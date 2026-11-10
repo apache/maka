@@ -253,7 +253,7 @@ export function createMessagesDock(
       }
     }
   };
-  const rowHeight = platform.isTerminal ? 32 : 40;
+  const rowHeight = platform.idiom === 'terminal' ? 32 : 40;
   const readerHeight = height;
   const feedback = () => (
     <>
@@ -356,7 +356,7 @@ export function createMessagesDock(
                             disabled={!connected() || busy() !== null || editing() !== null}
                             onPress={inputAction(act, request('edit'))}
                             style={actionStyle}
-                            hoverStyle={{ backgroundColor: C.raised }}
+                            hoverStyle={{ backgroundColor: C.cardRaised }}
                             focusStyle={{ backgroundColor: C.line }}
                           >
                             <Icon name="edit" color={C.muted} />
@@ -369,7 +369,7 @@ export function createMessagesDock(
                             disabled={!connected() || busy() !== null || editing() !== null}
                             onPress={inputAction(act, request('retract'))}
                             style={actionStyle}
-                            hoverStyle={{ backgroundColor: C.raised }}
+                            hoverStyle={{ backgroundColor: C.cardRaised }}
                             focusStyle={{ backgroundColor: C.line }}
                           >
                             <Icon name="close" color={C.muted} />
@@ -387,7 +387,7 @@ export function createMessagesDock(
                             }
                             onPress={inputAction(act, request('promote'))}
                             style={actionStyle}
-                            hoverStyle={{ backgroundColor: C.raised }}
+                            hoverStyle={{ backgroundColor: C.cardRaised }}
                             focusStyle={{ backgroundColor: C.line }}
                           >
                             <Icon name="send" color={C.muted} />
@@ -491,7 +491,7 @@ export function createMessagesDock(
                       }
                       onPress={inputAction(save, null)}
                       style={controlStyle}
-                      hoverStyle={{ backgroundColor: C.raised }}
+                      hoverStyle={{ backgroundColor: C.cardRaised }}
                       focusStyle={{ backgroundColor: C.line }}
                     >
                       <Text style={{ color: C.accent }}>{tr('Save')}</Text>

@@ -142,6 +142,18 @@ pub struct CodexCompatibility {
     pub fetched_at: u64,
 }
 
+/// Call only with ChatGPT provenance on both sides. Recorded observations do not
+/// expire with the catalog; a later catalog cannot certify a missing old hash.
+/// Native re-compaction may ask the producing model to convert its own old state.
+pub fn codex_replay_allowed(
+    same_model: bool,
+    hashes_match: Option<bool>,
+    operation: ModelOperation,
+) -> bool {
+    (same_model && operation == ModelOperation::CodexCompaction)
+        || hashes_match.unwrap_or(same_model)
+}
+
 impl ModelRequestContext {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.operation == ModelOperation::CodexCompaction && self.codex.is_none() {

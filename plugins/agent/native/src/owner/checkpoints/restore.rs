@@ -137,17 +137,6 @@ impl Owner {
                 if session.archived {
                     return Err("agent_checkpoint_archived_session".into());
                 }
-                if owner
-                    .store
-                    .session(&session.id)
-                    .await
-                    .map_err(failure)?
-                    .is_managed()
-                    .await
-                    .map_err(failure)?
-                {
-                    return Err("agent_checkpoint_managed_session_requires_manager".into());
-                }
                 let state = owner.checkpoint_state()?;
                 let history = state.session_history(owner.run_owner(), session.id.clone());
                 let checkout = repository

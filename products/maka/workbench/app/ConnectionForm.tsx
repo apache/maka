@@ -56,7 +56,10 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
     owner.defaultTarget()?.connectionId === form().baseline?.target.connectionId &&
     owner.defaultTarget()?.modelId === id;
   return (
-    <SettingsBody footer={footer(owner)}>
+    <SettingsBody
+      footerShown={!form().baseline || owner.dirty()}
+      footer={<ConnectionFooter owner={owner} />}
+    >
       <If when={interactive()}>
         <ConnectionLogin owner={owner} disabled={disabled()} />
       </If>
@@ -192,7 +195,10 @@ export function ConnectionAdvanced(props: { settings: ModelSettingsOwner }) {
   const interactive = () =>
     form().provider.descriptor.authentication.some((method) => method.interactive);
   return (
-    <SettingsBody footer={footer(owner)}>
+    <SettingsBody
+      footerShown={!form().baseline || owner.dirty()}
+      footer={<ConnectionFooter owner={owner} />}
+    >
       <SettingsSection
         note={
           form().baseline
@@ -265,9 +271,6 @@ export function ConnectionAdvanced(props: { settings: ModelSettingsOwner }) {
     </SettingsBody>
   );
 }
-
-const footer = (owner: ModelSettingsOwner) =>
-  !owner.editor()!.baseline || owner.dirty() ? <ConnectionFooter owner={owner} /> : undefined;
 
 function ConnectionFooter(props: { owner: ModelSettingsOwner }) {
   const owner = props.owner;

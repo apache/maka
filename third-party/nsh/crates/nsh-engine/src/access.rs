@@ -14,7 +14,9 @@ const MAX_REDIRECTS: usize = 20;
 /// A request (or a redirect's hop) the app's capabilities do not grant:
 /// JS's `fetch` rejects with a `TypeError` whose `code` is
 /// `ERR_ACCESS_DENIED`, `permission` `"network"` and `resource` the URL
-/// (`nsh_js::Host::fetch_refused`); a Rust task's fails with the message.
+/// (`nsh_js::Host::fetch_refused`); a Rust task's fails with the message,
+/// and a module function's call rejects with the same fields
+/// (`Core::fetch_refused`: `registerFont`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Refused {
     /// Why, for people.

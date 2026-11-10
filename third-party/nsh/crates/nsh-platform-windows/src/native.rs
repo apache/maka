@@ -198,8 +198,10 @@ pub struct Wheel {
 pub struct ComponentContext {
     id: NodeId,
     control: EngineControl,
-    /// The surface's key and window, to draw again from any thread.
+    /// The surface's key and the UI thread it lives on, to draw again
+    /// from any thread.
     surface: u64,
+    ui: crate::window::UiThread,
 }
 
 impl std::fmt::Debug for ComponentContext {
@@ -234,7 +236,7 @@ impl ComponentContext {
     /// thread).
     pub fn redraw(&self) {
         let key = self.surface;
-        crate::window::invoke(move || {
+        self.ui.invoke(move || {
             if let Some(surface) = Surface::by_key(key) {
                 surface.invalidate();
             }
@@ -311,6 +313,15 @@ pub(crate) struct NativeState {
 }
 
 impl NativeState {
+    #[cfg(feature = "terminal")]
+    pub(crate) fn needs_window_composition(&self) -> bool {
+        self.hosts.borrow().values().any(|host| match host {
+            Host::Web(_) => true,
+            Host::Component(item) => item.window.get().is_some(),
+            Host::Video(_) => false,
+        })
+    }
+
     /// Uses `components` (an [`crate::AppOptions`]'s registry).
     pub(crate) fn set_components(&self, components: Components) {
         *self.components.borrow_mut() = components;
@@ -393,6 +404,7 @@ pub(crate) fn create(surface: &Rc<Surface>, view: &NshView) {
             id,
             component: RefCell::new(None),
             window: Cell::new(None),
+            parent: Cell::new(None),
             placement: Placement::default(),
         })),
     };
@@ -450,10 +462,15 @@ pub(crate) fn component(surface: &Rc<Surface>, view: &NshView, name: &Arc<str>) 
         id: view.id(),
         control,
         surface: surface.key(),
+        ui: surface.ui_thread(),
     });
     if let Some(hwnd) = made.window() {
-        adopt(surface.hwnd(), hwnd);
+        // A child of the window its view shows in (it moves with the view
+        // to another window, [`ComponentItem::placed`]).
+        let parent = crate::app_window::hwnd_showing(surface, view);
+        adopt(parent, hwnd);
         item.window.set(Some(hwnd));
+        item.parent.set(Some(parent));
     }
     *item.component.borrow_mut() = Some(made);
     view.changed();
@@ -539,24 +556,6 @@ pub(crate) fn focused(surface: &Surface) -> Option<NshView> {
             .flatten()
             .filter(NshView::attached)
     })
-}
-
-/// Hides hosted input surfaces synchronously when a recycling row leaves
-/// the mounted tree, rather than waiting for the next drawn frame.
-pub(crate) fn detached(view: &NshView) {
-    let items: Vec<_> = view
-        .state()
-        .natives
-        .iter()
-        .map(|native| native.item.clone())
-        .collect();
-    for item in items {
-        item.placed(None);
-        item.compose_at(None);
-    }
-    for child in view.child_views() {
-        detached(&child);
-    }
 }
 
 /// Content that takes the keyboard (a dialog, a modal) comes over the
@@ -658,6 +657,8 @@ struct ComponentItem {
     component: RefCell<Option<Box<dyn NativeComponent>>>,
     /// The component's own window.
     window: Cell<Option<HWND>>,
+    /// The window it is a child of: the one its view shows in.
+    parent: Cell<Option<HWND>>,
     placement: Placement,
 }
 
@@ -711,6 +712,15 @@ impl Hosted for ComponentItem {
         let (Some(hwnd), Some(surface)) = (self.window.get(), self.surface.upgrade()) else {
             return;
         };
+        if rect.is_some()
+            && let Some(view) = view_of(&surface, self.id)
+        {
+            let parent = crate::app_window::hwnd_showing(&surface, &view);
+            if self.parent.replace(Some(parent)) != Some(parent) {
+                adopt(parent, hwnd);
+                self.placement.last.set(None);
+            }
+        }
         self.placement.apply(&surface, self.id, hwnd, rect);
     }
 
@@ -743,6 +753,42 @@ impl Wheel {
             ctrl: event.modifiers.ctrl,
             alt: event.modifiers.alt,
         }
+    }
+}
+
+/// The native window `hwnd` of a window of the app's own is about to go:
+/// the web views in it close (their views go with the window's root), and
+/// the components' windows it holds go back to the main window, hidden, so
+/// that they are not destroyed with it.
+pub(crate) fn window_closing(surface: &Surface, hwnd: HWND) {
+    let (webs, components): (Vec<_>, Vec<_>) = {
+        let hosts = surface.native.hosts.borrow();
+        let webs = hosts
+            .values()
+            .filter_map(|h| match h {
+                Host::Web(w) if w.hwnd() == Some(hwnd) => Some(w.clone()),
+                _ => None,
+            })
+            .collect();
+        let components = hosts
+            .values()
+            .filter_map(|h| match h {
+                Host::Component(c) if c.parent.get() == Some(hwnd) => Some(c.clone()),
+                _ => None,
+            })
+            .collect();
+        (webs, components)
+    };
+    for web in webs {
+        web.close();
+    }
+    let main = surface.hwnd();
+    for item in components {
+        if let Some(child) = item.window.get() {
+            adopt(main, child);
+        }
+        item.parent.set(Some(main));
+        item.placement.last.set(None);
     }
 }
 
@@ -894,7 +940,7 @@ fn intersect(a: RECT, b: RECT) -> Option<RECT> {
 
 /// Where a video's source is.
 #[derive(Debug, PartialEq)]
-enum Location {
+pub(crate) enum Location {
     /// A URL Media Foundation opens (`https://`, `file://`, ...).
     Url(String),
     /// A file path.
@@ -903,7 +949,7 @@ enum Location {
 
 impl Location {
     /// The URL the media engine opens.
-    fn url(&self) -> String {
+    pub(crate) fn url(&self) -> String {
         match self {
             Location::Url(url) => url.clone(),
             Location::Path(path) => file_url(&path.to_string_lossy()),
@@ -912,7 +958,7 @@ impl Location {
 }
 
 /// Resolves `source` (`asset:/` URIs against `base`).
-fn locate(source: &str, base: Option<&AssetBase>) -> Option<Location> {
+pub(crate) fn locate(source: &str, base: Option<&AssetBase>) -> Option<Location> {
     if let Some(path) = source.strip_prefix("asset:/") {
         let path = path.trim_start_matches('/');
         return match base {

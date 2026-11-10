@@ -3,14 +3,17 @@ import { createAnimatedValue } from "nsh";
 import { alpha, colors, density, finish } from "../ui";
 
 const pointer = platform.desktop;
+/** In a terminal everything is whole rows: the picture's rings are left
+ * out, so the header is only as tall as its two lines and the bar. */
+const terminal = platform.idiom === "terminal";
 /** How tall the header is open, and the bar it collapses to: compact with
  * a pointer, roomier on a touch screen. */
-const OPEN = pointer ? 168 : 220;
-const BAR = pointer ? 44 : 56;
+const OPEN = terminal ? 64 : pointer ? 168 : 220;
+const BAR = terminal ? 32 : pointer ? 44 : 56;
 /** The rows' height, the headings' and the gutter. */
-const ROW = pointer ? 36 : 52;
-const HEADING = pointer ? 28 : 34;
-const GUTTER = pointer ? 24 : 16;
+const ROW = terminal ? 16 : pointer ? 36 : 52;
+const HEADING = terminal ? 16 : pointer ? 28 : 34;
+const GUTTER = terminal ? 8 : pointer ? 24 : 16;
 /** How far the page scrolls while the header collapses. */
 const RANGE = OPEN - BAR;
 

@@ -1,0 +1,32 @@
+{
+  "numbers": {
+    "decimal": ",",
+    "group": " ",
+    "minGrouping": 1,
+    "indian": false,
+    "minus": "−",
+    "percent": " %",
+    "currencyBefore": false,
+    "currencySpace": " ",
+    "compactShort": [[3, " tn"], [6, " mn"], [9, " md"], [12, " bn"]],
+    "compactLong": []
+  },
+  "dates": {
+    "hour12": false,
+    "padHour24": true,
+    "am": "AM",
+    "pm": "PM",
+    "periodFirst": false,
+    "periodSpace": " ",
+    "hourSuffix": "",
+    "numeric": [["year", "-"], ["month", "-"], ["day", ""]],
+    "shortYear2digit": false,
+    "text": null,
+    "textLong": null,
+    "weekdayFirst": true,
+    "weekdaySep": ", ",
+    "dateTimeSep": " ",
+    "names": null,
+    "cjk": false
+  }
+}

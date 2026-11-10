@@ -50,6 +50,22 @@ A release APK carries `libnsh.so` without its symbol tables and debug info. The 
 runtime in `symbols/<abi>/libnsh.so` (a Rust app's in `.nsh/rust/android-rust-release/symbols/<abi>/`): give it to
 `ndk-stack` or upload it to Play Console as native debug symbols to read native crash stacks.
 
+## Upload to Google Play
+
+`nsh publish android` uploads an Android App Bundle (`.aab`) to Google Play's internal testing track
+([CLI](./cli.md#nsh-publish-android)):
+
+```sh
+export NSH_PLAY_CREDENTIALS=~/keys/play-service-account.json   # never commit it
+nsh publish android .nsh/out/App.aab
+```
+
+Once per app: create the app in Play Console, create a service account in Google Cloud with the Google Play Android
+Developer API enabled, download its JSON key, and invite the service account's email under **Users and permissions**
+with permission to release to testing tracks. Until the app's first release is made in Play Console, pass `--draft`.
+The bundle's version code must be higher than any uploaded before. Promoting a release beyond internal testing stays a
+step in Play Console.
+
 ## Embedding in an Android app
 
 An existing Android app can show NSH apps inside its own UI. The runtime ships as an Android library, `nsh.aar`: you
@@ -175,6 +191,7 @@ again replaces the running app. The complete sample is
 | `setLocale(Locale locale)` | The app's language and region in place of the user's: `Intl`, `locale()` and the components follow it at once, and the apps loaded later start in it. `null` follows the system's. |
 | `setFontScale(float scale)` | The text size in place of the system's font size (1 is the default): texts and inputs are laid out again at it and `fontScale()` reads it, at once and for the apps loaded later; lengths keep their size. `0` follows the system's. |
 | `setThemeOverrides(String json)` | The host's brand over the app's [theme](./tailwind.md#theme-tokens): a theme file in the format of `nsh.json`'s `"theme"`. Its tokens win over the app's of the same names, in light and dark mode, and the app's others stay. Applies at once and to the apps loaded later; `null` gives the app its own theme back. Throws `IllegalArgumentException` for a file that does not parse. |
+| `registerFont(byte[] data)` | Registers a font file (TrueType, OpenType, WOFF or WOFF2) the host ships. Apps name its family in `fontFamily` and do not bundle the file. A font registered before a load is in that app's first frame; one registered while an app runs is used from the next layout. Throws `IllegalArgumentException` when `data` is not a font. Registering the same file again does nothing. |
 | `setStorageDirectory(File dir)` | Where the apps loaded next keep their [storage](../modules/nsh.md#storage); `null`: `files/nsh/<app id>` in the app's private directory, by the app's own id. |
 | `setCacheOptions(NshCacheOptions options)` | Where the apps loaded next keep their caches, the [images they download](./images-and-assets.md#kept-on-disk), and how much each keeps. Build one with `NshCacheOptions.builder()`: `location(File)`, `systemLocation()` (the default: `nsh` in the cache directory, each app in `<app id>`) or `noDiskCache()`; `imagesMaxMegabytes(int)` (256 by default) or `imagesOff()`. |
 | `loadAssetBundle(String dir)` | Runs `dir/bundle.nshc` from the APK's assets; app assets come from `dir/assets/`. Returns `false` if it cannot be read (also reported to the error listener). |

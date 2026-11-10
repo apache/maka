@@ -30,8 +30,9 @@ use super::{
     table::{TableGesture, TablePreview},
 };
 use crate::{
-    editor::layout::{self, AutoScroll},
+    autoscroll::{self, AutoScroll},
     rich_editor::{
+        commands::base_keymap,
         extensions::{HistoryOptions, Keymap, KeymapOptions, history, starter},
         formats::{DomParser, slice_from_text, slice_to_text},
         model::{Fragment, Mark, Node, SchemaSpec, Slice},
@@ -160,7 +161,7 @@ pub(crate) struct Rv {
     /// A block's frame or a text's lines changed.
     pub(crate) layout_rev: Signal<u64>,
     /// The session has a state the view has not taken yet.
-    notified: Signal<u64>,
+    pub(crate) notified: Signal<u64>,
     pub(crate) focused: Signal<bool>,
     pub(crate) blink: Signal<bool>,
     pub(crate) composition: Signal<Option<String>>,
@@ -199,6 +200,13 @@ pub(crate) struct Rv {
     pub(crate) table_gesture: Rc<RefCell<Option<TableGesture>>>,
     /// What that drag shows: a column's or row's new size, a drop line.
     pub(crate) table_preview: Signal<Option<TablePreview>>,
+}
+
+/// Copy and Cut (`mod+c`, `mod+x`). The editor takes them only while
+/// something is selected: with nothing selected they would copy nothing and
+/// keep the page's selection off the clipboard.
+fn copy_or_cut(event: &KeyEvent) -> bool {
+    event.mod_key && !event.alt && !event.shift && matches!(event.key.as_str(), "c" | "x")
 }
 
 impl Rv {
@@ -331,12 +339,20 @@ impl Rv {
                 rv.editable()
             })
         };
+        let copying = {
+            let rv = self.clone();
+            computed(move || {
+                rv.sel_rev.get();
+                !rv.session.state().selection().empty()
+            })
+        };
         let rv = self.clone();
         effect(move || {
             if !rv.focused.get() || rv.composition.get().is_some() {
                 return;
             }
             let tab_navigation = rv.props.tab_navigation.get();
+            let copying = copying.get();
             for spec in keys::key_table(editable.get()) {
                 if tab_navigation
                     && spec.event.key == "Tab"
@@ -344,13 +360,19 @@ impl Rv {
                 {
                     continue;
                 }
+                // With nothing selected, leave them to the page.
+                if !copying && copy_or_cut(&spec.event) {
+                    continue;
+                }
                 let rv = rv.clone();
+                let input = rv.input;
                 let event = spec.event.clone();
-                on_key_with(
+                input.on_key_with(
                     &spec.keystroke,
                     KeyOptions {
                         when: When::Always,
                         repeat: spec.repeat,
+                        ..Default::default()
                     },
                     move |_| rv.key(&event),
                 );
@@ -614,7 +636,14 @@ impl Rv {
         let (deleted, inserted, composed) = {
             let mut sink = self.sink.borrow_mut();
             let base = match sink.emptied.take() {
-                Some(old) if text.starts_with(old.as_str()) => old,
+                // The platform dropped the empty value: the text still extends
+                // what it held. A text equal to what it held was typed again
+                // into the emptied sink: platforms report each edit, so an
+                // edit to the text the platform kept would show. Linux reports
+                // the edits made before it is idle as one: there, the text
+                // deleted and typed again before the empty value arrives reads
+                // the same, and is inserted a second time.
+                Some(old) if text != old && text.starts_with(old.as_str()) => old,
                 Some(_) => String::new(),
                 None => std::mem::take(&mut sink.text),
             };
@@ -626,7 +655,7 @@ impl Rv {
         };
         self.sink_value.set(text.to_owned());
         for _ in 0..deleted {
-            self.key(&keys::plain_event("Backspace"));
+            self.key(&KeyEvent::new("Backspace"));
         }
         let mut parts = inserted.split('\n').peekable();
         while let Some(part) = parts.next() {
@@ -634,7 +663,7 @@ impl Rv {
                 self.text_input(piece, composed);
             }
             if parts.peek().is_some() {
-                self.key(&keys::plain_event("Enter"));
+                self.key(&KeyEvent::new("Enter"));
             }
         }
         {
@@ -685,7 +714,7 @@ impl Rv {
     /// empty sink).
     pub(crate) fn sink_key(&self, key: &str) {
         if key == "Backspace" && self.sink.borrow().text.is_empty() {
-            self.key(&keys::plain_event("Backspace"));
+            self.key(&KeyEvent::new("Backspace"));
         }
     }
 
@@ -758,22 +787,34 @@ impl Rv {
                 return;
             }
         }
-        if event.mod_key && !event.alt && !event.shift {
-            match event.key.as_str() {
-                "c" => return self.copy(),
-                "x" => {
-                    self.copy();
-                    if editable {
-                        self.delete_selection();
-                    }
-                    return;
-                }
-                "a" => return self.select_all(),
-                _ => {}
+        if copy_or_cut(event) {
+            self.copy();
+            if editable && event.key == "x" {
+                self.delete_selection();
             }
+            return;
+        }
+        if event.mod_key && !event.alt && !event.shift && event.key == "a" {
+            return self.select_all();
         }
         if editable && self.delete_by_key(event) {
             self.after_key(event);
+            return;
+        }
+        // Escape no plugin, node view or keymap took collapses a selection
+        // to its head. With nothing to collapse, a terminal's focus leaves
+        // the editor, so it is no trap there (Tab then goes on after it);
+        // the other platforms keep Escape as it was. It stays bound for the
+        // plugins' own Escape (a suggestion's).
+        if plain && event.key == "Escape" {
+            let sel = state.selection();
+            if sel.empty() {
+                if crate::terminal::is_terminal() {
+                    self.blur();
+                }
+            } else if let Ok(p) = state.doc().resolve(sel.head()) {
+                self.set_selection(Selection::near(&p, 1), false);
+            }
             return;
         }
         if let Some(m) = keys::movement(event) {
@@ -1954,7 +1995,7 @@ impl Rv {
         let scroll_y = self.scroll_y.get_untracked();
         let y = page.y + drag.shift.y + (scroll_y - drag.scroll) - scroll_y;
         let viewport = self.viewport.get_untracked();
-        let dy = layout::edge_speed(y, viewport.height, layout::AUTOSCROLL_INNER_ZONE);
+        let dy = autoscroll::edge_speed(y, viewport.height, autoscroll::AUTOSCROLL_INNER_ZONE);
         let mut auto = self.autoscroll.borrow_mut();
         auto.page = page;
         if dy.0 == 0.0 {
@@ -1964,7 +2005,7 @@ impl Rv {
         auto.speed = Point::new(px(0.0), dy);
         if auto.task.is_none() {
             let rv = self.clone();
-            let period = Duration::from_millis(layout::AUTOSCROLL_PERIOD_MS);
+            let period = Duration::from_millis(autoscroll::AUTOSCROLL_PERIOD_MS);
             auto.task = Some(set_interval(period, move || rv.autoscroll_tick()));
         }
     }
@@ -2287,9 +2328,7 @@ fn own_session(props: &RichEditorProps) -> EditorSession {
             "starter" => plugins.extend(starter::plugins(&schema)),
             "history" if !starter_on => plugins.push(history(HistoryOptions::default())),
             "baseKeymap" if !starter_on => {
-                plugins.push(crate::rich_editor::extensions::keymap_plugin(
-                    crate::rich_editor::extensions::keymap::built_in_base_keymap(),
-                ))
+                plugins.push(crate::rich_editor::extensions::keymap(base_keymap()))
             }
             "markdown" => plugins.extend(crate::rich_editor::extensions::markdown::markdown(
                 Default::default(),

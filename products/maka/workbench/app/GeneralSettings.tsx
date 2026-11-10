@@ -38,6 +38,7 @@ import { LoadingIndicator } from './Loading';
 import {
   SettingsBody,
   SettingsButton,
+  SettingsDiscard,
   SettingsFormFooter,
   SettingsInput,
   SettingsProblem,
@@ -52,17 +53,22 @@ import { C, defaultColors, isDark } from './ui';
 export function GeneralSettings(props: { owner: GeneralSettingsOwner }) {
   const owner = props.owner;
   return (
-    <Each of={[owner.action()]} key={(request) => JSON.stringify(request)}>
-      {(action) => {
-        const request = action();
-        if (request.kind === 'root') return <GeneralRoot owner={owner} request={request} />;
-        if (request.kind === 'globalInstructions')
-          return <GlobalInstructionsEditor owner={owner} request={request} />;
-        if (request.kind === 'predictions')
-          return <PredictionSettings owner={owner} request={request} />;
-        return <PreferenceEditor owner={owner} request={request} />;
-      }}
-    </Each>
+    <If
+      when={!owner.discarding.asking()}
+      else={<SettingsDiscard onDiscard={owner.discarding.discard} onKeep={owner.discarding.keep} />}
+    >
+      <Each of={[owner.action()]} key={(request) => JSON.stringify(request)}>
+        {(action) => {
+          const request = action();
+          if (request.kind === 'root') return <GeneralRoot owner={owner} request={request} />;
+          if (request.kind === 'globalInstructions')
+            return <GlobalInstructionsEditor owner={owner} request={request} />;
+          if (request.kind === 'predictions')
+            return <PredictionSettings owner={owner} request={request} />;
+          return <PreferenceEditor owner={owner} request={request} />;
+        }}
+      </Each>
+    </If>
   );
 }
 
@@ -81,7 +87,7 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
           <AppearanceRows />
         </If>
         {/* A terminal without pixel scaling is sized by its font; a desktop window has neither. */}
-        <If when={uiScale.supported || platform.isTerminal}>
+        <If when={uiScale.supported || platform.idiom === 'terminal'}>
           <UiScaleSettings />
         </If>
         <If when={facts()}>

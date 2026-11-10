@@ -96,7 +96,7 @@ touches and UI tests meet each row once.
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
-| `each` | `virtual_list(count, ..)` | `readonly T[] \| ReadonlyListSource<T>` | | The items: an array or an [indexed snapshot](../modules/nsh-list.md#data-and-rendering). |
+| `each` | `virtual_list(count, ..)` | `readonly T[]` | | The items. |
 | `children` | `virtual_list(.., \|at\| row)` | `(item: () => T, index: () => number) => JSX.Element` | | Renders one row. |
 | `estimatedItemSize` | `.estimated_item_size(px(..))` | `number` | `50` | The size of items not measured yet, in points. Close estimates keep the scroll bar steady. |
 | `horizontal` | `.horizontal()` | `boolean` | `false` | Scrolls sideways. |
@@ -112,7 +112,7 @@ touches and UI tests meet each row once.
 | `empty` | `.empty(el)` | `ListSlot` | | Shown instead of the items while `each` is empty. |
 | `separator` | `.separator(\|\| el)` | `ListSlot` | | Between items (one column). |
 | `initialScrollIndex` | `.initial_scroll_index(i)` | `number` | | Scrolls to this item before the first frame. |
-| `keyExtractor` | `.keys(\|\| ids)` | `(item: T, index: number) => string` | `item.key`, `item.id` or the index | The key of an item in viewability tokens. In Rust, the rows' identities, so rows keep their cells and sizes when rows come and go before them. |
+| `keyExtractor` | `.keys(\|\| ids)` | `(item: T, index: number) => string` | `item.key`, `item.id` or the index | The key of an item in viewability tokens. In Rust, the rows' identities, so rows keep their cells and sizes when rows come and go before them. In TSX, rows whose keys match are the same rows even when `each` holds new objects, so rebuilding the rows (say in a `computed`) keeps their sizes and the reader's place; without it, rows are compared by identity. |
 | `onLoadMore` | `.on_load_more(..)` | `() => void` | | The end is near: load more. |
 | `loadMoreThreshold` | `.load_more_threshold(viewports)` | `number` | `1` | How close to the end (in viewports) `onLoadMore` fires. |
 | `onLoadMoreAtStart` | `.on_load_more_at_start(..)` | `() => void` | | The start is near, after the user or a scroll command moved the list: load what comes before the first item. |
@@ -123,7 +123,7 @@ touches and UI tests meet each row once.
 | `onRefresh` | `.on_refresh(..)` | `() => void` | | The user pulled to refresh. |
 | `refreshIndicator` | `.refresh_indicator(Some(height))` | `{ height: number }` | | The app draws its own indicator, `height` points tall: the platform's spinner is hidden, a pull refreshes once it reaches `height`, and refreshing keeps `height` above the content. A height of 0 or less is none. |
 | `pullValue` | `.pull_value(&value)` | `AnimatedValue` | | An animated value fed with how far the list is pulled past its top (0 at rest, growing with the pull; the room kept above the content while it refreshes: `height` with `refreshIndicator`), for the app's indicator. |
-| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | The scroll indicator shows: the platform's, or the app's [built-in bar](./scrollbar.md#built-in-bars) once it set a theme; an object is a theme of the view's own. On the desktop and in desktop browsers a horizontal view keeps it: it is the mouse's scroll bar. |
+| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | The scroll indicator shows: the platform's, or the app's [built-in bar](./scrollbar.md#built-in-bars) once it set a theme; an object is a theme of the view's own. |
 | `scrollValue` | `.scroll_value(&value)` | `AnimatedValue` | | An animated value fed with the scroll offset, for scroll-linked animations. |
 | `keyboardDismissMode` | `.keyboard_dismiss_mode(..)` | `"none" \| "on-drag" \| "interactive"` | `"none"` | Whether dragging dismisses the keyboard. |
 | `style` | `Styled` methods | `StyleProp<ViewStyle>` | | The list's own style (it needs a bounded size: `flex: 1` or a height). |

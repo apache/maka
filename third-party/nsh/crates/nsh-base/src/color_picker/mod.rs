@@ -13,8 +13,12 @@
 //! the pointer and Left and Right trading places
 //! ([`bind_while_directed`]). The direction is the surface's, read as it
 //! changes.
+//!
+//! In a terminal the area, the sliders and the swatches are Cells filled
+//! with their colors (`tui.rs`, [`crate::terminal`]).
 
 mod model;
+mod tui;
 
 use nsh_core::{
     AccessibilityActionDef, AccessibilityValue, Color,
@@ -348,6 +352,10 @@ pub struct ColorAreaProps {
 pub fn ColorArea(props: ColorAreaProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     let picker = Picker::find("ColorArea");
     let disabled = move || props.disabled.get() || picker.disabled();
+    // A terminal's area: a grid of colored Cells ([`tui::area`]).
+    if crate::terminal::is_terminal() {
+        return tui::area(picker, disabled, props.accessibility_label);
+    }
     let size = stored(Size::<Points>::default());
     let drag = stored(None::<(f64, f64)>);
     let focused = signal(false);
@@ -494,6 +502,7 @@ pub fn ColorArea(props: ColorAreaProps, _cx: Scope<NoEvent>) -> impl IntoElement
         .on_responder_terminate(move |_: &ResponderEvent| release())
         .child(panel)
         .child(thumb)
+        .into_element()
 }
 
 /// The props of [`ColorSlider`].
@@ -713,6 +722,10 @@ pub fn ColorSlider(props: ColorSliderProps, _cx: Scope<NoEvent>) -> impl IntoEle
         }
         Axis::Vertical => bind_while(move || focused.get(), SLIDER_KEYS, move |n| ctl.nudge(n)),
     }
+    // A terminal's slider: a row of the track's colors ([`tui::slider`]).
+    if crate::terminal::is_terminal() {
+        return tui::slider(ctl, focused, props.accessibility_label);
+    }
     // The track's colors from its start to its end, computed once per
     // change of the color; a segment restyles only when its two stops
     // change (dragging a channel leaves its own track as it was). The
@@ -848,6 +861,7 @@ pub fn ColorSlider(props: ColorSliderProps, _cx: Scope<NoEvent>) -> impl IntoEle
         .on_responder_terminate(move |_: &ResponderEvent| ctl.release())
         .child(track)
         .child(thumb)
+        .into_element()
 }
 
 /// The props of [`ColorField`].
@@ -949,7 +963,7 @@ pub fn ColorField(props: ColorFieldProps, _cx: Scope<NoEvent>) -> impl IntoEleme
 pub struct ColorSwatchProps {
     /// The color it shows; pressing it picks it in the [`ColorPicker`]
     /// around it. Without it, the picker's color, which a press does not
-    /// change (a preview).
+    /// change (a preview, no Tab stop).
     pub color: Prop<Option<Hsla>>,
     /// No presses; `disabled:` styles apply.
     #[prop(default)]
@@ -1015,6 +1029,9 @@ pub fn ColorSwatch(props: ColorSwatchProps, cx: Scope<ColorSwatchEvent>) -> impl
             ..AccessibilityState::default()
         })
         .selected_style(props.selected_style)
+        // A preview (no `color`) has nothing to press: no Tab stop, which
+        // would hold the focus where no key does anything.
+        .focusable(move || props.color.get().is_some())
         .on_press(move |_: &()| {
             let Some(color) = props.color.get_untracked() else {
                 return;
@@ -1027,17 +1044,23 @@ pub fn ColorSwatch(props: ColorSwatchProps, cx: Scope<ColorSwatchEvent>) -> impl
             }
             cx.emit(ColorSwatchEvent::Press(color));
         })
-        .child(checkerboard(
-            props.checkerboard_color,
-            props.checkerboard_size,
-        ))
-        .child(
-            view()
-                .absolute()
-                .inset_0()
-                .pointer_events(PointerEvents::None)
-                .bg(move || AdaptiveColor::from(shown())),
-        )
+        .map(move |v| match crate::terminal::is_terminal() {
+            // A terminal's swatch: its color, which the terminal fills
+            // with it, four Cells unless the app sizes it ([`tui`]).
+            true => v.child(tui::swatch_size()).child(tui::swatch_fill(shown)),
+            false => v
+                .child(checkerboard(
+                    props.checkerboard_color,
+                    props.checkerboard_size,
+                ))
+                .child(
+                    view()
+                        .absolute()
+                        .inset_0()
+                        .pointer_events(PointerEvents::None)
+                        .bg(move || AdaptiveColor::from(shown())),
+                ),
+        })
         .child(props.children)
 }
 

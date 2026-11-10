@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Desktop Host-following lifecycle.
+//! Native desktop Host-following lifecycle.
 
 use super::{Connection, runs};
 use maka_event_log::root;

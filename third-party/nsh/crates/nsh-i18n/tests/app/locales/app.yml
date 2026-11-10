@@ -1,0 +1,8 @@
+_version: 2
+hello:
+  en: Hello
+  zh-CN: 你好
+messages:
+  hello:
+    en: Hello, %{name}
+    zh-CN: 你好，%{name}

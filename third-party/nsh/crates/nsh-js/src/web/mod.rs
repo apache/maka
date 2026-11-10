@@ -1,7 +1,7 @@
 //! The web platform APIs of TS apps, natively: events and abort signals,
 //! URLs, text encoding, blobs and form data, streams, and `fetch` with its
 //! `Headers`, `Request` and `Response`; and ECMAScript's `Intl`, which
-//! QuickJS lacks (`intl/`). They are JS globals only: Rust code uses
+//! QuickJS lacks (`format/`). They are JS globals only: Rust code uses
 //! crates of its choice.
 //!
 //! Every object of these classes is one QuickJS class (functions made in
@@ -19,7 +19,7 @@ pub(crate) mod blob;
 mod encoding;
 mod event;
 mod fetch;
-mod intl;
+mod format;
 mod iterator;
 mod streams;
 mod url;
@@ -167,7 +167,7 @@ fn specs() -> impl Iterator<Item = &'static Spec> {
         blob::SPECS,
         fetch::SPECS,
         websocket::SPECS,
-        intl::SPECS,
+        format::SPECS,
     ]
     .into_iter()
     .flatten()
@@ -183,6 +183,16 @@ pub(crate) struct Function {
     pub(crate) doc: &'static str,
     /// What follows the name in its declaration.
     pub(crate) signature: &'static str,
+}
+
+/// Registers the language data the app ships (`nsh:rt`'s `i18n`: nsh.json
+/// `locales`), by language (`"de"`): what `Intl` formats those languages
+/// with. English is built in.
+pub(crate) fn add_languages(
+    cx: *mut qjs::JSContext,
+    languages: serde_json::Map<String, serde_json::Value>,
+) {
+    format::add_languages(cx, languages);
 }
 
 /// Global functions (not classes).
@@ -238,6 +248,8 @@ pub(crate) struct Web {
     pub(crate) date: V,
     /// When `performance.now()` is 0 under a manual clock.
     pub(crate) clock_origin: Option<nsh_core::time::Instant>,
+    /// The language data `Intl` formats with: English and the app's.
+    pub(crate) languages: format::Languages,
 }
 
 impl Web {
@@ -732,7 +744,7 @@ fn make_class(cx: Ctx, spec: &Spec, protos: &[Option<V>], ctors: &[Option<V>]) -
 fn global_value(cx: Ctx, name: &CStr) -> R<V> {
     build(cx)?;
     if name == INTL {
-        return intl::namespace(cx);
+        return format::namespace(cx);
     }
     if let Some(spec) = specs().find(|s| s.global && s.name == name) {
         return constructor(cx, spec.class);
@@ -870,7 +882,7 @@ pub(crate) fn forget_dropped_fetches(cx: Ctx) {
 /// Defines the globals as accessors that make the classes on first use
 /// (an app that uses none pays nothing).
 pub(crate) fn install(cx: Ctx) -> rquickjs::Result<()> {
-    intl::install(cx).map_err(|Throw| rquickjs::Error::Exception)?;
+    format::install(cx).map_err(|Throw| rquickjs::Error::Exception)?;
     let g = js::global(cx);
     for (i, name) in global_names().enumerate() {
         // SAFETY: new functions the property takes.

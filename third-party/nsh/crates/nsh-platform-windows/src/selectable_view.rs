@@ -23,7 +23,7 @@ use std::{
 };
 
 use nsh_core::{
-    AttributedText, Bounds, EventKind, Point, Points,
+    AttributedText, Bounds, EventKind, EventPayload, NodeId, PayloadValue, Point, Points,
     geometry::point,
     selection::{
         KeptRows, SelectionModel, SelectionTexts, autoscroll_step, reading_order, reorder,
@@ -159,6 +159,10 @@ impl SelectionTexts for Texts {
     fn key(&self, i: usize) -> u64 {
         u64::from(self.views[i].id())
     }
+
+    fn continues(&self, i: usize) -> bool {
+        self.views[i].state().props.continues_text
+    }
 }
 
 /// Whether text takes part in the area around it.
@@ -222,6 +226,8 @@ struct Current {
     autoscrolling: bool,
     /// The virtual list rows its ends are in, kept rendered.
     kept: KeptRows,
+    /// The selected text last reported to the area's `onSelectionChange`.
+    reported: String,
 }
 
 impl Current {
@@ -237,6 +243,7 @@ impl Current {
             last: None,
             autoscrolling: false,
             kept: KeptRows::default(),
+            reported: String::new(),
         }
     }
 
@@ -314,6 +321,7 @@ fn take(surface: u64, area: Option<&NshView>) -> Option<Current> {
 }
 
 fn put(current: Current) {
+    let surface = current.surface;
     // Something made another current meanwhile: that one stays.
     let mut current = Some(current);
     CURRENT.with_borrow_mut(|c| {
@@ -321,15 +329,75 @@ fn put(current: Current) {
             *c = current.take();
         }
     });
-    if let Some(mut lost) = current {
-        lost.unhighlight();
+    match current {
+        Some(lost) => end(lost),
+        None => report(surface),
     }
+}
+
+/// Ends `current`'s selection: its highlights go, and an area that
+/// reported a selected text (and is still there) reports `""`.
+fn end(mut current: Current) {
+    current.unhighlight();
+    if !current.reported.is_empty() && current.area.attached() {
+        let id = current.area.state().id;
+        if let Some(surface) = Surface::by_key(current.surface) {
+            send(&surface, id, String::new(), 0);
+        }
+    }
+}
+
+/// Reports the current area's selected text to its `onSelectionChange`
+/// when it changed (after it is put back: the handler may change what is
+/// shown).
+fn report(surface: u64) {
+    let Some(mut current) = take(surface, None) else {
+        return;
+    };
+    let (id, listens) = {
+        let s = current.area.state();
+        (s.id, s.events.contains(EventKind::SelectionChange))
+    };
+    let mut change = None;
+    if listens {
+        let (text, start) = if current.model.is_empty() {
+            (String::new(), 0)
+        } else {
+            let texts = Texts::of(&current.area);
+            (
+                current.model.text(&texts),
+                current.model.start_offset(&texts),
+            )
+        };
+        if text != current.reported {
+            current.reported.clone_from(&text);
+            change = Some((text, start));
+        }
+    }
+    CURRENT.set(Some(current));
+    if let Some((text, start)) = change
+        && let Some(surface) = Surface::by_key(surface)
+    {
+        send(&surface, id, text, start);
+    }
+}
+
+/// Sends `onSelectionChange` with `text` to view `id`.
+fn send(surface: &Surface, id: NodeId, text: String, start: u32) {
+    surface.event(
+        id,
+        EventKind::SelectionChange,
+        EventPayload::Map(vec![
+            ("text", PayloadValue::Str(text)),
+            ("start", PayloadValue::Number(f64::from(start))),
+        ]),
+    );
 }
 
 /// Ends the current area's selection (a single text was selected).
 pub(crate) fn clear() {
-    if let Some(mut current) = CURRENT.take() {
-        current.unhighlight();
+    if let Some(current) = CURRENT.take() {
+        end(current);
     }
 }
 
@@ -351,7 +419,7 @@ pub(crate) fn end_batch(surface: &Rc<Surface>) {
     DIRTY.set(false);
     let gone = !current.area.attached() || !current.area.state().props.selectable_view;
     if gone {
-        current.unhighlight();
+        end(current);
         return;
     }
     let texts = Texts::of(&current.area);
@@ -364,7 +432,7 @@ pub(crate) fn end_batch(surface: &Rc<Surface>) {
 /// the views get it: ends the area's selection when the press is outside
 /// it.
 pub(crate) fn window_pressed(surface: &Surface, x: f32, y: f32) {
-    let Some(mut current) = take(surface.key(), None) else {
+    let Some(current) = take(surface.key(), None) else {
         return;
     };
     let inside = current
@@ -378,7 +446,7 @@ pub(crate) fn window_pressed(surface: &Surface, x: f32, y: f32) {
     if inside {
         put(current);
     } else {
-        current.unhighlight();
+        end(current);
     }
 }
 
@@ -431,8 +499,8 @@ pub(crate) fn pointer(
             let mut current = match CURRENT.take() {
                 Some(c) if c.surface == key && c.area == *area => c,
                 other => {
-                    if let Some(mut other) = other {
-                        other.unhighlight();
+                    if let Some(other) = other {
+                        end(other);
                     }
                     Current::new(key, area.clone())
                 }
@@ -604,8 +672,8 @@ fn select_all(surface: u64, area: &NshView) {
     let mut current = match CURRENT.take() {
         Some(c) if c.surface == surface && c.area == *area => c,
         other => {
-            if let Some(mut other) = other {
-                other.unhighlight();
+            if let Some(other) = other {
+                end(other);
             }
             Current::new(surface, area.clone())
         }

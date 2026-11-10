@@ -32,6 +32,7 @@ import type {
 import type { SettingsOperations } from './settingsOperations';
 import { sameValue } from '../../../../plugins/shared/value';
 import { invalidatePredictionPreferences, observePredictionPreferences } from './messagePrediction';
+import { createSettingsDiscard } from './settingsDiscard';
 
 type PreferencesEditor =
   | {
@@ -423,12 +424,23 @@ export function createGeneralSettings(
               (!form.document.basis.exists ||
                 form.document.content !== form.document.basis.content);
   };
-  const back = () => {
-    if (operations.busy()) return false;
-    if (!editor()) return true;
+  // A missing AGENTS.md can be saved as is, but leaving it untouched loses nothing.
+  const unsaved = () => {
+    const form = editor();
+    return form?.kind === 'globalInstructions'
+      ? !!form.document && form.document.content !== form.document.basis.content
+      : dirty();
+  };
+  const closeEditor = () => {
     cancelRead();
     editor.set(null);
     if (visible()) void load();
+  };
+  const discarding = createSettingsDiscard(unsaved, closeEditor);
+  const back = () => {
+    if (operations.busy() || discarding.back()) return false;
+    if (!editor()) return true;
+    closeEditor();
     return false;
   };
   cleanup(() => {
@@ -464,6 +476,8 @@ export function createGeneralSettings(
     },
     saveDisabled: () => disabled() || !dirty() || !!globalDocument()?.conflict,
     dirty,
+    discarding,
+    leave: discarding.leave,
     activate() {
       if (!alive || enabled) return;
       enabled = true;
@@ -476,10 +490,12 @@ export function createGeneralSettings(
       const preserveDraft = dirty();
       enabled = false;
       cancelRead();
+      discarding.clear();
       if (!preserveDraft) editor.set(null);
     },
     reset() {
       cancelRead();
+      discarding.clear();
       editor.set(null);
       facts.set(null);
       if (visible()) void load();
@@ -539,7 +555,7 @@ export function createGeneralSettings(
       void load();
     },
     cancel(request: GeneralAction) {
-      if (current(request)) back();
+      if (current(request) && !operations.busy()) closeEditor();
     },
     toggle({
       request,

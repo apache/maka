@@ -31,6 +31,7 @@ use tokio::{
 /// EOF: shutdown closes that handle and readers observe EOF, never a fake Ack.
 pub struct LocalStream {
     pipe: Option<Pipe>,
+    dirty: bool,
 }
 enum Pipe {
     Server(NamedPipeServer),
@@ -40,11 +41,13 @@ impl LocalStream {
     pub(super) fn server(pipe: NamedPipeServer) -> Self {
         Self {
             pipe: Some(Pipe::Server(pipe)),
+            dirty: false,
         }
     }
     pub(super) fn client(pipe: NamedPipeClient) -> Self {
         Self {
             pipe: Some(Pipe::Client(pipe)),
+            dirty: false,
         }
     }
 }
@@ -67,15 +70,29 @@ impl AsyncWrite for LocalStream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        match self.pipe.as_mut() {
+        let written = ready!(match self.pipe.as_mut() {
             Some(Pipe::Server(pipe)) => Pin::new(pipe).poll_write(cx, buf),
             Some(Pipe::Client(pipe)) => Pin::new(pipe).poll_write(cx, buf),
             None => Poll::Ready(Err(io::ErrorKind::BrokenPipe.into())),
+        })?;
+        if written > 0 {
+            self.dirty = true;
         }
+        Poll::Ready(Ok(written))
     }
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if self.pipe.is_none() {
+            return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+        }
+        if !self.dirty {
+            return Poll::Ready(Ok(()));
+        }
         // Tokio flush is a no-op. A zero-byte write observes Mio's actual
         // previous-write completion/error and clears stale readiness on WouldBlock.
+        // Aborted pending writes report ERROR_BROKEN_PIPE (109) from write_done;
+        // ERROR_NO_DATA (232) means prior writes already completed and only this
+        // new zero-byte probe hit a peer handle that closed afterwards.
+        const ERROR_NO_DATA: i32 = 232;
         loop {
             let result = match self.pipe.as_ref() {
                 Some(Pipe::Server(pipe)) => {
@@ -89,9 +106,19 @@ impl AsyncWrite for LocalStream {
                 None => return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into())),
             };
             match result {
-                Ok(_) => return Poll::Ready(Ok(())),
+                Ok(_) => {
+                    self.dirty = false;
+                    return Poll::Ready(Ok(()));
+                }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
-                Err(error) => return Poll::Ready(Err(error)),
+                Err(error) if error.raw_os_error() == Some(ERROR_NO_DATA) => {
+                    self.dirty = false;
+                    return Poll::Ready(Ok(()));
+                }
+                Err(error) => {
+                    self.dirty = false;
+                    return Poll::Ready(Err(error));
+                }
             }
         }
     }
@@ -170,5 +197,21 @@ mod tests {
                 .unwrap()
                 .is_err()
         );
+        drop(stream);
+
+        let mut client = crate::ipc::connect(&path).await.unwrap();
+        let mut server = listener.accept().await.unwrap();
+        client.write_all(b"ping").await.unwrap();
+        let mut request = [0; 4];
+        server.read_exact(&mut request).await.unwrap();
+        assert_eq!(&request, b"ping");
+        server.write_all(b"pong").await.unwrap();
+        server.flush().await.unwrap();
+        drop(server);
+        client.flush().await.unwrap();
+        let mut reply = Vec::new();
+        client.read_to_end(&mut reply).await.unwrap();
+        assert_eq!(reply, b"pong");
+        assert!(client.write_all(b"more").await.is_err());
     }
 }

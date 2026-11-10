@@ -41,7 +41,12 @@ export function PendingMessage(props: {
 }) {
   const session = props.session;
   return (
-    <View style={{ padding: platform.isTerminal ? 16 : 12, gap: platform.isTerminal ? 8 : 6 }}>
+    <View
+      style={{
+        padding: platform.idiom === 'terminal' ? 16 : 12,
+        gap: platform.idiom === 'terminal' ? 8 : 6,
+      }}
+    >
       <If when={props.message.text !== ''}>
         <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
           {props.message.text}
@@ -74,7 +79,7 @@ export function PendingMessage(props: {
             onPress={inputAction(session.retrySend, props.message.id)}
             disabled={!session.connected() || props.message.busy}
             style={controlStyle}
-            hoverStyle={{ backgroundColor: C.raised }}
+            hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={controlFocusStyle()}
           >
             <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
@@ -86,7 +91,7 @@ export function PendingMessage(props: {
             onPress={inputAction(session.checkSend, props.message.id)}
             disabled={!session.connected() || props.message.busy}
             style={controlStyle}
-            hoverStyle={{ backgroundColor: C.raised }}
+            hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={controlFocusStyle()}
           >
             <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Check status')}</Text>
@@ -104,7 +109,7 @@ export function PendingMessage(props: {
               justifyContent: 'center',
               borderRadius: 16,
             }}
-            hoverStyle={{ backgroundColor: C.raised }}
+            hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={controlFocusStyle()}
           >
             <Icon name="close" color={C.muted} />

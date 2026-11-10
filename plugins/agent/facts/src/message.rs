@@ -18,10 +18,7 @@
  */
 
 //! Durable message provenance shared by admission, execution and recovery.
-use crate::{
-    execution::BehaviorId,
-    input::{DeliveredMessage, MessageInput},
-};
+use crate::input::{DeliveredMessage, MessageInput};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -44,12 +41,6 @@ pub enum MessageOrigin {
     /// A worker conversation created by the Bot finished a run.
     BotWorker {
         session_id: String,
-    },
-    /// The opening message of an approved Plan execution. `title` is the
-    /// approved Plan's title when the execution was frozen, not the current Plan.
-    Plan {
-        execution_id: String,
-        title: String,
     },
 }
 impl MessageOrigin {
@@ -85,16 +76,6 @@ impl MessageOrigin {
                 Ok(())
             }
             Self::BotWorker { session_id } => crate::interaction::entity_id(session_id),
-            Self::Plan {
-                execution_id,
-                title,
-            } => {
-                crate::interaction::entity_id(execution_id)?;
-                if title.trim().is_empty() || title.contains('\0') {
-                    return Err("Invalid Plan title");
-                }
-                Ok(())
-            }
         }
     }
 }
@@ -107,33 +88,15 @@ pub enum Placement {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TurnOrchestration {
-    pub mode: BehaviorId,
-    pub source: TurnOrchestrationSource,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TurnOrchestrationSource {
-    SlashCommand,
-    HostApi,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmittedTurnIntent {
     pub input_selections: crate::input::Selections,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_selection_sources: crate::input::SelectionSources,
-    pub turn_orchestration: Option<TurnOrchestration>,
 }
 impl SubmittedTurnIntent {
     /// Source shape is not admission: Host verifies actual providers before use.
     pub fn is_exact_turn(&self) -> bool {
-        self.turn_orchestration.is_some()
-            || crate::input::has_unbound_selections(
-                &self.input_selections,
-                &self.input_selection_sources,
-            )
+        crate::input::has_unbound_selections(&self.input_selections, &self.input_selection_sources)
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -141,7 +104,7 @@ impl SubmittedTurnIntent {
             &self.input_selections,
             &self.input_selection_sources,
         )?;
-        if self.input_selections.is_empty() && self.turn_orchestration.is_none() {
+        if self.input_selections.is_empty() {
             return Err("invalid submitted Turn intent");
         }
         Ok(())
@@ -208,10 +171,6 @@ pub fn validate_sources(
     }
     let mut ids = HashSet::new();
     let started = sources[0].disposition == MessageDisposition::TurnStarted;
-    let orchestration = sources[0]
-        .submitted_intent
-        .as_ref()
-        .and_then(|intent| intent.turn_orchestration.as_ref());
     for source in sources {
         source.validate()?;
         if !ids.insert(&source.message.message_id)
@@ -219,11 +178,6 @@ pub fn validate_sources(
                 && if started {
                     source.disposition != MessageDisposition::TurnStarted
                         || source.submitted_placement != Placement::CurrentTurn
-                        || source
-                            .submitted_intent
-                            .as_ref()
-                            .and_then(|intent| intent.turn_orchestration.as_ref())
-                            != orchestration
                 } else {
                     source.disposition == MessageDisposition::TurnStarted
                         || source
@@ -312,4 +266,61 @@ pub fn attributed_content(
         })
         .collect::<Vec<_>>();
     aggregate(contents.iter())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atomic_starts_preserve_intent_without_accepting_mixed_queue_sources() {
+        let mut sources: Vec<_> = ["first", "second"]
+            .into_iter()
+            .map(|text| {
+                let content = MessageInput::from(text);
+                RootSourceMessage {
+                    message: DeliveredMessage {
+                        origin: None,
+                        message_id: text.into(),
+                        submitted_content_digest: content.content_digest().unwrap(),
+                        content: content.clone(),
+                    },
+                    unprepared_content: content,
+                    submitted_placement: Placement::CurrentTurn,
+                    disposition: MessageDisposition::TurnStarted,
+                    submitted_intent: Some(SubmittedTurnIntent {
+                        input_selections: std::collections::BTreeMap::from([(
+                            "example".into(),
+                            vec![text.into()],
+                        )]),
+                        input_selection_sources: Default::default(),
+                    }),
+                }
+            })
+            .collect();
+        let content = aggregate(sources.iter().map(|s| &s.message.content));
+        assert!(validate_sources(&content, &sources).is_ok());
+        sources[0].message.origin = Some(MessageOrigin::BotWorker {
+            session_id: "invalid/id".into(),
+        });
+        assert!(validate_sources(&content, &sources).is_err());
+        sources[0].message.origin = None;
+        sources[1].submitted_intent = None;
+        sources[1].submitted_placement = Placement::NextTurn;
+        assert!(validate_sources(&content, &sources).is_err());
+        sources[1].disposition = MessageDisposition::Followup;
+        assert!(validate_sources(&content, &sources).is_err());
+        sources.reverse();
+        let reversed = aggregate(sources.iter().map(|s| &s.message.content));
+        assert!(validate_sources(&reversed, &sources).is_err());
+        sources[1].disposition = MessageDisposition::Steering;
+        assert!(validate_sources(&reversed, &sources).is_err());
+        sources[1].submitted_intent = None;
+        assert!(validate_sources(&reversed, &sources).is_ok());
+        sources[0].disposition = MessageDisposition::TurnStarted;
+        assert!(
+            validate_sources(&sources[0].message.content, &sources[..1]).is_ok(),
+            "an ordinary NextTurn submit may start an idle Session"
+        );
+    }
 }

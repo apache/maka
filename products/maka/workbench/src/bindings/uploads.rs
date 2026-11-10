@@ -681,14 +681,31 @@ fn display_name(path: &str) -> String {
     if let Ok(uri) = url::Url::parse(path)
         && uri.scheme() == "file"
     {
-        let name = uri.path().rsplit('/').next().unwrap_or_default();
+        let name = uri
+            .path()
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or_default();
         return clean_name(&percent_encoding::percent_decode_str(name).decode_utf8_lossy());
     }
     let bytes = path.as_bytes();
-    if path.starts_with("\\\\")
-        || bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
-    {
-        return clean_name(path.rsplit(['/', '\\']).next().unwrap_or_default());
+    if let Some(unc) = path.strip_prefix("\\\\") {
+        let mut parts = unc
+            .trim_end_matches(['/', '\\'])
+            .split(['/', '\\'])
+            .filter(|part| !part.is_empty());
+        let _ = (parts.next(), parts.next());
+        return clean_name(parts.next_back().unwrap_or_default());
+    }
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return clean_name(
+            path[2..]
+                .trim_end_matches(['/', '\\'])
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or_default(),
+        );
     }
     std::path::Path::new(path)
         .file_name()
@@ -701,5 +718,23 @@ fn clean_name(name: &str) -> String {
         "Selected file".into()
     } else {
         name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_name;
+
+    #[test]
+    fn display_name_ignores_trailing_directory_separators() {
+        assert_eq!(
+            display_name("file:///private/var/folders/tmp/%E6%9C%AA%E5%91%BD%E5%90%8D%202/"),
+            "未命名 2"
+        );
+        assert_eq!(display_name(r"C:\Users\alice\folder\"), "folder");
+        assert_eq!(display_name(r"\\server\share\folder\"), "folder");
+        assert_eq!(display_name("file:///"), "Selected file");
+        assert_eq!(display_name(r"C:\"), "Selected file");
+        assert_eq!(display_name(r"\\server\share\"), "Selected file");
     }
 }

@@ -122,11 +122,20 @@ impl Owner {
         input: SkillCandidatesRead,
         parent: &Scope,
     ) -> Result<SkillCandidates, String> {
-        let session = self.scoped_session(parent, &input.session_id).await?;
+        let (session, draft_workspace) = match &input.target {
+            CompletionTarget::Session { session_id } => {
+                (Some(self.scoped_session(parent, session_id).await?), None)
+            }
+            CompletionTarget::Draft { workspace } => (
+                None,
+                self.draft_completion_workspace(workspace.as_ref(), parent)
+                    .await?,
+            ),
+        };
         let Some(library) = &self.skills else {
             return Ok(SkillCandidates::default());
         };
-        let (editing, executor) = match input.backend {
+        let (editing, external) = match input.backend {
             BackendPreference::Model {
                 connection_id,
                 model_id,
@@ -143,72 +152,90 @@ impl Owner {
                 )
                 .await
                 {
-                    Ok(editing) => (Some(editing), None),
+                    Ok(editing) => (Some(editing), false),
                     Err(_) => return Ok(SkillCandidates::default()),
                 }
             }
             BackendPreference::Executor { selection } if selection.executor == "external" => {
                 match self.executors.select(selection) {
-                    Ok(backend) => (None, Some(backend.accepted)),
+                    Ok(_) => (None, true),
                     Err(_) => return Ok(SkillCandidates::default()),
                 }
             }
             BackendPreference::Executor { .. } => return Ok(SkillCandidates::default()),
         };
-        workspace::validate(
-            &self.workspace_roots,
-            &session.configuration.workspace,
-            &self.managed_worktrees,
-        )
-        .await?;
-        // This read-only basis selects tool names; it never renders or admits model work.
-        let mcp_floor = self
-            .capture_sandbox(&session.configuration, parent.sandbox_floor())
-            .await?;
-        let selected_catalog = if executor.is_some() {
-            self.mcp_projects.base.clone()
-        } else {
-            self.mcp_projects
-                .available(&session.configuration.workspace, &mcp_floor)
-                .await?
+        let tool_names = |selected: maka_tools::ToolCatalog| {
+            if external {
+                self.external_catalog(selected).names()
+            } else {
+                selected.names()
+            }
         };
-        let selected_catalog = self
-            .mcp_projects
-            .with_client(&input.session_id, selected_catalog)?;
-        let basis = CapturedRun {
-            mcp_revision: selected_catalog.revision.clone(),
-            client_mcp: selected_catalog.client_mcp,
-            mcp_catalog: Some(selected_catalog),
-            language: Language::En,
-            compaction_prompt: None,
-            collaboration_mode: session.configuration.collaboration_mode,
-            background_kind: BackgroundKind::Interactive,
-            tool_discovery: false,
-            allowed_tools: self.admitted_tools(&input.session_id, &session.configuration.tools),
-            background: None,
-            internal_tools: Arc::default(),
-            internal_bindings: Arc::default(),
-            behavior: None,
-            model: None,
-            executor,
-            workspace: session.configuration.workspace.clone(),
-            binding: session.configuration.binding,
-            fingerprint: String::new(),
-            tools: Arc::default(),
+        let (method, payload) = match &input.target {
+            CompletionTarget::Session { session_id } => {
+                let session = session.expect("session target has its scoped configuration");
+                workspace::validate(
+                    &self.workspace_roots,
+                    &session.configuration.workspace,
+                    &self.managed_worktrees,
+                )
+                .await?;
+                let catalog = if external {
+                    self.mcp_projects.base.clone()
+                } else {
+                    self.mcp_projects
+                        .observed(Some(&session.configuration.workspace))
+                        .await?
+                };
+                let catalog = self.mcp_projects.with_client(session_id, catalog)?;
+                let allowed_tools = self.admitted_tools(session_id, &session.configuration.tools);
+                let tools = tool_names(self.select_catalog_tools(
+                    &catalog.tools,
+                    Some(session_id),
+                    allowed_tools.as_deref(),
+                    editing,
+                ));
+                (
+                    "search",
+                    serde_json::to_value(SkillToolRequest {
+                        workspace: Some(session.configuration.workspace),
+                        tools,
+                        input: maka_skills_api::contract::ModelSearch {
+                            query: input.query,
+                            limit: None,
+                        },
+                    }),
+                )
+            }
+            CompletionTarget::Draft { .. } => {
+                let catalog = if external {
+                    self.mcp_projects.base.clone()
+                } else {
+                    self.mcp_projects
+                        .observed(
+                            draft_workspace
+                                .as_ref()
+                                .and_then(|workspace| workspace.workspace()),
+                        )
+                        .await?
+                };
+                let tools =
+                    tool_names(self.select_catalog_tools(&catalog.tools, None, None, editing));
+                (
+                    "candidates",
+                    serde_json::to_value(maka_skills_api::contract::CandidatesRead {
+                        directory: draft_workspace
+                            .as_ref()
+                            .map(|workspace| workspace.directory()),
+                        tools,
+                        query: input.query,
+                    }),
+                )
+            }
         };
-        let input = serde_json::to_value(SkillToolRequest {
-            workspace: Some(session.configuration.workspace),
-            tools: self.skill_tool_names(&input.session_id, &basis, editing)?,
-            input: maka_skills_api::contract::ModelSearch {
-                query: input.query,
-                limit: None,
-            },
-        })
-        .map_err(|_| "agent_skill_query_invalid")?;
+        let payload = payload.map_err(|_| "agent_skill_query_invalid")?;
         let import = library.selected.import.clone();
-        let services = library
-            .services
-            .select_import_method(&import, 0, "search")?;
+        let services = library.services.select_import_method(&import, 0, method)?;
         let mut ticket = parent
             .resources
             .reserve()
@@ -228,7 +255,7 @@ impl Owner {
                 ticket.start();
                 let result = AssertUnwindSafe(async {
                     request
-                        .call(&import, 0, "search".into(), input, Attachments::default())?
+                        .call(&import, 0, method.into(), payload, Attachments::default())?
                         .await
                 })
                 .catch_unwind()
@@ -242,6 +269,15 @@ impl Owner {
             .map_err(|_| "agent_skill_query_lost")???;
         if parent.cancellation.is_cancelled() {
             return Err("agent_skill_call_cancelled".into());
+        }
+        if let CompletionTarget::Draft { workspace } = &input.target {
+            if self
+                .draft_completion_workspace(workspace.as_ref(), parent)
+                .await?
+                != draft_workspace
+            {
+                return Err("agent_completion_workspace_changed".into());
+            }
         }
         candidates(result)
     }

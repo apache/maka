@@ -17,5 +17,6 @@
  * under the License.
  */
 
+mod json;
 mod plugin_vm;
 mod repl;

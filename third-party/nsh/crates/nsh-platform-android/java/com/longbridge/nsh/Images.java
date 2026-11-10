@@ -344,6 +344,14 @@ final class Images {
     /** An animated drawable (API 28+), downsampled like bitmaps. */
     private static Image decodeAnimated(byte[] bytes, int maxPx) throws java.io.IOException {
         if (android.os.Build.VERSION.SDK_INT < 28) return null;
+        // Android 9 aborts on a GIF played as an AnimatedImageDrawable (docs/dev/pitfalls.md, "Android 9, GIFs"):
+        // a Movie decodes on the thread that draws it, so a GIF below API 30 is played from a movie of its own.
+        boolean gif = bytes.length > 3 && bytes[0] == 'G' && bytes[1] == 'I' && bytes[2] == 'F';
+        if (gif && android.os.Build.VERSION.SDK_INT < 30) {
+            MovieDrawable drawable = MovieDrawable.open(bytes);
+            if (drawable == null) return null;
+            return new Image(drawable, drawable.width, drawable.height);
+        }
         android.graphics.ImageDecoder.Source source =
                 android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes));
         int[] size = new int[2];
@@ -356,6 +364,122 @@ final class Images {
             decoder.setTargetSampleSize(sample);
         });
         return d instanceof android.graphics.drawable.AnimatedImageDrawable ? new Image(d, size[0], size[1]) : null;
+    }
+
+    /**
+     * A GIF played from a {@link android.graphics.Movie}: each draw shows the frame at the time since the start,
+     * and a running one invalidates itself to draw the next. The encoded bytes stay with it so another view can
+     * decode a movie of its own: one movie has one clock, and one drawable has one callback.
+     */
+    static final class MovieDrawable extends android.graphics.drawable.Drawable
+            implements android.graphics.drawable.Animatable {
+        private final byte[] gif;
+        private final android.graphics.Movie movie;
+        private final int width;
+        private final int height;
+        private final android.graphics.Paint paint = new android.graphics.Paint();
+        private long startedAt;
+        private boolean running;
+
+        private MovieDrawable(byte[] gif, android.graphics.Movie movie) {
+            this.gif = gif;
+            this.movie = movie;
+            this.width = movie.width();
+            this.height = movie.height();
+        }
+
+        /** A drawable for {@code gif}, or null when those bytes are not a GIF {@link android.graphics.Movie} can play. */
+        static MovieDrawable open(byte[] gif) {
+            android.graphics.Movie movie = android.graphics.Movie.decodeByteArray(gif, 0, gif.length);
+            if (movie == null || movie.width() <= 0 || movie.height() <= 0) return null;
+            return new MovieDrawable(gif, movie);
+        }
+
+        /**
+         * {@link Images#finish} copies a drawable per waiting view through this. The copy decodes its own movie
+         * from the same bytes.
+         */
+        @Override
+        public android.graphics.drawable.Drawable.ConstantState getConstantState() {
+            return new State(gif);
+        }
+
+        private static final class State extends android.graphics.drawable.Drawable.ConstantState {
+            private final byte[] gif;
+
+            State(byte[] gif) {
+                this.gif = gif;
+            }
+
+            @Override
+            public android.graphics.drawable.Drawable newDrawable() {
+                MovieDrawable copy = open(gif);
+                if (copy == null) throw new IllegalStateException("cannot copy GIF");
+                return copy;
+            }
+
+            @Override
+            public int getChangingConfigurations() {
+                return 0;
+            }
+        }
+
+        @Override
+        public void draw(android.graphics.Canvas canvas) {
+            android.graphics.Rect bounds = getBounds();
+            int duration = movie.duration();
+            long elapsed = running ? android.os.SystemClock.uptimeMillis() - startedAt : 0;
+            movie.setTime(duration > 0 ? (int) (elapsed % duration) : 0);
+            canvas.save();
+            canvas.translate(bounds.left, bounds.top);
+            canvas.scale(bounds.width() / (float) width, bounds.height() / (float) height);
+            movie.draw(canvas, 0, 0, paint);
+            canvas.restore();
+            if (running) invalidateSelf();
+        }
+
+        @Override
+        public int getIntrinsicWidth() {
+            return width;
+        }
+
+        @Override
+        public int getIntrinsicHeight() {
+            return height;
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+            paint.setAlpha(alpha);
+        }
+
+        @Override
+        public void setColorFilter(android.graphics.ColorFilter filter) {
+            paint.setColorFilter(filter);
+        }
+
+        @Override
+        public int getOpacity() {
+            return android.graphics.PixelFormat.TRANSLUCENT;
+        }
+
+        @Override
+        public void start() {
+            if (running) return;
+            running = true;
+            startedAt = android.os.SystemClock.uptimeMillis();
+            invalidateSelf();
+        }
+
+        @Override
+        public void stop() {
+            running = false;
+        }
+
+        @Override
+        public boolean isRunning() {
+            return running;
+        }
     }
 
     /** `callback` no longer wants `uri`; cancels the load if nobody does. */

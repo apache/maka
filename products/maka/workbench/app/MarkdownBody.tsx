@@ -118,36 +118,38 @@ export function MarkdownBody(props: {
             heading6: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
             blockquote: { borderLeftColor: C.line, color: C.secondary },
             link: { color: C.accent },
-            code: { color: props.compact ? C.muted : C.accentHover, backgroundColor: C.surface },
+            code: { color: color(), backgroundColor: C.card, borderRadius: 4 },
             codeBlock: {
-              backgroundColor: C.surface,
+              backgroundColor: C.card,
               borderColor: C.line,
               borderRadius: props.compact ? 8 : 12,
             },
             codeBlockCode: { ...codeTextStyle, color: color() },
-            codeBlockHeader: platform.isTerminal
-              ? { color: C.muted }
-              : { color: C.muted, paddingHorizontal: 12, paddingTop: 8 },
+            codeBlockHeader:
+              platform.idiom === 'terminal'
+                ? { color: C.muted }
+                : { color: C.muted, paddingHorizontal: 12, paddingTop: 8 },
             // The desktop starts the language where the code starts.
-            codeBlockLanguage: platform.isTerminal
-              ? secondaryTextStyle
-              : { ...secondaryTextStyle, paddingLeft: 4 },
+            codeBlockLanguage:
+              platform.idiom === 'terminal'
+                ? secondaryTextStyle
+                : { ...secondaryTextStyle, paddingLeft: 4 },
             // The desktop starts a table's text where a code block's starts.
             tableCell: {
               ...readingStyle,
-              ...(platform.isTerminal ? {} : { paddingHorizontal: 16 }),
+              ...(platform.idiom === 'terminal' ? {} : { paddingHorizontal: 16 }),
               color: color(),
               borderColor: C.line,
             },
             tableHeaderCell: {
               ...readingStyle,
-              ...(platform.isTerminal ? {} : { paddingHorizontal: 16 }),
+              ...(platform.idiom === 'terminal' ? {} : { paddingHorizontal: 16 }),
               color: color(),
               fontWeight: '600',
               borderColor: C.line,
             },
-            tableHead: { backgroundColor: C.raised },
-            tableRow: { backgroundColor: C.surface },
+            tableHead: { backgroundColor: C.cardRaised },
+            tableRow: { backgroundColor: C.card },
             rule: { backgroundColor: C.line },
           }}
         />

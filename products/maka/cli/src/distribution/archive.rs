@@ -197,7 +197,6 @@ pub(super) fn publish(
         let name = path
             .strip_prefix("package/")
             .ok_or("native package member is outside package/")?;
-        let executable = target.is_executable(name);
         if !allowed(target, name)
             || !entry.header().entry_type().is_file()
             || files.contains_key(name)
@@ -217,7 +216,7 @@ pub(super) fn publish(
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(fs::Permissions::from_mode(if executable {
+            file.set_permissions(fs::Permissions::from_mode(if target.is_executable(name) {
                 0o500
             } else {
                 0o400
@@ -289,7 +288,6 @@ pub(super) fn import_directory(
     private_directory(&package)?;
     private_directory(&package.join("bin"))?;
     for (name, expected) in &receipt.files {
-        let executable = target.is_executable(name);
         if expected.size == 0 {
             return Err("transferred native package member is empty".into());
         }
@@ -309,7 +307,7 @@ pub(super) fn import_directory(
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            output.set_permissions(fs::Permissions::from_mode(if executable {
+            output.set_permissions(fs::Permissions::from_mode(if target.is_executable(name) {
                 0o500
             } else {
                 0o400

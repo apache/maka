@@ -125,8 +125,10 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
 struct Seen {
     texts: HashMap<NodeId, String>,
     parents: HashMap<NodeId, NodeId>,
-    /// The items (buttons): selected, disabled.
+    /// The items (buttons and labels): selected, disabled.
     items: HashMap<NodeId, (bool, bool)>,
+    /// Every view with a role: its role, disabled.
+    roles: HashMap<NodeId, (AccessibilityRole, bool)>,
     styles: HashMap<NodeId, ViewStyle>,
 }
 
@@ -144,7 +146,17 @@ impl Seen {
             }
             MountItem::ViewProps { id, props } => {
                 let a = &props.accessibility;
-                if a.role == AccessibilityRole::Button {
+                if a.role != AccessibilityRole::default() {
+                    self.roles.insert(*id, (a.role, a.state.disabled));
+                }
+                // The items: the buttons, and the labels (the weekdays,
+                // the months' titles).
+                if matches!(
+                    a.role,
+                    AccessibilityRole::Button
+                        | AccessibilityRole::ColumnHeader
+                        | AccessibilityRole::Header
+                ) {
                     self.items.insert(*id, (a.state.selected, a.state.disabled));
                 }
             }
@@ -153,6 +165,22 @@ impl Seen {
             }
             _ => {}
         }
+    }
+
+    /// The role and disabled state of the nearest view with a role around
+    /// each text `text`.
+    fn roles(&self, text: &str) -> Vec<(AccessibilityRole, bool)> {
+        self.texts
+            .iter()
+            .filter(|(_, t)| *t == text)
+            .filter_map(|(id, _)| {
+                let mut at = *id;
+                while !self.roles.contains_key(&at) {
+                    at = *self.parents.get(&at)?;
+                }
+                Some(self.roles[&at])
+            })
+            .collect()
     }
 
     /// The state marks of each item showing `text` (by its drawing):
@@ -412,6 +440,57 @@ fn the_days_are_one_stop_whose_arrows_move_the_keyboard() {
 }
 
 #[test]
+fn the_keys_pass_over_disabled_days() {
+    // Fridays 2026-10-30 and 2026-11-06, the weekends disabled: a disabled
+    // day takes no focus, so a move goes on to the next day that does.
+    let mut app = start(HarnessProps {
+        value: d(2026, 10, 30).into(),
+        weekends_disabled: true,
+        ..props()
+    });
+    for _ in 0..5 {
+        app.press_key("tab").unwrap();
+    }
+    see(&mut app, "10-30*^");
+    // Over Saturday and Sunday, into the next month.
+    app.press_key("right").unwrap();
+    see(&mut app, "M11/2026");
+    see(&mut app, "11-2^");
+    // The week's end is a Saturday: back to its Friday.
+    app.press_key("end").unwrap();
+    see(&mut app, "11-6^");
+    // Its start a Sunday: on to its Monday.
+    app.press_key("home").unwrap();
+    see(&mut app, "11-2^");
+    app.press_key("left").unwrap();
+    see(&mut app, "M10/2026");
+    see(&mut app, "10-30*^");
+    app.press_key("down").unwrap();
+    see(&mut app, "11-6^");
+    app.press_key("enter").unwrap();
+    see(&mut app, "11-6*^");
+    assert_eq!(log(&app), "2026-11-06");
+}
+
+#[test]
+fn a_disabled_selected_day_leaves_the_stop_to_one_that_takes_the_focus() {
+    // The app's value a Saturday the matcher disables: the stop is the
+    // shown day before it that is not.
+    let mut app = start(HarnessProps {
+        value: d(2026, 10, 31).into(),
+        controlled: true,
+        weekends_disabled: true,
+        ..props()
+    });
+    for _ in 0..5 {
+        app.press_key("tab").unwrap();
+    }
+    see(&mut app, "10-30^");
+    app.press_key("right").unwrap();
+    see(&mut app, "11-2^");
+}
+
+#[test]
 fn right_to_left_left_is_the_next_day_and_right_the_previous() {
     let props = HarnessProps {
         value: d(2026, 10, 30).into(),
@@ -451,6 +530,43 @@ fn several_months_show_side_by_side_from_the_first_day_of_the_week() {
     assert_eq!(texts[first + 6], "w0");
     app.press("label:Next month").unwrap();
     see(&mut app, "M12/2026");
+}
+
+#[test]
+fn the_weekdays_and_the_months_titles_are_labels_not_buttons() {
+    let mut app = start(HarnessProps {
+        months: 2,
+        ..props()
+    });
+    see(&mut app, "M10/2026");
+    let seen = app.seen.lock().unwrap();
+    for day in 0..7 {
+        let roles = seen.roles(&format!("w{day}"));
+        assert_eq!(roles.len(), 2, "w{day} heads a column of each month");
+        for (role, disabled) in roles {
+            assert_eq!(role, AccessibilityRole::ColumnHeader, "w{day}");
+            assert!(!disabled, "w{day} is not disabled");
+        }
+    }
+    for title in ["M10/2026", "M11/2026"] {
+        for (role, disabled) in seen.roles(title) {
+            assert_eq!(role, AccessibilityRole::Header, "{title}");
+            assert!(!disabled, "{title} is not disabled");
+        }
+    }
+    drop(seen);
+    assert!(app.press("text:w1").is_err(), "a weekday takes no press");
+}
+
+#[test]
+fn one_months_title_is_its_toggle() {
+    let mut app = start(props());
+    see(&mut app, "M10/2026");
+    let seen = app.seen.lock().unwrap();
+    assert_eq!(
+        seen.roles("M10/2026"),
+        vec![(AccessibilityRole::Button, false)]
+    );
 }
 
 // The cost of turns and keys.

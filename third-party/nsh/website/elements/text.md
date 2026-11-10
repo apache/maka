@@ -93,6 +93,8 @@ leave spans as they are; spaces inside the span give the box room on its sides.
 ### Links
 
 A span with a press handler is a link: a press on its characters goes to the span, a press elsewhere to the paragraph.
+In a terminal each link is also a stop of the keyboard focus: Tab reaches the links of a paragraph in turn, and Return
+presses the focused one.
 
 ```rust tabs
 text("By continuing you agree to the ")

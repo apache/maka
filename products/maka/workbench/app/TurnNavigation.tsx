@@ -19,9 +19,9 @@
 
 import type { HistoryRowAddress, HistoryOrder } from '../../../../packages/plugin-sdk/src/index.js';
 import { textTooltip } from './ui';
-import { Canvas, computed, effect, inputAction, signal, Text, View, Overlay, List } from 'nsh';
+import { Canvas, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
 import type { ListRef } from 'nsh';
-import { Button } from 'nsh/base';
+import { Button, Tooltip } from 'nsh/base';
 import { pixelRatio, platform, windowSize } from 'nsh';
 import { host as nativeHost } from 'maka/host';
 
@@ -31,18 +31,18 @@ import { tr } from './locale';
 
 // Cell input rounds by half a 16 / scale row; include the two-point stroke.
 const markPitch = computed(() => {
-  if (platform.isTerminal) return 16;
+  if (platform.idiom === 'terminal') return 16;
   pixelRatio();
   windowSize();
   return Math.max(24, 16 / nativeHost.uiScaleFactor + 2);
 });
-const railInset = platform.isTerminal ? 0 : 6;
+const railInset = platform.idiom === 'terminal' ? 0 : 6;
 const railMargin = 32;
-export const railWidth = () => (platform.isTerminal ? 24 : markPitch());
+export const railWidth = () => (platform.idiom === 'terminal' ? 24 : markPitch());
 
 function TurnMark(props: { active: boolean; busy: boolean; landmark: boolean }) {
   const color = () => (props.active ? C.text : C.line);
-  if (platform.isTerminal)
+  if (platform.idiom === 'terminal')
     return (
       <Text
         accessibilityElementsHidden
@@ -98,8 +98,8 @@ function RailFade(props: { bottom: boolean }) {
       ]}
       draw={(cx) => {
         const fade = cx.createLinearGradient(0, 0, 0, 24);
-        fade.addColorStop(0, props.bottom ? `${C.background}00` : C.background);
-        fade.addColorStop(1, props.bottom ? C.background : `${C.background}00`);
+        fade.addColorStop(0, props.bottom ? `${C.panel}00` : C.panel);
+        fade.addColorStop(1, props.bottom ? C.panel : `${C.panel}00`);
         cx.fillStyle = fade;
         cx.fillRect(0, 0, railWidth(), 24);
       }}
@@ -133,9 +133,9 @@ function NavigationMark(props: {
         label: props.item().label || tr('Recorded turn'),
       })}
       tooltip={
-        <Overlay
+        <Tooltip
           placement="left"
-          hintDelay={0}
+          delay={0}
           offset={12}
           margin={16}
           style={{
@@ -161,7 +161,7 @@ function NavigationMark(props: {
           <If when={props.busy}>
             <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Navigating…')}</Text>
           </If>
-        </Overlay>
+        </Tooltip>
       }
       selected={props.active}
       onPress={inputAction(props.navigate, props.item())}
@@ -172,7 +172,7 @@ function NavigationMark(props: {
         alignItems: 'center',
         justifyContent: 'center',
       }}
-      hoverStyle={{ backgroundColor: C.surface }}
+      hoverStyle={{ backgroundColor: C.card }}
       focusStyle={{ backgroundColor: C.raised }}
     >
       <TurnMark
@@ -200,7 +200,7 @@ export function TurnNavigation(props: {
     const available = Math.min(420, Math.max(0, height() - railMargin * 2));
     return Math.min(
       contentHeight(),
-      platform.isTerminal ? Math.floor(available / markPitch()) * markPitch() : available,
+      platform.idiom === 'terminal' ? Math.floor(available / markPitch()) * markPitch() : available,
     );
   });
   const activeIndex = computed(() => {
@@ -252,10 +252,10 @@ export function TurnNavigation(props: {
             />
           )}
         </List>
-        <If when={!platform.isTerminal && offset() > 0}>
+        <If when={platform.idiom !== 'terminal' && offset() > 0}>
           <RailFade bottom={false} />
         </If>
-        <If when={!platform.isTerminal && offset() + frameHeight() < contentHeight()}>
+        <If when={platform.idiom !== 'terminal' && offset() + frameHeight() < contentHeight()}>
           <RailFade bottom />
         </If>
         <If when={props.busy()}>
@@ -267,16 +267,16 @@ export function TurnNavigation(props: {
               position: 'absolute',
               right: 0,
               top: '100%',
-              marginTop: platform.isTerminal ? 0 : 8,
+              marginTop: platform.idiom === 'terminal' ? 0 : 8,
               width: railWidth(),
-              height: platform.isTerminal ? 32 : markPitch(),
+              height: platform.idiom === 'terminal' ? 32 : markPitch(),
               borderRadius: 8,
               alignItems: 'center',
               justifyContent: 'center',
-              backgroundColor: C.surface,
+              backgroundColor: C.card,
             }}
-            hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.raised }}
+            hoverStyle={{ backgroundColor: C.cardRaised }}
+            focusStyle={{ backgroundColor: C.cardRaised }}
           >
             <Icon name="close" color={C.secondary} />
           </Button>
@@ -313,9 +313,9 @@ export function ReturnToLatest(props: { visible: boolean; paused?: boolean; acti
             flexDirection: 'row',
             alignItems: 'center',
             gap: 8,
-            backgroundColor: C.raised,
+            backgroundColor: C.cardRaised,
           }}
-          hoverStyle={{ backgroundColor: C.surface }}
+          hoverStyle={{ backgroundColor: C.card }}
           focusStyle={{ backgroundColor: C.accent }}
         >
           <If when={!props.paused}>

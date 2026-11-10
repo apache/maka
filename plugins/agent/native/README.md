@@ -90,7 +90,7 @@ The [independent public-client acceptance](../../../products/maka/cli/src/acp/te
 cargo nextest run -p maka-cli --bin maka -E 'test(independent_public_agent_client_reconnects_history_watch_and_pending_interaction)'
 ```
 
-The Agent captures the model's Code Mode default or explicit `codeMode` override when it accepts a message. Queued work and resumed runs retain their original mode. A service tool can opt into Code Mode with `nestable: true`; nested calls use the same permissions, operation receipts and cleanup as direct calls. JavaScript receives the declared business result; the durable journal retains the original native receipt. Omitted `nestable` keeps the tool callable only directly. The Maka default composition enables nesting for files, processes, Web and Skills.
+The Agent captures the model's Code Mode default or explicit `codeMode` override when it accepts a message. Queued work and resumed runs retain their original mode. A service tool can opt into Code Mode with `nestable: true`; nested calls use the same permissions, operation receipts and cleanup as direct calls. JavaScript receives the declared business result; the durable journal retains the original native receipt. Omitted `nestable` keeps the tool callable only directly. The Maka default composition enables nesting for files, processes, Web, Skills, deployment/UI plugin management and Session/Model coordination tools, alongside built-in checklist, Goal, Recall, scheduled-task and Bot `SendUser` tools; provider-executed tools, turn-finishing tools (`sleep`), Computer Use REPL tools and `AskUserQuestion` remain direct-only.
 
 The model settings select `codeModeLanguage: "javascript" | "python"` independently of `codeMode`. JavaScript remains the default. Python uses the bundled Monty interpreter, with top-level await, `asyncio.gather`, JSON tool arguments and the same output/store helpers. The language is frozen when a message is accepted, including queued work and continuations; changing it applies to newly submitted messages. This does not change `maka code`, plugin JavaScript or Computer Use REPLs.
 
@@ -165,8 +165,10 @@ The engine installs its opaque checkpoint only after the producing stream comple
 validates the same source fence and producer request. Subsequent requests replay the checkpoint
 with the preserved suffix; another compact replaces that baseline. Session/global/custom text
 compaction prompts remain editable and saved, but do not enter native ChatGPT compaction requests.
-With the setting off, text compaction prompts apply as usual. Native replay currently requires
-the producing model; cross-model admission and switch preflight are separate stack layers.
+With the setting off, text compaction prompts apply as usual. Native checkpoints and ordinary
+encrypted reasoning share hash-based replay admission, including across subscription accounts.
+Incompatible native state is refused before inference; automatic conversion and smaller-window
+switch preflight remain separate work.
 
 The subscription provider selects native compaction in its resolved capabilities only when the
 connection opts in. Disabling it preserves replay of existing native checkpoints; the next

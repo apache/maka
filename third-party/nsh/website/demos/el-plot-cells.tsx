@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Cell, Plot, PlotAxis } from "nsh/base/plot";
-import { desktop, Log, Panel, Segmented, size, Split, tint, ui } from "./palette";
+import { desktop, Log, Panel, Segmented, size, Split, tint, ui, sectionSurface, plotAxisText, seriesColor } from "./palette";
 
 // Heatmaps: a `Cell` per row in the band of its `x` category across and
 // of its `y` category down, both band scales, colored by its `value`
@@ -49,7 +49,7 @@ const ACTIVITY: Hour[] = (() => {
 
 const num = { fontVariant: ["tabular-nums" as const] };
 const signed = (v: number) => `${v < 0 ? "−" : "+"}${Math.abs(v).toFixed(1)}%`;
-const axisLabel = () => ({ fontSize: 11, color: ui().muted, ...num });
+const axisLabel = plotAxisText;
 /** The largest move either way: the ends of the diverging scale's own domain. */
 const REACH = Math.max(...RETURNS.map((m) => Math.abs(m.ret)));
 
@@ -63,7 +63,7 @@ function App() {
   // A ring around the cell under the pointer, in the text's color, a little out from its edge.
   const ring = () => ({ outlineWidth: 1.5, outlineOffset: 1.5, outlineColor: ui().text });
   const returnsRamp = () => [ui().down, ui().line, ui().up];
-  const activityRamp = () => [ui().line, ui().accent];
+  const activityRamp = () => [ui().line, seriesColor(0)];
   const key = (colors: string[], labels: string[]) => (
     <View style={{ gap: 4 }}>
       <View style={{ height: 6, borderRadius: 3, backgroundImage: `linear-gradient(to right, ${colors.join(", ")})` }} />
@@ -96,7 +96,7 @@ function App() {
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, padding: desktop ? 16 : 14, gap: 12 }}>
+        <View style={{ ...sectionSurface({ padded: true }), gap: 12 }}>
           <If
             when={chart() === "returns"}
             else={

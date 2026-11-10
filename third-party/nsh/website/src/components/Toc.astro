@@ -2,11 +2,11 @@
 import type { Lang } from '../lib/site';
 
 export interface Heading { depth: number; slug: string; text: string }
-export interface Props { headings?: Heading[]; lang?: Lang }
+export interface Props { headings?: Heading[]; lang?: Lang; title?: string }
 
-const { headings = [], lang = 'en' } = Astro.props;
+const { headings = [], lang = 'en', title } = Astro.props;
 const items = headings.filter((h) => h.depth === 2 || h.depth === 3);
-const label = lang === 'zh-CN' ? '本页内容' : 'On this page';
+const label = title ?? (lang === 'zh-CN' ? '本页内容' : 'On this page');
 ---
 
 <nav class="toc" aria-label={label}>

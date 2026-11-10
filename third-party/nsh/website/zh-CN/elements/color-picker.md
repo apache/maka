@@ -210,7 +210,7 @@ mount(App);
 
 | Prop | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `color` | `.color(..)` | `string` | 无 | 显示的颜色；按下时在外层选择器中选中它。不设置时显示选择器自己的颜色，作为预览。 |
+| `color` | `.color(..)` | `string` | 无 | 显示的颜色；按下时在外层选择器中选中它。不设置时显示选择器自己的颜色，作为预览，不是 Tab 的一站。 |
 | `selectedStyle` | `.selected_style(..)` | `StyleProp<ViewStyle>` | 无 | 它是选择器当前颜色时的样式，与 `selected:` 类相同。 |
 | `checkerboardColor` | `.checkerboard_color(..)` | `string` | 无 | 半透明颜色下的棋盘格。 |
 | `checkerboardSize` | `.checkerboard_size(..)` | `number` | `4` | 棋盘格方块的边长。 |

@@ -11,21 +11,27 @@
 //! background (sublayers always draw over a layer's contents) without
 //! covering it, and work with transparent backgrounds.
 
+use std::cell::Cell;
+
 use nsh_core::{
     BackdropMaterial, BorderStyle, BoxShadow, Color, CornerRadii, Filter, GlassEffect, Gradient,
     GradientKind, GradientSize, ViewStyle,
     geometry::{Points, px},
 };
-use objc2::{MainThreadMarker, MainThreadOnly, msg_send, rc::Retained, runtime::AnyClass};
+use objc2::{
+    DefinedClass as _, MainThreadMarker, MainThreadOnly, define_class, msg_send,
+    rc::Retained,
+    runtime::{AnyClass, AnyObject},
+};
 use objc2_core_foundation::{CFRetained, CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGMutablePath;
-use objc2_foundation::{NSArray, NSNumber};
+use objc2_foundation::{NSArray, NSNumber, NSObjectProtocol, NSString, ns_string};
 use objc2_quartz_core::{
     CAGradientLayer, CALayer, CAShapeLayer, kCAFillRuleEvenOdd, kCAGradientLayerAxial,
     kCAGradientLayerConic, kCAGradientLayerRadial, kCALineCapButt, kCALineCapRound,
 };
 use objc2_ui_kit::{
-    UIBlurEffect, UIBlurEffectStyle, UIView, UIViewAnimating, UIViewAnimationCurve,
+    UIBlurEffect, UIBlurEffectStyle, UIColor, UIView, UIViewAnimating, UIViewAnimationCurve,
     UIViewPropertyAnimator, UIVisualEffect, UIVisualEffectView,
 };
 
@@ -58,14 +64,31 @@ pub(crate) struct Visual {
 }
 
 /// What a backdrop draws: the blur's radius, which material draws it,
-/// whether that material takes the dark variant, and the glass that takes
-/// the blur's place where UIKit has it.
+/// whether that material takes the dark variant, the glass that takes the
+/// blur's place where UIKit has it, and that glass's tint.
 #[derive(Clone, Copy, PartialEq)]
 struct BackdropSpec {
     radius: f32,
     material: BackdropMaterial,
     dark: bool,
     glass: GlassEffect,
+    /// The glass tint: `Some` (even transparent) where one was asked for,
+    /// `None` for the system's own.
+    tint: Option<Color>,
+    /// The view is masked: a [`PlainBlur`].
+    plain: bool,
+}
+
+impl BackdropSpec {
+    /// Whether both ask for the same effect view, ignoring the glass tint:
+    /// a tint is written to the existing view instead of rebuilding it.
+    fn same_effect(&self, other: &Self) -> bool {
+        self.radius == other.radius
+            && self.material == other.material
+            && self.dark == other.dark
+            && self.glass == other.glass
+            && self.plain == other.plain
+    }
 }
 
 struct Backdrop {
@@ -121,6 +144,137 @@ fn glass_effect(style: GlassEffect) -> Option<Retained<UIVisualEffect>> {
     // SAFETY: UIGlassEffect's documented factory, on the class just found,
     // which answers a UIVisualEffect. The caller holds a MainThreadMarker.
     unsafe { Some(msg_send![class, effectWithStyle: raw]) }
+}
+
+/// Sets a glass `effect`'s tint, or clears it (`None`: the system's own),
+/// and says whether the effect takes a tint at all. Only `UIGlassEffect`
+/// does; the blur that stands in for glass before iOS 26 does not.
+///
+/// A transparent tint is a tint, not the absence of one, so only `None`
+/// sends `nil`. The tint is a `UIColor` of the style's sRGB components.
+fn set_glass_tint(effect: &UIVisualEffect, tint: Option<Color>) -> bool {
+    let Some(class) = AnyClass::get(c"UIGlassEffect") else {
+        return false;
+    };
+    if !effect.isKindOfClass(class) {
+        return false;
+    }
+    let color = tint.map(|c| {
+        let (r, g, b, a) = c.to_f64();
+        UIColor::colorWithRed_green_blue_alpha(r, g, b, a)
+    });
+    // SAFETY: UIGlassEffect's `tintColor` is a `UIColor` (nil for the
+    // system's own), on the main thread.
+    let _: () = unsafe { msg_send![effect, setTintColor: color.as_deref()] };
+    true
+}
+
+/// Writes `tint` to the glass effect a view draws, if it draws glass: a
+/// `UIVisualEffectView`'s effect is copied when set, so the tinted copy goes
+/// back on the same view (the view and its glass stay; only the tint
+/// changes).
+fn update_glass_tint(view: &UIVisualEffectView, tint: Option<Color>) {
+    let Some(effect) = view.effect() else {
+        return;
+    };
+    if set_glass_tint(&effect, tint) {
+        view.setEffect(Some(&effect));
+    }
+}
+
+define_class!(
+    /// A masked `backdropFilter`: what a progressive blur stacks. UIKit's
+    /// materials tint, and layers of them held at a fraction add those tints
+    /// up; this view's backdrop layer blurs by the view's radius and draws
+    /// nothing else, as CSS.
+    ///
+    /// UIKit gives no way to say that, so it edits the layers the material
+    /// is made of, each time UIKit may have made them again, through public
+    /// `CALayer` API (`filters`, key-value coding). Where they are not what
+    /// this expects the view stays the plain material.
+    #[unsafe(super(UIVisualEffectView, UIView))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = Cell<f32>]
+    #[name = "NshPlainBlur"]
+    struct PlainBlur;
+
+    impl PlainBlur {
+        #[unsafe(method(layoutSubviews))]
+        fn layout_subviews(&self) {
+            // SAFETY: UIView's `layoutSubviews`, on the main thread.
+            let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+            self.strip();
+        }
+
+        #[unsafe(method(didMoveToWindow))]
+        fn did_move_to_window(&self) {
+            // SAFETY: UIView's `didMoveToWindow`, on the main thread.
+            let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+            self.strip();
+        }
+    }
+);
+
+impl PlainBlur {
+    fn new(radius: f32, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(Cell::new(radius));
+        let none: Option<&UIVisualEffect> = None;
+        // SAFETY: UIVisualEffectView's `initWithEffect:`, on an allocated view.
+        unsafe { msg_send![super(this), initWithEffect: none] }
+    }
+
+    fn strip(&self) {
+        strip_material(&self.layer(), self.ivars().get());
+    }
+}
+
+/// Leaves of a material's layers nothing but the blur of `radius`: the
+/// backdrop layer's Gaussian blur alone, its fill and tints hidden.
+fn strip_material(layer: &CALayer, radius: f32) {
+    // SAFETY: reading the sublayers on the main thread, which is all this does.
+    let Some(subs) = (unsafe { layer.sublayers() }) else {
+        return;
+    };
+    for sub in subs.iter() {
+        let backdrop = sub
+            .class()
+            .name()
+            .to_str()
+            .is_ok_and(|n| n.contains("Backdrop"));
+        if backdrop {
+            let gaussian = ns_string!("gaussianBlur");
+            // A backdrop layer's `filters` are `CAFilter`s, which have a name.
+            let kept: Vec<Retained<AnyObject>> = sub
+                .filters()
+                .map(|f| f.to_vec())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|f| {
+                    // SAFETY: `CAFilter`'s `name`, an `NSString`.
+                    let name: Option<Retained<NSString>> = unsafe { msg_send![&**f, name] };
+                    name.is_some_and(|n| &*n == gaussian)
+                })
+                .collect();
+            if kept.is_empty() {
+                continue;
+            }
+            // SAFETY: those filters, back on their layer, then their radius
+            // by the key path Core Animation documents for named filters.
+            unsafe {
+                sub.setFilters(Some(&NSArray::from_retained_slice(&kept)));
+                let value = NSNumber::new_f32(radius);
+                let _: () = msg_send![
+                    &*sub,
+                    setValue: &*value,
+                    forKeyPath: ns_string!("filters.gaussianBlur.inputRadius")
+                ];
+            }
+        } else if unsafe { sub.sublayers() }.is_some_and(|l| l.count() > 0) {
+            strip_material(&sub, radius);
+        } else {
+            sub.setHidden(true);
+        }
+    }
 }
 
 /// Holds `target`'s blur at `spec.radius`'s fraction of its material's
@@ -272,6 +426,8 @@ impl Visual {
             material: style.backdrop_material,
             dark,
             glass: style.glass_effect,
+            tint: style.glass_tint_color,
+            plain: effects.is_some_and(|e| !e.mask_images.is_empty()),
         };
         self.set_backdrop(view, spec, local, radii, mtm);
         // Last: the mask covers everything above, the backdrop's view included.
@@ -300,7 +456,9 @@ impl Visual {
             let spread = s.spread.0 as CGFloat;
             let shape = grow(local, spread);
             l.setFrame(local);
-            l.setShadowPath(Some(&rounded(shape, grown(radii, s.spread))));
+            crate::interaction::animate_geometry(l, ns_string!("shadowPath"), || {
+                l.setShadowPath(Some(&rounded(shape, grown(radii, s.spread))));
+            });
             l.setShadowColor(cg_color(Color(s.color.0 | 0xff)).as_deref());
             l.setShadowOpacity((s.color.0 & 0xff) as f32 / 255.0);
             l.setShadowOffset(CGSize::new(
@@ -324,7 +482,9 @@ impl Visual {
                 CGMutablePath::add_path(Some(&path), std::ptr::null(), Some(&box_path));
             }
             mask.setFrame(local);
-            mask.setPath(Some(&path));
+            crate::interaction::animate_geometry(&mask, ns_string!("path"), || {
+                mask.setPath(Some(&path));
+            });
         }
     }
 
@@ -540,7 +700,11 @@ impl Visual {
             self.backdrop = None;
             return;
         }
-        if self.backdrop.as_ref().is_none_or(|b| b.spec != spec) {
+        if self
+            .backdrop
+            .as_ref()
+            .is_none_or(|b| !b.spec.same_effect(&spec))
+        {
             self.backdrop = None;
             // Glass wherever UIKit has it. Where it does not (before iOS
             // 26), the view falls back to its blur, and one that asked for
@@ -549,12 +713,23 @@ impl Visual {
             if effect.is_none() && spec.radius <= 0.0 {
                 return;
             }
-            let effect_view =
-                UIVisualEffectView::initWithEffect(UIVisualEffectView::alloc(mtm), None);
+            let plain = effect.is_none() && spec.plain;
+            let effect_view = if plain {
+                Retained::into_super(PlainBlur::new(spec.radius, mtm))
+            } else {
+                UIVisualEffectView::initWithEffect(UIVisualEffectView::alloc(mtm), None)
+            };
             effect_view.setUserInteractionEnabled(false);
             let animator = match effect {
                 Some(glass) => {
+                    set_glass_tint(&glass, spec.tint);
                     effect_view.setEffect(Some(&glass));
+                    None
+                }
+                None if plain => {
+                    let blur =
+                        UIBlurEffect::effectWithStyle(blur_style(spec.material, spec.dark), mtm);
+                    effect_view.setEffect(Some(&blur));
                     None
                 }
                 None => Some(blur_animator(effect_view.clone(), spec, mtm)),
@@ -569,8 +744,12 @@ impl Visual {
                 spec,
             });
         }
-        if let Some(b) = &self.backdrop {
+        if let Some(b) = &mut self.backdrop {
             b.view.setFrame(local);
+            if b.spec.tint != spec.tint {
+                update_glass_tint(&b.view, spec.tint);
+                b.spec.tint = spec.tint;
+            }
             let layer = b.view.layer();
             match radii.shared().map(|r| r.0) {
                 Some(r) => {
@@ -796,5 +975,49 @@ fn shape_gradient_geometry(
             g.setEndPoint(CGPoint::new((cx + dx) / w, (cy + dy) / h));
             1.0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn backdrop(glass: GlassEffect, tint: Option<Color>) -> BackdropSpec {
+        BackdropSpec {
+            radius: 12.0,
+            material: BackdropMaterial::Regular,
+            dark: false,
+            glass,
+            tint,
+            plain: false,
+        }
+    }
+
+    /// A tint is written to the effect view that is already there: with
+    /// everything else equal, only the tint differs.
+    #[test]
+    fn a_tint_change_keeps_the_effect_view() {
+        let plain = backdrop(GlassEffect::Regular, None);
+        let tinted = backdrop(GlassEffect::Regular, Some(Color::rgba(255, 0, 0, 255)));
+        assert!(plain.same_effect(&tinted));
+    }
+
+    /// A change the effect view cannot take in place still rebuilds it.
+    #[test]
+    fn a_different_effect_rebuilds_the_view() {
+        let base = backdrop(GlassEffect::Regular, Some(Color::BLACK));
+        assert!(!base.same_effect(&backdrop(GlassEffect::Clear, Some(Color::BLACK))));
+        let mut other = base;
+        other.radius = 8.0;
+        assert!(!base.same_effect(&other));
+        other = base;
+        other.material = BackdropMaterial::Thin;
+        assert!(!base.same_effect(&other));
+        other = base;
+        other.dark = true;
+        assert!(!base.same_effect(&other));
+        other = base;
+        other.plain = true;
+        assert!(!base.same_effect(&other));
     }
 }

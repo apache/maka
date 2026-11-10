@@ -133,6 +133,20 @@ covers [nsh] WebView
 covers [nsh] nativeComponent
 covers [nsh] nativeModule
 covers [nsh] PanResponder
+# core-frame-rate
+tap id:case-core-frame-rate
+expect Frame rates started: yes
+# Each animation asks for a rate and still ends where it would.
+animated id:fade opacity 1
+animated id:slide transform.0 0
+# The decay stops at its bound.
+animated id:glide transform.0 20
+animated id:pulse opacity 1
+animated id:tint opacity 1
+style id:spinner animationName spin
+style id:spinner animationFrameRate 30
+nostyle id:uncapped animationFrameRate
+covers [styles] animationFrameRate
 # core-list
 tap id:case-core-list
 expect Fruits
@@ -167,7 +181,6 @@ drawing id:sep-1 fillStyle #0000ffff
 tap id:add
 expect 4. Item 4
 expect 3. Cherry
-expect Updated plum
 covers [nsh] List
 covers [nsh:rt] list
 covers [props] contentStyle
@@ -177,26 +190,6 @@ covers [props] List.header
 covers [props] List.footer
 covers [props] List.empty
 covers [props] List.separator
-# core-list-binding
-tap id:case-core-list-binding
-expect A/0/false
-expect B/1/false
-tap id:select-B
-expect B/1/true
-tap id:prepend
-expect X/0/false
-expect A/1/false
-expect B/2/true
-tap id:remove
-expect A/0/false
-expect B/1/true
-tap id:rename
-expect B2/1/true
-tap id:replace
-expect C/1/false
-absent B2/1/true
-tap id:select-C
-expect C/1/true
 # core-reactive
 tap id:case-core-reactive
 expect Sum: 3
@@ -418,13 +411,6 @@ covers [props] margin
 covers [events] onPosition
 covers [events] onPressOutside
 covers [events] onCancel
-
-# The terminal fork retains captured input action identity.
-tap id:case-core-input-action
-expect Action: pending
-tap id:captured-action
-expect Action: original:7:true
-covers [nsh] inputAction
 # core-error-boundary
 tap id:case-core-error-boundary
 expect Around the boundary
@@ -441,3 +427,8 @@ tap id:risky
 expect Caught pressed
 expect Break
 covers [nsh] ErrorBoundary
+# web-load
+tap id:case-web-load
+tap id:load
+expect Loaded, invalid header: TypeError
+covers [nsh] WebView

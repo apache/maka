@@ -45,7 +45,18 @@
 //! app id, in a `NetworkSession` of the app's own:
 //! `$XDG_DATA_HOME/<app id>/webkit` and `$XDG_CACHE_HOME/<app id>/webkit`
 //! (cookies in `cookies.sqlite` there), as the Windows backend keeps a
-//! WebView2 profile per app id.
+//! WebView2 profile per app id. The session lives as long as one of the
+//! app's web views does, and WebKit's network process with it: an app
+//! that has closed its last web view, such as one left running in the
+//! tray, doesn't keep that process. The next web view starts a new one,
+//! which reads the data from disk; only session cookies (those without an
+//! expiry, which WebKit keeps in memory) end with it, as when a browser
+//! is closed.
+//! An `incognito` web view has an ephemeral `NetworkSession` of its own
+//! instead, made with it: its data stays in memory and goes with it.
+//!
+//! The URL schemes the app serves (`WebView::url_scheme`) are registered on
+//! the web context and answered per web view (`super::web_scheme`).
 //!
 //! Keys: a focused page gets them first. Escape the page does not use
 //! comes back to the window, where it leaves the page as it leaves a text
@@ -68,7 +79,7 @@ use nsh_core::{Command, EventKind, EventPayload, PayloadValue, WebProps, WebSour
 use nsh_engine::Access;
 use webkit6::{
     CookiePersistentStorage, LoadEvent, NavigationPolicyDecision, NetworkError, NetworkSession,
-    PolicyDecisionType, PolicyError, ResponsePolicyDecision, UserContentInjectedFrames,
+    PolicyDecisionType, PolicyError, ResponsePolicyDecision, URIRequest, UserContentInjectedFrames,
     UserContentManager, UserScript, UserScriptInjectionTime, UserStyleLevel, UserStyleSheet,
     WebView, prelude::*,
 };
@@ -115,10 +126,17 @@ pub(super) struct WebHost {
     default_background: gdk::RGBA,
     /// A page to load once the web view is mapped ([`WebHost::load`]).
     pending: Rc<RefCell<Option<WebSource>>>,
+    /// Serves the URL schemes of the first props while the web view is
+    /// here (held for its drop).
+    _schemes: Option<super::web_scheme::SchemeServer>,
 }
 
 impl WebHost {
-    pub(super) fn new(surface: &Rc<Surface>, view: &NshView) -> Self {
+    /// Makes the page with its first props: `incognito` gives it an
+    /// ephemeral network session of its own, and it serves the app's URL
+    /// schemes.
+    pub(super) fn new(surface: &Rc<Surface>, view: &NshView, p: &WebProps) -> Self {
+        let incognito = p.incognito;
         let shared = Rc::new(Shared {
             emitter: Emitter {
                 surface: Rc::downgrade(surface),
@@ -130,11 +148,16 @@ impl WebHost {
         });
         let content = UserContentManager::new();
         content.register_script_message_handler(HANDLER, None);
-        let session = session(&surface.native.app_id.borrow());
+        let session = if incognito {
+            NetworkSession::new_ephemeral()
+        } else {
+            session(&surface.native.app_id.borrow())
+        };
         let web = WebView::builder()
             .network_session(&session)
             .user_content_manager(&content)
             .build();
+        let schemes = super::web_scheme::serve(&web, &p.url_schemes);
         let default_background = web.background_color();
         let message = {
             let shared = shared.clone();
@@ -173,6 +196,7 @@ impl WebHost {
             pending,
             props: None,
             default_background,
+            _schemes: schemes,
         }
     }
 
@@ -286,7 +310,7 @@ impl Drop for WebHost {
 }
 
 /// `reload()`, `goBack()`, `goForward()`, `stopLoading()`,
-/// `injectJavaScript()` and `postMessage()`.
+/// `injectJavaScript()`, `postMessage()` and `load()`.
 pub(super) fn command(web: &WebView, command: &Command) {
     let script = match command {
         Command::InjectJavaScript(js) => Some(js.clone()),
@@ -306,6 +330,17 @@ pub(super) fn command(web: &WebView, command: &Command) {
         (Command::GoBack, _) => web.go_back(),
         (Command::GoForward, _) => web.go_forward(),
         (Command::StopLoading, _) => web.stop_loading(),
+        (Command::Load(load), _) => {
+            // Only this request carries the headers; WebKit makes its
+            // subresources' and later navigations' requests itself.
+            let request = URIRequest::new(&load.src);
+            if let Some(headers) = request.http_headers() {
+                for (name, value) in &load.headers {
+                    headers.append(name, value);
+                }
+            }
+            web.load_request(&request);
+        }
         _ => {}
     }
 }
@@ -549,32 +584,40 @@ fn folders(app_id: &str) -> (PathBuf, PathBuf) {
 
 thread_local! {
     /// Network sessions by app id: one network process (and one set of
-    /// cookies and storage) serves every web view of an app.
-    static SESSIONS: RefCell<HashMap<String, NetworkSession>> = RefCell::default();
+    /// cookies and storage) serves every web view of an app. Weak: each
+    /// web view holds its session, which ends with the app's last one.
+    static SESSIONS: RefCell<HashMap<String, glib::WeakRef<NetworkSession>>> = RefCell::default();
 }
 
 /// The network session of app `app_id`.
 fn session(app_id: &str) -> NetworkSession {
+    shared_session(app_id, || {
+        let (data, cache) = folders(app_id);
+        if let Err(err) = std::fs::create_dir_all(&data) {
+            log::warn!("web view: cannot create {}: {err}", data.display());
+        }
+        let session = NetworkSession::new(data.to_str(), cache.to_str());
+        // Cookies outlive the app, as other website data does.
+        if let Some(cookies) = session.cookie_manager() {
+            cookies.set_persistent_storage(
+                &data.join("cookies.sqlite").to_string_lossy(),
+                CookiePersistentStorage::Sqlite,
+            );
+        }
+        session
+    })
+}
+
+/// The session app `app_id`'s web views use, else the one `new` makes.
+fn shared_session(app_id: &str, new: impl FnOnce() -> NetworkSession) -> NetworkSession {
     SESSIONS.with(|sessions| {
-        sessions
-            .borrow_mut()
-            .entry(app_id.to_owned())
-            .or_insert_with(|| {
-                let (data, cache) = folders(app_id);
-                if let Err(err) = std::fs::create_dir_all(&data) {
-                    log::warn!("web view: cannot create {}: {err}", data.display());
-                }
-                let session = NetworkSession::new(data.to_str(), cache.to_str());
-                // Cookies outlive the app, as other website data does.
-                if let Some(cookies) = session.cookie_manager() {
-                    cookies.set_persistent_storage(
-                        &data.join("cookies.sqlite").to_string_lossy(),
-                        CookiePersistentStorage::Sqlite,
-                    );
-                }
-                session
-            })
-            .clone()
+        let mut sessions = sessions.borrow_mut();
+        if let Some(session) = sessions.get(app_id).and_then(|weak| weak.upgrade()) {
+            return session;
+        }
+        let session = new();
+        sessions.insert(app_id.to_owned(), session.downgrade());
+        session
     })
 }
 
@@ -601,6 +644,25 @@ mod tests {
         assert!(folders("a/b").0.ends_with("a_b/webkit"));
         assert!(folders("..").0.ends_with("nsh/webkit"));
         assert!(folders("").0.ends_with("nsh/webkit"));
+    }
+
+    #[test]
+    fn web_views_share_a_session_that_ends_with_the_last() {
+        crate::gtk_test::run(|| {
+            let ephemeral = || NetworkSession::new_ephemeral();
+            let first = shared_session("sessions.test", ephemeral);
+            let web = WebView::builder().network_session(&first).build();
+            let ended = first.downgrade();
+            drop(first);
+            // A second web view of the app gets the first one's session.
+            let second = shared_session("sessions.test", ephemeral);
+            assert_eq!(web.network_session().as_ref(), Some(&second));
+            drop(second);
+            drop(web);
+            // Nothing holds it once its last web view is gone, so WebKit
+            // ends its network process.
+            assert!(ended.upgrade().is_none());
+        });
     }
 
     #[test]

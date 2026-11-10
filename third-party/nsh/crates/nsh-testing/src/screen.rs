@@ -9,10 +9,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU32, Ordering},
-    },
+    sync::Arc,
 };
 
 use nsh_core::{
@@ -91,62 +88,6 @@ pub(crate) enum Back {
     Nothing,
 }
 
-#[derive(Debug)]
-pub(crate) enum InputResult {
-    CancelTouch(u32),
-    SetStates(NodeId, u16),
-    RetireListCell {
-        id: NodeId,
-        request: u64,
-        /// A focused descendant refused retirement; its path precedes the reply.
-        focus_path: Option<Vec<NodeId>>,
-    },
-}
-
-/// One actual finger, shared with the driver while its gesture is running.
-/// Removing its owners ends this contact even if their ids mount again.
-#[derive(Debug)]
-pub(crate) struct Contact {
-    pub(crate) id: u32,
-    pub(crate) target: NodeId,
-    owners: Vec<NodeId>,
-    active: AtomicBool,
-    reporting: AtomicBool,
-    native: AtomicU32,
-}
-
-/// The window's native modal presentation slots, including parked ones.
-#[derive(Debug)]
-struct Presentation {
-    id: NodeId,
-    live: bool,
-}
-
-impl Contact {
-    pub(crate) fn active(&self) -> bool {
-        self.active.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn reporting(&self) -> bool {
-        self.reporting.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn stop_reporting(&self) {
-        self.reporting.store(false, Ordering::Relaxed);
-    }
-
-    pub(crate) fn capture_native(&self, owner: NodeId) {
-        self.native.store(owner, Ordering::Relaxed);
-    }
-
-    pub(crate) fn native_owner(&self) -> Option<NodeId> {
-        match self.native.load(Ordering::Relaxed) {
-            0 => None,
-            owner => Some(owner),
-        }
-    }
-}
-
 /// The native views as the mount items built them: their tree, what they
 /// show (text, test id, accessibility label), the events they report,
 /// inputs' text, scroll views' offsets, the screens and modals a back
@@ -160,10 +101,6 @@ pub struct Screen {
     commands: Vec<(NodeId, Command)>,
     /// The input that has the focus.
     focused: Option<NodeId>,
-    /// Actual fingers down, until they lift or the native tree revokes them.
-    contacts: Vec<Arc<Contact>>,
-    /// Native input results retain their order within each consumed batch.
-    input_results: Vec<InputResult>,
     /// The view that takes presses Tab gave the keyboard focus to (macOS,
     /// the web).
     key_focus: Option<NodeId>,
@@ -174,10 +111,8 @@ pub struct Screen {
     popped: HashSet<NodeId>,
     /// Modals a back closed natively, until the app removes them.
     closed: HashSet<NodeId>,
-    /// Canonical native modal order: projection restores the existing slot.
-    presented: Vec<Presentation>,
-    /// New presentations waiting for `onShow`; this is only an event queue.
-    shows: Vec<NodeId>,
+    /// Modals presented since the last call (`onShow`).
+    presented: Vec<NodeId>,
     /// The dialogs shown, in order, and how many were answered.
     dialogs: Vec<Dialog>,
     answered: usize,
@@ -190,7 +125,7 @@ pub struct Screen {
     image_infos: Vec<u32>,
     /// The picks asked (`Picker.pickImages`), in order, and how many were
     /// answered.
-    picks: Vec<(u32, nsh_core::picker::PickRequest)>,
+    picks: Vec<(u32, nsh_core::picker::Pick)>,
     picks_answered: usize,
     /// The URLs the app had the system open (`openUrl`), in order.
     opened_urls: Vec<String>,
@@ -227,6 +162,13 @@ pub struct Screen {
     viewport: Option<Size<Points>>,
     /// The nodes each canvas's drawing has, as views of the model.
     canvas_nodes: HashMap<NodeId, Vec<NodeId>>,
+    /// The app's windows of its own, in the order they opened: each one's
+    /// root (a modal the platform shows in a window of its own,
+    /// `DesktopCommand::OpenWindow`) and the app's id for it.
+    windows: Vec<(NodeId, String)>,
+    /// Those not on screen (minimized, hidden, closed by a policy of
+    /// theirs), as the driver keeps them: their views are not found.
+    hidden_windows: HashSet<NodeId>,
     /// The id the next canvas node gets.
     next_canvas_node: NodeId,
 }
@@ -289,6 +231,9 @@ struct View {
     attributed: Option<Arc<nsh_core::AttributedText>>,
     /// Which touches it and its subtree receive (`pointerEvents`).
     pointer_events: PointerEvents,
+    /// Its children are read in screen order along this axis (a list in
+    /// its parent's viewport, `ViewProps::screen_order`).
+    screen_order: Option<nsh_core::geometry::Axis>,
     /// A node of a canvas's drawing, not a view of its own.
     canvas_node: bool,
 }
@@ -382,27 +327,7 @@ impl Screen {
         }
     }
 
-    /// A real host owns retirement decisions; only the core's confirmation
-    /// updates this mirror after the native reply reaches the core.
-    #[cfg(feature = "agent")]
-    pub(crate) fn observe(&mut self, batch: &MountBatch) {
-        for item in &batch.items {
-            match item {
-                MountItem::RetireListCell { .. } => {}
-                MountItem::ListCellRetired { roots } => {
-                    for root in roots {
-                        self.park_presentations(*root);
-                        self.detach(*root);
-                        self.popped.remove(root);
-                        self.closed.remove(root);
-                    }
-                }
-                _ => self.apply_item(item),
-            }
-        }
-    }
-
-    pub(crate) fn apply_item(&mut self, item: &MountItem) {
+    fn apply_item(&mut self, item: &MountItem) {
         match item {
             MountItem::Create { id, kind } => {
                 let view = View {
@@ -417,83 +342,25 @@ impl Screen {
                 parent,
                 child,
                 before,
-            } => self.insert(*parent, *child, *before),
-            MountItem::ProjectRoot {
-                parent,
-                id,
-                following,
             } => {
-                // Logical siblings do not describe the window's modal stack.
-                let before = if self.kind(*id) == Some(ViewKind::Modal) {
-                    None
-                } else {
-                    // These roots have platform-owned presentation slots,
-                    // rather than their parent's ordinary content host.
-                    let slot = |node| {
-                        self.kind(node).filter(|kind| {
-                            matches!(
-                                kind,
-                                ViewKind::Modal
-                                    | ViewKind::Screen
-                                    | ViewKind::HeaderItem
-                                    | ViewKind::InputAccessory
-                            )
-                        })
-                    };
-                    let host = slot(*id);
-                    following.iter().copied().find(|next| {
-                        next != id
-                            && slot(*next) == host
-                            && self
-                                .nodes
-                                .get(next)
-                                .is_some_and(|view| view.parent == Some(*parent))
-                            && self
-                                .children
-                                .get(parent)
-                                .is_some_and(|siblings| siblings.contains(next))
-                    })
-                };
-                self.insert(*parent, *id, before);
-            }
-            MountItem::RetireListCell { id, request, roots } => {
-                let actual = self.focus_path();
-                let focus_path = roots
-                    .iter()
-                    .any(|root| actual.contains(root))
-                    .then_some(actual);
-                if focus_path.is_none() {
-                    for root in roots {
-                        self.revoke_contacts(*root);
-                        self.revoke_hovered(*root);
-                        self.park_presentations(*root);
-                        self.detach(*root);
-                        self.popped.remove(root);
-                        self.closed.remove(root);
-                    }
+                self.detach(*child);
+                let siblings = self.children.entry(*parent).or_default();
+                let at = before
+                    .and_then(|b| siblings.iter().position(|s| *s == b))
+                    .unwrap_or(siblings.len());
+                siblings.insert(at, *child);
+                self.nodes.entry(*child).or_default().parent = Some(*parent);
+                if self.kind(*child) == Some(ViewKind::Modal) {
+                    self.presented.push(*child);
                 }
-                self.input_results.push(InputResult::RetireListCell {
-                    id: *id,
-                    request: *request,
-                    focus_path,
-                });
             }
-            // The real host already detached these roots before replying.
-            MountItem::ListCellRetired { .. } => {}
             MountItem::Remove { id } => {
-                self.revoke_contacts(*id);
-                self.revoke_hovered(*id);
-                self.revoke_focus(*id);
-                self.remove_presentations(*id);
                 self.detach(*id);
                 self.popped.remove(id);
                 self.closed.remove(id);
+                self.forget_window(*id);
             }
             MountItem::Delete { id } => {
-                self.revoke_contacts(*id);
-                self.revoke_hovered(*id);
-                self.revoke_focus(*id);
-                self.remove_presentations(*id);
                 self.drop_spans(*id);
                 self.canvas(*id, &[]);
                 self.detach(*id);
@@ -501,6 +368,10 @@ impl Screen {
                 self.children.remove(id);
                 self.popped.remove(id);
                 self.closed.remove(id);
+                self.forget_window(*id);
+                if self.focused == Some(*id) {
+                    self.focused = None;
+                }
             }
             MountItem::ScreenConfig { id, config } => {
                 self.nodes.entry(*id).or_default().prevent_back = config.prevent_back;
@@ -535,6 +406,7 @@ impl Screen {
                 view.selectable_view = props.selectable_view;
                 view.pan_activation = props.pan_activation;
                 view.pointer_events = props.pointer_events;
+                view.screen_order = props.screen_order;
             }
             MountItem::Keymap(keymap) => self.keymap = Some(keymap.clone()),
             MountItem::TrackStates { id, states } => {
@@ -661,7 +533,12 @@ impl Screen {
             // Headless runs load no images: the size is answered as a
             // failed load (a `TextView` asks for its images' sizes).
             Command::ImageInfo { id, .. } => self.image_infos.push(*id),
-            Command::PickImages { id, request } => self.picks.push((*id, *request)),
+            Command::PickImages { id, request } => self
+                .picks
+                .push((*id, nsh_core::picker::Pick::Images(*request))),
+            Command::PickFiles { id, request } => self
+                .picks
+                .push((*id, nsh_core::picker::Pick::Files(request.clone()))),
             // Recorded, never opened: a test's machine opens nothing.
             Command::OpenUrl { id, url } => {
                 self.opened_urls.push(url.clone());
@@ -675,21 +552,24 @@ impl Screen {
                 self.file_answers.push((*id, (**request).clone()));
             }
             Command::Back => self.back_asked = true,
-            Command::Desktop(desktop) => {
-                if let nsh_core::desktop::DesktopCommand::PopupMenu { items, .. } = &**desktop {
+            Command::Desktop(desktop) => match &**desktop {
+                nsh_core::desktop::DesktopCommand::PopupMenu { items, .. } => {
                     self.menu = Some(items.clone());
                 }
-            }
+                nsh_core::desktop::DesktopCommand::OpenWindow(open)
+                    if !self.windows.iter().any(|(root, _)| *root == id) =>
+                {
+                    self.windows.push((id, open.options.id.clone()));
+                }
+                _ => {}
+            },
             Command::SetJsResponder { block } => {
                 self.js_block = *block;
                 self.js_grants.push(*block);
             }
             Command::ClearJsResponder => self.js_block = false,
-            Command::Focus if self.input(id).is_some() => self.set_focused(Some(id)),
-            Command::Blur if id == ROOT || self.focused == Some(id) => {
-                self.set_focused(None);
-                self.set_key_focus(None);
-            }
+            Command::Focus if self.input(id).is_some() => self.focused = Some(id),
+            Command::Blur if id == ROOT || self.focused == Some(id) => self.focused = None,
             Command::ScrollTo { x, y, .. } => {
                 let end = self.scroll_end(id);
                 if let Some(scroll) = self.scroll_mut(id) {
@@ -722,26 +602,6 @@ impl Screen {
     /// `text`: each a view in the model, inside the text view (or the span
     /// around it), as a platform finds the one under a finger.
     fn set_spans(&mut self, id: NodeId, text: &nsh_core::AttributedText) {
-        let retired = self
-            .nodes
-            .get(&id)
-            .map(|view| {
-                view.spans
-                    .iter()
-                    .copied()
-                    .filter(|old| {
-                        !text
-                            .links
-                            .iter()
-                            .any(|next| next.node == *old && next.is_enabled())
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for old in retired {
-            self.revoke_contacts(old);
-            self.revoke_hovered(old);
-        }
         self.drop_spans(id);
         let mut links = text.links.clone();
         // Outer spans first, so each finds the one around it made.
@@ -758,6 +618,7 @@ impl Screen {
                 View {
                     parent: Some(parent),
                     events: link.events,
+                    focusable: Some(link.focus_stop),
                     span: Some(Span {
                         view: id,
                         text: utf16_slice(&text.text, link.start, link.end),
@@ -887,133 +748,6 @@ impl Screen {
         }
     }
 
-    fn insert(&mut self, parent: NodeId, child: NodeId, before: Option<NodeId>) {
-        self.detach(child);
-        let siblings = self.children.entry(parent).or_default();
-        let at = before
-            .and_then(|before| siblings.iter().position(|sibling| *sibling == before))
-            .unwrap_or(siblings.len());
-        siblings.insert(at, child);
-        self.nodes.entry(child).or_default().parent = Some(parent);
-        if self.kind(child) == Some(ViewKind::Modal) {
-            if let Some(presentation) = self.presented.iter_mut().find(|entry| entry.id == child) {
-                presentation.live = true;
-            } else {
-                self.presented.push(Presentation {
-                    id: child,
-                    live: true,
-                });
-                self.shows.push(child);
-            }
-        }
-    }
-
-    fn park_presentations(&mut self, root: NodeId) {
-        for at in 0..self.presented.len() {
-            let id = self.presented[at].id;
-            if id == root || self.is_inside(id, root) {
-                self.presented[at].live = false;
-                self.shows.retain(|shown| *shown != id);
-            }
-        }
-    }
-
-    fn remove_presentations(&mut self, root: NodeId) {
-        let presentations = std::mem::take(&mut self.presented);
-        for presentation in presentations {
-            if presentation.id == root || self.is_inside(presentation.id, root) {
-                self.shows.retain(|shown| *shown != presentation.id);
-            } else {
-                self.presented.push(presentation);
-            }
-        }
-    }
-
-    fn top_modal(&self, attached: &[NodeId]) -> Option<NodeId> {
-        self.presented
-            .iter()
-            .rev()
-            .find(|entry| entry.live && attached.contains(&entry.id))
-            .map(|entry| entry.id)
-    }
-
-    fn revoke_focus(&mut self, id: NodeId) {
-        if self
-            .key_focus
-            .is_some_and(|focus| focus == id || self.is_inside(focus, id))
-        {
-            self.key_focus = None;
-        }
-        if self
-            .focused
-            .is_some_and(|focus| focus == id || self.is_inside(focus, id))
-        {
-            self.focused = None;
-        }
-    }
-
-    /// Revoke before changing ancestry: a later Insert cannot revive a finger.
-    fn revoke_contacts(&mut self, root: NodeId) {
-        let contains = |id| id == root || self.is_inside(id, root);
-        let mut cancelled = Vec::new();
-        for contact in &self.contacts {
-            if contact.owners.iter().copied().any(contains) {
-                contact.active.store(false, Ordering::Relaxed);
-                if contact.reporting.swap(false, Ordering::Relaxed) {
-                    cancelled.push(InputResult::CancelTouch(contact.id));
-                }
-            }
-            if contact.native_owner().is_some_and(contains) {
-                contact.native.store(0, Ordering::Relaxed);
-            }
-        }
-        self.input_results.extend(cancelled);
-    }
-
-    /// Forget the actual hovered owners before their ids can be reused.
-    fn revoke_hovered(&mut self, root: NodeId) {
-        let hovered = std::mem::take(&mut self.hovered);
-        for owner in hovered {
-            if owner == root || self.is_inside(owner, root) {
-                if let Some(states) =
-                    self.set_state(owner, nsh_core::tailwind::state::HOVERED, false)
-                {
-                    self.input_results
-                        .push(InputResult::SetStates(owner, states));
-                }
-            } else {
-                self.hovered.push(owner);
-            }
-        }
-    }
-
-    pub(crate) fn begin_contact(
-        &mut self,
-        id: u32,
-        target: NodeId,
-        mut owners: Vec<NodeId>,
-        reporting: bool,
-    ) -> Arc<Contact> {
-        owners.push(target);
-        let contact = Arc::new(Contact {
-            id,
-            target,
-            owners,
-            active: AtomicBool::new(true),
-            reporting: AtomicBool::new(reporting),
-            native: AtomicU32::new(0),
-        });
-        self.contacts.push(contact.clone());
-        contact
-    }
-
-    pub(crate) fn end_contact(&mut self, contact: &Arc<Contact>) {
-        self.contacts.retain(|other| !Arc::ptr_eq(other, contact));
-        contact.active.store(false, Ordering::Relaxed);
-        contact.stop_reporting();
-        contact.native.store(0, Ordering::Relaxed);
-    }
-
     /// The views on screen, in tree order: below the root, of a stack
     /// only its top screen (the others are covered), without what a back
     /// took away.
@@ -1021,7 +755,7 @@ impl Screen {
         let mut out = Vec::new();
         let mut stack = vec![ROOT];
         while let Some(id) = stack.pop() {
-            if self.closed.contains(&id) {
+            if self.closed.contains(&id) || self.hidden_windows.contains(&id) {
                 continue;
             }
             if id != ROOT {
@@ -1054,7 +788,7 @@ impl Screen {
         // parent shows.
         let mut stack = vec![(ROOT, Point::default(), window, false, true)];
         while let Some((id, origin, clip, hidden, parent_shown)) = stack.pop() {
-            if self.closed.contains(&id) {
+            if self.closed.contains(&id) || self.hidden_windows.contains(&id) {
                 continue;
             }
             // The root is the platform's: no batch creates it.
@@ -1066,7 +800,8 @@ impl Screen {
             };
             let hidden = hidden || view.hidden;
             // A modal is presented over the window, wherever it is in the
-            // tree.
+            // tree; a window of the app's own is a window of its own, as
+            // large as the main one (its root fills it).
             let (origin, clip) = if view.kind == Some(ViewKind::Modal) {
                 (Point::default(), window)
             } else {
@@ -1125,11 +860,35 @@ impl Screen {
             } else if view.clips && id != ROOT {
                 inner = inner.within(bounds);
             }
-            let children: Vec<NodeId> = if self.kind(id) == Some(ViewKind::Stack) {
+            let mut children: Vec<NodeId> = if self.kind(id) == Some(ViewKind::Stack) {
                 self.screens(id).last().copied().into_iter().collect()
             } else {
                 self.children.get(&id).cloned().unwrap_or_default()
             };
+            // A scroll view's content, and a list's cells in its parent's
+            // viewport, in the order they are on screen, as macOS, iOS and
+            // Android order Tab and screen readers: a list's recycled cells
+            // are in the order they were made.
+            let horizontal = view.scroll.as_ref().map(|s| s.horizontal).or(view
+                .screen_order
+                .map(|a| a == nsh_core::geometry::Axis::Horizontal));
+            if let Some(horizontal) = horizontal
+                && children.len() > 1
+            {
+                let start = |child: &NodeId| {
+                    let frame = self.nodes.get(child).map(|v| v.frame).unwrap_or_default();
+                    let (main, cross) = if horizontal {
+                        (frame.origin.x, frame.origin.y)
+                    } else {
+                        (frame.origin.y, frame.origin.x)
+                    };
+                    (main.0, cross.0)
+                };
+                children.sort_by(|a, b| {
+                    let (a, b) = (start(a), start(b));
+                    a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1))
+                });
+            }
             stack.extend(
                 children
                     .into_iter()
@@ -1161,11 +920,16 @@ impl Screen {
 
     /// What going back does now, as a platform's back does it: in the
     /// newest modal (else the whole screen) the innermost stack that can go
-    /// back pops its top screen, or asks it when it prevents going back;
+    /// back and is laid out with a size (`shown_in_layout`) pops its top
+    /// screen, or asks it when it prevents going back;
     /// without one, the newest modal asks to close.
     pub(crate) fn back_target(&self) -> Back {
         let attached = self.attached();
-        let modal = self.top_modal(&attached);
+        let modal = attached
+            .iter()
+            .rev()
+            .copied()
+            .find(|id| self.kind(*id) == Some(ViewKind::Modal) && !self.is_window(*id));
         let can_go_back = |stack: NodeId| {
             let screens = self.screens(stack);
             screens.len() >= 2
@@ -1180,6 +944,11 @@ impl Screen {
                 self.kind(*id) == Some(ViewKind::Stack)
                     && modal.is_none_or(|m| self.is_inside(*id, m))
                     && can_go_back(*id)
+                    && nsh_core::navigation::shown_in_layout(
+                        std::iter::successors(Some(*id), |id| self.nodes.get(id)?.parent)
+                            .filter(|id| *id != ROOT)
+                            .filter_map(|id| Some(self.nodes.get(&id)?.frame)),
+                    )
             })
             .collect();
         let innermost = stacks
@@ -1214,9 +983,60 @@ impl Screen {
         self.closed.insert(modal);
     }
 
-    /// The modals presented since the last call.
+    /// The modals presented since the last call (not the windows of the
+    /// app's own: the platform shows those in windows of their own).
     pub(crate) fn take_presented(&mut self) -> Vec<NodeId> {
-        std::mem::take(&mut self.shows)
+        let mut presented = std::mem::take(&mut self.presented);
+        presented.retain(|id| !self.is_window(*id));
+        presented
+    }
+
+    /// Whether `id` is the root of a window of the app's own.
+    pub(crate) fn is_window(&self, id: NodeId) -> bool {
+        self.windows.iter().any(|(root, _)| *root == id)
+    }
+
+    /// The root of the window view `id` is in: a window of the app's own,
+    /// else the main window's root.
+    pub(crate) fn window_of(&self, mut id: NodeId) -> NodeId {
+        loop {
+            if self.is_window(id) {
+                return id;
+            }
+            match self.nodes.get(&id).and_then(|v| v.parent) {
+                Some(parent) => id = parent,
+                None => return ROOT,
+            }
+        }
+    }
+
+    /// The root of the window the app calls `id` (`"main"`: the main
+    /// window's), while it is open.
+    pub(crate) fn window_root(&self, id: &str) -> Option<NodeId> {
+        if id == "main" {
+            return Some(ROOT);
+        }
+        self.windows
+            .iter()
+            .find(|(_, own)| own == id)
+            .map(|(root, _)| *root)
+    }
+
+    /// Window `root` of the app's own is on screen (`!hidden`) or not
+    /// (minimized, hidden, closed by a policy until the app removes it).
+    pub(crate) fn set_window_hidden(&mut self, root: NodeId, hidden: bool) {
+        if hidden {
+            self.hidden_windows.insert(root);
+        } else {
+            self.hidden_windows.remove(&root);
+        }
+    }
+
+    /// Node `id` left the tree: when it was a window's root, the window
+    /// closed.
+    fn forget_window(&mut self, id: NodeId) {
+        self.windows.retain(|(root, _)| *root != id);
+        self.hidden_windows.remove(&id);
     }
 
     /// Whether the app asked for a back since the last call.
@@ -1239,15 +1059,19 @@ impl Screen {
         self.answered = (self.answered + 1).min(self.dialogs.len());
     }
 
-    /// The picks the app asked for so far, in order (`Picker.pickImages`).
-    pub fn picks(&self) -> Vec<nsh_core::picker::PickRequest> {
-        self.picks.iter().map(|(_, request)| *request).collect()
+    /// The picks the app asked for so far, in order (`Picker.pickImages`,
+    /// `Picker.pickFiles`).
+    pub fn picks(&self) -> Vec<nsh_core::picker::Pick> {
+        self.picks
+            .iter()
+            .map(|(_, request)| request.clone())
+            .collect()
     }
 
     /// The oldest pick not answered yet: its request's id and what it
     /// asks.
-    pub(crate) fn pending_pick(&self) -> Option<(u32, nsh_core::picker::PickRequest)> {
-        self.picks.get(self.picks_answered).copied()
+    pub(crate) fn pending_pick(&self) -> Option<(u32, nsh_core::picker::Pick)> {
+        self.picks.get(self.picks_answered).cloned()
     }
 
     /// The oldest pick was answered.
@@ -1313,12 +1137,19 @@ impl Screen {
     /// topmost modal's first (the last presented), then the rest.
     fn by_layer(&self) -> Vec<NodeId> {
         let attached = self.shown();
-        let Some(top) = self.top_modal(&attached) else {
+        // Windows of the app's own are side by side with the main one, not
+        // over it: their views are found in tree order.
+        let modals: Vec<NodeId> = attached
+            .iter()
+            .copied()
+            .filter(|id| self.kind(*id) == Some(ViewKind::Modal) && !self.is_window(*id))
+            .collect();
+        let Some(top) = modals.last() else {
             return attached;
         };
         let (mut first, rest): (Vec<NodeId>, Vec<NodeId>) = attached
             .into_iter()
-            .partition(|id| *id == top || self.is_inside(*id, top));
+            .partition(|id| *id == *top || self.is_inside(*id, *top));
         first.extend(rest);
         first
     }
@@ -1357,7 +1188,8 @@ impl Screen {
         self.nodes.get(&id)?.kind
     }
 
-    /// The texts on screen, in tree order.
+    /// The texts on screen, in tree order (a scroll view's content in
+    /// screen order).
     pub fn texts(&self) -> Vec<&str> {
         self.shown()
             .into_iter()
@@ -1608,11 +1440,71 @@ impl Screen {
             .then_some((view.parent?, view.frame.center()))
     }
 
-    /// The view a pointer at `at` (in the root) reaches: the topmost,
-    /// innermost one there that receives touches. Canvas nodes are not views.
-    fn hit_pointer(&self, at: Point<Points>) -> NodeId {
-        let attached: HashSet<NodeId> = self.attached().into_iter().collect();
-        self.hit_in(ROOT, at, &attached).unwrap_or(ROOT)
+    /// The view that takes a pointer at `at` (in the root) instead of
+    /// `target`: one drawn over it there, neither in it nor around it.
+    /// `None` when the pointer reaches `target` (or a view in it), only
+    /// views around it (a target scrolled out of view or of no size, which
+    /// a press still reaches as before), or a view that handles presses or
+    /// touches itself.
+    pub(crate) fn covering(&self, target: NodeId, at: Point<Points>) -> Option<NodeId> {
+        let hit = self.hit_pointer(at, self.window_of(target));
+        let reaches = hit == target || self.is_inside(hit, target) || self.is_inside(target, hit);
+        if reaches {
+            return None;
+        }
+        // A view over the target that hears presses or touches itself (a
+        // data table's or an editor's input layer) takes the press and
+        // places it as the app wants; only one that hears neither swallows
+        // it.
+        let mut id = hit;
+        loop {
+            if id == target || self.is_inside(target, id) {
+                return Some(hit);
+            }
+            if self.hears(id, EventKind::Press) || self.hears(id, EventKind::Touch) {
+                return None;
+            }
+            id = self.nodes.get(&id).and_then(|v| v.parent)?;
+        }
+    }
+
+    /// `id` as a selector a test would write: its test id, else the first
+    /// text in it, else `view:<id>`.
+    pub(crate) fn selector_of(&self, id: NodeId) -> String {
+        if let Some(test_id) = self.nodes.get(&id).and_then(|v| v.test_id.as_deref()) {
+            return format!("`id:{test_id}`");
+        }
+        match self
+            .down_to(id, |v| v.text.is_some())
+            .and_then(|t| self.nodes.get(&t)?.text.as_deref())
+        {
+            Some(text) => format!("`{}`", text.trim()),
+            None => format!("`view:{id}`"),
+        }
+    }
+
+    /// The view a pointer at `at` (in the root of `window`, a window's
+    /// root) reaches in that window: the topmost, innermost one there that
+    /// receives touches. Canvas nodes are not views, and the windows of the
+    /// app's own are windows of their own.
+    fn hit_pointer(&self, at: Point<Points>, window: NodeId) -> NodeId {
+        let order = self.attached();
+        let attached: HashSet<NodeId> = order.iter().copied().collect();
+        // The dialogs presented over this window first, the last one on
+        // top: a dialog is over its window wherever its node is in the
+        // tree, so the views around that node (a card that clips) take no
+        // part in where it is hit.
+        let dialogs = order.iter().rev().copied().filter(|id| {
+            self.kind(*id) == Some(ViewKind::Modal)
+                && !self.is_window(*id)
+                && self.window_of(*id) == window
+        });
+        for dialog in dialogs {
+            if let Some(hit) = self.hit_in(dialog, at, &attached) {
+                return hit;
+            }
+        }
+        self.hit_in(window, at, &attached).unwrap_or(window)
     }
 
     fn hit_in(&self, id: NodeId, at: Point<Points>, attached: &HashSet<NodeId>) -> Option<NodeId> {
@@ -1621,7 +1513,9 @@ impl Screen {
         if receives == PointerEvents::None || view.is_some_and(|v| v.hidden) {
             return None;
         }
-        let inside = id == ROOT || self.bounds_in_root(id).is_some_and(|b| b.contains(&at));
+        let inside = id == ROOT
+            || self.is_window(id)
+            || self.bounds_in_root(id).is_some_and(|b| b.contains(&at));
         // Unclipped children can receive a pointer outside their parent's box.
         if !inside
             && (receives == PointerEvents::BoxOnly
@@ -1634,7 +1528,9 @@ impl Screen {
         {
             for &child in children.iter().rev() {
                 let node = self.nodes.get(&child).is_some_and(|v| v.canvas_node);
-                if node || !attached.contains(&child) {
+                // Windows are windows of their own; dialogs were tried
+                // first ([`Screen::hit_pointer`]).
+                if node || !attached.contains(&child) || self.kind(child) == Some(ViewKind::Modal) {
                     continue;
                 }
                 if let Some(hit) = self.hit_in(child, at, attached) {
@@ -1653,7 +1549,7 @@ impl Screen {
         if let [id] = matches[..]
             && let Some(at) = self.canvas_node_center(id)
         {
-            let Some(target) = self.up_to(self.hit_pointer(at), |v| {
+            let Some(target) = self.up_to(self.hit_pointer(at, self.window_of(id)), |v| {
                 v.events.contains(EventKind::Press)
             }) else {
                 return Pick::None;
@@ -1916,7 +1812,12 @@ impl Screen {
         }
         let view = self.nodes.get(&id)?;
         let mut origin = view.frame.origin;
-        let mut at = view.parent;
+        // A modal (a window of the app's own too) is placed over its
+        // window, wherever it is in the tree: what it holds is where it
+        // is in it, in that window's points.
+        let mut at = (view.kind != Some(ViewKind::Modal))
+            .then_some(view.parent)
+            .flatten();
         while let Some(parent) = at {
             let Some(p) = self.nodes.get(&parent) else {
                 break;
@@ -1924,6 +1825,9 @@ impl Screen {
             origin += p.frame.origin;
             if let Some(scroll) = &p.scroll {
                 origin -= nsh_core::Point::new(scroll.x, scroll.y);
+            }
+            if p.kind == Some(ViewKind::Modal) {
+                break;
             }
             at = p.parent;
         }
@@ -1953,6 +1857,7 @@ impl Screen {
 
     /// View `id`'s interaction states with `bit` set (or cleared), when it
     /// tracks it and they change.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_state(&mut self, id: NodeId, bit: u16, on: bool) -> Option<u16> {
         let view = self.nodes.get_mut(&id)?;
         let next = nsh_core::input::next_states(view.tracked, view.states, bit, on)?;
@@ -2004,19 +1909,9 @@ impl Screen {
 
     /// Whether view `id` reports `event`.
     pub(crate) fn hears(&self, id: NodeId, event: EventKind) -> bool {
-        self.is_attached(id)
-            && self
-                .nodes
-                .get(&id)
-                .is_some_and(|view| view.events.contains(event))
-    }
-
-    pub(crate) fn is_attached(&self, id: NodeId) -> bool {
-        id == ROOT || self.is_inside(id, ROOT)
-    }
-
-    pub(crate) fn take_input_results(&mut self) -> Vec<InputResult> {
-        std::mem::take(&mut self.input_results)
+        self.nodes
+            .get(&id)
+            .is_some_and(|v| v.events.contains(event))
     }
 
     pub(crate) fn input(&self, id: NodeId) -> Option<&Input> {
@@ -2074,36 +1969,22 @@ impl Screen {
         self.focused
     }
 
-    pub(crate) fn focus_path(&self) -> Vec<NodeId> {
-        let Some(mut id) = self.focused.or_else(|| self.key_focus()) else {
-            return Vec::new();
-        };
-        let mut path = vec![id];
-        while let Some(parent) = self.nodes.get(&id).and_then(|view| view.parent) {
-            path.push(parent);
-            id = parent;
-        }
-        path
-    }
-
     pub(crate) fn set_focused(&mut self, id: Option<NodeId>) {
-        if id.is_some() {
-            self.key_focus = None;
-        }
         self.focused = id;
     }
 
     /// The view (not an input) with the keyboard focus, while it is
     /// mounted: a pressable or a `focusable` view Tab moved it to.
     pub(crate) fn key_focus(&self) -> Option<NodeId> {
-        self.key_focus.filter(|&id| self.is_attached(id))
+        self.key_focus.filter(|id| self.nodes.contains_key(id))
     }
 
     pub(crate) fn set_key_focus(&mut self, id: Option<NodeId>) {
         self.key_focus = id;
     }
 
-    /// Tab's stops, in tree order, as macOS and the web have them: the
+    /// Tab's stops, in tree order (a scroll view's content in screen
+    /// order), as macOS and the web have them: the
     /// inputs that edit and the views [`nsh_core::ViewProps::focus_stop`]
     /// takes (those that take presses unless `focusable={false}`, and
     /// `focusable={true}` ones whether or not they do), shown and enabled.
@@ -2117,16 +1998,40 @@ impl Screen {
                 if let Some(input) = &v.input {
                     return input.config.editable && !self.disabled_from(id, None);
                 }
+                // A link in a text view is a stop after it, in text order
+                // (`TextLink::focus_stop`).
+                if v.span.is_some() {
+                    return v.focusable == Some(true) && !self.disabled_from(id, None);
+                }
                 // Disabled is the ancestors' too here (`disabled_from`).
                 let props = nsh_core::ViewProps {
                     focusable: v.focusable,
                     ..Default::default()
                 };
-                v.span.is_none()
-                    && props.focus_stop(v.events.contains(EventKind::Press))
+                props.focus_stop(v.events.contains(EventKind::Press))
                     && !self.disabled_from(id, None)
             })
             .collect()
+    }
+
+    /// The stop a press on `id` gives the focus to in a terminal: `id` or
+    /// its nearest ancestor that Tab stops at (`tab_stops`), else the
+    /// topmost stop over the press's point (a table's hit layer over its
+    /// rows), as a terminal finds what is under the pointer.
+    pub(crate) fn stop_around(&self, id: NodeId) -> Option<NodeId> {
+        let stops = self.tab_stops();
+        let mut at = Some(id);
+        while let Some(id) = at {
+            if stops.contains(&id) {
+                return Some(id);
+            }
+            at = self.nodes.get(&id).and_then(|v| v.parent);
+        }
+        let point = self.bounds_in_root(id)?.center();
+        stops.iter().rev().copied().find(|&stop| {
+            self.bounds_in_root(stop)
+                .is_some_and(|bounds| bounds.contains(&point))
+        })
     }
 
     pub(crate) fn scroll(&self, id: NodeId) -> Option<&Scroll> {
@@ -2165,70 +2070,6 @@ impl Screen {
 mod tests {
     use super::*;
 
-    #[test]
-    fn detached_pressable_focus_does_not_revive_after_reinsertion_or_id_reuse() {
-        for delete in [false, true] {
-            let mut screen = Screen::default();
-            screen.apply(&batch(vec![
-                create(2, ViewKind::View),
-                create(4, ViewKind::View),
-                create(6, ViewKind::View),
-                project(ROOT, 2, &[]),
-                insert(2, 4),
-                project(ROOT, 6, &[]),
-            ]));
-            screen
-                .nodes
-                .get_mut(&4)
-                .unwrap()
-                .events
-                .set(EventKind::Press, true);
-            screen.set_key_focus(Some(4));
-            screen.apply(&batch(vec![MountItem::Remove { id: 6 }]));
-            assert_eq!(screen.key_focus(), Some(4), "unrelated removal keeps focus");
-            if delete {
-                screen.apply(&batch(vec![MountItem::Delete { id: 4 }]));
-                screen.apply(&batch(vec![create(4, ViewKind::View), insert(2, 4)]));
-                screen
-                    .nodes
-                    .get_mut(&4)
-                    .unwrap()
-                    .events
-                    .set(EventKind::Press, true);
-            } else {
-                screen.apply(&batch(vec![MountItem::Remove { id: 2 }]));
-                assert_eq!(screen.key_focus(), None);
-                screen.apply(&batch(vec![project(ROOT, 2, &[])]));
-            }
-            assert!(screen.hears(4, EventKind::Press));
-            assert_eq!(
-                screen.key_focus(),
-                None,
-                "attachment cannot restore keyboard focus"
-            );
-        }
-    }
-
-    #[test]
-    fn native_retirement_keeps_a_cell_with_pressable_keyboard_focus() {
-        let mut screen = Screen::default();
-        screen.apply(&batch(vec![
-            create(2, ViewKind::View),
-            create(4, ViewKind::View),
-            project(ROOT, 2, &[]),
-            insert(2, 4),
-        ]));
-        screen.set_key_focus(Some(4));
-        screen.apply(&batch(vec![MountItem::RetireListCell {
-            id: 2,
-            request: 1,
-            roots: vec![2],
-        }]));
-        assert!(screen.is_attached(4));
-        assert!(matches!(screen.take_input_results().as_slice(),
-            [InputResult::RetireListCell { focus_path: Some(path), .. }] if path == &[4, 2, ROOT]));
-    }
-
     /// A canvas over a pressable pad, both inside a plain container.
     fn canvas_screen() -> Screen {
         let mut screen = Screen::default();
@@ -2239,7 +2080,7 @@ mod tests {
             frame(2, 0.0, 0.0, 200.0, 40.0),
             frame(4, 0.0, 0.0, 200.0, 40.0),
             frame(6, 0.0, 0.0, 200.0, 40.0),
-            project(1, 2, &[]),
+            insert(1, 2),
             insert(2, 6),
             insert(2, 4),
         ]));
@@ -2363,14 +2204,6 @@ mod tests {
         }
     }
 
-    fn project(parent: NodeId, id: NodeId, following: &[NodeId]) -> MountItem {
-        MountItem::ProjectRoot {
-            parent,
-            id,
-            following: following.to_vec(),
-        }
-    }
-
     fn frame(id: NodeId, x: f32, y: f32, width: f32, height: f32) -> MountItem {
         MountItem::Frame {
             id,
@@ -2455,30 +2288,16 @@ mod tests {
             frame(6, 0.0, 0.0, 100.0, 20.0),
             frame(10, 0.0, 0.0, 100.0, 20.0),
             frame(14, 0.0, 0.0, 100.0, 20.0),
-            project(1, 2, &[]),
-            project(2, 4, &[]),
+            insert(1, 2),
+            insert(2, 4),
             insert(4, 6),
-            project(2, 8, &[]),
+            insert(2, 8),
             insert(8, 10),
         ]));
         assert_eq!(screen.texts(), ["Details"]);
         screen.apply(&batch(vec![
-            create(16, ViewKind::Screen), // An independent root still parked.
-            create(18, ViewKind::Screen),
-            create(20, ViewKind::Stack),
-            project(1, 20, &[]),
-            project(20, 18, &[]), // An existing root in another native host.
-            project(2, 4, &[16, 18, 8]),
-        ]));
-        // A missing or foreign first candidate must not append Home on top.
-        assert_eq!(screen.texts(), ["Details"]);
-        screen.apply(&batch(vec![project(2, 8, &[16, 18, 4])]));
-        assert_eq!(screen.texts(), ["Home"]);
-        screen.apply(&batch(vec![project(2, 4, &[16, 18, 8])]));
-        assert_eq!(screen.texts(), ["Details"]);
-        screen.apply(&batch(vec![
             text(10, "Close"),
-            project(1, 12, &[]),
+            insert(1, 12),
             insert(12, 14),
         ]));
         assert_eq!(screen.texts(), ["Close", "Close"]);
@@ -2489,150 +2308,6 @@ mod tests {
         );
         screen.apply(&batch(vec![MountItem::Remove { id: 8 }]));
         assert_eq!(screen.texts(), ["Home", "Close"]);
-    }
-
-    #[test]
-    fn projected_cells_use_the_first_live_sibling_after_native_retirement() {
-        let mut screen = Screen::default();
-        screen.apply(&batch(vec![
-            create(2, ViewKind::View),
-            frame(2, 0.0, 0.0, 400.0, 400.0),
-            project(ROOT, 2, &[]),
-            create(18, ViewKind::View),
-            frame(18, 0.0, 0.0, 400.0, 400.0),
-            project(ROOT, 18, &[]),
-            create(20, ViewKind::View),
-            project(18, 20, &[]),
-            create(22, ViewKind::View), // A root not currently in a native host.
-        ]));
-        for (id, label) in [(4, "A"), (8, "B"), (12, "C")] {
-            screen.apply(&batch(vec![
-                create(id, ViewKind::View),
-                create(id + 2, ViewKind::Text),
-                text(id + 2, label),
-                frame(id, 0.0, 0.0, 100.0, 40.0),
-                frame(id + 2, 0.0, 0.0, 100.0, 20.0),
-                project(2, id, &[]),
-                insert(id, id + 2),
-            ]));
-        }
-        screen.apply(&batch(vec![
-            create(24, ViewKind::Modal),
-            project(2, 24, &[]), // Same logical parent, a different native host.
-            create(16, ViewKind::Input),
-            insert(8, 16),
-            MountItem::Command {
-                id: 16,
-                command: Command::Focus,
-            },
-            MountItem::RetireListCell {
-                id: 8,
-                request: 1,
-                roots: vec![8],
-            },
-            project(2, 4, &[22, 20, 24, 8, 12]),
-        ]));
-        assert_eq!(screen.texts(), ["A", "B", "C"]);
-        assert!(matches!(screen.take_input_results().as_slice(),
-            [InputResult::RetireListCell { id: 8, request: 1, focus_path: Some(path) }]
-                if path.first() == Some(&16)));
-
-        screen.apply(&batch(vec![
-            MountItem::Command {
-                id: ROOT,
-                command: Command::Blur,
-            },
-            MountItem::RetireListCell {
-                id: 8,
-                request: 2,
-                roots: vec![8],
-            },
-            project(2, 4, &[22, 20, 24, 8, 12]),
-        ]));
-        assert_eq!(screen.texts(), ["A", "C"]);
-        assert!(matches!(
-            screen.take_input_results().as_slice(),
-            [InputResult::RetireListCell {
-                id: 8,
-                request: 2,
-                focus_path: None
-            }]
-        ));
-        screen.apply(&batch(vec![project(2, 8, &[12])]));
-        assert_eq!(screen.texts(), ["A", "B", "C"]);
-    }
-
-    #[test]
-    fn parked_modals_keep_their_window_slot_across_projection_parents() {
-        let mut screen = Screen::default();
-        screen.apply(&batch(vec![
-            create(2, ViewKind::View),
-            create(18, ViewKind::View),
-            project(ROOT, 2, &[]),
-            project(ROOT, 18, &[]),
-            create(4, ViewKind::Modal),
-            create(6, ViewKind::Text),
-            text(6, "Choose"),
-            frame(6, 0.0, 0.0, 100.0, 20.0),
-            project(2, 4, &[]),
-            insert(4, 6),
-            create(8, ViewKind::Modal),
-            create(10, ViewKind::Text),
-            text(10, "Choose"),
-            frame(10, 0.0, 0.0, 100.0, 20.0),
-            project(18, 8, &[]),
-            insert(8, 10),
-            create(12, ViewKind::Input),
-            insert(8, 12),
-        ]));
-        let choose = Selector::parse("text:Choose").unwrap();
-        assert_eq!(screen.resolve(&choose), [10, 6]);
-        assert_eq!(screen.take_presented(), [4, 8]);
-        screen.apply(&batch(vec![
-            MountItem::Command {
-                id: 12,
-                command: Command::Focus,
-            },
-            MountItem::RetireListCell {
-                id: 8,
-                request: 1,
-                roots: vec![8],
-            },
-            project(18, 4, &[]),
-        ]));
-        assert!(matches!(
-            screen.take_input_results().as_slice(),
-            [InputResult::RetireListCell {
-                id: 8,
-                request: 1,
-                focus_path: Some(_)
-            }]
-        ));
-        assert_eq!(screen.resolve(&choose), [10, 6]);
-        assert!(screen.take_presented().is_empty());
-
-        screen.apply(&batch(vec![
-            MountItem::Command {
-                id: ROOT,
-                command: Command::Blur,
-            },
-            MountItem::RetireListCell {
-                id: 4,
-                request: 2,
-                roots: vec![4],
-            },
-        ]));
-        assert_eq!(screen.resolve(&choose), [10]);
-        screen.apply(&batch(vec![project(2, 4, &[])]));
-        assert_eq!(screen.resolve(&choose), [10, 6]);
-        assert!(screen.take_presented().is_empty());
-
-        screen.apply(&batch(vec![
-            MountItem::Remove { id: 4 },
-            project(2, 4, &[]),
-        ]));
-        assert_eq!(screen.resolve(&choose), [6, 10]);
-        assert_eq!(screen.take_presented(), [4]);
     }
 
     #[test]
@@ -2663,7 +2338,7 @@ mod tests {
             frame(12, 0.0, 0.0, 100.0, 20.0),
             frame(14, 0.0, 200.0, 400.0, 100.0),
             frame(16, 0.0, 1000.0, 100.0, 20.0),
-            project(1, 2, &[]),
+            insert(1, 2),
             insert(2, 4),
             insert(2, 6),
             insert(2, 8),
@@ -2711,7 +2386,7 @@ mod tests {
             end,
             node,
             events,
-            props: Arc::default(),
+            focus_stop: true,
         };
         let linked = |links: Vec<nsh_core::TextLink>| MountItem::Text {
             id: 4,
@@ -2728,7 +2403,7 @@ mod tests {
             create(4, ViewKind::Text),
             frame(2, 0.0, 0.0, 400.0, 800.0),
             frame(4, 0.0, 0.0, 300.0, 40.0),
-            project(1, 2, &[]),
+            insert(1, 2),
             insert(2, 4),
             // "Terms 🙂" (the emoji is two UTF-16 units), and "Privacy".
             linked(vec![link(13, 21, 100), link(26, 33, 102)]),

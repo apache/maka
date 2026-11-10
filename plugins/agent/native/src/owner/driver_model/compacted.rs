@@ -19,7 +19,7 @@
 
 //! Append complete compacted material from its original bound source.
 use super::*;
-use maka_agent_facts::context::{CheckpointContent, CodexRequestProvenance, CompactedContext};
+use maka_agent_facts::context::{CheckpointContent, CompactedContext};
 use maka_model::prompt::AssistantPart;
 use sha2::{Digest, Sha256};
 
@@ -200,7 +200,7 @@ impl DriverModel {
                     let mut system=directory.open(0);
                     while let Some(recipe)=system.next().await?{if matches!(recipe,MessageRecipe::System{..}){builder.append_recipe(&recipe).await?;}}
                 }
-                self.append_compacted(&reader,view.run,baseline,model.context.as_ref().and_then(|context|context.codex.as_ref()),&mut builder).await?;
+                self.append_compacted(&reader,view.run,baseline,ReplayTarget::new(&model, frozen.operation),&mut builder).await?;
                 let mut tail=directory.open(start);
                 while let Some(recipe)=tail.next().await?{if !matches!(recipe,MessageRecipe::System{..}){builder.append_recipe(&recipe).await?;}}
                 Ok::<(),RunError>(())
@@ -274,7 +274,7 @@ impl DriverModel {
         reader: &HistorySource<'_>,
         run: RunId,
         baseline: &ContentRef,
-        target: Option<&CodexRequestProvenance>,
+        target: ReplayTarget<'_>,
         messages: &mut preparation::PromptBuilder,
     ) -> Result<RequestSource, RunError> {
         let body: CompactedContext = reader.decode(run, baseline).await?;
@@ -310,21 +310,11 @@ impl DriverModel {
                     .native
                     .as_ref()
                     .ok_or_else(|| unsupported("native-compaction-item"))?;
-                let target = target.ok_or_else(|| unsupported("native-compaction-target"))?;
-                let producer_compatibility = native
-                    .producer
-                    .compatibility
-                    .as_ref()
-                    .ok_or_else(|| unsupported("native-compaction-producer-compatibility"))?;
-                let target_compatibility = target
-                    .compatibility
-                    .as_ref()
-                    .ok_or_else(|| unsupported("native-compaction-target-compatibility"))?;
-                if native.producer.connection_id != target.connection_id
-                    || native.producer.account_id != target.account_id
-                    || producer_compatibility.comp_hash != target_compatibility.comp_hash
-                {
-                    return Err(unsupported("native-compaction-provenance"));
+                let request = reader.request(run, body.checkpoint.summary_step_id).await?;
+                if !target.encrypted_allowed(&request.accounting.model_id, Some(&native.producer)) {
+                    return Err(RunError::InvalidInput(
+                        "native Codex checkpoint requires compatible ChatGPT state or re-compaction".into(),
+                    ));
                 }
                 messages
                     .append(Message::Assistant {

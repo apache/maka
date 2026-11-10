@@ -74,6 +74,16 @@ fn what_an_owner_made_goes_with_it() {
 }
 
 #[test]
+fn a_stored_value_of_a_disposed_owner_is_skipped_by_try_with() {
+    let runtime = Runtime::default();
+    let _entered = runtime.enter();
+    let (owner, list) = create_root(|| stored(vec![1, 2]));
+    assert_eq!(list.try_with(|l| l.len()), Some(2));
+    owner.dispose();
+    assert_eq!(list.try_with(|l| l.len()), None, "it went with its owner");
+}
+
+#[test]
 #[should_panic(expected = "after its owner was disposed")]
 fn reading_a_disposed_signal_panics() {
     let runtime = Runtime::default();

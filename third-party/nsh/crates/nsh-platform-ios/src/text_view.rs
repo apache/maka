@@ -703,7 +703,7 @@ impl TextView {
             point.x - content.origin.x.0 as CGFloat,
             point.y - content.origin.y.0 as CGFloat,
         ))?;
-        text.link_at(u32::try_from(index).ok()?).cloned()
+        text.link_at(u32::try_from(index).ok()?).copied()
     }
 
     fn has_text(&self) -> bool {

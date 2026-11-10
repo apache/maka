@@ -1457,6 +1457,9 @@ fn keyword(u: &str) -> Option<Vec<Decl>> {
             sets(K::Overflow, "hidden")
         }
         "overflow-visible" => sets(K::Overflow, "visible"),
+        // Corner shapes: the names of `corner-shape`'s keywords.
+        "corner-squircle" => sets(K::BorderCurve, "continuous"),
+        "corner-round" => sets(K::BorderCurve, "circular"),
         // Flexbox.
         "flex-row" => sets(K::FlexDirection, "row"),
         "flex-row-reverse" => sets(K::FlexDirection, "row-reverse"),
@@ -3029,6 +3032,7 @@ fn preset(keyframes: Keyframes) -> KeyframeAnimation {
             delay: 0.0,
             easing: [0.0, 0.0, 1.0, 1.0],
             iterations: None,
+            frame_rate: None,
         },
         Keyframes::Ping => KeyframeAnimation {
             keyframes,
@@ -3036,6 +3040,7 @@ fn preset(keyframes: Keyframes) -> KeyframeAnimation {
             delay: 0.0,
             easing: [0.0, 0.0, 0.2, 1.0],
             iterations: None,
+            frame_rate: None,
         },
         Keyframes::Pulse => KeyframeAnimation {
             keyframes,
@@ -3043,6 +3048,7 @@ fn preset(keyframes: Keyframes) -> KeyframeAnimation {
             delay: 0.0,
             easing: [0.4, 0.0, 0.6, 1.0],
             iterations: None,
+            frame_rate: None,
         },
         Keyframes::Bounce => KeyframeAnimation {
             keyframes,
@@ -3050,6 +3056,7 @@ fn preset(keyframes: Keyframes) -> KeyframeAnimation {
             delay: 0.0,
             easing: [0.8, 0.0, 1.0, 1.0],
             iterations: None,
+            frame_rate: None,
         },
     }
 }

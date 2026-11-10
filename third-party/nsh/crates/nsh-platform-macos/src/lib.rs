@@ -28,6 +28,8 @@ mod animation;
 mod app;
 mod blur;
 mod canvas;
+#[cfg(any(feature = "dev", feature = "terminal"))]
+mod capture;
 mod chrome;
 mod decor;
 #[cfg(feature = "dev")]
@@ -35,12 +37,15 @@ pub mod dev;
 mod file_drop;
 mod file_requests;
 mod fps;
+mod global_shortcut;
 mod gpu;
 mod image;
 mod input;
 mod keymap;
 mod mount;
 mod native;
+#[cfg(any(feature = "terminal", test))]
+mod native_events;
 mod navigation;
 mod net;
 mod picker;
@@ -49,16 +54,23 @@ mod scroll;
 mod selectable_view;
 mod shader;
 mod sight;
-mod speech;
+// Shared with iOS.
+use nsh_platform_apple::{audio, notifications, speech};
+mod status_menu;
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;
 mod system;
+#[cfg(feature = "terminal")]
+mod terminal;
 mod text;
 mod text_input;
 mod transition;
+mod tray;
 mod view;
 mod visual;
+mod window;
+mod window_state;
 
 pub use nsh_core::platform::{Appearance, Locale};
 pub use nsh_engine::{
@@ -67,15 +79,18 @@ pub use nsh_engine::{
 pub use objc2;
 pub use objc2_app_kit;
 pub use objc2_foundation;
+#[cfg(feature = "terminal")]
+pub use terminal::TerminalSurface;
 
 #[cfg(feature = "dev")]
 pub use crate::app::set_root;
 pub use crate::{
     app::{
         AppOptions, AppSource, AppView, WindowDisplay, quit_app, run_app, run_app_with_config,
-        set_components, set_ui_sets, with_running_view,
+        run_resident_app_with_config, set_components, set_ui_sets, with_running_view,
     },
     image::AssetBase,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent},
+    status_menu::{StatusMenu, StatusMenuOptions},
     text::CoreTextEngine,
 };

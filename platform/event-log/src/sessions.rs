@@ -29,9 +29,7 @@ mod processes;
 pub(crate) mod removal;
 pub use metadata::SessionMutation;
 pub use origin::PluginSession;
-pub use removal::{
-    RemovalAuthority, RemovalPlan, RemoveFamilyResult, SessionRemovalResult, SessionRetirement,
-};
+pub use removal::{RemovalPlan, RemoveFamilyResult, SessionRemovalResult, SessionRetirement};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 

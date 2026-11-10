@@ -36,6 +36,7 @@ use std::collections::BTreeSet;
 
 pub(super) struct TailReplay<'a, 'source> {
     driver: &'a DriverModel,
+    target: super::ReplayTarget<'a>,
     reader: &'a HistorySource<'source>,
     view: &'a RunView,
     vision: bool,
@@ -51,6 +52,7 @@ pub(super) struct TailReplay<'a, 'source> {
 impl<'a, 'source> TailReplay<'a, 'source> {
     pub(super) fn new(
         driver: &'a DriverModel,
+        target: super::ReplayTarget<'a>,
         reader: &'a HistorySource<'source>,
         view: &'a RunView,
         vision: bool,
@@ -60,6 +62,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
     ) -> Self {
         Self {
             driver,
+            target,
             reader,
             view,
             vision,
@@ -79,6 +82,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
     ) -> Result<Option<BoxFuture<'b, Result<(), RunError>>>, RunError> {
         let Self {
             driver,
+            target,
             reader,
             view,
             vision,
@@ -98,6 +102,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             accepted_tools,
         } = self;
         let driver = *driver;
+        let target = *target;
         let reader = *reader;
         let view = *view;
         let vision = *vision;
@@ -197,7 +202,33 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         flush_assistant(messages, assistant).await?;
                         *current = Some(*attempt);
                     }
-                    if let Some(part) = preparation::assistant_part(part)? {
+                    let projected = if matches!(
+                        part,
+                        maka_agent_facts::model::ModelPart::Text {
+                            text_kind: maka_agent_facts::model::TextKind::Thinking,
+                            ..
+                        }
+                    ) {
+                        let step = attempt_steps.get(attempt).ok_or_else(|| {
+                            RunError::ReconciliationRequired(
+                                "reasoning lost its producing step".into(),
+                            )
+                        })?;
+                        let request = reader.request(view.run, *step).await?;
+                        let evidence: maka_agent_facts::context::RequestContextEvidence =
+                            reader.decode(view.run, &request.provenance).await?;
+                        target.part(
+                            part,
+                            &request.accounting.model_id,
+                            evidence
+                                .model_context
+                                .as_ref()
+                                .and_then(|context| context.codex.as_ref()),
+                        )?
+                    } else {
+                        preparation::assistant_part(part)?
+                    };
+                    if let Some(part) = projected {
                         assistant.push(part);
                     }
                     Ok(())

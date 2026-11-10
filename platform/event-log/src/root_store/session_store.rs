@@ -22,24 +22,6 @@ use super::SessionStore;
 use crate::{StoreError, shell_runs::ShellResourcePage};
 use maka_plugin_core::shell_run::{ShellPatch, ShellRun};
 impl SessionStore {
-    /// Creation-time lifecycle ownership of this visible Session.
-    pub async fn is_managed(&self) -> Result<bool, StoreError> {
-        let log = self.scoped().await?;
-        let session = self.id().to_owned();
-        log.connection
-            .read(move |connection| {
-                if !super::catalog::session_visible(connection, &session)? {
-                    return Err(StoreError::SessionNotFound);
-                }
-                Ok(connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM plugin_sessions WHERE session_id=? AND managed=1)",
-                    [session],
-                    |row| row.get(0),
-                )?)
-            })
-            .await
-    }
-
     pub async fn has_unsettled_shells(&self, session: &str) -> Result<bool, StoreError> {
         self.check_session(session)?;
         self.scoped().await?.has_unsettled_shells(session).await
@@ -104,13 +86,6 @@ impl SessionStore {
             .await?
             .change_session_archived(session, expected, archived, now)
             .await
-    }
-    pub async fn session_manager(
-        &self,
-        session: &str,
-    ) -> Result<Option<maka_plugin_core::storage::Namespace>, StoreError> {
-        self.check_session(session)?;
-        self.scoped().await?.session_manager(session).await
     }
     pub async fn admit_session_process(
         &self,

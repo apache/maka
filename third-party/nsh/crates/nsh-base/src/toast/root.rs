@@ -81,7 +81,8 @@ pub enum ToastEvent {
 /// `swipeThreshold` or a flick asks to dismiss it (`onDismissRequest`);
 /// short of it, it goes back. The screen reader reads its
 /// `accessibilityLabel` as it shows. Placed in a `ToastStack`, which lays
-/// toasts out.
+/// toasts out. In a terminal it shows and goes in one frame: its state
+/// classes do not apply.
 #[component]
 pub fn Toast(props: ToastProps, cx: Scope<ToastEvent>) -> impl IntoElement {
     let status = props.transition_status;
@@ -162,7 +163,12 @@ pub fn Toast(props: ToastProps, cx: Scope<ToastEvent>) -> impl IntoElement {
     // The state's classes win over the app's `class` and `style`, as a
     // state's styles do (`activeStyle`) and as CSS's state selectors do by
     // their specificity: applied as `!` utilities.
+    // A terminal's toast comes and goes in one frame: no state's motion.
+    let terminal = crate::terminal::is_terminal();
     let class = move || {
+        if terminal {
+            return None;
+        }
         let state = if status.get() == ToastTransitionStatus::Ending {
             props.ending_class.get()
         } else if swiping.get() {

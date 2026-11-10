@@ -25,13 +25,11 @@ For people working on NSH itself (`AGENTS.md` at the root is the short version a
 | [sandbox.md](sandbox.md) | VM limits, hardening, capabilities |
 | [signed-packages.md](signed-packages.md) | Keys, packages, verification, revocation |
 | [embedding.md](embedding.md) | `nsh package`, the iOS / Android SDKs, native components |
-| [layerfs.md](layerfs.md) | Opt-in Linux development and CI trial: Git, Cargo, snapshots and receipts |
 | [tooling.md](tooling.md) | `.nsh/types`, the dev server, hot reload, symbolication |
 | [macos.md](macos.md) | The macOS backend (AppKit): building, how each area maps to AppKit, `nsh test --target macos`, what differs |
 | [linux.md](linux.md) | The Linux backend (GTK 4): building, how each area maps to GTK, `nsh test --target linux`, what differs |
 | [windows.md](windows.md) | The Windows backend (Win32, Direct2D): building, how each area maps to Windows, `nsh test --target windows`, what differs |
 | [gpui.md](gpui.md) | The GPUI backend (macOS, Windows, Linux): building, the surface element and `DrawCx`, embedding as a GPUI view, what differs |
-| [tui.md](tui.md) | The terminal backend (Ratatui): cell metrics, retained rendering, input, graphics, embedding and scripts |
 | [web.md](web.md) | The WebAssembly runtime of the website's demos: `LocalEngine`, the clock, the DOM protocol |
 | [compatibility.md](compatibility.md) | The backward compatibility contract: what apps depend on, the rules, `nsh-compat` and `tests/compat/` |
 | [performance.md](performance.md) | Baselines |

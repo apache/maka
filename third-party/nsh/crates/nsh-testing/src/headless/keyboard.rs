@@ -7,10 +7,11 @@
 //! between the inputs and the views that are its stops (those that take
 //! presses, and `focusable` ones that take none) where the platform
 //! does (macOS, the web), Return and Space press the pressable it is on,
-//! the focused input takes the keys that edit it, and Escape goes back.
+//! Shift+F10 asks it for its context menu (the web, Linux), the
+//! focused input takes the keys that edit it, and Escape goes back.
 
 use nsh_core::{
-    Command, EventKind, EventPayload, MountItem, NodeId, PayloadValue, ROOT_ID,
+    Command, EventKind, EventPayload, MountBatch, MountItem, NodeId, PayloadValue, ROOT_ID,
     keymap::{Key, KeyMatch, Keystroke},
     platform::Os,
     tailwind::state::FOCUSED,
@@ -47,11 +48,24 @@ impl Headless {
         self.done()
     }
 
+    /// Whether the app's keymap claims `keys` where the focus is now: the
+    /// platform consumes the key and the app hears `onKeyCommand`. Else the
+    /// key goes on to the focused input or the page, as the platform gives
+    /// it.
+    pub fn claims_key(&self, keys: &str) -> Result<bool, String> {
+        let stroke = Keystroke::parse(keys, self.environment.os).map_err(|e| e.to_string())?;
+        let editing = self.screen.focused().is_some();
+        Ok(self
+            .screen
+            .keymap()
+            .is_some_and(|keymap| keymap.find(stroke, editing, false).consumed()))
+    }
+
     /// The step `keyboard.press(<keys>)`: presses `keys`, a keystroke as
     /// `nsh/keymap` names it (`"mod+k"`, `"shift+tab"`, `"escape"`; `mod` is
     /// the app's platform's command key). A binding of the app's keymap
-    /// that fires where the focus is hears it (`onKeyCommand`); else the
-    /// focused input takes a character, Backspace or the return key, and
+    /// that fires where the focus is hears it (`onKeyCommand`), and takes
+    /// the key unless it passes it through; else the focused input takes a character, Backspace or the return key, and
     /// Escape goes back as the desktops' back key does when there is
     /// something to go back from.
     pub fn press_key(&mut self, keys: &str) -> Result<(), String> {
@@ -64,16 +78,46 @@ impl Headless {
             Some(keymap) => keymap.find(stroke, editing, false),
             None => KeyMatch::None,
         };
-        if let KeyMatch::Fire(id) = found {
+        if let Some(id) = found.fired() {
             self.engine.control().dispatch_event(
                 ROOT_ID,
                 EventKind::KeyCommand,
                 EventPayload::Value(PayloadValue::Number(f64::from(id))),
             );
+        }
+        // A binding passing the key through leaves it to what follows, as a
+        // platform does: on the screen as it is when the key comes.
+        if found.consumed() {
             return self.done();
         }
         let m = stroke.modifiers;
         let plain = !(m.ctrl || m.alt || m.cmd);
+        // The key goes to the focused window: Escape closes one of the app's
+        // own that says so (`closeOnEscape`), natively.
+        if stroke.key == Key::Escape
+            && plain
+            && !m.shift
+            && self.windows.as_mut().is_some_and(|w| w.escape())
+        {
+            self.report_windows();
+            return self.done();
+        }
+        // Shift+F10 asks the focused view for its context menu where views
+        // take the keyboard focus and the key is the platform's: the web
+        // and Linux (macOS has no such key; Windows focuses fields only). The
+        // nearest view around it listening hears `onContextMenu`, with no
+        // pointer, at its bottom-start corner; a focused input keeps the
+        // key for its own edit menu.
+        if matches!(self.environment.os, Os::Web | Os::Linux)
+            && nsh_core::input::opens_context_menu(false, Some(stroke.key), m)
+        {
+            if self.screen.focused().is_none()
+                && let Some(from) = self.screen.key_focus()
+            {
+                self.keyboard_context_menu(from, m);
+            }
+            return self.done();
+        }
         if stroke.key == Key::Tab && plain && self.tabs_to_views() {
             self.tab(m.shift);
             return self.done();
@@ -114,10 +158,28 @@ impl Headless {
         self.done()
     }
 
-    /// Whether Tab stops at views (not only inputs), as on macOS and the
-    /// web (the other platforms move it between fields only).
+    /// The keyboard asked view `from` (the keyboard focus) for its context
+    /// menu: the nearest view around it listening hears `onContextMenu`
+    /// at its bottom-start corner (left to right: the screen keeps no
+    /// direction), with no pointer.
+    fn keyboard_context_menu(&mut self, from: NodeId, modifiers: nsh_core::keymap::Modifiers) {
+        let Some(id) = self.screen.context_menu_target(from) else {
+            return;
+        };
+        let Some(bounds) = self.screen.bounds_in_root(id) else {
+            return;
+        };
+        let position = nsh_core::input::context_menu_anchor(bounds.size, false);
+        let event =
+            nsh_core::ContextMenuEvent::new(position, bounds.origin + position, modifiers, None);
+        self.send(id, EventKind::ContextMenu, EventPayload::ContextMenu(event));
+    }
+
+    /// Whether Tab stops at views (not only inputs), as on macOS, the web,
+    /// Linux and in a terminal (the other platforms move it between fields only).
     fn tabs_to_views(&self) -> bool {
-        matches!(self.environment.os, Os::MacOs | Os::Web)
+        matches!(self.environment.os, Os::MacOs | Os::Web | Os::Linux)
+            || self.environment.idiom == nsh_core::platform::Idiom::Terminal
     }
 
     /// Tab (`back`: Shift+Tab): the keyboard focus moves to the next stop
@@ -139,70 +201,74 @@ impl Headless {
         if from == to {
             return;
         }
-        self.screen.set_focused(None);
-        self.screen.set_key_focus(None);
+        if let Some(old) = from {
+            self.screen.set_focused(None);
+            self.screen.set_key_focus(None);
+            self.set_focused_state(old, false);
+            self.send(old, EventKind::Blur, EventPayload::None);
+        }
         if let Some(new) = to {
             if self.screen.input(new).is_some() {
                 self.screen.set_focused(Some(new));
             } else {
                 self.screen.set_key_focus(Some(new));
             }
-        }
-        self.engine
-            .control()
-            .set_focus_path(self.screen.focus_path());
-        if let Some(old) = from {
-            self.set_focused_state(old, false);
-            self.send(old, EventKind::Blur, EventPayload::None);
-        }
-        if let Some(new) = to {
             self.set_focused_state(new, true);
             self.send(new, EventKind::Focus, EventPayload::None);
         }
     }
 
-    /// Applies a non-input focus call after the screen applied this item,
-    /// before the next item can retire or remove its target. Inputs and
-    /// root blur are already handled by the screen.
-    pub(super) fn focus_call(&mut self, item: &MountItem) {
-        if !self.tabs_to_views() {
-            return;
-        }
-        let MountItem::Command { id, command } = item else {
-            return;
-        };
-        match command {
-            Command::Focus
-                if *id != ROOT_ID
-                    && self.screen.input(*id).is_none()
-                    && self.screen.tab_stops().contains(id) =>
-            {
-                self.screen.set_focused(None);
-                self.screen.set_key_focus(Some(*id));
-            }
-            Command::Blur if self.screen.key_focus() == Some(*id) => {
-                self.screen.set_key_focus(None);
-            }
-            _ => {}
-        }
-    }
-
-    /// Reports the batch's net focus change. An intermediate target may
-    /// already have been deleted or replaced, so it receives no late event.
-    pub(super) fn report_focus_change(&mut self, focused: Option<NodeId>) {
-        let now = self.screen.focused().or(self.screen.key_focus());
+    /// The app moved the focus (`focus()`, `blur()`) in `batch`, applied
+    /// with input `focused` focused before it: platforms tell the views as
+    /// when the user moves it. The screen applied the calls on inputs;
+    /// where Tab stops at views that take presses, a call on one of those
+    /// moves the keyboard focus as Tab does (the batch's last call counts).
+    pub(super) fn focus_calls(&mut self, batch: &MountBatch, focused: Option<NodeId>) {
+        let now = self.screen.focused();
         if now != focused {
-            self.engine
-                .control()
-                .set_focus_path(self.screen.focus_path());
             if let Some(old) = focused {
                 self.set_focused_state(old, false);
                 self.send(old, EventKind::Blur, EventPayload::None);
             }
             if let Some(new) = now {
+                // The pressable that had the keyboard focus loses it.
+                if let Some(key) = self.screen.key_focus() {
+                    self.screen.set_key_focus(None);
+                    self.set_focused_state(key, false);
+                    self.send(key, EventKind::Blur, EventPayload::None);
+                }
                 self.set_focused_state(new, true);
                 self.send(new, EventKind::Focus, EventPayload::None);
             }
+        }
+        if !self.tabs_to_views() {
+            return;
+        }
+        let mut key = self.screen.key_focus();
+        let mut to = None;
+        for item in &batch.items {
+            let MountItem::Command { id, command } = item else {
+                continue;
+            };
+            let id = *id;
+            match command {
+                Command::Focus if self.screen.input(id).is_some() => {
+                    to = None;
+                    key = None;
+                }
+                Command::Focus if id != ROOT_ID && self.screen.tab_stops().contains(&id) => {
+                    to = Some(Some(id));
+                    key = Some(id);
+                }
+                Command::Blur if id != ROOT_ID && key == Some(id) => {
+                    to = Some(None);
+                    key = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(to) = to {
+            self.move_focus(to);
         }
     }
 

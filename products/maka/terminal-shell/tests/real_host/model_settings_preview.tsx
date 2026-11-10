@@ -117,7 +117,7 @@ function Preview() {
     reply: {
       receipt: {
         kind: 'recorded',
-        outcome: { kind: 'returned', value },
+        outcome: { kind: 'returned', result: { kind: 'success', value } },
         cleanup: { kind: 'confirmed' },
       },
     },
@@ -348,6 +348,7 @@ function Preview() {
         nested: () => owner.page() !== 'connections' || !!owner.confirmation(),
         navigation: owner.navigation,
         back: owner.back,
+        leave: owner.leave,
         busy: owner.busy,
       }),
     );

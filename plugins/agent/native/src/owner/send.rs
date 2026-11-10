@@ -92,7 +92,7 @@ impl Owner {
             return Err("agent_session_configuration_changed".into());
         }
         let mut selection = selection.or_else(|| session.configuration.backend.clone());
-        self.use_bot_model(parent, &mut selection).await;
+        selection = self.use_bot_model(parent, selection).await?;
         let selection = selection.ok_or(CaptureError::ModelUnavailable)?;
         let (model, executor) = match selection {
             BackendPreference::Model {

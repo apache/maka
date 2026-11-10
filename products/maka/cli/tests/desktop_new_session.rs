@@ -17,17 +17,13 @@
  * under the License.
  */
 
-#![cfg(all(unix, feature = "desktop-tests"))]
+#![cfg(all(target_os = "macos", feature = "desktop-tests"))]
 
-// The real Desktop workbench on an offscreen GPUI/Wgpu platform. This is not
-// an OS-window/Desktop Shell E2E test or a terminal-keyboard surface.
+// The real Desktop workbench on NSH's native surface, admitted to an owned Root.
+// This is not an OS-window/Desktop Shell E2E test or a terminal-keyboard surface.
 #[path = "support/host.rs"]
 mod host;
 
-use gpui::{
-    AppContext, Application, Bounds, Focusable, MouseButton, MouseDownEvent, MouseUpEvent,
-    PlatformInput, WindowBounds, WindowHandle, WindowOptions, point, px, size,
-};
 use host::{Host, Result, Sandbox};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{
@@ -44,8 +40,11 @@ use maka_plugin_core::{
     operation::{OperationOutcome, OperationReply, OperationResult, Receipt},
 };
 use maka_workbench::bindings::Bindings;
-use nsh_gpui_terminal::TerminalPlatform;
-use nsh_platform_gpui::{AppOptions, AppView};
+use nsh_platform_macos::TerminalSurface;
+use nsh_terminal::{
+    Bounds, DevicePixels, MouseButton, MouseDownEvent, MouseUpEvent, NativeSurface, PlatformInput,
+    point, px, size,
+};
 use serde_json::{Value, json};
 use std::{
     cell::{Cell, RefCell},
@@ -377,14 +376,14 @@ async fn sessions(client: &Client) -> Result<BTreeMap<String, Value>> {
 }
 
 fn wait_native(
-    platform: &TerminalPlatform,
+    platform: &TerminalSurface,
     errors: &RefCell<Option<String>>,
     name: &str,
     mut ready: impl FnMut() -> Result<bool>,
 ) -> Result<()> {
     let deadline = Instant::now() + STEP;
     loop {
-        platform.pump();
+        platform.pump_with_draw(true);
         if let Some(error) = platform.take_error() {
             return Err(format!("{name}: native platform: {error}"));
         }
@@ -425,8 +424,7 @@ fn settle(name: &str, errors: &mut Vec<String>, operation: impl FnOnce() -> Resu
     }
 }
 
-#[test]
-fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
+pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -441,10 +439,8 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
     let mut bindings = None;
     let mut desktop_client = None;
     let mut platform = None;
-    let mut application = None;
     let mut model = None;
     let nonce = format!("desktop-message-{}", Uuid::new_v4().simple());
-    let window: Rc<RefCell<Option<WindowHandle<AppView>>>> = Rc::new(RefCell::new(None));
     let errors = Rc::new(RefCell::new(None::<String>));
     let frames = Rc::new(Cell::new(0usize));
 
@@ -517,6 +513,14 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
                 phase("real Desktop Host connection", HostClient::connect(&address, Some(epoch))).await?,
                 &sandbox.root, "desktop",
             )).await?;
+            let bot_read = phase("reserve Bot read marker in shell control custody", client.control(
+                Uuid::new_v4(), "markBotRead", json!({"sessionId":id,"through":2}),
+            )).await?;
+            let original = client.operation_for_control(bot_read.id()).await?;
+            assert_eq!(original.session_id.as_deref(), Some(id.as_str()));
+            assert_eq!(original.method, "markBotRead");
+            // This checks reservation custody, not an outbox domain mutation.
+            bot_read.close().await?;
             desktop_client = Some(client.clone());
             bindings = Some(Bindings::new(client, runtime.handle().clone()));
             Ok::<_, String>((id, title, directory, model_choice))
@@ -535,18 +539,18 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
         let submitted = frames.clone();
         let main_thread = std::thread::current();
         platform = Some(
-            TerminalPlatform::new(
-                Box::new(
-                    gpui_wgpu::WgpuHeadlessRenderer::new().map_err(|error| error.to_string())?,
-                ),
+            TerminalSurface::new(
+                config,
+                size(DevicePixels(1200), DevicePixels(800)),
+                1.0,
                 Box::new(move |frame| {
                     let rendered = std::thread::spawn(move || frame.submit()?.complete())
                         .join()
-                        .expect("original GPU readback panicked")
-                        .expect("original GPU readback failed");
+                        .expect("native snapshot transfer panicked")
+                        .expect("native snapshot capture failed");
                     assert!(
                         !rendered.pixels().is_empty(),
-                        "GPU returned no actual pixels"
+                        "native surface returned no pixels"
                     );
                     submitted.set(submitted.get() + 1);
                 }),
@@ -555,73 +559,16 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
             .map_err(|error| error.to_string())?,
         );
         let native = platform.as_ref().unwrap();
-        let opened = window.clone();
-        let failed = errors.clone();
-        application = Some(
-            Application::with_platform(native.clone()).run_embedded(move |cx| {
-                *opened.borrow_mut() = Some(
-                    cx.open_window(
-                        WindowOptions {
-                            window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                                point(px(0.0), px(0.0)),
-                                size(px(1200.0), px(800.0)),
-                            ))),
-                            inactive_frame_interval: None,
-                            ..Default::default()
-                        },
-                        move |window, cx| {
-                            cx.new(|cx| {
-                                let view = AppView::new(
-                                    AppOptions {
-                                        terminal_keyboard: false,
-                                        data_dir: Some(directory),
-                                        cache: nsh_engine::CacheOptions::off(),
-                                        ..Default::default()
-                                    },
-                                    window,
-                                    cx,
-                                );
-                                view.on_error(move |message| {
-                                    failed
-                                        .borrow_mut()
-                                        .get_or_insert_with(|| message.to_owned());
-                                });
-                                // AppView's public Desktop environment owns idiom, viewport
-                                // and OS; its actual native window supplies input and layout.
-                                view.load_with_config(config);
-                                window.focus(&view.focus_handle(cx), cx);
-                                view
-                            })
-                        },
-                    )
-                    .expect("open actual offscreen GPUI window"),
-                );
-            }),
-        );
         native.set_active(true).map_err(|error| error.to_string())?;
-        let embedded = application.as_ref().unwrap();
-        let bounds = |label: &str| -> Result<Vec<Bounds<gpui::Pixels>>> {
-            embedded.update(|cx| {
-                window
-                    .borrow()
-                    .as_ref()
-                    .ok_or("original window missing")?
-                    .update(cx, |view, _, _| view.pressable_bounds(label))
-                    .map_err(|error| error.to_string())
-            })
+        let bounds = |label: &str| -> Result<Vec<Bounds<nsh_terminal::Pixels>>> {
+            Ok(native.pressable_bounds(label))
         };
-        let paint = |name: &str| -> Result<()> {
-            let previous = frames.get();
-            embedded
-                .update(|cx| {
-                    window
-                        .borrow()
-                        .as_ref()
-                        .unwrap()
-                        .update(cx, |_, window, _| window.refresh())
-                })
-                .map_err(|error| error.to_string())?;
-            wait_native(native, &errors, name, || Ok(frames.get() > previous))
+        let paint = |_name: &str| -> Result<()> {
+            native.pump_with_draw(true);
+            match native.take_error() {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
         };
         wait_native(
             native,
@@ -634,9 +581,9 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
                     && bounds(&format!("Open conversation {seed_title}"))?.len() == 1)
             },
         )?;
-        // Bounds observe the current NSH tree; GPUI dispatches against its
+        // Bounds observe the current NSH tree; native dispatches against its
         // rendered frame. A prior startup frame is not this target's paint.
-        paint("actual GPU frame after seed controls mounted")?;
+        paint("actual native frame after seed controls mounted")?;
         for label in MODEL_MENU {
             assert!(
                 bounds(label)?.is_empty(),
@@ -672,25 +619,12 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
         );
 
         let diagnose = |stage: &str| {
-            let window_state = embedded.update(|cx| {
-                window
-                    .borrow()
-                    .as_ref()
-                    .unwrap()
-                    .update(cx, |view, window, cx| {
-                        format!(
-                            "viewport={:?} scale={} active={} view_focused={} mouse={:?} focus_subtree_hovered={} input_group_admitted={}",
-                            window.viewport_size(),
-                            window.scale_factor(),
-                            window.is_window_active(),
-                            view.focus_handle(cx).is_focused(window),
-                            window.mouse_position(),
-                            view.focus_handle(cx).contains_hovered(window),
-                            window.input_group_is_admitted(window.active_input_group()),
-                        )
-                    })
-                    .map_err(|error| error.to_string())
-            });
+            let window_state = (
+                native.viewport_size(),
+                native.scale_factor(),
+                native.is_active(),
+                native.text_input_target(),
+            );
             let mut labels = MODEL_MENU
                 .iter()
                 .map(|label| (*label).to_owned())
@@ -769,7 +703,7 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
         diagnose("before original click");
 
         let click = |label: &str| -> Result<()> {
-            paint("actual GPU frame before semantic pointer input")?;
+            paint("actual native frame before semantic pointer input")?;
             let targets = bounds(label)?;
             assert_eq!(targets.len(), 1, "{label} must have one live native target");
             let target = targets[0];
@@ -779,22 +713,16 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
                 target.origin.y + target.size.height / 2.0,
             );
             eprintln!("desktop click label={label:?} bounds={target:?}");
-            native
-                .dispatch_input(PlatformInput::MouseDown(MouseDownEvent {
-                    position,
-                    button: MouseButton::Left,
-                    click_count: 1,
-                    ..Default::default()
-                }))
-                .map_err(|error| error.to_string())?;
-            native
-                .dispatch_input(PlatformInput::MouseUp(MouseUpEvent {
-                    position,
-                    button: MouseButton::Left,
-                    click_count: 1,
-                    ..Default::default()
-                }))
-                .map_err(|error| error.to_string())?;
+            let mut down = MouseDownEvent::default();
+            down.position = position;
+            down.button = MouseButton::Left;
+            down.click_count = 1;
+            native.dispatch_input(PlatformInput::MouseDown(down))?;
+            let mut up = MouseUpEvent::default();
+            up.position = position;
+            up.button = MouseButton::Left;
+            up.click_count = 1;
+            native.dispatch_input(PlatformInput::MouseUp(up))?;
             Ok(())
         };
         let models_pane = |name: &str| -> Result<()> {
@@ -810,11 +738,11 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
                 diagnose(name);
             }
             result?;
-            paint("actual GPU frame with models pane")
+            paint("actual native frame with models pane")
         };
 
         click("New conversation")?;
-        paint("actual GPU frame after original New click")?;
+        paint("actual native frame after original New click")?;
         diagnose("after original New click");
         wait_native(
             native,
@@ -998,7 +926,7 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
             }
             return Err(error);
         }
-        paint("actual GPU frame with loopback model row")?;
+        paint("actual native frame with loopback model row")?;
         click(&choose)?;
         wait_native(
             native,
@@ -1013,20 +941,20 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
                 Ok(bounds("Focus message composer")?.len() == 1)
             },
         )?;
-        paint("actual GPU frame after choosing pending model")?;
+        paint("actual native frame after choosing pending model")?;
         click("Focus message composer")?;
         wait_native(native, &errors, "real native composer input target", || {
             Ok(native.text_input_target().is_some())
         })?;
-        // This is the current GPUI native editor, not a JS callback or a stored draft edit.
-        native.paste(&nonce).map_err(|error| error.to_string())?;
+        // This is the current native native editor, not a JS callback or a stored draft edit.
+        assert!(native.paste(nsh_core::PasteEvent::new(&nonce)));
         wait_native(
             native,
             &errors,
             "actual enabled Send message after native paste",
             || Ok(bounds("Send message")?.len() == 1),
         )?;
-        paint("actual GPU frame with enabled Send message")?;
+        paint("actual native frame with enabled Send message")?;
         click("Send message")?;
 
         let mut original_message = None;
@@ -1178,7 +1106,7 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
                     && bounds("Choose model and effort")?.len() == 1)
             },
         )?;
-        paint("actual GPU frame of selected completed Session")?;
+        paint("actual native frame of selected completed Session")?;
         // The empty seed and pending draft cannot expose these nonempty conversation tabs.
         click("Choose model and effort")?;
         wait_native(
@@ -1207,7 +1135,7 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
             bounds("Back to model settings")?.is_empty(),
             "Desktop root has no models-pane back header"
         );
-        paint("actual GPU frame of selected Session's model settings")?;
+        paint("actual native frame of selected Session's model settings")?;
         click("Choose model")?;
         models_pane("persisted new Session's real models pane")?;
         let after = runtime.block_on(phase(
@@ -1232,22 +1160,9 @@ fn new_conversation_creates_and_selects_a_session_in_the_same_workspace() {
     // view, settle the original Bindings, then request Host quit or reap it.
     let mut cleanup = Vec::new();
     settle("stop original view", &mut cleanup, || {
-        if let Some(app) = &application {
-            app.update(|cx| {
-                if let Some(window) = window.borrow().as_ref() {
-                    window
-                        .update(cx, |view, _, _| view.stop())
-                        .map_err(|error| error.to_string())
-                } else {
-                    Ok(())
-                }
-            })
-        } else {
-            Ok(())
+        if let Some(native) = &platform {
+            native.stop();
         }
-    });
-    settle("drop original GPUI application", &mut cleanup, || {
-        drop(application.take());
         Ok(())
     });
     settle("stop original platform", &mut cleanup, || {

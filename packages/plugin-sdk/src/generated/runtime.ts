@@ -3270,7 +3270,6 @@ export type AgentRejection =
   | 'workspace_unavailable'
   | 'session_unavailable'
   | 'history_unavailable'
-  | 'managed_session'
   | 'closed';
 export type AgentForkResult =
   | {
@@ -3342,7 +3341,7 @@ export type AgentSessionChanged =
       kind: 'rejected';
       reason: AgentRejection;
     };
-export type AgentSendDelivery = 'queue' | 'steer';
+export type AgentSendDelivery = 'steer' | 'queue';
 export type AgentExecutionResult =
   | {
       kind: 'missing';
@@ -3810,6 +3809,18 @@ export type FormResult =
     };
 export type QuestionRejection = 'invalid_input' | 'unavailable';
 export type AgentContextRequestState = 'requested' | 'completed' | 'interrupted';
+/**
+ * Read-only completion context before or after a conversation is created.
+ */
+export type AgentCompletionTarget =
+  | {
+      kind: 'session';
+      sessionId: string;
+    }
+  | {
+      kind: 'draft';
+      workspace: AgentWorkspaceSelection | null;
+    };
 export type AgentFileKind = 'file' | 'directory' | 'symlink' | 'other';
 export type AgentFileChange =
   | {
@@ -4311,11 +4322,6 @@ export type MessageOrigin =
   | {
       kind: 'bot_worker';
       sessionId: string;
-    }
-  | {
-      kind: 'plan';
-      executionId: string;
-      title: string;
     };
 export type AgentDeliveryPage =
   | {
@@ -5462,11 +5468,6 @@ export interface AgentConfiguration {
    * Enable explicitly approved Goal continuation.
    */
   goals?: boolean;
-  /**
-   * Retired with planning mode and ignored. Package updates keep a saved
-   * installation's parameters, so this key must keep validating.
-   */
-  plans?: boolean;
   /**
    * Enable the session-scoped, model-maintained checklist.
    */
@@ -7078,242 +7079,18 @@ export interface AgentGoalBudget {
 export interface AgentChecklistRead {
   sessionId: string;
   offset?: number;
+  limit?: number | null;
 }
 export interface AgentChecklist {
   enabled: boolean;
   revision?: number | null;
+  digest?: string | null;
   total: number;
   completed: number;
+  activeIndex?: number | null;
   current?: AgentTodoItem | null;
   offset: number;
-  /**
-   * @maxItems 20
-   */
-  items:
-    | []
-    | [AgentTodoItem]
-    | [AgentTodoItem, AgentTodoItem]
-    | [AgentTodoItem, AgentTodoItem, AgentTodoItem]
-    | [AgentTodoItem, AgentTodoItem, AgentTodoItem, AgentTodoItem]
-    | [AgentTodoItem, AgentTodoItem, AgentTodoItem, AgentTodoItem, AgentTodoItem]
-    | [AgentTodoItem, AgentTodoItem, AgentTodoItem, AgentTodoItem, AgentTodoItem, AgentTodoItem]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ]
-    | [
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-        AgentTodoItem,
-      ];
+  items: AgentTodoItem[];
   nextOffset?: number | null;
 }
 export interface AgentTodoItem {
@@ -7636,6 +7413,10 @@ export interface AgentChangeSession {
   action: AgentSessionAction;
 }
 export interface AgentSend {
+  /**
+   * Defaults to steer. Omit or use steer for updates to ongoing work;
+   * use queue only when this message should wait until the current turn ends.
+   */
   delivery?: AgentSendDelivery;
   /**
    * An active send must not start new work after Stop fences its original Run.
@@ -7935,10 +7716,10 @@ export interface AgentFileCursor {
   after: WorkspacePath;
 }
 /**
- * Workspace-relative file suggestions from this Session's admitted directory.
+ * Workspace-relative file suggestions from the selected completion context.
  */
 export interface AgentFileCandidatesRead {
-  sessionId: string;
+  target: AgentCompletionTarget;
   /**
    * Omission or null selects the workspace root.
    */

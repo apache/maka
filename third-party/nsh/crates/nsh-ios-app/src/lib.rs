@@ -1,5 +1,6 @@
 //! The executable of a packaged nsh app (`nsh package`): runs the bundle
-//! shipped inside the app (`nsh/bundle.nshc`, assets in `nsh/assets`).
+//! shipped inside the app (`nsh/bundle.nshc`, assets in `nsh/assets`), or a
+//! newer signed package of its code it downloaded (`nsh_engine::updates`).
 //!
 //! A library so that an app with Rust components of its own (`nsh.json`
 //! `"rust"`) builds the release runner with them: its `main` calls
@@ -10,9 +11,9 @@
 /// Runs the release runner (until the app quits).
 #[cfg(all(target_os = "ios", feature = "js"))]
 pub fn main() {
-    use nsh_platform_ios::{AppSource, Bundle, run_app};
+    use nsh_platform_ios::{AppSource, AssetBase, Bundle, run_app};
 
-    let (dir, options) = setup();
+    let (dir, mut options) = setup();
     // SAFETY: the bytecode is a resource of this (signed) app.
     let bundle = match unsafe { Bundle::read_trusted(&dir.join("bundle.nshc")) } {
         Ok(bundle) => bundle,
@@ -21,7 +22,14 @@ pub fn main() {
             std::process::exit(1);
         }
     };
-    run_app(AppSource::Bundle(bundle), options);
+    // Where the engine keeps the app's data (`SurfaceOptions::data_dir`).
+    let data_dir = options
+        .data_dir
+        .clone()
+        .or_else(|| nsh_platform_ios::SurfaceOptions::default().data_dir);
+    let launch = nsh_engine::updates::launch(bundle, &dir, data_dir.as_deref());
+    options.asset_base = Some(AssetBase::Directory(launch.assets));
+    run_app(AppSource::Bundle(launch.bundle), options);
 }
 
 /// Runs the Rust app whose root is `root` (until the app quits), with the

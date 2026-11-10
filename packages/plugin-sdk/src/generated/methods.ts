@@ -1170,6 +1170,14 @@ export interface ServiceMethods {
          */
         messages: AgentBotOutboxOutput_AgentBotMessage[];
         /**
+         * Durable, monotonic acknowledgement of messages actually shown to the user.
+         */
+        readThrough: number;
+        /**
+         * Latest `SendUser` text, bounded for list previews. Never internal model output.
+         */
+        preview: string;
+        /**
          * Pass as `after` to read the next page; absent when caught up.
          */
         nextAfter?: number | null;
@@ -1527,6 +1535,47 @@ export interface ServiceMethods {
       input: Runtime.AgentMcpConfigurationChange;
       output: Runtime.AgentMcpConfigurationResult;
     };
+    markBotRead: {
+      mode: 'mutation';
+      /**
+       * Acknowledge only the outbox sequence actually exposed in the foreground UI.
+       */
+      input: {
+        sessionId: string;
+        through: number;
+      };
+      output: {
+        enabled: boolean;
+        /**
+         * The current Bot Session, whatever `sessionId` was asked for.
+         */
+        sessionId?: string | null;
+        /**
+         * Whether the Session that was read is, or once was, a Bot Session.
+         */
+        isBot: boolean;
+        /**
+         * Highest sequence recorded so far; 0 when empty.
+         */
+        through: number;
+        /**
+         * @maxItems 100
+         */
+        messages: AgentMarkBotReadOutput_AgentBotMessage[];
+        /**
+         * Durable, monotonic acknowledgement of messages actually shown to the user.
+         */
+        readThrough: number;
+        /**
+         * Latest `SendUser` text, bounded for list previews. Never internal model output.
+         */
+        preview: string;
+        /**
+         * Pass as `after` to read the next page; absent when caught up.
+         */
+        nextAfter?: number | null;
+      };
+    };
     markRead: {
       mode: 'mutation';
       input: Runtime.AgentMarkRead;
@@ -1842,10 +1891,10 @@ export interface ServiceMethods {
     skillCandidates: {
       mode: 'query';
       /**
-       * Read-only suggestions resolved against the session's actual skill context.
+       * Read-only suggestions resolved against the selected completion context.
        */
       input: {
-        sessionId: string;
+        target: Runtime.AgentCompletionTarget;
         backend: Runtime.AgentBackendPreference;
         query: string;
       };
@@ -1976,6 +2025,14 @@ export interface ServiceMethods {
          * @maxItems 100
          */
         messages: AgentWatchBotOutboxOutput_AgentBotMessage[];
+        /**
+         * Durable, monotonic acknowledgement of messages actually shown to the user.
+         */
+        readThrough: number;
+        /**
+         * Latest `SendUser` text, bounded for list previews. Never internal model output.
+         */
+        preview: string;
         /**
          * Pass as `after` to read the next page; absent when caught up.
          */
@@ -2644,6 +2701,15 @@ export interface ServiceMethods {
     };
   };
   skillLibrary: {
+    candidates: {
+      mode: 'query';
+      input: {
+        directory: SkillLibraryCandidatesInput_SkillLibraryCandidateDirectory | null;
+        tools: string[];
+        query: string;
+      };
+      output: Runtime.SkillModelSearchResult;
+    };
     delete: {
       mode: 'mutation';
       input: Runtime.SkillLibraryManageSkill;
@@ -3059,6 +3125,33 @@ export interface AgentLoadedHistoryCheckpointSourceInput_AgentCheckpointInspecti
 export interface AgentLoadedHistoryCheckpointToolImageInput_AgentCheckpointInspection {
   sourceSessionId: string;
   operationId: string;
+}
+/**
+ * One message the Bot deliberately sent to its user.
+ */
+export interface AgentMarkBotReadOutput_AgentBotMessage {
+  /**
+   * Monotonic position in the outbox, starting at 1.
+   */
+  sequence: number;
+  /**
+   * The model-chosen idempotency key of the `SendUser` call.
+   */
+  messageId: string;
+  /**
+   * Position of this message within its `SendUser` call.
+   */
+  index: number;
+  text: string;
+  /**
+   * Milliseconds since the Unix epoch when the message was recorded.
+   */
+  at: number;
+  /**
+   * The Turn whose work sent this message, so clients can show it as that
+   * Turn's reply.
+   */
+  turnId?: string | null;
 }
 export interface AgentPreviewHistoryCheckpointOutput_AgentHistoryCheckpointSession {
   id: string;
@@ -3758,4 +3851,11 @@ export interface TerminalReadDisplayOutput_Style {
   background: TerminalReadDisplayOutput_Color;
   flags: number;
   underline?: TerminalReadDisplayOutput_Color | null;
+}
+/**
+ * A read-only directory observation; it does not allocate an execution workspace.
+ */
+export interface SkillLibraryCandidatesInput_SkillLibraryCandidateDirectory {
+  path: string;
+  directoryIdentity: string;
 }

@@ -158,7 +158,8 @@ included).
 
 The stack's children are its toasts, oldest first. From its `placement` edge (`"topRight"` by default; the bottom
 anchors lay out upward), collapsed toasts overlap `collapsedPeek` apart, each further one narrower by
-`collapsedScaleStep`, and only `collapsedVisible` show; expanded, they are a list `expandedGap` apart. Toasts that
+`collapsedScaleStep`, and only `collapsedVisible` show; expanded, they are a list `expandedGap` apart (in a terminal three rows apart, so
+each toast's frame keeps a blank row from the next's). Toasts that
 arrive or leave, and expansion, move them with critically damped springs. It is expanded while the pointer is on it
 or a finger is down on it (`onExpandedChange({ expanded })`; Rust `ToastStackState`, whose `is_expanded()` reads it), so
 the app pauses the timeouts while the user reads or touches the toasts.

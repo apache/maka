@@ -15,19 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Exercise the real component's CPU worker while its engine keeps rendering.
+//! Exercise the real component's CPU worker while its engine keeps rendering,
+//! typed root parts, keyboard link navigation, and link press modifiers.
 use std::{
     sync::{Arc, Condvar, Mutex},
     time::Duration,
 };
 
 use nsh_base::{
-    MarkdownPlugin, MarkdownPlugins, text_view,
+    MarkdownPlugin, MarkdownPlugins, TextViewLinkPressEvent, text_view,
     text_view::{Block, ParseContext, mdast},
 };
 use nsh_core::{
     ListContentStyle, MountItem, NodeId, Size,
     element::{EngineContext, Root, engine_context},
+    platform::{Idiom, Os},
     prelude::*,
 };
 use nsh_engine::EngineConfig;
@@ -285,6 +287,7 @@ fn OffscreenParagraphs() -> impl IntoElement {
     provide_context((*engine_context::<MarkdownPlugins>().expect("test plugins")).clone());
     let page = element_ref();
     let extent = signal(0.0f32);
+    let scrolled = signal(0.0f32);
     // The labels occupy one parsed line each. Their URLs make the actual
     // literal larger than all thirty parsed rows' initial size estimates,
     // including with the headless engine's approximate line wrapping.
@@ -319,13 +322,15 @@ fn OffscreenParagraphs() -> impl IntoElement {
                         })
                         .child(text("Top")),
                 )
-                .child(text(move || format!("extent {:.0}", extent.get())).text_size(px(10.0))),
+                .child(text(move || format!("extent {:.0}", extent.get())).text_size(px(10.0)))
+                .child(text(move || format!("scrolled {:.0}", scrolled.get())).text_size(px(10.0))),
         )
         .child(
             scroll()
                 .element_ref(&page)
                 .h(px(200.0))
                 .w_full()
+                .on_scroll(move |event: &ScrollEvent| scrolled.set(event.offset.y.0))
                 .child(
                     view()
                         .flex_col()
@@ -407,9 +412,19 @@ fn an_offscreen_parsed_paragraph_does_not_inherit_the_whole_literal_rows_height(
         .unwrap()
         .literal
         .expect("the actual literal Text");
+    let scrolled = |screen: &nsh_testing::Screen| {
+        screen.texts().into_iter().find_map(|text| {
+            text.strip_prefix("scrolled ")
+                .and_then(|offset| offset.parse::<f32>().ok())
+        })
+    };
     app.press("id:far").unwrap();
-    app.wait_for_gone("text:/Paragraph00/", Duration::from_secs(5))
-        .unwrap();
+    app.wait_until(
+        "the scroll view moved past the literal row and overscan",
+        Duration::from_secs(5),
+        |screen| scrolled(screen).is_some_and(|offset| offset >= literal_extent + 2000.0),
+    )
+    .unwrap();
 
     gate.release(usize::MAX);
     gate.entered(30);
@@ -426,6 +441,7 @@ fn an_offscreen_parsed_paragraph_does_not_inherit_the_whole_literal_rows_height(
         parsed_extent <= parsed_upper,
         "the offscreen parsed tree kept a literal measurement: raw {literal_extent}, parsed {parsed_extent}, upper {parsed_upper}"
     );
+    assert_eq!(app.screen().matches("text:/Paragraph00/"), Ok(false));
     assert_eq!(app.screen().matches("text:Paragraph00"), Ok(false));
 
     app.press("id:top").unwrap();
@@ -528,4 +544,105 @@ mod typed_root_parts {
             px(15.0)
         );
     }
+}
+
+/// A paragraph with two links, and a stop after it; what the links
+/// reported and where the focus came, on screen.
+#[component]
+fn Links() -> impl IntoElement {
+    let pressed = signal(Vec::<String>::new());
+    let after = signal(false);
+    view()
+        .child(
+            text_view()
+                .markdown("Read [the guide](https://example.com/guide) or [the notes](#notes).")
+                .on_link_press(move |e: &TextViewLinkPressEvent| {
+                    let url = e.url.to_string();
+                    pressed.update(|p| p.push(url));
+                }),
+        )
+        .child(
+            view()
+                .focusable(true)
+                .on_focus(move || after.set(true))
+                .child(text("After")),
+        )
+        .child(text(move || {
+            format!("Pressed: {}", pressed.get().join(" "))
+        }))
+        .child(text(move || format!("After focused: {}", after.get())))
+}
+
+#[test]
+fn tab_reaches_a_documents_links_in_order_and_return_presses_them() {
+    let mut config = EngineConfig::new(Root::of::<Links>());
+    config.environment.os = Os::MacOs;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("the guide").unwrap();
+    app.press_key("tab").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("Pressed: https://example.com/guide").unwrap();
+    app.press_key("tab").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("Pressed: https://example.com/guide #notes")
+        .unwrap();
+    assert!(app.shows("After focused: false"), "the links came first");
+    app.press_key("tab").unwrap();
+    app.wait_for("After focused: true").unwrap();
+    // Back from the stop after it: the last link.
+    app.press_key("shift+tab").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("Pressed: https://example.com/guide #notes #notes")
+        .unwrap();
+}
+
+/// A link and a footnote reference; each press, with whether Command was
+/// held, on screen.
+#[component]
+fn LinkModifiers() -> impl IntoElement {
+    let pressed = signal(Vec::<String>::new());
+    view()
+        .child(
+            text_view()
+                .markdown("Read [the guide](https://example.com/guide)[^n].\n\n[^n]: A note.")
+                .on_link_press(move |e: &TextViewLinkPressEvent| {
+                    let held = if e.modifiers.cmd { "cmd" } else { "plain" };
+                    let press = format!("{}:{held}", e.url);
+                    pressed.update(|p| p.push(press));
+                }),
+        )
+        .child(text(move || {
+            format!("Pressed: {}", pressed.get().join(" "))
+        }))
+}
+
+#[test]
+fn a_link_press_reports_the_modifier_keys_held() {
+    let mut config = EngineConfig::new(Root::of::<LinkModifiers>());
+    config.environment.os = Os::MacOs;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("the guide").unwrap();
+    app.press("the guide").unwrap();
+    app.wait_for("Pressed: https://example.com/guide:plain")
+        .unwrap();
+    app.hold_keys("mod", true).unwrap();
+    app.press("the guide").unwrap();
+    app.wait_for("Pressed: https://example.com/guide:plain https://example.com/guide:cmd")
+        .unwrap();
+    app.press("1").unwrap();
+    app.wait_for(
+        "Pressed: https://example.com/guide:plain https://example.com/guide:cmd #footnote-n:cmd",
+    )
+    .unwrap();
+    // The keyboard holds no pointer's modifiers: Return presses with none.
+    app.hold_keys("mod", false).unwrap();
+    app.press_key("tab").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for(
+        "Pressed: https://example.com/guide:plain https://example.com/guide:cmd \
+         #footnote-n:cmd https://example.com/guide:plain",
+    )
+    .unwrap();
 }

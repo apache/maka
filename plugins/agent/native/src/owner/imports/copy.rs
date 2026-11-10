@@ -197,7 +197,6 @@ impl Owner {
             session_id: target,
             creator: namespace(),
             fingerprint: operation.fingerprint.clone(),
-            managed: false,
             authority_session_id: scope
                 .identity
                 .agent()

@@ -315,16 +315,15 @@ impl Owner {
         }
     }
 
-    /// The caller holds the same admission gate as create/send/queue/metadata.
-    pub(super) async fn select_project(
+    pub(super) async fn project_selection(
         &self,
-        selected: ProjectRef,
+        selected: &ProjectRef,
         path: &str,
-    ) -> Result<Option<PreparedProjectWorkspace>, String> {
+    ) -> Result<Option<(ProjectRecord, String)>, String> {
         let Some(record) = self.project_record(selected.id).await? else {
             return Ok(None);
         };
-        if reference(&record) != selected || record.archived_at.is_some() {
+        if reference(&record) != *selected || record.archived_at.is_some() {
             return Ok(None);
         }
         let Some((registration, path)) = self.project_directory(path).await? else {
@@ -338,13 +337,24 @@ impl Owner {
         {
             return Ok(None);
         }
+        Ok(Some((record, path)))
+    }
+
+    pub(super) async fn select_project(
+        &self,
+        selected: ProjectRef,
+        path: &str,
+    ) -> Result<Option<PreparedProjectWorkspace>, String> {
+        let Some((record, path)) = self.project_selection(&selected, path).await? else {
+            return Ok(None);
+        };
         let writer = self
             .store
             .data_writer()
             .map_err(|error| error.to_string())?;
         let project = self
             .store
-            .plan_selected_project(record, vec![registration.path], now(), &writer)
+            .plan_selected_project(record, vec![path.clone()], now(), &writer)
             .map_err(|error| error.to_string())?;
         let root = self
             .store

@@ -18,6 +18,8 @@
  */
 
 use crate::contract::*;
+#[cfg(test)]
+mod tests;
 use futures_util::future::BoxFuture;
 use maka_agent_facts::configuration::*;
 use maka_host_runtime::application::{

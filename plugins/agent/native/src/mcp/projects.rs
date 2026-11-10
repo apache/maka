@@ -397,6 +397,19 @@ impl Projects {
         }
         self.capture(workspace, floor).await
     }
+    /// Completion reads a captured catalog without opening transports or changing admission.
+    pub async fn observed(&self, workspace: Option<&Workspace>) -> Result<Arc<Catalog>, String> {
+        let mut proposal = self.propose(workspace.cloned()).await?;
+        if !self.trusted(&proposal).await? {
+            proposal = self.propose(None).await?;
+        }
+        let snapshots = self.snapshots.read().expect("MCP snapshots");
+        Ok(snapshots
+            .revisions
+            .get(&proposal.revision)
+            .map(|snapshot| snapshot.catalog.clone())
+            .unwrap_or_else(|| self.base.clone()))
+    }
     fn workspace_key(workspace: &Workspace) -> String {
         maka_agent_facts::artifact::content_digest(
             &serde_json::to_vec(&(

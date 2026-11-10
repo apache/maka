@@ -23,7 +23,8 @@ delivers the screens that change often as signed packages.
 
 > [!NOTE]
 > NSH verifies and runs packages; it does not deliver them. Where packages come from (your update server, a CDN, a
-> store of mini apps) and when the app downloads them is up to the host app.
+> store of mini apps) and when the app downloads them is up to the host app. A packaged NSH app updating its own TSX
+> is the exception: [OTA updates](./ota-updates.md) fetch, verify, run and roll back its packages for it.
 
 ## Why packages are signed
 
@@ -108,7 +109,7 @@ next to the entry, overridden by the flags:
 | `--strip-debug` | Leave the line and column tables out of the bytecode: a smaller package whose error stacks have no positions. |
 | `--min-runtime <version>` | The lowest runtime that runs the package, such as `0.2.0` (`nsh.json` `minRuntime`). Default: this CLI's version. See [Which runtimes run a package](#which-runtimes-run-a-package). |
 
-`nsh publish` refuses to sign what a device would refuse: the certificate must cover the app id and the current time.
+`nsh publish` refuses to sign what a device would refuse: the app id must be one path segment, and the certificate must cover it and the current time.
 
 ```text
 error the release key's certificate does not cover this package: it does not cover app `com.example.counter` (only com.other.app)
@@ -214,7 +215,8 @@ A device checks, in order:
 1. the certificate's signature by a trusted root;
 2. that the release key is not revoked;
 3. the package's signature by the release key;
-4. that the certificate covers the app id and the signing time;
+4. that the app id is one path segment (no `/`, `\`, `:` or NUL, and not `.` or `..`: it names the package's
+   directories on the device), and that the certificate covers it and the signing time;
 5. the minimum runtime the package needs;
 6. that the file table covers the data exactly and each file matches its hash;
 7. that the package itself is not revoked;
@@ -383,4 +385,5 @@ refused there too.
 
 - [Sandbox and capabilities](./sandbox-and-capabilities.md)
 - [Embedding in iOS apps](./ios.md), [Embedding in Android apps](./android.md)
+- [OTA Updates](./ota-updates.md): a packaged app's own TSX, delivered as signed packages
 - [CLI](./cli.md)

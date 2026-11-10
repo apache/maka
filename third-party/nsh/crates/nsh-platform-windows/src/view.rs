@@ -163,7 +163,6 @@ pub(crate) struct ViewState {
     pub(crate) fade: f32,
     /// Not drawn and not hit (screens below the top one of a stack).
     pub(crate) concealed: bool,
-    pub(crate) parked: bool,
     /// Scroll state (scroll views).
     pub(crate) scroll: Option<ScrollState>,
     /// Text content (text views).
@@ -203,7 +202,6 @@ impl ViewState {
             shift: (0.0, 0.0),
             fade: 1.0,
             concealed: false,
-            parked: false,
             scroll: matches!(kind, ViewKind::Scroll).then(ScrollState::default),
             text: None,
             image: None,
@@ -443,6 +441,11 @@ impl NshView {
         *self.0.invalidate.borrow_mut() = Some(invalidate);
     }
 
+    /// It no longer roots a surface's tree ([`Self::set_invalidate`]).
+    pub(crate) fn clear_invalidate(&self) {
+        self.0.invalidate.borrow_mut().take();
+    }
+
     /// Something it or its subtree draws changed: its surface draws that
     /// again (if it is in one), and it and the views it is in hold a newer
     /// change ([`Self::changes`]: a shader picturing them takes them again).
@@ -555,6 +558,31 @@ impl NshView {
     /// (`f` must not change this view's children).
     pub(crate) fn with_children<R>(&self, f: impl FnOnce(&[NshView]) -> R) -> R {
         f(&self.0.children.borrow())
+    }
+
+    /// Calls `f` with its children in the order Tab and screen readers go
+    /// through them: a scroll view's, and a list's in its parent's viewport
+    /// (`ViewProps::screen_order`), as they are on screen (a list's
+    /// recycled cells are not in their rows' order in the tree:
+    /// [`nsh_core::scroll::reading_order`]), any other view's bottom to top.
+    pub(crate) fn with_children_in_reading_order<R>(&self, f: impl FnOnce(&[NshView]) -> R) -> R {
+        let sorted = self.try_state().and_then(|s| {
+            let axis = match &s.scroll {
+                Some(scroll) if scroll.horizontal => nsh_core::geometry::Axis::Horizontal,
+                Some(_) => nsh_core::geometry::Axis::Vertical,
+                None => s.props.screen_order?,
+            };
+            let mut kids = self.child_views();
+            nsh_core::scroll::reading_order(axis, &mut kids, |v| {
+                v.try_state()
+                    .map_or_else(Default::default, |s| s.frame.origin)
+            });
+            Some(kids)
+        });
+        match sorted {
+            Some(kids) => f(&kids),
+            None => self.with_children(f),
+        }
     }
 
     /// Inserts this view into `parent`, below `before` (on top when `None`

@@ -173,7 +173,7 @@ mount(() => (
     <TextView
       markdown="See [the docs](https://example.com/docs) or [the top](#top)."
       links="open"
-      onLinkPress={({ url }) => pressed.set([...pressed(), url])}
+      onLinkPress={({ url, modifiers }) => pressed.set([...pressed(), modifiers.platform ? `cmd+${url}` : url])}
     />
     <Text>{`pressed ${pressed().join(" ")}`}</Text>
   </View>
@@ -198,17 +198,28 @@ fn a_text_view_opens_its_links_when_asked() {
         }
     }
     assert_eq!(links.len(), 2, "no text with two links");
-    for link in links {
-        engine
-            .control()
-            .dispatch_event(link, EventKind::Press, EventPayload::None);
-    }
+    // The page clicked with Command held, the anchor pressed from the
+    // keyboard (no pointer, no modifiers).
+    let cmd = nsh_core::PressEvent {
+        modifiers: nsh_core::keymap::Modifiers {
+            cmd: true,
+            ..Default::default()
+        },
+        clicks: 1,
+        ..Default::default()
+    };
+    engine
+        .control()
+        .dispatch_event(links[0], EventKind::Press, EventPayload::Press(cmd));
+    engine
+        .control()
+        .dispatch_event(links[1], EventKind::Press, EventPayload::None);
     // The page opens; the anchor is only reported.
     let (_, urls) = run(
         &engine,
         &rx,
         true,
-        &["pressed https://example.com/docs #top"],
+        &["pressed cmd+https://example.com/docs #top"],
     );
     assert_eq!(urls, ["https://example.com/docs"]);
     drop(engine);

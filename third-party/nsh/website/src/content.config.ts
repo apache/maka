@@ -1,5 +1,6 @@
 import { defineCollection, z } from 'astro:content';
 import { glob } from 'astro/loaders';
+import { machineLocales } from './lib/locales';
 
 // One schema for every section and both locales; `tests/content.test.ts` checks
 // that the Chinese pages mirror the English ones.
@@ -30,4 +31,8 @@ export const collections = {
   'zh-docs': section('./zh-CN/docs'),
   'zh-elements': section('./zh-CN/elements'),
   'zh-modules': section('./zh-CN/modules'),
+  // Machine translations, when the build has them (`src/lib/locales.ts`).
+  ...Object.fromEntries(
+    machineLocales.flatMap(({ code }) => ['docs', 'elements', 'modules'].map((s) => [`${code}-${s}`, section(`./translations/${code}/${s}`)])),
+  ),
 };

@@ -129,7 +129,8 @@ The editor works as code editors do:
 - **Several carets.** Alt-click (Option-click) adds a caret, `mod+d` selects the next occurrence of the selection,
   `mod+shift+l` all of them, and the add-caret keys add one on the row above or below. Typing, deleting, moving and
   every command act at each one; Escape goes back to one. `undoSelection` (`cmd+u`, `ctrl+u`) goes back to the
-  selections before the last move.
+  selections before the last move. The carets blink while the editor has the focus; on Linux they stay shown after
+  ten seconds with no edit, caret move or focus change (GTK's default), until the next one.
 - **Selections grow** by units with `expandSelection` (`ctrl+shift+cmd+right`, `shift+alt+right`): the word, a
   string's contents and the string, a bracket pair's contents and the pair, the line, the text; `shrinkSelection`
   goes back the same way. `splitSelectionIntoLines` (`shift+alt+i`) turns a selection over several lines into one
@@ -763,7 +764,7 @@ is set with `fontFamily`, `fontSize` and `lineHeight`, which the editor measures
 | `scrollBeyondLastLine` | `.scroll_beyond_last_line(..)` | `boolean \| number` | `true` | The text scrolls on past its last line: up to a screen (`true`), not at all (`false`) or that many rows. |
 | `fontFamily` | `.font_family(..)` | `string` | the theme's `font-mono` | The font the text is drawn and measured in. |
 | `fontSize` | `.font_size(..)` | `number` | `13` | The font size, in points. |
-| `lineHeight` | `.line_height(..)` | `number` | `20` | The height of a row, in points. |
+| `lineHeight` | `.line_height(..)` | `number` | `20` | The height of a row, in points; in a terminal a row is one Cell. |
 | `search` | `.search(..)` | `EditorSearch` | | What to find ([Find and replace](#find-and-replace)). |
 | `diagnostics` | `.diagnostics(..)` | `EditorDiagnostic[]` | `[]` | Problems to mark ([Diagnostics](#diagnostics)). |
 | `decorations` | `.decorations(..)` | `EditorDecoration[]` | `[]` | Ranges the app styles ([Decorations](#decorations)). |

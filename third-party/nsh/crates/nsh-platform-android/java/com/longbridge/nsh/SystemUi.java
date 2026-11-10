@@ -185,6 +185,32 @@ final class SystemUi {
         }
     }
 
+    /**
+     * {@code openPath}: opens the file at {@code path} with the app Android resolves for it, as a
+     * {@code content:} URI the app's {@link FilesProvider} serves (a {@code file:} URI would not
+     * leave the app). Whether an app took it: false when there is no regular file, the provider
+     * will not serve it, or none handles it.
+     */
+    static boolean openPath(Context context, String path) {
+        java.io.File file = new java.io.File(path);
+        android.net.Uri uri = FilesProvider.uriFor(context, file);
+        // Share the provider's root check with URI creation: a file the
+        // provider would refuse must fail here, not after the viewer has
+        // already been launched (the caller could not handle that failure).
+        if (uri == null || !file.isFile()) return false;
+        android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW);
+        intent.setDataAndType(uri, FilesProvider.typeOf(context, file));
+        intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        Activity activity = activity(context);
+        if (activity == null) intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            (activity != null ? activity : context).startActivity(intent);
+            return true;
+        } catch (android.content.ActivityNotFoundException | SecurityException e) {
+            return false;
+        }
+    }
+
     /** {@code Clipboard.writeText}: a plain text clip. */
     static void setClipboard(Context context, String text) {
         android.content.ClipboardManager clipboard =

@@ -64,10 +64,7 @@ impl Screen {
                 MountItem::Text { id, text, .. } => {
                     self.texts.insert(*id, text.text.clone());
                 }
-                MountItem::Insert { parent, child, .. }
-                | MountItem::ProjectRoot {
-                    parent, id: child, ..
-                } => {
+                MountItem::Insert { parent, child, .. } => {
                     self.parents.insert(*child, *parent);
                 }
                 MountItem::Remove { id } | MountItem::Delete { id } => {
@@ -170,7 +167,6 @@ fn edits_replace_modules_and_keep_unrelated_state() {
         refuse_connections: None,
         filesystem: None,
         assets: None,
-        chunk_loader: None,
         environment: Default::default(),
         header_heights: (nsh_core::Points(44.0), nsh_core::Points(96.0)),
         limits: nsh_engine::Limits::default(),
@@ -186,6 +182,9 @@ fn edits_replace_modules_and_keep_unrelated_state() {
         host: Default::default(),
         picker: None,
         speech: None,
+        chunk_loader: None,
+        audio: None,
+        windows: None,
     };
     let engine = Engine::start(
         config,
@@ -331,7 +330,6 @@ fn entry_edits_keep_navigation_and_state() {
             refuse_connections: None,
             filesystem: None,
             assets: None,
-            chunk_loader: None,
             environment: Default::default(),
             header_heights: (nsh_core::Points(44.0), nsh_core::Points(96.0)),
             limits: nsh_engine::Limits::default(),
@@ -347,6 +345,9 @@ fn entry_edits_keep_navigation_and_state() {
             host: Default::default(),
             picker: None,
             speech: None,
+            chunk_loader: None,
+            audio: None,
+            windows: None,
         };
         let engine = Engine::start(
             config,

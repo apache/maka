@@ -275,21 +275,9 @@ pub(crate) fn set_args(view: &NshView, values: &[(u16, AnimationValue)]) {
 
 /// Its size changed: a frame of the new size is rendered.
 pub(crate) fn resized(view: &NshView) {
-    if view.state().shader.is_none() {
-        return;
+    if view.state().shader.is_some() {
+        tick(view);
     }
-    let scale = view
-        .native()
-        .and_then(|n| n.surface())
-        .map_or(view.scale_factor() as f64, |s| s.scale()) as f32;
-    {
-        let mut state = view.state_mut();
-        let size = state.frame.size;
-        if let Some(shader) = state.shader.as_mut() {
-            shader.view.set_size(size, scale);
-        }
-    }
-    tick(view);
 }
 
 /// A shader transition starts ([`nsh_core::MountItem::ShaderTransition`],
@@ -490,7 +478,7 @@ pub(crate) fn draw(snapshot: &gtk::Snapshot, state: &ViewState) {
     if size.width.0 <= 0.0 || size.height.0 <= 0.0 {
         return;
     }
-    snapshot.push_rounded_clip(&state.rounded_bounds());
+    crate::decor::push_clip(snapshot, state);
     append(snapshot, texture, size, shader.view.overflow().0);
     snapshot.pop();
 }
@@ -1257,6 +1245,20 @@ mod tests {
             assert!(!shows(Some(&glass)), "what is behind the view");
             window.destroy();
         });
+    }
+
+    /// A build without the feature `shader` refuses shaders, saying why,
+    /// and has no renderer.
+    #[cfg(not(feature = "shader"))]
+    #[test]
+    fn without_the_feature_there_are_no_shaders() {
+        let error = Shader::compile("fn shade(uv: vec2f) -> vec4f { return vec4f(1.0); }")
+            .expect_err("no compiler");
+        assert!(error.to_string().contains("feature `shader`"), "{error}");
+        assert!(Renderer::new(nsh_engine::shader::PixelFormat::Rgba).is_none());
+        let mut view = ShaderView::default();
+        assert!(!view.wants_frame());
+        assert!(!view.replaces_children(Instant::now()));
     }
 
     /// Without a GPU device an effect and a screen effect draw their

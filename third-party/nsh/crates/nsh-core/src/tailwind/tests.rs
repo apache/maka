@@ -767,6 +767,16 @@ fn transforms() {
 }
 
 #[test]
+fn corner_shapes() {
+    assert!(styled("rounded-xl corner-squircle").view.continuous_corners);
+    assert!(
+        !styled("corner-squircle corner-round")
+            .view
+            .continuous_corners
+    );
+}
+
+#[test]
 fn effects_and_interaction() {
     let s = styled(
         "blur-sm brightness-125 backdrop-blur-md mix-blend-multiply outline-2 outline-offset-2 outline-blue-500 invisible cursor-pointer",

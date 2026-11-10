@@ -18,13 +18,13 @@
  */
 
 import { displayText, tr } from './locale';
-import { computed, inputAction, platform, Scroll, Text, View } from 'nsh';
+import { computed, effect, inputAction, platform, Scroll, signal, Text, View } from 'nsh';
 import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Row } from './history';
 import type { ImagePreview } from './ImageThumbnail';
 import { ToolImage, ToolImageStrip, toolImages } from './ToolImage';
 import { createToolSource, OriginalToolSource, type ToolSourceRef } from './ToolSource';
-import { cardFamily, processFamily, toolArguments, toolResult } from './toolCards';
+import { cardFamily, processFamily, toolArguments, toolResult, type ToolFamily } from './toolCards';
 import { ToolReader } from './ToolReader';
 import {
   C,
@@ -37,13 +37,23 @@ import {
   textTooltip,
 } from './ui';
 import { LoadingIndicator } from './Loading';
-import type { ToolActivity } from './toolActivity';
+import { toolActivitySummary, type ToolActivity } from './toolActivity';
 import { Icon } from './Icon';
 import { viewRuntimeContext } from './plugins/viewContext';
 import { PluginView } from './plugins/PluginView';
 import { useHost } from './host';
 
 const detailsGap = 8;
+// The 32-point copy button in the card's first row is concentric with its corner.
+const cardPadding = { top: 4, right: 4, bottom: 12, left: disclosureContentInset(0) };
+const cardStyle = () => ({
+  backgroundColor: C.card,
+  borderRadius: 12,
+  paddingTop: cardPadding.top,
+  paddingRight: cardPadding.right,
+  paddingBottom: cardPadding.bottom,
+  paddingLeft: cardPadding.left,
+});
 
 type StatusKind =
   | 'recorded'
@@ -58,20 +68,18 @@ type StatusKind =
   | 'running';
 
 const statusIcons = {
-  recorded: 'statusRecorded',
-  success: 'statusSuccess',
   error: 'statusError',
   unknown: 'statusUnknown',
   rejected: 'statusError',
   stopped: 'statusStopped',
   dispatched: 'statusDispatched',
   pending: 'statusPending',
-  preparing: 'loader',
-  running: 'loader',
 } as const;
 
+/** The row's trailing state lane: empty while the tool is healthy. */
 function Status(props: { label: string; kind?: StatusKind }) {
   const active = () => props.kind === 'preparing' || props.kind === 'running';
+  const silent = () => !props.kind || props.kind === 'success' || props.kind === 'recorded';
   const color = () =>
     props.kind === 'error'
       ? C.danger
@@ -80,9 +88,9 @@ function Status(props: { label: string; kind?: StatusKind }) {
         : C.muted;
   return (
     <View
-      accessible={!active()}
+      accessible={!active() && !silent()}
       accessibilityLabel={props.label}
-      tooltip={textTooltip(() => props.label)}
+      tooltip={silent() ? undefined : textTooltip(() => props.label)}
       style={{
         width: 20,
         height: 20,
@@ -91,15 +99,28 @@ function Status(props: { label: string; kind?: StatusKind }) {
         flexShrink: 0,
       }}
     >
-      <If
-        when={active()}
-        else={<Icon name={statusIcons[props.kind ?? 'recorded']} color={color()} />}
-      >
-        <LoadingIndicator label={props.label} color={color()} />
+      <If when={!silent()}>
+        <If
+          when={active()}
+          else={<Icon name={statusIcons[props.kind as keyof typeof statusIcons]} color={color()} />}
+        >
+          <LoadingIndicator label={props.label} color={color()} />
+        </If>
       </If>
     </View>
   );
 }
+
+const familyIcon = (family: ToolFamily) =>
+  processFamily(family)
+    ? 'terminal'
+    : family === 'read' || family === 'fetch'
+      ? 'file'
+      : family === 'write' || family === 'edit' || family === 'patch'
+        ? 'edit'
+        : family === 'glob' || family === 'grep' || family === 'webSearch'
+          ? 'search'
+          : 'activity';
 
 function reference(tool: HistoryTool, field: 'arguments' | 'result'): ToolSourceRef | null {
   const position = (field === 'arguments' ? tool.call : tool.result)?.position;
@@ -205,6 +226,8 @@ function Field(props: {
   original(): boolean;
   userScroll(): void;
   tool(): HistoryTool;
+  /** Called once a complete result is read, with whether its view shows a process's command. */
+  showsCommand?(shown: boolean): void;
 }) {
   const host = useHost();
   const plugins = viewRuntimeContext()!;
@@ -217,6 +240,10 @@ function Field(props: {
       ? toolArguments(family, value())
       : toolResult(family, value()),
   );
+  effect(() => {
+    if (props.showsCommand && (source.complete() || source.error()))
+      props.showsCommand(!renderer() && !source.error() && projection()?.kind === 'process');
+  });
   return (
     <If
       when={!props.original() && !!renderer() && source.complete() && !source.error()}
@@ -258,6 +285,36 @@ function Field(props: {
         )}
       </Each>
     </If>
+  );
+}
+
+/** A tool whose call is still streaming in has no record to open yet. */
+export function LiveToolRow(props: { activity(): ToolActivity }) {
+  const phase = () =>
+    props.activity().phase === 'preparing' ? tr('Preparing tool') : tr('Running tool');
+  const title = () => {
+    const value = props.activity();
+    return value.title ? displayText(value.title) : value.name;
+  };
+  return (
+    <Disclosure
+      label={toolActivitySummary(props.activity(), phase(), title())}
+      icon="activity"
+      open={false}
+      foldable={false}
+      terminalInset={controlStyle.paddingHorizontal}
+      onPress={() => {}}
+      trailing={<Status label={phase()} kind={props.activity().phase} />}
+    >
+      <Text
+        style={[
+          { ...disclosureTitleStyle, color: C.secondary },
+          { numberOfLines: 1, textOverflow: 'ellipsis' },
+        ]}
+      >
+        {title()}
+      </Text>
+    </Disclosure>
   );
 }
 
@@ -310,11 +367,22 @@ export function ToolCard(props: {
         return tool()?.call?.name ?? tr('Tool');
     }
   };
-  // Open at the recorded output; the complete original arguments remain below.
+  // Open at the recorded output; the complete original arguments remain below,
+  // except a process's command once its recorded result shows it. Until that
+  // result is read, a successful settlement is taken to show it.
+  const resultShowsCommand = signal<boolean | null>(null);
   const references = () =>
     tool()
       ? (['result', 'arguments'] as const).flatMap((field) => {
           const value = reference(tool()!, field);
+          const result = tool()!.result;
+          if (
+            field === 'arguments' &&
+            !props.original() &&
+            processFamily(family()) &&
+            (resultShowsCommand() ?? (result?.settlement === 'returned' && !result.isError))
+          )
+            return [];
           return value ? [value] : [];
         })
       : [];
@@ -345,6 +413,7 @@ export function ToolCard(props: {
           name: tool()?.call?.name ?? tr('Tool details'),
         })}
         tooltip={title()}
+        icon={familyIcon(family())}
         open={props.expanded()}
         terminalInset={controlStyle.paddingHorizontal}
         onPress={inputAction(props.expand, {
@@ -354,7 +423,7 @@ export function ToolCard(props: {
         })}
         trailing={
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-            <If when={!platform.isTerminal && images().length > 0}>
+            <If when={platform.idiom !== 'terminal' && images().length > 0}>
               <ToolImageStrip
                 sessionId={props.sessionId}
                 through={imageThrough}
@@ -379,6 +448,37 @@ export function ToolCard(props: {
                 })}
               />
             </If>
+            <If
+              when={props.progress?.() != null}
+              else={
+                <If
+                  when={
+                    family() &&
+                    result() &&
+                    tool()?.result?.settlement === 'returned' &&
+                    !tool()?.result?.isError
+                  }
+                  else={<Status label={fallbackState().label} kind={fallbackState().kind} />}
+                >
+                  <Each of={result() ? [result()!] : []} key={(value) => value.key}>
+                    {(value) => (
+                      <Outcome
+                        reference={value()}
+                        sessionId={props.sessionId}
+                        through={props.row().metadataThrough ?? props.through()}
+                      />
+                    )}
+                  </Each>
+                </If>
+              }
+            >
+              <Status
+                label={
+                  props.progress?.() === 'preparing' ? tr('Preparing tool') : tr('Running tool')
+                }
+                kind={props.progress?.() ?? 'running'}
+              />
+            </If>
           </View>
         }
       >
@@ -390,39 +490,9 @@ export function ToolCard(props: {
         >
           {title()}
         </Text>
-        <If
-          when={props.progress?.() != null}
-          else={
-            <If
-              when={
-                family() &&
-                result() &&
-                tool()?.result?.settlement === 'returned' &&
-                !tool()?.result?.isError
-              }
-              else={<Status label={fallbackState().label} kind={fallbackState().kind} />}
-            >
-              <Each of={result() ? [result()!] : []} key={(value) => value.key}>
-                {(value) => (
-                  <Outcome
-                    reference={value()}
-                    sessionId={props.sessionId}
-                    through={props.row().metadataThrough ?? props.through()}
-                  />
-                )}
-              </Each>
-            </If>
-          }
-        >
-          <Status
-            label={props.progress?.() === 'preparing' ? tr('Preparing tool') : tr('Running tool')}
-            kind={props.progress?.() ?? 'running'}
-          />
-        </If>
       </Disclosure>
       <If when={props.expanded()}>
-        {/* On the desktop the details start under the title, as thinking text does. */}
-        <View style={{ paddingLeft: disclosureContentInset(16) }}>
+        <View style={platform.idiom === 'terminal' ? { paddingLeft: 16 } : cardStyle()}>
           <Scroll
             accessibilityLabel={tr('Tool details')}
             onScrollIntent={() => {
@@ -432,9 +502,15 @@ export function ToolCard(props: {
             style={{
               minHeight: 16,
               minWidth: 0,
-              maxHeight: Math.max(16, props.maxHeight() - controlStyle.minHeight - detailsGap),
+              maxHeight: Math.max(
+                16,
+                props.maxHeight() -
+                  controlStyle.minHeight -
+                  detailsGap -
+                  (platform.idiom === 'terminal' ? 0 : cardPadding.top + cardPadding.bottom),
+              ),
             }}
-            contentStyle={{ gap: 16, paddingRight: platform.isTerminal ? 0 : 12 }}
+            contentStyle={{ gap: 16 }}
           >
             <Each of={images()} key={(value) => value.key}>
               {(value) => (
@@ -456,6 +532,11 @@ export function ToolCard(props: {
                   original={props.original}
                   userScroll={props.userScroll}
                   tool={() => tool()!}
+                  showsCommand={
+                    value().field === 'result'
+                      ? (shown) => resultShowsCommand.set(shown)
+                      : undefined
+                  }
                 />
               )}
             </Each>

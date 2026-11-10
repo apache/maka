@@ -132,6 +132,16 @@ impl Output {
 #[derive(Default)]
 pub(super) struct FrameWriter(pub Vec<u8>);
 
+pub(super) fn osc52(text: &str, tmux: bool) -> String {
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    if tmux {
+        format!("\x1bPtmux;\x1b\x1b]52;c;{encoded}\x1b\x1b\\\x1b\\")
+    } else {
+        format!("\x1b]52;c;{encoded}\x1b\\")
+    }
+}
+
 impl Write for FrameWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.0
@@ -262,8 +272,7 @@ mod tests {
         }
         let original = "中😀".repeat(1_200_000);
         assert!(original.len() > 8 * 1024 * 1024);
-        let clipboard =
-            nsh_platform_tui::ServiceOutput::Clipboard(original.clone()).terminal_sequence(false);
+        let clipboard = osc52(&original, false);
         let encoded = clipboard
             .strip_prefix("\x1b]52;c;")
             .and_then(|bytes| bytes.strip_suffix("\x1b\\"))

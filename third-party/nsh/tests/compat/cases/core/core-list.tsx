@@ -6,72 +6,17 @@
 // content (`contentStyle`, `contentClass`); the rows of the overscan around
 // the viewport, rendered once the frames after the first bind them. Its
 // script checks each.
-import {
-  Canvas,
-  List as NativeList,
-  Scroll,
-  Text,
-  View,
-  cleanup,
-  signal,
-  type ListItemsProps,
-  type ListProps,
-} from "nsh";
-import { List, type ReadonlyListSource } from "nsh";
-
-function plumSource(name: string): ReadonlyListSource<string> {
-  return { length: 1, at: () => name };
-}
-
-// Checked by `nsh check`: definite elements stay definite for both public
-// entry points; a native class can provide its rows without becoming an array.
-function listInferenceContract<T>(props: ListProps<T>, items: ListItemsProps<T>) {
-  const rows: readonly { name: string }[] = [{ name: "Apple" }];
-  List({ each: rows, children: (row) => {
-    const item: { name: string } = row();
-    // @ts-expect-error the inferred name is a string
-    const wrong: number = row().name;
-    return <Text>{item.name}{wrong}</Text>;
-  } });
-  NativeList({ each: [{ name: "Apple" }], children: (row) => {
-    const item: { name: string } = row();
-    // @ts-expect-error a definite row is not undefined
-    const wrong: undefined = row();
-    return <Text>{item.name}{wrong}</Text>;
-  } });
-  class Source {
-    readonly length = 1;
-    at(_index: number) { return { name: "Plum" }; }
-  }
-  NativeList({ each: new Source(), children: (row) => {
-    const item: { name: string } = row();
-    // @ts-expect-error the inferred source row is not a string
-    const wrong: string = row();
-    return <Text>{item.name}{wrong}</Text>;
-  } });
-  NativeList({ each: plumSource("Plum"), children: (row) => {
-    const item: string = row();
-    // @ts-expect-error the indexed source returns strings
-    const wrong: number = row();
-    return <Text>{item}{wrong}</Text>;
-  } });
-  NativeList(props);
-  NativeList(items);
-  return <NativeList {...props} />;
-}
+import { Canvas, Scroll, Text, View, cleanup, signal } from "nsh";
+import { List } from "nsh";
 
 function App() {
   const items = signal(["Apple", "Banana", "Cherry"]);
-  const plums = signal(plumSource("Plum"));
   const color = signal("#ff0000");
   const cleaned = signal(0);
   let separators = 0;
   return (
     <View testID="root" style={{ flex: 1, paddingTop: 64 }}>
-      <View testID="add" onPress={() => {
-        items.set([...items(), `Item ${items().length + 1}`]);
-        plums.set(plumSource("Updated plum"));
-      }}>
+      <View testID="add" onPress={() => items.set([...items(), `Item ${items().length + 1}`])}>
         <Text>Add</Text>
       </View>
       <List
@@ -103,7 +48,7 @@ function App() {
       </List>
       <List
         testID="classed"
-        each={plums()}
+        each={["Plum"]}
         style={{ height: 60 }}
         contentClass="px-4"
         empty={<Text>No plums</Text>}
@@ -114,7 +59,7 @@ function App() {
           </View>
         )}
       </List>
-      <List testID="none" each={{ length: 0, at: (_index: number): string => "" }} style={{ height: 60 }} empty={() => <Text>Nothing here</Text>}>
+      <List testID="none" each={[] as string[]} style={{ height: 60 }} empty={() => <Text>Nothing here</Text>}>
         {(item) => <Text>{item()}</Text>}
       </List>
       <Scroll testID="scroll" style={{ height: 80 }} contentStyle={{ padding: 12 }}>

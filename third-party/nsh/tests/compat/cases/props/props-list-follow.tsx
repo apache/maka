@@ -28,6 +28,13 @@ function App() {
           </View>
         )}
       </List>
+      <List each={range(10)} alignment="bottom" estimatedItemSize={40} style={{ height: 100 }}>
+        {(item) => (
+          <View style={{ height: 40 }}>
+            <Text>Tail {item()}</Text>
+          </View>
+        )}
+      </List>
       <List
         each={range(10)}
         viewabilityConfig={{ itemVisibleThreshold: 1 }}

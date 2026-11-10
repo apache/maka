@@ -1,6 +1,6 @@
-import { effect, type GestureResponderEvent, type JSX, signal, Text, View, type ViewRef } from "nsh";
+import { effect, type GestureResponderEvent, type JSX, platform, signal, Text, View, type ViewRef } from "nsh";
 import { createAnimatedValue, Easing } from "nsh";
-import { Button, Tab, Tabs } from "nsh/base";
+import { Button, Switch as BaseSwitch, Tab, Tabs } from "nsh/base";
 import { Icon, type IconName } from "./icons";
 import { color, mono, radius } from "./theme";
 
@@ -246,41 +246,21 @@ export function Line(props: { first?: boolean; selected?: boolean; children: JSX
   );
 }
 
-/** An on / off switch; a disabled one is dimmed and ignores presses. */
+/** An on / off switch: `nsh/base`'s Switch, given the app's track and
+ * thumb (a terminal shows its own `[on ]` / `[off]`); a disabled one is
+ * dimmed and ignores presses. */
 export function Switch(props: { value: boolean; onChange: (v: boolean) => void; disabled?: boolean; label: string }) {
-  const on = createAnimatedValue(props.value ? 1 : 0);
-  effect(() => {
-    on.spring(props.value ? 1 : 0, { stiffness: 380, damping: 28 });
-  });
   return (
-    <View
-      onPress={() => props.onChange(!props.value)}
+    <BaseSwitch
+      checked={props.value}
+      onChange={({ checked }) => props.onChange(checked)}
       disabled={props.disabled}
       hitSlop={8}
-      role="switch"
       accessibilityLabel={props.label}
-      accessibilityState={{ checked: props.value, disabled: props.disabled }}
-      style={{
-        width: 46,
-        height: 28,
-        borderRadius: 14,
-        padding: 3,
-        opacity: props.disabled ? 0.4 : 1,
-        backgroundColor: on.interpolate({ inputRange: [0, 1], outputRange: [color.lineStrong, color.accent] }),
-      }}
-    >
-      <View
-        style={{
-          width: 22,
-          height: 22,
-          borderRadius: 11,
-          borderWidth: 3,
-          borderColor: on.interpolate({ inputRange: [0, 1], outputRange: [color.muted, color.ink] }),
-          backgroundColor: color.ink,
-          translate: [on.interpolate({ inputRange: [0, 1], outputRange: [0, 18] }), 0],
-        }}
-      />
-    </View>
+      style={{ opacity: props.disabled ? 0.4 : 1 }}
+      trackClass="h-[28px] w-[46px] rounded-[14px] bg-[#323b46] p-[3px] transition-colors checked:bg-[#3dd6c6]"
+      thumbClass="size-[22px] rounded-[11px] border-[3px] border-[#8794a3] bg-[#0d1014] transition-transform checked:translate-x-[18px] checked:border-[#0d1014]"
+    />
   );
 }
 
@@ -309,6 +289,9 @@ export function Segmented<T extends string>(props: { options: readonly T[]; valu
     </Tabs>
   );
 }
+
+/** Whether the app runs in a terminal, whose Cells size some controls. */
+const terminal = platform.idiom === "terminal";
 
 /** A value between − / + buttons on a bordered track; holding a button
  * repeats. */
@@ -340,9 +323,12 @@ export function Counter(props: {
       hitSlop={6}
       role="button"
       accessibilityLabel={`${name} ${props.label}`}
+      // A terminal sizes the button by its glyph: a Cell of room on each
+      // side keeps its focus band wider than the glyph.
       style={{
-        width: 34,
+        width: terminal ? undefined : 34,
         height: 34,
+        paddingHorizontal: terminal ? 8 : 0,
         borderRadius: 9,
         backgroundColor: color.raised,
         alignItems: "center",

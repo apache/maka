@@ -4,6 +4,9 @@
 animation::animator::AnimValues.opacity                          # an opacity factor
 animation::animator::AnimValues.transform                        # transform operands (any of their kinds' units)
 animation::animator::Animator::pan_values ->                     # a generic animated value (any prop: opacity, a color channel, a length)
+animation::animator::Animator::deadline ->                       # time
+animation::animator::Animator::deadline(now)                     # time
+animation::animator::Animator::frame_rate ->                     # a frame rate (Hz)
 animation::animator::Animator::tick(now)                         # time
 animation::animator::Animator::transform_moved(amount)           # a gesture amount fed to a generic animated value (a pinch scale, a rotation in degrees)
 animation::driver::sample_driver ->                              # generic animated values, sampled
@@ -13,7 +16,10 @@ animation::driver::sample_easing ->                              # easing curve 
 animation::graph::AnimationValue::Number.0                       # a generic animated value (any prop: opacity, a color channel, a length)
 animation::graph::AnimationValue::number ->                      # a generic animated value (any prop: opacity, a color channel, a length)
 animation::graph::Finished.value                                 # a generic animated value (any prop: opacity, a color channel, a length)
+animation::graph::Graph::frame_rate ->                           # a frame rate (Hz)
 animation::graph::Graph::set(new)                                # a generic animated value (any prop: opacity, a color channel, a length)
+animation::graph::Graph::deadline ->                             # time
+animation::graph::Graph::deadline(now)                           # time
 animation::graph::Graph::tick(now)                               # time
 animation::graph::Graph::value ->                                # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::AnimationOp::Adjust.factor                       # an affine multiplier of a generic animated value
@@ -24,6 +30,8 @@ animation::motion::Keyframe::at(offset)                          # progress thro
 animation::motion::Keyframe::at(value)                           # a generic animated value (any prop: opacity, a color channel, a length)
 animation::motion::Keyframe::new(value)                          # a generic animated value (any prop: opacity, a color channel, a length)
 animation::motion::KeyframeTiming.delay_ms                       # time
+animation::motion::KeyframeTiming.frame_rate                     # a frame rate (Hz)
+animation::motion::KeyframeTiming::frame_rate(hz)                # a frame rate (Hz)
 animation::motion::KeyframeTiming.duration_ms                    # time
 animation::motion::KeyframeTiming::delay(delay_ms)               # time
 animation::motion::KeyframeTiming::new(duration_ms)              # time
@@ -44,16 +52,24 @@ animation::ops::Curve::Back.0                                    # an easing cur
 animation::ops::Curve::Elastic.0                                 # an easing curve parameter
 animation::ops::Curve::Poly.0                                    # an easing curve parameter
 animation::ops::Driver::Decay.bounce                             # decay physics parameters
+animation::ops::Composite::frame_rate ->                         # a frame rate (Hz)
 animation::ops::Driver::Decay.clamp                              # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::Driver::Decay.deceleration                       # decay physics parameters
+animation::ops::Driver::Decay.frame_rate                         # a frame rate (Hz)
 animation::ops::Driver::Decay.velocity                           # a generic animated value per millisecond
 animation::ops::Driver::Spring.damping                           # spring physics parameters
+animation::ops::Driver::Spring.frame_rate                        # a frame rate (Hz)
 animation::ops::Driver::Spring.mass                              # spring physics parameters
 animation::ops::Driver::Spring.stiffness                         # spring physics parameters
 animation::ops::Driver::Spring.to                                # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::Driver::Spring.velocity                          # a generic animated value per millisecond
 animation::ops::Driver::Timing.delay_ms                          # time
 animation::ops::Driver::Timing.duration_ms                       # time
+animation::ops::Driver::Timing.frame_rate                        # a frame rate (Hz)
+animation::ops::Driver::frame_rate ->                            # a frame rate (Hz)
+animation::ops::highest_frame_rate ->                            # a frame rate (Hz)
+animation::ops::highest_frame_rate(a)                            # a frame rate (Hz)
+animation::ops::highest_frame_rate(b)                            # a frame rate (Hz)
 animation::ops::Driver::Timing.to                                # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::Easing::Bezier.0                                 # easing curve coordinates (unit square)
 animation::ops::Easing::Bezier.1                                 # easing curve coordinates (unit square)
@@ -61,18 +77,34 @@ animation::ops::Easing::Bezier.2                                 # easing curve 
 animation::ops::Easing::Bezier.3                                 # easing curve coordinates (unit square)
 animation::ops::Operand::Const.0                                 # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::Output::Numbers.0                                # generic animated values
+audio::AudioCommand::Play.rate                                   # a playback rate multiplier
+audio::AudioCommand::Play.volume                                 # audio volume, 0..1
+audio::PlayerSettings.rate                                       # a playback rate multiplier
+audio::PlayerSettings.volume                                     # audio volume, 0..1
+audio::RATE                                                      # a playback rate multiplier
+audio::VOLUME                                                    # audio volume, 0..1
+audio::check_rate ->                                             # a playback rate multiplier
+audio::check_rate(rate)                                          # a playback rate multiplier
+audio::check_volume ->                                           # audio volume, 0..1
+audio::check_volume(volume)                                      # audio volume, 0..1
 canvas::CanvasOp::MiterLimit.0                                   # a ratio of the stroke width
 canvas::Num::Const.0                                             # a generic number (a JS value, a recorded slot)
 canvas::Num::get ->                                              # a generic number (a JS value, a recorded slot)
 canvas::Num::get(slot)                                           # a generic number (a JS value, a recorded slot)
 canvas::ViewBoxFit::transform ->                                 # a transform matrix (scales, and offsets in points)
 canvas::damage::DamageScan::damage(value)                        # a generic number (a JS value, a recorded slot)
+canvas::damage::DamageScan::painted_after(value)                 # a generic number (a JS value, a recorded slot)
 canvas::hit::point_in_path(slot)                                 # a generic number (a JS value, a recorded slot)
 canvas::hit::point_in_stroke(slot)                               # a generic number (a JS value, a recorded slot)
 core::Core::scroll_listener ->                                   # time and a zoom scale factor (the sizes it gives are typed)
 core::Core::set_font_scale(scale)                                # a font scale factor
 core::Core::set_zoom(scale)                                      # a zoom scale factor
 css::Color::with_alpha(factor)                                   # an opacity factor
+desktop::menu_icon::fade(opacity)                                # an opacity factor
+desktop::menu_icon::want(scale)                                  # device pixels per point, a ratio
+desktop::window_state::Display.refresh_rate                     # a refresh rate (Hz)
+desktop::window_state::Display.scale_factor                     # device pixels per point, a ratio
+desktop::window_state::WindowState.scale_factor                 # device pixels per point, a ratio
 effects::Filter::Brightness.0                                    # a filter amount (1 leaves the image as it is)
 effects::Filter::Contrast.0                                      # a filter amount (1 leaves the image as it is)
 effects::Filter::Grayscale.0                                     # a filter amount (1 leaves the image as it is)
@@ -84,9 +116,11 @@ effects::Filter::color_matrix ->                                 # color compone
 effects::KeyframeAnimation.delay                                 # time
 effects::KeyframeAnimation.duration                              # time
 effects::KeyframeAnimation.easing                                # easing curve coordinates (unit square)
+effects::KeyframeAnimation.frame_rate                            # a frame rate (Hz)
 effects::KeyframeAnimation::delay(ms)                            # time
 effects::KeyframeAnimation::duration(ms)                         # time
 effects::KeyframeAnimation::easing(curve)                        # easing curve coordinates (unit square)
+effects::KeyframeAnimation::frame_rate(hz)                       # a frame rate (Hz)
 effects::Transition.delay                                        # time
 effects::Transition.duration                                     # time
 effects::Transition.easing                                       # easing curve coordinates (unit square)
@@ -130,6 +164,8 @@ mount::VideoProps.progress_interval_ms                           # time
 mount::VideoProps.rate                                           # a playback rate multiplier
 mount::VideoProps.volume                                         # audio volume, 0..1
 navigation::Tick::At.1                                           # eased transition progress (easing curve coordinates, unit square)
+navigation::Transitions::deadline ->                             # time
+navigation::Transitions::deadline(now)                           # time
 navigation::Transitions::tick(now)                               # time
 navigation::dim ->                                               # an opacity, 0..1
 navigation::dim(amount)                                          # eased transition progress (easing curve coordinates, unit square)
@@ -148,6 +184,7 @@ ops::EventPayload::PanCancelled.velocity_y                       # points per se
 ops::IMAGE_SCALES                                                # pixel densities (device pixels per point)
 ops::ImageProp::FadeDuration.0                                   # time
 ops::ImageScales::iter ->                                        # pixel densities (device pixels per point)
+ops::ImageSource::at_pixel_ratio(pixel_ratio)                    # device pixels per point, a ratio
 ops::NativeProp::ProgressInterval.0                              # time
 ops::NativeProp::Rate.0                                          # a playback rate multiplier
 ops::NativeProp::Volume.0                                        # audio volume, 0..1
@@ -183,6 +220,8 @@ scroll::drag_end(vx)                                             # a velocity, p
 scroll::drag_end(vy)                                             # a velocity, points per second
 scroll::ease_out ->                                              # easing curve coordinates (unit square)
 scroll::ease_out(t)                                              # easing curve coordinates (unit square)
+scroll::deadline ->                                              # time
+scroll::deadline(now)                                            # time
 scroll::frame(now)                                               # time
 scroll::indicator_alpha ->                                       # an opacity, 0..1
 scroll::indicator_alpha(since)                                   # time
@@ -234,6 +273,9 @@ transform::TransformKind::identity ->                            # a transform o
 transform::TransformOp.value                                     # a transform operand (any of its kinds' units)
 transition::Extra.scale                                          # a scale factor
 transition::Live::opacity ->                                     # an opacity factor
+transition::Live::deadline ->                                    # time
+transition::Live::deadline(now)                                  # time
+transition::Live::frame_rate ->                                  # a frame rate (Hz)
 transition::Live::step(now)                                      # time
 transition::TextColor::step(now)                                 # time
 element::ambient::animated_value(value)                               # an animated value (any quantity)
@@ -283,11 +325,15 @@ element::animated::Animation::stagger(ms)                             # time
 element::animated::Animation::stagger_from(ms)                        # time
 element::animated::Animation::timing(to)                              # an animated value (any quantity)
 element::animated::Spring.damping                                     # a rate or a physical constant of an animation
+element::animated::Spring.frame_rate                             # a frame rate (Hz)
+element::animated::Spring::frame_rate(hz)                        # a frame rate (Hz)
 element::animated::Spring.mass                                        # a rate or a physical constant of an animation
 element::animated::Spring.stiffness                                   # a rate or a physical constant of an animation
 element::animated::Spring.velocity                                    # a rate or a physical constant of an animation
 element::animated::Timing.delay_ms                                    # time
 element::animated::Timing.duration_ms                                 # time
+element::animated::Timing.frame_rate                             # a frame rate (Hz)
+element::animated::Timing::frame_rate(hz)                        # a frame rate (Hz)
 element::animated::Timing::new(duration_ms)                           # time
 element::animated::sample_decay ->                                    # an animated value (any quantity)
 element::animated::sample_decay(deceleration)                         # a rate or a physical constant of an animation
@@ -306,6 +352,8 @@ element::animated::sample_spring(fps)                                 # time
 element::animated::sample_spring(from)                                # an animated value (any quantity)
 element::animated::sample_spring(to)                                  # an animated value (any quantity)
 element::asset::ImageAsset.scales                                     # pixel densities (device pixels per point)
+element::audio::Sound::play(rate)                                     # a playback rate multiplier
+element::audio::Sound::play(volume)                                   # audio volume, 0..1
 element::builder::Image::fade_duration(ms)                            # time
 element::builder::Interactive::long_press_delay(ms)                   # time
 element::builder::Text::max_font_size_multiplier(multiplier)          # a font scale factor

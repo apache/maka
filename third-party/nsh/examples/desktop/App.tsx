@@ -8,13 +8,14 @@
 import { effect, mount, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { colorScheme, platform } from "nsh";
-import { Menu, type MenuItem, titleBar, Window } from "nsh/desktop";
-
-Window.setTitle("nsh desktop");
+import { currentWindow, Menu, type MenuItem, titleBar } from "nsh/desktop";
 
 const mac = platform.os === "macos";
 
 function App() {
+  // The main window: `currentWindow()` while the app renders.
+  const win = currentWindow();
+  win.set({ title: "nsh desktop" });
   const log = signal<string[]>([]);
   const wrap = signal(true);
   const hidden = signal(true);
@@ -67,7 +68,7 @@ function App() {
 
   effect(() => {
     // The bar is 40 points tall: the window controls are centered in it.
-    Window.setTitleBar({ style: hidden() ? "hidden" : "default", height: 40 });
+    win.set({ titleBar: { style: hidden() ? "hidden" : "default", height: 40 } });
   });
 
   effect(() => {

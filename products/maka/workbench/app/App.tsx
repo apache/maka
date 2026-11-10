@@ -75,7 +75,7 @@ function App(
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
   const session = signal<ConversationSessionHandle | null>(null);
-  const restoredSides = platform.isTerminal ? [] : (saved?.sideSessionIds ?? []);
+  const restoredSides = platform.idiom === 'terminal' ? [] : (saved?.sideSessionIds ?? []);
   const sides = signal<SidePane[]>(restoredSides.map(createSide));
   const besides = () => sides().map((pane) => pane.id());
   const sideFor = (id: string) => sides().find((pane) => pane.id() === id);
@@ -218,9 +218,9 @@ function App(
       return true;
     },
     get openBeside() {
-      return !platform.isTerminal && sideRoom() > 0 ? openBeside : undefined;
+      return platform.idiom !== 'terminal' && sideRoom() > 0 ? openBeside : undefined;
     },
-    ...(platform.isTerminal ? {} : { besideSessionIds: besides }),
+    ...(platform.idiom === 'terminal' ? {} : { besideSessionIds: besides }),
   };
   function openBeside(id: string) {
     if (!alive || blocked() || id === selected() || sideFor(id)) return;
@@ -259,7 +259,13 @@ function App(
     })),
   );
   return (
-    <View style={{ flex: 1, minHeight: 0, backgroundColor: C.background }}>
+    <View
+      style={{
+        flex: 1,
+        minHeight: 0,
+        backgroundColor: platform.idiom === 'terminal' ? C.background : C.chrome,
+      }}
+    >
       <Workbench
         expanded={sidebarExpanded}
         previewShown={previewShown}
@@ -306,7 +312,7 @@ function App(
             gap: 8,
             paddingHorizontal: 16,
             paddingVertical: 4,
-            backgroundColor: C.surface,
+            backgroundColor: C.chrome,
           }}
         >
           <Text style={[{ ...bodyTextStyle, flex: 1, color: C.warning }, { userSelect: 'text' }]}>

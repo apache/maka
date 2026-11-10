@@ -48,7 +48,8 @@ pub struct SemanticRow {
     /// Canonical sequence that published this row version.
     pub revision: u64,
     pub execution: ExecutionIdentity,
-    /// Assistant items share their request position; item_index orders them.
+    /// Projection order may use the completion position, not the producing
+    /// request. item_index orders parts within that position.
     pub order: RowPosition,
     pub kind: SemanticKind,
 }

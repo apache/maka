@@ -1,6 +1,6 @@
-import { Canvas, computed, effect, signal, Text, untracked, View } from "nsh";
+import { Canvas, computed, effect, signal, Text, type TextStyle, untracked, View } from "nsh";
 import { createAnimatedValue, Easing } from "nsh";
-import { colors, Legend, tints } from "../../ui";
+import { colors, Legend, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, terminal, tints } from "../../ui";
 import { BLOCK, buckets, compact, type Market, price, type Stock, type Trade, time } from "./market";
 import { Block, grid, Head, SpringBar } from "./parts";
 
@@ -45,75 +45,111 @@ export function Tape(props: { market: Market; stock: Stock }) {
   });
   return (
     <Block title="Time & sales" note={`blocks ≥ ${compact(BLOCK)}`}>
-      <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 16, rowGap: 6 }}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 16, rowGap: terminal ? 0 : 6 }}>
         <Legend color={colors.up} label="At ask" value={compact(stats().buys)} />
         <Legend color={colors.down} label="At bid" value={compact(stats().sells)} />
         <Legend color={colors.accent} label="Blocks" value={`${stats().blocks}`} />
       </View>
-      <View style={{ flexDirection: "row", gap: 10, paddingHorizontal: 8 }}>
-        <Head label="TIME" width={80} />
-        <Head label="PRICE" flex={1} />
-        <Head label="SIZE" align="right" />
-      </View>
-      <Canvas
-        style={{ height: SHOWN * ROW }}
-        accessibilityLabel="Recent trades"
-        draw={(cx, { width, height }) => {
-          const trades = shown();
-          cx.save();
-          cx.beginPath();
-          cx.rect(0, 0, width, height);
-          cx.clip();
-          cx.translate(0, offset);
-          cx.textBaseline = "middle";
-          trades.forEach((t, i) => {
-            const y = i * ROW + ROW / 2;
-            const block = t.size >= BLOCK;
-            const color = t.side > 0 ? colors.up : colors.down;
-            if (block) {
-              cx.fillStyle = tints.accent;
-              cx.beginPath();
-              cx.roundRect(0, i * ROW + 2, width, ROW - 4, 8);
-              cx.fill();
-            } else if (i) {
-              cx.strokeStyle = grid();
-              cx.lineWidth = 1;
-              cx.beginPath();
-              cx.moveTo(0, i * ROW);
-              cx.lineTo(width, i * ROW);
-              cx.stroke();
-            }
-            cx.font = "12px system-ui";
-            cx.textAlign = "left";
-            cx.fillStyle = colors.faint;
-            cx.fillText(time(t.t), 8, y);
-            cx.fillStyle = color;
+      <If when={terminal}>
+        <TerminalTape stock={props.stock} trades={shown()} />
+      </If>
+      <If when={!terminal}>
+        <View style={{ flexDirection: "row", gap: 10, paddingHorizontal: 8 }}>
+          <Head label="TIME" width={80} />
+          <Head label="PRICE" flex={1} />
+          <Head label="SIZE" align="right" />
+        </View>
+        <Canvas
+          style={{ height: SHOWN * ROW }}
+          accessibilityLabel="Recent trades"
+          draw={(cx, { width, height }) => {
+            const trades = shown();
+            cx.save();
             cx.beginPath();
-            cx.arc(84, y, 3, 0, Math.PI * 2);
-            cx.fill();
-            cx.font = "14px system-ui";
-            cx.fillText(price(t.price, props.stock), 96, y);
-            cx.textAlign = "right";
-            cx.font = block ? "600 14px system-ui" : "14px system-ui";
-            cx.fillStyle = block ? colors.accent : colors.text;
-            cx.fillText(compact(t.size), width - 8, y);
-            if (block) {
-              cx.font = "600 10px system-ui";
-              cx.fillText("BLOCK", width - 70, y);
-            }
-          });
-          cx.restore();
-        }}
-      />
+            cx.rect(0, 0, width, height);
+            cx.clip();
+            cx.translate(0, offset);
+            cx.textBaseline = "middle";
+            trades.forEach((t, i) => {
+              const y = i * ROW + ROW / 2;
+              const block = t.size >= BLOCK;
+              const color = t.side > 0 ? colors.up : colors.down;
+              if (block) {
+                cx.fillStyle = tints.accent;
+                cx.beginPath();
+                cx.roundRect(0, i * ROW + 2, width, ROW - 4, 8);
+                cx.fill();
+              } else if (i) {
+                cx.strokeStyle = grid();
+                cx.lineWidth = 1;
+                cx.beginPath();
+                cx.moveTo(0, i * ROW);
+                cx.lineTo(width, i * ROW);
+                cx.stroke();
+              }
+              cx.font = "12px system-ui";
+              cx.textAlign = "left";
+              cx.fillStyle = colors.faint;
+              cx.fillText(time(t.t), 8, y);
+              cx.fillStyle = color;
+              cx.beginPath();
+              cx.arc(84, y, 3, 0, Math.PI * 2);
+              cx.fill();
+              cx.font = "14px system-ui";
+              cx.fillText(price(t.price, props.stock), 96, y);
+              cx.textAlign = "right";
+              cx.font = block ? "600 14px system-ui" : "14px system-ui";
+              cx.fillStyle = block ? colors.accent : colors.text;
+              cx.fillText(compact(t.size), width - 8, y);
+              if (block) {
+                cx.font = "600 10px system-ui";
+                cx.fillText("BLOCK", width - 70, y);
+              }
+            });
+            cx.restore();
+          }}
+        />
+      </If>
     </Block>
+  );
+}
+
+/** The tape in the terminal: a row of text per trade under its columns'
+ * heads, the price in the side's color, blocks marked and their size in the
+ * accent. */
+function TerminalTape(props: { stock: Stock; trades: Trade[] }) {
+  const size: TextStyle = { width: 8 * TERMINAL_COLUMN, textAlign: "right", fontSize: 14, fontVariant: ["tabular-nums"] };
+  return (
+    <View style={{ marginTop: TERMINAL_ROW }}>
+      <View style={{ flexDirection: "row", gap: TERMINAL_GAP }}>
+        <Head label="TIME" width={8 * TERMINAL_COLUMN} />
+        <Head label="PRICE" flex={1} />
+        <Head label="SIZE" width={8 * TERMINAL_COLUMN} align="right" />
+      </View>
+      <Each of={props.trades.slice(0, SHOWN)}>
+        {(trade) => {
+          const block = trade().size >= BLOCK;
+          return (
+            <View style={{ height: TERMINAL_ROW, flexDirection: "row", gap: TERMINAL_GAP }}>
+              <Text style={{ width: 8 * TERMINAL_COLUMN, fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>{time(trade().t)}</Text>
+              <Text style={{ flex: 1, fontSize: 14, color: trade().side > 0 ? colors.up : colors.down, fontVariant: ["tabular-nums"] }}>{price(trade().price, props.stock)}</Text>
+              <If when={block}>
+                <Text style={{ fontSize: 10, fontWeight: "600", color: colors.accent }}>BLOCK</Text>
+              </If>
+              <Text style={[size, { fontWeight: block ? "600" : "400", color: block ? colors.accent : colors.text }]}>{compact(trade().size)}</Text>
+            </View>
+          );
+        }}
+      </Each>
+    </View>
   );
 }
 
 /** One bucket: sold to the left of the middle, bought to the right. */
 function FlowRow(props: { label: string; note: string; buy: () => number; sell: () => number; max: () => number }) {
   return (
-    <View style={{ gap: 4 }}>
-      <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
+    <View style={{ gap: terminal ? 0 : 4 }}>
+      <View style={{ flexDirection: "row", alignItems: "baseline", gap: terminal ? TERMINAL_COLUMN : 8 }}>
         <Text style={{ flex: 1, fontSize: 13, color: colors.text }}>
           {props.label}
           <Text style={{ fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}> {props.note}</Text>
@@ -122,15 +158,17 @@ function FlowRow(props: { label: string; note: string; buy: () => number; sell: 
         <Text style={{ fontSize: 12, fontVariant: ["tabular-nums"], color: colors.faint }}>/</Text>
         <Text style={{ fontSize: 12, fontVariant: ["tabular-nums"], color: colors.up }}>{compact(props.buy())}</Text>
       </View>
-      <View style={{ flexDirection: "row", alignItems: "center" }}>
-        <View style={{ flex: 1 }}>
-          <SpringBar share={() => props.sell() / props.max()} color={colors.down} from="right" height={10} radius={3} />
+      <If when={!terminal}>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <View style={{ flex: 1 }}>
+            <SpringBar share={() => props.sell() / props.max()} color={colors.down} from="right" height={10} radius={3} />
+          </View>
+          <View style={{ width: 2, height: 18, marginHorizontal: 2, borderRadius: 1, backgroundColor: colors.border }} />
+          <View style={{ flex: 1 }}>
+            <SpringBar share={() => props.buy() / props.max()} color={colors.up} height={10} radius={3} />
+          </View>
         </View>
-        <View style={{ width: 2, height: 18, marginHorizontal: 2, borderRadius: 1, backgroundColor: colors.border }} />
-        <View style={{ flex: 1 }}>
-          <SpringBar share={() => props.buy() / props.max()} color={colors.up} height={10} radius={3} />
-        </View>
-      </View>
+      </If>
     </View>
   );
 }
@@ -152,7 +190,7 @@ export function Flow(props: { market: Market }) {
           {compact(big())} large orders
         </Text>
       </Text>
-      <View style={{ gap: 10 }}>
+      <View style={{ gap: terminal ? 0 : 10 }}>
         <Each of={buckets}>
           {(b, i) => <FlowRow label={b().label} note={b().note} buy={() => flow().buy[i()]} sell={() => flow().sell[i()]} max={max} />}
         </Each>

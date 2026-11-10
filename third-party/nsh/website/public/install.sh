@@ -1,10 +1,13 @@
 #!/usr/bin/env sh
-# Installs a GitHub release, or builds the latest main with --source.
+# Installs a GitHub release, the nightly build of main with --nightly, or
+# builds the latest main with --source.
 #
 #   curl -fsSL https://nsh.dev/install.sh | sh
+#   curl -fsSL https://nsh.dev/install.sh | sh -s -- --nightly
 #   curl -fsSL https://nsh.dev/install.sh | sh -s -- --source
 #
-# NSH_VERSION      a release tag such as v0.1.0 (default: the latest release)
+# NSH_VERSION      a release tag such as v0.1.0, or nightly (default: the
+#                  latest release)
 # NSH_INSTALL_DIR  where the distribution goes (default: ~/.nsh); nsh finds
 #                  its runtimes next to bin/nsh, so the directory stays whole
 #
@@ -71,12 +74,17 @@ case "$#:${1:-}" in
     esac
     exit 0
     ;;
+  1:--nightly)
+    [ "$version" = latest ] || fail "--nightly installs the nightly build; NSH_VERSION selects a release"
+    version=nightly
+    ;;
   1:--help)
-    echo "Usage: install.sh [--source]"
-    echo "Install the latest release, or build the latest main from source (Git and Rust required)."
+    echo "Usage: install.sh [--nightly | --source]"
+    echo "Install the latest release, the nightly build of main (--nightly), or build"
+    echo "the latest main from source (--source, Git and Rust required)."
     exit 0
     ;;
-  *) fail "usage: install.sh [--source]" ;;
+  *) fail "usage: install.sh [--nightly | --source]" ;;
 esac
 
 case "$(uname -s)/$(uname -m)" in

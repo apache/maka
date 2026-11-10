@@ -326,3 +326,63 @@ fn a_clock_that_moves_with_frames_runs_them_at_the_display_pace() {
     advance(&engine, 0);
     assert_eq!(shown(&rx, &mut last), "60 frames, the last at 1000");
 }
+
+/// A Rust root with nothing to wake the engine after its first frame.
+#[component]
+fn Still() -> impl IntoElement {
+    view().flex_1().child(text("still"))
+}
+
+/// What the engine handed a [`Reports`] sink.
+#[derive(Debug)]
+enum Sent {
+    Batch(MountBatch),
+    Resized(Size<Points>),
+}
+
+/// Hands batches and resize reports to the test, in order.
+struct Reports(crossbeam_channel::Sender<Sent>);
+
+impl nsh_engine::MountSink for Reports {
+    fn submit(&self, batch: MountBatch) {
+        let _ = self.0.send(Sent::Batch(batch));
+    }
+
+    fn resized(&self, size: Size<Points>) {
+        let _ = self.0.send(Sent::Resized(size));
+    }
+}
+
+#[test]
+fn a_resize_sent_before_the_first_frame_is_reported_with_it() {
+    // On a manual clock a Rust app has no timer, collection or resize
+    // burst to end: after its first frame nothing wakes the engine, so the
+    // report cannot ride on a later turn.
+    let config = EngineConfig {
+        clock: Clock::manual(start_time()),
+        ..EngineConfig::new(App::Rust(Root::new::<Still>(|| ())))
+    };
+    let size = Size::new(px(500.0), px(700.0));
+    let (tx, rx) = crossbeam_channel::unbounded();
+    // Sent before the engine starts, the resize is handled while the app
+    // starts, as one that comes while a slow app starts is.
+    let _engine = Engine::start_with(
+        config,
+        || ApproxTextEngine,
+        Reports(tx),
+        |control| control.resize(size),
+    )
+    .unwrap();
+    let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a message");
+    let Sent::Batch(batch) = next() else {
+        panic!("the first frame first");
+    };
+    assert!(
+        batch.items.iter().any(|i| matches!(
+            i,
+            MountItem::Frame { frame, .. } if frame.size.width.0 == 500.0 && frame.size.height.0 == 700.0
+        )),
+        "the first frame is laid out at the new size"
+    );
+    assert!(matches!(next(), Sent::Resized(s) if s == size));
+}

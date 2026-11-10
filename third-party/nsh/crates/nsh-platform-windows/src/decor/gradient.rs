@@ -75,6 +75,10 @@ thread_local! {
     static COLLECTIONS: RefCell<Option<Collections>> = const { RefCell::new(None) };
 }
 
+pub(super) fn clear_thread_cache() {
+    let _ = COLLECTIONS.try_with(|c| c.borrow_mut().take());
+}
+
 /// What the brush of one gradient paints: a Direct2D brush in the view's
 /// coordinates, or (conic) a bitmap covering the box.
 pub(crate) enum Paint {

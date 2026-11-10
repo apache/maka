@@ -2,7 +2,7 @@ import { Image, type JSX, signal, Text, View } from "nsh";
 import { fontScale } from "nsh";
 import pacifico from "../fonts/Pacifico-Regular.ttf";
 import logo from "../logo@2x.png";
-import { alpha, Caption, Card, colors, DemoPage, finish, isDark, mono, Press, radius, tints } from "../ui";
+import { alpha, Caption, Card, colors, DemoPage, finish, isDark, mono, photoUrl, type PhotoName, Press, radius, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, terminal, tints } from "../ui";
 
 const LOREM =
   "Native text, typeset once on the engine thread with CoreText and drawn on the main thread without any layout work.";
@@ -10,10 +10,13 @@ const LOREM =
 const body = () => ({ fontSize: 15, lineHeight: 22, color: colors.text }) as const;
 const link = () => ({ color: colors.accent, textDecorationLine: "underline", textDecorationColor: alpha(colors.accent, 0.5) }) as const;
 
-/** A labeled specimen: a quiet label (and the prop it shows, in code) above the text. */
+/** A labeled specimen: a quiet label (and the prop it shows, in code) above
+ * the text; in the terminal the label right under the rule, which takes a
+ * row of its own. */
 function Specimen(props: { label: string; code?: string; first?: boolean; children: JSX.Element }) {
+  const ruleSpace = terminal ? TERMINAL_ROW - 1 : 12;
   return (
-    <View style={{ gap: 8, paddingTop: props.first ? 0 : 12, borderTopWidth: props.first ? 0 : 1, borderTopColor: colors.line }}>
+    <View style={{ gap: terminal ? 0 : 8, paddingTop: props.first ? 0 : ruleSpace, borderTopWidth: props.first ? 0 : 1, borderTopColor: colors.line }}>
       <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
         <Text style={{ flex: 1, fontSize: 13, color: colors.muted }}>{props.label}</Text>
         <If when={props.code}>
@@ -61,10 +64,14 @@ function Inline() {
     <Card icon="image" title="Inline views and images" subtitle="They wrap with the line">
       <Text style={{ ...body(), fontSize: 16, lineHeight: 28 }}>
         {"Made with "}
-        <Image src={logo} style={{ width: 18, height: 18, borderRadius: 5 }} />
-        {" nsh. Status "}
-        <View style={{ backgroundColor: tints.up, borderRadius: 9, paddingHorizontal: 8, height: 18, flexDirection: "row", alignItems: "center", gap: 4 }}>
-          <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.up }} />
+        <If when={!terminal}>
+          <Image src={logo} style={{ width: 18, height: 18, borderRadius: 5 }} />
+        </If>
+        {terminal ? "nsh. Status " : " nsh. Status "}
+        <View style={{ backgroundColor: tints.up, borderRadius: 9, paddingHorizontal: 8, height: terminal ? TERMINAL_ROW : 18, flexDirection: "row", alignItems: "center", gap: 4 }}>
+          <If when={!terminal}>
+            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.up }} />
+          </If>
           <Text style={{ color: colors.up, fontSize: 11, fontWeight: "700", letterSpacing: 0.5 }}>LIVE</Text>
         </View>
         {" and a button inside the sentence "}
@@ -74,8 +81,8 @@ function Inline() {
               backgroundColor: colors.raised,
               ...finish.raised,
               borderRadius: 11,
-              paddingHorizontal: 9,
-              height: 22,
+              paddingHorizontal: terminal ? TERMINAL_COLUMN : 9,
+              height: terminal ? TERMINAL_ROW : 22,
               justifyContent: "center",
               borderWidth: 1,
               borderColor: colors.border,
@@ -118,44 +125,26 @@ function Fonts() {
         </Text>
       </Specimen>
       <Specimen label="Shadows" code="textShadow">
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-          <Text
-            style={{
-              fontSize: 26,
-              fontWeight: "800",
-              color: colors.accent,
-              textShadow: `0 0 10px ${alpha(colors.accent, isDark() ? 0.6 : 0.3)}`,
-            }}
-          >
-            Glow
-          </Text>
-          <View
-            style={{
-              height: 48,
-              paddingHorizontal: 14,
-              justifyContent: "center",
-              borderRadius: radius.control,
-              borderCurve: "continuous",
-              backgroundColor: colors.raised,
-              ...finish.raised,
-              borderWidth: 1,
-              borderColor: colors.border,
-            }}
-          >
-            <Text
-              style={{
-                fontSize: 26,
-                fontWeight: "800",
-                color: colors.info,
-                textShadow: isDark() ? "2px 3px 3px rgba(0,0,0,0.9)" : "2px 3px 3px rgba(20,20,10,0.22)",
-              }}
-            >
-              Drop shadow
-            </Text>
-          </View>
+        <View style={{ flexDirection: "row", gap: terminal ? TERMINAL_GAP : 12 }}>
+          <ShadowPhoto photo="booster" label="Glow" color="#ffe9c7" shadow="0 0 12px rgba(255,150,60,1)" />
+          <ShadowPhoto photo="day" label="Drop shadow" color="#ffffff" shadow="0 1px 8px rgba(5,25,45,0.75)" />
         </View>
       </Specimen>
     </Card>
+  );
+}
+
+/** A line of text over a photo, where a text shadow does its work. */
+function ShadowPhoto(props: { photo: PhotoName; label: string; color: string; shadow: string }) {
+  return (
+    <View style={{ flex: 1, height: terminal ? TERMINAL_ROW : 96, borderRadius: radius.control, borderCurve: "continuous", overflow: "hidden", backgroundColor: colors.raised }}>
+      {/* A terminal has no photo to set the text on, so the line uses its own color. */}
+      <If when={!terminal}>
+        <Image src={photoUrl(props.photo, "small")} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, objectFit: "cover" }} />
+      </If>
+      {/* The padding keeps the shadow inside the text's own box. */}
+      <Text style={{ numberOfLines: 1, padding: terminal ? 0 : 14, fontSize: 19, fontWeight: "600", color: terminal ? colors.text : props.color, textShadow: props.shadow }}>{props.label}</Text>
+    </View>
   );
 }
 

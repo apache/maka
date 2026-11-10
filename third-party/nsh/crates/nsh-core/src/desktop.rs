@@ -1,18 +1,35 @@
-//! What only desktops have: the window's title and title bar, the
-//! application menu, context menus and keyboard shortcuts (TS
-//! `nsh/desktop`). The platforms get them as [`DesktopCommand`]s on the
-//! root and report a chosen menu item as [`crate::EventKind::Menu`];
-//! mobile platforms ignore them.
+//! What only desktops have: windows ([`window`]), the application menu,
+//! context menus and keyboard shortcuts (TS `nsh/desktop`). The platforms
+//! get them as [`DesktopCommand`]s on a window's root node (the main
+//! window's is the root) and report a chosen menu item as
+//! [`crate::EventKind::Menu`]; mobile platforms ignore them. The platforms
+//! report the main window's state in the environment ([`WindowState`]),
+//! the other windows' as [`WindowEvent`]s, and the displays with their own
+//! message ([`Display`]).
 
 use std::sync::Arc;
 
 use crate::{
+    ImageSource,
     element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropEnum, PropError, TsTypes},
     geometry::{Point, Points},
     keymap::{self, Keystroke, Modifiers, When},
 };
 
-/// How the window's title bar looks (`Window.setTitleBar`).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod menu_icon;
+pub mod window;
+mod window_state;
+
+pub use window::{
+    Backdrop, CloseReason, MainWindowOptions, OpenWindow, ProgressState, ResizeEdge, SizeToContent,
+    TitleBarOptions, WindowAttributes, WindowBackend, WindowCloseCause, WindowControl, WindowEvent,
+    WindowKind, WindowMode, WindowOptions, WindowPointerEvents, WindowPosition, WindowProgress,
+    WindowRequest, Workspaces,
+};
+pub use window_state::{Display, DisplayId, WindowPlacement, WindowState};
+
+/// How a window's title bar looks ([`TitleBarOptions::style`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
 pub enum TitleBarStyle {
     /// The system's title bar, above the app.
@@ -26,7 +43,7 @@ pub enum TitleBarStyle {
     Hidden,
 }
 
-/// When the window's menu bar shows (`Window.setMenuBar`), where the app's
+/// When the window's menu bar shows (`Menu.setMenuBar`), where the app's
 /// window draws one (the GPUI backend on Windows and Linux).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
 pub enum MenuBarMode {
@@ -40,7 +57,7 @@ pub enum MenuBarMode {
     AutoHide,
 }
 
-/// A window's frame (`Window.setFrame`): the part of it to move, in
+/// A window's frame (`WindowRef.setBounds`): the part of it to move, in
 /// points, in screen coordinates; a field left out keeps its value. The
 /// origin is the window's top left corner, measured from the top left of
 /// the primary screen (the one with the menu bar on macOS) with `y`
@@ -54,11 +71,13 @@ pub struct WindowFrame {
     /// keeps the top edge where it is (the window grows and shrinks at its
     /// bottom edge).
     pub y: Option<Points>,
-    /// Its outer width on macOS / Windows, GTK default width on Linux.
+    /// Its outer width on macOS / Windows, GTK default width on Linux;
+    /// in GPUI windows, the content's width (at least 1 point).
     pub width: Option<Points>,
-    /// Its outer height on macOS / Windows, GTK default height on Linux.
+    /// Its outer height on macOS / Windows, GTK default height on Linux;
+    /// in GPUI windows, the content's height (at least 1 point).
     pub height: Option<Points>,
-    /// Animates the change on macOS (false by default).
+    /// Animates the change on macOS (false by default; GPUI ignores it).
     pub animated: Option<bool>,
 }
 
@@ -66,7 +85,7 @@ pub struct WindowFrame {
 impl JsValue for WindowFrame {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("WindowFrame", |_| {
-            "/** A window's frame (`Window.setFrame`): the part of it to move, in points, in screen coordinates; a field left out keeps its value. */\n\
+            "/** A window's frame (`WindowRef.setBounds`): the part of it to move, in points, in screen coordinates; a field left out keeps its value. */\n\
              export interface WindowFrame {\n  \
              /** Its top left corner, from the primary screen's top left corner, `y` growing down. A height changed without a `y` keeps the top edge where it is: the window grows and shrinks at its bottom edge. */\n  \
              origin?: Partial<Point>;\n  \
@@ -138,18 +157,31 @@ impl JsValue for WindowFrame {
     }
 }
 
-/// How high a window floats (`Window.setLevel`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
+/// How high a window floats (its `level`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PropEnum)]
 pub enum WindowLevel {
     /// The normal level.
     #[default]
     Normal,
     /// Above normal windows: a floating palette or a widget.
     Floating,
+    /// Above the Dock and the taskbar (an overlay, a launcher).
+    #[prop(rename = "aboveDock")]
+    AboveDock,
     /// macOS's desktop icon level; on Windows, moves to the bottom of
     /// the current z-order (later activation can raise the window).
     #[prop(rename = "desktopIcon")]
     DesktopIcon,
+}
+
+/// Whether a window has the system's frame (its `frame`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PropEnum)]
+pub enum WindowFrameStyle {
+    /// The system's title bar and border.
+    #[default]
+    Default,
+    /// No title bar or border: the app draws everything.
+    None,
 }
 
 /// A key of a [`Shortcut`].
@@ -648,6 +680,8 @@ pub struct MenuAction {
     /// When its shortcut chooses it while a text field has the keyboard
     /// focus (`when`); [`When::Always`] unless the app says otherwise.
     pub when: When,
+    /// What it shows beside its label, the app's own image ([`menu_icon`]).
+    pub icon: Option<ImageSource>,
 }
 
 impl MenuAction {
@@ -679,10 +713,27 @@ pub enum MenuItem {
         enabled: bool,
         /// Its items.
         items: Vec<MenuItem>,
+        /// What it shows beside its label ([`menu_icon`]), but for the
+        /// top-level menus of a menu bar, which show their titles alone.
+        icon: Option<ImageSource>,
     },
 }
 
 impl MenuItem {
+    /// Calls `f` with the icon of every item of `items`, submenus' too.
+    pub fn each_icon<'a>(items: &'a [MenuItem], f: &mut impl FnMut(&'a ImageSource)) {
+        for item in items {
+            match item {
+                MenuItem::Action(action) => action.icon.iter().for_each(&mut *f),
+                MenuItem::Submenu { items, icon, .. } => {
+                    icon.iter().for_each(&mut *f);
+                    MenuItem::each_icon(items, f);
+                }
+                MenuItem::Separator => {}
+            }
+        }
+    }
+
     /// Calls `f` with every action of `items`, submenus' too.
     pub fn each_action<'a>(items: &'a [MenuItem], f: &mut impl FnMut(&'a MenuAction)) {
         for item in items {
@@ -722,37 +773,30 @@ impl MenuItem {
     }
 }
 
-/// A desktop command (on the root).
+/// A desktop command, on a window's root node (the root for the main
+/// window and what is the app's: menus, the tray, global shortcuts).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DesktopCommand {
-    /// The window's title.
-    SetTitle(String),
-    /// The title bar's style.
-    SetTitleBar {
-        /// Shown or hidden.
-        style: TitleBarStyle,
-        /// The height of the app's own title bar, in points: the window
-        /// controls are centered in it (Windows' caption buttons fill it);
-        /// `None` for the platform's height. On macOS this selects a native
-        /// toolbar style; the environment reports its actual height.
-        height: Option<Points>,
-    },
-    /// Minimizes the window.
-    Minimize,
-    /// Maximizes the window, or restores it when it is maximized.
-    ToggleMaximize,
-    /// Enters or leaves full screen.
-    ToggleFullScreen,
-    /// Moves and sizes the window (screen coordinates, points; a field
-    /// left out keeps its value).
-    SetFrame(WindowFrame),
-    /// The window's level (a floating window stays above normal ones).
-    SetLevel(WindowLevel),
-    /// Brings the window to the front of its level and focuses it (the app
-    /// activates).
-    OrderFront,
-    /// Closes the window (the app ends with its last window).
-    Close,
+    /// Shows the dialog root the command is addressed to in a window of its
+    /// own, until the node is removed. Sent before the node is inserted; a
+    /// platform without windows of its own ignores it (the runtime does not
+    /// send it there).
+    OpenWindow(Box<OpenWindow>),
+    /// The window's attributes that changed since the last commit (the
+    /// fields set; one command per window and commit).
+    SetAttributes(Box<WindowAttributes>),
+    /// A request to the window.
+    Request(WindowRequest),
+    /// Quits the app, as its `quit` menu role does: its windows close and
+    /// its run ends, also when closing the window would leave it running
+    /// (a window kept hidden, a tray icon). A view embedded in another app
+    /// leaves the app's lifecycle to that app.
+    Quit,
+    /// Quits the app as [`DesktopCommand::Quit`] does, then starts it again
+    /// with the same arguments once this process has exited
+    /// ([`crate::restart`]). A view embedded in another app leaves the
+    /// app's lifecycle to that app: nothing happens there.
+    Restart,
     /// The application menu (macOS's menu bar, the window's menu bar on
     /// Windows and Linux; not shown there while the title bar is hidden,
     /// its shortcuts still work); `None` restores the platform's default.
@@ -767,6 +811,64 @@ pub enum DesktopCommand {
         /// Where its top left corner goes.
         at: Option<Point<Points>>,
     },
+    /// Shows the app's icon in the system tray (the notification area on
+    /// Windows, the menu bar's status items on macOS, a StatusNotifierItem
+    /// on Linux), or changes it; `None` removes it. One per app: the last
+    /// window's wins.
+    SetTray(Option<Tray>),
+    /// Registers `shortcut` system-wide, whichever app has the keyboard: the
+    /// root's [`crate::EventKind::Menu`] reports `id` with `registered`
+    /// (whether the system took it), then `id` alone at each press.
+    RegisterGlobalShortcut {
+        /// Reported at each press (not 0).
+        id: u32,
+        /// The keystroke.
+        shortcut: Shortcut,
+    },
+    /// Gives back the global shortcut registered as `id`.
+    UnregisterGlobalShortcut(u32),
+}
+
+impl DesktopCommand {
+    /// A command about a window that the core keeps a record of or adjusts
+    /// (opening one, its attributes, a placement to fit).
+    /// It is addressed to one window: opening it, its attributes or a
+    /// request.
+    pub(crate) fn is_window_command(&self) -> bool {
+        matches!(
+            self,
+            DesktopCommand::OpenWindow(_)
+                | DesktopCommand::SetAttributes(_)
+                | DesktopCommand::Request(_)
+        )
+    }
+
+    pub(crate) fn is_windows(&self) -> bool {
+        matches!(
+            self,
+            DesktopCommand::OpenWindow(_)
+                | DesktopCommand::SetAttributes(_)
+                | DesktopCommand::Request(WindowRequest::SetPlacement(_))
+        )
+    }
+}
+
+/// The app's icon in the system tray ([`DesktopCommand::SetTray`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct Tray {
+    /// The icon, the app's own image (an SVG is a template, drawn in the
+    /// panel's text color where the platform has such icons: macOS);
+    /// `None`: the app's icon where the platform has one.
+    pub icon: Option<ImageSource>,
+    /// Shown when the pointer rests on it; `""` for the app's name.
+    pub tooltip: String,
+    /// Its menu: opened by a secondary click (a primary one too when
+    /// [`Self::click`] is 0); empty for none.
+    pub menu: Arc<[MenuItem]>,
+    /// Reported as [`crate::EventKind::Menu`] when the icon is clicked
+    /// (primary button); 0: the click opens the menu.
+    pub click: u32,
 }
 
 pub(crate) fn title_bar_height(height: Option<Points>) -> Option<Points> {
@@ -888,6 +990,7 @@ mod tests {
                 checked: None,
                 role,
                 when: When::Always,
+                icon: None,
             })
         };
         let menu = vec![MenuItem::Submenu {
@@ -898,6 +1001,7 @@ mod tests {
                 MenuItem::Separator,
                 action(0, copy, Some(MenuRole::Copy)),
             ],
+            icon: None,
         }];
         assert_eq!(MenuItem::find_shortcut(&menu, &new).map(|a| a.id), Some(1));
         // Text fields keep their own shortcuts.
@@ -914,6 +1018,7 @@ mod tests {
             checked: None,
             role: None,
             when,
+            icon: None,
         };
         let fires = |shortcut, when| item(shortcut, when).fires_while_editing();
         assert!(fires("ctrl+z", When::Always));

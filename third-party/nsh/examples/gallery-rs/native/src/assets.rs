@@ -32,7 +32,7 @@ mod tests {
                 size(px(64.0), px(64.0))
             )
         );
-        assert_eq!(BOUNCE.size, size(px(96.0), px(96.0)));
+        assert_eq!(BOUNCE.size, size(px(192.0), px(192.0)));
         assert_eq!(
             PACIFICO,
             FontAsset {

@@ -36,6 +36,7 @@
 //! of an app's crate, which need no QuickJS for a Rust root.
 
 mod animation;
+mod audio;
 mod keyboard;
 #[cfg(feature = "live")]
 mod live;
@@ -43,6 +44,9 @@ mod menus;
 mod net;
 mod pointer;
 mod speech;
+mod windows;
+
+pub use audio::AudioCall;
 mod stub;
 
 use std::{
@@ -73,7 +77,7 @@ pub use self::{
 };
 use crate::{
     failure,
-    screen::{Back, Contact, InputResult, Pick, Screen},
+    screen::{Back, Pick, Screen},
     selector::Selector,
 };
 
@@ -133,7 +137,7 @@ impl MountSink for ChannelSink {
 /// animations and what waits for a frame run), laying text out with
 /// [`ApproxTextEngine`]: the engine, and the batches it sends.
 pub fn start(config: EngineConfig) -> std::io::Result<(Engine, Receiver<MountBatch>)> {
-    launch(config).map(|launched| (launched.engine, launched.batches))
+    launch(config, Vec::new()).map(|launched| (launched.engine, launched.batches))
 }
 
 /// A started engine and what it sends.
@@ -145,7 +149,12 @@ struct Launched {
     wanted: Option<Arc<AtomicBool>>,
 }
 
-fn launch(config: EngineConfig) -> std::io::Result<Launched> {
+/// [`start`], the platform reporting `displays` before the app first
+/// renders.
+fn launch(
+    config: EngineConfig,
+    displays: Vec<nsh_core::desktop::Display>,
+) -> std::io::Result<Launched> {
     let (batches, batches_rx) = crossbeam_channel::unbounded();
     let (errors, errors_rx) = crossbeam_channel::unbounded();
     let control = Arc::new(OnceLock::new());
@@ -156,7 +165,16 @@ fn launch(config: EngineConfig) -> std::io::Result<Launched> {
         control: control.clone(),
         wanted: wanted.clone(),
     };
-    let engine = Engine::start(config, || ApproxTextEngine, sink)?;
+    let engine = Engine::start_with(
+        config,
+        || ApproxTextEngine,
+        sink,
+        |control| {
+            if !displays.is_empty() {
+                control.set_displays(displays);
+            }
+        },
+    )?;
     let _ = control.set(engine.control());
     Ok(Launched {
         engine,
@@ -189,7 +207,7 @@ pub enum DialogAnswer {
 /// Answers a pick: the files the user picks for the request (none: the
 /// picker cancelled).
 type PickHandler =
-    Box<dyn FnMut(&nsh_core::picker::PickRequest) -> Vec<nsh_core::picker::PickedFile> + Send>;
+    Box<dyn FnMut(&nsh_core::picker::Pick) -> Vec<nsh_core::picker::PickedFile> + Send>;
 
 /// Who answers the picks a step asks for.
 enum Picks {
@@ -283,6 +301,9 @@ pub struct Headless {
     /// The recognizer the test speaks into; `None` when the config gave
     /// its own (`EngineConfig::speech`).
     speech: Option<speech::FakeSpeech>,
+    /// The speaker the app plays to; `None` when the config gave its own
+    /// (`EngineConfig::audio`).
+    audio: Option<audio::FakeAudio>,
     step: String,
     applied: u64,
     /// The app left (`process.exit`, `Command::ExitApp`): no more batches
@@ -305,6 +326,9 @@ pub struct Headless {
     /// Where the app's `nsh/host` calls go (the web page's host).
     #[cfg(feature = "js")]
     host_calls: Option<HostCalls>,
+    /// The app's windows, on a desktop ([`windows`]); `None` elsewhere, and
+    /// when the config gives its own windows (`EngineConfig::windows`).
+    windows: Option<windows::Windows>,
 }
 
 impl Headless {
@@ -314,6 +338,20 @@ impl Headless {
         if let Some(speech) = &speech {
             config.speech = Some(Arc::new(speech.clone()));
         }
+        let audio = config.audio.is_none().then(audio::FakeAudio::default);
+        if let Some(audio) = &audio {
+            config.audio = Some(Arc::new(audio.clone()));
+        }
+        // A desktop's windows: the main one, focused, on one display, and
+        // those the app opens.
+        let windows = (config.environment.os.is_desktop() && config.windows.is_none())
+            .then(|| windows::Windows::new(config.viewport));
+        if let Some(windows) = &windows
+            && config.environment.window_state.is_none()
+        {
+            config.environment.window_state = Some(windows.main());
+        }
+        let displays = windows.as_ref().map(|w| w.displays()).unwrap_or_default();
         let environment = config.environment;
         let viewport = config.viewport;
         let clock = config.clock.clone();
@@ -323,7 +361,7 @@ impl Headless {
             batches,
             errors,
             wanted,
-        } = launch(config)?;
+        } = launch(config, displays)?;
         let mut screen = Screen::default();
         screen.set_viewport(viewport);
         Ok(Headless {
@@ -341,6 +379,7 @@ impl Headless {
             picked_paths: Vec::new(),
             save_path: None,
             speech,
+            audio,
             step: "open".to_owned(),
             applied: 0,
             exited: false,
@@ -353,6 +392,7 @@ impl Headless {
             last_press: None,
             #[cfg(feature = "js")]
             host_calls: None,
+            windows,
         })
     }
 
@@ -494,6 +534,29 @@ impl Headless {
         self.done()
     }
 
+    /// The step `openWithUrl(<url>)`: the system hands the app `url`, a
+    /// link that opens it, as a platform reports it (`UrlScheme.on("open")`
+    /// gets it when the app claims its scheme); then waits until the app
+    /// is quiet.
+    pub fn open_with_url(&mut self, url: &str) -> Result<(), String> {
+        self.step(format!("openWithUrl({url})"));
+        self.send_url_scheme(url);
+        self.done()
+    }
+
+    /// Reports `url` as a link the system handed the app, without a step:
+    /// the one that launches it.
+    pub fn send_url_scheme(&self, url: &str) {
+        self.engine.control().dispatch_event(
+            ROOT_ID,
+            EventKind::UrlScheme,
+            EventPayload::Map(vec![(
+                nsh_core::url_scheme::URL,
+                PayloadValue::Str(url.to_owned()),
+            )]),
+        );
+    }
+
     /// The step `setViewport(<w>, <h>)`: the surface becomes `size` (a
     /// rotation, a resized window), as a platform reports it.
     pub fn set_viewport(&mut self, size: Size<Points>) -> Result<(), String> {
@@ -501,6 +564,11 @@ impl Headless {
         self.viewport = size;
         self.screen.set_viewport(size);
         self.environment.window = size;
+        if let Some(windows) = &mut self.windows {
+            windows.resize_main(size);
+            self.environment.window_state = Some(windows.main());
+            windows.take_reports();
+        }
         self.engine.control().resize(size);
         self.engine.control().set_environment(self.environment);
         self.done()
@@ -567,11 +635,11 @@ impl Headless {
         self.done()
     }
 
-    /// Answers the picks steps ask for (`Picker.pickImages`) with
+    /// Answers the picks steps ask for (`Picker.pickImages`, `Picker.pickFiles`) with
     /// `handler`, the files the user picks, instead of cancelling them.
     pub fn on_pick(
         &mut self,
-        handler: impl FnMut(&nsh_core::picker::PickRequest) -> Vec<nsh_core::picker::PickedFile>
+        handler: impl FnMut(&nsh_core::picker::Pick) -> Vec<nsh_core::picker::PickedFile>
         + Send
         + 'static,
     ) {
@@ -613,12 +681,12 @@ impl Headless {
     }
 
     /// The oldest pick asked and not answered yet.
-    pub fn pending_pick(&self) -> Option<nsh_core::picker::PickRequest> {
+    pub fn pending_pick(&self) -> Option<nsh_core::picker::Pick> {
         self.screen.pending_pick().map(|(_, request)| request)
     }
 
     /// The picks the app asked for so far, in order.
-    pub fn picks(&self) -> Vec<nsh_core::picker::PickRequest> {
+    pub fn picks(&self) -> Vec<nsh_core::picker::Pick> {
         self.screen.picks()
     }
 
@@ -673,6 +741,27 @@ impl Headless {
         self.done()
     }
 
+    /// What the app asked of the speaker so far (`Sound`, `AudioPlayer`),
+    /// in order. Headless apps play sound: sounds decode as WAV, players
+    /// play a minute of their source at once and end when the test says
+    /// ([`Headless::end_audio`]).
+    pub fn audio_calls(&self) -> Vec<AudioCall> {
+        self.audio
+            .as_ref()
+            .map(audio::FakeAudio::calls)
+            .unwrap_or_default()
+    }
+
+    /// The players playing reach their end (`end`; those that loop start
+    /// again), then waits until the app is quiet. Fails when none plays.
+    pub fn end_audio(&mut self) -> Result<(), String> {
+        self.audio
+            .clone()
+            .ok_or_else(|| "the app plays sound with EngineConfig::audio".to_owned())?
+            .end()?;
+        self.done()
+    }
+
     fn fake_speech(&self) -> Result<speech::FakeSpeech, String> {
         self.speech
             .clone()
@@ -709,21 +798,9 @@ impl Headless {
     }
 
     fn apply(&mut self, batch: &MountBatch) {
-        let focused = self
-            .screen
-            .focused()
-            .or(self.screen.key_focus())
-            .filter(|old| {
-                !batch
-                    .items
-                    .iter()
-                    .any(|item| matches!(item, MountItem::Delete { id } if id == old))
-            });
-        for item in &batch.items {
-            self.screen.apply_item(item);
-            self.focus_call(item);
-        }
-        self.report_focus_change(focused);
+        let focused = self.screen.focused();
+        self.screen.apply(batch);
+        self.focus_calls(batch, focused);
         self.exited |= batch.items.iter().any(|item| {
             matches!(
                 item,
@@ -735,6 +812,18 @@ impl Headless {
         });
         for item in &batch.items {
             self.animator.apply(item);
+        }
+        if let Some(windows) = &mut self.windows {
+            for item in &batch.items {
+                match item {
+                    MountItem::Command {
+                        id,
+                        command: Command::Desktop(command),
+                    } => windows.command(*id, command),
+                    MountItem::Remove { id } | MountItem::Delete { id } => windows.removed(*id),
+                    _ => {}
+                }
+            }
         }
         #[cfg(feature = "js")]
         if let Some(calls) = &mut self.host_calls {
@@ -761,26 +850,6 @@ impl Headless {
     /// animations.
     fn react(&mut self) {
         let control = self.engine.control();
-        for result in self.screen.take_input_results() {
-            match result {
-                InputResult::CancelTouch(id) => control.cancel_touch(id),
-                InputResult::SetStates(id, states) => control.set_states(id, states),
-                InputResult::RetireListCell {
-                    id,
-                    request,
-                    focus_path,
-                } => {
-                    let retired = focus_path.is_none();
-                    if let Some(path) = focus_path {
-                        control.set_focus_path(path);
-                    }
-                    control.retire_list_cell(id, request, retired);
-                }
-            }
-        }
-        // A later source removal in the same batch may have revoked a focus
-        // that refused retirement earlier in that batch.
-        control.set_focus_path(self.screen.focus_path());
         for id in self.screen.take_scrolled() {
             if let Some(scroll) = self.screen.scroll(id) {
                 let (x, y) = (scroll.x, scroll.y);
@@ -845,7 +914,100 @@ impl Headless {
         if self.screen.take_back_asked() {
             self.go_back(false);
         }
+        self.report_windows();
         self.report_finished();
+    }
+
+    /// Reports what changed of the app's windows, as a platform does: a
+    /// window of the app's own on its root, the main window in the
+    /// environment; the views of a window off the screen are not found.
+    fn report_windows(&mut self) {
+        let Some(windows) = &mut self.windows else {
+            return;
+        };
+        let control = self.engine.control();
+        let mut environment = false;
+        for report in windows.take_reports() {
+            match report {
+                windows::Report::Main(state) => {
+                    self.environment.window_state = Some(state);
+                    environment = true;
+                }
+                windows::Report::Window(root, event) => control.dispatch_event(
+                    root,
+                    EventKind::Window,
+                    EventPayload::Window(Box::new(event)),
+                ),
+                windows::Report::Hidden(root, hidden) => {
+                    self.screen.set_window_hidden(root, hidden);
+                }
+                windows::Report::RootSize(root, size) => {
+                    control.set_root_size(root, size, Default::default());
+                }
+            }
+        }
+        if environment {
+            control.set_environment(self.environment);
+        }
+        // `sizeToContent` on the main window: its viewport becomes that size.
+        if let Some(size) = self.windows.as_mut().and_then(|w| w.take_main_resize())
+            && size != self.viewport
+        {
+            self.viewport = size;
+            self.screen.set_viewport(size);
+            self.environment.window = size;
+            if let Some(windows) = &mut self.windows {
+                windows.resize_main(size);
+                self.environment.window_state = Some(windows.main());
+                windows.take_reports();
+            }
+            control.resize(size);
+            control.set_environment(self.environment);
+        }
+    }
+
+    /// A pointer acts in the window view `id` is in: the platform activates
+    /// that window first (the one that had the focus loses it).
+    fn activate_window_of(&mut self, id: NodeId) {
+        let window = self.screen.window_of(id);
+        if let Some(windows) = &mut self.windows {
+            windows.pressed_in(window);
+        }
+        self.report_windows();
+    }
+
+    /// The state of the app's window `id` (`"main"`, or the id it opened
+    /// one with) as the platform reports it; `None` while it is not open
+    /// (`app.window(id).state()`).
+    pub fn window_state(
+        &mut self,
+        id: &str,
+    ) -> Result<Option<nsh_core::desktop::WindowState>, String> {
+        self.catch_up();
+        let windows = self.windows.as_ref().ok_or_else(no_windows)?;
+        Ok(self
+            .screen
+            .window_root(id)
+            .and_then(|root| windows.state(root)))
+    }
+
+    /// The step `window(<id>).pressClose()`: the user presses the close
+    /// button of the app's window `id`: the window reports the press
+    /// (`onClosePress`, reason `closeButton`) and closes when its
+    /// `closeOnPress` lets it; then waits until the app is quiet.
+    pub fn press_window_close(&mut self, id: &str) -> Result<(), String> {
+        self.step(format!("window({id}).pressClose"));
+        self.catch_up();
+        let root = self
+            .screen
+            .window_root(id)
+            .ok_or_else(|| format!("no window {id:?} is open"))?;
+        let windows = self.windows.as_mut().ok_or_else(no_windows)?;
+        windows
+            .press_close(root)
+            .map_err(|e| format!("cannot press the close button of window {id:?}: {e}"))?;
+        self.report_windows();
+        self.done()
     }
 
     fn report_finished(&mut self) {
@@ -1369,12 +1531,29 @@ impl Headless {
     /// whose test id, label or text it is), sending the view's
     /// `onPressDown`, `onPressUp` and `onPress`, inside a finger going down
     /// and lifting on it as platforms report it to the views around it
-    /// that listen to touches (an overlay's `onPressOutside` hears it).
+    /// that listen to touches (an overlay's `onPressOutside` hears it). A
+    /// text field that listens to presses takes the focus first, as a tap
+    /// in it does.
     pub fn press(&mut self, selector: &str) -> Result<(), String> {
         let parsed = Selector::parse(selector)?;
         self.step(format!("press({selector})"));
         let pick = self.screen.pressable(&parsed);
         let id = self.picked(pick, selector, "pressable view")?;
+        // A real finger lands where the view is drawn: a view drawn over it
+        // there takes the press, so the step fails as the user would.
+        if let Some(target) = self.screen.bounds_in_root(id) {
+            let point = self
+                .screen
+                .press_point(&parsed, id)
+                .map_or(target.center(), |p| target.origin + p);
+            if let Some(cover) = self.screen.covering(id, point) {
+                return Err(format!(
+                    "{}; {}",
+                    failure::covered(selector, &self.screen.selector_of(cover)),
+                    self.on_screen()
+                ));
+            }
+        }
         let at = self
             .screen
             .canvas_node(&parsed)
@@ -1383,24 +1562,28 @@ impl Headless {
                     .bounds_in_root(canvas)
                     .map(|b| b.origin + center)
             });
+        self.activate_window_of(id);
         // The finger, as platforms report it to the views around it that
         // listen to touches (an overlay's `onPressOutside` among them).
         let path = self.screen.touch_path(id);
-        let contact = self
-            .screen
-            .begin_contact(0, id, path.clone(), !path.is_empty());
-        if contact.reporting() {
-            self.send_touch(&contact, nsh_core::TouchPhase::Start, path.clone(), at);
+        if !path.is_empty() {
+            self.send_touch(id, nsh_core::TouchPhase::Start, path.clone(), at);
+        }
+        // A text field that listens to presses (a combobox's) takes the
+        // focus as a tap's does, then hears the press.
+        if self.screen.input(id).is_some_and(|i| i.config.editable)
+            && self.screen.focused() != Some(id)
+        {
+            self.move_focus(Some(id));
         }
         let inside = self.screen.press_point(&parsed, id);
         let payload = self.press_payload(id, inside);
         for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
             self.send(id, kind, payload.clone());
         }
-        if contact.reporting() {
-            self.send_touch(&contact, nsh_core::TouchPhase::End, path, at);
+        if !path.is_empty() {
+            self.send_touch(id, nsh_core::TouchPhase::End, path, at);
         }
-        self.screen.end_contact(&contact);
         self.done()
     }
 
@@ -1429,21 +1612,18 @@ impl Headless {
             (Some(page), Some(target)) => page - target.origin,
             _ => at,
         };
+        self.activate_window_of(id);
         let path = self.screen.touch_path(id);
-        let contact = self
-            .screen
-            .begin_contact(0, id, path.clone(), !path.is_empty());
-        if contact.reporting() {
-            self.send_touch(&contact, nsh_core::TouchPhase::Start, path.clone(), page);
+        if !path.is_empty() {
+            self.send_touch(id, nsh_core::TouchPhase::Start, path.clone(), page);
         }
         let payload = self.press_payload(id, Some(at));
         for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
             self.send(id, kind, payload.clone());
         }
-        if contact.reporting() {
-            self.send_touch(&contact, nsh_core::TouchPhase::End, path, page);
+        if !path.is_empty() {
+            self.send_touch(id, nsh_core::TouchPhase::End, path, page);
         }
-        self.screen.end_contact(&contact);
         self.done()
     }
 
@@ -1453,9 +1633,16 @@ impl Headless {
     /// press), as the platforms count them. `None` when the view has no
     /// bounds.
     fn press_payload(&mut self, view: NodeId, at: Option<Point<Points>>) -> EventPayload {
-        // A pointer's press takes the keyboard focus off the view Tab
-        // gave it to.
-        if self.screen.key_focus().is_some_and(|id| id != view) {
+        // In a terminal a press gives the stop it is on (or in) the
+        // focus, as terminal apps do, and Tab goes on from there.
+        let stop = (self.environment.idiom == nsh_core::platform::Idiom::Terminal)
+            .then(|| self.screen.stop_around(view))
+            .flatten();
+        if let Some(stop) = stop {
+            self.move_focus(Some(stop));
+        } else if self.screen.key_focus().is_some_and(|id| id != view) {
+            // A pointer's press takes the keyboard focus off the view Tab
+            // gave it to.
             self.move_focus(None);
         }
         let Some(bounds) = self.screen.bounds_in_root(view) else {
@@ -1496,24 +1683,19 @@ impl Headless {
         let pick = self.screen.long_pressable(&parsed);
         let id = self.picked(pick, selector, "pressable view")?;
         let delay = self.screen.long_press_delay(id).unwrap_or(500.0).max(0.0);
+        self.activate_window_of(id);
         let path = self.screen.touch_path(id);
-        let contact = self
-            .screen
-            .begin_contact(0, id, path.clone(), !path.is_empty());
-        if contact.reporting() {
-            self.send_touch(&contact, nsh_core::TouchPhase::Start, path.clone(), None);
+        if !path.is_empty() {
+            self.send_touch(id, nsh_core::TouchPhase::Start, path.clone(), None);
         }
         let payload = self.press_payload(id, None);
         self.send(id, EventKind::PressDown, payload.clone());
         self.elapse(Duration::from_secs_f64(f64::from(delay) / 1000.0));
-        if contact.active() {
-            self.send(id, EventKind::LongPress, payload.clone());
-            self.send(id, EventKind::PressUp, payload);
-            if contact.reporting() {
-                self.send_touch(&contact, nsh_core::TouchPhase::End, path, None);
-            }
+        self.send(id, EventKind::LongPress, payload.clone());
+        self.send(id, EventKind::PressUp, payload);
+        if !path.is_empty() {
+            self.send_touch(id, nsh_core::TouchPhase::End, path, None);
         }
-        self.screen.end_contact(&contact);
         self.done()
     }
 
@@ -1627,7 +1809,15 @@ impl Headless {
         if self.screen.input(id).is_some_and(|i| !i.config.editable) {
             return Err(format!("the input `{selector}` is not editable"));
         }
-        self.move_focus(Some(id));
+        if self.screen.focused() != Some(id) {
+            if let Some(old) = self.screen.focused() {
+                self.set_focused_state(old, false);
+                self.send(old, EventKind::Blur, EventPayload::None);
+            }
+            self.screen.set_focused(Some(id));
+            self.set_focused_state(id, true);
+            self.send(id, EventKind::Focus, EventPayload::None);
+        }
         Ok(id)
     }
 
@@ -1642,21 +1832,17 @@ impl Headless {
     /// root with the views around it that listen to touches.
     fn send_touch(
         &self,
-        contact: &Contact,
+        target: NodeId,
         phase: nsh_core::TouchPhase,
         path: Vec<NodeId>,
         at: Option<Point<Points>>,
     ) {
-        if !contact.active() {
-            return;
-        }
-        let target = contact.target;
         let location = at.and_then(|p| self.screen.bounds_in_root(target).map(|b| p - b.origin));
         let touch = nsh_core::TouchEvent {
             phase,
             timestamp: 0.0,
             points: vec![nsh_core::TouchPoint {
-                id: contact.id,
+                id: 0,
                 target,
                 path,
                 page: at.unwrap_or_default(),
@@ -1751,9 +1937,6 @@ impl Headless {
         self.send(id, EventKind::SubmitEditing, payload);
         if behavior == SubmitBehavior::BlurAndSubmit {
             self.screen.set_focused(None);
-            self.engine
-                .control()
-                .set_focus_path(self.screen.focus_path());
             self.set_focused_state(id, false);
             self.send(id, EventKind::Blur, EventPayload::None);
         }
@@ -1805,12 +1988,11 @@ impl Headless {
             let s = screen.scroll(id);
             EventPayload::Scroll(s.map_or(Point::default(), |s| point(s.x, s.y)))
         };
-        let contact = self.screen.begin_contact(1, id, Vec::new(), false);
         self.send(id, EventKind::ScrollDragStart, offset(&self.screen));
         // The core may shift the offset meanwhile (`ScrollBy`): each frame
         // moves on from where the view is.
         let mut frames = ((target - start).abs() / SCROLL_STEP).ceil() as usize * 2 + 10;
-        while contact.active() {
+        loop {
             let now = at(&self.screen);
             if (target - now).abs() < px(0.5) || frames == 0 {
                 break;
@@ -1834,14 +2016,16 @@ impl Headless {
             self.animator.scrolled(id, point(x, y));
             self.display_frame();
         }
-        if contact.active() {
-            self.send(id, EventKind::ScrollDragEnd, offset(&self.screen));
-            self.animator.scroll_ended(id);
-            self.send(id, EventKind::ScrollEnd, offset(&self.screen));
-        }
-        self.screen.end_contact(&contact);
+        self.send(id, EventKind::ScrollDragEnd, offset(&self.screen));
+        self.animator.scroll_ended(id);
+        self.send(id, EventKind::ScrollEnd, offset(&self.screen));
         self.done()
     }
+}
+
+/// Why a step on windows fails off the desktops.
+fn no_windows() -> String {
+    "the app has no windows of its own here: open it as a desktop app (`platform: \"macos\"`, \"windows\" or \"linux\")".into()
 }
 
 /// How a dialog is answered when the test says nothing, as a user backing
@@ -2313,273 +2497,6 @@ mod tests {
         app.wait_for("33 24 0 24").unwrap();
     }
 
-    #[component]
-    fn FocusTransfer() -> impl IntoElement {
-        let blurs = signal(0_u32);
-        let presses = signal(0_u32);
-        view()
-            .child(
-                view()
-                    .test_id("button")
-                    .w(px(100.0))
-                    .h(px(30.0))
-                    .on_press(move || presses.update(|n| *n += 1))
-                    .on_blur(move || blurs.update(|n| *n += 1)),
-            )
-            .child(input().test_id("field"))
-            .child(text(move || {
-                format!("Blurs {} Presses {}", blurs.get(), presses.get())
-            }))
-    }
-
-    #[test]
-    fn input_steps_transfer_pressable_focus_without_reviving_it_after_submit() {
-        let mut config = EngineConfig::new(Root::of::<FocusTransfer>());
-        config.environment.os = nsh_core::platform::Os::MacOs;
-        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
-        let mut app = Headless::start(config).unwrap();
-        app.first_render().unwrap();
-        app.press_key("tab").unwrap();
-        assert!(app.screen.key_focus().is_some());
-        app.type_text("id:field", "Ada").unwrap();
-        app.wait_for("Blurs 1 Presses 0").unwrap();
-        app.submit("id:field").unwrap();
-        app.press_key("enter").unwrap();
-        app.press_key("space").unwrap();
-        assert!(app.shows("Blurs 1 Presses 0"));
-        assert_eq!(app.screen.key_focus(), None);
-    }
-
-    #[test]
-    fn input_focus_commands_release_pressable_focus_before_blur() {
-        let mut config = EngineConfig::new(Root::of::<FocusTransfer>());
-        config.environment.os = nsh_core::platform::Os::MacOs;
-        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
-        let mut app = Headless::start(config).unwrap();
-        app.first_render().unwrap();
-        app.press_key("tab").unwrap();
-        let field = app.screen.resolve(&Selector::parse("id:field").unwrap())[0];
-        app.apply(&MountBatch {
-            items: vec![MountItem::Command {
-                id: field,
-                command: Command::Focus,
-            }],
-        });
-        app.done().unwrap();
-        app.wait_for("Blurs 1 Presses 0").unwrap();
-        app.apply(&MountBatch {
-            items: vec![MountItem::Command {
-                id: field,
-                command: Command::Blur,
-            }],
-        });
-        app.done().unwrap();
-        app.press_key("enter").unwrap();
-        assert!(app.shows("Blurs 1 Presses 0"));
-        assert_eq!(app.screen.key_focus(), None);
-    }
-
-    #[test]
-    fn replacing_a_focused_id_does_not_send_the_old_blur_to_its_replacement() {
-        let mut config = EngineConfig::new(Root::of::<FocusTransfer>());
-        config.environment.os = nsh_core::platform::Os::MacOs;
-        let mut app = Headless::start(config).unwrap();
-        app.first_render().unwrap();
-        app.press_key("tab").unwrap();
-        let old = app.screen.key_focus().unwrap();
-        let mut events = nsh_core::EventMask::default();
-        events.set(EventKind::Blur, true);
-        app.apply(&MountBatch {
-            items: vec![
-                MountItem::Delete { id: old },
-                MountItem::Create {
-                    id: old,
-                    kind: nsh_core::ViewKind::View,
-                },
-                MountItem::Insert {
-                    parent: ROOT_ID,
-                    child: old,
-                    before: None,
-                },
-                MountItem::Events { id: old, events },
-            ],
-        });
-        app.done().unwrap();
-        assert!(app.shows("Blurs 0 Presses 0"));
-        assert_eq!(app.screen.key_focus(), None);
-    }
-
-    #[component]
-    fn FocusCommands() -> impl IntoElement {
-        let focuses = signal(0_u32);
-        let blurs = signal(0_u32);
-        let presses = signal(0_u32);
-        view()
-            .child(
-                view().test_id("cell").child(
-                    view()
-                        .test_id("button")
-                        .w(px(100.0))
-                        .h(px(30.0))
-                        .focus(|s| s.opacity(0.5))
-                        .on_press(move || presses.update(|n| *n += 1))
-                        .on_focus(move || focuses.update(|n| *n += 1))
-                        .on_blur(move || blurs.update(|n| *n += 1)),
-                ),
-            )
-            .child(input().test_id("field"))
-            .child(text(move || {
-                format!(
-                    "Focuses {} Blurs {} Presses {}",
-                    focuses.get(),
-                    blurs.get(),
-                    presses.get()
-                )
-            }))
-    }
-
-    fn focus_commands_app(os: nsh_core::platform::Os) -> (Headless, NodeId, NodeId) {
-        let mut config = EngineConfig::new(Root::of::<FocusCommands>());
-        config.environment.os = os;
-        let mut app = Headless::start(config).unwrap();
-        app.first_render().unwrap();
-        let cell = app.screen.resolve(&Selector::parse("id:cell").unwrap())[0];
-        let button = app.screen.resolve(&Selector::parse("id:button").unwrap())[0];
-        (app, cell, button)
-    }
-
-    #[test]
-    fn focus_commands_keep_a_pressable_focused_through_noop_and_update_batches() {
-        let (mut app, _, button) = focus_commands_app(nsh_core::platform::Os::MacOs);
-        let opacity = Arc::new(std::sync::Mutex::new(None));
-        let seen = opacity.clone();
-        app.observe(move |_, batch| {
-            for item in &batch.items {
-                if let MountItem::ViewStyle { id, style } = item
-                    && *id == button
-                {
-                    *seen.lock().unwrap() = Some(style.opacity);
-                }
-            }
-        });
-        app.apply(&MountBatch {
-            items: vec![MountItem::Command {
-                id: button,
-                command: Command::Focus,
-            }],
-        });
-        app.done().unwrap();
-        app.wait_for("Focuses 1 Blurs 0 Presses 0").unwrap();
-        assert_eq!(app.screen.key_focus(), Some(button));
-        assert_eq!(*opacity.lock().unwrap(), Some(0.5));
-        app.apply(&MountBatch { items: vec![] });
-        app.done().unwrap();
-        app.press_key("enter").unwrap();
-        app.wait_for("Focuses 1 Blurs 0 Presses 1").unwrap();
-        assert_eq!(app.screen.key_focus(), Some(button));
-        assert_eq!(*opacity.lock().unwrap(), Some(0.5));
-    }
-
-    #[test]
-    fn focus_commands_root_blur_after_view_focus_wins_in_the_same_batch() {
-        let (mut app, _, button) = focus_commands_app(nsh_core::platform::Os::MacOs);
-        app.apply(&MountBatch {
-            items: vec![
-                MountItem::Command {
-                    id: button,
-                    command: Command::Focus,
-                },
-                MountItem::Command {
-                    id: ROOT_ID,
-                    command: Command::Blur,
-                },
-            ],
-        });
-        app.done().unwrap();
-        assert_eq!(app.screen.key_focus(), None);
-        assert_eq!(app.screen.focused(), None);
-        assert!(app.screen.focus_path().is_empty());
-        // Headless reports the net change, not a transient focus that was
-        // already cleared by the time the batch completed.
-        assert!(app.shows("Focuses 0 Blurs 0 Presses 0"));
-        app.apply(&MountBatch {
-            items: vec![MountItem::Command {
-                id: button,
-                command: Command::Focus,
-            }],
-        });
-        app.done().unwrap();
-        app.wait_for("Focuses 1 Blurs 0 Presses 0").unwrap();
-        app.apply(&MountBatch {
-            items: vec![MountItem::Command {
-                id: ROOT_ID,
-                command: Command::Blur,
-            }],
-        });
-        app.done().unwrap();
-        app.wait_for("Focuses 1 Blurs 1 Presses 0").unwrap();
-        assert_eq!(app.screen.key_focus(), None);
-    }
-
-    #[test]
-    fn focus_commands_are_applied_before_native_retirement_decisions() {
-        let (mut app, cell, button) = focus_commands_app(nsh_core::platform::Os::MacOs);
-        app.apply(&MountBatch {
-            items: vec![
-                MountItem::Command {
-                    id: button,
-                    command: Command::Focus,
-                },
-                MountItem::RetireListCell {
-                    id: cell,
-                    request: 1,
-                    roots: vec![cell],
-                },
-            ],
-        });
-        app.done().unwrap();
-        assert!(app.screen.is_attached(cell));
-        assert!(app.screen.is_attached(button));
-        assert_eq!(app.screen.key_focus(), Some(button));
-        assert!(app.screen.focus_path().contains(&cell));
-        app.wait_for("Focuses 1 Blurs 0 Presses 0").unwrap();
-        app.apply(&MountBatch {
-            items: vec![
-                MountItem::Command {
-                    id: ROOT_ID,
-                    command: Command::Blur,
-                },
-                MountItem::RetireListCell {
-                    id: cell,
-                    request: 2,
-                    roots: vec![cell],
-                },
-            ],
-        });
-        app.done().unwrap();
-        assert!(!app.screen.is_attached(cell));
-        assert!(!app.screen.is_attached(button));
-        assert_eq!(app.screen.key_focus(), None);
-        assert_eq!(app.screen.focused(), None);
-        // The detached old view receives no end-of-batch callback.
-        assert!(app.shows("Focuses 1 Blurs 0 Presses 0"));
-    }
-
-    #[test]
-    fn focus_commands_do_not_focus_pressable_views_on_mobile() {
-        let (mut app, _, button) = focus_commands_app(nsh_core::platform::Os::Ios);
-        app.apply(&MountBatch {
-            items: vec![MountItem::Command {
-                id: button,
-                command: Command::Focus,
-            }],
-        });
-        app.done().unwrap();
-        assert_eq!(app.screen.key_focus(), None);
-        assert_eq!(app.screen.focused(), None);
-        assert!(app.shows("Focuses 0 Blurs 0 Presses 0"));
-    }
-
     /// A name field that says hello and keeps what was sent.
     #[component]
     fn Form() -> impl IntoElement {
@@ -2766,342 +2683,6 @@ mod tests {
         assert!(error.starts_with("no view matches `Nothing`"), "{error}");
     }
 
-    /// Keeps one real DOM node while changing its semantic owner, so the
-    /// engine sends Remove and Insert of the same id in one native batch.
-    #[cfg(feature = "js")]
-    fn contact_app(action: &str, scrolling: bool) -> (Headless, Arc<AtomicBool>) {
-        let source = r#"
-import { mount, signal } from "nsh";
-import { append, element, insert, prop } from "nsh:rt";
-mount(() => {
-  const log = signal("");
-  const shown = signal(true);
-  const record = value => log.set(`${log()}${value}|`);
-  const root = element("view");
-  prop(root, "style", { flex: 1 });
-  const label = element("text");
-  insert(label, () => `log ${log()}`);
-  append(root, label);
-  const content = element(SCROLLING ? "scroll" : "view");
-  prop(content, "testID", "content");
-  prop(content, "style", { height: 200 });
-  prop(content, "onScrollDragEnd", () => record("scroll-end"));
-  append(root, content);
-  const destination = element("view");
-  append(root, destination);
-  const held = element("view");
-  prop(held, "testID", "held");
-  prop(held, "style", { height: 40 });
-  prop(held, "delayLongPress", 200);
-  let armed = true;
-  const surgery = () => { ACTION };
-  const arm = () => {
-    if (armed) {
-      armed = false;
-      setTimeout(surgery, SCROLLING ? 160 : 10);
-    }
-  };
-  prop(held, "onTouchStart", arm);
-  prop(held, "onTouchEnd", () => record("end"));
-  prop(held, "onPressDown", () => { record("down"); arm(); });
-  prop(held, "onLongPress", () => record("long"));
-  prop(held, "onPressUp", () => record("up"));
-  prop(held, "onPress", () => record("press"));
-  insert(content, () => shown() ? held : null);
-  const tail = element("view");
-  prop(tail, "style", { height: 1000 });
-  append(content, tail);
-  return root;
-});
-"#
-        .replace("SCROLLING", if scrolling { "true" } else { "false" })
-        .replace("ACTION", action);
-        reinsert_app(source)
-    }
-
-    #[cfg(feature = "js")]
-    fn reinsert_app(source: String) -> (Headless, Arc<AtomicBool>) {
-        let mut config = EngineConfig::new(nsh_engine::Bundle::source(source));
-        config.clock = Clock::manual(std::time::UNIX_EPOCH);
-        let mut app = Headless::start(config).unwrap();
-        let same_batch = Arc::new(AtomicBool::new(false));
-        let seen = same_batch.clone();
-        app.observe(move |_, batch| {
-            for item in &batch.items {
-                if let MountItem::Remove { id } = item
-                    && batch
-                        .items
-                        .iter()
-                        .any(|next| matches!(next,
-                            MountItem::Insert { child, .. } | MountItem::ProjectRoot { id: child, .. }
-                                if child == id))
-                {
-                    seen.store(true, Ordering::Relaxed);
-                }
-            }
-        });
-        app.first_render().unwrap();
-        (app, same_batch)
-    }
-
-    #[cfg(feature = "js")]
-    const REBIND_CONTACT: &str = r#"
-shown.set(false);
-prop(held, "onPressDown", () => record("new-down"));
-prop(held, "onLongPress", () => record("new-long"));
-prop(held, "onPressUp", () => record("new-up"));
-prop(held, "onPress", () => record("new-press"));
-prop(held, "onTouchEnd", () => record("new-end"));
-shown.set(true);
-record("rebound");
-"#;
-
-    #[cfg(feature = "js")]
-    #[test]
-    fn a_reinserted_owner_does_not_receive_the_previous_long_press_or_drag() {
-        for long in [true, false] {
-            let (mut app, same_batch) = contact_app(REBIND_CONTACT, false);
-            let original = app.screen().press_target("id:held").unwrap();
-            if long {
-                app.long_press("id:held").unwrap();
-            } else {
-                app.drag("id:held", point(px(0.0), px(4.0))).unwrap();
-            }
-            assert!(same_batch.load(Ordering::Relaxed));
-            assert_eq!(app.screen().press_target("id:held").unwrap(), original);
-            app.wait_for("log down|rebound|").unwrap();
-            // The replacement accepts a fresh physical contact normally.
-            app.press("id:held").unwrap();
-            app.wait_for("log down|rebound|new-down|new-up|new-press|new-end|")
-                .unwrap();
-        }
-    }
-
-    #[cfg(feature = "js")]
-    #[test]
-    fn an_insert_only_move_keeps_the_existing_long_press() {
-        let (mut app, same_batch) =
-            contact_app(r#"append(destination, held); record("moved");"#, false);
-        app.long_press("id:held").unwrap();
-        assert!(!same_batch.load(Ordering::Relaxed));
-        app.wait_for("log down|moved|long|up|end|").unwrap();
-    }
-
-    #[cfg(feature = "js")]
-    #[test]
-    fn a_surviving_scroll_finishes_after_its_original_row_is_reinserted() {
-        let (mut app, same_batch) = contact_app(REBIND_CONTACT, true);
-        app.drag("id:held", point(px(0.0), px(-300.0))).unwrap();
-        assert!(same_batch.load(Ordering::Relaxed));
-        let Pick::One(content) = app
-            .screen()
-            .scroll_view(&Selector::parse("id:content").unwrap())
-        else {
-            panic!("one scroll view");
-        };
-        assert_eq!(app.screen().scroll(content).map(|s| s.y), Some(px(280.0)));
-        assert!(app.screen().texts().iter().any(|text| {
-            text.contains("rebound|")
-                && text.contains("scroll-end|")
-                && !text.contains("new-up|")
-                && !text.contains("new-press|")
-                && !text.contains("new-end|")
-        }));
-    }
-
-    #[cfg(feature = "js")]
-    #[test]
-    fn a_scroll_step_stops_when_its_native_owner_is_reinserted() {
-        let (mut app, reinserted) = reinsert_app(
-            r#"
-import { mount, signal } from "nsh";
-import { append, element, insert, prop } from "nsh:rt";
-mount(() => {
-  const log = signal("");
-  const shown = signal(true);
-  const record = value => log.set(`${log()}${value}|`);
-  const root = element("view");
-  prop(root, "style", { flex: 1 });
-  const label = element("text");
-  insert(label, () => `log ${log()}`);
-  append(root, label);
-  const scroll = element("scroll");
-  prop(scroll, "testID", "scroll");
-  prop(scroll, "style", { height: 100 });
-  prop(scroll, "onScroll", () => record("move"));
-  prop(scroll, "onScrollDragStart", () => {
-    record("start");
-    setTimeout(() => {
-      shown.set(false);
-      prop(scroll, "onScroll", () => record("new-move"));
-      prop(scroll, "onScrollDragStart", () => record("new-start"));
-      prop(scroll, "onScrollDragEnd", () => record("new-drag-end"));
-      prop(scroll, "onScrollEnd", () => record("new-end"));
-      shown.set(true);
-      record("rebound");
-    }, 10);
-  });
-  const tail = element("view");
-  prop(tail, "style", { height: 1000 });
-  append(scroll, tail);
-  insert(root, () => shown() ? scroll : null);
-  return root;
-});
-"#
-            .into(),
-        );
-        app.scroll("id:scroll", px(300.0)).unwrap();
-        assert!(reinserted.load(Ordering::Relaxed));
-        assert!(app.screen().texts().iter().any(|text| {
-            text.contains("start|") && text.contains("rebound|") && !text.contains("new-")
-        }));
-        app.scroll("id:scroll", px(20.0)).unwrap();
-        assert!(app.screen().texts().iter().any(|text| {
-            text.contains("new-start|")
-                && text.contains("new-move|")
-                && text.contains("new-drag-end|")
-                && text.contains("new-end|")
-        }));
-    }
-
-    #[cfg(feature = "js")]
-    #[test]
-    fn a_reinserted_owner_does_not_inherit_the_previous_hover_path() {
-        for reenter in [false, true] {
-            let (mut app, reinserted) = reinsert_app(
-                r#"
-import { mount, signal } from "nsh";
-import { append, element, insert, prop } from "nsh:rt";
-mount(() => {
-  const log = signal("");
-  const shown = signal(true);
-  const record = value => log.set(`${log()}${value}|`);
-  const root = element("view");
-  prop(root, "style", { flex: 1 });
-  const label = element("text");
-  insert(label, () => `log ${log()}`);
-  append(root, label);
-  const held = element("view");
-  prop(held, "testID", "held");
-  prop(held, "style", { height: 40 });
-  prop(held, "class", "hover:opacity-50");
-  prop(held, "onMouseEnter", () => {
-    record("in");
-    setTimeout(() => {
-      shown.set(false);
-      prop(held, "onMouseEnter", () => record("new-in"));
-      prop(held, "onMouseLeave", () => record("new-out"));
-      shown.set(true);
-      record("rebound");
-    }, 10);
-  });
-  prop(held, "onMouseLeave", () => record("out"));
-  insert(root, () => shown() ? held : null);
-  const other = element("view");
-  prop(other, "testID", "other");
-  prop(other, "style", { height: 40 });
-  prop(other, "onMouseEnter", () => record("other-in"));
-  append(root, other);
-  return root;
-});
-"#
-                .into(),
-            );
-            app.set_environment("desktop pointer", |environment| {
-                environment.os = nsh_core::platform::Os::MacOs;
-                environment.idiom = nsh_core::platform::Idiom::Desktop;
-            })
-            .unwrap();
-            app.hover("id:held").unwrap();
-            app.run_for(Duration::from_millis(20)).unwrap();
-            assert!(reinserted.load(Ordering::Relaxed));
-            if reenter {
-                app.hover("id:held").unwrap();
-                app.wait_for("log in|rebound|new-in|").unwrap();
-            } else {
-                app.hover("id:other").unwrap();
-                app.wait_for("log in|rebound|other-in|").unwrap();
-                app.hover("id:held").unwrap();
-                app.wait_for("log in|rebound|other-in|new-in|").unwrap();
-            }
-        }
-    }
-
-    #[cfg(feature = "js")]
-    #[test]
-    fn cross_parent_modal_projection_keeps_the_native_presentation_slot() {
-        let source = r#"
-import { mount, signal } from "nsh";
-import { append, element, insert, prop } from "nsh:rt";
-mount(() => {
-  const picks = signal([]);
-  const reopened = signal(false);
-  const root = element("view");
-  prop(root, "style", { flex: 1 });
-  const result = element("text");
-  insert(result, () => `picked ${picks().join(",")}`);
-  append(root, result);
-  const button = (label, onPress) => {
-    const view = element("view");
-    prop(view, "style", { height: 40, width: 240 });
-    prop(view, "onPress", onPress);
-    const text = element("text");
-    insert(text, label);
-    append(view, text);
-    return view;
-  };
-  const modal = name => {
-    const view = element("modal");
-    prop(view, "style", { width: 320, height: 240 });
-    append(view, button("Choose", () => picks.set([...picks(), name])));
-    return view;
-  };
-  const left = element("view");
-  const right = element("view");
-  append(root, left);
-  append(root, right);
-  const older = modal("older");
-  const newer = modal("newer");
-  append(left, older);
-  append(right, newer);
-  insert(right, () => reopened() ? older : null);
-  append(newer, button("Move older modal", () => append(right, older)));
-  append(newer, button("Reopen older modal", () => {
-    reopened.set(true);
-    reopened.set(false);
-    reopened.set(true);
-  }));
-  return root;
-});
-"#;
-        let mut app =
-            Headless::start(EngineConfig::new(nsh_engine::Bundle::source(source.into()))).unwrap();
-        let projected = Arc::new(AtomicBool::new(false));
-        let seen = projected.clone();
-        app.observe(move |step, batch| {
-            if step == "press(Move older modal)"
-                && batch
-                    .items
-                    .iter()
-                    .any(|item| matches!(item, MountItem::ProjectRoot { .. }))
-            {
-                seen.store(true, Ordering::Relaxed);
-            }
-        });
-        app.first_render().unwrap();
-        app.press("text:Choose >> nth=0").unwrap();
-        app.wait_for("picked newer").unwrap();
-        app.press("Move older modal").unwrap();
-        assert!(projected.load(Ordering::Relaxed));
-        app.press("text:Choose >> nth=0").unwrap();
-        app.wait_for("picked newer,newer").unwrap();
-        // A genuine source removal ends that slot; reopening is a new
-        // presentation and now goes above the previously newer modal.
-        app.press("Reopen older modal").unwrap();
-        app.press("text:Choose >> nth=0").unwrap();
-        app.wait_for("picked newer,newer,older").unwrap();
-    }
-
     /// A list with a refresh indicator of its own, 100 tall.
     #[component]
     fn FarPull() -> impl IntoElement {
@@ -3280,6 +2861,85 @@ mount(() => {
         app.press("id:chart").unwrap();
         app.wait_for("Opens 1 presses 1 steps 1 focused false")
             .unwrap();
+    }
+
+    /// A list of 200 rows of its own, each a button showing its row.
+    #[component]
+    fn LongList() -> impl IntoElement {
+        virtual_list(200, |at| {
+            view()
+                .h(px(40.0))
+                .on_press(|| {})
+                .child(text(move || format!("Row {}", at.index())))
+        })
+        .test_id("list")
+        .estimated_item_size(px(40.0))
+        .flex_1()
+    }
+
+    /// Scrolled back and forth, a list's cells are recycled out of the order
+    /// they were made in: what reads the screen, Tab and `nth=` still find
+    /// its rows in the order they show.
+    #[test]
+    fn a_lists_recycled_rows_are_found_in_screen_order() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<LongList>())).unwrap();
+        app.first_render().unwrap();
+        for distance in [
+            300.0, 500.0, -200.0, 900.0, -700.0, 1300.0, -400.0, 250.0, -1100.0, 800.0,
+        ] {
+            app.scroll("id:list", px(distance)).unwrap();
+        }
+        let rows: Vec<u32> = app
+            .screen()
+            .texts()
+            .iter()
+            .filter_map(|t| t.strip_prefix("Row ")?.parse().ok())
+            .collect();
+        assert!(rows.len() > 10, "{rows:?}");
+        assert!(rows.windows(2).all(|w| w[1] == w[0] + 1), "{rows:?}");
+        // Tab's stops are the rows' buttons, in the same order.
+        assert_eq!(app.screen().tab_stops().len(), rows.len());
+    }
+
+    /// A page: a header and a list of 200 rows in the page's viewport.
+    #[component]
+    fn LongPage() -> impl IntoElement {
+        scroll()
+            .test_id("page")
+            .flex_1()
+            .child(text("Header").h(px(120.0)))
+            .child(
+                virtual_list(200, |at| {
+                    view()
+                        .h(px(40.0))
+                        .on_press(|| {})
+                        .child(text(move || format!("Row {}", at.index())))
+                })
+                .viewport(nsh_core::ListViewport::Parent)
+                .estimated_item_size(px(40.0)),
+            )
+    }
+
+    /// The same for a list in its parent's viewport: a plain view in the
+    /// page, its cells read in screen order all the same.
+    #[test]
+    fn a_page_lists_recycled_rows_are_found_in_screen_order() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<LongPage>())).unwrap();
+        app.first_render().unwrap();
+        for distance in [
+            300.0, 500.0, -200.0, 900.0, -700.0, 1300.0, -400.0, 250.0, -1100.0, 800.0,
+        ] {
+            app.scroll("id:page", px(distance)).unwrap();
+        }
+        let rows: Vec<u32> = app
+            .screen()
+            .texts()
+            .iter()
+            .filter_map(|t| t.strip_prefix("Row ")?.parse().ok())
+            .collect();
+        assert!(rows.len() > 10, "{rows:?}");
+        assert!(rows.windows(2).all(|w| w[1] == w[0] + 1), "{rows:?}");
+        assert_eq!(app.screen().tab_stops().len(), rows.len());
     }
 
     #[cfg(feature = "js")]

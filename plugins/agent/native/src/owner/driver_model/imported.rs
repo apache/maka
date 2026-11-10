@@ -29,6 +29,7 @@ use std::io::BufReader;
 impl DriverModel {
     pub(super) async fn imported_messages(
         &self,
+        target: ReplayTarget<'_>,
         snapshot: &Snapshot,
         path: &[RunId],
         vision: bool,
@@ -145,7 +146,7 @@ impl DriverModel {
                                     "imported model part requires assistant historical role".into(),
                                 ));
                             }
-                            if let Some(part) = preparation::assistant_part(&part)? {
+                            if let Some(part) = target.part(&part, "", None)? {
                                 assistant.push(part);
                             }
                         }

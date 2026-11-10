@@ -75,6 +75,7 @@ const textSourceExtensions = new Set([
   '.ftl',
   '.pem',
   '.astro',
+  '.c',
   '.cjs',
   '.css',
   '.csv',

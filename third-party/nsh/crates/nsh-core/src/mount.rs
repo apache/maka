@@ -78,6 +78,15 @@ pub struct WebProps {
     pub javascript_enabled: bool,
     /// Swipes go back and forward (iOS).
     pub back_forward_gestures: bool,
+    /// Website data (cookies, storage, the cache) lives only as long as
+    /// the web view, apart from the app's other web views (Android: no
+    /// HTTP cache and no saved form data). Read when the platform makes the
+    /// web view: the core keeps it from changing afterwards.
+    pub incognito: bool,
+    /// The URL schemes the page loads from the app
+    /// ([`crate::web_resource`]). Read when the platform makes the web
+    /// view, as `incognito`.
+    pub url_schemes: Vec<crate::web_resource::WebUrlScheme>,
 }
 
 impl Default for WebProps {
@@ -92,6 +101,8 @@ impl Default for WebProps {
             scrollable: true,
             javascript_enabled: true,
             back_forward_gestures: false,
+            incognito: false,
+            url_schemes: Vec::new(),
         }
     }
 }
@@ -496,6 +507,12 @@ pub struct ModalConfig {
     pub close_on_backdrop_press: bool,
     /// Swiping a sheet down closes it natively (`closeOnSwipe`).
     pub close_on_swipe: bool,
+    /// The window it shows in (desktops): [`crate::ROOT_ID`], the main
+    /// window, or the root of the app's window of its own that holds it
+    /// (a dialog opened from a `<Window>`'s content shows over that
+    /// window, not the main one). For a window's own root: the window
+    /// holding its node. The core works it out from where the node is.
+    pub window: NodeId,
 }
 
 impl Default for ModalConfig {
@@ -508,6 +525,7 @@ impl Default for ModalConfig {
             close_on_escape: true,
             close_on_backdrop_press: true,
             close_on_swipe: true,
+            window: crate::ROOT_ID,
         }
     }
 }
@@ -548,8 +566,6 @@ pub struct InputConfig {
     pub auto_correct: bool,
     /// Several lines (return inserts a line break).
     pub multiline: bool,
-    /// Styled and optionally atomic source ranges, matched natively.
-    pub tokens: Vec<crate::input_tokens::InputTokenRule>,
     /// Maximum length in UTF-16 units.
     pub max_length: Option<u32>,
     /// The user can edit the text.
@@ -617,7 +633,6 @@ impl Default for InputConfig {
             auto_capitalize: AutoCapitalize::Sentences,
             auto_correct: true,
             multiline: false,
-            tokens: Vec::new(),
             max_length: None,
             editable: true,
             blur_on_submit: true,
@@ -658,6 +673,12 @@ pub struct ImageOptions {
 /// created by the preceding items.
 #[derive(Debug, Clone)]
 pub enum MountItem {
+    /// Mounted nodes in depth-first logical tree order, independent of native
+    /// stacking (`Insert`); a list's cells, which it recycles, in the order
+    /// they are on screen. Opt-in through `Core::set_tree_order_tracking`;
+    /// emitted after structural changes and when a list's cells move, in the
+    /// same batch as the affected views.
+    TreeOrder(Vec<NodeId>),
     /// Create a native view. It starts detached and invisible.
     Create {
         /// Node id, used to address the view in later items.
@@ -677,6 +698,17 @@ pub enum MountItem {
         /// The states.
         states: u16,
     },
+    /// The states the view shows as a part of a control (`tailwind::state`
+    /// bits: a list's highlighted option is focused while the focus stays
+    /// on its search field), for a platform that marks them itself. Opt-in
+    /// through `Core::set_projected_state_mounting`; the platform shows
+    /// them and never reports them back.
+    ProjectStates {
+        /// View id.
+        id: NodeId,
+        /// The states.
+        states: u16,
+    },
     /// Insert (or move) `child` into `parent`, below sibling `before` (or
     /// on top when `None`). Siblings rather than indices, so platform-owned
     /// subviews (refresh controls, scroll indicators) cannot shift positions.
@@ -688,46 +720,10 @@ pub enum MountItem {
         /// The app sibling to insert below.
         before: Option<NodeId>,
     },
-    /// Projects an independent native root. A following root may still be
-    /// parked by an earlier retirement, or kept by native focus. Insert
-    /// below the first candidate actually attached to the same native host.
-    /// SDK-owned modal/route hosts retain their existing presentation order;
-    /// logical row siblings do not specify a global window stacking order.
-    ProjectRoot {
-        /// The root's native projection parent.
-        parent: NodeId,
-        /// The cell or promoted layout root to project.
-        id: NodeId,
-        /// Following siblings in core order, nearest first.
-        following: Vec<NodeId>,
-    },
     /// Remove a view from its superview, keeping it alive.
     Remove {
         /// View to detach.
         id: NodeId,
-    },
-    /// Retire a recycling cell only after native input can no longer target
-    /// its current owner. A focused descendant refuses retirement: publish
-    /// its native focus path before confirming `false`. Otherwise detach the
-    /// cell immediately, then confirm `true` through the engine's input FIFO.
-    /// This must be consumed by every platform, never silently ignored.
-    RetireListCell {
-        /// Cell to detach, keeping its current content alive until confirmed.
-        id: NodeId,
-        /// Correlates this request; cancelled and superseded replies are inert.
-        request: u64,
-        /// Native roots owned by this cell in the core's logical tree:
-        /// the cell itself and its promoted layout roots. Check focus for
-        /// the whole group before parking any root, then acknowledge once.
-        roots: Vec<NodeId>,
-    },
-    /// Confirms native roots have been parked by a list-cell retirement.
-    /// Native input is already excluded. A platform may collect the old
-    /// native presentation resources, isolated from any new projection;
-    /// otherwise it does nothing. Scene observers detach these roots.
-    ListCellRetired {
-        /// The retired cell and its promoted native roots.
-        roots: Vec<NodeId>,
     },
     /// Destroy a view.
     Delete {
@@ -800,7 +796,7 @@ pub enum MountItem {
         scrollbar_visible: bool,
         /// A built-in bar of the app's takes the indicator's place (the
         /// core's, over the viewport): the platform shows none on either
-        /// axis, also where a horizontal view keeps its own.
+        /// axis.
         replaced: bool,
         /// Native animation value fed with the main-axis offset.
         scroll_value: Option<crate::animation::NodeId>,

@@ -34,6 +34,7 @@ import type {
 } from '../../../../packages/plugin-sdk/src/index.js';
 import type { SettingsOperations } from './settingsOperations';
 import { createRootUiSettings } from './rootUiSettingsState';
+import { createSettingsDiscard } from './settingsDiscard';
 import type { UiContext, UiRuntime } from '../../../../packages/plugin-sdk/src/workbench.js';
 
 type Path = InstanceSettingsRead['path'];
@@ -59,6 +60,15 @@ export const settingCaption = (value: SettingValue | null | undefined) =>
       : value?.kind === 'null'
         ? 'null'
         : tr('Not set');
+const initialValue = (field: SettingField): SettingValue =>
+  field.value ??
+  (field.kind === 'boolean'
+    ? { kind: 'boolean', value: false }
+    : field.kind === 'number'
+      ? { kind: 'number', text: '' }
+      : field.kind === 'null'
+        ? { kind: 'null' }
+        : { kind: 'text', text: '' });
 
 // This is a read projection and an unsaved field, never another deployment
 // manager. The original Host source and Settings journal own every change.
@@ -210,13 +220,20 @@ export function createPluginSettings(
     );
     if (visible()) await load(keep);
   };
+  const closeEditor = () => {
+    batch(() => {
+      editor.set(null);
+      view.set(view() + 1);
+    });
+  };
+  const discarding = createSettingsDiscard(() => {
+    const form = editor();
+    return !!form && !same(form.value, initialValue(form.field));
+  }, closeEditor);
   const back = () => {
-    if (operations.busy()) return false;
+    if (operations.busy() || discarding.back()) return false;
     if (editor()) {
-      batch(() => {
-        editor.set(null);
-        view.set(view() + 1);
-      });
+      closeEditor();
       return false;
     }
     const instance = selected();
@@ -280,9 +297,11 @@ export function createPluginSettings(
     deactivate() {
       enabled = false;
       cancelRead();
+      discarding.clear();
     },
     reset() {
       cancelRead();
+      discarding.clear();
       editor.set(null);
       if (visible()) void load();
       else {
@@ -291,6 +310,11 @@ export function createPluginSettings(
       }
     },
     back,
+    cancel() {
+      if (!operations.busy()) closeEditor();
+    },
+    discarding,
+    leave: discarding.leave,
     refresh() {
       if (visible() && !editor() && !selected() && !operations.busy() && !loading()) void load();
     },
@@ -367,18 +391,7 @@ export function createPluginSettings(
         return;
       batch(() => {
         view.set(view() + 1);
-        editor.set({
-          field,
-          value:
-            field.value ??
-            (field.kind === 'boolean'
-              ? { kind: 'boolean', value: false }
-              : field.kind === 'number'
-                ? { kind: 'number', text: '' }
-                : field.kind === 'null'
-                  ? { kind: 'null' }
-                  : { kind: 'text', text: '' }),
-        });
+        editor.set({ field, value: initialValue(field) });
       });
     },
     change({ request, value }: { request: PluginAction; value: SettingValue | null }) {

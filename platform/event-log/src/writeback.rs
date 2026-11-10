@@ -243,8 +243,8 @@ impl<S: Statement> ErasedRequest for Pending<S> {
         if result.is_err() {
             self.failures.fetch_add(1, Ordering::AcqRel);
         }
-        let _ = self.reply.send(result);
         drop(self.retained);
+        let _ = self.reply.send(result);
     }
 }
 
@@ -294,7 +294,7 @@ pub(crate) fn commit(
     mut requests: Vec<Request>,
     validate: &(impl Fn() -> Result<(), StoreError> + Sync),
     changed: &watch::Sender<()>,
-) -> bool {
+) -> (bool, impl FnOnce() + Send + 'static) {
     let result = transaction(connection, &mut requests, validate);
     let reusable = result
         .as_ref()
@@ -303,10 +303,11 @@ pub(crate) fn commit(
         changed.send_replace(());
     }
     let result = result.map(|_| ());
-    for request in requests {
-        request.finish(&result);
-    }
-    reusable
+    (reusable, move || {
+        for request in requests {
+            request.finish(&result);
+        }
+    })
 }
 
 fn transaction(

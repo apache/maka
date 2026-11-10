@@ -8,8 +8,9 @@
 //! [`crate::svg::MAX_SIDE`]), and kept by (source key, bucket, frames)
 //! ([`Key`]): views of similar sizes share an entry, one that grows asks
 //! for the next bucket. One decode per key runs at a time; the natural sizes
-//! read from the bytes' headers are remembered, so a request for an image
-//! decoded before is answered from memory without reading anything.
+//! read from the bytes' headers are kept while a decoded entry remains, so
+//! cached images are answered without reading anything. Evicting the last
+//! entry of a source releases its natural-size metadata too.
 
 use std::{
     collections::HashMap,
@@ -194,8 +195,8 @@ struct Shared<V> {
     decoder: Box<Decoder<V>>,
     /// Decodes running, by key: who waits for them.
     pending: Mutex<HashMap<Key, Pending<V>>>,
-    /// Natural sizes read so far, by source key.
-    naturals: Mutex<HashMap<String, Natural>>,
+    /// Natural sizes and the number of decoded entries that keep them.
+    naturals: Arc<Mutex<HashMap<String, (Natural, usize)>>>,
     waiters: AtomicU64,
 }
 
@@ -225,7 +226,7 @@ impl<V: Clone + Send + Sync + 'static> Images<V> {
         + Sync
         + 'static,
     ) -> Self {
-        Self::make(MemoryCache::new(budget), Box::new(decoder))
+        Self::with_on_evict(budget, decoder, |_| {})
     }
 
     /// [`Images::new`], calling `on_evict` with each picture dropped (to
@@ -238,19 +239,27 @@ impl<V: Clone + Send + Sync + 'static> Images<V> {
         + 'static,
         on_evict: impl Fn(&V) + Send + Sync + 'static,
     ) -> Self {
-        let memory =
-            MemoryCache::with_on_evict(budget, move |_, d: &Decoded<V>| on_evict(&d.value));
-        Self::make(memory, Box::new(decoder))
-    }
-
-    fn make(memory: MemoryCache<Key, Decoded<V>>, decoder: Box<Decoder<V>>) -> Self {
+        let naturals = Arc::new(Mutex::new(HashMap::<String, (Natural, usize)>::new()));
+        let retained = naturals.clone();
+        let memory = MemoryCache::with_on_evict(budget, move |key: &Key, d: &Decoded<V>| {
+            {
+                let mut naturals = lock(&retained);
+                if let Some((_, entries)) = naturals.get_mut(&key.source) {
+                    *entries -= 1;
+                    if *entries == 0 {
+                        naturals.remove(&key.source);
+                    }
+                }
+            }
+            on_evict(&d.value);
+        });
         Images {
             loader: loader(),
             memory,
             shared: Arc::new(Shared {
-                decoder,
+                decoder: Box::new(decoder),
                 pending: Mutex::default(),
-                naturals: Mutex::default(),
+                naturals,
                 waiters: AtomicU64::new(0),
             }),
         }
@@ -268,9 +277,11 @@ impl<V: Clone + Send + Sync + 'static> Images<V> {
         &self.memory
     }
 
-    /// The natural size of `source` (a source key), if it was read.
+    /// The natural size of `source` (a source key), while a decoded entry remains.
     pub fn natural(&self, source: &str) -> Option<Natural> {
-        lock(&self.shared.naturals).get(source).copied()
+        lock(&self.shared.naturals)
+            .get(source)
+            .map(|(natural, _)| *natural)
     }
 
     /// The key `request` is decoded by, once its natural size is known.
@@ -354,11 +365,7 @@ impl<V: Clone + Send + Sync + 'static> Images<V> {
         stage: &Mutex<Stage>,
         done: Done<V>,
     ) {
-        let natural = self.natural(&source).or_else(|| {
-            let natural = Natural::of(&bytes)?;
-            lock(&self.shared.naturals).insert(source.clone(), natural);
-            Some(natural)
-        });
+        let natural = self.natural(&source).or_else(|| Natural::of(&bytes));
         let (key, target) = self.key(request, &source, natural);
         {
             let mut s = lock(stage);
@@ -412,6 +419,15 @@ impl<V: Clone + Send + Sync + 'static> Images<V> {
         match result {
             Ok((value, natural, cost)) => {
                 let decoded = Decoded { value, natural };
+                // Register before inserting: insertion can evict another bucket
+                // of this source (or replace this key). Its callback releases
+                // only that entry's hold, including concurrent replacements.
+                {
+                    let mut naturals = lock(&self.shared.naturals);
+                    let entry = naturals.entry(key.source.clone()).or_insert((natural, 0));
+                    entry.0 = natural;
+                    entry.1 += 1;
+                }
                 let lease = self.memory.insert(key.clone(), decoded.clone(), cost);
                 for (_, done) in take(&key) {
                     done(Ok((decoded.clone(), lease.clone())));
@@ -447,5 +463,81 @@ impl<V: Clone + Send + Sync + 'static> Images<V> {
             pending.remove(&key).and_then(|p| p.ticket)
         };
         drop(ticket);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(source: &str, longest: u32) -> Key {
+        Key {
+            source: source.into(),
+            longest,
+            frames: Frames::All,
+        }
+    }
+
+    #[test]
+    fn unique_sources_release_metadata_but_keep_active_images() {
+        let budget = Budget::new(8);
+        let images = Images::new(&budget, |_, _| unreachable!());
+        let active = key("active", 1);
+        images.decoded(active.clone(), Ok((7_u32, Natural::Pixels(1, 1), 4)));
+        let (_, lease) = images.memory.get(&active).unwrap();
+        for i in 0..10_000 {
+            let source = format!("inline:{i}");
+            images.decoded(key(&source, 1), Ok((i, Natural::Pixels(1, 1), 4)));
+            assert_eq!(budget.used(), 8);
+            assert_eq!(lock(&images.shared.naturals).len(), 2);
+        }
+        assert_eq!(images.natural("active"), Some(Natural::Pixels(1, 1)));
+        assert_eq!(images.memory.get(&active).unwrap().0.value, 7);
+        assert_eq!(images.natural("inline:0"), None);
+        budget.clear();
+        assert_eq!(lock(&images.shared.naturals).len(), 1);
+        drop(lease);
+        budget.clear();
+        assert!(lock(&images.shared.naturals).is_empty());
+    }
+
+    #[test]
+    fn metadata_lives_until_the_last_bucket_and_replacement_go() {
+        let budget = Budget::new(100);
+        let evictions = Arc::new(AtomicU64::new(0));
+        let heard = evictions.clone();
+        let images = Images::with_on_evict(
+            &budget,
+            |_, _| unreachable!(),
+            move |_: &u32| {
+                heard.fetch_add(1, Ordering::Relaxed);
+            },
+        );
+        let small = key("photo", 1);
+        let large = key("photo", 2);
+        let natural = Natural::Pixels(2, 2);
+        images.decoded(small.clone(), Ok((1, natural, 4)));
+        images.decoded(large.clone(), Ok((2, natural, 16)));
+        images.decoded(small.clone(), Ok((3, natural, 4)));
+        assert_eq!(lock(&images.shared.naturals)["photo"].1, 2);
+        images.memory.remove(&small);
+        assert_eq!(images.natural("photo"), Some(natural));
+        images.memory.remove(&large);
+        assert_eq!(images.natural("photo"), None);
+        assert_eq!(evictions.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn failed_decodes_keep_no_metadata_and_successful_ones_report_the_decoder_size() {
+        let images = Images::new(&Budget::new(16), |_, _| unreachable!());
+        images.decoded(key("bad", 0), Err("invalid pixels".into()));
+        assert!(lock(&images.shared.naturals).is_empty());
+        // Some formats have no header Natural::of can read. The decoder's
+        // dimensions must still be remembered while the picture is retained.
+        images.decoded(
+            key("opaque-header", 0),
+            Ok((1_u32, Natural::Pixels(2, 2), 16)),
+        );
+        assert_eq!(images.natural("opaque-header"), Some(Natural::Pixels(2, 2)));
     }
 }

@@ -2,7 +2,7 @@ import { signal, Text, View } from "nsh";
 import { type OpenChangeReason, Popover } from "nsh/base";
 import { LucideIcon, type LucideIconName } from "../icons";
 import { dismissToast, toast } from "../toast";
-import { alpha, Badge, Button, Caption, Card, colors, DemoPage, hovered, PopIn, type PopupSide, popupSurface, Segmented, Stat, Toggle } from "../ui";
+import { alpha, Badge, Button, Caption, Card, colors, DemoPage, hovered, PopIn, popoverLook, type PopupSide, popupSurface, Segmented, Stat, Toggle } from "../ui";
 import { Avatar, createEvents, Field, pointer, Rule, tap, Trigger } from "./OverlayUi";
 
 // Every popover here comes in with `PopIn` (the gallery's popup surface,
@@ -89,7 +89,7 @@ export function Popovers() {
             margin={8}
             trigger={<Trigger label="Share" icon="share-2" open={open()} variant="primary" />}
           >
-            <PopIn style={{ ...popupSurface(), width: pointer ? 320 : 330, padding: pointer ? 14 : 16, gap: 12 }}>
+            <PopIn style={popoverLook({ width: pointer ? 320 : 330 })}>
               <Head title="Share “Q3 roadmap”" note={`${people().length} people have access`} />
               <View style={{ flexDirection: "row", gap: 8 }}>
                 <View style={{ flex: 1 }}>
@@ -157,7 +157,7 @@ export function Popovers() {
             margin={8}
             trigger={<Trigger label="@Mira Chen" open={open()} variant="ghost" ink={colors.accent} />}
           >
-            <PopIn side="top" style={{ ...popupSurface(), width: pointer ? 280 : 300, padding: pointer ? 14 : 16, gap: 12 }}>
+            <PopIn side="top" style={popoverLook({ width: pointer ? 280 : 300 })}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
                 <Avatar name="Mira Chen" size={44} />
                 <View style={{ flex: 1, gap: 2 }}>
@@ -296,7 +296,7 @@ export function Popovers() {
         />
         <View style={{ alignItems: "center", paddingVertical: pointer ? 40 : 28 }}>
           <Popover placement={side()} align={align()} offset={8} margin={8} onOpenChange={changed("placed")} trigger={<Trigger label={`${side()} · ${align()}`} icon="map-pin" />}>
-            <PopIn side={side()} style={{ ...popupSurface(), padding: 12, gap: 4, maxWidth: 220 }}>
+            <PopIn side={side()} style={{ ...popoverLook({ compact: true }), maxWidth: 220 }}>
               <Text style={{ fontSize: 13, fontWeight: "600", color: colors.text }}>
                 Placed {side()} · {align()}
               </Text>

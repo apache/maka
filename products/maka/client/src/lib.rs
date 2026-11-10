@@ -61,6 +61,7 @@ const CONTROL_METHODS: &[&str] = &[
     "adjudicateRisk",
     "setCompactionPrompt",
     "markRead",
+    "markBotRead",
     "stop",
     "stopComputerApp",
     "respond",

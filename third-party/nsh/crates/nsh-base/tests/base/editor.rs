@@ -234,6 +234,17 @@ fn typing_inserts_at_the_caret_and_reports_the_text() {
 }
 
 #[test]
+fn typing_the_same_text_after_moving_the_caret_inserts_it() {
+    let mut app = start(props(""));
+    app.type_text("id:editor", "a").unwrap();
+    see(&mut app, &value("a"));
+    keys(&mut app, &["left"]);
+    see(&mut app, "Sel 0:0");
+    app.type_text("id:editor", "a").unwrap();
+    see(&mut app, &value("aa"));
+}
+
+#[test]
 fn arrows_move_and_shift_arrows_select() {
     let mut app = start(props("abc\ndef"));
     focus(&mut app);
@@ -532,4 +543,54 @@ fn the_rows_text_lets_the_pointer_through_to_the_scroll_views() {
         at = seen.parents.get(&id).copied();
     }
     assert!(blocked, "the row's text takes the pointer");
+}
+
+/// The harness on `os` with a manual clock, the editor focused, and a
+/// count of the mount items it sends from then on.
+fn start_idle(os: Os) -> (Headless, Arc<Mutex<usize>>) {
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
+        ..EngineConfig::new(Root::new::<Harness>(move || props("abc")))
+    };
+    config.environment.os = os;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("text:Changes 0").unwrap();
+    focus(&mut app);
+    app.run_for(Duration::from_millis(100)).unwrap();
+    let items = Arc::new(Mutex::new(0usize));
+    let seen = items.clone();
+    app.observe(move |_, batch| *seen.lock().unwrap() += batch.items.len());
+    (app, items)
+}
+
+/// The mount items sent while the clock runs `secs` seconds.
+fn items_over(app: &mut Headless, items: &Mutex<usize>, secs: u64) -> usize {
+    *items.lock().unwrap() = 0;
+    app.run_for(Duration::from_secs(secs)).unwrap();
+    *items.lock().unwrap()
+}
+
+#[test]
+fn the_carets_stop_blinking_after_ten_idle_seconds_on_linux() {
+    let (mut app, items) = start_idle(Os::Linux);
+    assert!(items_over(&mut app, &items, 2) > 0, "the carets blink");
+    app.run_for(Duration::from_secs(9)).unwrap();
+    assert_eq!(items_over(&mut app, &items, 3), 0, "still blinking");
+    // A key shows them blinking again.
+    app.type_text("id:editor", "x").unwrap();
+    see(&mut app, &value("xabc"));
+    app.run_for(Duration::from_millis(100)).unwrap();
+    assert!(
+        items_over(&mut app, &items, 2) > 0,
+        "the carets blink again"
+    );
+}
+
+#[test]
+fn the_carets_blink_for_good_on_macos() {
+    let (mut app, items) = start_idle(Os::MacOs);
+    app.run_for(Duration::from_secs(11)).unwrap();
+    assert!(items_over(&mut app, &items, 3) > 0);
 }

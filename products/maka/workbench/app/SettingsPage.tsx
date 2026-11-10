@@ -34,7 +34,7 @@ import {
   inputTextStyle,
 } from './ui';
 
-const terminal = platform.isTerminal;
+const terminal = platform.idiom === 'terminal';
 /** The page's side margin; groups start here. */
 export const settingsGutter = terminal ? 0 : 24;
 /** Where text starts inside a group; the title, section names and notes align to it. */
@@ -51,6 +51,27 @@ const rowStyle = {
 const labelStyle = { fontSize: 14, lineHeight: terminal ? 16 : 20 };
 const textGap = terminal ? 0 : 2;
 
+function SettingsFooter(props: { render: () => JSX.Element | undefined }) {
+  const content = props.render();
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'flex-end',
+        flexWrap: 'wrap',
+        gap: 8,
+        paddingHorizontal: terminal ? 0 : 16,
+        paddingVertical: terminal ? 0 : 12,
+        borderTopWidth: 1,
+        borderTopColor: C.line,
+      }}
+    >
+      {content}
+    </View>
+  );
+}
+
 /**
  * A settings page below the panel's title row: its sections scroll, its footer
  * (Save, Cancel) stays in view.
@@ -58,9 +79,11 @@ const textGap = terminal ? 0 : 2;
 export function SettingsBody(props: {
   children: JSX.Element;
   footer?: JSX.Element;
+  footerShown?: boolean;
   ref?: (node: ScrollRef) => void;
   accessibilityLabel?: string;
 }) {
+  const hasFooter = 'footer' in props;
   return (
     <View style={{ flex: 1, minHeight: 0 }}>
       <Scroll
@@ -79,22 +102,8 @@ export function SettingsBody(props: {
           {props.children}
         </View>
       </Scroll>
-      <If when={props.footer}>
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'flex-end',
-            flexWrap: 'wrap',
-            gap: 8,
-            paddingHorizontal: terminal ? 0 : 16,
-            paddingVertical: terminal ? 0 : 12,
-            borderTopWidth: 1,
-            borderTopColor: C.line,
-          }}
-        >
-          {props.footer}
-        </View>
+      <If when={'footerShown' in props ? props.footerShown : hasFooter}>
+        <SettingsFooter render={() => props.footer} />
       </If>
     </View>
   );
@@ -840,5 +849,20 @@ export function SettingsConfirm(props: {
         </If>
       </View>
     </SettingsBody>
+  );
+}
+
+/** Asks before leaving a page with unsaved changes; the name says which draft. */
+export function SettingsDiscard(props: { name?: string; onDiscard(): void; onKeep(): void }) {
+  return (
+    <SettingsConfirm
+      title={tr('Discard unsaved changes?')}
+      body={props.name}
+      confirm={tr('Discard changes')}
+      cancel={tr('Keep editing')}
+      destructive
+      onConfirm={props.onDiscard}
+      onCancel={props.onKeep}
+    />
   );
 }

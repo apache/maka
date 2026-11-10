@@ -31,8 +31,7 @@ import {
   captionTextStyle,
   compact,
   controlDisabledStyle,
-  controlFocusStyle,
-  controlHoverStyle,
+  cardFocusStyle,
   controlStyle,
   inputBorderRadius,
   inputTextStyle,
@@ -60,10 +59,10 @@ function Choice(props: {
         alignItems: 'center',
         justifyContent: 'flex-start',
         gap: 8,
-        backgroundColor: props.selected ? C.raised : C.surface,
+        backgroundColor: props.selected ? C.cardRaised : C.card,
       }}
-      hoverStyle={controlHoverStyle()}
-      focusStyle={controlFocusStyle()}
+      hoverStyle={{ backgroundColor: C.cardRaised }}
+      focusStyle={cardFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
       <If when={props.kind}>
@@ -171,7 +170,7 @@ export function FormRequest(props: {
                       paddingHorizontal: 12,
                       paddingVertical: compact() ? 4 : 8,
                       color: C.text,
-                      backgroundColor: C.background,
+                      backgroundColor: C.panel,
                       borderRadius: inputBorderRadius,
                       borderWidth: 1,
                       borderColor: C.line,

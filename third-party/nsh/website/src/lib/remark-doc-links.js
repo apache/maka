@@ -50,7 +50,8 @@ export function remarkDocLinks({ base = '/', repo = 'https://github.com/longbrid
         return;
       }
 
-      const withoutExt = rel.replace(/\.md$/, '');
+      // Machine translations sit in `translations/<locale>/…` but route at `/<locale>/…`.
+      const withoutExt = rel.replace(/\.md$/, '').replace(/^translations[/\\]/, '');
       const route = `/${withoutExt.split(sep).join('/')}`.replace(/\/index$/, '');
       node.url = `${prefix}${route || '/'}${hash}`;
     };

@@ -44,7 +44,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    ops::Range,
+    collections::VecDeque,
     rc::Rc,
 };
 
@@ -52,7 +52,6 @@ use nsh_core::{
     Bounds, Color, EventKind, EventPayload, InputConfig, NodeId, PayloadValue, Points,
     SubmitBehavior, TextAlign,
     geometry::{Point, Size},
-    input_tokens::InputTokenStyle,
     tailwind::state,
     text_edit::{self as model, Composition, Model, Unit, key_of, pasted, utf16_to_byte},
 };
@@ -61,14 +60,14 @@ use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::{
-            Direct2D::{D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ROUNDED_RECT},
+            Direct2D::D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
             DirectWrite::{
                 DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_WEIGHT, DWRITE_HIT_TEST_METRICS, DWRITE_LINE_SPACING_METHOD_UNIFORM,
-                DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
-                DWRITE_TEXT_ALIGNMENT_JUSTIFIED, DWRITE_TEXT_ALIGNMENT_LEADING,
-                DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
-                DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                DWRITE_FONT_WEIGHT, DWRITE_HIT_TEST_METRICS, DWRITE_LINE_METRICS,
+                DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_TEXT_ALIGNMENT,
+                DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_JUSTIFIED,
+                DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
+                DWRITE_TEXT_RANGE, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
                 DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP, IDWriteTextFormat,
                 IDWriteTextLayout, IDWriteTextLayout1,
             },
@@ -213,6 +212,10 @@ impl InputState {
             layout: RefCell::new(None),
             placeholder: RefCell::new(None),
         }
+    }
+
+    pub(crate) fn editable(&self) -> bool {
+        self.config.borrow().editable
     }
 
     fn multiline(&self) -> bool {
@@ -413,6 +416,29 @@ impl InputState {
         let mut m = DWRITE_HIT_TEST_METRICS::default();
         // SAFETY: local out values.
         let _ = unsafe { layout.HitTestTextPosition(pos, false, &mut x, &mut y, &mut m) };
+        let mut stack = [DWRITE_LINE_METRICS::default(); 4];
+        let mut count = 0u32;
+        // SAFETY: `stack` is a valid buffer of 4 elements; `count` is a local out value.
+        let _ = unsafe { layout.GetLineMetrics(Some(&mut stack), &mut count) };
+        let mut heap = Vec::new();
+        let lines: &[DWRITE_LINE_METRICS] = if (count as usize) <= stack.len() {
+            &stack[..count as usize]
+        } else {
+            heap.resize(count as usize, DWRITE_LINE_METRICS::default());
+            // SAFETY: `heap` has `count` elements.
+            let _ = unsafe { layout.GetLineMetrics(Some(&mut heap), &mut count) };
+            &heap[..count as usize]
+        };
+        let mut offset = 0u32;
+        let mut top = 0.0f32;
+        for (i, line) in lines.iter().enumerate() {
+            let next = offset.saturating_add(line.length);
+            if pos < next || i + 1 == lines.len() {
+                return (x, top, line.height);
+            }
+            offset = next;
+            top += line.height;
+        }
         (x, y, m.height)
     }
 
@@ -555,26 +581,6 @@ impl Hosted for InputState {
         let color = self.text_color();
         let focused = self.focused.get();
 
-        let tokens = if secure {
-            Vec::new()
-        } else {
-            display_tokens(&model)
-        };
-        for (range, style) in &tokens {
-            if let Some(tint) = style.background_color {
-                for r in hit_rects(&layout, range.start, range.end - range.start, ox, oy) {
-                    let rect = D2D1_ROUNDED_RECT {
-                        rect: rect_f(r.left, r.top, r.width, r.height),
-                        radiusX: style.border_radius.0,
-                        radiusY: style.border_radius.0,
-                    };
-                    // SAFETY: drawing within BeginDraw/EndDraw on this thread.
-                    unsafe {
-                        cx.dc.FillRoundedRectangle(&rect, cx.solid(tint));
-                    }
-                }
-            }
-        }
         if focused && model.has_selection() {
             let (s, e) = model.selection();
             let (s, e) = (model.to_display(s, secure), model.to_display(e, secure));
@@ -620,37 +626,14 @@ impl Hosted for InputState {
                 }
             }
         } else {
-            // Effects live only during this draw, not in the cached layout across device loss.
-            // SAFETY: COM calls on a layout and brushes owned by this UI thread.
+            // SAFETY: as above.
             unsafe {
-                for (range, style) in &tokens {
-                    if let Some(tint) = style.color {
-                        let _ = layout.SetDrawingEffect(
-                            cx.solid(tint),
-                            DWRITE_TEXT_RANGE {
-                                startPosition: range.start,
-                                length: range.end - range.start,
-                            },
-                        );
-                    }
-                }
                 cx.dc.DrawTextLayout(
                     Vector2 { X: ox, Y: oy },
                     &layout,
                     cx.solid(color),
                     D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
                 );
-                for (range, style) in &tokens {
-                    if style.color.is_some() {
-                        let _ = layout.SetDrawingEffect(
-                            None::<&windows::core::IUnknown>,
-                            DWRITE_TEXT_RANGE {
-                                startPosition: range.start,
-                                length: range.end - range.start,
-                            },
-                        );
-                    }
-                }
             }
         }
 
@@ -753,30 +736,6 @@ fn hit_rects(
     }
 }
 
-fn display_tokens(model: &Model) -> Vec<(Range<u32>, InputTokenStyle)> {
-    let mut shown = Vec::new();
-    let caret = model.caret();
-    let composition = model
-        .composition
-        .as_ref()
-        .filter(|c| !c.text.is_empty())
-        .map_or(0, |c| model::utf16_len(&c.text) as u32);
-    for span in model.tokens().spans() {
-        let start = model.to_display(span.range.start, false);
-        let end = model.to_display(span.range.end, false);
-        if composition > 0 && span.range.start <= caret && caret < span.range.end {
-            let at = model.to_display(caret, false);
-            if start < at {
-                shown.push((start..at, span.style));
-            }
-            shown.push((at + composition..end, span.style));
-        } else {
-            shown.push((start..end, span.style));
-        }
-    }
-    shown
-}
-
 fn metrics(layout: &IDWriteTextLayout) -> DWRITE_TEXT_METRICS {
     let mut m = DWRITE_TEXT_METRICS::default();
     // SAFETY: a local out value.
@@ -853,16 +812,70 @@ fn dwrite_align(config: &InputConfig) -> DWRITE_TEXT_ALIGNMENT {
 
 // --- Focus -------------------------------------------------------------------
 
+enum Held {
+    Char(String),
+    Ime {
+        result: Option<String>,
+        composition: Option<Composition>,
+    },
+    Key(KeyEvent),
+    #[cfg(feature = "terminal")]
+    Paste(nsh_core::PasteEvent),
+    #[cfg(feature = "terminal")]
+    TerminalComposition {
+        expected: (u32, u64),
+        commit: String,
+        preedit: String,
+        selection: Option<std::ops::Range<usize>>,
+        active: bool,
+    },
+}
+
 /// A surface's focused field, and whether its window is active.
 #[derive(Default)]
 struct Focus {
     view: Option<NshView>,
+    auto_focus: Option<NshView>,
     inactive: bool,
+    pending: VecDeque<Held>,
+    armed: bool,
+    after: u64,
+    changing: bool,
+    replaying: bool,
 }
 
 thread_local! {
     /// The focus of each surface of this thread, by surface key.
     static FOCUS: RefCell<FxHashMap<u64, Focus>> = RefCell::default();
+}
+
+/// An engine reload releases its old editor but keeps the window's activation state.
+pub(crate) fn stopped(surface: &Surface) {
+    let view = FOCUS.with(|focus| {
+        focus
+            .borrow_mut()
+            .get_mut(&surface.key())
+            .and_then(|focus| {
+                focus.auto_focus = None;
+                focus.pending.clear();
+                focus.armed = false;
+                focus.after = 0;
+                focus.changing = false;
+                focus.replaying = false;
+                focus.view.take()
+            })
+    });
+    if let Some(input) = view.as_ref().and_then(input_of) {
+        input.focused.set(false);
+        input.active.set(false);
+        input.model.borrow_mut().composition = None;
+    }
+    blink::update();
+}
+
+/// Do not retain an editor after its owning native surface has gone away.
+pub(crate) fn disposed(key: u64) {
+    let _ = FOCUS.try_with(|focus| focus.borrow_mut().remove(&key));
 }
 
 /// The input of a view: a function, so that the view's state is not
@@ -915,19 +928,88 @@ pub(crate) fn focused(surface: &Surface) -> Option<NshView> {
     focused_view(surface).filter(|view| view.state().input.is_some())
 }
 
+pub(crate) fn composing(view: &NshView) -> bool {
+    input_of(view).is_some_and(|input| input.model.borrow().composition.is_some())
+}
+
+pub(crate) fn composing_focused(surface: &Surface) -> bool {
+    focused(surface).is_some_and(|view| {
+        if !is_replaying(surface) {
+            #[cfg(feature = "terminal")]
+            let expected = (view.id(), surface.terminal_focus_generation.get());
+            if let Some(active) = FOCUS.with(|f| {
+                f.borrow().get(&surface.key()).and_then(|focus| {
+                    focus.pending.iter().rev().find_map(|held| match held {
+                        Held::Ime { composition, .. } => Some(composition.is_some()),
+                        #[cfg(feature = "terminal")]
+                        Held::TerminalComposition {
+                            expected: item_expected,
+                            active,
+                            ..
+                        } if *item_expected == expected => Some(*active),
+                        _ => None,
+                    })
+                })
+            }) {
+                return active;
+            }
+        }
+        composing(&view)
+    })
+}
+
+pub(crate) fn wants_text(surface: &Surface) -> bool {
+    focused(surface)
+        .and_then(|view| input_of(&view))
+        .is_some_and(|input| input.config.borrow().editable)
+}
+
+fn can_hold_focus(surface: &Surface, view: &NshView) -> bool {
+    if !view.attached() || !crate::navigation::in_focus_scope(surface, view) {
+        return false;
+    }
+    let mut current = Some(view.clone());
+    while let Some(node) = current {
+        let state = node.state();
+        if state.style.hidden
+            || state.concealed
+            || (node.kind() != nsh_core::ViewKind::Input
+                && state.props.pointer_events == nsh_core::PointerEvents::None)
+        {
+            return false;
+        }
+        drop(state);
+        current = node.parent_view();
+    }
+    true
+}
+
 pub(crate) fn focused_view(surface: &Surface) -> Option<NshView> {
     let view = FOCUS.with(|f| f.borrow().get(&surface.key()).and_then(|f| f.view.clone()))?;
-    if view.attached() {
+    if can_hold_focus(surface, &view) {
         return Some(view);
     }
+    surface.terminal_focus_generation.set(
+        surface
+            .terminal_focus_generation
+            .get()
+            .checked_add(1)
+            .expect("native focus generation exhausted"),
+    );
     if let Some(input) = input_of(&view) {
         input.focused.set(false);
+        input.drag.set(None);
+        input.model.borrow_mut().composition = None;
+        input.relayout();
+        report_composition(surface, &view, &input);
     }
     FOCUS.with(|f| {
         if let Some(f) = f.borrow_mut().get_mut(&surface.key()) {
             f.view = None;
         }
     });
+    crate::input::set_state(surface, &view, state::FOCUSED, false);
+    send(surface, &view, EventKind::Blur, || EventPayload::None);
     update_ime(surface);
     blink::update();
     None
@@ -940,10 +1022,45 @@ fn window_active(surface: &Surface) -> bool {
 /// Moves the surface's focus to `view` (or nowhere), reporting the blur of
 /// the field that had it, then the focus of the new one.
 fn set_focus(surface: &Rc<Surface>, view: Option<&NshView>) {
-    let old = focused_view(surface);
-    if old.as_ref() == view {
+    if let Some(target) = view
+        && !can_hold_focus(surface, target)
+    {
         return;
     }
+    if view.is_some() {
+        FOCUS.with(|f| f.borrow_mut().entry(surface.key()).or_default().auto_focus = None);
+    }
+    let old = focused_view(surface);
+    set_changing(surface, true);
+    if old.as_ref() != view {
+        let moved_to = view.is_some();
+        move_focus(surface, old, view);
+        if wants_text(surface) && surface.events_handled() < surface.events_sent() {
+            arm(surface);
+        } else if moved_to && !behind(surface) && !has_pending(surface) {
+            disarm(surface);
+        }
+    } else if view.is_some() {
+        surface.sync_focus();
+    }
+    set_changing(surface, false);
+    flush_pending(surface);
+}
+
+fn set_changing(surface: &Surface, changing: bool) {
+    FOCUS.with(|f| {
+        f.borrow_mut().entry(surface.key()).or_default().changing = changing;
+    });
+}
+
+fn move_focus(surface: &Rc<Surface>, old: Option<NshView>, view: Option<&NshView>) {
+    surface.terminal_focus_generation.set(
+        surface
+            .terminal_focus_generation
+            .get()
+            .checked_add(1)
+            .expect("native focus generation exhausted"),
+    );
     crate::input::cancel_keyboard_press(surface);
     if let Some(old) = &old {
         cancel_composition(surface);
@@ -978,6 +1095,265 @@ fn set_focus(surface: &Rc<Surface>, view: Option<&NshView>) {
     update_ime(surface);
     blink::update();
     place_ime(surface);
+}
+
+pub(crate) fn arm(surface: &Surface) {
+    let after = surface.events_sent();
+    FOCUS.with(|f| {
+        let mut map = f.borrow_mut();
+        let focus = map.entry(surface.key()).or_default();
+        focus.armed = true;
+        focus.after = after;
+    });
+}
+
+fn behind(surface: &Surface) -> bool {
+    let after = FOCUS.with(|f| f.borrow().get(&surface.key()).map_or(0, |f| f.after));
+    surface.events_handled() < after
+}
+
+pub(crate) fn engine_caught_up(surface: &Rc<Surface>) {
+    if is_armed(surface) && !behind(surface) {
+        flush_pending(surface);
+        let has_auto = FOCUS.with(|f| {
+            f.borrow()
+                .get(&surface.key())
+                .is_some_and(|focus| focus.auto_focus.is_some() || focus.changing)
+        });
+        if !behind(surface) && !has_pending(surface) && !has_auto {
+            disarm(surface);
+        }
+    }
+}
+
+pub(crate) fn hold_key(surface: &Surface, event: &KeyEvent) -> bool {
+    let m = event.modifiers;
+    let vk = event.vk;
+    let edits = matches!(
+        vk,
+        x if x == VK_RETURN.0
+            || x == VK_BACK.0
+            || x == VK_DELETE.0
+            || x == 0x09
+            || x == VK_LEFT.0
+            || x == VK_RIGHT.0
+            || x == VK_UP.0
+            || x == VK_DOWN.0
+            || x == VK_HOME.0
+            || x == VK_END.0
+            || x == VK_PRIOR.0
+            || x == VK_NEXT.0
+            || (0x70..=0x87).contains(&x)
+    );
+    let chord = (m.ctrl || m.alt || m.meta) && !crate::input::is_modifier(vk);
+    if is_replaying(surface) || (event.down && !(edits || chord)) || !is_armed(surface) {
+        return false;
+    }
+    let waiting_for_engine = behind(surface);
+    FOCUS.with(|f| {
+        let mut map = f.borrow_mut();
+        let Some(focus) = map.get_mut(&surface.key()) else {
+            return false;
+        };
+        if focus.pending.is_empty()
+            && !waiting_for_engine
+            && focus.auto_focus.is_none()
+            && !focus.changing
+        {
+            return false;
+        }
+        if !event.down
+            && !focus
+                .pending
+                .iter()
+                .rev()
+                .find_map(|held| match held {
+                    Held::Key(key) if key.vk == vk => Some(key.down),
+                    _ => None,
+                })
+                .unwrap_or(false)
+        {
+            return false;
+        }
+        focus.pending.push_back(Held::Key(*event));
+        true
+    })
+}
+
+pub(crate) fn removing(surface: &Rc<Surface>, view: &NshView) {
+    cancel_auto_focus(view);
+    let inside = |candidate: &NshView| {
+        let mut at = Some(candidate.clone());
+        while let Some(node) = at {
+            if node == *view {
+                return true;
+            }
+            at = node.parent_view();
+        }
+        false
+    };
+    FOCUS.with(|f| {
+        if let Some(focus) = f.borrow_mut().get_mut(&surface.key())
+            && focus.auto_focus.as_ref().is_some_and(inside)
+        {
+            focus.auto_focus = None;
+        }
+    });
+    if let Some(old) = FOCUS.with(|f| {
+        f.borrow()
+            .get(&surface.key())
+            .and_then(|focus| focus.view.clone())
+            .filter(inside)
+    }) {
+        set_changing(surface, true);
+        move_focus(surface, Some(old), None);
+        arm(surface);
+        set_changing(surface, false);
+    }
+}
+
+pub(crate) fn disarm(surface: &Surface) {
+    FOCUS.with(|f| {
+        if let Some(focus) = f.borrow_mut().get_mut(&surface.key()) {
+            focus.pending.clear();
+            focus.armed = false;
+        }
+    });
+}
+
+pub(crate) fn is_armed(surface: &Surface) -> bool {
+    FOCUS.with(|f| {
+        f.borrow()
+            .get(&surface.key())
+            .is_some_and(|focus| focus.changing || focus.armed)
+    })
+}
+
+pub(crate) fn has_pending(surface: &Surface) -> bool {
+    FOCUS.with(|f| {
+        f.borrow()
+            .get(&surface.key())
+            .is_some_and(|focus| !focus.pending.is_empty())
+    })
+}
+
+fn is_replaying(surface: &Surface) -> bool {
+    FOCUS.with(|f| {
+        f.borrow()
+            .get(&surface.key())
+            .is_some_and(|focus| focus.replaying)
+    })
+}
+
+fn with_replaying(surface: &Surface, run: impl FnOnce()) {
+    let prev = FOCUS.with(|f| {
+        let mut map = f.borrow_mut();
+        let focus = map.entry(surface.key()).or_default();
+        std::mem::replace(&mut focus.replaying, true)
+    });
+    run();
+    FOCUS.with(|f| {
+        if let Some(focus) = f.borrow_mut().get_mut(&surface.key()) {
+            focus.replaying = prev;
+        }
+    });
+}
+
+fn queue_if_unsettled(surface: &Surface, operation: impl FnOnce() -> Held) -> bool {
+    if is_replaying(surface) || !is_armed(surface) {
+        return false;
+    }
+    let (changing, waits, has_auto) = FOCUS.with(|f| {
+        f.borrow()
+            .get(&surface.key())
+            .map_or((false, false, false), |focus| {
+                (
+                    focus.changing,
+                    !focus.pending.is_empty(),
+                    focus.auto_focus.is_some(),
+                )
+            })
+    });
+    if !changing && !waits && !has_auto && !behind(surface) {
+        disarm(surface);
+        return false;
+    }
+    FOCUS.with(|f| {
+        f.borrow_mut()
+            .entry(surface.key())
+            .or_default()
+            .pending
+            .push_back(operation());
+    });
+    true
+}
+
+fn flush_pending(surface: &Rc<Surface>) {
+    if !is_armed(surface) && !wants_text(surface) {
+        disarm(surface);
+    }
+    let mut taken = false;
+    loop {
+        if behind(surface) {
+            return;
+        }
+        let next = FOCUS.with(|f| {
+            f.borrow_mut()
+                .get_mut(&surface.key())
+                .and_then(|focus| focus.pending.pop_front())
+        });
+        let Some(next) = next else {
+            break;
+        };
+        let needs_editable = match &next {
+            Held::Char(_) | Held::Ime { .. } => true,
+            #[cfg(feature = "terminal")]
+            Held::Paste(_) | Held::TerminalComposition { .. } => true,
+            Held::Key(_) => false,
+        };
+        if needs_editable && !wants_text(surface) {
+            if is_armed(surface) {
+                FOCUS.with(|f| {
+                    f.borrow_mut()
+                        .entry(surface.key())
+                        .or_default()
+                        .pending
+                        .push_front(next);
+                });
+            }
+            return;
+        }
+        with_replaying(surface, || match next {
+            Held::Char(text) => char_input_now(surface, &text),
+            Held::Ime {
+                result,
+                composition,
+            } => apply_ime_composition(surface, result, composition),
+            Held::Key(event) => {
+                crate::input::key_now(surface, event);
+            }
+            #[cfg(feature = "terminal")]
+            Held::Paste(content) => terminal_paste_now(surface, content),
+            #[cfg(feature = "terminal")]
+            Held::TerminalComposition {
+                expected,
+                commit,
+                preedit,
+                selection,
+                active,
+            } => {
+                if focused(surface).map(|v| v.id()) == Some(expected.0)
+                    && surface.terminal_focus_generation.get() == expected.1
+                {
+                    terminal_composition_now(surface, &commit, &preedit, selection, active);
+                }
+            }
+        });
+        taken = true;
+    }
+    if taken && !behind(surface) {
+        disarm(surface);
+    }
 }
 
 // --- The IME -----------------------------------------------------------------
@@ -1191,26 +1567,12 @@ pub(crate) fn ime(
                 (result, composition)
             });
             let (result, composition) = read.unwrap_or_default();
-            if let Some(result) = result.filter(|r| !r.is_empty()) {
-                // A commit ends the composition it came from, even when
-                // the IME starts the next one in the same message (as
-                // GPUI's input handler brings them, one call each): the
-                // committed text's `onChangeText`, the end, then the
-                // composition that follows.
-                input.model.borrow_mut().composition = Some(Composition::default());
-                input.relayout();
-                insert(surface, &view, &input, &result, true);
-                report_composition(surface, &view, &input);
+            if !queue_if_unsettled(surface, || Held::Ime {
+                result: result.clone(),
+                composition: composition.clone(),
+            }) {
+                apply_ime_composition(surface, result, composition);
             }
-            input.model.borrow_mut().composition = composition
-                .filter(|c| !c.text.is_empty())
-                .or(Some(Composition::default()));
-            input.relayout();
-            input.wake_caret();
-            input.reveal();
-            view.changed();
-            report_composition(surface, &view, &input);
-            place_ime(surface);
             Some(LRESULT(0))
         }
         WM_IME_ENDCOMPOSITION => {
@@ -1223,6 +1585,37 @@ pub(crate) fn ime(
         }
         _ => None,
     }
+}
+
+fn apply_ime_composition(
+    surface: &Rc<Surface>,
+    result: Option<String>,
+    composition: Option<Composition>,
+) {
+    let Some(view) = focused(surface) else { return };
+    let Some(input) = input_of(&view) else {
+        return;
+    };
+    if let Some(result) = result.filter(|r| !r.is_empty()) {
+        // A commit ends the composition it came from, even when
+        // the IME starts the next one in the same message (as
+        // GPUI's input handler brings them, one call each): the
+        // committed text's `onChangeText`, the end, then the
+        // composition that follows.
+        input.model.borrow_mut().composition = Some(Composition::default());
+        input.relayout();
+        insert(surface, &view, &input, &result, true);
+        report_composition(surface, &view, &input);
+    }
+    input.model.borrow_mut().composition = composition
+        .filter(|c| !c.text.is_empty())
+        .or(Some(Composition::default()));
+    input.relayout();
+    input.wake_caret();
+    input.reveal();
+    view.changed();
+    report_composition(surface, &view, &input);
+    place_ime(surface);
 }
 
 // --- Edits and events ----------------------------------------------------------
@@ -1371,6 +1764,7 @@ fn submit(surface: &Rc<Surface>, view: &NshView, input: &InputState, blur: bool)
     send(surface, view, EventKind::SubmitEditing, || {
         EventPayload::Text { text, count }
     });
+    arm(surface);
     if blur {
         set_focus(surface, None);
     }
@@ -1426,19 +1820,44 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
             input.scroll.set(0.0);
         }
     }
-    let editable_changed = {
+    let (editable_changed, became_readonly, became_editable) = {
         let old = input.config.borrow();
-        old.editable != config.editable || old.secure != config.secure
+        (
+            old.editable != config.editable || old.secure != config.secure,
+            old.editable && !config.editable,
+            !old.editable && config.editable,
+        )
     };
-    let tokens_changed = input.model.borrow_mut().set_tokens(&config.tokens);
     *input.config.borrow_mut() = config.clone();
-    if tokens_changed {
-        input.reveal();
-        report_selection(surface, view, &input);
-        view.changed();
+    if became_readonly && input.focused.get() {
+        surface.terminal_focus_generation.set(
+            surface
+                .terminal_focus_generation
+                .get()
+                .checked_add(1)
+                .expect("native focus generation exhausted"),
+        );
+        cancel_composition(surface);
+        if input.model.borrow_mut().composition.take().is_some() {
+            input.relayout();
+            report_composition(surface, view, &input);
+            view.changed();
+        }
+    }
+    if became_editable && input.focused.get() {
+        surface.terminal_focus_generation.set(
+            surface
+                .terminal_focus_generation
+                .get()
+                .checked_add(1)
+                .expect("native focus generation exhausted"),
+        );
     }
     if editable_changed && input.focused.get() {
         update_ime(surface);
+        if config.editable {
+            flush_pending(surface);
+        }
     }
     let first = !input.configured.replace(true);
     if first && config.auto_focus {
@@ -1460,15 +1879,18 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
 /// Focuses the field once it is on screen (the batch that made it may
 /// insert it after configuring it).
 fn auto_focus(surface: &Rc<Surface>, view: &NshView) {
-    if view.attached() {
+    if can_hold_focus(surface, view) {
         return set_focus(surface, Some(view));
     }
+    FOCUS.with(|f| {
+        f.borrow_mut().entry(surface.key()).or_default().auto_focus = Some(view.clone());
+    });
     let Some(input) = input_of(view) else { return };
     input.auto_focus_pending.set(true);
     let pending = Rc::downgrade(&input);
     let view = view.clone();
     let mut frames = 0;
-    surface.on_frame(move |surface, _| {
+    surface.on_draw_frame(move |surface, _| {
         let Some(input) = pending.upgrade() else {
             return false;
         };
@@ -1476,7 +1898,7 @@ fn auto_focus(surface: &Rc<Surface>, view: &NshView) {
             return false;
         }
         frames += 1;
-        if view.attached() {
+        if can_hold_focus(surface, &view) {
             input.auto_focus_pending.set(false);
             set_focus(surface, Some(&view));
             return false;
@@ -1489,13 +1911,35 @@ fn auto_focus(surface: &Rc<Surface>, view: &NshView) {
     });
 }
 
+pub(crate) fn end_batch(surface: &Rc<Surface>) {
+    let view = FOCUS.with(|f| {
+        f.borrow_mut()
+            .get_mut(&surface.key())
+            .and_then(|focus| focus.auto_focus.take())
+    });
+    let Some(view) = view else { return };
+    if surface.view(view.id()).as_ref() != Some(&view) {
+        return;
+    }
+    if can_hold_focus(surface, &view) {
+        if let Some(input) = input_of(&view) {
+            input.auto_focus_pending.set(false);
+        }
+        set_focus(surface, Some(&view));
+    } else {
+        FOCUS.with(|f| {
+            f.borrow_mut().entry(surface.key()).or_default().auto_focus = Some(view);
+        });
+    }
+}
+
 /// Cancels scheduled focus when a subtree leaves the native input tree.
-pub(crate) fn retire_cell(view: &NshView) {
+fn cancel_auto_focus(view: &NshView) {
     if let Some(input) = input_of(view) {
         input.auto_focus_pending.set(false);
     }
     for child in view.child_views() {
-        retire_cell(&child);
+        cancel_auto_focus(&child);
     }
 }
 
@@ -1625,7 +2069,11 @@ pub(crate) fn blur(view: &NshView) {
 
 /// Blurs whatever field has the focus.
 pub(crate) fn blur_all(surface: &Rc<Surface>) {
+    FOCUS.with(|f| f.borrow_mut().entry(surface.key()).or_default().auto_focus = None);
     set_focus(surface, None);
+    if !has_pending(surface) {
+        disarm(surface);
+    }
 }
 
 /// Focuses `view`, reached with Tab: as in Windows' dialogs, its text is
@@ -1637,61 +2085,10 @@ pub(crate) fn tab_to(view: &NshView) {
     set_focus(&surface, Some(view));
     if let Some(input) = input_of(view)
         && input.focused.get()
+        && !input.config.borrow().caret_hidden
     {
         input.model.borrow_mut().select_all();
         after_edit(&surface, view, &input, false);
-    }
-}
-
-/// One guarded, undoable application edit of this native input.
-pub(crate) fn replace_range(surface: &Rc<Surface>, view: &NshView, command: &nsh_core::Command) {
-    let nsh_core::Command::ReplaceRange {
-        range,
-        text,
-        expected_text,
-        expected_selection,
-        count,
-    } = command
-    else {
-        return;
-    };
-    let Some(input) = input_of(view) else {
-        return;
-    };
-    if !input.focused.get()
-        || !input.active.get()
-        || !input.config.borrow().editable
-        || !view.attached()
-        || view.state().props.accessibility.state.disabled
-        || input.count.get() != *count
-    {
-        return;
-    }
-    let (changed, selection_changed) = {
-        let mut model = input.model.borrow_mut();
-        let before = model.selection();
-        let observed = model::byte_to_utf16(model.text(), before.0)
-            ..model::byte_to_utf16(model.text(), before.1);
-        if model.composition.is_some()
-            || model.text() != expected_text
-            || observed != *expected_selection
-            || range.start > range.end
-        {
-            return;
-        }
-        let start = model::utf16_to_byte(model.text(), range.start);
-        let end = model::utf16_to_byte(model.text(), range.end);
-        if model::byte_to_utf16(model.text(), start) != range.start
-            || model::byte_to_utf16(model.text(), end) != range.end
-        {
-            return;
-        }
-        let changed = model.replace_range(start..end, text, input.config.borrow().max_length);
-        (changed, model.selection() != before)
-    };
-    if changed || selection_changed {
-        input.goal_x.set(None);
-        after_edit(surface, view, &input, changed);
     }
 }
 
@@ -1720,21 +2117,37 @@ pub(crate) fn set_selection(view: &NshView, start: u32, end: u32) {
 /// Characters typed (`WM_CHAR`, the script's `type`). Control characters
 /// are keys ([`key`] handles Return, Backspace and Tab).
 pub(crate) fn char_input(surface: &Rc<Surface>, text: &str) {
-    let Some(view) = focused(surface) else { return };
-    let Some(input) = input_of(&view) else {
-        return;
-    };
     let text: String = text.chars().filter(|c| !c.is_control()).collect();
     if text.is_empty() {
         return;
     }
-    insert(surface, &view, &input, &text, true);
+    if queue_if_unsettled(surface, || Held::Char(text.clone())) {
+        return;
+    }
+    char_input_now(surface, &text);
+}
+
+fn char_input_now(surface: &Rc<Surface>, text: &str) {
+    let Some(view) = focused(surface) else { return };
+    let Some(input) = input_of(&view) else {
+        return;
+    };
+    insert(surface, &view, &input, text, true);
 }
 
 /// The window got (or lost) the keyboard focus: the focused field keeps
 /// the focus (an app in the background keeps its field), without a caret.
 pub(crate) fn window_focus(surface: &Rc<Surface>, focused_window: bool) {
-    FOCUS.with(|f| f.borrow_mut().entry(surface.key()).or_default().inactive = !focused_window);
+    let changed = FOCUS.with(|f| {
+        let mut f = f.borrow_mut();
+        let entry = f.entry(surface.key()).or_default();
+        let changed = entry.inactive == focused_window;
+        entry.inactive = !focused_window;
+        changed
+    });
+    if changed && !focused_window {
+        disarm(surface);
+    }
     if let Some(view) = focused(surface)
         && let Some(input) = input_of(&view)
     {
@@ -1977,6 +2390,14 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
     };
     let unit = if m.ctrl { Unit::Word } else { Unit::Char };
     let vk = event.vk;
+    #[cfg(feature = "terminal")]
+    if surface.terminal_active.get().is_some()
+        && composing_focused(surface)
+        && (vk == VK_RETURN.0 || vk == VK_ESCAPE.0)
+    {
+        // Only the terminal IME protocol can commit or cancel its preedit.
+        return true;
+    }
     // Movements: the caret goes, the text stays.
     let moved = |f: &dyn Fn(&mut Model)| {
         f(&mut input.model.borrow_mut());
@@ -2047,10 +2468,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
             }
             let behavior = input.config.borrow().submit();
             match return_key(behavior, multiline, m) {
-                None => {
-                    let ending = model::line_ending(input.model.borrow().text());
-                    insert(surface, &view, &input, ending, true);
-                }
+                None => insert(surface, &view, &input, "\n", true),
                 Some(blur) => submit(surface, &view, &input, blur),
             }
             true
@@ -2058,6 +2476,16 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
         // Reported as on macOS and Linux; navigation then takes the focus
         // from the field (`navigation::key_pressed`).
         _ if vk == VK_ESCAPE.0 => {
+            if input.model.borrow().composition.is_some() {
+                cancel_composition(surface);
+                input.model.borrow_mut().composition = None;
+                input.relayout();
+                input.reveal();
+                view.changed();
+                report_composition(surface, &view, &input);
+                crate::keymap::drop_char(surface);
+                return true;
+            }
             if !m.ctrl && !m.alt && !event.repeat {
                 key_press(surface, &view, "Escape");
             }
@@ -2183,8 +2611,7 @@ fn line_edge(input: &InputState, end: bool) -> usize {
             at = at.saturating_sub(1);
         }
     }
-    let model = input.model.borrow();
-    model.tokens().step(model.text_at(at, secure), end)
+    input.model.borrow().text_at(at, secure)
 }
 
 /// Where Up / Down (a line) or Page Up / Down (a box) takes the caret,
@@ -2213,7 +2640,7 @@ fn vertical(input: &InputState, down: bool, page: bool) -> usize {
         return model.text().len();
     }
     let at = input.hit_layout(&layout, goal, target);
-    model.tokens().step(model.text_at(at, secure), down)
+    model.text_at(at, secure)
 }
 
 // --- The caret's blinking ----------------------------------------------------
@@ -2291,100 +2718,508 @@ mod blink {
     }
 }
 
+/// The terminal's input method uses the same editing model as IMM32.
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_target(surface: &Surface) -> Option<(u64, Bounds<Points>)> {
+    let view = focused(surface)?;
+    let input = input_of(&view)?;
+    if !input.config.borrow().editable {
+        return None;
+    }
+    let caret = caret_bounds(&view, &input);
+    let (x, y, w, h) = view.to_root()?.bounds(
+        caret.origin.x.0,
+        caret.origin.y.0,
+        caret.size.width.0,
+        caret.size.height.0,
+    )?;
+    Some((u64::from(view.id()), crate::geom::rect(x, y, w, h)))
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_candidate(surface: &Surface) -> Option<Bounds<Points>> {
+    let view = focused(surface)?;
+    let input = input_of(&view)?;
+    if !input.config.borrow().editable {
+        return None;
+    }
+    let anchor = if let Some(layout) = input.layout() {
+        let pos = {
+            let model = input.model.borrow();
+            model.to_display(model.caret(), input.secure())
+        };
+        let (ox, oy) = input.origin(&layout);
+        let (x, y, h) = input.caret_at(&layout, pos);
+        let content = content_rect(&view, &input);
+        Bounds {
+            origin: Point::new(
+                content.origin.x + Points(ox + x),
+                content.origin.y + Points(oy + y),
+            ),
+            size: Size::new(Points(caret_width()), Points(h)),
+        }
+    } else {
+        Bounds::default()
+    };
+    let (x, y, w, h) = view.to_root()?.bounds(
+        anchor.origin.x.0,
+        anchor.origin.y.0,
+        anchor.size.width.0,
+        anchor.size.height.0,
+    )?;
+    Some(crate::geom::rect(x, y, w, h))
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_composition(
+    surface: &Rc<Surface>,
+    commit: &str,
+    preedit: &str,
+    selection: Option<std::ops::Range<usize>>,
+    active: bool,
+) -> Result<(), String> {
+    let check = selection.clone().unwrap_or(preedit.len()..preedit.len());
+    if check.start > check.end
+        || check.end > preedit.len()
+        || !preedit.is_char_boundary(check.start)
+        || !preedit.is_char_boundary(check.end)
+    {
+        return Err("composition selection is not a UTF-8 boundary".into());
+    }
+    if commit.is_empty() && preedit.is_empty() && !active && !has_pending(surface) {
+        terminal_composition_now(surface, commit, preedit, selection, active);
+        return Ok(());
+    }
+    let Some(expected_view) = focused(surface) else {
+        return Ok(());
+    };
+    let expected = (expected_view.id(), surface.terminal_focus_generation.get());
+    if queue_if_unsettled(surface, || Held::TerminalComposition {
+        expected,
+        commit: commit.to_owned(),
+        preedit: preedit.to_owned(),
+        selection: selection.clone(),
+        active,
+    }) {
+        return Ok(());
+    }
+    terminal_composition_now(surface, commit, preedit, selection, active);
+    Ok(())
+}
+
+#[cfg(feature = "terminal")]
+fn terminal_composition_now(
+    surface: &Rc<Surface>,
+    commit: &str,
+    preedit: &str,
+    selection: Option<std::ops::Range<usize>>,
+    active: bool,
+) {
+    let Some(view) = focused(surface) else {
+        return;
+    };
+    let Some(input) = input_of(&view) else {
+        return;
+    };
+    if !input.config.borrow().editable {
+        return;
+    }
+    let events_before = surface.events_sent();
+    let selection = selection.unwrap_or(preedit.len()..preedit.len());
+    if !commit.is_empty() {
+        input.model.borrow_mut().composition = None;
+        input.relayout();
+        insert(surface, &view, &input, commit, true);
+        report_composition(surface, &view, &input);
+    }
+    input.model.borrow_mut().composition = active.then(|| {
+        Composition::new(
+            preedit.to_owned(),
+            selection.end,
+            (selection.start != selection.end).then_some((selection.start, selection.end)),
+        )
+    });
+    input.relayout();
+    input.wake_caret();
+    input.reveal();
+    view.changed();
+    report_composition(surface, &view, &input);
+    report_caret(surface, &view, &input);
+    if !active && surface.events_sent() > events_before {
+        arm(surface);
+    }
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_paste(surface: &Rc<Surface>, content: nsh_core::PasteEvent) {
+    if queue_if_unsettled(surface, || Held::Paste(content.clone())) {
+        return;
+    }
+    terminal_paste_now(surface, content);
+}
+
+#[cfg(feature = "terminal")]
+fn terminal_paste_now(surface: &Surface, content: nsh_core::PasteEvent) {
+    let Some(view) = focused(surface) else {
+        return;
+    };
+    let Some(input) = input_of(&view) else {
+        return;
+    };
+    if view.state().events.contains(EventKind::Paste) {
+        surface.event(
+            view.id(),
+            EventKind::Paste,
+            EventPayload::Paste(Box::new(content.clone())),
+        );
+    }
+    if input.config.borrow().paste_behavior == nsh_core::PasteBehavior::Insert {
+        let text = pasted(&content.text, input.multiline());
+        if !text.is_empty() {
+            insert(surface, &view, &input, &text, false);
+        }
+    }
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_text(surface: &Surface) -> Option<String> {
+    let view = focused(surface)?;
+    let input = input_of(&view)?;
+    if input.secure() {
+        return None;
+    }
+    let text = input.model.borrow().text().to_owned();
+    Some(text)
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_validate_selection(
+    surface: &Surface,
+    range: &std::ops::Range<usize>,
+) -> Result<(), String> {
+    let view = focused(surface).ok_or("no focused native editor")?;
+    let input = input_of(&view).ok_or("no focused native editor")?;
+    let model = input.model.borrow();
+    if range.start > range.end {
+        return Err("inverted text selection".into());
+    }
+    crate::terminal::utf16_offset(model.text(), range.start)?;
+    crate::terminal::utf16_offset(model.text(), range.end)?;
+    Ok(())
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_is_composing(surface: &Surface) -> bool {
+    composing_focused(surface)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[cfg(feature = "js")]
+    fn find_test_view(root: &NshView, test_id: &str) -> Option<NshView> {
+        let mut pending = vec![root.clone()];
+        while let Some(view) = pending.pop() {
+            if view.state().props.test_id.as_deref() == Some(test_id) {
+                return Some(view);
+            }
+            pending.extend(view.child_views());
+        }
+        None
+    }
+
+    #[cfg(feature = "js")]
     #[test]
-    fn within_scoped_binding_replaces_native_text_and_undoes_as_one_edit() {
-        let code = nsh_bundler::compile_module("ScopedPaste.tsx", r#"
-            import { mount, keymap, View } from 'nsh';
-            import { Input } from 'nsh/base';
+    fn composing_escape_cancels_preedit_without_blurring_or_closing_modal() {
+        let code = nsh_bundler::compile_module(
+            "ComposingEscape.tsx",
+            r#"
+            import { keymap, mount, signal, View } from 'nsh';
+            import { Dialog, Input } from 'nsh/base';
             function App() {
-                let field;
-                return <View ref={node => keymap.bind('ctrl+v', () => field.replaceRange({
-                    start: 2, end: 4, text: 'X', expectedText: 'ab😀cd',
-                    expectedSelection: {start: 6, end: 6}
-                }), {within: node, when: 'always'})}>
-                    <Input ref={node => field = node} value="ab😀cd" style={{width: 200, height: 40}} />
-                </View>;
+                const log = signal('');
+                const open = signal(true);
+                let unbind = () => {};
+                keymap.bind('f2', () => { unbind(); unbind = () => {}; log.set(log() + 'unbound|'); }, { when: 'always' });
+                return (
+                    <View style={{ flex: 1 }}>
+                        <Input testID="log" readonly focusable={false} value={log()} style={{ height: 24 }} />
+                        <Dialog
+                            open={open()}
+                            animation="none"
+                            closeOnEscape
+                            onOpenChange={({ open: next }) => {
+                                if (!next) {
+                                    log.set(log() + 'modal|');
+                                    open.set(false);
+                                }
+                            }}
+                        >
+                            <View ref={node => {
+                                if (node) unbind = keymap.bind('escape', () => log.set(log() + 'bound|'), { within: node, when: 'always' });
+                            }}>
+                                <Input
+                                    testID="editor"
+                                    autoFocus
+                                    value="ab"
+                                    onKeyPress={({ key }) => log.set(log() + 'key:' + key + '|')}
+                                    onCompositionChange={({ composing, text }) =>
+                                        log.set(log() + (composing ? 'comp:' + text : 'end') + '|')
+                                    }
+                                    style={{ width: 200, height: 32 }}
+                                />
+                            </View>
+                        </Dialog>
+                    </View>
+                );
             }
             mount(App);
-        "#, &[]).unwrap();
+            "#,
+            &[],
+        )
+        .unwrap();
         let surface = Surface::new(nsh_core::platform::Environment {
-            window: nsh_core::Size::new(Points(240.0), Points(80.0)),
+            window: nsh_core::Size::new(Points(240.0), Points(120.0)),
             os: nsh_core::platform::Os::Windows,
             native_focus_scopes: true,
+            fallback_key_bindings: true,
+            ..Default::default()
+        });
+        surface.root.state_mut().frame = crate::geom::rect(0.0, 0.0, 240.0, 120.0);
+        surface.without_shader_renderer();
+        let mut config = nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(code));
+        config.ui_sets = vec![nsh_base::registry()];
+        surface.start(config);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (editor, log_view) = loop {
+            surface.drain();
+            if let Some(editor) = focused(&surface)
+                && let Some(log_view) = find_test_view(&surface.root, "log")
+                && input_of(&editor).is_some_and(|i| i.model.borrow().text() == "ab")
+            {
+                break (editor, log_view);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "modal editor did not autoFocus"
+            );
+            std::thread::yield_now();
+        };
+        let editor_input = input_of(&editor).unwrap();
+        editor_input.model.borrow_mut().composition = Some(Composition::new("ni".into(), 2, None));
+        report_composition(&surface, &editor, &editor_input);
+
+        let esc = KeyEvent {
+            vk: VK_ESCAPE.0,
+            down: true,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+        // With an `always` Escape binding inside the modal, composing Escape cancels composition only.
+        assert!(crate::input::key(&surface, esc));
+        assert!(!composing(&editor));
+        assert_eq!(focused(&surface), Some(editor.clone()));
+        while input_of(&log_view).unwrap().model.borrow().text() != "comp:ni|end|" {
+            surface.drain();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "composition cancel log did not arrive"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(focused(&surface), Some(editor.clone()));
+
+        // Unbind the Escape shortcut and verify 3-step desktop Escape navigation:
+        // 1st cancels preedit, 2nd leaves editor, 3rd closes Modal.
+        assert!(crate::input::key(
+            &surface,
+            KeyEvent {
+                vk: 0x71, // VK_F2
+                down: true,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            }
+        ));
+        while input_of(&log_view).unwrap().model.borrow().text() != "comp:ni|end|unbound|" {
+            surface.drain();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "f2 unbind did not arrive"
+            );
+            std::thread::yield_now();
+        }
+        editor_input.model.borrow_mut().composition = Some(Composition::new("hao".into(), 3, None));
+        report_composition(&surface, &editor, &editor_input);
+        assert!(crate::input::key(&surface, esc));
+        assert!(!composing(&editor));
+        assert_eq!(focused(&surface), Some(editor.clone()));
+        while input_of(&log_view).unwrap().model.borrow().text()
+            != "comp:ni|end|unbound|comp:hao|end|"
+        {
+            surface.drain();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "second composition cancel log did not arrive"
+            );
+            std::thread::yield_now();
+        }
+
+        // Second Escape (no longer composing) reports Escape and blurs the editor without closing the modal.
+        assert!(crate::input::key(&surface, esc));
+        assert_eq!(focused(&surface), None);
+        while input_of(&log_view).unwrap().model.borrow().text()
+            != "comp:ni|end|unbound|comp:hao|end|key:Escape|"
+        {
+            surface.drain();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "non-composing Escape log did not arrive"
+            );
+            std::thread::yield_now();
+        }
+
+        // Third Escape (unfocused) closes the modal.
+        assert!(crate::input::key(&surface, esc));
+        while input_of(&log_view).unwrap().model.borrow().text()
+            != "comp:ni|end|unbound|comp:hao|end|key:Escape|modal|"
+        {
+            surface.drain();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "modal close log did not arrive"
+            );
+            std::thread::yield_now();
+        }
+        surface.stop();
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn editing_keys_and_shortcuts_wait_for_pending_focus_events_without_queued_text() {
+        let code = nsh_bundler::compile_module(
+            "FocusFence.tsx",
+            r#"
+            import { keymap, mount, signal, View } from 'nsh';
+            import { Input } from 'nsh/base';
+            function App() {
+                const first = signal('A');
+                const second = signal('BC');
+                let firstNode, secondNode;
+                keymap.bind('ctrl+n', () => secondNode.focus(), { when: 'always' });
+                keymap.bind('ctrl+1', () => firstNode.focus(), { when: 'always' });
+                return (
+                    <View style={{ flex: 1, gap: 4 }}>
+                        <Input
+                            testID="first"
+                            autoFocus
+                            ref={n => firstNode = n}
+                            value={first()}
+                            onChange={({ value }) => first.set(value)}
+                            onSubmit={() => secondNode.focus()}
+                            submitBehavior="submit"
+                            style={{ height: 28 }}
+                        />
+                        <View ref={node => {
+                            if (node) keymap.bind('f6', () => second.set(second() + '!'), { within: node, when: 'always' });
+                        }}>
+                            <Input
+                                testID="second"
+                                ref={n => secondNode = n}
+                                value={second()}
+                                onChange={({ value }) => second.set(value)}
+                                style={{ height: 28 }}
+                            />
+                        </View>
+                        <Input testID="report" readonly focusable={false} value={first() + ':' + second()} style={{ height: 28 }} />
+                    </View>
+                );
+            }
+            mount(App);
+            "#,
+            &[],
+        )
+        .unwrap();
+        let surface = Surface::new(nsh_core::platform::Environment {
+            window: nsh_core::Size::new(Points(240.0), Points(120.0)),
+            os: nsh_core::platform::Os::Windows,
+            native_focus_scopes: true,
+            fallback_key_bindings: true,
             ..Default::default()
         });
         let mut config = nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(code));
         config.ui_sets = vec![nsh_base::registry()];
         surface.start(config);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let field = loop {
+        let report = loop {
             surface.drain();
-            let mut pending = surface.root.child_views();
-            let mut found = None;
-            while let Some(view) = pending.pop() {
-                pending.extend(view.child_views());
-                if let Some(input) = input_of(&view)
-                    && input.configured.get()
-                    && input.model.borrow().text() == "ab😀cd"
-                {
-                    found = Some(view);
-                    break;
-                }
-            }
-            if let Some(view) = found {
-                break view;
+            if focused(&surface).is_some()
+                && surface.events_handled() == surface.events_sent()
+                && let Some(report) = find_test_view(&surface.root, "report")
+                && input_of(&report).is_some_and(|i| i.model.borrow().text() == "A:BC")
+            {
+                break report;
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "scoped input did not mount"
+                "initial fields did not settle"
             );
             std::thread::yield_now();
         };
-        focus_view(&surface, &field);
-        set_selection(&field, 6, 6);
-        let input = input_of(&field).unwrap();
-        assert!(crate::input::key(
-            &surface,
-            KeyEvent {
-                vk: 0x56,
-                down: true,
-                repeat: false,
-                modifiers: Modifiers {
-                    ctrl: true,
-                    ..Default::default()
-                }
-            }
-        ));
-        while input.model.borrow().text() != "abXcd" {
+
+        let down = |vk: u16, ctrl: bool| KeyEvent {
+            vk,
+            down: true,
+            repeat: false,
+            modifiers: Modifiers {
+                ctrl,
+                ..Default::default()
+            },
+        };
+
+        // Submit + immediate End + Backspace with NO queued text: waits for second field!
+        assert!(crate::input::key(&surface, down(VK_RETURN.0, false)));
+        assert!(crate::input::key(&surface, down(VK_END.0, false)));
+        assert!(crate::input::key(&surface, down(VK_BACK.0, false)));
+        while input_of(&report).unwrap().model.borrow().text() != "A:B" {
             surface.drain();
             assert!(
                 std::time::Instant::now() < deadline,
-                "within-scoped replaceRange was not applied"
+                "held Backspace without queued text did not edit second field"
             );
             std::thread::yield_now();
         }
-        assert_eq!(input.count.get(), 1);
-        assert_eq!(input.model.borrow().selection(), (3, 3));
-        crate::input::key(
-            &surface,
-            KeyEvent {
-                vk: 0x5a,
-                down: true,
-                repeat: false,
-                modifiers: Modifiers {
-                    ctrl: true,
-                    ..Default::default()
-                },
-            },
-        );
-        assert_eq!(input.model.borrow().text(), "ab😀cd");
-        assert_eq!(input.count.get(), 2);
-        blur_all(&surface);
+
+        // Move back to first via Ctrl+1, then Ctrl+N + immediate Ctrl+A + Backspace + "Z":
+        assert!(crate::input::key(&surface, down(0x31, true)));
+        while focused(&surface)
+            .and_then(|v| v.state().props.test_id.clone())
+            .as_deref()
+            != Some("first")
+            || surface.events_handled() < surface.events_sent()
+        {
+            surface.drain();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "did not return to first"
+            );
+            std::thread::yield_now();
+        }
+        assert!(crate::input::key(&surface, down(0x4E, true)));
+        assert!(crate::input::key(&surface, down(0x41, true)));
+        assert!(crate::input::key(&surface, down(VK_BACK.0, false)));
+        char_input(&surface, "xy");
+        assert!(crate::input::key(&surface, down(VK_BACK.0, false)));
+        char_input(&surface, "z");
+        assert!(crate::input::key(&surface, down(0x75, false))); // VK_F6 within second's scope
+        while input_of(&report).unwrap().model.borrow().text() != "A:xz!" {
+            surface.drain();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "ordered shortcut + editing key + text did not replay onto second field"
+            );
+            std::thread::yield_now();
+        }
         surface.stop();
     }
 
@@ -2416,31 +3251,107 @@ mod tests {
     }
 
     #[test]
-    fn configured_tokens_style_and_delete_whole_skill() {
-        use nsh_core::input_tokens::{InputTokenRule, InputTokenStyle};
+    fn stopped_surface_releases_editor_without_reactivating_a_hidden_reload() {
+        let surface = Surface::new(Default::default());
+        let view = NshView::new(2, nsh_core::ViewKind::Input);
+        view.insert_before(&surface.root, None);
+        create(&surface, &view);
+        focus_view(&surface, &view);
+        window_focus(&surface, false);
+        let input = input_of(&view).unwrap();
+        surface.stop();
+        assert!(!input.focused.get());
+        assert!(!input.active.get());
+        assert!(FOCUS.with(|focus| focus.borrow()[&surface.key()].view.is_none()));
+        assert!(!window_active(&surface));
+        let key = surface.key();
+        drop(surface);
+        assert!(!FOCUS.with(|focus| focus.borrow().contains_key(&key)));
+    }
+
+    #[test]
+    fn removing_ancestor_blurs_focused_input_and_arms_fence() {
+        let surface = Surface::new(Default::default());
+        let parent = NshView::new(2, nsh_core::ViewKind::View);
+        let child = NshView::new(3, nsh_core::ViewKind::Input);
+        parent.insert_before(&surface.root, None);
+        child.insert_before(&parent, None);
+        create(&surface, &child);
+        focus_view(&surface, &child);
+        let input = input_of(&child).unwrap();
+        assert!(input.focused.get());
+        let generation = surface.terminal_focus_generation.get();
+        removing(&surface, &parent);
+        parent.unparent();
+        assert!(!input.focused.get());
+        assert_eq!(focused_view(&surface), None);
+        assert!(is_armed(&surface));
+        assert!(surface.terminal_focus_generation.get() > generation);
+        focus_view(&surface, &child);
+        assert!(!input.focused.get());
+        assert_eq!(focused_view(&surface), None);
+        parent.state_mut().style.hidden = true;
+        parent.insert_before(&surface.root, None);
+        focus_view(&surface, &child);
+        assert!(!input.focused.get());
+        assert_eq!(focused_view(&surface), None);
+        surface.stop();
+    }
+
+    #[test]
+    fn inactive_editor_retains_selection_and_restores_its_caret_on_activation() {
         let surface = Surface::new(Default::default());
         let view = NshView::new(2, nsh_core::ViewKind::Input);
         view.insert_before(&surface.root, None);
         create(&surface, &view);
         let input = input_of(&view).unwrap();
-        input.model.borrow_mut().set_text("/skill:demo ");
-        let style = InputTokenStyle {
-            color: Some(Color::rgba(255, 0, 0, 255)),
-            background_color: Some(Color::rgba(0, 0, 255, 255)),
-            border_radius: Points(3.0),
-        };
-        config(
-            &surface,
-            &view,
-            &InputConfig {
-                tokens: vec![InputTokenRule::new("(?P<token>/skill:[a-z]+)", style, true).unwrap()],
-                ..Default::default()
-            },
-        );
-        assert_eq!(display_tokens(&input.model.borrow()), vec![(0..11, style)]);
-        input.model.borrow_mut().select(11, 11);
-        assert!(input.model.borrow_mut().delete(Unit::Char, false));
-        assert_eq!(input.model.borrow().text(), " ");
+        input.model.borrow_mut().set_text("a😀b");
+        focus_view(&surface, &view);
+        set_selection(&view, 1, 3);
+        let selection = input.model.borrow().selection();
+        window_focus(&surface, false);
+        assert_eq!(focused(&surface), Some(view.clone()));
+        assert_eq!(input.model.borrow().selection(), selection);
+        assert!(!input.active.get());
+        window_focus(&surface, true);
+        assert_eq!(focused(&surface), Some(view));
+        assert_eq!(input.model.borrow().selection(), selection);
+        assert!(input.active.get());
+        assert!(input.caret_on.get());
+        blur_all(&surface);
+    }
+
+    #[cfg(feature = "terminal")]
+    #[test]
+    fn terminal_preedit_waits_for_protocol_commit_and_replaces_selection_once() {
+        let surface = Surface::new(Default::default());
+        surface.terminal_active.set(Some(true));
+        let view = NshView::new(2, nsh_core::ViewKind::Input);
+        view.insert_before(&surface.root, None);
+        create(&surface, &view);
+        let input = input_of(&view).unwrap();
+        input.model.borrow_mut().set_text("a😀b");
+        focus_view(&surface, &view);
+        set_selection(&view, 1, 3);
+        terminal_composition(&surface, "", "中文", None, true).unwrap();
+        for vk in [0x0D, 0x1B] {
+            assert!(key(
+                &surface,
+                &KeyEvent {
+                    vk,
+                    down: true,
+                    repeat: false,
+                    modifiers: Modifiers::default()
+                }
+            ));
+            assert_eq!(input.model.borrow().text(), "a😀b");
+            assert!(terminal_is_composing(&surface));
+        }
+        terminal_composition(&surface, "中", "", None, false).unwrap();
+        assert_eq!(input.model.borrow().text(), "a中b");
+        assert_eq!(input.count.get(), 1);
+        assert!(!terminal_is_composing(&surface));
+        blur_all(&surface);
     }
 
     #[test]
@@ -2492,5 +3403,356 @@ mod tests {
         assert_eq!(target_clause(&[0, 0, 1, 1, 2]), Some((2, 4)));
         assert_eq!(target_clause(&[3, 0]), Some((0, 1)));
         assert_eq!(target_clause(&[0, 2]), None);
+    }
+
+    #[test]
+    fn focus_in_an_app_window_outside_its_events_holds() {
+        use nsh_core::{
+            Command, ModalAnimation, ModalConfig, MountItem, NodeId, ROOT_ID, ViewKind,
+            desktop::{DesktopCommand, OpenWindow},
+        };
+
+        let surface = Surface::new(Default::default());
+        let window: NodeId = 2;
+        let field: NodeId = 3;
+        {
+            let mut mounter = surface.mounter.borrow_mut();
+            for item in [
+                MountItem::Create {
+                    id: window,
+                    kind: ViewKind::Modal,
+                },
+                MountItem::ModalConfig {
+                    id: window,
+                    config: ModalConfig {
+                        animation: ModalAnimation::None,
+                        ..Default::default()
+                    },
+                },
+                MountItem::Create {
+                    id: field,
+                    kind: ViewKind::Input,
+                },
+                MountItem::Input {
+                    id: field,
+                    config: Box::new(InputConfig::default()),
+                },
+                MountItem::Insert {
+                    parent: window,
+                    child: field,
+                    before: None,
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: window,
+                    before: None,
+                },
+                MountItem::Command {
+                    id: window,
+                    command: Command::Desktop(Box::new(DesktopCommand::OpenWindow(Box::new(
+                        OpenWindow::default(),
+                    )))),
+                },
+                MountItem::Command {
+                    id: field,
+                    command: Command::Focus,
+                },
+            ] {
+                mounter.apply(&surface, &item);
+            }
+            mounter.end_batch(&surface);
+        }
+        assert_eq!(focused(&surface).map(|v| v.id()), Some(field));
+        surface.stop();
+    }
+
+    #[test]
+    fn modal_auto_focus_keeps_focus_over_covered_background_input() {
+        use nsh_core::{
+            Command, ModalAnimation, ModalConfig, MountItem, NodeId, ROOT_ID, ViewKind,
+        };
+
+        let surface = Surface::new(Default::default());
+        let bg: NodeId = 2;
+        let modal: NodeId = 3;
+        let dialog_input: NodeId = 4;
+        let apply = |items: &[MountItem]| {
+            let mut mounter = surface.mounter.borrow_mut();
+            for item in items {
+                mounter.apply(&surface, item);
+            }
+            mounter.end_batch(&surface);
+        };
+
+        apply(&[
+            MountItem::Create {
+                id: bg,
+                kind: ViewKind::Input,
+            },
+            MountItem::Input {
+                id: bg,
+                config: Box::new(InputConfig::default()),
+            },
+            MountItem::Insert {
+                parent: ROOT_ID,
+                child: bg,
+                before: None,
+            },
+            MountItem::Command {
+                id: bg,
+                command: Command::Focus,
+            },
+        ]);
+        assert_eq!(focused(&surface).map(|v| v.id()), Some(bg));
+
+        // Child input configures auto_focus before its parent modal inserts (blurring `bg`).
+        let mut auto = InputConfig::default();
+        auto.auto_focus = true;
+        apply(&[
+            MountItem::Create {
+                id: modal,
+                kind: ViewKind::Modal,
+            },
+            MountItem::ModalConfig {
+                id: modal,
+                config: ModalConfig {
+                    animation: ModalAnimation::None,
+                    ..Default::default()
+                },
+            },
+            MountItem::Create {
+                id: dialog_input,
+                kind: ViewKind::Input,
+            },
+            MountItem::Input {
+                id: dialog_input,
+                config: Box::new(auto),
+            },
+            MountItem::Insert {
+                parent: modal,
+                child: dialog_input,
+                before: None,
+            },
+            MountItem::Insert {
+                parent: ROOT_ID,
+                child: modal,
+                before: None,
+            },
+        ]);
+        assert_eq!(focused(&surface).map(|v| v.id()), Some(dialog_input));
+
+        // A delayed focus command for the covered background input must not steal focus.
+        apply(&[MountItem::Command {
+            id: bg,
+            command: Command::Focus,
+        }]);
+        assert_eq!(focused(&surface).map(|v| v.id()), Some(dialog_input));
+
+        // Dismissing the modal restores focus to the background input.
+        apply(&[MountItem::Remove { id: modal }]);
+        assert_eq!(focused(&surface).map(|v| v.id()), Some(bg));
+        surface.stop();
+    }
+
+    #[test]
+    fn editor_sink_with_pointer_events_none_focuses_and_blurs_when_container_inert() {
+        let surface = Surface::new(Default::default());
+        let container = NshView::new(2, nsh_core::ViewKind::View);
+        let sink = NshView::new(3, nsh_core::ViewKind::Input);
+        sink.state_mut().props.pointer_events = nsh_core::PointerEvents::None;
+        container.insert_before(&surface.root, None);
+        sink.insert_before(&container, None);
+        create(&surface, &sink);
+        config(
+            &surface,
+            &sink,
+            &InputConfig {
+                editable: true,
+                caret_hidden: true,
+                multiline: true,
+                ..Default::default()
+            },
+        );
+        input_of(&sink).unwrap().model.borrow_mut().set_text("abc");
+        set_selection(&sink, 3, 3);
+        tab_to(&sink);
+        assert_eq!(focused(&surface), Some(sink.clone()));
+        assert_eq!(
+            surface.focus_path(),
+            vec![sink.id(), container.id(), nsh_core::ROOT_ID]
+        );
+        assert_eq!(input_of(&sink).unwrap().model.borrow().selection(), (3, 3));
+        #[cfg(feature = "terminal")]
+        assert_eq!(
+            terminal_target(&surface).map(|(id, _)| id),
+            Some(u64::from(sink.id()))
+        );
+
+        let generation = surface.terminal_focus_generation.get();
+        container.state_mut().props.pointer_events = nsh_core::PointerEvents::None;
+        assert_eq!(focused_view(&surface), None);
+        assert!(!input_of(&sink).unwrap().focused.get());
+        assert!(surface.focus_path().is_empty());
+        assert!(surface.terminal_focus_generation.get() > generation);
+        surface.stop();
+    }
+
+    #[test]
+    fn unfocused_input_readonly_transitions_do_not_advance_focus_generation() {
+        let surface = Surface::new(Default::default());
+        let first = NshView::new(2, nsh_core::ViewKind::Input);
+        let second = NshView::new(3, nsh_core::ViewKind::Input);
+        first.insert_before(&surface.root, None);
+        second.insert_before(&surface.root, None);
+        create(&surface, &first);
+        create(&surface, &second);
+        config(&surface, &first, &InputConfig::default());
+        focus_view(&surface, &first);
+        assert!(input_of(&first).unwrap().focused.get());
+        assert!(!input_of(&second).unwrap().focused.get());
+
+        let generation = surface.terminal_focus_generation.get();
+        config(
+            &surface,
+            &second,
+            &InputConfig {
+                editable: false,
+                ..Default::default()
+            },
+        );
+        assert_eq!(surface.terminal_focus_generation.get(), generation);
+        config(
+            &surface,
+            &second,
+            &InputConfig {
+                editable: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(surface.terminal_focus_generation.get(), generation);
+
+        config(
+            &surface,
+            &first,
+            &InputConfig {
+                editable: false,
+                ..Default::default()
+            },
+        );
+        let readonly_generation = surface.terminal_focus_generation.get();
+        assert!(readonly_generation > generation);
+        config(
+            &surface,
+            &first,
+            &InputConfig {
+                editable: true,
+                ..Default::default()
+            },
+        );
+        assert!(surface.terminal_focus_generation.get() > readonly_generation);
+        surface.stop();
+    }
+
+    #[cfg(all(feature = "js", feature = "terminal"))]
+    #[test]
+    fn unsettled_terminal_composition_survives_enter_and_escape() {
+        let code = nsh_bundler::compile_module(
+            "UnsettledTerminalIme.tsx",
+            r#"
+            import { mount, signal, View } from 'nsh';
+            import { Input } from 'nsh/base';
+            function App() {
+                const first = signal('A');
+                const second = signal('');
+                const log = signal('');
+                return (
+                    <View style={{ flex: 1, gap: 4 }}>
+                        <Input
+                            testID="first"
+                            autoFocus
+                            value={first()}
+                            onChange={({ value }) => first.set(value)}
+                            style={{ height: 28 }}
+                        />
+                        <Input
+                            testID="second"
+                            value={second()}
+                            onChange={({ value }) => second.set(value)}
+                            onFocus={() => log.set(log() + 'focused|')}
+                            onSubmit={() => log.set(log() + 'submitted|')}
+                            submitBehavior="submit"
+                            style={{ height: 28 }}
+                        />
+                        <Input
+                            testID="report"
+                            readonly
+                            focusable={false}
+                            value={log() + second()}
+                            style={{ height: 28 }}
+                        />
+                    </View>
+                );
+            }
+            mount(App);
+            "#,
+            &[],
+        )
+        .unwrap();
+        let surface = Surface::new(nsh_core::platform::Environment {
+            window: nsh_core::Size::new(Points(240.0), Points(120.0)),
+            os: nsh_core::platform::Os::Windows,
+            native_focus_scopes: true,
+            fallback_key_bindings: true,
+            ..Default::default()
+        });
+        surface.terminal_active.set(Some(true));
+        let mut config = nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(code));
+        config.ui_sets = vec![nsh_base::registry()];
+        surface.start(config);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (second, report) = loop {
+            surface.drain();
+            if focused(&surface).is_some()
+                && surface.events_handled() == surface.events_sent()
+                && let Some(second) = find_test_view(&surface.root, "second")
+                && let Some(report) = find_test_view(&surface.root, "report")
+            {
+                break (second, report);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "initial fields did not settle"
+            );
+            std::thread::yield_now();
+        };
+
+        focus_view(&surface, &second);
+        assert!(behind(&surface));
+        terminal_composition(&surface, "", "方向", None, true).unwrap();
+        assert!(terminal_is_composing(&surface));
+        for vk in [VK_RETURN.0, VK_ESCAPE.0] {
+            assert!(crate::input::key(
+                &surface,
+                KeyEvent {
+                    vk,
+                    down: true,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                },
+            ));
+        }
+        assert_eq!(focused(&surface), Some(second.clone()));
+        terminal_composition(&surface, "方向", "", None, false).unwrap();
+
+        while input_of(&report).unwrap().model.borrow().text() != "focused|方向" {
+            surface.drain();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "unsettled terminal composition did not commit cleanly"
+            );
+            std::thread::yield_now();
+        }
+        assert!(!terminal_is_composing(&surface));
+        surface.stop();
     }
 }

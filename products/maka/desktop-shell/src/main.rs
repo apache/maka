@@ -21,15 +21,15 @@
 
 //! The Maka desktop: runs the workbench (`maka-workbench`) in a window of
 //! its own through NSH's AppKit backend on macOS, its Direct2D backend on
-//! Windows and GPUI on Linux.
+//! Windows and GTK on Linux.
 //! `maka desktop` starts it for the Host it admitted, named by
 //! `MAKA_HOST_ROOT`, `MAKA_HOST_ENDPOINT` and
-//! `MAKA_HOST_EPOCH`. Closing the window detaches this client; the Host keeps
-//! the work it accepted. If that Host stops while the window is open, the
-//! AppKit or GPUI window connects to the Root's next Host, which the launcher named by
+//! `MAKA_HOST_EPOCH`. Ordinary close releases the UI and retains its admitted
+//! client when a usable tray exists; explicit Quit detaches it. Without a tray,
+//! close exits. The Host keeps the work it accepted. If that Host stops, the
+//! AppKit or Linux window connects to the Root's next Host, which the launcher named by
 //! `MAKA_LAUNCHER` starts, and loads the workbench again. Opened directly,
 //! from Finder, the Dock or a file manager, it runs `maka desktop` beside it.
-//! On macOS, `MAKA_GPUI` selects the GPUI window (`window`) instead.
 
 #[cfg(target_os = "macos")]
 mod appkit;
@@ -43,14 +43,18 @@ mod permission_window;
 use direct2d as backend;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod host;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
 mod placement;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod shell;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod window;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use window as backend;
+#[cfg(target_os = "linux")]
+mod tray_linux;
+#[cfg(target_os = "macos")]
+use appkit as backend;
+#[cfg(target_os = "linux")]
+use linux as backend;
 
 use std::{path::PathBuf, process::ExitCode};
 

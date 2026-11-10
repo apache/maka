@@ -77,7 +77,7 @@ view ── lease ──▶ L4 decoded (per display size) ──▶ GPU texture
 
 - Bundled assets: shipped in the package's `assets/` (as now); in development
   served by the dev server. Read on demand, never copied into the disk cache.
-- Files: read on the I/O pool without the HTTP response-size limit.
+- Files: read on the I/O pool.
 - Inline: already in memory (`ImageData`), shared, keyed by digest.
 
 ### L2 — remote downloads and the disk cache
@@ -89,8 +89,8 @@ platform networking but follow the same policy and budget):
 - **Dedup**: one fetch per source key in flight; waiters attach to it.
 - **Pools**: downloads (6 at once, 4 per host) separate from decodes
   (`min(cores−1, 4)`), so slow networks never block decoding.
-- **Priority**: loads for views on screen first, prefetches last; waiting reads
-  are re-prioritized as views scroll.
+- **Priority**: loads for views on screen first, prefetches last; the queue is
+  bounded and re-prioritized as views scroll.
 - **Cancellation**: a load nobody waits for any more is cancelled (the network
   request too) — on every platform.
 - **Limits**: 64 MiB per response, 60 s timeout, 20 redirects each checked

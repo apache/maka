@@ -386,7 +386,13 @@ impl CodeCells {
         )
         .await?;
         let source = String::from_utf8(admission.source.bytes.clone()).map_err(persistence)?;
-        let catalog = catalog.nested();
+        let nested_catalog = catalog.nested();
+        let direct = super::DirectAliases::new(
+            &self.0.executor,
+            &nested_catalog,
+            &catalog.direct_only().names(),
+        );
+        let catalog = nested_catalog;
         let metadata = catalog
             .definitions()
             .map(|d| ToolMetadata {
@@ -418,6 +424,7 @@ impl CodeCells {
                 id,
                 source,
                 catalog,
+                direct,
                 worker_port.clone(),
             ))
             .catch_unwind()
@@ -608,6 +615,7 @@ async fn run_cell(
     id: CellId,
     source: String,
     catalog: ToolCatalog,
+    direct: super::DirectAliases,
     port: Arc<dyn CellPersistence>,
 ) -> Result<(), ToolError> {
     let nested = Arc::new(Nested {
@@ -712,6 +720,10 @@ async fn run_cell(
         output.extend(live.context.take_output());
         output
     };
+    let result = result.map(|mut result| {
+        direct.explain(&mut result);
+        result
+    });
     let published = match result {
         Ok(result @ CellResult::Success { .. }) => {
             let context = live.context.clone();

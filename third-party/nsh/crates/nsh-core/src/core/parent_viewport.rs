@@ -173,7 +173,8 @@ impl<M: TextEngine> Core<M> {
                 .as_ref()
                 .is_some_and(|s| s.refreshing);
             let flags = match (parent, refreshing) {
-                (true, _) => dirty::VIEW,
+                // Its children are read in screen order (`ViewProps::screen_order`).
+                (true, _) => dirty::VIEW | dirty::VIEW_PROPS,
                 (false, false) => dirty::VIEW | dirty::SCROLL,
                 (false, true) => dirty::VIEW | dirty::SCROLL | dirty::REFRESHING,
             };
@@ -312,6 +313,42 @@ impl<M: TextEngine> Core<M> {
                 self.sticky_views.push(outer.view);
             }
         }
+    }
+
+    /// The sticky cells of list `key`, in the viewport of `view`, changed
+    /// from `old`: the cells that became sticky go on top of the list's
+    /// other cells (the platforms keep the cells of a scroll view's own
+    /// list on top), and the view's sticky cells are sent again.
+    pub(super) fn page_sticky_changed(&mut self, key: Key, view: Key, old: &[StickyRange]) {
+        let list = self.nodes[key as usize].list.as_ref().expect("list");
+        let id = self.nodes[key as usize].id;
+        let new: Vec<u32> = list
+            .sent_sticky
+            .iter()
+            .map(|r| r.cell)
+            .filter(|c| !old.iter().any(|o| o.cell == *c))
+            .collect();
+        for cell in new {
+            self.mount.push(MountItem::Insert {
+                parent: id,
+                child: cell,
+                before: None,
+            });
+        }
+        self.sticky_views.push(view);
+    }
+
+    /// Where a cell inserted into list `key` in its parent's viewport goes:
+    /// below its sticky cells.
+    pub(super) fn below_sticky(&self, key: Key, child: Key) -> Option<crate::NodeId> {
+        let list = self.nodes[key as usize].list.as_ref()?;
+        let child = self.nodes[child as usize].id;
+        list.sent_sticky.iter().map(|r| r.cell).find(|&c| {
+            c != child
+                && self.key(c).is_ok_and(|k| {
+                    self.nodes[k as usize].parent == key && self.nodes[k as usize].created
+                })
+        })
     }
 
     /// The native scroll view's own and nested lists' ranges, plus CSS
@@ -683,9 +720,10 @@ const AROUND: &str = "the scroll view around the list scrolls it";
 const OWN: &str = "it needs a scroll view of its own (viewport=\"own\")";
 
 /// What each [`ignored`] bit stands for, and why.
-const IGNORED: [(u16, &str, &str); 7] = [
+const IGNORED: [(u16, &str, &str); 8] = [
     (ignored::INVERTED, "`inverted`", OWN),
     (ignored::FOLLOW_END, "`maintainVisibleContentPosition`", OWN),
+    (ignored::ALIGNMENT, "`alignment`", OWN),
     (
         ignored::ON_SCROLL,
         "`onScroll` and the other scroll events",

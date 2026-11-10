@@ -90,7 +90,7 @@ mod tests {
     use nsh_core::{
         Size,
         element::Instance,
-        platform::{Environment, Os, Renderer},
+        platform::{Environment, Os},
         prelude::px,
     };
 
@@ -123,7 +123,6 @@ mod tests {
             viewport: Size::new(px(480.0), px(200.0)),
             environment: Environment {
                 os: Os::MacOs,
-                renderer: Renderer::Native,
                 ..Environment::default()
             },
             ui_sets: sets,
@@ -160,7 +159,6 @@ mod tests {
             viewport: Size::new(px(640.0), px(480.0)),
             environment: Environment {
                 os: Os::MacOs,
-                renderer: Renderer::Native,
                 ..Environment::default()
             },
             ui_sets: sets,
@@ -234,7 +232,8 @@ mod tests {
         );
         compose(&mut app, false);
         app.wait_for(r#"text:Draft "ab文""#).unwrap();
-        app.type_text("label:前😀 /skill:review 后", "").unwrap();
+        assert!(app.type_text("label:前😀 /skill:review 后", "x").is_err());
+        app.press("text:/前😀/").unwrap();
         app.press_key("mod+a").unwrap();
         app.press_key("mod+c").unwrap();
         assert_eq!(app.screen().clipboard(), Some("前😀 /skill:review 后"));

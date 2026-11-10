@@ -230,7 +230,7 @@ pub(super) fn check_grant(contract: &Contract, grant: &Grant) -> Result<()> {
 }
 /// Explicit trusted launcher approval for one edge of native domain work.
 /// Imports select providers; this separate declaration authorizes calls.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeGrant {
     pub origin: InstanceId,

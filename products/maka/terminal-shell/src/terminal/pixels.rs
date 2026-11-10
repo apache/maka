@@ -24,8 +24,6 @@ mod kitty;
 mod mapping;
 mod probe;
 mod session;
-#[cfg(test)]
-mod tests;
 pub(super) mod text_input;
 
 use super::{Presentation, output::Output};
@@ -79,16 +77,8 @@ pub(super) fn select(
                         probe::Protocol::Iterm2 => "iterm2",
                     });
                 }
-            } else if let Some(pixels) = state.pixels.take() {
-                let (events, resize) = pixels.into_startup();
-                for event in events {
-                    if let Some(event) = super::adapter::event(event) {
-                        state.push(event);
-                    }
-                }
-                if let Some(size) = resize {
-                    state.push(crossterm::event::Event::Resize(size.cols, size.rows));
-                }
+            } else {
+                restore_character_input(&mut state);
             }
             return Ok(decision);
         }
@@ -102,6 +92,18 @@ pub(super) fn select(
             });
         drop(state);
         thread::park_timeout(wait);
+    }
+}
+
+fn restore_character_input(state: &mut super::input::Inbox) {
+    if let Some(pixels) = state.pixels.take() {
+        let (events, resize) = pixels.into_startup();
+        for event in events {
+            state.push_terminal(event);
+        }
+        if let Some(size) = resize {
+            state.push(crossterm::event::Event::Resize(size.cols, size.rows));
+        }
     }
 }
 
@@ -122,13 +124,12 @@ enum Phase {
 }
 
 /// Drives terminal transport independently of native UI preparation and
-/// background GPU submission, readback and encoding.
+/// background native snapshot transfer and encoding.
 pub(super) fn run(
     output: &mut Output,
     presentation: &Presentation,
     config: EngineConfig,
     caps: Capabilities,
-    worker: &mut Option<super::GpuWorker>,
 ) -> Result<(), String> {
     let mut setup = b"\x1b[?1003h".to_vec();
     if matches!(caps.mouse, MouseCoordinates::Pixels(_)) {
@@ -145,8 +146,7 @@ pub(super) fn run(
         state.trace.is_some()
     };
     output.submit([setup])?;
-    let (startup, handle) = session::spawn(config, presentation.clone())?;
-    *worker = Some(handle);
+    let startup = session::spawn(config, presentation.clone())?;
     let mut starting = true;
     let mut phase = Phase::Setup;
     let mut submitted_cursor = None;
@@ -249,7 +249,7 @@ pub(super) fn run(
                     Phase::Origin(encoded) => {
                         let (next, cursor) = publish(output, presentation, encoded, tracing)?;
                         phase = next;
-                        submitted_cursor = Some(cursor);
+                        submitted_cursor = cursor.or(submitted_cursor);
                     }
                     Phase::AwaitImage { offer, image } => {
                         presentation
@@ -290,19 +290,7 @@ pub(super) fn run(
                         output.take_flushed();
                         {
                             let mut state = presentation.state.lock().unwrap();
-                            if let Some(pixels) = state.pixels.take() {
-                                let (events, resize) = pixels.into_startup();
-                                for event in events {
-                                    if let Some(event) = super::adapter::event(event) {
-                                        state.push(event);
-                                    }
-                                }
-                                if let Some(size) = resize {
-                                    state.push(crossterm::event::Event::Resize(
-                                        size.cols, size.rows,
-                                    ));
-                                }
-                            }
+                            restore_character_input(&mut state);
                         }
                         if presentation.stop.load(Ordering::Acquire)
                             || presentation.state.lock().unwrap().quit
@@ -321,7 +309,7 @@ pub(super) fn run(
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {}
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        return Err("terminal GPUI worker stopped during startup".into());
+                        return Err("terminal native renderer stopped during startup".into());
                     }
                 }
             }
@@ -363,7 +351,7 @@ pub(super) fn run(
                 } else {
                     let (next, cursor) = publish(output, presentation, encoded, tracing)?;
                     phase = next;
-                    submitted_cursor = Some(cursor);
+                    submitted_cursor = cursor.or(submitted_cursor);
                 }
             } else if submitted_cursor != Some((inbox.cursor, inbox.text_input.ready_nonce()))
                 && inbox.last_fully_written_geometry == Some(inbox.geometry)
@@ -395,12 +383,14 @@ pub(super) fn run(
     }
 }
 
+type SubmittedCursor = (cursor::Cursor, Option<std::num::NonZeroU64>);
+
 fn publish(
     output: &mut Output,
     presentation: &Presentation,
     encoded: input::Encoded,
     tracing: bool,
-) -> Result<(Phase, (cursor::Cursor, Option<std::num::NonZeroU64>)), String> {
+) -> Result<(Phase, Option<SubmittedCursor>), String> {
     let mut state = presentation.state.lock().unwrap();
     let slots = state.pixel_probe.slots;
     let inbox = state.pixels.as_mut().unwrap();
@@ -415,7 +405,6 @@ fn publish(
         } else {
             slots.first
         };
-        inbox.kitty.begin(kitty::Reply::Image(image));
         Some(image)
     } else {
         None
@@ -433,16 +422,30 @@ fn publish(
     let parts = cursor.frame_parts(bytes, nonce);
     let wire_bytes = parts.iter().map(Vec::len).sum();
     let submitted = tracing.then(Instant::now);
-    output.submit(parts)?;
-    if let Some(at) = submitted {
-        let mut state = presentation.state.lock().unwrap();
-        if let Some(trace) = &mut state.trace {
-            let sample = trace.record(&offer.token, offer.geometry, "upload_submit_begin", at, at);
-            sample.bytes = Some(wire_bytes);
-            sample.image = image;
+    let mut state = presentation.state.lock().unwrap();
+    let inbox = state.pixels.as_mut().unwrap();
+    if offer.geometry != inbox.geometry {
+        inbox.presented(&offer.token);
+        if let Some(wake) = &inbox.wake {
+            wake.unpark();
         }
+        if let Some(trace) = &mut state.trace {
+            trace.discard(&offer.token, offer.geometry, "revoked");
+        }
+        return Ok((Phase::Idle, None));
     }
-    Ok((Phase::Publish { offer, image }, (cursor, nonce)))
+    if let Some(image) = image {
+        inbox.kitty.begin(kitty::Reply::Image(image));
+    }
+    // Submission is a nonblocking channel send. Commit it under the same lock
+    // as resize/reload so a revoked waiting snapshot cannot start writing.
+    output.submit(parts)?;
+    if let (Some(at), Some(trace)) = (submitted, &mut state.trace) {
+        let sample = trace.record(&offer.token, offer.geometry, "upload_submit_begin", at, at);
+        sample.bytes = Some(wire_bytes);
+        sample.image = image;
+    }
+    Ok((Phase::Publish { offer, image }, Some((cursor, nonce))))
 }
 
 pub(super) fn cleanup(presentation: &Presentation, failed: bool) -> Vec<u8> {
@@ -485,12 +488,12 @@ pub(super) fn cleanup(presentation: &Presentation, failed: bool) -> Vec<u8> {
         Some(probe::Protocol::Kitty) => {
             let slots = state.pixel_probe.slots;
             bytes.extend(
-                nsh_gpui_terminal::kitty::cleanup(slots.first, slots.second)
+                nsh_terminal::kitty::cleanup(slots.first, slots.second)
                     .expect("distinct nonzero owned image slots"),
             );
         }
         Some(probe::Protocol::Sixel | probe::Protocol::Iterm2) => {
-            bytes.extend_from_slice(nsh_gpui_terminal::inline::cleanup());
+            bytes.extend_from_slice(nsh_terminal::inline::cleanup());
         }
         None => {}
     }
@@ -498,4 +501,101 @@ pub(super) fn cleanup(presentation: &Presentation, failed: bool) -> Vec<u8> {
         bytes.extend_from_slice(b"\x1b[?80l");
     }
     bytes
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[test]
+    fn revoked_snapshot_waiting_for_origin_never_starts_a_write() {
+        #[derive(Clone)]
+        struct Writer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Writer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for protocol in [Protocol::Kitty, Protocol::Sixel, Protocol::Iterm2] {
+            let written = Arc::new(Mutex::new(Vec::new()));
+            let mut output = Output::new(Writer(written.clone())).unwrap();
+            let presentation = Presentation::default();
+            let caps = Capabilities {
+                size: termina::WindowSize {
+                    cols: 1,
+                    rows: 1,
+                    pixel_width: Some(1),
+                    pixel_height: Some(1),
+                },
+                mouse: MouseCoordinates::Cells,
+                protocol: Some(protocol),
+                synchronized: false,
+                sixel_geometry: Default::default(),
+                ui_scale: 1.0,
+            };
+            let mut clock = nsh_terminal::FrameClock::default();
+            clock
+                .set_viewport(
+                    nsh_terminal::size(
+                        nsh_terminal::DevicePixels(1),
+                        nsh_terminal::DevicePixels(1),
+                    ),
+                    1.0,
+                )
+                .unwrap();
+            let candidate = clock
+                .prepare(vec![0, 0, 0, 255])
+                .unwrap()
+                .submit()
+                .unwrap()
+                .complete()
+                .unwrap();
+            let token = candidate.token();
+            let frame = match protocol {
+                Protocol::Kitty => input::WireFrame::Kitty(
+                    nsh_terminal::kitty::KittyFrame::encode(&candidate, 1, 1).unwrap(),
+                ),
+                _ => input::WireFrame::Inline(nsh_terminal::inline::InlineFrame::inert(
+                    token.clone(),
+                )),
+            };
+            let mut inbox = Inbox::new(caps, false);
+            inbox.in_flight = Some(input::Offer { token, geometry: 1 });
+            inbox.reload().unwrap();
+            presentation.state.lock().unwrap().pixels = Some(inbox);
+            let (phase, cursor) = publish(
+                &mut output,
+                &presentation,
+                input::Encoded { frame, geometry: 1 },
+                false,
+            )
+            .unwrap();
+            assert!(matches!(phase, Phase::Idle));
+            assert!(
+                cursor.is_none(),
+                "a discarded frame must not claim cursor output"
+            );
+            assert!(
+                presentation
+                    .state
+                    .lock()
+                    .unwrap()
+                    .pixels
+                    .as_ref()
+                    .unwrap()
+                    .in_flight
+                    .is_none()
+            );
+            output.close(Vec::new()).unwrap().recv().unwrap().unwrap();
+            assert!(
+                written.lock().unwrap().is_empty(),
+                "revoked snapshot reached the writer"
+            );
+        }
+    }
 }

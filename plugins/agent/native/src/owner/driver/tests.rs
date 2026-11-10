@@ -321,7 +321,7 @@ impl Rig {
         store
             .commit_application(deployment, 0, input, vec![], vec![agent, gateway])
             .await?;
-        self.attach_host(store, deployment, gateway_key, false)
+        self.attach_host(store, deployment, gateway_key, false, None)
             .await?;
         self.call = Some(self.client.as_ref().unwrap().call("agent", "create".into(), json!({
             "title":"native wait original read failure", "labels":[],
@@ -363,6 +363,7 @@ impl Rig {
         deployment: Uuid,
         gateway_key: Uuid,
         model_test: bool,
+        observation: Option<crate::model::Observation>,
     ) -> TestResult<()> {
         self.store = Some(store.clone());
         let data = store.data_writer()?;
@@ -388,6 +389,10 @@ impl Rig {
                 Box::pin(async move {
                     match Owner::open(context, configuration, catalog, state, helper, None).await {
                         Ok(owner) => {
+                            let owner = match observation {
+                                Some(observe) => owner.with_model_observation(observe),
+                                None => owner,
+                            };
                             *capture.lock().unwrap() = Some(owner.clone());
                             let service = Arc::new(crate::service::Agent(owner));
                             NativeActivation {
@@ -1739,6 +1744,8 @@ mod model_recovery {
         gateway: Uuid,
         source: Value,
         base_url: String,
+        #[serde(default)]
+        replay: bool,
     }
     #[derive(serde::Serialize, serde::Deserialize)]
     struct Frozen {
@@ -1748,6 +1755,7 @@ mod model_recovery {
         spec: Value,
         request: Value,
         request_bytes: Vec<u8>,
+        provenance_bytes: Vec<u8>,
         upstream: Value,
         facts: Vec<Value>,
     }
@@ -1782,6 +1790,7 @@ mod model_recovery {
             gateway: Uuid::new_v4(),
             source: Value::Null,
             base_url,
+            replay: false,
         };
         let agent = package(
             "maka.tests.model-agent",
@@ -1892,8 +1901,15 @@ mod model_recovery {
             serde_json::to_value(loaded.source())? == boot.source,
             "reopen changed original deployment or instance keys"
         );
-        rig.attach_host(store, boot.deployment, boot.gateway, true)
-            .await
+        rig.attach_host(
+            store,
+            boot.deployment,
+            boot.gateway,
+            true,
+            boot.replay
+                .then_some(replay_observation as crate::model::Observation),
+        )
+        .await
     }
     async fn call(
         client: &HostClient,
@@ -1973,6 +1989,278 @@ mod model_recovery {
         Ok(())
     }
 
+    // This fixture supplies provider observations, not ChatGPT authentication/inventory.
+    fn replay_observation(
+        binding: &maka_agent_facts::execution::ModelBinding,
+        model: &mut maka_agent_ports::provider::Model,
+    ) -> maka_agent_facts::context::ModelRequestContext {
+        use maka_agent_facts::context::{
+            CodexCompatibility, CodexRequestProvenance, ModelOperation, ModelRequestContext,
+        };
+        model.adapter = "codex-responses".into();
+        model.protocol = maka_agent_ports::model::ProviderKind::OpenaiResponses;
+        model.provider_options =
+            json!({"openai":{"instructions":"Follow the conversation.","store":false}});
+        model
+            .info
+            .capabilities
+            .get_or_insert_default()
+            .native_compaction = Some(false);
+        let source = binding.model == "llama3.2";
+        ModelRequestContext {
+            operation: ModelOperation::Inference,
+            provider_id: "chatgpt".into(),
+            codex: Some(CodexRequestProvenance {
+                connection_id: binding.connection_id.clone(),
+                account_id: Some(if source { "account-a" } else { "account-b" }.into()),
+                compatibility: Some(CodexCompatibility {
+                    comp_hash: if binding.connection_slug == "replay-different" {
+                        "4000"
+                    } else {
+                        "3000"
+                    }
+                    .into(),
+                    fetched_at: 1,
+                }),
+            }),
+            context_window: Some(128_000),
+            model_context_window: Some(128_000),
+            declared_window: Some(108_800),
+        }
+    }
+
+    fn replay_reasoning() -> Value {
+        json!({"type":"reasoning","id":"reason-original","encrypted_content":"opaque-original",
+            "summary":[{"type":"summary_text","text":"visible summary"}]})
+    }
+
+    async fn serve_replay(
+        listener: tokio::net::TcpListener,
+        posts: Arc<std::sync::atomic::AtomicUsize>,
+        requests: tokio::sync::mpsc::Sender<Vec<u8>>,
+        stop: CancellationToken,
+    ) -> TestResult<()> {
+        use axum::response::IntoResponse;
+        let app = axum::Router::new().route(
+            "/v1/responses",
+            axum::routing::post(move |request: axum::extract::Request| {
+                let posts = posts.clone();
+                let requests = requests.clone();
+                async move {
+                    let bytes =
+                        match axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024).await {
+                            Ok(bytes) => bytes,
+                            Err(_) => return axum::http::StatusCode::BAD_REQUEST.into_response(),
+                        };
+                    let index = posts.fetch_add(1, Ordering::SeqCst);
+                    if requests.send(bytes.to_vec()).await.is_err() {
+                        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    if index == 1 {
+                        return (
+                            axum::http::StatusCode::TOO_MANY_REQUESTS,
+                            [("content-type", "application/json"), ("retry-after", "0")],
+                            r#"{"error":{"message":"retry fixture","type":"rate_limit_error"}}"#,
+                        )
+                            .into_response();
+                    }
+                    let item = if index == 0 {
+                        replay_reasoning()
+                    } else {
+                        json!({"type":"message","id":"answer-target","role":"assistant",
+                            "content":[{"type":"output_text","text":"target-answer"}]})
+                    };
+                    let body = [
+                        json!({"type":"response.output_item.done","item":item}),
+                        json!({"type":"response.completed","response":{
+                            "id":format!("response-{index}"),
+                            "model":if index == 0 { "llama3.2" } else { "llama3.1" },
+                            "output":[item],"usage":{"input_tokens":100,"output_tokens":10}
+                        }}),
+                    ]
+                    .iter()
+                    .map(|event| format!("data: {event}\n\n"))
+                    .collect::<String>();
+                    (
+                        axum::http::StatusCode::OK,
+                        [("content-type", "text/event-stream")],
+                        body,
+                    )
+                        .into_response()
+                }
+            }),
+        );
+        axum::serve(listener, app)
+            .with_graceful_shutdown(stop.cancelled_owned())
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recorded_encrypted_replay_survives_root_reopen_and_http_retry() {
+        for (slug, expected) in [("replay-same", true), ("replay-different", false)] {
+            let mut rig = Rig::new().expect("owned replay directories");
+            let mut child: Option<tokio::process::Child> = None;
+            let stop = CancellationToken::new();
+            let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(4);
+            let mut wire: Option<JoinHandle<TestResult<()>>> = None;
+            let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(180), async {
+                let base = rig.directory.path().to_path_buf();
+                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+                let mut boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?)).await?;
+                boot.replay = true;
+                wire = Some(tokio::spawn(serve_replay(
+                    listener, posts.clone(), requests_tx, stop.clone(),
+                )));
+                let path = base.join("boot.json");
+                tokio::fs::write(&path, serde_json::to_vec(&boot)?).await?;
+                let child_test = format!("{}::model_reader_child",
+                    module_path!().split_once("::").ok_or("test module missing")?.1);
+                child = Some(tokio::process::Command::new(std::env::current_exe()?)
+                    .args(["--exact", &child_test, "--nocapture"]).env(CHILD_ENV, &path)
+                    .env("MAKA_TEST_MODEL_CLEANUP_BARRIER", base.join("closed"))
+                    .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                    .kill_on_drop(true).spawn()?);
+                let pid = child.as_ref().and_then(|child| child.id()).ok_or("owned child PID missing")?;
+                let identity = tokio::task::spawn_blocking(move || ProcessIdentity::capture(pid)).await??;
+                while !tokio::fs::try_exists(base.join("frozen.json")).await? {
+                    if child.as_mut().ok_or("owned child missing")?.try_wait()?.is_some() {
+                        return Err("replay child ended before its durable model closure".into());
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                let frozen: Frozen = serde_json::from_slice(&tokio::fs::read(base.join("frozen.json")).await?)?;
+                let original_identity: ProcessIdentity =
+                    serde_json::from_value(frozen.upstream["nativeReader"]["process"].clone())?;
+                assert!(identity == original_identity, "source model did not belong to the owned child");
+                let source_wire: Value = serde_json::from_slice(
+                    &requests_rx.recv().await.ok_or("source HTTP request missing")?,
+                )?;
+                assert_eq!(source_wire["model"], "llama3.2");
+                assert!(source_wire.to_string().contains("question-source"));
+                let owned = child.as_mut().ok_or("owned child missing")?;
+                owned.start_kill()?;
+                assert!(!owned.wait().await?.success(), "owned child was not killed");
+                child = None;
+                let gone = tokio::task::spawn_blocking(move || maka_process::lifetime::observe(&identity)).await??;
+                assert!(matches!(gone, ProcessObservation::Gone(ref proof) if proof.identity() == &original_identity));
+
+                attach(&mut rig, &boot).await?;
+                let client = rig.client.as_ref().ok_or("reopened client missing")?;
+                loop {
+                    let work = call(client, "agent", "work", json!({
+                        "sessionId":frozen.session,"target":{"kind":"run","runId":frozen.run}
+                    })).await?;
+                    if work["execution"]["state"]["kind"] == "completed" { break; }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                let owner = rig.captured.lock().unwrap().clone().ok_or("reopened Native owner missing")?;
+                let view = owner.durable.frontier(frozen.run).await?;
+                let original = &view.attempts[&frozen.attempt];
+                assert!(view.terminal == Some(Terminal::Completed)
+                    && original.cleanup == OperationCleanup::Confirmed);
+                assert!(serde_json::to_value(&view.spec)? == frozen.spec
+                    && view.current_attempt == Some(frozen.attempt));
+                let request = owner.durable.request(frozen.run, original.step).await?;
+                assert_eq!(serde_json::to_value(&request)?, frozen.request);
+                assert_eq!(owner.durable.content(frozen.run, request.request.clone()).await?, frozen.request_bytes);
+                assert_eq!(owner.durable.content(frozen.run, request.provenance.clone()).await?, frozen.provenance_bytes);
+                let provenance: maka_agent_facts::context::RequestContextEvidence =
+                    serde_json::from_slice(&frozen.provenance_bytes)?;
+                let producer = provenance.model_context.and_then(|context| context.codex)
+                    .ok_or("normal source preparation did not record provider observation")?;
+                assert_eq!(request.accounting.model_id, "llama3.2");
+                assert_eq!(producer.account_id.as_deref(), Some("account-a"));
+                assert_eq!(producer.compatibility.as_ref().map(|value| value.comp_hash.as_str()), Some("3000"));
+                assert_eq!(posts.load(Ordering::SeqCst), 1, "source recovery must not resend its HTTP request");
+                assert!(facts(&owner.durable, frozen.run).await?.starts_with(&frozen.facts));
+
+                let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+                let connection = call(client, "settings", "create", json!({
+                    "expectedCatalogRevision":catalog["revision"],
+                    "connection":{"slug":slug,"name":slug,
+                        "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                        "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.1"],
+                        "modelOverrides":{"llama3.1":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
+                })).await?;
+                assert_eq!(connection["kind"], "committed");
+                let models = call(client, "agent", "models", json!({"kind":"start"})).await?;
+                let selection = models["choices"].as_array().ok_or("target model choices missing")?
+                    .iter().find(|choice| choice["selection"]["connectionId"] == connection["connection"]["connectionId"]
+                        && choice["selection"]["modelId"] == "llama3.1")
+                    .ok_or("target model not selectable")?["selection"].clone();
+                let sent = call(client, "agent", "send", json!({
+                    "sessionId":frozen.session,"message":"question-target","backend":selection,"delivery":"queue"
+                })).await?;
+                assert_eq!(sent["kind"], "queued");
+                let target_run: RunId = loop {
+                    let work = call(client, "agent", "work", json!({
+                        "sessionId":frozen.session,"target":{"kind":"message","messageId":sent["messageId"]}
+                    })).await?;
+                    if work["execution"]["state"]["kind"] == "completed" {
+                        break serde_json::from_value(work["execution"]["runId"].clone())?;
+                    }
+                    if work["execution"]["state"]["kind"] == "failed" {
+                        return Err(format!("target inference failed: {work}").into());
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                };
+                assert!(target_run != frozen.run, "normal new send reused the completed source Run");
+                let first = requests_rx.recv().await.ok_or("target HTTP request missing")?;
+                let retry = requests_rx.recv().await.ok_or("429 physical retry missing")?;
+                assert_eq!(first, retry, "physical retry changed frozen opaque replay bytes");
+                let sent: Value = serde_json::from_slice(&first)?;
+                assert_eq!(sent["model"], "llama3.1");
+                let items = sent["input"].as_array().ok_or("Responses input missing")?;
+                assert_eq!(items.contains(&replay_reasoning()), expected, "{slug}: {sent}");
+                let body = sent.to_string();
+                assert!(body.contains("question-source") && body.contains("question-target"),
+                    "history replay lost a user boundary: {sent}");
+                if !expected {
+                    assert!(!body.contains("opaque-original"), "incompatible encrypted state leaked: {sent}");
+                }
+                let target = owner.durable.frontier(target_run).await?;
+                let current = &target.attempts[&target.current_attempt.ok_or("target attempt missing")?];
+                let target_request = owner.durable.request(target_run, current.step).await?;
+                let target_context: maka_agent_facts::context::RequestContextEvidence =
+                    serde_json::from_slice(&owner.durable.content(target_run, target_request.provenance.clone()).await?)?;
+                let target_codex = target_context.model_context.and_then(|context| context.codex)
+                    .ok_or("target provider observation not recorded")?;
+                assert_eq!(target_codex.account_id.as_deref(), Some("account-b"));
+                assert_ne!(target_codex.connection_id, producer.connection_id);
+                assert_eq!(target_codex.compatibility.as_ref().map(|value| value.comp_hash.as_str()),
+                    Some(if expected { "3000" } else { "4000" }));
+                assert_eq!(owner.durable.content(frozen.run, request.provenance.clone()).await?, frozen.provenance_bytes);
+                assert_eq!(posts.load(Ordering::SeqCst), 3, "unexpected provider dispatch outside source + target + retry");
+                Ok::<_, Box<dyn Error + Send + Sync>>(())
+            })).catch_unwind().await;
+            if let Some(mut owned) = child {
+                let _ = owned.kill().await;
+                let _ = owned.wait().await;
+            }
+            drop(requests_rx);
+            stop.cancel();
+            let wire_ok = match wire {
+                Some(task) => matches!(task.await, Ok(Ok(()))),
+                None => true,
+            };
+            let cleanup =
+                AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(120), rig.finish()))
+                    .catch_unwind()
+                    .await;
+            assert!(
+                matches!(result, Ok(Ok(Ok(())))),
+                "encrypted replay failed for {slug}: {result:?}"
+            );
+            assert!(wire_ok, "replay HTTP fixture did not settle");
+            assert!(
+                matches!(cleanup, Ok(Ok(ref errors)) if errors.is_empty()),
+                "replay fixture did not physically settle"
+            );
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn model_reader_child() -> TestResult<()> {
         let Some(path) = std::env::var_os(CHILD_ENV) else {
@@ -2039,7 +2327,9 @@ mod model_recovery {
             .ok_or("test session missing")?
             .to_owned();
         let sent = call(client, "agent", "send", json!({
-        "sessionId":session,"message":"Return the fixed fixture response.","backend":selection,"delivery":"queue"
+        "sessionId":session,
+        "message":if boot.replay { "question-source" } else { "Return the fixed fixture response." },
+        "backend":selection,"delivery":"queue"
     })).await?;
         assert!(sent["kind"] == "queued", "normal send did not queue");
         tokio::time::timeout(Duration::from_secs(90), async {
@@ -2127,6 +2417,10 @@ mod model_recovery {
                         attempt,
                         spec: serde_json::to_value(&view.spec)?,
                         request_bytes: owner.durable.content(run, request.request.clone()).await?,
+                        provenance_bytes: owner
+                            .durable
+                            .content(run, request.provenance.clone())
+                            .await?,
                         request: serde_json::to_value(request)?,
                         upstream,
                         facts: facts(&owner.durable, run).await?,
@@ -2288,5 +2582,88 @@ mod model_recovery {
             matches!(cleanup, Ok(Ok(ref errors)) if errors.is_empty()),
             "Child fixture cleanup did not settle"
         );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn direct_only_tool_in_a_real_cell_reports_calling_mode_without_dispatch() {
+    let mut rig = Rig::new().expect("owned directories");
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(120), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let input = json!({"code":"await tools.ordinary_local({})","yield_time_ms":30000});
+        let (key, sequence) = rig
+            .tool(attempt, "exec", "direct-only-diagnostic", input.clone())
+            .await?;
+        let driver = rig.driver.as_ref().ok_or("driver missing")?;
+        let view = driver
+            .state
+            .frontier(driver.access.execution().run_id)
+            .await?;
+        let (effect, source) = rig
+            .cells
+            .as_ref()
+            .ok_or("cells missing")?
+            .prepare(
+                driver.context(&view, &key)?,
+                "exec",
+                &input,
+                driver.catalog.clone(),
+                CancellationToken::new(),
+                CancellationToken::new(),
+            )
+            .await?;
+        let owner = driver.original_effects.clone();
+        rig.begin(
+            effect,
+            sequence,
+            key.clone(),
+            source,
+            owner,
+            Arc::new(AtomicBool::new(false)),
+        )?;
+        rig.complete().await?;
+        let driver = rig.driver.as_ref().ok_or("driver missing")?;
+        let view = driver
+            .state
+            .frontier(driver.access.execution().run_id)
+            .await?;
+        let cell = view
+            .cells
+            .values()
+            .find(|cell| {
+                matches!(&cell.owner,
+                    maka_agent_facts::cells::CellOwner::Agent { call, .. } if call == &key.call
+                )
+            })
+            .ok_or("actual Cell missing")?;
+        let maka_agent_facts::cells::CellStatus::Interrupted { report } = &cell.status else {
+            return Err("direct-only call did not interrupt the Cell".into());
+        };
+        let report: maka_agent_facts::cells::CellInterruption =
+            serde_json::from_slice(&driver.state.content(view.run, report.clone()).await?)?;
+        assert!(
+            report.diagnostic.contains(
+                "ordinary_local is a direct tool: call it outside exec, not through tools"
+            ),
+            "{}",
+            report.diagnostic
+        );
+        assert!(
+            cell.children.is_empty(),
+            "direct-only member must not admit a nested effect"
+        );
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "original cleanup: {cleanup:?}");
+    match outcome {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(error))) => panic!("{error}"),
+        Ok(Err(error)) => panic!("diagnostic observation deadline: {error}"),
+        Err(payload) => std::panic::resume_unwind(payload),
     }
 }

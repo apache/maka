@@ -56,3 +56,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 [[test]]
 name = "root_lease"
 path = "tests/root_lease.rs"
+
+[[test]]
+name = "checkpoint_restore"
+path = "tests/checkpoint_restore.rs"

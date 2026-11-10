@@ -1,43 +1,32 @@
 import { Clipboard, cleanup, mount, signal, Text, View } from "nsh";
 import { Button, OtpInput, Switch } from "nsh/base";
-import { button, buttonText, desktop, focusRing, hoverFill, Log, Panel, size, Split, ui } from "./palette";
+import { button, buttonText, desktop, Log, Panel, Split, switchLook, ui, RowLabel, sectionSurface, listRow, controlSize, otpCellLook } from "./palette";
 
-// The parts: geometry and motion in classes, colors from the palette. The
-// cell that takes the next digit gets the keyboard's focus ring (`focus:`,
-// the palette's `info` ring) while the code has the focus, and the caret
-// blinks in it (steady with reduced motion: the input's own). A cell that
-// holds a digit, a bullet too, lifts out of its well: a card's fill under a
-// firmer edge (`data-filled:`), faded in (`transition-colors`). Cells are
-// 44 points on a touch screen, 36 with a pointer; a pressed or hovered
-// button and the switches' rows take the palette's states.
+// The cells are the shared one-time code look (`otpCellLook`): wells a
+// digit (a bullet too) lifts out of, the cell that takes the next digit
+// edged in the accent while the code has the focus (the fields' focus
+// edge), its caret blinking there (steady with reduced motion: the input's
+// own), the verdict's tone over all of them, each change fading. Cells are
+// 44 points high on a touch screen, 36 wide with a pointer; the switches'
+// rows and the buttons are the shared ones.
 const CODE = "246810";
-const cell = desktop ? "w-9 h-11 text-lg" : "w-11 h-13 text-xl";
-const cellClass = `${cell} items-center justify-center rounded-lg border border-line bg-inset font-semibold text-foreground transition-colors motion-reduce:transition-none data-filled:border-input data-filled:bg-card focus:outline-2 focus:outline-info focus:-outline-offset-2 disabled:opacity-40`;
-const row = `-mx-2 flex-row-reverse items-center justify-between gap-3 rounded-lg px-2 ${desktop ? "py-1" : "py-2"} active:opacity-70`;
-const track = `${desktop ? "w-9" : "w-12"} rounded-full p-0.5 transition-colors motion-reduce:transition-none`;
-const thumb = desktop ? "size-4 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-4" : "size-5.5 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-5";
 
 function Option(props: { label: string; checked: boolean; onChange: (next: boolean) => void }) {
   return (
     <Switch
       checked={props.checked}
       onChange={({ checked }) => props.onChange(checked)}
-      class={row}
-      hoverStyle={hoverFill()}
-      focusStyle={focusRing()}
-      trackClass={track}
-      trackStyle={props.checked ? ui().accentFill : ui().inset}
-      thumbClass={thumb}
-      thumbStyle={props.checked ? { backgroundColor: ui().onAccent } : ui().raised}
+      {...listRow({ first: true, style: { flexDirection: "row-reverse" } })}
+      {...switchLook(() => props.checked)}
     >
-      <Text style={{ flex: 1, fontSize: size.label, color: ui().text }}>{props.label}</Text>
+      <RowLabel label={props.label} />
     </Switch>
   );
 }
 
 function Action(props: { label: string; disabled?: boolean; onPress: () => void }) {
   return (
-    <Button onPress={props.onPress} disabled={props.disabled} {...button("secondary", { style: desktop ? {} : { flex: 1 } })}>
+    <Button onPress={props.onPress} disabled={props.disabled} {...button("secondary", { disabled: () => !!props.disabled, style: desktop ? {} : { flex: 1 } })}>
       <Text style={buttonText()}>{props.label}</Text>
     </Button>
   );
@@ -102,10 +91,10 @@ function App() {
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, padding: desktop ? 20 : 16, gap: 16, alignItems: "center" }}>
+        <View style={{ ...sectionSurface(), padding: desktop ? 20 : 16, gap: 16, alignItems: "center" }}>
           <View style={{ gap: 4, alignItems: "center" }}>
-            <Text style={{ fontSize: size.label, fontWeight: "600", color: ui().text }}>Enter the code</Text>
-            <Text style={{ fontSize: size.detail, color: ui().muted }}>{`We sent it to •••• 4821 (it is ${CODE})`}</Text>
+            <Text style={{ fontSize: controlSize.label, fontWeight: "600", color: ui().text }}>Enter the code</Text>
+            <Text style={{ fontSize: controlSize.detail, color: ui().muted }}>{`We sent it to •••• 4821 (it is ${CODE})`}</Text>
           </View>
           <OtpInput
             length={6}
@@ -127,12 +116,9 @@ function App() {
             accessibilityLabel="Verification code, 6 digits"
             class="flex-row items-center gap-3"
             groupClass="flex-row gap-1.5"
-            cellClass={cellClass}
-            cellStyle={{ boxShadow: ui().inset.boxShadow }}
-            caretClass="w-0.5 h-6 rounded-full"
-            caretStyle={{ backgroundColor: ui().text }}
+            {...otpCellLook({ tone: () => (status() === "wrong" ? "danger" : status() === "right" ? "up" : undefined) })}
           />
-          <Text style={{ fontSize: size.detail, color: message().color }}>{message().text}</Text>
+          <Text style={{ fontSize: controlSize.detail, color: message().color }}>{message().text}</Text>
           <View class={desktop ? "flex-row gap-2" : "flex-row gap-2 self-stretch"}>
             <Action
               label="Copy the code"

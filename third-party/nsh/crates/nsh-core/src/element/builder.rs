@@ -41,19 +41,6 @@ impl<E: ?Sized + 'static> Listener<E> {
         }
     }
 
-    pub(super) fn forward(host: NodeId, event: Rc<dyn AnyEvent>) -> Listener<()> {
-        let name = event.name();
-        Listener::new(Rc::new(move |_: &()| {
-            super::reactive::emit(
-                host,
-                Box::new(SharedEvent {
-                    event: event.clone(),
-                    name,
-                }),
-            );
-        }))
-    }
-
     /// Whether both listeners belong to the same region run or component.
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
         self.owner == other.owner
@@ -200,29 +187,6 @@ impl<E: Event> AnyEvent for E {
     }
 }
 
-/// A closed forwarder shares the original event without invoking its `Clone`.
-struct SharedEvent {
-    event: Rc<dyn AnyEvent>,
-    name: &'static str,
-}
-
-impl super::EventToJs for SharedEvent {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn data_js<'a>(&self, host: &'a dyn super::JsHost) -> Result<super::JsOwned<'a>, PropError> {
-        self.event.data_js(host)
-    }
-}
-
-impl AnyEvent for SharedEvent {
-    fn as_any(&self) -> &dyn Any {
-        // Select the event's method, not `AnyProps` on the `Rc` wrapper.
-        self.event.as_ref().as_any()
-    }
-}
-
 /// The props of an element the core diffs field by field (opaque).
 #[doc(hidden)]
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -259,6 +223,8 @@ pub struct Attrs {
     pub(crate) class: Option<SharedString>,
     /// The view is a selectable view ([`crate::selection`]).
     pub(crate) selectable_view: bool,
+    /// The text continues the one before it ([`Element::continues_text`]).
+    pub(crate) continues_text: bool,
     /// The states it shows as its control's part
     /// ([`Interactive::project_checked`]).
     pub(crate) projected_states: u16,
@@ -268,6 +234,9 @@ pub struct Attrs {
     /// Where a JS renderer's content goes (the element is its
     /// placeholder: [`super::Renderer::render`]).
     pub(crate) render: Option<super::renderer::RenderAt>,
+    /// A window of the app's own: the dialog root it shows
+    /// ([`super::desktop::window`]).
+    pub(crate) window: Option<Box<crate::desktop::WindowOptions>>,
 }
 
 impl Attrs {
@@ -318,6 +287,9 @@ impl Attrs {
         }
         if self.selectable_view != old.selectable_view {
             out.push(Prop::SelectableView(self.selectable_view));
+        }
+        if self.continues_text != old.continues_text {
+            out.push(Prop::ContinuesText(self.continues_text));
         }
         if self.projected_states != old.projected_states {
             out.push(Prop::ProjectedStates(self.projected_states));
@@ -458,6 +430,7 @@ pub struct ListConfig {
     pub(crate) scrollbar_visible: Option<bool>,
     pub(crate) content: Option<ListContentStyle>,
     pub(crate) follow_end: Option<f32>,
+    pub(crate) alignment: Option<crate::ListAlignment>,
     pub(crate) viewport: Option<crate::ListViewport>,
 }
 
@@ -488,6 +461,9 @@ impl ListConfig {
         }
         if self.follow_end != old.follow_end {
             out.push(Prop::FollowEnd(self.follow_end.map(Points)));
+        }
+        if self.alignment != old.alignment {
+            out.push(Prop::ListAlignment(self.alignment.unwrap_or_default()));
         }
         if self.viewport != old.viewport {
             out.push(Prop::ListViewport(self.viewport.unwrap_or_default()));
@@ -926,6 +902,19 @@ pub trait Element: IntoElement + Sized {
         self
     }
 
+    /// Marks a text as the continuation of the text before it in document
+    /// order: a long line a component draws as several texts, one per
+    /// wrapped part (`DiffView`'s soft wrap). In a selectable view
+    /// ([`Self::selectable`]) a copy joins the parts with nothing between
+    /// them, as the one line they are, and a double or triple click
+    /// selects a word or the whole line across them
+    /// ([`crate::selection::SelectionTexts::continues`]). Off by default.
+    fn continues_text(mut self, continues: impl IntoReactive<bool>) -> Self {
+        self.node()
+            .bind_attr(continues, |a, continues| a.continues_text = continues);
+        self
+    }
+
     /// Tailwind classes the app passed (a prop naming the classes of one
     /// of the component's parts: `classes={{ heading: "text-2xl" }}`),
     /// after the element's own styles, as the app's `class` on a
@@ -1008,6 +997,27 @@ impl Style {
         typed.extend_as(Variant::default(), over.1.clone());
         style.1 = typed;
         style
+    }
+
+    /// The color it fills its view with in no state (`backgroundColor`,
+    /// Rust's `bg`), if it sets one that is no gradient and not
+    /// transparent: what a part's terminal form draws its text in (a
+    /// progress bar's run in its indicator's color). The typed styles'
+    /// over the declarations; their bound parts are left out.
+    pub fn background_color(&self) -> Option<crate::element::AdaptiveColor> {
+        let typed = self.1.static_color(crate::StyleKey::BackgroundColor);
+        let declared = || {
+            self.decls().iter().rev().find_map(|decl| match decl {
+                crate::StyleDecl::Set(
+                    crate::StyleKey::BackgroundColor,
+                    crate::PropertyValue::Color(color),
+                ) => Some(color.map(crate::element::AdaptiveColor::from)),
+                _ => None,
+            })?
+        };
+        typed
+            .or_else(declared)
+            .filter(|c| *c != crate::element::AdaptiveColor::from(crate::Color::TRANSPARENT))
     }
 
     /// Its declarations, in order (not its typed styles').
@@ -1460,6 +1470,23 @@ pub trait Interactive: Element {
         )
     }
 
+    /// The selection across the texts of a selectable view
+    /// ([`Self::selectable`]) changed: the selected text, as a copy gives
+    /// it, empty once nothing is selected, and where it starts in the
+    /// view's whole text (TSX `onSelectionChange` of a `<View selectable>`,
+    /// `{ text, start }`). Only the outermost selectable view of an area
+    /// reports it; an [`Input`](super::Input)'s own selection is its
+    /// `on_selection_change`.
+    fn on_text_selection_change<M>(
+        self,
+        listener: impl IntoListener<super::TextSelectionEvent, M>,
+    ) -> Self {
+        self.on(
+            EventKind::SelectionChange,
+            events::typed(listener.into_listener(), events::selected_text),
+        )
+    }
+
     /// It took the keyboard focus: an input, or a view that takes presses
     /// reached by Tab (or `focus()`) on the platforms that move the focus
     /// between pressables.
@@ -1770,6 +1797,13 @@ pub trait Interactive: Element {
         self
     }
 
+    /// The native material the view draws with on macOS
+    /// (`macos={{ backdrop }}`): an `NSVisualEffectView`, or none.
+    fn macos_backdrop(mut self, backdrop: impl IntoReactive<Option<crate::MacOsBackdrop>>) -> Self {
+        super::host::bind_prop(self.node(), backdrop, Prop::MacOsBackdrop);
+        self
+    }
+
     /// The id UI tests find it by.
     fn test_id(mut self, id: &str) -> Self {
         super::host::set(self.node(), Prop::TestId(Some(id.into())));
@@ -1779,11 +1813,29 @@ pub trait Interactive: Element {
     /// Whether a desktop press drags the window and a double click follows
     /// the system's title-bar behavior. The nearest explicit value wins;
     /// inputs and press/touch handlers inside a drag region stay interactive.
+    /// On macOS and Linux, background clicks reach the app on release,
+    /// including ancestor press handlers; dragging does not deliver a click.
     /// Set false on a child to exclude it from its parent's drag region.
     fn window_drag(mut self, enabled: impl IntoReactive<bool>) -> Self {
         super::host::bind_prop(self.node(), enabled, |enabled| {
             Prop::WindowDrag(Some(enabled))
         });
+        self
+    }
+
+    /// Makes the view one of the system's window buttons in a title bar the
+    /// app draws (TS: `desktop={{ windowControl }}`): the platform hit-tests
+    /// it as that button (the snap layouts over a maximize button on
+    /// Windows) and carries out its press.
+    fn window_control(mut self, control: crate::desktop::WindowControl) -> Self {
+        super::host::set(self.node(), Prop::WindowControl(Some(control)));
+        self
+    }
+
+    /// Pressing the view resizes a frameless window by `edge` (TS:
+    /// `desktop={{ windowResize }}`).
+    fn window_resize(mut self, edge: crate::desktop::ResizeEdge) -> Self {
+        super::host::set(self.node(), Prop::WindowResize(Some(edge)));
         self
     }
 
@@ -2692,30 +2744,5 @@ impl<C: Component> ParentElement for ComponentElement<C> {}
 impl<C: Component> IntoElement for ComponentElement<C> {
     fn into_element(self) -> AnyElement {
         AnyElement(self.node)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{AnyEvent, Rc, SharedEvent};
-    use crate::element::{Event, EventToJs};
-
-    #[derive(Debug, PartialEq, Event)]
-    enum ForwardedEvent {
-        Value(u32),
-    }
-
-    #[test]
-    fn a_shared_event_preserves_its_rust_type_and_data() {
-        let event: Rc<dyn AnyEvent> = Rc::new(ForwardedEvent::Value(42));
-        let shared = SharedEvent {
-            name: event.name(),
-            event,
-        };
-        assert_eq!(shared.name(), "value");
-        assert_eq!(
-            shared.as_any().downcast_ref::<ForwardedEvent>(),
-            Some(&ForwardedEvent::Value(42))
-        );
     }
 }

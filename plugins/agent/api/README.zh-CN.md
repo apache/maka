@@ -58,7 +58,9 @@ const operation = await context.services.agent[0].mutation('setCompactionPrompt'
 
 `listFiles` 列出所选 Session 工作区中一个目录的直接子项，`watchFiles` 通知该目录需要重新读取。`path` 为 null 表示工作区根目录，其他路径使用 `WorkspacePath`，以 `bytesBase64` 保留相对文件名的原始字节。符号链接作为叶子展示，不进入其目标；排除 `.git`、工作区标记及 Host 私有状态/control 目录，模型配置为无限制访问时也不例外。私有状态内仅允许读取 Session 已验证的受管 worktree。每页最多 128 项，以 512 KiB 为软字节目标，完整首项始终可以推进；路径保留完整相对字节。平台无法表示的文件名明确报错，不做有损转换。
 
-`fileCandidates` 是同一 Session 工作区内的有限订阅。输入 `{sessionId, query, directory?}` 中省略 `directory` 或传 null 时选择工作区根目录。空查询或纯空白查询浅浏览所选目录内全部符合条件的直接文件和目录；非空查询只在该目录的后代中搜索相对文件路径。发送的数据项为 `{entries: [{path, kind}, ...]}` 批次，`WorkspacePath` 保留工作区相对路径的原始字节；持续追加批次，直到 EOF。与 `readFile` 一样，成功的最终完成值为 null，因此方法输出 schema 同时允许批次对象和该完成值；生产者不会把 null 作为数据项发送。批次沿用现有 `readFile` 的字节量子，不截断单项或结果集。关闭订阅会取消遍历并等待工作线程退出，发送背压会暂停生产者。遍历遵守工作区内 `.rgignore`、`.ignore`、`.gitignore` 及目录型 `.git/info/exclude` 规则，不跟随目录或忽略文件的符号链接，也不读取候选文件内容。搜索结果不会增加读取权限。
+`skillCandidates` 和 `fileCandidates` 通过 `target` 选择补全上下文：已有对话使用 `{kind: 'session', sessionId}`；新草稿使用 `{kind: 'draft', workspace}`，其中工作区为 `WorkspaceSelection`。草稿工作区为 null 时只查询全局 skills；文件候选需要工作区。补全查询不会创建对话或工作区。`skillCandidates` 还接收 `backend` 和 `query`，按所选后端的可用工具过滤 skills。
+
+`fileCandidates` 是目标工作区内的有限订阅。输入 `{target, query, directory?}` 中省略 `directory` 或传 null 时选择工作区根目录。空查询或纯空白查询浅浏览所选目录内全部符合条件的直接文件和目录；非空查询只在该目录的后代中搜索相对文件路径。发送的数据项为 `{entries: [{path, kind}, ...]}` 批次，`WorkspacePath` 保留工作区相对路径的原始字节；持续追加批次，直到 EOF。与 `readFile` 一样，成功的最终完成值为 null，因此方法输出 schema 同时允许批次对象和该完成值；生产者不会把 null 作为数据项发送。批次沿用现有 `readFile` 的字节量子，不截断单项或结果集。关闭订阅会取消遍历并等待工作线程退出，发送背压会暂停生产者。遍历遵守工作区内 `.rgignore`、`.ignore`、`.gitignore` 及目录型 `.git/info/exclude` 规则，不跟随目录或忽略文件的符号链接，也不读取候选文件内容。搜索结果不会增加读取权限。
 
 `readFile` 是普通 UI 可用的订阅，按相同 Session 权限读取一个精确 `WorkspacePath` 指向的当前普通文件。完整捕获 UTF-8 文本或受支持的原始图片字节，使用不跟随符号链接的目录/文件句柄，并在发布前校验工作区、权限边界及文件身份。它依次发送 `begin`、每块最多 32 KiB 原始字节的 Base64 `chunk`，最后发送明确的 `end` item；订阅最终值为 null。文本块止于 UTF-8 边界。消费者必须核验连续字节偏移、End 中匹配的版本/大小/摘要和完整 SHA-256 摘要，才能接受内容；缺少 End 表示传输未完成。文件缺失、已变化、二进制和不支持的文件类型均有明确结果；权限、非法路径和 IO 错误仍然返回失败。空文件是合法文本。
 

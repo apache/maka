@@ -28,8 +28,19 @@ import { sameHistoryRow, type Row } from './history';
 import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
 import { MessageCopy } from './MessageCopy';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
+import { Button } from 'nsh/base';
+import type { MessageMenu } from './messageMenu';
 import { TurnUsage } from './TurnUsage';
-import { C, IconButton } from './ui';
+import {
+  C,
+  controlDisabledStyle,
+  controlStyle,
+  IconButton,
+  quietActiveStyle,
+  quietFocusStyle,
+  quietHoverStyle,
+  textTooltip,
+} from './ui';
 
 type Target = {
   sessionId: string;
@@ -55,6 +66,7 @@ export function FinalActions(props: {
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
   /** Another action on this turn, after the fork. */
   extra?: JSX.Element;
+  menu?: MessageMenu;
 }) {
   const host = useHost();
   const pending = signal(false);
@@ -107,6 +119,12 @@ export function FinalActions(props: {
       if (alive) pending.set(false);
     }
   };
+  props.menu?.add({
+    kind: 'fork',
+    label: () => tr('Fork from this turn'),
+    busy: pending,
+    action: () => (target() === null ? null : inputAction(fork, target())),
+  });
   const showUsage = (original: Target | null) => {
     if (
       original &&
@@ -148,6 +166,7 @@ export function FinalActions(props: {
           ownerKey={props.ownerKey}
           sessionId={props.sessionId}
           through={props.through}
+          menu={props.menu}
         />
         <IconButton
           label={tr('Fork from this turn')}
@@ -157,15 +176,21 @@ export function FinalActions(props: {
           onPress={inputAction(fork, target())}
         />
         {props.extra}
-        <IconButton
-          label={tr("View this turn's model usage")}
-          icon="activity"
+        <Button
+          accessibilityLabel={tr("View this turn's model usage")}
+          tooltip={textTooltip(() => tr("View this turn's model usage"))}
           disabled={target()?.position.kind !== 'live' || target()?.turnId === undefined}
           onPress={inputAction(showUsage, target())}
-        />
-        <If when={details()}>
-          <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>{details()}</Text>
-        </If>
+          style={{ ...controlStyle, paddingHorizontal: 8 }}
+          hoverStyle={quietHoverStyle()}
+          activeStyle={quietActiveStyle()}
+          focusStyle={quietFocusStyle()}
+          disabledStyle={controlDisabledStyle}
+        >
+          <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
+            {details() || tr('Main model usage')}
+          </Text>
+        </Button>
       </View>
       <If when={notice()}>
         <Text style={[{ color: C.warning }, { userSelect: 'text' }]}>{notice()}</Text>

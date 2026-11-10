@@ -19,13 +19,13 @@
 
 use std::{ops::Range, sync::LazyLock};
 
-use nsh_core::input_tokens::{InputTokenRule, InputTokens};
-
 use nsh_base::rich_editor::{
     model::{Fragment, Node, Schema, SchemaSpec, Slice},
     state::{EditorState, TextSelection, Transaction},
 };
+use regex::Regex;
 use serde_json::{Value, json};
+use unicode_segmentation::UnicodeSegmentation;
 
 pub(super) fn schema() -> Schema {
     SchemaSpec::from_json(&json!({
@@ -55,20 +55,33 @@ fn skill(schema: &Schema, name: &str) -> Node {
 }
 
 fn token_ranges(text: &str) -> Vec<Range<usize>> {
-    static RULE: LazyLock<InputTokenRule> = LazyLock::new(|| {
-        InputTokenRule::new(
+    static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
             r"(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+)",
-            Default::default(),
-            true,
-        ).expect("the skill invocation token pattern is valid")
+        )
+        .expect("the skill invocation token pattern is valid")
     });
-    let mut tokens = InputTokens::default();
-    tokens.set_rules(std::slice::from_ref(&RULE), text);
-    tokens
-        .spans()
-        .iter()
-        .map(|span| span.range.clone())
-        .collect()
+    if !text.contains("/skill:") {
+        return Vec::new();
+    }
+    let boundaries: Vec<_> = text
+        .grapheme_indices(true)
+        .map(|(offset, _)| offset)
+        .chain(std::iter::once(text.len()))
+        .collect();
+    let mut ranges = Vec::new();
+    let mut at = 0;
+    while let Some(found) = PATTERN.captures_at(text, at) {
+        let token = found.name("token").expect("skill token capture");
+        let range = token.start()..token.end();
+        if boundaries.binary_search(&range.start).is_ok()
+            && boundaries.binary_search(&range.end).is_ok()
+        {
+            ranges.push(range);
+        }
+        at = token.end();
+    }
+    ranges
 }
 
 fn inline(schema: &Schema, text: &str) -> Vec<Node> {
@@ -449,5 +462,14 @@ mod tests {
         }
         let state = state.apply(replace(&state, 3, 4, "X").unwrap()).unwrap();
         assert_eq!(source(state.doc()), "a/sXill:review");
+    }
+
+    #[test]
+    fn skill_tokens_require_grapheme_boundaries() {
+        assert_eq!(
+            token_ranges("/skill:review\u{3000}/skill:fix.1"),
+            vec![0..13, 16..28]
+        );
+        assert!(token_ranges("/skill:a\u{0301}").is_empty());
     }
 }

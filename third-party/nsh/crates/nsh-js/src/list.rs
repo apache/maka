@@ -48,6 +48,7 @@ const FORWARDED: &[&str] = &[
     "keyboardDismissMode",
     "numColumns",
     "inverted",
+    "alignment",
     "maintainVisibleContentPosition",
     "stickyHeaderIndices",
     "stickyHeaderOffset",
@@ -131,6 +132,12 @@ struct ListData {
     staged_source: Option<JsValue>,
     /// Last emitted count; an array may have been mutated since that emission.
     emitted_len: i64,
+    /// Count matching `source`.
+    published_len: i64,
+    /// Count read by `separated_run`, held back while bound cells wait for
+    /// their shifted indices from the core.
+    len_signal: JsValue,
+    len_deferred: bool,
     /// The owner the list was made under: cells are made as its roots.
     owner: u32,
     /// Cells by slot.
@@ -158,6 +165,7 @@ impl Lists {
                 // SAFETY: replace the reference owned by this list.
                 unsafe { qjs::JS_FreeValue(raw, data.source) };
                 data.source = source;
+                data.published_len = data.emitted_len;
             }
         }
     }
@@ -176,6 +184,7 @@ fn free_data(cx: *mut JsContext, data: ListData) {
         qjs::JS_FreeValue(cx, data.props);
         qjs::JS_FreeValue(cx, data.node);
         qjs::JS_FreeValue(cx, data.source);
+        qjs::JS_FreeValue(cx, data.len_signal);
         if let Some(source) = data.staged_source {
             qjs::JS_FreeValue(cx, source);
         }
@@ -337,6 +346,9 @@ pub(crate) fn render(cx: *mut JsContext, props: JsValue) -> Result<JsValue, JsVa
         source: UNDEFINED,
         staged_source: None,
         emitted_len: 0,
+        published_len: 0,
+        len_signal: reactive::new_signal(cx, qjs::JS_NewFloat64(0.0)),
+        len_deferred: false,
         owner: reactive::current_owner(cx),
         cells: Vec::new(),
         extras: Vec::new(),
@@ -506,12 +518,38 @@ unsafe extern "C" fn splice_run(
                 return e;
             }
         };
+        let mut shifted_cells = false;
+        let mut retained_cells = Vec::new();
         if old_len > 0 {
             let max = old_len.min(next_len);
+            // With a `keyExtractor`, rows are the same when their keys
+            // are: apps that rebuild their rows (new objects, same keys)
+            // keep the rows' measurements and the reader's place.
+            let key_of = get(cx, props, "keyExtractor");
+            let keyed = qjs::JS_IsFunction(cx, key_of);
+            let key = |item: JsValue, i: i64| {
+                let mut args = [qjs::JS_DupValue(cx, item), qjs::JS_NewFloat64(i as f64)];
+                let k = qjs::JS_Call(cx, key_of, UNDEFINED, 2, args.as_mut_ptr());
+                qjs::JS_FreeValue(cx, args[0]);
+                k
+            };
             let same = |i: i64, j: i64| {
                 let a = qjs::JS_GetPropertyInt64(cx, old, i);
                 let b = qjs::JS_GetPropertyInt64(cx, next, j);
-                let s = qjs::JS_IsStrictEqual(cx, a, b);
+                let mut s = qjs::JS_IsStrictEqual(cx, a, b);
+                if !s && keyed {
+                    let (ka, kb) = (key(a, i), key(b, j));
+                    s = !qjs::JS_IsException(ka)
+                        && !qjs::JS_IsException(kb)
+                        && qjs::JS_IsStrictEqual(cx, ka, kb);
+                    for k in [ka, kb] {
+                        if qjs::JS_IsException(k) {
+                            qjs::JS_FreeValue(cx, qjs::JS_GetException(cx));
+                        } else {
+                            qjs::JS_FreeValue(cx, k);
+                        }
+                    }
+                }
                 qjs::JS_FreeValue(cx, a);
                 qjs::JS_FreeValue(cx, b);
                 s
@@ -533,8 +571,34 @@ unsafe extern "C" fn splice_run(
                     end += 1;
                 }
             }
+            qjs::JS_FreeValue(cx, key_of);
             let removed = old_len - start - end;
             let inserted = next_len - start - end;
+            if end > 0 && inserted != removed {
+                shifted_cells = lists(cx).map.borrow().get(&id).is_some_and(|data| {
+                    data.cells.iter().flatten().any(|cell| {
+                        reactive::peek_number(cx, cell.index)
+                            .is_some_and(|i| i as i64 >= start + removed)
+                    })
+                });
+            }
+            if keyed && (start > 0 || (end > 0 && inserted == removed)) {
+                if let Some(data) = lists(cx).map.borrow().get(&id) {
+                    for cell in data.cells.iter().flatten() {
+                        if let Some(i) = reactive::peek_number(cx, cell.index) {
+                            let i = i as i64;
+                            if i >= 0
+                                && (i < start
+                                    || (inserted == removed
+                                        && i >= start + removed
+                                        && i < next_len))
+                            {
+                                retained_cells.push((qjs::JS_DupValue(cx, cell.item), i));
+                            }
+                        }
+                    }
+                }
+            }
             if removed > 0 || inserted > 0 {
                 let mut values = [
                     qjs::JS_NewFloat64(start as f64),
@@ -543,19 +607,62 @@ unsafe extern "C" fn splice_run(
                 ];
                 let splice = qjs::JS_NewArrayFrom(cx, 3, values.as_mut_ptr());
                 if let Err(e) = set(cx, node, "splice", splice) {
+                    for (item_signal, _) in retained_cells {
+                        qjs::JS_FreeValue(cx, item_signal);
+                    }
                     qjs::JS_FreeValue(cx, next);
                     return e;
                 }
             }
         }
         if let Err(e) = set(cx, node, "count", qjs::JS_NewFloat64(next_len as f64)) {
+            for (item_signal, _) in retained_cells {
+                qjs::JS_FreeValue(cx, item_signal);
+            }
             qjs::JS_FreeValue(cx, next);
             return e;
         }
-        if let Some(data) = lists(cx).map.borrow_mut().get_mut(&id) {
+        let update_len_now = if let Some(data) = lists(cx).map.borrow_mut().get_mut(&id) {
             data.emitted_len = next_len;
             if let Some(previous) = data.staged_source.replace(qjs::JS_DupValue(cx, next)) {
                 qjs::JS_FreeValue(cx, previous);
+            }
+            if shifted_cells || (data.len_deferred && next_len > 0) {
+                data.len_deferred = true;
+                None
+            } else {
+                data.len_deferred = false;
+                Some(qjs::JS_DupValue(cx, data.len_signal))
+            }
+        } else {
+            None
+        };
+        if !retained_cells.is_empty() || update_len_now.is_some() {
+            let mut err = None;
+            reactive::batch_with(cx, || {
+                for &(item_signal, i) in &retained_cells {
+                    let item = qjs::JS_GetPropertyInt64(cx, next, i);
+                    if qjs::JS_IsException(item) {
+                        err = Some(item);
+                        break;
+                    }
+                    reactive::set_signal(cx, item_signal, item);
+                }
+                if err.is_none()
+                    && let Some(len_signal) = update_len_now
+                {
+                    reactive::set_signal(cx, len_signal, qjs::JS_NewFloat64(next_len as f64));
+                }
+            });
+            for (item_signal, _) in retained_cells {
+                qjs::JS_FreeValue(cx, item_signal);
+            }
+            if let Some(len_signal) = update_len_now {
+                qjs::JS_FreeValue(cx, len_signal);
+            }
+            if let Some(e) = err {
+                qjs::JS_FreeValue(cx, next);
+                return e;
             }
         }
         next
@@ -844,12 +951,17 @@ pub(crate) fn bind(
     list: NodeId,
     binds: &[(u32, u32)],
 ) -> Option<Result<(), ()>> {
-    let source = {
-        let map = lists(cx).map.borrow();
-        let data = map.get(&list)?;
+    let (source, published_len, len_signal) = {
+        let mut map = lists(cx).map.borrow_mut();
+        let data = map.get_mut(&list)?;
+        data.len_deferred = false;
         // Keep this publication alive across arbitrary indexed-source calls.
-        // SAFETY: the list owns the borrowed source.
-        Guard(cx, unsafe { qjs::JS_DupValue(cx, data.source) })
+        // SAFETY: the list owns the borrowed source and length signal.
+        (
+            Guard(cx, unsafe { qjs::JS_DupValue(cx, data.source) }),
+            data.published_len,
+            Guard(cx, unsafe { qjs::JS_DupValue(cx, data.len_signal) }),
+        )
     };
     let mut failed = false;
     let mut bound = Vec::with_capacity(binds.len());
@@ -878,13 +990,16 @@ pub(crate) fn bind(
                     reactive::set_signal(cx, index_signal, qjs::JS_NewFloat64(index as f64));
                 }
                 None => {
-                    if make_cell(cx, list, slot, index, value.1).is_err() {
+                    if make_cell(cx, list, slot, index, value.1, published_len).is_err() {
                         failed = true;
                         break;
                     }
                 }
             }
             bound.push((slot, index));
+        }
+        if !failed && reactive::peek_number(cx, len_signal.1) != Some(published_len as f64) {
+            reactive::set_signal(cx, len_signal.1, qjs::JS_NewFloat64(published_len as f64));
         }
     });
     let r = reactive::finish_value(cx, UNDEFINED);
@@ -916,14 +1031,18 @@ fn make_cell(
     slot: u32,
     first: u32,
     value: JsValue,
+    published_len: i64,
 ) -> Result<(), JsValue> {
-    let (props, list_node, owner) = {
+    let (props, list_node, len_signal, owner) = {
         let map = lists(cx).map.borrow();
         let Some(d) = map.get(&list) else {
             return Ok(());
         };
-        (d.props, d.node, d.owner)
+        (d.props, d.node, d.len_signal, d.owner)
     };
+    if reactive::peek_number(cx, len_signal) != Some(published_len as f64) {
+        reactive::set_signal(cx, len_signal, qjs::JS_NewFloat64(published_len as f64));
+    }
     let mut made = None;
     let (root, r) = reactive::with_root_under(cx, owner, || -> Result<(), JsValue> {
         let cell = dom::create_element(cx, Tag::Cell)?;
@@ -954,7 +1073,7 @@ fn make_cell(
                 cx,
                 separated_run,
                 0,
-                &mut [content, props, index, holder, owner],
+                &mut [content, props, index, len_signal, holder, owner],
             );
             unsafe { qjs::JS_FreeValue(cx, holder) };
             let r = dom::insert_value_at(cx, cell, between, None);
@@ -1005,27 +1124,25 @@ unsafe extern "C" fn separated_run(
     _magic: c_int,
     data: *mut JsValue,
 ) -> JsValue {
-    // SAFETY: five data values; values got are freed or returned.
+    // SAFETY: six data values; values got are freed or returned.
     unsafe {
-        let (content, props, index, holder, owner) = (
+        let (content, props, index, len_signal, holder, owner) = (
             *data,
             *data.add(1),
             *data.add(2),
             *data.add(3),
             *data.add(4),
+            *data.add(5),
         );
         let i = qjs::JS_Call(cx, index, UNDEFINED, 0, ptr::null_mut());
         let mut n = 0f64;
         qjs::JS_ToFloat64(cx, &mut n, i);
         qjs::JS_FreeValue(cx, i);
-        let each = get(cx, props, "each");
-        let len = source_length(cx, each);
-        qjs::JS_FreeValue(cx, each);
-        let len = match len {
-            Ok(len) => len,
-            Err(e) => return e,
-        };
-        if (n as i64) >= len - 1 {
+        let l = qjs::JS_Call(cx, len_signal, UNDEFINED, 0, ptr::null_mut());
+        let mut len = 0f64;
+        qjs::JS_ToFloat64(cx, &mut len, l);
+        qjs::JS_FreeValue(cx, l);
+        if (n as i64) >= (len as i64) - 1 {
             return qjs::JS_DupValue(cx, content);
         }
         let mut separator = qjs::JS_GetPropertyUint32(cx, holder, 0);
@@ -2217,5 +2334,136 @@ mod tests {
                 .count()
         };
         assert_eq!((made("Head"), made("Foot")), (1, 1));
+    }
+
+    /// Rows rebuilt as new objects with the same keys are the same rows:
+    /// appending one splices only the new row in.
+    #[test]
+    fn keyed_rows_rebuilt_with_the_same_keys_splice_only_the_new_row() {
+        let host = Host::with_options(HostOptions::default()).unwrap();
+        host.eval_source(
+            r#"
+            import { List, mount, signal } from "nsh";
+            import { text } from "nsh:rt";
+            const items = signal(["a", "b", "c"].map(id => ({ id })));
+            globalThis.keyed = { items };
+            mount(() => List({
+                get each() { return items(); },
+                keyExtractor: item => item.id,
+                children: item => text(item().id),
+            }));
+            "#,
+        )
+        .unwrap();
+        let mut ops = Vec::new();
+        host.take_ops(&mut ops);
+        ops.clear();
+        assert!(
+            host.eval_script(
+                "keyed-append",
+                "keyed.items.set([...keyed.items().map(i => ({...i})), {id: 'd'}]); true",
+            )
+            .unwrap()
+        );
+        host.take_ops(&mut ops);
+        let splices: Vec<String> = ops
+            .iter()
+            .map(|op| format!("{op:?}"))
+            .filter(|op| op.contains("Splice"))
+            .collect();
+        assert_eq!(splices.len(), 1, "{splices:?}");
+        assert!(splices[0].contains("Splice(3, 0, 1)"), "{splices:?}");
+    }
+
+    #[test]
+    fn keyed_rows_rebuilt_with_the_same_keys_refresh_retained_cell_items_without_splicing() {
+        let host = Host::with_options(HostOptions::default()).unwrap();
+        host.eval_source(
+            r#"
+            import { List, mount, signal } from "nsh";
+            import { element, insert } from "nsh:rt";
+            const items = signal([
+                { id: "a", label: "a1" },
+                { id: "b", label: "b1" },
+                { id: "c", label: "c1" },
+            ]);
+            globalThis.keyed = { items };
+            mount(() => List({
+                get each() { return items(); },
+                keyExtractor: item => item.id,
+                children: item => {
+                    const el = element("text");
+                    insert(el, () => item().label);
+                    return el;
+                },
+            }));
+            "#,
+        )
+        .unwrap();
+        let mut ops = Vec::new();
+        host.take_ops(&mut ops);
+        let list = ops
+            .iter()
+            .find_map(|op| match op {
+                nsh_core::Op::Create {
+                    id,
+                    tag: nsh_core::Tag::List,
+                } => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        host.bind_list(list, &[(0, 0), (1, 1), (2, 2)]);
+        host.take_ops(&mut ops);
+        ops.clear();
+
+        assert!(
+            host.eval_script(
+                "keyed-refresh-all",
+                "keyed.items.set([{id:'a',label:'a2'},{id:'b',label:'b2'},{id:'c',label:'c2'}]); true",
+            )
+            .unwrap()
+        );
+        host.take_ops(&mut ops);
+        assert!(
+            !ops.iter().any(|op| format!("{op:?}").contains("Splice")),
+            "{ops:?}"
+        );
+        let texts: Vec<&str> = ops
+            .iter()
+            .filter_map(|op| match op {
+                nsh_core::Op::SetText { text, .. } | nsh_core::Op::CreateText { text, .. } => {
+                    Some(&**text)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["a2", "b2", "c2"]);
+
+        ops.clear();
+        assert!(
+            host.eval_script(
+                "keyed-refresh-middle",
+                "keyed.items.set([{id:'a',label:'a3'},{id:'x',label:'x1'},{id:'c',label:'c3'}]); true",
+            )
+            .unwrap()
+        );
+        host.take_ops(&mut ops);
+        let splices: Vec<String> = ops
+            .iter()
+            .map(|op| format!("{op:?}"))
+            .filter(|op| op.contains("Splice"))
+            .collect();
+        assert_eq!(splices.len(), 1, "{splices:?}");
+        assert!(splices[0].contains("Splice(1, 1, 1)"), "{splices:?}");
+        let texts: Vec<&str> = ops
+            .iter()
+            .filter_map(|op| match op {
+                nsh_core::Op::SetText { text, .. } | nsh_core::Op::CreateText { text, .. } => {
+                    Some(&**text)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["a3", "c3"]);
     }
 }

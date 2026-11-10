@@ -19,13 +19,16 @@
 
 //! A published directory is a stable filesystem observation, not a string prefix.
 use super::{Workspace, invalid};
+use cap_std::{ambient_authority, fs::Dir};
+use maka_sandbox::workspace::DirectoryIdentity;
 use std::{
     io,
     path::{Component, Path, PathBuf},
 };
 
 pub struct PublishedDirectory {
-    root: Workspace,
+    path: PathBuf,
+    identity: DirectoryIdentity,
 }
 
 impl PublishedDirectory {
@@ -33,21 +36,28 @@ impl PublishedDirectory {
         if !path.is_absolute() {
             return Err(invalid("published root must be absolute"));
         }
-        Ok(Self {
-            root: Workspace::capture(path)?,
-        })
+        let (path, identity) = crate::directory::capture(path)?;
+        Ok(Self { path, identity })
     }
 
-    pub fn identity(&self) -> io::Result<maka_sandbox::workspace::DirectoryIdentity> {
-        crate::directory::identity(&self.root.dir)
+    pub fn identity(&self) -> io::Result<DirectoryIdentity> {
+        Ok(self.identity.clone())
     }
 
     pub fn path(&self) -> &Path {
-        &self.root.path
+        &self.path
+    }
+
+    fn validate_root(&self) -> io::Result<Dir> {
+        let visible = Dir::open_ambient_dir(&self.path, ambient_authority())?;
+        if crate::directory::identity(&visible)? != self.identity {
+            return Err(invalid("workspace directory changed"));
+        }
+        Ok(visible)
     }
 
     pub fn resolve(&self, segments: &[String]) -> io::Result<PathBuf> {
-        let mut path = self.root.path.clone();
+        let mut path = self.path.clone();
         for segment in segments {
             if segment.is_empty()
                 || segment.contains(['/', '\\', '\0'])
@@ -69,19 +79,20 @@ impl PublishedDirectory {
     }
 
     fn contained(&self, path: &Path) -> io::Result<PathBuf> {
-        self.root.validate_directory()?;
+        let _root = self.validate_root()?;
         let path = path.canonicalize()?;
-        if !path.starts_with(&self.root.path) || !path.is_dir() {
+        if !path.starts_with(&self.path) || !path.is_dir() {
             return Err(invalid(
                 "directory is outside the published root or unavailable",
             ));
         }
-        self.root.validate_directory()?;
+        self.validate_root()?;
         Ok(path)
     }
 
     /// Names use UTF-16 order because they also act as client continuation cursors.
     pub fn directory_names(&self, segments: &[String]) -> io::Result<Vec<String>> {
+        let _root = self.validate_root()?;
         let directory = Workspace::capture(&self.resolve(segments)?)?;
         let mut names = Vec::new();
         for entry in directory.dir.entries()? {
@@ -102,7 +113,7 @@ impl PublishedDirectory {
             }
         }
         directory.validate_directory()?;
-        self.root.validate_directory()?;
+        self.validate_root()?;
         names.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
         Ok(names)
     }

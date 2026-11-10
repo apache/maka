@@ -1,0 +1,27 @@
+[package]
+name = "nsh-updater"
+description = "Self-update of packaged nsh apps: signed manifests, verified downloads, replacing the installed app."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+base64.workspace = true
+ed25519-dalek.workspace = true
+semver.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+# Replacing the app happens on the desktop only.
+[target.'cfg(any(target_os = "linux", target_os = "macos", windows))'.dependencies]
+flate2.workspace = true
+tar.workspace = true
+zip.workspace = true

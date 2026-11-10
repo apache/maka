@@ -22,7 +22,7 @@ use crate::{EventLog, StoreError};
 use rusqlite::{OptionalExtension, params};
 
 mod plan;
-pub use plan::{RemovalAuthority, RemovalPlan, RemoveFamilyResult};
+pub use plan::{RemovalPlan, RemoveFamilyResult};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionRetirement {

@@ -127,11 +127,17 @@ impl AcceptedModel {
     }
 }
 
+// The fixture starts at provider observation, not recorded requests or Host authority.
+#[cfg(test)]
+pub(crate) type Observation = fn(&ModelBinding, &mut Model) -> ModelRequestContext;
+
 #[derive(Clone)]
 pub(crate) struct Credentials {
     pub executor: maka_model::ModelExecutor,
     pub refresh: Arc<oauth::Authority>,
     pub inventory: Arc<codex_inventory::Authority>,
+    #[cfg(test)]
+    pub observation: Option<Observation>,
 }
 pub(crate) struct Source {
     configuration: Arc<ConfigurationStore>,
@@ -206,6 +212,11 @@ impl Source {
                 material
             };
             let row = &material.connection;
+            let binding = ModelBinding {
+                connection_id: row.connection_id.clone(),
+                connection_slug: row.slug.clone(),
+                model: selection.model_id.clone(),
+            };
             let model = resolve(
                 &definition,
                 row,
@@ -213,6 +224,14 @@ impl Source {
                 thinking_level,
                 row.model_overrides.as_ref().and_then(|models| models.get(&selection.model_id)),
             ).await?;
+            #[cfg(test)]
+            let model = {
+                let mut model = model;
+                if let Some(observe) = credentials.observation {
+                    observe(&binding, &mut model);
+                }
+                model
+            };
             revision.name = row.provider.name.clone();
             let source = Self {
                 pricing:Arc::new(ConfigPricing(configuration.clone())),
@@ -233,11 +252,7 @@ impl Source {
                         .and_then(|models| models.get(&selection.model_id))
                         .and_then(|overrides| overrides.code_mode_language)
                         .unwrap_or_default(),
-                    binding: ModelBinding {
-                        connection_id: row.connection_id.clone(),
-                        connection_slug: row.slug.clone(),
-                        model: selection.model_id,
-                    },
+                    binding,
                     thinking_level,
                     provider: row.provider.clone(),
                     route: ExecutionRoute::new(&model),
@@ -292,6 +307,15 @@ impl Source {
         material: ConnectionObservation,
         model: Model,
     ) -> Result<PreparedModel, RunError> {
+        #[cfg(test)]
+        let (model, observed_context) = {
+            let mut model = model;
+            let context = self
+                .credentials
+                .observation
+                .map(|observe| observe(&self.accepted.binding, &mut model));
+            (model, context)
+        };
         let capabilities = model.info.capabilities.unwrap_or_default();
         if capabilities.chat == Some(false) {
             tracing::warn!(
@@ -366,6 +390,10 @@ impl Source {
             }
             provenance.account_id = account_id;
             request_context.codex = Some(provenance);
+        }
+        #[cfg(test)]
+        if let Some(context) = observed_context {
+            request_context = context;
         }
         let credentials = self
             .definition
@@ -510,6 +538,14 @@ impl Source {
             self.accepted.model_override.as_ref(),
         )
         .await?;
+        #[cfg(test)]
+        let model = {
+            let mut model = model;
+            if let Some(observe) = self.credentials.observation {
+                observe(&self.accepted.binding, &mut model);
+            }
+            model
+        };
         if !self.accepted.route.matches(&model) {
             tracing::warn!(
                 stage = "accepted_model_observation",

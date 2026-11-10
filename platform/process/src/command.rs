@@ -508,10 +508,10 @@ impl Prepared {
             failure.get_or_insert_with(|| error.to_string());
         }
         #[cfg(windows)]
-        if let Some(launch) = self.0.launch.take() {
-            if let Err(error) = launch.abort().await {
-                failure = Some(error.to_string());
-            }
+        if let Some(launch) = self.0.launch.take()
+            && let Err(error) = launch.abort().await
+        {
+            failure = Some(error.to_string());
         }
         match failure {
             Some(message) => Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(

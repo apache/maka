@@ -2,7 +2,7 @@
 import type { JSX, MotionSpec, ViewStyle } from "nsh";
 import { createMotion, Easing, View } from "nsh";
 import { CheckMark } from "./icons";
-import { finish } from "./theme";
+import { finish, terminal } from "./theme";
 
 /** The side of its trigger a popup is on. */
 export type PopupSide = "top" | "bottom" | "left" | "right";
@@ -10,9 +10,12 @@ export type PopupSide = "top" | "bottom" | "left" | "right";
 /**
  * The surface every anchored popup shares (menus, popovers, a select's
  * list): the floating tier, one edge, a soft shadow, 10-point corners and
- * 4 points around its rows (Design Guides, "Surfaces and elevation").
+ * 4 points around its rows (Design Guides, "Surfaces and elevation"). A
+ * terminal shows it by its line alone: a box there is its line or its fill.
  */
-export const popupSurface = (): ViewStyle => ({ borderRadius: 10, borderWidth: 1, padding: 4, ...finish.menu });
+export const popupSurface = (): ViewStyle =>
+  // A terminal draws a popup as its line alone, over no fill of its own.
+  terminal ? { borderRadius: 10, borderWidth: 1, padding: 4, borderColor: finish.menu.borderColor } : { borderRadius: 10, borderWidth: 1, padding: 4, ...finish.menu };
 
 /** Where a popup grows from: the edge that faces its trigger. */
 const origins: Record<PopupSide, string> = { bottom: "top", top: "bottom", left: "right", right: "left" };

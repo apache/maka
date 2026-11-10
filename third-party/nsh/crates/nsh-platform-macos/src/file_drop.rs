@@ -52,8 +52,18 @@ pub(crate) fn deleted(surface: &Surface, id: nsh_core::NodeId) {
 fn destination_changed(surface: &Surface, id: nsh_core::NodeId, enabled: bool) {
     let registration = surface.file_drop.destinations.borrow_mut().set(id, enabled);
     match registration {
-        Some(true) => register(surface.root.ns()),
-        Some(false) => surface.root.ns().unregisterDraggedTypes(),
+        Some(true) => {
+            register(surface.root.ns());
+            for root in crate::window::roots(surface) {
+                register(root.ns());
+            }
+        }
+        Some(false) => {
+            surface.root.ns().unregisterDraggedTypes();
+            for root in crate::window::roots(surface) {
+                root.ns().unregisterDraggedTypes();
+            }
+        }
         None => {}
     }
     if !enabled {
@@ -69,7 +79,13 @@ pub(crate) fn reset(surface: &Surface) {
     *surface.file_drop.destinations.borrow_mut() = Destinations::default();
 }
 
-fn register(view: &NSView) {
+/// Whether a view of the surface takes file drops: a window's root view
+/// made later registers then ([`crate::window`]).
+pub(crate) fn accepting(surface: &Surface) -> bool {
+    surface.file_drop.destinations.borrow().count > 0
+}
+
+pub(crate) fn register(view: &NSView) {
     let kind = NSString::from_str("public.file-url");
     view.registerForDraggedTypes(&NSArray::from_slice(&[&*kind]));
 }
@@ -81,8 +97,7 @@ fn target(surface: &Surface, sender: &ProtocolObject<dyn NSDraggingInfo>) -> Opt
     {
         return None;
     }
-    let point = surface
-        .root
+    let point = input::event_root(surface)
         .ns()
         .convertPoint_fromView(sender.draggingLocation(), None);
     input::file_drop_target(surface, point.x as f32, point.y as f32)
@@ -169,6 +184,40 @@ pub(crate) fn perform(surface: &Surface, sender: &ProtocolObject<dyn NSDraggingI
     true
 }
 
+/// A drag entering an input's text view (a text area, a field's editor).
+/// AppKit offers a drag to the deepest view registered for one of its
+/// types, and a text view registers for files to insert their paths: local
+/// files over an input inside a file drop target go to that target, as
+/// anywhere else in it (`Some`); any other drag stays the text view's
+/// (`None`), text drags included.
+pub(crate) fn text_entered(
+    surface: &Surface,
+    sender: &ProtocolObject<dyn NSDraggingInfo>,
+) -> Option<NSDragOperation> {
+    Some(begin(surface, sender)).filter(|operation| *operation == NSDragOperation::Copy)
+}
+
+/// A drag moving over an input's text view: [`text_entered`].
+pub(crate) fn text_updated(
+    surface: &Surface,
+    sender: &ProtocolObject<dyn NSDraggingInfo>,
+) -> Option<NSDragOperation> {
+    if !surface.file_drop.offered.get() {
+        return None;
+    }
+    Some(update(surface, sender)).filter(|operation| *operation == NSDragOperation::Copy)
+}
+
+/// A drop on an input's text view: whether the target around it took the
+/// files (`Some`), or `None` for the text view to handle ([`text_entered`]).
+pub(crate) fn text_performed(
+    surface: &Surface,
+    sender: &ProtocolObject<dyn NSDraggingInfo>,
+) -> Option<bool> {
+    (surface.file_drop.offered.get() && target(surface, sender).is_some())
+        .then(|| perform(surface, sender))
+}
+
 fn read_uris(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String> {
     let board = sender.draggingPasteboard();
     let kind = NSString::from_str("public.file-url");
@@ -178,24 +227,30 @@ fn read_uris(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String> {
             items
                 .iter()
                 .filter_map(|item| item.stringForType(&kind))
-                .filter(|uri| is_local_uri(uri))
-                .map(|uri| uri.to_string())
+                .filter_map(|uri| local_file_uri(&uri))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
 }
 
-pub(crate) fn is_local_uri(uri: &NSString) -> bool {
-    NSURL::URLWithString(uri).is_some_and(|url| {
-        url.isFileURL()
-            && url
-                .path()
-                .is_some_and(|path| path.to_string().starts_with('/'))
-            && url.host().is_none_or(|host| {
-                let host = host.to_string();
-                host.is_empty() || host.eq_ignore_ascii_case("localhost")
-            })
-    })
+/// The `file:` URL with the path of the local file or directory `uri`
+/// names, if it names one. Finder puts file reference URLs
+/// (`file:///.file/id=…`) on drag and copy pasteboards: they become the
+/// path's URL, which apps can turn into a path.
+pub(crate) fn local_file_uri(uri: &NSString) -> Option<String> {
+    let url = NSURL::URLWithString(uri)?.filePathURL()?;
+    let local = url.isFileURL()
+        && url
+            .path()
+            .is_some_and(|path| path.to_string().starts_with('/'))
+        && url.host().is_none_or(|host| {
+            let host = host.to_string();
+            host.is_empty() || host.eq_ignore_ascii_case("localhost")
+        });
+    local
+        .then(|| url.absoluteString())
+        .flatten()
+        .map(|uri| uri.to_string())
 }
 
 #[cfg(test)]
@@ -221,7 +276,7 @@ mod tests {
             "file:///tmp/%E4%B8%AD/",
             "file://localhost/tmp/a",
         ] {
-            assert!(is_local_uri(&NSString::from_str(uri)), "{uri}");
+            assert!(local_file_uri(&NSString::from_str(uri)).is_some(), "{uri}");
         }
         for uri in [
             "https://example.com/file",
@@ -229,7 +284,72 @@ mod tests {
             "file:relative",
             "plain text",
         ] {
-            assert!(!is_local_uri(&NSString::from_str(uri)), "{uri}");
+            assert_eq!(local_file_uri(&NSString::from_str(uri)), None, "{uri}");
         }
     }
+
+    #[test]
+    fn file_reference_urls_become_the_paths_urls() {
+        let dir = std::env::temp_dir().join("nsh file drop 中");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a b.txt");
+        std::fs::write(&file, "x").unwrap();
+        let path = NSString::from_str(&file.to_string_lossy());
+        let path_url = NSURL::fileURLWithPath(&path);
+        let reference = path_url
+            .fileReferenceURL()
+            .unwrap()
+            .absoluteString()
+            .unwrap();
+        assert!(
+            reference.to_string().starts_with("file:///.file/id="),
+            "{reference}"
+        );
+        // The reference resolves to the file's real path (`/var` is `/private/var`).
+        let real = std::fs::canonicalize(&file).unwrap();
+        let expected = NSURL::fileURLWithPath(&NSString::from_str(&real.to_string_lossy()))
+            .absoluteString()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            local_file_uri(&reference).as_deref(),
+            Some(expected.as_str())
+        );
+        // A reference to nothing (the file is gone) is no file.
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(local_file_uri(&reference), None);
+    }
+}
+
+/// Routes host-supplied files through the same native hit testing and enter/leave lifecycle.
+#[cfg(feature = "terminal")]
+pub(crate) fn paths(
+    surface: &Surface,
+    paths: Vec<std::path::PathBuf>,
+    position: nsh_core::Point<nsh_core::Points>,
+) {
+    let uris: Vec<String> = paths
+        .into_iter()
+        .filter(|path| path.is_absolute())
+        .filter_map(|path| {
+            let path = path.to_str()?;
+            NSURL::fileURLWithPath(&NSString::from_str(path))
+                .absoluteString()
+                .map(|url| url.to_string())
+        })
+        .collect();
+    let destination = input::file_drop_target(surface, position.x.0, position.y.0);
+    if uris.is_empty() {
+        clear(surface);
+        return;
+    }
+    set_target(surface, destination.clone());
+    if let Some(destination) = destination {
+        surface.event(
+            destination.id(),
+            EventKind::FileDrop,
+            EventPayload::FileDrop(uris),
+        );
+    }
+    clear(surface);
 }

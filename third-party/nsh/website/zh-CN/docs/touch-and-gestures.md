@@ -638,3 +638,11 @@ view()
 - [滚动](./scrolling.md)：键盘点击设置、滚动视图与嵌套手势。
 - [`PanResponder`](../modules/nsh.md#panresponder)：`PanResponder` 参考。
 - [无障碍](./accessibility.md)：可按压视图是无障碍元素；给它们设置角色和标签。
+
+## 终端鼠标输入
+
+终端宿主捕获鼠标：悬停应用 `hoverStyle` 和 `hover:` 类并报告 `onMouseEnter` / `onMouseMove` /
+`onMouseLeave`，主键拖动驱动原生 pan 和 responder，拖动滚动内容或滚动条的滑块移动视口，滚轮滚动指针下最内层的
+滚动视图（按住 Shift 横向滚动）。双击和三击在 `Press` 事件中带上次数，右键单击送达 `onContextMenu`。坐标遵循
+Cell 网格。启动宿主时传入 `--no-mouse`，即把鼠标留给终端模拟器及其自身的文本选择。嵌入应用自行决定何时把鼠标
+事件转发给 NSH surface。

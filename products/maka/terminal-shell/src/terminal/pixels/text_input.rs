@@ -20,9 +20,12 @@
 //! Composition packets share the physical-input FIFO. Only the native owner
 //! retains an editor admission; the IO owner negotiates one subscription.
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::super::Presentation;
-use gpui::TextInputTarget;
-use nsh_gpui_terminal::TerminalPlatform;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use nsh_terminal::NativeSurface;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use nsh_terminal::TextInputTarget;
 use std::{collections::VecDeque, num::NonZeroU64};
 use termina::{
     Event,
@@ -97,6 +100,7 @@ impl Wire {
         self.ready().then_some(self.nonce)
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn cancel(&mut self, composition: NonZeroU64) {
         if self.ready() {
             self.controls.push_back(NshTextInput::Cancel(composition));
@@ -140,17 +144,20 @@ fn encode(input: NshTextInput) -> Vec<u8> {
     Osc::NshTextInput(input).to_string().into_bytes()
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 struct Composition {
     id: NonZeroU64,
     target: TextInputTarget,
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Default)]
 pub(super) struct Owner {
     high_water: u64,
     active: Option<Composition>,
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl Owner {
     pub fn new() -> Self {
         Self::default()
@@ -167,7 +174,7 @@ impl Owner {
 
     pub fn sync(
         &mut self,
-        platform: &TerminalPlatform,
+        platform: &dyn NativeSurface,
         presentation: &Presentation,
     ) -> Result<(), String> {
         if self
@@ -184,7 +191,7 @@ impl Owner {
     /// touching another editor. A revoked native admission has already blurred.
     pub fn blur(
         &mut self,
-        platform: &TerminalPlatform,
+        platform: &dyn NativeSurface,
         presentation: &Presentation,
     ) -> Result<(), String> {
         if let Some(active) = self.active.take() {
@@ -205,7 +212,7 @@ impl Owner {
     pub fn handle(
         &mut self,
         packet: &NshTextInput,
-        platform: &TerminalPlatform,
+        platform: &dyn NativeSurface,
         presentation: &Presentation,
     ) -> Result<(), String> {
         // A preceding mouse/key/callback may have revoked the editor admission.

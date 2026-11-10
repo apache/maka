@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Arc, Pie, Plot } from "nsh/base/plot";
-import { desktop, Log, Panel, Segmented, size, Split, tint, ui, wide } from "./palette";
+import { desktop, Log, Panel, Segmented, size, Split, tint, ui, wide, sectionSurface } from "./palette";
 
 // A donut built from the plot's parts: a `Pie` of the rows' shares, each
 // slice in a series color of the theme (`fill-chart-*`, a class per row),
@@ -84,7 +84,7 @@ function App() {
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, padding: desktop ? 16 : 14, gap: 16 }}>
+        <View style={{ ...sectionSurface({ padded: true }), gap: 16 }}>
           <View class="flex-row items-baseline gap-3">
             <View style={{ flex: 1, gap: 2 }}>
               <Text style={{ fontSize: size.label, fontWeight: "600", color: ui().text }}>Revenue</Text>

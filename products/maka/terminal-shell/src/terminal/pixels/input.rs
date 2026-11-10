@@ -18,7 +18,7 @@
  */
 
 use super::probe::{Capabilities, Protocol, SixelGeometry};
-use nsh_gpui_terminal::{CandidateFrame, FrameToken};
+use nsh_terminal::{CandidateFrame, FrameToken};
 use std::{collections::VecDeque, time::Instant};
 use termina::{
     Event, WindowSize,
@@ -28,6 +28,7 @@ use termina::{
 pub(super) struct Input {
     pub event: Event,
     pub geometry: u64,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub queued_at: Option<Instant>,
 }
 
@@ -37,20 +38,26 @@ pub(in crate::terminal) struct Offer {
     pub geometry: u64,
 }
 
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub(super) struct Preparation {
-    pub frame: nsh_gpui_terminal::PreparedFrame,
+    pub frame: nsh_terminal::PreparedFrame,
     pub geometry: u64,
     pub pump_started: Option<Instant>,
 }
 
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub(super) struct Candidate {
     pub frame: CandidateFrame,
     pub geometry: u64,
 }
 
+#[cfg_attr(
+    not(any(test, target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
 pub(super) enum WireFrame {
-    Kitty(nsh_gpui_terminal::kitty::KittyFrame),
-    Inline(nsh_gpui_terminal::inline::InlineFrame),
+    Kitty(nsh_terminal::kitty::KittyFrame),
+    Inline(nsh_terminal::inline::InlineFrame),
 }
 
 impl WireFrame {
@@ -67,6 +74,8 @@ pub(super) struct Encoded {
     pub geometry: u64,
 }
 
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub(super) enum Completion {
     Finished,
     Superseded {
@@ -75,13 +84,17 @@ pub(super) enum Completion {
     },
 }
 
-/// GPU submission, readback and codec work keep their slots until completion.
+/// Native snapshot transfer and codec work keep their slots until completion.
 /// Complete snapshots can supersede another completed snapshot before writing.
 struct FrameJob {
     geometry: u64,
     work: FrameWork,
 }
 
+#[cfg_attr(
+    not(any(test, target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
 enum FrameWork {
     Reserved,
     Prepared(Preparation),
@@ -108,10 +121,12 @@ impl FrameWork {
 pub(crate) struct Inbox {
     pub capabilities: Capabilities,
     events: VecDeque<Input>,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     tracing: bool,
     /// Last current-viewport writer receipt; also rejects late older snapshots.
     pub published: Option<FrameToken>,
     frames: VecDeque<FrameJob>,
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     frame_capacity: usize,
     /// Last image whose upload was flushed and acknowledged by the terminal.
     pub last_fully_written_image: Option<u32>,
@@ -132,18 +147,20 @@ pub(crate) struct Inbox {
 }
 
 impl Inbox {
-    pub fn new(capabilities: Capabilities, tracing: bool) -> Self {
+    pub fn new(capabilities: Capabilities, _tracing: bool) -> Self {
         Self {
             kitty: super::kitty::Transfer::default(),
             capabilities,
             events: VecDeque::new(),
-            tracing,
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            tracing: _tracing,
             published: None,
             frames: VecDeque::new(),
             // A five-process whole-frame codec scout exceeded 120 encodes/s.
             // Keep that finite candidate width; GUI/writer throughput is separate.
             // Smaller hosts use the same hardware width as the native executor.
-            // Capacity gates GPU draws; it never rejects input or application data.
+            // Capacity gates native captures; it never rejects input or application data.
+            #[cfg(any(test, target_os = "macos", target_os = "windows"))]
             frame_capacity: std::thread::available_parallelism()
                 .map(usize::from)
                 .unwrap_or(1)
@@ -166,11 +183,12 @@ impl Inbox {
 
     /// Admission is checked before drawing, so the native dirty bit coalesces
     /// changes while these finite readback/codec/result slots are occupied.
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     pub(super) fn can_submit(&self) -> bool {
         let protocol = self.capabilities.protocol;
         let capacity = match protocol {
             Some(Protocol::Sixel) => self.frame_capacity,
-            // One codec owner and one GPU lookahead/completed-result position.
+            // One codec owner and one native capture lookahead/completed-result position.
             Some(Protocol::Kitty) => 2,
             _ => 1,
         };
@@ -199,6 +217,7 @@ impl Inbox {
                 && !self.frames.iter().any(|job| job.geometry == self.geometry))
     }
 
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     pub(super) fn reserve_frame(&mut self) -> bool {
         if !self.can_submit() {
             return false;
@@ -210,6 +229,7 @@ impl Inbox {
         true
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(super) fn prepared(&mut self, preparation: Preparation) -> bool {
         let Some(job) = self.frames.iter_mut().find(|job| {
             job.geometry == preparation.geometry && matches!(job.work, FrameWork::Reserved)
@@ -220,6 +240,7 @@ impl Inbox {
         true
     }
 
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     pub(super) fn take_preparation(&mut self) -> Option<Preparation> {
         let job = self
             .frames
@@ -234,6 +255,7 @@ impl Inbox {
         Some(preparation)
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(super) fn rendered(&mut self, candidate: Candidate) -> bool {
         let token = candidate.frame.token();
         let Some(job) = self.frames.iter_mut().find(|job| {
@@ -246,17 +268,20 @@ impl Inbox {
         true
     }
 
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     pub(super) fn rendering_finished(&mut self, token: &FrameToken) {
         self.frames
             .retain(|job| !matches!(&job.work, FrameWork::Rendering(active) if active == token));
     }
 
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     pub(super) fn release_reservation(&mut self) {
         // A pump can produce no draw, or fail before producing a ticket.
         self.frames
             .retain(|job| !matches!(job.work, FrameWork::Reserved));
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(super) fn oldest_frame(&self) -> Option<u64> {
         self.frames
             .front()?
@@ -265,6 +290,7 @@ impl Inbox {
             .map(|token| token.sequence())
     }
 
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     pub(super) fn take_candidate(&mut self) -> Option<Candidate> {
         if self.capabilities.protocol == Some(Protocol::Kitty)
             && self
@@ -289,6 +315,7 @@ impl Inbox {
 
     /// A worker can only finish its own immutable token. Stale and cancelled
     /// jobs release capacity here, after their codec actually returned.
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     pub(super) fn finished(&mut self, token: &FrameToken, encoded: Option<Encoded>) -> Completion {
         let Some(index) = self
             .frames
@@ -413,6 +440,7 @@ impl Inbox {
         })
     }
 
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     pub(in crate::terminal) fn set_ui_scale(&mut self, scale: f32) -> Result<(), String> {
         if !scale.is_finite() || scale <= 0.0 {
             return Err("interface scale must be a finite positive number".into());
@@ -503,6 +531,7 @@ impl Inbox {
         let input = Input {
             event,
             geometry: self.geometry,
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             queued_at: self.tracing.then(Instant::now),
         };
         if let Some(previous) = self.events.back_mut()
@@ -553,6 +582,16 @@ impl Inbox {
         }
     }
 
+    /// Revoke the old app's captures before replacing its native engine.
+    /// Running jobs and a started writer retain ownership until completion.
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
+    pub(super) fn reload(&mut self) -> Result<(), String> {
+        self.invalidate_geometry()?;
+        self.frames
+            .retain(|job| matches!(job.work, FrameWork::Rendering(_) | FrameWork::Encoding(_)));
+        Ok(())
+    }
+
     fn invalidate_geometry(&mut self) -> Result<(), String> {
         self.geometry = self
             .geometry
@@ -574,10 +613,12 @@ impl Inbox {
         self.events.retain(|input| !pointer(&input.event));
     }
 
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     pub(super) fn has_pending_input(&self) -> bool {
         !self.events.is_empty() && self.resize.is_none()
     }
 
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     pub(super) fn pop(&mut self) -> Option<Input> {
         if !self.has_pending_input() {
             return None;
@@ -585,6 +626,7 @@ impl Inbox {
         self.events.pop_front()
     }
 
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     pub(super) fn queue_len(&self) -> usize {
         self.events.len()
     }
@@ -604,6 +646,7 @@ impl Inbox {
 }
 
 /// Classification only: diagnostics retain no typed characters or pasted text.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn trace_kind(event: &Event) -> &'static str {
     let mouse = match event {
         Event::SgrMouse(mouse) => Some(mouse.kind),
@@ -642,6 +685,8 @@ pub(super) fn pointer(event: &Event) -> bool {
     )
 }
 
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn released(event: &Event) -> bool {
     match event {
         Event::SgrMouse(mouse) => matches!(mouse.kind, MouseEventKind::Up(_)),
@@ -721,7 +766,7 @@ mod tests {
 
     fn inert_encoded(token: &FrameToken, geometry: u64) -> Encoded {
         Encoded {
-            frame: WireFrame::Inline(nsh_gpui_terminal::inline::InlineFrame::inert(token.clone())),
+            frame: WireFrame::Inline(nsh_terminal::inline::InlineFrame::inert(token.clone())),
             geometry,
         }
     }
@@ -919,6 +964,100 @@ mod tests {
     }
 
     #[test]
+    fn reload_revokes_waiting_captures_but_retains_running_jobs_and_writer_receipt() {
+        let mut clock = nsh_terminal::FrameClock::default();
+        clock
+            .set_viewport(
+                nsh_terminal::size(nsh_terminal::DevicePixels(1), nsh_terminal::DevicePixels(1)),
+                1.0,
+            )
+            .unwrap();
+        let prepared = clock.prepare(vec![0, 0, 0, 255]).unwrap();
+        let rendered = clock
+            .prepare(vec![0, 0, 0, 255])
+            .unwrap()
+            .submit()
+            .unwrap()
+            .complete()
+            .unwrap();
+        let tokens = inert_tokens(4);
+        let mut inbox = Inbox::new(capabilities(), false);
+        inbox.last_fully_written_geometry = Some(1);
+        inbox.published = Some(tokens[0].clone());
+        inbox.in_flight = Some(Offer {
+            token: tokens[0].clone(),
+            geometry: 1,
+        });
+        inbox.frames.extend([
+            FrameJob {
+                geometry: 1,
+                work: FrameWork::Reserved,
+            },
+            FrameJob {
+                geometry: 1,
+                work: FrameWork::Prepared(Preparation {
+                    frame: prepared,
+                    geometry: 1,
+                    pump_started: None,
+                }),
+            },
+            FrameJob {
+                geometry: 1,
+                work: FrameWork::Rendered(Candidate {
+                    frame: rendered,
+                    geometry: 1,
+                }),
+            },
+            FrameJob {
+                geometry: 1,
+                work: FrameWork::Rendering(tokens[1].clone()),
+            },
+            FrameJob {
+                geometry: 1,
+                work: FrameWork::Encoding(tokens[2].clone()),
+            },
+            FrameJob {
+                geometry: 1,
+                work: FrameWork::Ready(inert_encoded(&tokens[3], 1)),
+            },
+        ]);
+        inbox
+            .push(Event::Paste("retained keyboard input".into()))
+            .unwrap();
+        inbox.reload().unwrap();
+        assert_eq!(inbox.geometry, 2);
+        assert!(inbox.published.is_none());
+        assert_eq!(inbox.frames.len(), 2, "only running work retains its slots");
+        assert!(inbox.take_preparation().is_none());
+        assert!(inbox.take_candidate().is_none());
+        assert!(inbox.take_encoded().is_none());
+        assert_eq!(inbox.in_flight.as_ref().unwrap().token, tokens[0]);
+        inbox.finished(&tokens[2], Some(inert_encoded(&tokens[2], 1)));
+        inbox.rendering_finished(&tokens[1]);
+        assert!(
+            inbox.frames.is_empty(),
+            "late completion cannot publish the old app"
+        );
+        inbox.written(
+            Offer {
+                token: tokens[0].clone(),
+                geometry: 1,
+            },
+            None,
+        );
+        let receipt = inbox.ready.take().unwrap();
+        assert_ne!(receipt.geometry, inbox.geometry);
+        inbox.presented(&receipt.token);
+        assert!(inbox.in_flight.is_none());
+        inbox.resize.take();
+        assert!(matches!(inbox.pop().unwrap().event, Event::Paste(_)));
+        assert!(
+            inbox.reserve_frame(),
+            "new app can capture after the old receipt retires"
+        );
+    }
+
+    #[test]
     fn font_zoom_with_the_same_physical_canvas_revokes_old_input_geometry() {
         let mut inbox = Inbox::new(capabilities(), false);
         let original = inbox.capabilities;
@@ -951,7 +1090,7 @@ mod tests {
         assert_eq!(inbox.capabilities.scale_factor(), 3.125);
         assert_eq!(
             inbox.capabilities.logical_viewport().unwrap(),
-            gpui::size(gpui::px(384.0), gpui::px(256.0))
+            nsh_terminal::size(nsh_terminal::px(384.0), nsh_terminal::px(256.0))
         );
         inbox.set_ui_scale(1.0).unwrap();
         assert_eq!(inbox.geometry, 4);
@@ -973,9 +1112,9 @@ mod tests {
         assert_eq!(inbox.capabilities.size.pixel_height, Some(800));
         assert_eq!(
             inbox.capabilities.viewport(),
-            Some(gpui::size(
-                gpui::DevicePixels(1000),
-                gpui::DevicePixels(800)
+            Some(nsh_terminal::size(
+                nsh_terminal::DevicePixels(1000),
+                nsh_terminal::DevicePixels(800)
             ))
         );
         assert!(inbox.published.is_none());
@@ -1021,9 +1160,9 @@ mod tests {
         assert_eq!(inbox.capabilities.size.pixel_width, Some(1400));
         assert_eq!(
             inbox.capabilities.viewport(),
-            Some(gpui::size(
-                gpui::DevicePixels(1000),
-                gpui::DevicePixels(800)
+            Some(nsh_terminal::size(
+                nsh_terminal::DevicePixels(1000),
+                nsh_terminal::DevicePixels(800)
             ))
         );
         size.cols = 80;
@@ -1034,7 +1173,10 @@ mod tests {
         assert_eq!(inbox.last_fully_written_geometry, Some(1));
         assert_eq!(
             inbox.capabilities.viewport(),
-            Some(gpui::size(gpui::DevicePixels(800), gpui::DevicePixels(600)))
+            Some(nsh_terminal::size(
+                nsh_terminal::DevicePixels(800),
+                nsh_terminal::DevicePixels(600)
+            ))
         );
     }
 

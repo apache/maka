@@ -200,6 +200,8 @@ impl Script {
         sets: &[Registry],
         posts: Posts,
         environment: &Environment,
+        // A browser page has no displays of its own (`displays()` is empty).
+        _displays: &[nsh_core::desktop::Display],
         tokens: Arc<Tokens>,
         theme: ThemeTokens,
         _text: Rc<M>,
@@ -311,6 +313,11 @@ impl Script {
     pub(crate) fn set_environment(&self, value: &Environment) {
         self.0.set_environment(value);
     }
+    /// A browser page has no displays of its own.
+    pub(crate) fn set_displays(&self, _: &[nsh_core::desktop::Display]) {}
+    /// A browser page has no performance monitor: `fpsEnabled()` stays
+    /// false.
+    pub(crate) fn set_fps_enabled(&self, _: bool) {}
     pub(crate) fn set_tokens(&self, value: Arc<Tokens>) {
         self.0.set_tokens(value);
     }

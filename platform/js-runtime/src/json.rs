@@ -18,13 +18,23 @@
  */
 
 //! JSON values keep JSON Number semantics instead of serde_v8's automatic BigInt conversion.
-use deno_core::{ToV8, v8};
+use deno_core::{FromV8, ToV8, v8};
 use deno_error::JsErrorBox;
 pub(super) use maka_plugin_core::json::encoded_size;
 use maka_plugin_core::json::{exact_numbers, inexact_integer};
 use serde_json::Value;
 
 pub(super) struct Json(String);
+pub(crate) struct JsonInput(pub Value);
+impl<'a> FromV8<'a> for JsonInput {
+    type Error = JsErrorBox;
+    fn from_v8<'i>(
+        scope: &mut v8::PinScope<'a, 'i>,
+        value: v8::Local<'a, v8::Value>,
+    ) -> Result<Self, Self::Error> {
+        decode(scope, value).map(Self)
+    }
+}
 impl Json {
     pub(super) fn encode(value: &Value) -> Result<Self, JsErrorBox> {
         exact_numbers(value).map_err(JsErrorBox::generic)?;
@@ -65,6 +75,12 @@ pub(super) fn to_v8<'a, 'i>(
     Json::encode(value)?.to_v8(scope)
 }
 
+pub(crate) fn decode_str(json: &str) -> Result<Value, serde_json::Error> {
+    let mut value = serde_json::from_str(json)?;
+    js_numbers(&mut value);
+    Ok(value)
+}
+
 pub(super) fn decode<'a, 'i>(
     scope: &mut v8::PinScope<'a, 'i>,
     value: v8::Local<'a, v8::Value>,
@@ -76,6 +92,9 @@ pub(super) fn decode<'a, 'i>(
         value
     };
     let encoded = v8::json::stringify(scope, value).ok_or_else(|| {
+        if scope.has_terminated() {
+            return JsErrorBox::generic("execution terminated");
+        }
         JsErrorBox::generic(
             scope
                 .exception()
@@ -83,8 +102,5 @@ pub(super) fn decode<'a, 'i>(
                 .unwrap_or_else(|| "value is not JSON".into()),
         )
     })?;
-    let mut value = serde_json::from_str(&encoded.to_rust_string_lossy(scope))
-        .map_err(|e| JsErrorBox::generic(e.to_string()))?;
-    js_numbers(&mut value);
-    Ok(value)
+    decode_str(&encoded.to_rust_string_lossy(scope)).map_err(|e| JsErrorBox::generic(e.to_string()))
 }

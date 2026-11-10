@@ -160,6 +160,32 @@ async fn work(client: &Client, session: &str, target: Value, terminal: Option<&s
     }
 }
 
+async fn publish_workspace_checkpoint(client: &Client, session: &str, expected: Value) -> Value {
+    let preview = call(
+        client,
+        "agent",
+        "previewHistoryCheckpoint",
+        json!({"sessionId":session}),
+        Attachments::new(),
+    )
+    .await;
+    let published = call(
+        client,
+        "agent",
+        "publishCheckpoint",
+        json!({
+            "sessionId":session, "expectedRevision":expected,
+            "confirmedSubtreeDigest":preview["subtreeDigest"],
+            "workspaceConsistency":"caller_confirmed_quiescent",
+        }),
+        Attachments::new(),
+    )
+    .await;
+    assert_eq!(published["state"]["kind"], "published", "{published}");
+    assert_eq!(published["cleanupPending"], false);
+    published["state"]["head"].clone()
+}
+
 type Body = UnsyncBoxBody<Bytes, Infallible>;
 fn response(body: String, content_type: &str) -> Response<Body> {
     Response::builder()
@@ -210,6 +236,28 @@ async fn model(
             .unwrap_or_default()
             .join(",")
     );
+    let checkpoint_followup = format!("checkpoint-followup-{nonce}");
+    if messages.iter().any(|message| {
+        message["role"] == "user"
+            && message["content"]
+                .to_string()
+                .contains(&checkpoint_followup)
+    }) {
+        assert!(
+            stopped.load(Ordering::SeqCst),
+            "checkpoint follow-up is explicit work after reopen"
+        );
+        assert!(
+            messages.iter().any(|message| message["role"] == "tool"
+                && message["tool_call_id"] == format!("effect-{nonce}")),
+            "restored Session must retain its original tool result: {body}"
+        );
+        events.send("checkpoint-followup").unwrap();
+        return response(
+            sse(json!({"content":"Checkpoint follow-up completed."}), "stop"),
+            "text/event-stream",
+        );
+    }
     let call_id = format!("effect-{nonce}");
     if messages
         .iter()
@@ -449,6 +497,7 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
                 _ => panic!("original Run became unavailable: {readiness}"),
             }
         }
+        let checkpoint = publish_workspace_checkpoint(&client, session, Value::Null).await;
         hosts.last_mut().unwrap().quit(&mut client).await.unwrap();
         eprintln!("mainline stage: original Host exited; inspect canonical identities");
         let original = identities(&sandbox, session, &run).await;
@@ -476,6 +525,33 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
         assert_eq!(reopened["execution"]["runId"], run);
         assert_eq!(reopened["execution"]["turnId"], cancelled["execution"]["turnId"]);
         assert_eq!(tokio::fs::read_to_string(workspace.join("effects.log")).await.unwrap(), format!("{nonce}\n"));
+        // Restoring changes only the selected workspace, never the immutable original Run.
+        tokio::fs::write(workspace.join("effects.log"), "later local edit").await.unwrap();
+        let restored = call(&client, "agent", "restoreSessionCheckpoint", json!({
+            "checkpoint":{"sessionId":session,"revision":checkpoint["revision"]},
+            "parent":sandbox.home, "backend":{"kind":"model","connectionId":connection,"modelId":"gpt-4.1","thinkingLevel":null},
+            "permissions":{"access":"workspace_write","requestPermissions":true},
+            "acceptExternalWritersRisk":true,
+        }), Attachments::new()).await;
+        assert_eq!(restored["sessionId"], session);
+        assert_eq!(restored["head"], checkpoint);
+        let restored_path = std::path::PathBuf::from(restored["path"].as_str().unwrap());
+        assert_ne!(&restored_path, workspace);
+        assert_eq!(tokio::fs::read_to_string(restored_path.join("effects.log")).await.unwrap(), format!("{nonce}\n"));
+        assert_eq!(tokio::fs::read_to_string(workspace.join("effects.log")).await.unwrap(), "later local edit");
+        let observed = call(&client, "agent", "observe", json!({"sessionId":session}), Attachments::new()).await;
+        assert_eq!(observed["session"]["workspace"]["path"], restored["path"]);
+        let followup = call(&client, "agent", "send", json!({
+            "sessionId":session,"message":format!("checkpoint-followup-{nonce}"),"delivery":"queue",
+        }), Attachments::new()).await;
+        assert_eq!(followup["kind"], "queued");
+        let finished = work(&client, session,
+            json!({"kind":"message","messageId":followup["messageId"]}), Some("completed")).await;
+        assert_ne!(finished["execution"]["runId"], run);
+        assert_eq!(finished["answer"]["text"], "Checkpoint follow-up completed.");
+        let successor = publish_workspace_checkpoint(&client, session, checkpoint["revision"].clone()).await;
+        assert_ne!(successor["revision"], checkpoint["revision"]);
+        assert_eq!(tokio::fs::read_to_string(restored_path.join("effects.log")).await.unwrap(), format!("{nonce}\n"));
         hosts.last_mut().unwrap().quit(&mut client).await.unwrap();
         assert_eq!(identities(&sandbox, session, &run).await, original);
         stop_wire.cancel();

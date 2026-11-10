@@ -126,6 +126,9 @@ pub(super) enum Appended {
 fn former_key(session: &str) -> String {
     format!("former/{session}")
 }
+fn read_key(session: &str) -> String {
+    format!("outbox/{session}/read")
+}
 fn head_key(session: &str) -> String {
     format!("outbox/{session}/head")
 }
@@ -142,6 +145,8 @@ fn message_key(session: &str, sequence: u64) -> String {
     format!("{}{sequence:020}", messages_prefix(session))
 }
 
+#[cfg(test)]
+mod receipts;
 mod wake;
 
 pub(super) struct Bot {
@@ -192,6 +197,16 @@ impl Bot {
             .as_deref()
             == Some(session)
     }
+    async fn is_or_was(&self, session: &str) -> Result<bool, String> {
+        Ok(self.is(session)
+            || self
+                .storage
+                .read(former_key(session))
+                .await
+                .map_err(|error| error.to_string())?
+                .is_some())
+    }
+
     pub(super) fn prepare_creation_storage(
         &self,
         mutations: Vec<Mutation>,
@@ -243,7 +258,7 @@ impl Bot {
                     output_schema: None,
                     freeform: None,
                 },
-                nesting: ToolNesting::DirectOnly,
+                nesting: ToolNesting::Nestable,
                 semantics: ToolSemantics::ExclusiveStep,
                 handler: ToolHandler::Prepared(self.clone()),
             },
@@ -372,6 +387,32 @@ impl Bot {
                 // Another call advanced the head or recorded this id; read again.
                 Err(StoreError::Conflict { .. }) => continue,
                 Err(error) => return Err(storage(error)),
+            }
+        }
+    }
+    /// Advance the read cursor; a stale acknowledgement leaves it where it is.
+    async fn mark_read(&self, session: &str, through: u64) -> Result<(), StoreError> {
+        let key = read_key(session);
+        loop {
+            let (revision, previous) = self.read::<Head>(&key).await?;
+            if previous.unwrap_or_default().through >= through {
+                return Ok(());
+            }
+            match self
+                .storage
+                .batch(vec![Self::mutation(
+                    key.clone(),
+                    revision,
+                    &Head { through },
+                )?])
+                .await
+            {
+                Ok(_) => {
+                    self.changed.send_replace(());
+                    return Ok(());
+                }
+                Err(StoreError::Conflict { .. }) => continue,
+                Err(error) => return Err(error),
             }
         }
     }
@@ -816,21 +857,38 @@ impl Owner {
             _ => Ok(true),
         }
     }
+    pub async fn mark_bot_read(&self, input: BotMarkRead) -> Result<BotOutbox, String> {
+        if !self.owns(&input.session_id) || !self.bot.is_or_was(&input.session_id).await? {
+            return Err("bot_session_unavailable".into());
+        }
+        let head = self
+            .bot
+            .read::<Head>(&head_key(&input.session_id))
+            .await
+            .map_err(|error| error.to_string())?
+            .1
+            .unwrap_or_default()
+            .through;
+        if input.through > head {
+            return Err("bot_read_beyond_head".into());
+        }
+        self.bot
+            .mark_read(&input.session_id, input.through)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.bot_outbox(&BotOutboxRead {
+            session_id: Some(input.session_id),
+            after: 0,
+            limit: 0,
+        })
+        .await
+    }
     pub async fn bot_outbox(&self, input: &BotOutboxRead) -> Result<BotOutbox, String> {
         self.bot.load().await.map_err(|error| error.to_string())?;
         let session_id = self.bot.session();
         let target = input.session_id.clone().or_else(|| session_id.clone());
         let is_bot = match &target {
-            Some(session) => {
-                session_id.as_deref() == Some(session)
-                    || self
-                        .bot
-                        .storage
-                        .read(former_key(session))
-                        .await
-                        .map_err(|error| error.to_string())?
-                        .is_some()
-            }
+            Some(session) => self.bot.is_or_was(session).await?,
             None => false,
         };
         let (through, messages, more) = match target.as_ref().filter(|_| is_bot) {
@@ -844,15 +902,50 @@ impl Owner {
         let next_after = more
             .then(|| messages.last().map(|message| message.sequence))
             .flatten();
+        let (read_through, preview) = match target.as_ref().filter(|_| is_bot) {
+            Some(session) => {
+                let read = self
+                    .bot
+                    .read::<Head>(&read_key(session))
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .1
+                    .unwrap_or_default()
+                    .through
+                    .min(through);
+                let latest = self
+                    .bot
+                    .read::<BotMessage>(&message_key(session, through))
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .1;
+                (
+                    read,
+                    latest.map_or_else(String::new, |message| preview(&message.text)),
+                )
+            }
+            None => (0, String::new()),
+        };
         Ok(BotOutbox {
             enabled: self.settings.bot,
             session_id,
             is_bot,
+            read_through,
+            preview,
             through,
             messages,
             next_after,
         })
     }
+}
+
+fn preview(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(160)
+        .collect()
 }
 
 /// What the standing instructions may claim, keyed by the tools that grant it:
@@ -959,12 +1052,9 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 "你是用户在 Maka 里的常驻 Bot。\n\n对话方式：用户只能看到你用 SendUser 工具发出的消息；你的普通回复和工具步骤都是内部过程，用户看不到。要回应用户，就调用 SendUser，普通文字尽量少写。不值得打扰用户的事，就什么都不发。\n\n你的真实能力只有这些工具：{}。你自己不能读写文件、运行命令、使用浏览器、访问网络或调用 MCP。",
                 tools.join("、")
             );
-            text.push_str(if !sessions {
-                "需要动手做的事你既做不到也无法委派，请如实告诉用户。"
+            if !sessions {
+                text.push_str("需要动手做的事你既做不到也无法委派，请如实告诉用户。");
             } else {
-                ""
-            });
-            if sessions {
                 text.push_str("需要动手做的事，用 SessionCreate 新建一个会话，再用 SessionSend 把任务交给它；同一件事可以并行开多个。使用 ModelList 的带来源 selection 作为 backend；省略时沿用会话偏好。原生模型 worker 继承你的模型，显式执行器选择保留其来源。它每做完一轮都会叫醒你；醒来后先用会话读取工具看它的实际结果，再决定告诉用户还是继续派活，不要假装它已经做完。");
             }
             if skills {
@@ -984,12 +1074,9 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 "你是使用者在 Maka 裡的常駐 Bot。\n\n對話方式：使用者只能看到你用 SendUser 工具發出的訊息；你的一般回覆和工具步驟都是內部過程，使用者看不到。要回應使用者，就呼叫 SendUser，一般文字盡量少寫。不值得打擾使用者的事，就什麼都不發。\n\n你的真實能力只有這些工具：{}。你自己不能讀寫檔案、執行指令、使用瀏覽器、存取網路或呼叫 MCP。",
                 tools.join("、")
             );
-            text.push_str(if !sessions {
-                "需要動手做的事你既做不到也無法委派，請如實告訴使用者。"
+            if !sessions {
+                text.push_str("需要動手做的事你既做不到也無法委派，請如實告訴使用者。");
             } else {
-                ""
-            });
-            if sessions {
                 text.push_str("需要動手做的事，用 SessionCreate 新建一個會話，再用 SessionSend 把任務交給它；同一件事可以平行開多個。使用 ModelList 的帶來源 selection 作為 backend；省略時沿用會話偏好。原生模型 worker 繼承你的模型，明確的執行器選擇保留其來源。它每做完一輪都會叫醒你；醒來後先用會話讀取工具看它的實際結果，再決定告訴使用者還是繼續派活，不要假裝它已經做完。");
             }
             if skills {
@@ -1009,12 +1096,10 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 "You are the user's persistent Bot in Maka.\n\nHow you talk: the user sees only the messages you send with the SendUser tool; your ordinary replies and tool steps are internal and never shown. To respond to the user, call SendUser, and keep ordinary text minimal. When something does not need the user's attention, send nothing.\n\nYour real abilities are only these tools: {}. You yourself cannot read or edit files, run commands, use a browser, reach the network or call MCP tools. ",
                 tools.join(", ")
             );
-            text.push_str(if !sessions {
-                "Hands-on work is something you can neither do nor delegate, so tell the user plainly. "
+            if !sessions {
+                text.push_str(
+                "Hands-on work is something you can neither do nor delegate, so tell the user plainly. ");
             } else {
-                ""
-            });
-            if sessions {
                 text.push_str("Hands-on work goes to a new conversation: create it with SessionCreate and give it the task with SessionSend; independent pieces can run in parallel. Use a source-tagged ModelList selection as backend; omission keeps the session preference. Native workers inherit your model; explicit executors keep their own source. Each time a worker finishes a run it wakes you; then read its actual result with the conversation read tools before deciding whether to tell the user or hand out more work, and never claim it is done before you have seen that. ");
             }
             if skills {

@@ -41,12 +41,15 @@ Object.defineProperty(globalThis, 'write', { value: value => emit({kind:'text', 
 "#;
 
 const BOOTSTRAP: &str = r#"
+const ErrorClass = Error;
+const stringify = JSON.stringify;
+if (typeof opTool !== 'undefined') throw new ErrorClass('bridge internals leaked into bootstrap');
 Object.defineProperty(globalThis, 'invoke', { value: async () => {
     const result = await call('fixture', {});
-    if (!result.ok) throw Error(result.error.message);
+    if (!result.ok) throw new ErrorClass(result.error.message);
     return result.value;
 }});
-Object.defineProperty(globalThis, 'write', { value: value => emit({kind:'text', text:JSON.stringify(value)}) });
+Object.defineProperty(globalThis, 'write', { value: value => emit({kind:'text', text:stringify(value)}) });
 "#;
 
 struct Fixture(usize);

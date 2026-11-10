@@ -172,11 +172,15 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             "messages",
         )
     } else {
-        let namespace = match request.provider.kind {
-            ProviderKind::OpenaiCompatible { name } => name,
-            ProviderKind::OpenaiChatCompletions => "openai".into(),
-            _ => return Err(ModelError::Adapter("unsupported provider protocol".into())),
-        };
+        let options = super::wire::chat_options(&request.provider.kind, &request.provider_options)?;
+        let include_usage = request
+            .provider_options
+            .get("maka")
+            .and_then(|options| options.get("includeUsage"))
+            .map(|value| serde_json::from_value::<bool>(value.clone()))
+            .transpose()
+            .map_err(|error| ModelError::Adapter(error.to_string()))?
+            .unwrap_or(true);
         let tools = request
             .tools
             .into_iter()
@@ -214,17 +218,12 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
                 streaming: true,
             },
             &chat_completions::request::Config {
-                provider_namespace: namespace.clone(),
-                include_usage: true,
+                provider_namespace: options.provider_namespace.clone(),
+                include_usage,
                 ..Default::default()
             },
         )
         .map_err(failure)?;
-        let options = chat_completions::request::PromptOptions {
-            provider_namespace: namespace.clone(),
-            metadata_namespace: prepared.metadata_namespace.clone(),
-            multipart_tool_content: false,
-        };
         if let Some(wire) = request
             .prompt
             .wire(crate::prompt::WireFormat::ChatCompletions)

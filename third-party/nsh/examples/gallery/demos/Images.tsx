@@ -4,13 +4,12 @@ import logo from "../logo@2x.png";
 import mark from "../mark.svg";
 import spinner from "../spinner.webp";
 import star from "../star.svg";
-import { alpha, Appear, Badge, Button, Caption, Card, colors, DemoPage, finish, Meter, mono, radius } from "../ui";
+import { alpha, Appear, Badge, Button, Caption, Card, colors, DemoPage, Meter, mono, photoUrl, type PhotoName, type PhotoSize, radius } from "../ui";
 
-// Fixed photos (in color), large enough to stay sharp at 3x.
-const wide = "https://picsum.photos/id/1015/1200/600";
-const photo = (id: number, w: number, h: number) => `https://picsum.photos/id/${id}/${w}/${h}`;
-// A remote SVG (the W3C's SVG logo).
-const remoteSvg = "https://www.w3.org/Icons/SVG/svg-logo.svg";
+// The one picture the demos of a single image compare themselves on.
+const launch = photoUrl("arc");
+// A remote SVG (Twemoji's rocket, CC BY 4.0).
+const remoteSvg = "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/1f680.svg";
 
 /** Every photo's frame: rounded, a hairline border, a raised fill while it loads. */
 const frame = () => ({ borderRadius: radius.control, borderCurve: "continuous", borderWidth: 1, borderColor: colors.border, backgroundColor: colors.raised }) as const;
@@ -33,10 +32,9 @@ function Tile(props: { note: string; code?: boolean; height?: number; children: 
           height: props.height ?? 76,
           borderRadius: radius.control,
           borderCurve: "continuous",
-          backgroundColor: colors.raised,
-          ...finish.raised,
+          backgroundColor: colors.inset,
           borderWidth: 1,
-          borderColor: colors.border,
+          borderColor: colors.line,
           alignItems: "center",
           justifyContent: "center",
         }}
@@ -48,21 +46,21 @@ function Tile(props: { note: string; code?: boolean; height?: number; children: 
   );
 }
 
-/** A 2:1 image in squares, one per `objectFit` value. */
+/** A portrait photo in wide frames, one per `objectFit` value. */
 function ResizeModes() {
   const rows = [
     ["cover", "contain"],
     ["fill", "none"],
   ] as const;
   return (
-    <Card icon="image" title="Resize modes" subtitle="A 2:1 image in square frames">
+    <Card icon="image" title="Resize modes" subtitle="A portrait photo in wide frames">
       <Each of={rows}>
         {(row) => (
           <View style={{ flexDirection: "row", gap: 12 }}>
             <Each of={row()}>
               {(mode) => (
                 <View style={{ flex: 1, gap: 8 }}>
-                  <Image src={wide} style={{ ...frame(), height: 140, objectFit: mode() }} />
+                  <Image src={launch} style={{ ...frame(), height: 150, objectFit: mode() }} />
                   <Note code>{mode()}</Note>
                 </View>
               )}
@@ -78,17 +76,17 @@ function Corners() {
   const square = () => ({ ...frame(), width: 88, height: 88 }) as const;
   return (
     <Card icon="styles" title="Corners and borders" subtitle="Radii per corner, borders on the image">
-      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-        <View style={{ alignItems: "center", gap: 8 }}>
-          <Image src={wide} style={{ ...square(), borderRadius: 44 }} />
+      <View style={{ flexDirection: "row" }}>
+        <View style={{ flex: 1, alignItems: "center", gap: 8 }}>
+          <Image src={photoUrl("silver")} style={{ ...square(), borderRadius: 44 }} />
           <Note>Circle</Note>
         </View>
-        <View style={{ alignItems: "center", gap: 8 }}>
-          <Image src={wide} style={{ ...square(), borderRadius: 18, borderWidth: 2, borderColor: colors.accent }} />
+        <View style={{ flex: 1, alignItems: "center", gap: 8 }}>
+          <Image src={photoUrl("rays")} style={{ ...square(), borderRadius: 18, borderWidth: 2, borderColor: colors.accent }} />
           <Note>Border</Note>
         </View>
-        <View style={{ alignItems: "center", gap: 8 }}>
-          <Image src={wide} style={{ ...square(), borderRadius: 0, borderTopLeftRadius: 40, borderBottomRightRadius: 40 }} />
+        <View style={{ flex: 1, alignItems: "center", gap: 8 }}>
+          <Image src={photoUrl("day")} style={{ ...square(), borderRadius: 0, borderTopLeftRadius: 40, borderBottomRightRadius: 40 }} />
           <Note>Two corners</Note>
         </View>
       </View>
@@ -120,10 +118,10 @@ function Assets() {
   );
 }
 
-/** SVG images: a one-color star tinted at three sizes and as drawn, a
- * two-color logo fitted two ways (`objectFit`), and an SVG from a URL. */
+/** SVG images: a spark tinted at three sizes and with its own gradient, a
+ * night launch fitted two ways (`objectFit`), and an SVG from a URL. */
 function Svg() {
-  const sizes = [18, 36, 72];
+  const sizes = [18, 32, 56];
   const modes = ["contain", "cover"] as const;
   return (
     <Card icon="star" title="SVG images" subtitle="star.svg, mark.svg and a remote SVG, sharp at every size">
@@ -149,7 +147,9 @@ function Svg() {
           )}
         </Each>
         <View style={{ flex: 1, gap: 8 }}>
-          <Image testID="svg-remote" src={remoteSvg} style={{ ...frame(), height: 96, objectFit: "contain" }} />
+          <View style={{ ...frame(), height: 96, padding: 14, backgroundColor: colors.inset }}>
+            <Image testID="svg-remote" src={remoteSvg} style={{ flex: 1, objectFit: "contain" }} />
+          </View>
           <Note>Remote</Note>
         </View>
       </View>
@@ -162,13 +162,13 @@ function Animated() {
     <Card icon="animation" title="Animated GIF and WebP" subtitle="Decoded and played natively">
       <View style={{ flexDirection: "row", gap: 12 }}>
         <Tile note="bounce.gif" code height={96}>
-          <Image src={bounce} />
+          <Image src={bounce} style={{ width: 64, height: 64 }} />
         </Tile>
         <Tile note="spinner.webp" code height={96}>
-          <Image src={spinner} />
+          <Image src={spinner} style={{ width: 64, height: 64 }} />
         </Tile>
         <Tile note="Scaled, round" height={96}>
-          <Image src={bounce} style={{ width: 48, height: 48, borderRadius: 24 }} />
+          <Image src={bounce} style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: alpha(colors.accent, 0.14) }} />
         </Tile>
       </View>
     </Card>
@@ -179,11 +179,12 @@ function Animated() {
  * images that are not cached yet. */
 function Placeholders() {
   const seed = signal(1);
-  // A new size per reload: a URL not in the cache yet.
+  // Another size per reload: a URL not in the cache yet.
+  const sizes: PhotoSize[] = ["medium", "small", "900x900", "large", "360x360"];
   const fades = [
-    { id: 1043, ms: 0 },
-    { id: 1080, ms: 300 },
-    { id: 1069, ms: 1000 },
+    { name: "dragon" as PhotoName, ms: 0 },
+    { name: "transporter" as PhotoName, ms: 300 },
+    { name: "moon" as PhotoName, ms: 1000 },
   ];
   return (
     <Card
@@ -197,7 +198,7 @@ function Placeholders() {
           {(fade) => (
             <View style={{ flex: 1, gap: 8 }}>
               <Image
-                src={photo(fade().id, 600 + seed(), 600 + seed())}
+                src={photoUrl(fade().name, sizes[(seed() - 1) % sizes.length])}
                 placeholder={logo}
                 fadeDuration={fade().ms}
                 style={{ ...frame(), height: 100 }}
@@ -220,7 +221,7 @@ function Blur() {
         <Each of={radii}>
           {(r) => (
             <View style={{ flex: 1, gap: 8 }}>
-              <Image src={wide} blurRadius={r()} style={{ ...frame(), height: 76 }} />
+              <Image src={launch} blurRadius={r()} style={{ ...frame(), height: 76 }} />
               <Note>{r() === 0 ? "None" : `${r()} pt`}</Note>
             </View>
           )}
@@ -231,7 +232,7 @@ function Blur() {
 }
 
 function Info() {
-  const big = photo(1018, 2400, 1600);
+  const big = photoUrl("booster", "4096x4096");
   const size = signal("—");
   const prefetched = signal("—");
   const progress = signal(0);
@@ -304,7 +305,7 @@ function Events() {
     <Card icon="bell" title="Events" subtitle="Load start, load, error, load end">
       <View style={{ flexDirection: "row", gap: 12, alignItems: "center" }}>
         <Image
-          src={photo(1084, 600, 400)}
+          src={photoUrl("liftoff")}
           onLoadStart={() => log("onLoadStart")}
           onLoad={(e) => {
             log("onLoad");
@@ -315,7 +316,7 @@ function Events() {
           style={thumb()}
         />
         <View style={{ flex: 1, gap: 4 }}>
-          <Text style={{ fontSize: 15, color: colors.text }}>picsum.photos</Text>
+          <Text style={{ fontSize: 15, color: colors.text }}>pbs.twimg.com</Text>
           <Text style={{ fontSize: 13, color: colors.up, fontVariant: ["tabular-nums"] }}>{`Loaded, ${loaded()} px`}</Text>
         </View>
       </View>

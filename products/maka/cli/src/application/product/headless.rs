@@ -526,3 +526,69 @@ async fn replace_workspace_locations(
     apply_launch_configuration(store, loaded.source().reference.deployment, Some(roots)).await?;
     Ok(())
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::raise_open_file_limit;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_low_open_file_limit_is_raised_within_the_hard_limit() {
+        const CHILD: &str = "MAKA_OPEN_FILE_LIMIT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "application::product::headless::tests::a_low_open_file_limit_is_raised_within_the_hard_limit",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated open file limit test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        // This exact-test subprocess owns its limit.
+        let read = || {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: `limit` is a valid rlimit for the duration of the call.
+            assert_eq!(
+                unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+                0
+            );
+            limit
+        };
+        let original = read();
+        #[cfg(not(target_os = "macos"))]
+        {
+            let low = libc::rlimit {
+                rlim_cur: original.rlim_max.min(64),
+                rlim_max: original.rlim_max,
+            };
+            // SAFETY: only this subprocess's soft limit is lowered.
+            assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &low) }, 0);
+            raise_open_file_limit();
+            let raised = read();
+            assert_eq!(raised.rlim_cur, original.rlim_max);
+            assert_eq!(raised.rlim_max, original.rlim_max);
+        }
+
+        let hard = original.rlim_max.min(200);
+        let low = libc::rlimit {
+            rlim_cur: hard.min(64),
+            rlim_max: hard,
+        };
+        // SAFETY: `low` is a valid rlimit for the duration of the call.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &low) }, 0);
+        raise_open_file_limit();
+        assert_eq!(read().rlim_cur, hard);
+    }
+}

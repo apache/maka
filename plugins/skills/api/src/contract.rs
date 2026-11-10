@@ -52,6 +52,27 @@ pub struct Configuration {
     pub preferences: bool,
     pub sources: Vec<Source>,
 }
+
+/// A read-only directory observation; it does not allocate an execution workspace.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "SkillLibraryCandidateDirectory")]
+pub struct CandidateDirectory {
+    #[schemars(length(min = 1))]
+    pub path: String,
+    #[schemars(with = "String", regex(pattern = "^sha256:[a-f0-9]{64}$"))]
+    pub directory_identity: maka_sandbox::workspace::DirectoryIdentity,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "SkillLibraryCandidatesRead")]
+pub struct CandidatesRead {
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<CandidateDirectory>")]
+    pub directory: Option<CandidateDirectory>,
+    pub tools: Vec<String>,
+    pub query: String,
+}
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SkillLibrarySource")]
@@ -191,6 +212,16 @@ pub fn contract() -> Contract {
         transport: Transport::Remote,
         interface: Interface::Service {
             methods: BTreeMap::from([
+                (
+                    "candidates".into(),
+                    Method {
+                        progress: None,
+                        mode: MethodMode::Query,
+                        input: schemars::schema_for!(CandidatesRead).into(),
+                        output: schemars::schema_for!(ModelSearchResult<'static>).into(),
+                        resources: BTreeMap::new(),
+                    },
+                ),
                 (
                     "prepare".into(),
                     Method {

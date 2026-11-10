@@ -20,6 +20,7 @@ const icons = {
   play: { lucide: 'play', glyph: '▶' },
   close: { lucide: 'x', glyph: '×' },
   down: { lucide: 'chevron-down', glyph: '⌄' },
+  up: { lucide: 'chevron-up', glyph: '⌃' },
   right: { lucide: 'chevron-right', glyph: '›' },
   search: { lucide: 'search', glyph: '⌕' },
   settings: { lucide: 'settings', glyph: '⚙' },
@@ -48,6 +49,8 @@ const icons = {
   shield: { lucide: 'shield', glyph: '◇' },
   lock: { lucide: 'lock', glyph: '▣' },
   activity: { lucide: 'clock', glyph: '◌' },
+  bot: { lucide: 'bot', glyph: '◌' },
+  inbox: { lucide: 'inbox', glyph: '?' },
   thinking: { lucide: 'brain', glyph: '◌' },
   statusRecorded: { lucide: 'circle-dot', glyph: '●' },
   statusSuccess: { lucide: 'circle-check', glyph: '✓' },
@@ -113,7 +116,7 @@ function draw(cx: CanvasRenderingContext2D, el: LucideElement) {
 }
 
 export function Icon(props: { name: keyof typeof icons; color: string; size?: number }) {
-  if (platform.isTerminal)
+  if (platform.idiom === 'terminal')
     return (
       <Text
         accessibilityElementsHidden

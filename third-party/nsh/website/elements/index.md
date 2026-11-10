@@ -284,8 +284,8 @@ const at = signal<number | null>(null);
 ### Tooltips
 
 `tooltip` gives any element a hint, shown above it on the desktops (macOS, Windows, Linux, the GPUI backend and
-desktop browsers) once the pointer has rested on it for half a second, until the pointer leaves or presses it. Phones
-and tablets show none. The hint never takes the pointer or presses, so the element works exactly as it does without it.
+desktop browsers) once the pointer has rested on it for half a second, until the pointer leaves or presses it, and on
+every device while the keyboard focus is on it, until the focus leaves or Escape is pressed. The hint never takes the pointer or presses, so the element works exactly as it does without it.
 
 | Prop | Rust | Type | Description |
 |---|---|---|---|
@@ -324,7 +324,9 @@ tooltips keeps one small component of its own that wraps a text in its `Tooltip`
 ### Context menus
 
 `onContextMenu` tells a view that the secondary button was pressed over it: a right click, Control-click on macOS, a
-two-finger click on a touchpad, the secondary click of an iPad's pointer; in browsers also the keyboard's menu key.
+two-finger click on a touchpad, the secondary click of an iPad's pointer; in browsers also Shift+F10 and the
+keyboard's Menu key on the focused view; on macOS and Windows also a screen reader's "show menu" action (VoiceOver's
+VO-Shift-M, UI Automation's).
 Open the app's own menu there; in TSX, [`Menu.popup`](../modules/nsh-desktop.md) shows the system's:
 
 ```rust tabs
@@ -344,10 +346,13 @@ import { Menu } from "nsh/desktop";
 
 | Prop | Rust | Type | Description |
 |---|---|---|---|
-| `onContextMenu` | `.on_context_menu(..)` | `(e: ContextMenuEvent) => void` | The secondary button was pressed over the view or a view inside it. |
+| `onContextMenu` | `.on_context_menu(..)` | `(e: ContextMenuEvent) => void` | A context menu was asked for over the view or a view inside it. |
 
 `ContextMenuEvent` has `position` in the view, `pagePosition` in its root view (where `Menu.popup` places a menu:
-`Menu.popup(items, e.pagePosition)`) and the `modifiers`; in Rust `position`, `page_position` and `modifiers`. The nearest view that listens, from the one under the pointer outwards, hears it. A text input, or
+`Menu.popup(items, e.pagePosition)`), the `modifiers` and `pointerType`, the DOM's: `"mouse"`, `"pen"` or `"touch"`
+for a pointer, `null` for the keyboard or a screen reader, whose positions are the view's bottom-start corner, so a
+menu placed there opens below the view; in Rust `position`, `page_position`, `modifiers` and `pointer_type`
+(`Option<PointerType>`). The nearest view that listens, from the one under the pointer outwards, hears it. A text input, or
 selectable text with an edit menu (Windows, the GPUI backend, browsers), nearer than that view shows its own menu
 instead. The platform decides this as the button goes down, from what is mounted, so the handler is told after the fact
 and nothing has to be cancelled. A `disabled` view leaves the click to the nearest enabled listener around it. On
@@ -508,6 +513,8 @@ their platform.
 | `desktop` key | Rust | Type | Description |
 |---|---|---|---|
 | `windowDrag` | `.window_drag(..)` | `boolean` | Pressing the view drags the window, as its title bar would; `false` keeps a part of a draggable view clickable. See [a title bar of your own](../modules/nsh-desktop.md#a-title-bar-of-your-own). |
+| `windowControl` | `.window_control(..)` | `"minimize" \| "maximize" \| "close"` | The view is that window button of a title bar the app draws: the platform carries out its press, and assistive technologies see the button. |
+| `windowResize` | `.window_resize(..)` | `"top" \| "bottom" \| "left" \| "right" \| "topLeft" \| "topRight" \| "bottomLeft" \| "bottomRight"` | Pressing the view resizes a frameless window by that edge or corner. |
 
 ```rust tabs
 use nsh_core::Ripple;

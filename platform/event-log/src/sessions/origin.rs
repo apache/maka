@@ -30,7 +30,6 @@ pub struct PluginSession {
     pub creator: Namespace,
     /// Stable identity of the original creation request.
     pub fingerprint: String,
-    pub managed: bool,
     /// Session whose current authority the Host used to create this root.
     /// This is a lifecycle dependency, not a business parent or a new grant.
     pub authority_session_id: Option<String>,
@@ -128,7 +127,7 @@ pub(super) fn check(
 ) -> Result<(), StoreError> {
     let row = connection
         .query_row(
-            "SELECT package_id, scope_id, fingerprint, managed, authority_session_id
+            "SELECT package_id, scope_id, fingerprint, authority_session_id
          FROM plugin_sessions WHERE session_id=?",
             params![session],
             |row| {
@@ -136,8 +135,7 @@ pub(super) fn check(
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, bool>(3)?,
-                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             },
         )
@@ -152,8 +150,7 @@ pub(super) fn check(
                 )
                 .map_err(|error| super::invalid(&error.to_string()))?,
                 fingerprint: row.2,
-                managed: row.3,
-                authority_session_id: row.4,
+                authority_session_id: row.3,
             })
         })
         .transpose()?;
@@ -169,13 +166,12 @@ pub(super) fn insert(
 ) -> Result<(), StoreError> {
     retain_authority(connection, origin.authority_session_id.as_deref())?;
     connection.execute(
-        "INSERT INTO plugin_sessions VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO plugin_sessions VALUES (?, ?, ?, ?, ?)",
         params![
             &origin.session_id,
             origin.creator.package(),
             String::from(origin.creator.scope().clone()),
             &origin.fingerprint,
-            origin.managed,
             &origin.authority_session_id
         ],
     )?;
@@ -201,41 +197,25 @@ pub(super) fn retain_authority(
 }
 
 impl EventLog {
-    pub async fn session_manager(&self, session_id: &str) -> Result<Option<Namespace>, StoreError> {
-        self.session_plugin(session_id, true).await
-    }
-
     pub async fn session_creator(&self, session_id: &str) -> Result<Option<Namespace>, StoreError> {
-        self.session_plugin(session_id, false).await
-    }
-
-    async fn session_plugin(
-        &self,
-        session_id: &str,
-        managed_only: bool,
-    ) -> Result<Option<Namespace>, StoreError> {
         validate_id(session_id)?;
         let session_id = session_id.to_owned();
         self.connection
             .read(move |connection| {
-                {
-                    connection
-                        .query_row(
-                            "SELECT package_id, scope_id FROM plugin_sessions
-                         WHERE session_id = ? AND (NOT ? OR managed = 1)",
-                            params![session_id, managed_only],
-                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                        )
-                        .optional()?
-                        .map(|row| {
-                            let scope = Scope::try_from(row.1).map_err(|error| {
-                                StoreError::InvalidTransition(error.to_string())
-                            })?;
-                            Namespace::new(row.0, scope)
-                                .map_err(|error| StoreError::InvalidTransition(error.to_string()))
-                        })
-                        .transpose()
-                }
+                connection
+                    .query_row(
+                        "SELECT package_id, scope_id FROM plugin_sessions WHERE session_id = ?",
+                        params![session_id],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()?
+                    .map(|row| {
+                        let scope = Scope::try_from(row.1)
+                            .map_err(|error| StoreError::InvalidTransition(error.to_string()))?;
+                        Namespace::new(row.0, scope)
+                            .map_err(|error| StoreError::InvalidTransition(error.to_string()))
+                    })
+                    .transpose()
             })
             .await
     }

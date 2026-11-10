@@ -10,10 +10,13 @@
 //!   field in the root's row, between the app's `prefix` (chips, an icon)
 //!   and `suffix`, with the clear button and the app's `triggerButton` (a
 //!   chevron) after it. Typing opens the list and filters it, Down and Up
-//!   open it, a press on the trigger button opens and closes it, a tap on
-//!   the input opens it on touch screens. With one value the input shows
+//!   open it, a press on the input or the trigger button opens and closes
+//!   it in every idiom (`gpui-component`'s trigger click); a tap that
+//!   focuses the input on a touch screen opens it once. With one value the input shows
 //!   its title, selected while it gets the focus, so typing replaces it.
-//!   The list is as wide as the root.
+//!   Tab or Shift+Tab while the list is open closes it with `"focus"`, and
+//!   the focus moves on as the key moves it (as `Select`'s). The list is as
+//!   wide as the root.
 //!
 //! - **The value is a list** (`value: string[]`). With `multiple`, a
 //!   choice toggles the item in it and the list stays open; without, it
@@ -39,6 +42,7 @@ use crate::{
     SelectEntry, SelectGroup, SelectItem,
     listbox::{self, Footer, Hooks, Listbox, Move, Parts, Query, Shown},
     popup::{DropdownFrame, OpenChangeReason, OpenState},
+    terminal::{CLEAR, SELECT_ARROW, is_terminal, mark_slot},
 };
 
 /// The props of [`Combobox`].
@@ -264,6 +268,13 @@ enum Opening {
 /// is `value` and `onChange` (or the combobox's own, from `defaultValue`),
 /// `onConfirm` tells it as the list closes. It looks like nothing: the app
 /// styles every part or draws the rows (`renderItem`, `renderGroup`).
+///
+/// In a terminal the input is one row as wide as the room left (no
+/// `inputClass` / `inputStyle`), then the terminal's own ` ×` in place of
+/// `clearButton` and ` ▾` in place of `triggerButton`, on the input's row;
+/// the list's rows are the items' titles from the row's start, with `✓` at
+/// the row's end while chosen, one full-width row each, which the terminal marks while highlighted (no
+/// `renderItem`, `renderGroup` or row classes there) ([`crate::terminal`]).
 #[component]
 pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElement {
     let open = OpenState::new(props.open, props.default_open);
@@ -420,6 +431,7 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
                 KeyOptions {
                     when: When::Always,
                     repeat: false,
+                    ..Default::default()
                 },
                 move |_| change(false, OpenChangeReason::Select),
             );
@@ -442,6 +454,7 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
                     KeyOptions {
                         when: When::Always,
                         repeat: false,
+                        ..Default::default()
                     },
                     move |_| {
                         opening.replace(how);
@@ -466,7 +479,15 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
                 return;
             }
             cx.emit(ComboboxEvent::Close);
-            if is_desktop() && closed_by.replace(None) != Some(OpenChangeReason::PressOutside) {
+            // Back to the input, unless a press outside or Tab took the
+            // keyboard somewhere else.
+            let by = closed_by.replace(None);
+            if is_desktop()
+                && !matches!(
+                    by,
+                    Some(OpenChangeReason::PressOutside | OpenChangeReason::Focus)
+                )
+            {
                 field.focus();
             }
         }),
@@ -520,6 +541,11 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
     };
     let input_change = change.clone();
     let focus_change = change.clone();
+    let press_change = change.clone();
+    // The focus a press gave opened the list (a touch screen): that
+    // press's own report does not close it again.
+    let focus_opened = stored(false);
+    let terminal = is_terminal();
     let text_field = input()
         .element_ref(&field)
         .value(shown_text)
@@ -537,6 +563,7 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
         .optional_label(props.accessibility_label)
         .accessibility_state(move || AccessibilityState {
             expanded: Some(open.get()),
+            has_popup: true,
             disabled: props.disabled.get(),
             ..AccessibilityState::default()
         })
@@ -554,6 +581,7 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
             // not, and typing or the arrow keys do.
             if !is_desktop() && !open.get_untracked() && !props.disabled.get_untracked() {
                 opening.replace(Opening::Press);
+                focus_opened.replace(true);
                 focus_change(true, OpenChangeReason::TriggerPress);
             }
             // The chosen title, selected: typing replaces it.
@@ -564,7 +592,20 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
                 }
             }
         })
-        .on_blur(move || focused.set(false))
+        .on_blur(move || {
+            focused.set(false);
+            focus_opened.replace(false);
+        })
+        // A press on the input opens and closes the list in every idiom,
+        // as `gpui-component`'s trigger does (after the focus it gave,
+        // which the platforms report first).
+        .on_press(move || {
+            if focus_opened.replace(false) || props.disabled.get_untracked() {
+                return;
+            }
+            opening.replace(Opening::Press);
+            press_change(!open.get_untracked(), OpenChangeReason::TriggerPress);
+        })
         .on_change(move |text: &str| {
             // Typed after the chosen title (the caret at its end): the
             // characters typed replace it, as they would the selection.
@@ -595,8 +636,13 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
             }
             cx.emit(ComboboxEvent::QueryChange(text.to_owned().into()));
         })
-        .app_class(props.input_class)
-        .inline_style(move || props.input_style.get());
+        .map(|i| match terminal {
+            // The terminal's field: one row, as wide as the room left.
+            true => i.flex_grow(1.0).min_w(px(0.0)),
+            false => i
+                .app_class(props.input_class)
+                .inline_style(move || props.input_style.get()),
+        });
     // Not a stop of Tab (`gpui-component`'s `tab_stop(false)`): the input
     // keeps the keyboard.
     let clear = when(
@@ -611,36 +657,78 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
                     report(Vec::new());
                     field.focus();
                 })
-                .app_class(props.clear_button_class)
-                .inline_style(props.clear_button_style)
-                .child(props.clear_button.place(|c| c))
+                .map(|v| match terminal {
+                    // The terminal's own `×`, in place of the app's button:
+                    // a mark in a slot of three Cells (`mark_slot`), muted
+                    // or lit as the `▾`.
+                    true => mark_slot(v, CLEAR.trim_start(), move || focused.get() || open.get()),
+                    false => v
+                        .app_class(props.clear_button_class)
+                        .inline_style(props.clear_button_style)
+                        .child(props.clear_button.place(|c| c)),
+                })
         },
     );
     // The input says whether the list is open: the button is hidden from
     // screen readers, and leaves the keyboard on the input.
+    // Tab past the input closes the list and moves the focus on.
+    {
+        let change = change.clone();
+        listbox::bind_tab_out(
+            move || open.get(),
+            Rc::new(move || change(false, OpenChangeReason::Focus)),
+        );
+    }
     let toggle = change;
-    let trigger_button = props.trigger_button.place(move |t| {
+    let press = move || {
         let toggle = toggle.clone();
-        t.role(AccessibilityRole::Button)
-            .focusable(false)
-            .accessibility_elements_hidden(true)
-            .disabled(props.disabled)
-            .on_press(move || {
-                opening.replace(Opening::Press);
-                toggle(!open.get_untracked(), OpenChangeReason::TriggerPress);
-                if is_desktop() {
-                    field.focus();
-                }
-            })
-    });
+        move || {
+            opening.replace(Opening::Press);
+            toggle(!open.get_untracked(), OpenChangeReason::TriggerPress);
+            if is_desktop() {
+                field.focus();
+            }
+        }
+    };
+    let trigger_button = match terminal {
+        // The terminal's own button, in place of the app's: `▾` in a slot
+        // of three Cells (`mark_slot`).
+        true => mark_slot(
+            view()
+                .role(AccessibilityRole::Button)
+                .accessibility_elements_hidden(true)
+                .disabled(props.disabled)
+                .on_press(press()),
+            SELECT_ARROW.trim_start(),
+            move || focused.get() || open.get(),
+        )
+        .into_element(),
+        false => props.trigger_button.place(move |t| {
+            t.role(AccessibilityRole::Button)
+                .focusable(false)
+                .accessibility_elements_hidden(true)
+                .disabled(props.disabled)
+                .on_press(press())
+        }),
+    };
     view()
         .element_ref(&anchor)
         .flex_row()
         .on_layout(move |frame: &Bounds<Points>| width.set(Some(frame.size.width)))
-        .child(props.prefix.place(|p| p))
+        // A terminal keeps a column between the field and the app's
+        // prefix and suffix (a `⌘K` after the ` ▾`).
+        .child(
+            props
+                .prefix
+                .place(move |p| if terminal { p.mr(px(8.0)) } else { p }),
+        )
         .child(text_field)
         .child(clear)
         .child(trigger_button)
-        .child(props.suffix.place(|s| s))
+        .child(
+            props
+                .suffix
+                .place(move |s| if terminal { s.ml(px(8.0)) } else { s }),
+        )
         .child(listbox::present(lb, anchor, width, parts, hooks))
 }

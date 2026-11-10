@@ -17,13 +17,28 @@
  * under the License.
  */
 
-use gpui::{
-    AppContext, Application, Bounds, Focusable, PlatformInput, WindowBounds, WindowOptions, point,
-    px, size,
-};
+#[path = "tests/rail.rs"]
+mod rail;
+
+pub(super) fn cases() -> [(&'static str, fn()); 2] {
+    [
+        (
+            "native_editor_focus_and_text_do_not_wait_for_another_pixel_frame",
+            native_editor_focus_and_text_do_not_wait_for_another_pixel_frame,
+        ),
+        (
+            "every_visible_turn_mark_can_be_clicked_with_cell_coordinates",
+            rail::every_visible_turn_mark_can_be_clicked_with_cell_coordinates,
+        ),
+    ]
+}
+
 use nsh_engine::{App, Bundle, EngineConfig};
-use nsh_gpui_terminal::{CandidateFrame, TerminalPlatform};
-use nsh_platform_gpui::{AppOptions, AppView};
+#[cfg(target_os = "macos")]
+use nsh_platform_macos::TerminalSurface;
+#[cfg(target_os = "windows")]
+use nsh_platform_windows::terminal::TerminalSurface;
+use nsh_terminal::{CandidateFrame, NativeSurface, PlatformInput, point, px, size};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -34,7 +49,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[test]
 fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     const APP: &str = r#"
         import { mount, signal } from 'nsh';
@@ -43,10 +57,8 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
         import { element, prop, bindProp, append } from 'nsh:rt';
         const value = signal('');
         const second = signal('B');
-        const pastes = signal([]);
         keymap.bind('mod+k', () => value.set(keymap.label('mod+k')), { when: 'always' });
         keymap.bind('mod+j', () => Clipboard.writeText(value()), { when: 'always' });
-        keymap.bind('mod+h', () => Clipboard.writeText('paste-events:' + pastes().join('|')), { when: 'always' });
         mount(() => {
             const root = element('view');
             prop(root, 'style', {flex: 1, padding: 16, backgroundColor: '#111111'});
@@ -54,9 +66,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             prop(input, 'style', {width: 240, height: 48, backgroundColor: '#204060', color: '#ffffff'});
             bindProp(input, 'value', value);
             prop(input, 'onFileDrop', () => {});
-            prop(input, 'onPaste', event => {
-                pastes.set([...pastes(), event.uris.length ? event.uris.join(';') : event.text]);
-            });
+            prop(input, 'onPaste', () => {});
             prop(input, 'onChange', ({ value: text }) => {
                 value.set(text);
                 if (text.endsWith('|ABA')) {
@@ -67,6 +77,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             });
             append(root, input);
             const body = element('view');
+            prop(body, 'selectable', true);
             prop(body, 'onPress', () => {});
             prop(body, 'style', {width: 240, height: 64, backgroundColor: '#406020'});
             append(root, body);
@@ -86,13 +97,21 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     let owner = std::thread::current().id();
     let wakes = Arc::new(AtomicUsize::new(0));
     let wake = wakes.clone();
-    let platform = TerminalPlatform::new(
-        Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
+    let platform = TerminalSurface::new(
+        EngineConfig {
+            ui_sets: vec![nsh_base::registry()],
+            ..EngineConfig::new(App::Js(Bundle::source(APP.into())))
+        },
+        size(
+            nsh_terminal::DevicePixels(320),
+            nsh_terminal::DevicePixels(160),
+        ),
+        1.0,
         Box::new(move |frame| {
             submitted.set(submitted.get() + 1);
             let rendered_frame = std::thread::spawn(move || frame.submit()?.complete())
                 .join()
-                .expect("GPU rendering panicked")
+                .expect("native snapshot transfer panicked")
                 .unwrap();
             received.borrow_mut().push(rendered_frame);
         }),
@@ -103,54 +122,13 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
         }),
     )
     .unwrap();
-    let errors = Rc::new(RefCell::new(None));
-    let failed = errors.clone();
-    let window = Rc::new(RefCell::new(None));
-    let opened = window.clone();
-    let application = Application::with_platform(platform.clone()).run_embedded(move |cx| {
-        *opened.borrow_mut() = Some(
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                        point(px(0.0), px(0.0)),
-                        size(px(320.0), px(160.0)),
-                    ))),
-                    inactive_frame_interval: None,
-                    ..Default::default()
-                },
-                move |window, cx| {
-                    cx.new(|cx| {
-                        let view = AppView::new(
-                            AppOptions {
-                                terminal_keyboard: true,
-                                ..Default::default()
-                            },
-                            window,
-                            cx,
-                        );
-                        view.on_error(move |message| {
-                            *failed.borrow_mut() = Some(message.to_owned())
-                        });
-                        view.load_with_config(EngineConfig {
-                            ui_sets: vec![nsh_base::registry()],
-                            ..EngineConfig::new(App::Js(Bundle::source(APP.into())))
-                        });
-                        window.focus(&view.focus_handle(cx), cx);
-                        view
-                    })
-                },
-            )
-            .unwrap(),
-        );
-    });
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        platform.pump();
-        assert!(
-            errors.borrow().is_none(),
-            "real Input failed to load: {:?}",
-            errors.borrow()
-        );
+        platform.pump_with_draw(true);
+        {
+            let error = platform.take_error();
+            assert!(error.is_none(), "real Input failed to load: {:?}", error);
+        }
         let ready = frames.borrow_mut().drain(..).any(|frame| {
             // The fixture's actual input fill proves that native mount and its
             // initial paint completed; a blank startup frame is insufficient.
@@ -164,59 +142,63 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     assert!(platform.input_caret_bounds().is_none());
     assert!(platform.input_candidate_bounds().is_none());
     let initial_count = Cell::new(count.get());
-    let paste = |text: &str| {
-        application.update(|cx| {
-            window
-                .borrow()
-                .as_ref()
-                .unwrap()
-                .update(cx, |view, window, cx| {
-                    let accepted = view.paste(nsh_core::PasteEvent::new(text));
-                    window.refresh();
-                    cx.notify();
-                    accepted
-                })
-                .unwrap()
-        })
+    let paste = |text: &str| platform.paste(nsh_core::PasteEvent::new(text));
+    let insert = |text: &str| {
+        if let Some(target) = platform.text_input_target() {
+            platform
+                .apply_composition(&target, text, "", None, false)
+                .unwrap();
+        }
     };
     let click_at = |x, y| {
         let position = point(px(x), px(y));
         platform
-            .dispatch_input(PlatformInput::MouseDown(gpui::MouseDownEvent {
-                position,
-                button: gpui::MouseButton::Left,
-                click_count: 1,
-                ..Default::default()
+            .dispatch_input(PlatformInput::MouseDown({
+                let mut value = nsh_terminal::MouseDownEvent::default();
+                value.position = position;
+                value.button = nsh_terminal::MouseButton::Left;
+                value.click_count = 1;
+                value
             }))
             .unwrap();
         platform
-            .dispatch_input(PlatformInput::MouseUp(gpui::MouseUpEvent {
-                position,
-                button: gpui::MouseButton::Left,
-                click_count: 1,
-                ..Default::default()
+            .dispatch_input(PlatformInput::MouseUp({
+                let mut value = nsh_terminal::MouseUpEvent::default();
+                value.position = position;
+                value.button = nsh_terminal::MouseButton::Left;
+                value.click_count = 1;
+                value
             }))
             .unwrap();
     };
     let click = |y| click_at(32.0, y);
     let stroke = |key: &str, text: Option<&str>, control| {
-        let keystroke = gpui::Keystroke {
-            key: key.into(),
-            key_char: text.map(str::to_owned),
-            modifiers: gpui::Modifiers {
-                control,
-                ..Default::default()
-            },
+        let keystroke = {
+            let mut value = nsh_terminal::Keystroke::default();
+            value.key = key.into();
+            value.key_char = text.map(str::to_owned);
+            value.modifiers = {
+                let mut value = nsh_terminal::Modifiers::default();
+                value.control = control;
+                value
+            };
+            value
         };
         platform
-            .dispatch_input(PlatformInput::KeyDown(gpui::KeyDownEvent {
-                keystroke: keystroke.clone(),
-                is_held: false,
-                prefer_character_input: false,
+            .dispatch_input(PlatformInput::KeyDown({
+                let mut value = nsh_terminal::KeyDownEvent::default();
+                value.keystroke = keystroke.clone();
+                value.is_held = false;
+                value.prefer_character_input = false;
+                value
             }))
             .unwrap();
         platform
-            .dispatch_input(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }))
+            .dispatch_input(PlatformInput::KeyUp({
+                let mut value = nsh_terminal::KeyUpEvent::default();
+                value.keystroke = keystroke;
+                value
+            }))
             .unwrap();
     };
     let copy_stage = Cell::new(0);
@@ -235,27 +217,31 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
                 initial_count.get(),
                 "text/focus must not force pixel output"
             );
-            if let Some(text) = platform.take_clipboard_write().and_then(|item| item.text()) {
+            if let Some(text) = platform.take_clipboard_write() {
                 return text;
             }
-            assert!(
-                errors.borrow().is_none(),
-                "native input error: {:?}",
-                errors.borrow()
-            );
+            {
+                let error = platform.take_error();
+                assert!(error.is_none(), "native input error: {:?}", error);
+            }
             assert!(
                 Instant::now() < deadline,
                 "native copy did not complete at stage {stage}"
             );
         }
     };
-    // The terminal owns the GPUI keyboard before any pointer click. A global
+    // The terminal owns the native keyboard before any pointer click. A global
     // Control-based command must already reach the app through that focus.
     stroke("k", None, true);
     click(32.0);
+    let expected_shortcut = if cfg!(target_os = "macos") {
+        "⌃K"
+    } else {
+        "Ctrl+K"
+    };
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if copied() == "Ctrl+K" {
+        if copied() == expected_shortcut {
             break;
         }
         assert!(
@@ -268,7 +254,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     // the physical click can focus it and accept text before another paint.
     click(32.0);
     stroke("a", Some("a"), false);
-    platform.paste("你好😀").unwrap();
+    insert("你好😀");
     assert_eq!(copied(), "a你好😀");
     stroke("home", None, false);
     let start = platform.input_caret_bounds().unwrap();
@@ -291,12 +277,12 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     assert_eq!(wakes.load(Ordering::SeqCst), before_queries);
     assert_eq!(count.get(), initial_count.get());
 
-    // The same registered handler must consult live focus: clicking another
-    // native press target stops paste without a paint to unregister it.
+    // The same registered handler must consult live focus: clicking a selectable
+    // target outside the editor stops paste without a paint to unregister it.
     click(96.0);
     assert!(platform.input_caret_bounds().is_none());
     assert!(platform.input_candidate_bounds().is_none());
-    platform.paste("must not enter the old editor").unwrap();
+    insert("must not enter the old editor");
     assert!(!paste("must not enter the old editor"));
     click(32.0);
     assert_eq!(copied(), "a你好😀");
@@ -307,17 +293,17 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     platform.pump_with_draw(false);
     assert!(platform.input_caret_bounds().is_none());
     assert!(platform.input_candidate_bounds().is_none());
-    platform.paste("must not enter an inactive editor").unwrap();
+    insert("must not enter an inactive editor");
     assert!(!paste("must not enter an inactive editor"));
     platform.set_active(true).unwrap();
     platform.pump_with_draw(false);
     assert_eq!(copied(), "a你好😀");
-    platform.paste("恢复 active").unwrap();
+    insert("恢复 active");
     assert_eq!(copied(), "恢复 active");
-    // Composition enters the same native editor and WGPU painter. The app's
+    // Composition enters the same native editor and platform painter. The app's
     // committed value stays observable while the preedit has visible glyphs.
     stroke("a", None, true);
-    platform.paste("BASE").unwrap();
+    insert("BASE");
     assert_eq!(copied(), "BASE");
     stroke("end", None, false);
     let target = platform.text_input_target().unwrap();
@@ -331,7 +317,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     let painted = || {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            platform.pump();
+            platform.pump_with_draw(true);
             let pixels = frames
                 .borrow_mut()
                 .drain(..)
@@ -378,7 +364,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         platform.pump_with_draw(false);
-        if let Some(text) = platform.take_clipboard_write().and_then(|item| item.text()) {
+        if let Some(text) = platform.take_clipboard_write() {
             assert_eq!(text, "BASE", "preedit must not change the app's value");
             break;
         }
@@ -450,7 +436,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         platform.pump_with_draw(false);
-        if let Some(text) = platform.take_clipboard_write().and_then(|item| item.text()) {
+        if let Some(text) = platform.take_clipboard_write() {
             assert_eq!(text, "ABA-done");
             break;
         }
@@ -474,15 +460,22 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     // another screen does. Preserve logical layout and rasterize at full size.
     platform
         .set_viewport(
-            size(gpui::DevicePixels(700), gpui::DevicePixels(350)),
+            size(
+                nsh_terminal::DevicePixels(700),
+                nsh_terminal::DevicePixels(350),
+            ),
             2.1875,
         )
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        platform.pump();
+        platform.pump_with_draw(true);
         let ready = frames.borrow_mut().drain(..).any(|frame| {
-            frame.size() == size(gpui::DevicePixels(700), gpui::DevicePixels(350))
+            frame.size()
+                == size(
+                    nsh_terminal::DevicePixels(700),
+                    nsh_terminal::DevicePixels(350),
+                )
                 && frame.pixels()[(120 * 700 + 525) * 4..][..4] == [32, 64, 96, 255]
         });
         if ready {
@@ -493,36 +486,30 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             "scaled native input did not paint at device resolution"
         );
     }
-    application.update(|cx| {
-        window
-            .borrow()
-            .as_ref()
-            .unwrap()
-            .update(cx, |_, window, _| {
-                assert_eq!(window.viewport_size(), size(px(320.0), px(160.0)));
-                assert_eq!(window.scale_factor(), 2.1875);
-            })
-            .unwrap();
-    });
+    assert_eq!(
+        platform.viewport_size(),
+        size(
+            nsh_terminal::DevicePixels(700),
+            nsh_terminal::DevicePixels(350)
+        )
+    );
+    let physical = platform.viewport_size();
+    let logical = size(
+        px(physical.width.0 as f32 / platform.scale_factor()),
+        px(physical.height.0 as f32 / platform.scale_factor()),
+    );
+    assert_eq!(logical, size(px(320.0), px(160.0)));
+    assert_eq!(platform.scale_factor(), 2.1875);
     let scaled_count = count.get();
     initial_count.set(scaled_count);
     click(32.0);
     stroke("a", None, true);
-    platform.paste("scaled 你好😀").unwrap();
+    insert("scaled 你好😀");
     assert_eq!(copied(), "scaled 你好😀");
     assert_eq!(
         count.get(),
         scaled_count,
         "scaled input must not wait for another image"
     );
-    application.update(|cx| {
-        window
-            .borrow()
-            .as_ref()
-            .unwrap()
-            .update(cx, |view, _, _| view.stop())
-            .unwrap();
-    });
-    drop(application);
     platform.shutdown();
 }

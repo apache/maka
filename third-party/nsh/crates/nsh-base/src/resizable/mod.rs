@@ -114,7 +114,7 @@ pub use panel::{
 };
 /// The line a handle's band is centered on, 1 point: the indicator's
 /// default thickness, for the dock's edge handles too.
-pub(crate) use resize_handle::HANDLE_SIZE;
+pub(crate) use resize_handle::{HANDLE_SIZE, PointerOnly};
 pub use resize_handle::{
     HandleEdge, ResizeHandle, ResizeHandleContext, ResizeHandleElement, ResizeHandleEvent,
     ResizeHandleProps, ResizeHandleState, resize_handle,

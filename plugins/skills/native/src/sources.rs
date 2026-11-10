@@ -153,13 +153,32 @@ impl Library {
         workspace: Option<Workspace>,
         scope: &Scope,
     ) -> Result<Self, String> {
+        let directory = workspace.as_ref().map(|workspace| CandidateDirectory {
+            path: workspace.path.clone(),
+            directory_identity: workspace.directory_identity.clone(),
+        });
+        self.for_observation(directory, workspace, scope).await
+    }
+    pub(super) async fn for_directory(
+        &self,
+        directory: Option<CandidateDirectory>,
+        scope: &Scope,
+    ) -> Result<Self, String> {
+        self.for_observation(directory, None, scope).await
+    }
+    async fn for_observation(
+        &self,
+        directory: Option<CandidateDirectory>,
+        workspace: Option<Workspace>,
+        scope: &Scope,
+    ) -> Result<Self, String> {
         if scope.cancellation.is_cancelled() {
             return Err("skills_cancelled".into());
         }
         let mut library = self.clone();
         library.workspace = workspace.clone();
         library.sources.retain(|source| !source.project());
-        let Some(workspace) = workspace.filter(|_| !self.projects.is_empty()) else {
+        let Some(directory) = directory.filter(|_| !self.projects.is_empty()) else {
             return Ok(library);
         };
         let mut ticket = scope
@@ -173,10 +192,10 @@ impl Library {
                 if cancellation.is_cancelled() {
                     return Err("skills_cancelled".into());
                 }
-                let (path, observed) = directory::capture(Path::new(&workspace.path))
+                let (path, observed) = directory::capture(Path::new(&directory.path))
                     .map_err(|_| "skills_workspace_unavailable")?;
-                if workspace::project::host_path(&path).ok() != Some(workspace.path.as_str())
-                    || observed != workspace.directory_identity
+                if workspace::project::host_path(&path).ok() != Some(directory.path.as_str())
+                    || observed != directory.directory_identity
                     || path.starts_with(&library.private)
                 {
                     return Err("skills_workspace_unavailable".into());
@@ -186,16 +205,17 @@ impl Library {
                     .iter()
                     .find(|root| root.validate(&path).is_ok())
                     .ok_or("skills_workspace_unavailable")?;
-                let handle = directory::open(&path, &workspace.directory_identity)
+                let handle = directory::open(&path, &directory.directory_identity)
                     .map_err(|_| "skills_workspace_unavailable")?;
-                if workspace::read_directory_identity(
-                    path.clone(),
-                    handle
-                        .try_clone()
-                        .map_err(|_| "skills_workspace_unavailable")?,
-                )
-                .map_err(|_| "skills_workspace_unavailable")?
-                    != workspace.identity
+                if let Some(workspace) = &workspace
+                    && workspace::read_directory_identity(
+                        path.clone(),
+                        handle
+                            .try_clone()
+                            .map_err(|_| "skills_workspace_unavailable")?,
+                    )
+                    .map_err(|_| "skills_workspace_unavailable")?
+                        != workspace.identity
                 {
                     return Err("skills_workspace_unavailable".into());
                 }
@@ -210,7 +230,7 @@ impl Library {
                 .restrict(library.policy.clone())
                 .map_err(|_| "skills_workspace_unavailable")?;
                 let identity = maka_agent_facts::artifact::content_digest(
-                    &serde_json::to_vec(&workspace).map_err(|_| "skills_workspace_unavailable")?,
+                    &serde_json::to_vec(&directory).map_err(|_| "skills_workspace_unavailable")?,
                 );
                 let mut sources = standard(root, handle, &path, Some(&identity[7..]));
                 sources.append(&mut library.sources);
@@ -225,5 +245,184 @@ impl Library {
         })
         .await
         .map_err(|_| "skills_workspace_unavailable")?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_capabilities::call::{Identity, Issuer};
+    use maka_event_log::{
+        RootStore,
+        root::{RootNamespaces, RootOwner},
+    };
+    use serde_json::json;
+    use tokio_util::sync::CancellationToken;
+
+    fn scope() -> Scope {
+        Issuer::default()
+            .issue(Identity::Native, CancellationToken::new())
+            .unwrap()
+    }
+    fn write(root: &Path, name: &str, description: &str) {
+        let path = root.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(
+            path.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\nInstructions"),
+        )
+        .unwrap();
+    }
+    async fn preferences(base: &Path) -> (preferences::Store, Arc<RootStore>) {
+        let root = Arc::new(
+            RootOwner::create(
+                &base.join("private"),
+                &RootNamespaces {
+                    ownership: base.join("owners"),
+                    control: base.join("control"),
+                },
+            )
+            .unwrap(),
+        );
+        let log = Arc::new(
+            RootStore::open(root, maka_event_log::ROOT_MIGRATIONS)
+                .await
+                .unwrap(),
+        );
+        (
+            preferences::Store::new(log.clone(), "candidate-test/".into()),
+            log,
+        )
+    }
+    pub(crate) async fn workspace(path: &Path) -> Workspace {
+        std::fs::create_dir_all(path).unwrap();
+        let (path, directory_identity) = directory::capture(path).unwrap();
+        let handle = directory::open(&path, &directory_identity).unwrap();
+        let private = tempfile::tempdir().unwrap();
+        let control = tempfile::tempdir().unwrap();
+        let identity = workspace::ensure_directory_identity(
+            path.clone(),
+            handle,
+            private.path().to_owned(),
+            control.path().to_owned(),
+            None,
+        )
+        .await
+        .unwrap();
+        Workspace {
+            worktree: None,
+            project_id: None,
+            path: workspace::project::host_path(&path).unwrap().into(),
+            directory_identity,
+            identity,
+        }
+    }
+
+    async fn library(base: &Path) -> (Library, Arc<RootStore>) {
+        std::fs::create_dir_all(base.join("home")).unwrap();
+        std::fs::create_dir_all(base.join("projects")).unwrap();
+        let (preferences, log) = preferences(base).await;
+        let library = Library::open(
+            Configuration {
+                home: Some(base.join("home").to_str().unwrap().into()),
+                project_roots: vec![maka_host_runtime::DirectoryRootSpec {
+                    label: "Projects".into(),
+                    path: base.join("projects"),
+                }],
+                bundled: false,
+                manage: false,
+                preferences: true,
+                sources: vec![],
+            },
+            base.canonicalize().unwrap().join("private"),
+            preferences,
+        )
+        .unwrap();
+        (library, log)
+    }
+    #[tokio::test]
+    async fn draft_candidates_keep_bound_source_identity_without_initializing_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let (library, log) = library(dir.path()).await;
+        let call = scope();
+        write(
+            &dir.path().join("home/.maka/skills"),
+            "user-guide",
+            "User guidance",
+        );
+        let project = dir.path().join("projects/new");
+        write(
+            &project.join(".agents/skills"),
+            "project-guide",
+            "Project guidance",
+        );
+        std::fs::write(
+            project.join(".agents/skills/project-guide/SKILL.md"),
+            "---\nname: project-guide\ndescription: Project guidance\nrequired-tools: FindGuide\n---\nProject instructions",
+        )
+        .unwrap();
+        let global = library
+            .candidates(json!({"directory":null,"tools":[],"query":""}), &call)
+            .await
+            .unwrap();
+        assert_eq!(global["totalEligible"], 1);
+        assert_eq!(global["matches"][0]["id"], "user-guide");
+        let (path, identity) = directory::capture(&project).unwrap();
+        let observation = CandidateDirectory {
+            path: workspace::project::host_path(&path).unwrap().into(),
+            directory_identity: identity,
+        };
+        let input = json!({"directory":observation,"tools":["FindGuide"],"query":""});
+        let local = library.candidates(input.clone(), &call).await.unwrap();
+        assert_eq!(local["totalEligible"], 2);
+        let selected = local["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "project-guide")
+            .unwrap();
+        assert!(selected["ref"].as_str().unwrap().starts_with("project:"));
+        let narrowed = library
+            .candidates(
+                json!({"directory":observation,"tools":[],"query":""}),
+                &call,
+            )
+            .await
+            .unwrap();
+        assert_eq!(narrowed["totalEligible"], 1);
+        assert_eq!(narrowed["matches"][0]["id"], "user-guide");
+        assert!(!project.join(workspace::MARKER_FILE).exists());
+        let reference = selected["ref"].as_str().unwrap().to_owned();
+        let bound = workspace(&project).await;
+        let bound_search = library
+            .model(
+                "search",
+                json!({
+                    "workspace":bound,"tools":["FindGuide"],"input":{"query":""}
+                }),
+                &call,
+            )
+            .await
+            .unwrap();
+        let bound_project = bound_search["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "project-guide")
+            .unwrap();
+        assert_eq!(bound_project["ref"], reference);
+        let marker = std::fs::read(project.join(workspace::MARKER_FILE)).unwrap();
+        write(
+            &project.join(".agents/skills"),
+            "aaa-guide",
+            "Another project guide",
+        );
+        let ordinary = library.candidates(input.clone(), &call).await.unwrap();
+        assert_eq!(ordinary["matches"][0]["id"], "aaa-guide");
+        assert_eq!(
+            std::fs::read(project.join(workspace::MARKER_FILE)).unwrap(),
+            marker
+        );
+        log.drain().await;
     }
 }

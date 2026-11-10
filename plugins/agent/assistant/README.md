@@ -21,8 +21,6 @@
 
 [简体中文](README.zh-CN.md)
 
-Implements assistant policy for instructions, prompts, plans, recall and todos. Each module owns its domain data and exposes operations through Agent ports. UI packages render that data separately. Changes to a plan or todo are business state changes; they do not by themselves authorize execution or prove task completion.
-
-Plan retains one repository for proposals, approved artifacts, progress, decisions and history. Its approval payload is generic: the native Agent stores its frozen execution authority there and uses the existing outbox to admit work through its own queue. A user decision and its original business receipt share the same compare-and-swap transaction. Model progress alone cannot settle an execution.
+Implements assistant policy for instructions, prompts, recall and todos. Each module owns its domain data and exposes operations through Agent ports. UI packages render that data separately. Changes to a todo are business state changes; they do not by themselves authorize execution or prove task completion.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Bar, Grid, Plot, PlotAxis, Rule } from "nsh/base/plot";
-import { desktop, Log, Panel, Segmented, size, Split, tint, ui } from "./palette";
+import { desktop, Log, Panel, Segmented, size, Split, ui, sectionSurface, plotAxisText, plotBaseline, plotCrossLine, plotGrid, seriesColor } from "./palette";
 
 // Bars that span a range of their own row: `Bar`'s `base` takes a field
 // name or a function of the row as well as a number, so each bar runs
@@ -95,7 +95,7 @@ function App() {
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, padding: desktop ? 16 : 14, gap: 12 }}>
+        <View style={{ ...sectionSurface({ padded: true }), gap: 12 }}>
           <If
             when={chart() === "candles"}
             else={
@@ -113,21 +113,20 @@ function App() {
                   data={STEPS}
                   xScale={{ type: "band", paddingInner: 0.32, paddingOuter: 0.16 }}
                   yScale={{ type: "linear", domain: [0, 160] }}
-                  colorScale={{ type: "ordinal", domain: ["total", "up", "down"], range: [ui().info, ui().up, ui().down] }}
+                  colorScale={{ type: "ordinal", domain: ["total", "up", "down"], range: [seriesColor(1), ui().up, ui().down] }}
                   accessibilityLabel={`Profit bridge: $142.7M revenue to $${STEPS[STEPS.length - 1].end.toFixed(1)}M net profit`}
                   accessibilityValue={{ text: hovered() == null ? undefined : `${step().name}: ${step().end.toFixed(1)}` }}
                   appearGeneration="bridge"
                   motion={{ appear: { duration: 800, easing: "easeOut" }, enter: { duration: 120 }, exit: { duration: 180 }, pointer: { stiffness: 320, damping: 32 } }}
-                  crossLineClass="w-full h-full"
-                  crossLineStyle={{ backgroundColor: tint(ui().text, 0.05) }}
+                  {...plotCrossLine({ band: true })}
                   onHoverChange={({ index }) => {
                     hovered.set(index);
                     log(index == null ? "null: left the chart" : `${index}: ${STEPS[index].name}, ${STEPS[index].start} → ${STEPS[index].end}`);
                   }}
                   style={{ height, marginRight: 36, marginBottom: AXIS_BELOW }}
                 >
-                  <Grid y={[40, 80, 120]} style={{ stroke: tint(ui().text, 0.08) }} />
-                  <Grid y={[0]} style={{ stroke: tint(ui().text, 0.2) }} />
+                  <Grid y={[40, 80, 120]} style={plotGrid()} />
+                  <Grid y={[0]} style={plotBaseline()} />
                   {/* From each row's start to its end, colored by its kind. */}
                   <Bar
                     value="end"
@@ -139,8 +138,8 @@ function App() {
                     label={(d: Step) => (d.kind === "total" ? d.end.toFixed(1) : signed(d.end - d.start))}
                     labelStyle={labelStyle()}
                   />
-                  <PlotAxis placement="right" tickValues={[0, 40, 80, 120]} labelStyle={{ width: 36, paddingLeft: 8, textAlign: "right", fontSize: 11, color: ui().muted, ...num }} />
-                  <PlotAxis format={(i) => STEPS[i].name} labelStyle={{ fontSize: 11, lineHeight: 14, paddingTop: 12, color: ui().muted }} />
+                  <PlotAxis placement="right" tickValues={[0, 40, 80, 120]} labelStyle={{ ...plotAxisText(), width: 36, paddingLeft: 8, textAlign: "right" }} />
+                  <PlotAxis format={(i) => STEPS[i].name} labelStyle={{ ...plotAxisText(), lineHeight: 14, paddingTop: 12 }} />
                 </Plot>
               </>
             }
@@ -163,8 +162,7 @@ function App() {
               accessibilityValue={{ text: hovered() == null ? undefined : `Day ${candle().day + 1}: open ${candle().open}, high ${candle().high}, low ${candle().low}, close ${candle().close}` }}
               appearGeneration="candles"
               motion={{ appear: { duration: 800, easing: "easeOut" }, enter: { duration: 120 }, exit: { duration: 180 }, pointer: { stiffness: 320, damping: 32 } }}
-              crossLineClass="w-full h-full"
-              crossLineStyle={{ backgroundColor: tint(ui().text, 0.06) }}
+              {...plotCrossLine({ band: true })}
               onHoverChange={({ index }) => {
                 hovered.set(index);
                 const c = index == null ? undefined : CANDLES[index];
@@ -172,7 +170,7 @@ function App() {
               }}
               style={{ height, marginRight: 36, marginBottom: AXIS_BELOW }}
             >
-              <Grid y={[LOW + (HIGH - LOW) / 3, LOW + ((HIGH - LOW) * 2) / 3]} style={{ stroke: tint(ui().text, 0.08) }} />
+              <Grid y={[LOW + (HIGH - LOW) / 3, LOW + ((HIGH - LOW) * 2) / 3]} style={plotGrid()} />
               {/* The wick, low to high, under the body, open to close. */}
               <Rule value="high" base="low" color="dir" stagger={0.5} inactiveOpacity={0.3} style={{ strokeWidth: 1 }} />
               <Bar value="close" base="open" color="dir" cornerRadii={1} stagger={0.5} inactiveOpacity={0.3} />
@@ -180,9 +178,9 @@ function App() {
                 placement="right"
                 tickValues={[LOW + (HIGH - LOW) / 3, LOW + ((HIGH - LOW) * 2) / 3]}
                 format={(v) => v.toFixed(0)}
-                labelStyle={{ paddingLeft: 8, fontSize: 11, color: ui().muted, ...num }}
+                labelStyle={{ ...plotAxisText(), paddingLeft: 8 }}
               />
-              <PlotAxis tickValues={[0, 11, 23]} format={(i) => `Day ${i + 1}`} labelStyle={{ fontSize: 11, lineHeight: 14, paddingTop: 12, color: ui().muted }} />
+              <PlotAxis tickValues={[0, 11, 23]} format={(i) => `Day ${i + 1}`} labelStyle={{ ...plotAxisText(), lineHeight: 14, paddingTop: 12 }} />
             </Plot>
           </If>
         </View>

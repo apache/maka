@@ -40,6 +40,7 @@ import { backendName } from '../../../../products/maka/workbench/app/modelSelect
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
 import type {
+  AgentCompletionTarget,
   AgentInteractionResult,
   AgentWorkspaceAccess,
   ModelSelection,
@@ -57,6 +58,7 @@ import {
   type ConversationPreviewInput,
   type ConversationSessionHandle,
   type ComposerSession,
+  type ComposerCompletionSource,
   type ComposerFocusHandle,
   type ComposerViewInput,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
@@ -133,6 +135,7 @@ import {
 import {
   applicationMenu,
   ownTitleBar,
+  PANEL_INSET,
   windowTitle,
 } from '../../../../products/maka/workbench/app/chrome';
 import {
@@ -276,7 +279,7 @@ export function createConversationUi(
   };
   cleanup(() => replacePending(null));
   const recentWorkspaces = signal<RecentWorkspace[]>([]);
-  const recentKnown = signal(platform.isTerminal || !!side);
+  const recentKnown = signal(platform.idiom === 'terminal' || !!side);
   const workspaceReady = signal(false);
   const workspaceError = createText();
   const recentOpen = signal(false);
@@ -293,7 +296,7 @@ export function createConversationUi(
     return write;
   };
   const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
-    if (platform.isTerminal || side || !path || workspace.kind === 'session') return;
+    if (platform.idiom === 'terminal' || side || !path || workspace.kind === 'session') return;
     void setRecentWorkspace(path, true).catch(report);
   };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
@@ -446,7 +449,7 @@ export function createConversationUi(
   };
   effect(() => {
     const workspace = pendingWorkspace();
-    if (!platform.isTerminal && !side && workspace)
+    if (platform.idiom !== 'terminal' && !side && workspace)
       untracked(() => {
         void checkWorkspace();
       });
@@ -754,7 +757,7 @@ export function createConversationUi(
     remember = true,
   ) => {
     if (!alive || selected() !== expectedSessionId) return;
-    if (!platform.isTerminal) {
+    if (platform.idiom !== 'terminal') {
       if (pendingSending() || pendingFileBusy() || pendingCreateUncertain()) return;
       let recentWorkspace = workspace;
       let label =
@@ -963,8 +966,11 @@ export function createConversationUi(
     const confirmation = () => `${generation}/${pending()?.revision ?? 0}`;
     return {
       id: `pending/${generation}`,
+      completion: projectComposerCompletion(host, { kind: 'draft', workspace }),
       draft: pendingText,
       workspace: pendingWorkspaceLabel,
+      backend: pendingBackend,
+      modelDetails: pendingModelDetails,
       permissions: {
         id: `pending/${generation}`,
         access: pendingAccess,
@@ -1878,6 +1884,7 @@ export function createConversationUi(
       browserRoot = node;
     },
     close: closeSidebar,
+    collapse: (sessionId) => toggleSidebar({ sessionId, expanded: true }),
     selectSession: selectBrowsed,
     changeSession: async (action, origin) => {
       await changeBrowsedSession(action, origin);
@@ -2375,10 +2382,12 @@ export function createConversationUi(
                       style={{
                         minHeight: bodyTextStyle.lineHeight + 16,
                         flexShrink: 1,
-                        backgroundColor: C.surface,
+                        backgroundColor: C.card,
                         // A card of its own on the desktop: square corners
                         // flush on the composer's rounded top read as notches.
-                        ...(platform.isTerminal ? {} : { borderRadius: 8, marginBottom: 8 }),
+                        ...(platform.idiom === 'terminal'
+                          ? {}
+                          : { borderRadius: 8, marginBottom: 8 }),
                       }}
                       contentStyle={{
                         paddingHorizontal: 16,
@@ -2427,7 +2436,7 @@ export function createConversationUi(
                               origin: selected(),
                             })}
                             style={controlStyle}
-                            hoverStyle={controlHoverStyle()}
+                            hoverStyle={{ backgroundColor: C.cardRaised }}
                             focusStyle={controlFocusStyle()}
                           >
                             <Text style={{ ...bodyTextStyle, color: C.accent }}>
@@ -2513,7 +2522,7 @@ export function createConversationUi(
                 sessionId: selected(),
               })}
               workspacePicker={
-                platform.isTerminal || side ? undefined : (
+                platform.idiom === 'terminal' || side ? undefined : (
                   <RecentWorkspaces
                     path={() =>
                       selected() === null ? pendingWorkspaceLabel() : (handle()?.workspace() ?? '')
@@ -2599,7 +2608,14 @@ export function createConversationUi(
                         backgroundColor: C.scrim,
                       }}
                     >
-                      <View style={{ backgroundColor: C.background }}>
+                      <View
+                        style={
+                          platform.idiom === 'terminal'
+                            ? { backgroundColor: C.background }
+                            : // The panel's inset keeps the header on the window controls' center line.
+                              { backgroundColor: C.chrome, paddingTop: PANEL_INSET }
+                        }
+                      >
                         <Header
                           title={current.sessionId === null ? '' : tr('Sessions')}
                           commands={inputAction(invokeCommand, {
@@ -2615,7 +2631,7 @@ export function createConversationUi(
                           maxWidth: 640,
                           flex: 1,
                           minHeight: 0,
-                          backgroundColor: C.surface,
+                          backgroundColor: C.chrome,
                         }}
                       >
                         <WorkspaceBrowser
@@ -2756,6 +2772,26 @@ export function createConversationUi(
   };
 }
 
+function projectComposerCompletion(
+  host: Host,
+  target: AgentCompletionTarget,
+): ComposerCompletionSource {
+  return {
+    files:
+      target.kind === 'draft' && target.workspace === null
+        ? null
+        : (query, directory) =>
+            host.subscribe('agent', 'fileCandidates', {
+              target,
+              query,
+              ...(directory ? { directory } : {}),
+            }),
+    skills: ({ query, backend }) =>
+      host.query('agent', 'skillCandidates', { target, backend, query }),
+    pathLabel: host.pathLabel,
+  };
+}
+
 function projectComposerSession(
   owner: ConversationHandle,
   host: Host,
@@ -2768,26 +2804,13 @@ function projectComposerSession(
     checkSend: owner.checkSend,
     dismissSend: owner.dismissSend,
     computerAccess: owner.computerAccess,
-    completion: {
-      files: (query, directory) =>
-        host.subscribe('agent', 'fileCandidates', {
-          sessionId: owner.sessionId,
-          query,
-          ...(directory ? { directory } : {}),
-        }),
-      skills: ({ query, backend }) =>
-        host.query('agent', 'skillCandidates', {
-          sessionId: owner.sessionId,
-          backend,
-          query,
-        }),
-      pathLabel: host.pathLabel,
-    },
+    completion: projectComposerCompletion(host, { kind: 'session', sessionId: owner.sessionId }),
     checklist: {
-      read: (offset) =>
+      read: (offset, limit) =>
         host.query('agent', 'checklist', {
           sessionId: owner.sessionId,
           offset,
+          ...(limit === undefined ? {} : { limit }),
         }),
       watch: (offset) =>
         host.subscribe('agent', 'watchChecklist', {

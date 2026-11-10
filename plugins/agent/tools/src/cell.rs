@@ -38,7 +38,9 @@ use maka_agent_facts::tool_call::ToolRejection;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::ToolDefinition;
+use crate::{CodeExecutor, ToolCatalog, ToolDefinition};
+use maka_code_runtime::{CellDiagnosticKind, CellResult};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 const EXEC_GRAMMAR: &str = r#"start: pragma_source | plain_source
 pragma_source: PRAGMA_LINE NEWLINE SOURCE
@@ -47,6 +49,120 @@ PRAGMA_LINE: /[ \t]*\/\/ @exec:[^\r\n]*/
 NEWLINE: /\r?\n/
 SOURCE: /[\s\S]+/
 "#;
+
+/// The request's direct tools by the `tools` member a cell would call them
+/// through. `tools` holds only the nested catalog, so such a call fails as a
+/// missing member; the settled failure then names the calling mode.
+struct DirectAliases {
+    language: CodeLanguage,
+    names: BTreeMap<String, String>,
+}
+
+impl DirectAliases {
+    fn new(cells: &CodeExecutor, catalog: &ToolCatalog, direct: &[String]) -> Self {
+        let callable: HashSet<_> = catalog
+            .names()
+            .iter()
+            .map(|name| cells.tool_identifier(name))
+            .collect();
+        let direct: BTreeSet<_> = direct
+            .iter()
+            .map(String::as_str)
+            .chain(["exec", "wait"])
+            .collect();
+        let mut names = BTreeMap::new();
+        for name in direct {
+            let alias = cells.tool_identifier(name);
+            if !callable.contains(&alias) {
+                // Two direct tools behind one member cannot say which was meant.
+                names
+                    .entry(alias)
+                    .and_modify(|name| *name = None)
+                    .or_insert(Some(name));
+            }
+        }
+        Self {
+            language: cells.language(),
+            names: names
+                .into_iter()
+                .filter_map(|(alias, name)| Some((alias, name?.to_owned())))
+                .collect(),
+        }
+    }
+
+    fn explain(&self, result: &mut CellResult) {
+        let CellResult::Failure { error, .. } = result else {
+            return;
+        };
+        if error.kind != CellDiagnosticKind::ExecutionError {
+            return;
+        }
+        // V8 reports the member alone; Monty ends its traceback with it.
+        let member = match self.language {
+            CodeLanguage::JavaScript => error
+                .message
+                .strip_prefix("TypeError: tools.")
+                .and_then(|rest| rest.strip_suffix(" is not a function")),
+            CodeLanguage::Python => error
+                .message
+                .lines()
+                .last()
+                .and_then(|line| {
+                    line.strip_prefix("AttributeError: module 'tools' has no attribute '")
+                })
+                .and_then(|rest| rest.strip_suffix('\'')),
+        };
+        if let Some(name) = member.and_then(|member| self.names.get(member)) {
+            error.message = format!(
+                "{}\n{name} is a direct tool: call it outside exec, not through tools",
+                error.message
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_code_runtime::{CellDiagnostic, CellLimits};
+
+    // The Python worker is not built with this crate's tests; the traceback is
+    // the worker's actual report for `await tools.SessionCreate({})`.
+    #[test]
+    fn a_python_cell_names_the_direct_tool_it_called_through_tools() {
+        let cells = CodeExecutor::new(CellLimits::default())
+            .unwrap()
+            .with_language(CodeLanguage::Python);
+        let direct = DirectAliases::new(
+            &cells,
+            &ToolCatalog::new([]).unwrap(),
+            &["SessionCreate".into()],
+        );
+        let explained = |name: &str| {
+            let message = format!(
+                "Traceback (most recent call last):\n  File \"code_mode.py\", line 1, in <module>\n    await tools.{name}({{}})\nAttributeError: module 'tools' has no attribute '{name}'"
+            );
+            let mut result = CellResult::Failure {
+                error: CellDiagnostic::new(CellDiagnosticKind::ExecutionError, message.clone()),
+                tool_calls: Vec::new(),
+            };
+            direct.explain(&mut result);
+            let CellResult::Failure { error, .. } = result else {
+                unreachable!()
+            };
+            (message, error.message)
+        };
+        let (message, direct) = explained("SessionCreate");
+        assert_eq!(
+            direct,
+            format!(
+                "{message}\nSessionCreate is a direct tool: call it outside exec, not through tools"
+            )
+        );
+        let (message, unknown) = explained("UnknownTool");
+        assert_eq!(unknown, message);
+    }
+}
 
 fn default_wait_yield() -> u64 {
     10_000

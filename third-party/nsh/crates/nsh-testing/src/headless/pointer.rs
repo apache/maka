@@ -7,8 +7,6 @@
 //! responder holds it, and the press under the finger is cancelled once
 //! the finger moves away.
 
-use std::sync::Arc;
-
 use nsh_core::{
     EventKind, EventPayload, NodeId, Point, Points, ROOT_ID, TouchEvent, TouchPhase, TouchPoint,
     geometry::point,
@@ -19,7 +17,7 @@ use nsh_core::{
 };
 
 use super::Headless;
-use crate::{screen::Contact, selector::Selector};
+use crate::selector::Selector;
 
 /// How far a finger moves in one display frame, as a scroll's does.
 const DRAG_STEP: Points = Points(10.0);
@@ -48,10 +46,11 @@ pub(super) struct Finger {
     /// Milliseconds since the drag began.
     time: f64,
     velocity: VelocityTracker,
-    contact: Arc<Contact>,
+    target: NodeId,
     /// Where the target's bounds start in the root, for touches' locations.
     origin: Point<Points>,
     path: Vec<NodeId>,
+    reporting: bool,
     candidates: Vec<(NodeId, Candidate)>,
     gate: Option<Gate>,
     press: Option<input::Press<NodeId>>,
@@ -128,26 +127,14 @@ impl Headless {
             .screen
             .press_in_chain(&chain)
             .map(|(node, events, delay)| input::Press::new(node, node, events, delay, 0));
-        let mut owners = candidates.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-        owners.extend(press.as_ref().map(|press| press.node));
-        owners.extend(path.iter().copied());
-        if gate.is_some() {
-            owners.extend(chain.iter().copied().find(|id| {
-                self.screen
-                    .link(*id)
-                    .is_some_and(|link| link.pan_activation.is_some())
-            }));
-        }
-        let contact = self
-            .screen
-            .begin_contact(1, target, owners, !path.is_empty());
         let mut finger = Finger {
             start,
             at: start,
             time: 0.0,
             velocity: VelocityTracker::default(),
-            contact,
+            target,
             origin: bounds.origin,
+            reporting: !path.is_empty(),
             path,
             candidates,
             gate,
@@ -156,7 +143,7 @@ impl Headless {
             moved: false,
         };
         finger.velocity.add(0.0, start);
-        if finger.contact.reporting() {
+        if finger.reporting {
             self.touch(TouchPhase::Start, &finger, None);
         }
         // Inside a scroll view a touch presses only once it rests: a drag
@@ -171,10 +158,6 @@ impl Headless {
         let frame = super::animation::FRAME.as_secs_f64() * 1000.0;
         while finger.time + frame <= LANDING {
             self.display_frame();
-            if self.retired_finger(&mut finger) {
-                self.screen.end_contact(&finger.contact);
-                return self.done();
-            }
             finger.time += frame;
             if press_due.is_some_and(|due| finger.time >= due) {
                 press_due = None;
@@ -184,10 +167,6 @@ impl Headless {
         let steps = (by.x.abs().max(by.y.abs()) / DRAG_STEP).ceil().max(1.0) as u32;
         for step in 1..=steps {
             self.display_frame();
-            if self.retired_finger(&mut finger) {
-                self.screen.end_contact(&finger.contact);
-                return self.done();
-            }
             finger.time += frame;
             if press_due.is_some_and(|due| finger.time >= due) {
                 press_due = None;
@@ -206,22 +185,6 @@ impl Headless {
         self.done()
     }
 
-    /// A detached original target revokes its contact. A native scroll or
-    /// pan already captured by a surviving ancestor may finish normally.
-    fn retired_finger(&mut self, finger: &mut Finger) -> bool {
-        if finger.contact.active() {
-            return false;
-        }
-        // Its old owner is gone: even an Up would reach replacement content.
-        finger.press = None;
-        finger.candidates.clear();
-        finger.gate = None;
-        match finger.mode {
-            Mode::Pan(view) | Mode::Scroll(view, ..) => finger.contact.native_owner() != Some(view),
-            Mode::Idle | Mode::Free => true,
-        }
-    }
-
     /// The finger moved to `at`, as a platform's pointer move goes.
     fn finger_moved(&mut self, finger: &mut Finger, at: Point<Points>) {
         finger.at = at;
@@ -234,13 +197,13 @@ impl Headless {
         if activated.is_some() && finger.mode == Mode::Idle {
             finger.mode = Mode::Free;
         }
-        if finger.contact.reporting() {
+        if finger.reporting {
             self.touch(TouchPhase::Move, finger, activated);
         }
         let distance = Points(tx.0.hypot(ty.0));
         // JS hears of the first move only now: its responder gets a chance
         // to take the gesture before a native drag starts.
-        let js_pending = finger.contact.reporting() && first;
+        let js_pending = finger.reporting && first;
         if finger.mode == Mode::Idle && distance > PAN_SLOP && !js_pending {
             if finger.gate.is_none() {
                 finger.mode = Mode::Free;
@@ -254,19 +217,17 @@ impl Headless {
                 Some((view, Candidate::Pan { .. })) => {
                     finger.gate = None;
                     self.pan_start(view, finger);
-                    finger.contact.capture_native(view);
                     finger.mode = Mode::Pan(view);
                 }
                 Some((view, Candidate::Scroll { .. })) => {
                     // The scroll view takes the touches over from JS.
-                    if finger.contact.reporting() {
+                    if finger.reporting {
                         self.touch(TouchPhase::Cancel, finger, None);
-                        finger.contact.stop_reporting();
+                        finger.reporting = false;
                     }
                     finger.gate = None;
                     let from = self.scroll_offset(view);
                     self.send(view, EventKind::ScrollDragStart, self.scroll_payload(view));
-                    finger.contact.capture_native(view);
                     finger.mode = Mode::Scroll(view, from, at);
                 }
                 None => {}
@@ -298,7 +259,6 @@ impl Headless {
             }
             if block && let Mode::Pan(view) = finger.mode {
                 self.pan_end(view, finger);
-                finger.contact.capture_native(0);
                 finger.mode = Mode::Free;
             }
         }
@@ -306,11 +266,7 @@ impl Headless {
 
     /// The finger lifted: ends what it did.
     fn finger_lifted(&mut self, mut finger: Finger) {
-        if self.retired_finger(&mut finger) {
-            self.screen.end_contact(&finger.contact);
-            return;
-        }
-        if finger.contact.reporting() {
+        if finger.reporting {
             self.touch(TouchPhase::End, &finger, None);
         }
         match finger.mode {
@@ -339,7 +295,6 @@ impl Headless {
                 }
             }
         }
-        self.screen.end_contact(&finger.contact);
     }
 
     /// The press under the finger goes in (`onPressDown`).
@@ -377,8 +332,8 @@ impl Headless {
             phase,
             timestamp: finger.time,
             points: vec![TouchPoint {
-                id: finger.contact.id,
-                target: finger.contact.target,
+                id: 1,
+                target: finger.target,
                 // JS keeps a finger's path from its start.
                 path: if phase == TouchPhase::Start {
                     finger.path.clone()

@@ -24,6 +24,7 @@ import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import { Clipboard } from 'nsh';
 import { useHost } from './host';
 import { messageBytes, sameHistoryRow, type Row } from './history';
+import type { MessageMenu } from './messageMenu';
 import { C, IconButton } from './ui';
 
 export type OriginalMessage = {
@@ -93,6 +94,7 @@ export function MessageCopy(props: {
   ownerKey(): string;
   sessionId: string;
   through(): number;
+  menu?: MessageMenu;
 }) {
   const host = useHost();
   const busy = signal(false);
@@ -146,6 +148,13 @@ export function MessageCopy(props: {
       if (owns(original)) busy.set(false);
     }
   };
+  const label = () => (props.row().role === 'user' ? tr('Copy user message') : tr('Copy message'));
+  props.menu?.add({
+    kind: 'copy',
+    label,
+    busy,
+    action: () => (target() === null ? null : inputAction(copy, target())),
+  });
   return (
     <View
       style={{
@@ -163,7 +172,7 @@ export function MessageCopy(props: {
         </Text>
       </If>
       <IconButton
-        label={props.row().role === 'user' ? tr('Copy user message') : tr('Copy message')}
+        label={label()}
         tooltip={busy() ? tr('Reading original message…') : undefined}
         icon={notice() && !failed() ? 'check' : 'copy'}
         disabled={target() === null}

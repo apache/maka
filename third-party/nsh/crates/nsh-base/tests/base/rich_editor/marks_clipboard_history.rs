@@ -379,6 +379,21 @@ fn copy_writes_markdown() {
     );
 }
 
+/// Nothing selected: Copy is not the editor's to take, so the page's
+/// selected output gets it.
+#[test]
+fn copy_with_nothing_selected_is_left_to_the_page() {
+    let mut app = start(paragraphs(&["hello"]));
+    focus(&mut app);
+    assert!(!app.claims_key("mod+c").unwrap());
+    // With a selection it is the editor's, and copies as before.
+    select_right(&mut app, 3);
+    assert!(app.claims_key("mod+c").unwrap());
+    keys(&mut app, &["mod+c"]);
+    app.wait(Duration::from_millis(50)).unwrap();
+    assert_eq!(app.screen().clipboard(), Some("hel"));
+}
+
 // The history.
 
 #[test]

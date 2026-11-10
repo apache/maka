@@ -123,11 +123,6 @@ impl Owner {
             Ok(selected) => selected,
             Err(error) => return publication_error(error),
         };
-        match selected.is_managed().await {
-            Ok(true) => return Ok(rejected(Rejection::ManagedSession)),
-            Ok(false) => {}
-            Err(error) => return publication_error(error),
-        }
         let Some(source) = self
             .store
             .get_session::<StoredSessionConfiguration>(&input.session_id)
@@ -272,7 +267,6 @@ impl Owner {
             creator: Namespace::new(IMPLEMENTATION, maka_plugin_core::scope::Scope::Profile)
                 .map_err(|error| error.to_string())?,
             fingerprint: operation.fingerprint.clone(),
-            managed: false,
             authority_session_id: Some(input.session_id.clone()),
         };
         let guard = selected

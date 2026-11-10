@@ -142,14 +142,25 @@ pub struct TabsProps {
 /// readers and takes no focus: the arrows, Home and End move between the
 /// tabs only. The tabs it follows are in the list, or in views inside it;
 /// a list that scrolls is in a scroll view around the `Tabs`.
+///
+/// In a terminal the list has no indicator and its tabs are in a row, two
+/// Cells apart: the terminal draws the selected tab bold on a band (its
+/// underline alone when the app underlines its label) and the others
+/// muted, from the selected state each tab reports ([`crate::terminal`]).
 #[component]
 pub fn Tabs(props: TabsProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     let list = Roving::new(Pattern::Tabs);
     provide_context(TabsContext(list.clone()));
     let (class, style) = (props.indicator_class, props.indicator_style);
-    let styled = move || class.with(Option::is_some) || style.with(|s| *s != Style::default());
+    // A terminal marks the selected tab itself: no indicator there.
+    let terminal = crate::terminal::is_terminal();
+    let styled = move || {
+        !terminal && (class.with(Option::is_some) || style.with(|s| *s != Style::default()))
+    };
     view()
         .role(AccessibilityRole::Tablist)
+        // Tabs two Cells apart in a row: the terminal's tab bar.
+        .when(terminal, |v| v.flex_row().gap_x(measure_text("", "00")))
         .child(when(styled, move || indicator(list.clone(), class, style)))
         .child(props.children)
 }

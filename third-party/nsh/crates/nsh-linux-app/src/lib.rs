@@ -1,6 +1,7 @@
 //! The executable of a packaged nsh app (`nsh package --target linux`):
 //! runs the bundle shipped next to it (`nsh/bundle.nshc`, assets in
-//! `nsh/assets`, the app's name, id and appearance in `nsh/app.json`).
+//! `nsh/assets`, the app's name, id and appearance in `nsh/app.json`), or a
+//! newer signed package of its code it downloaded (`nsh_engine::updates`).
 //!
 //! A library so that an app with Rust components of its own (`nsh.json`
 //! `"rust"`) builds the release runner with them: its `main` calls
@@ -11,9 +12,9 @@
 /// Runs the release runner (until its window closes).
 #[cfg(all(target_os = "linux", feature = "js"))]
 pub fn main() -> std::process::ExitCode {
-    use nsh_platform_linux::{AppSource, Bundle};
+    use nsh_platform_linux::{AppSource, AssetBase, Bundle};
 
-    let Some((dir, options)) = setup() else {
+    let Some((dir, mut options)) = setup() else {
         return std::process::ExitCode::FAILURE;
     };
     // SAFETY: the bytecode is a resource of this app's own package.
@@ -24,7 +25,10 @@ pub fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    run(AppSource::Bundle(bundle), options)
+    let data_dir = options.data_dir.clone().or_else(nsh_engine::data_dir);
+    let launch = nsh_engine::updates::launch(bundle, &dir, data_dir.as_deref());
+    options.asset_base = Some(AssetBase::Directory(launch.assets));
+    run(AppSource::Bundle(launch.bundle), options)
 }
 
 /// Runs the Rust app whose root is `root` (until its window closes), with
@@ -92,6 +96,15 @@ fn setup() -> Option<(std::path::PathBuf, nsh_platform_linux::AppOptions)> {
     }
     if let Some(name) = field("name") {
         options.title = name;
+    }
+    if let Some(schemes) = info
+        .as_ref()
+        .and_then(|info| info.get("schemes")?.as_array().cloned())
+    {
+        options.schemes = schemes
+            .iter()
+            .filter_map(|s| s.as_str().map(str::to_owned))
+            .collect();
     }
     // The window opens in the app's appearance (no flash of the system's).
     match field("appearance").as_deref() {

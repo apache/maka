@@ -194,6 +194,13 @@ pub(crate) fn MarketButton() -> impl IntoElement {
                                     IconName::Play
                                 }
                             })
+                            .label(move || {
+                                Some(SharedString::from(if running.get() {
+                                    "Pause"
+                                } else {
+                                    "Resume"
+                                }))
+                            })
                             .size(13.0)
                             .tint(move || {
                                 if running.get() {

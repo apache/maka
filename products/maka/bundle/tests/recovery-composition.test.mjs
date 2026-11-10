@@ -196,3 +196,24 @@ test('built recovery gateway binds the exact ReceiptReader query without caller 
   );
   assert.deepEqual(read.input.$defs.RecoveryProtocol.enum, ['journal_v1']);
 });
+
+test('the built default installation nests service tools except computer REPL and user questions', () => {
+  const tools = instances.agent.configuration.values.tools;
+  const directOnly = tools.filter((tool) => !tool.nestable).map((tool) => tool.name);
+  assert.deepEqual(directOnly, ['cua_repl', 'cua_reset', 'AskUserQuestion']);
+  const nested = new Set(tools.filter((tool) => tool.nestable).map((tool) => tool.name));
+  for (const expected of [
+    'Read',
+    'Shell',
+    'WebFetch',
+    'Skill',
+    'PluginReadDeployment',
+    'PluginEditComposition',
+    'ModelList',
+    'SessionCreate',
+    'SessionSend',
+    'SessionWork',
+  ]) {
+    assert.ok(nested.has(expected), `expected ${expected} to be nestable`);
+  }
+});

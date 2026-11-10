@@ -74,7 +74,8 @@ pub fn private_rules(
     state_root: &Path,
 ) -> Result<Vec<maka_sandbox::filesystem::Rule>, String> {
     use maka_sandbox::filesystem::{Access, Rule};
-    let mut rules = vec![Rule::subtree(state_root, Access::Deny)];
+    let state_root = PathBuf::from(host_path(state_root)?);
+    let mut rules = vec![Rule::subtree(&state_root, Access::Deny)];
     if let Some(binding) = &selected.worktree {
         if binding.directory() != Path::new(&selected.path) {
             return Err("agent_workspace_unavailable".into());
@@ -388,7 +389,7 @@ pub async fn open_workspace(
         let authorized = if let Some(binding) = &selected.worktree {
             directory::open(binding.source(), binding.source_identity())
                 .map_err(|_| "agent_workspace_unavailable")?;
-            if binding.directory() != path {
+            if binding.directory() != Path::new(&selected.path) {
                 return Err("agent_workspace_unavailable".into());
             }
             maka_fs_tools::worktree::Worktrees::open(&managed)

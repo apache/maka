@@ -72,6 +72,7 @@ function App() {
       keyboardType="number-pad"
       autoComplete="one-time-code"
       maxLength={6}
+      placeholder="000000"
       onFocus={() => focused.set("code")}
     />
   );
@@ -84,7 +85,7 @@ function App() {
       onChange={({ value }) => notes.set(value)}
       onContentSizeChange={({ size }) => notesHeight.set(Math.min(size.height, 120))}
       placeholder="Return adds a line"
-      {...field({ style })}
+      {...field({ multiline: true, style })}
       onFocus={() => focused.set("notes")}
       onBlur={() => focused.set("nothing")}
     />
@@ -107,7 +108,7 @@ function App() {
         {passwordField()}
 
         <Text style={label()}>Code (number pad, 6 digits)</Text>
-        {codeField(() => ({ letterSpacing: 8, textAlign: "center", fontSize: 22 }))}
+        {codeField(() => ({ letterSpacing: 8, textAlign: "center", fontSize: 16 }))}
 
         <Text style={label()}>About you (grows with its text, 200 max)</Text>
         {notesField(() => ({ height: Math.max(notesHeight(), 22) + 20 }))}

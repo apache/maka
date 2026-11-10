@@ -8,6 +8,7 @@
 
 use std::rc::Rc;
 
+use super::element_ref::RefTarget;
 use crate::keymap::KeyBinding;
 
 /// A view's shortcut handler: it gets the keystroke as written.
@@ -20,8 +21,19 @@ pub(crate) const FIRST_ID: u32 = 1 << 31;
 /// (what the handler gets) and the handler.
 pub(crate) struct ViewKey {
     pub(crate) binding: KeyBinding,
+    pub(crate) within: Option<RefTarget>,
     pub(crate) text: Rc<str>,
     pub(crate) handler: KeyHandler,
+}
+
+impl ViewKey {
+    pub(crate) fn scoped_binding(&self) -> Option<KeyBinding> {
+        let mut binding = self.binding;
+        if let Some(target) = &self.within {
+            binding.within = Some(target.node()?);
+        }
+        Some(binding)
+    }
 }
 
 /// The views' bindings, oldest first (the newest that may fire wins).
@@ -38,13 +50,18 @@ impl ViewKeys {
     pub(crate) fn add(
         &mut self,
         make: impl FnOnce(u32) -> KeyBinding,
+        within: Option<RefTarget>,
         text: Rc<str>,
         handler: KeyHandler,
     ) -> u32 {
         let id = FIRST_ID + self.next;
         self.next += 1;
+        if let Some(target) = &within {
+            target.watch_keys();
+        }
         self.list.push(ViewKey {
             binding: make(id),
+            within,
             text,
             handler,
         });
@@ -57,7 +74,11 @@ impl ViewKeys {
     pub(crate) fn remove(&mut self, id: u32) -> Option<ViewKey> {
         let i = self.list.iter().position(|k| k.binding.id == id)?;
         self.changed = true;
-        Some(self.list.remove(i))
+        let removed = self.list.remove(i);
+        if let Some(target) = &removed.within {
+            target.unwatch_keys();
+        }
+        Some(removed)
     }
 
     /// Binding `id`'s keystroke as written and its handler.

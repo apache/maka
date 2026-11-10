@@ -150,8 +150,15 @@ pub(crate) fn began(target: &EventTarget, presses: &AnyObject, editing: bool) ->
             continue;
         }
         // Presses come once: no auto-repeat to match (`KeyMatch::Held`).
-        let KeyMatch::Fire(id) = table.find(stroke, editing, false) else {
-            continue;
+        let id = match table.find(stroke, editing, false) {
+            KeyMatch::Fire(id) => id,
+            // Reported, and the press goes on to the responders (Tab
+            // moves the focus); its release is theirs too.
+            KeyMatch::Notify(id) => {
+                fire(target, id);
+                continue;
+            }
+            KeyMatch::None | KeyMatch::Held => continue,
         };
         fire(target, id);
         let repeats = table.bindings().iter().any(|b| b.id == id && b.repeat);

@@ -1,5 +1,10 @@
 # Scrolling and lists
 
+- **A resize keeps what a scroll view shows** (`core/resize_anchor.rs`): as a browser's scroll anchoring, in the layout
+  after a change of the viewport a plain vertical scroll view past its start scrolls by as much as the first view it
+  shows moved, with a `ScrollBy` in the same batch, clamped to its content. Text above the viewport wrapping onto more
+  lines moves nothing on screen, through a window's drag and when text that waited catches up (`docs/dev/text.md`).
+  Lists keep their rows themselves.
 - **Scrolling**: `pagingEnabled`, `snapToInterval` / `snapToOffsets` / `snapToAlignment`, `disableIntervalMomentum`,
   `decelerationRate`, `scrollable`, `bounces`, `contentInset`, `contentOffset`, `keyboardShouldPersistTaps`
   (`never` / `handled` / `always`), `onScroll` (+ `scrollEventThrottle`; at most once per engine turn), `onScrollDragStart` /
@@ -10,17 +15,18 @@
   the content is a touchscreen's way to scroll): it scrolls with the wheel, the touchpad, the keyboard and the
   indicator (a scroll bar), and its drags are the app's (pans, responders, text selection). On Linux, Windows and desktop Web, the indicator shows while scrolling or when the pointer reaches its draggable thumb;
   moving over content leaves its visibility and fade timer unchanged. macOS follows the system's scroll-bar
-  visibility preference (`WhenScrolling` suppresses content-hover reveal). Horizontal
-  views keep theirs with `scrollbar={false}` (the platforms' `scroll::config`; on the web `barShown`, in the
-  desktop idiom): a mouse without a horizontal wheel has no other way to move them. With a
+  visibility preference (`WhenScrolling` suppresses content-hover reveal). `scrollbar={false}` hides the
+  indicator on either axis (the platforms' `scroll::config`; on the web `barShown`, in the desktop idiom): a mouse
+  without a horizontal wheel moves a horizontal view with Shift + wheel, with the vertical wheel where nothing
+  around it scrolls vertically (`scroll_target`), and with the keys. With a
   mouse alone, pull to refresh needs a touchpad that rubber-bands (macOS): apps offer another way on the desktop.
 - **Scroll bars of the app's own** (`nsh/base`'s `Scrollbar`, `docs/dev/components.md` "Scroll bars"): a view the
   app places that names a scroll view or a list (`scroll={ref}`), with its look (`class`, `thumbClass`) and `mode`;
   the target's own indicator off with `scrollbar={false}`. It follows the target through the core
   (`element::watch_scroll`: the offset every platform reports, the content size the layout sends), so it
   works on every backend, and scrolls it with `ScrollTo`. With an app theme (`Scrollbar.setTheme`) or a view's own
-  (`scrollbar={{ … }}`) the core draws one over every such view in place of its indicator (`ScrollConfig.replaced`,
-  which also hides the horizontal views' kept indicator on the desktops); `docs/dev/components.md` "Scroll bars".
+  (`scrollbar={{ … }}`) the core draws one over every such view in place of its indicator (`ScrollConfig.replaced`);
+  `docs/dev/components.md` "Scroll bars".
 - **Carousels** (`nsh/base`'s `Carousel`, `docs/dev/components.md` "Carousels"): a horizontal or vertical scroll view
   whose `snapToOffsets` are its slides' laid-out starts, with `disableIntervalMomentum`; the slide is read where the
   scroll comes to rest (`onScrollEnd`) and discrete changes are `ScrollTo`s.
@@ -29,10 +35,6 @@
   a change to one goes to both): the first one set makes a view the scroll view's children move into (also the ones
   already there; later inserts and removals go to it), and styles it. The core lays a scroll view's children out in
   the scroll view itself, so without it nothing changes (no extra view).
-- **Changing extents** (GPUI, Linux and Windows): changing the scrolling axis ends motion on the old axis and
-  preserves offsets that remain within the content. Changes to content, viewport size or content insets reconcile
-  offsets after the mount batch, so an anchoring `ScrollBy` in that batch applies first. Layout animations notify
-  the same range check as their viewport changes. Animated scrolls finish within the current extent.
 - **Zooming** (`<Scroll>`, not lists): `maximumZoomScale` above `minimumZoomScale` makes the content zoomable; `zoomScale`
   zooms when it changes, `bouncesZoom`, `zoomable`, `centerContent` (content smaller than the viewport is centered);
   ref `zoomTo({ scale, x, y, animated })` (content point `x`, `y` in the middle); `onScroll` reports `zoomScale` and the zoomed
@@ -42,12 +44,11 @@
   content around its top left and scrolls both ways itself (ScaleGestureDetector around the focal point, panning with any
   number of fingers, OverScroller flings, rubber bands past the edges and the zoom limits). Pinches start only after
   Android's minimum span (about 27 mm between the fingers). Zoom reports go to the core (`EngineControl::zoom`).
-- **List** props: `each`, `estimatedItemSize`, `numColumns`, `inverted` (chat: item 0 at the bottom, starts at the end and keeps its
+- **List** props: `each`, `estimatedItemSize`, `numColumns` (both may change while the list shows: the first visible item keeps its place, `ListState::visible_anchor`; a change of columns remembers it in `columns_anchor`, so resizing back and forth does not drift), `inverted` (chat: item 0 at the bottom, starts at the end and keeps its
   distance from the end as content changes; with `onLoadMoreAtStart`, only while at it, the visible rows when scrolled away), `maintainVisibleContentPosition` (`autoscrollToBottomThreshold`: a list
   that is not inverted follows its end while within that distance of it, `ListState::anchor_end`; scrolled up, growth
-  below the viewport moves nothing; Rust components: `ListLayout::follow_end`, on their own lists and the lists they place), `stickyHeaderIndices` (one column, not inverted) + `stickyHeaderOffset` (where they stick: the core subtracts a number from the sticky ranges, so platforms pin as they do without one; an animated node rides along in `StickyCell::offset`, `ListState::sticky_node`, and the platforms add its value as they pin), `header` /
-  `footer` / `empty` / `separator` (a component or an element; functions and their returned children stay reactive
-  as in ordinary JSX children), `contentStyle`
+  below the viewport moves nothing; Rust components: `ListLayout::follow_end`, on their own lists and the lists they place), `alignment` (`bottom`, GPUI's `ListAlignment::Bottom`: rows in reading order, opens at the end with no scroll command to pin, follows it within `follow_end` or a point's rounding, `ListState::anchor_end`; it waits for an appended last row's measurement the window will reach, so one scroll lands on its real size; short content lies at the bottom, `ListState::leading`), `stickyHeaderIndices` (one column, not inverted) + `stickyHeaderOffset` (where they stick: the core subtracts a number from the sticky ranges, so platforms pin as they do without one; an animated node rides along in `StickyCell::offset`, `ListState::sticky_node`, and the platforms add its value as they pin), `header` /
+  `footer` / `empty` / `separator` (a component, called once and untracked, or an element; a signal or memo, as `<If>` and `<Each>` are, is the slot's insert's to track: `slot` in `nsh-js` `list.rs`, `web/browser/list.js`), `contentStyle`
   (padding and gaps, numbers) / `contentClass` (`p-*`, `gap-*`), `initialScrollIndex`, `onLoadMore` + `loadMoreThreshold`,
   `onLoadMoreAtStart` + `loadMoreAtStartThreshold` (below), `onViewableItemsChange` +
   `viewabilityConfig` (`itemVisibleThreshold` / `viewAreaCoverageThreshold` / `minimumViewTime`), `keyExtractor`,
@@ -79,15 +80,16 @@
 - **Spare list cells** (recycled cells without an item) keep their last row. The core hides them (`Core::set_spare`:
   `visibility: hidden` and `accessibilityElementsHidden`) when they lie in the render window, were never placed or
   the items changed, and shows them as it places them; the few the window leaves behind while scrolling stay shown.
+  A row coming back into the window takes back the spare cell that still shows it (the window shrank and grew back
+  as a panel showed and went), so it is not made again; spare cells follow their rows through splices.
+- **Kept rows**: a row holding the keyboard focus, an open overlay (a row's menu or popover; not a hint) or an end of
+  a text selection stays bound wherever the list scrolls, so the field keeps the focus and the menu stays open
+  (`Core::sync_kept`, each commit before the lists update). Once none is left in it, the row is recycled as any other.
 - **List scroll commands**: the core resolves a list's `scrollToEnd` / `scrollToIndex` to a `ScrollTo` with the sizes it
   knows, which are estimates for rows never rendered; the target stays pinned (`ListState::follow_pin`), and as the rows
   around it are measured the list follows it (a `ScrollBy`, or a retargeted `ScrollTo` while an animated scroll is in
   flight) until the rows in the viewport are all measured, the user scrolls away or the items change. Platforms only
-  apply what they get. `scrollToIndex({ automatic: true })` on GPUI and terminal backends waits for the list's
-  native hover/focus-within snapshot, retains only the latest target while the list is being operated, and resumes
-  without another app request when interaction ends. It uses the same target pin, not the issued-scroll ACK ledger.
-  Other native backends do not yet report the direct focus-within snapshot this opt-in behavior requires. Ordinary
-  explicit commands are unchanged. For immediate automatic recentering use `animated: false`.
+  apply what they get.
 - **Lists in their parent's viewport** (`viewport="parent"`, `ListLayout::viewport(ListViewport::Parent)`; `own`,
   the default, is a scroll view of its own): fixed when the list's native view is made (a change in the batch that
   makes it counts; later ones warn once). The list mounts as a plain view clipping its cells and lies in its parent's layout at its full length (padding,
@@ -99,17 +101,11 @@
   `refreshing`, `refreshIndicator`, `pullValue`, paging and snapping, `contentInset`, `scrollbar`, `scrollable`,
   `keyboardDismissMode`) and what needs a scroll view of the list's own (`inverted`,
   `maintainVisibleContentPosition`) are ignored there, each warned of once; a zoomable scroll view around it is not
-  supported. Sticky rows stick to the view's viewport, as CSS `position: sticky` in its container. Lists of their
+  supported. Sticky rows stick to the view's viewport, as CSS `position: sticky` in its container. Its props carry
+  `ViewProps::screen_order` (its axis): the platforms read its cells in the order they are on screen, as they read a
+  scroll view's content, since recycled cells are not in their rows' order in the tree. Lists of their
   own pay nothing (`crates/nsh-core/src/core/parent_viewport.rs`).
 - **List internals** (the window, binding cells, recycling): `crates/nsh-core/src/core/list.rs`.
-- **JS cell binding**: the host publishes a list's source with the count and splice operations returned by
-  `Host::take_ops`. A pending core bind reads that published source, even if JS has already queued another source
-  change. Each cell owns its item and index signals; a bind resolves the item first, then updates both in one batch.
-  Surviving keyed children retain their owners and local state across insertions and removals. Replacements reach
-  the child when the core processes their splice and binds the cell; signals inside a bound item remain reactive.
-- **Indexed data**: TSX `each` also accepts `ReadonlyListSource<T>`, a readonly snapshot with `length` and `at(index)`.
-  Only bound and viewable items are read. Replacing a snapshot's identity replaces the full range without reading its
-  items; arrays retain their identity-based common-prefix / suffix splice behavior. Counts use the core's existing u32 range.
 - **Paced binding** (the runtime's lists): what shows binds in the commit that assigns it (the viewport, sticky items,
   cells whose item moved); the rest of the overscan is bound by the engine over the following turns and frames
   within a budget. Cells assigned but not bound yet are moved out of sight like unassigned ones. Rust components'

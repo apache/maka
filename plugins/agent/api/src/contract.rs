@@ -99,10 +99,6 @@ pub struct Configuration {
     /// Enable explicitly approved Goal continuation.
     #[serde(default)]
     pub goals: bool,
-    /// Retired with planning mode and ignored. Package updates keep a saved
-    /// installation's parameters, so this key must keep validating.
-    #[serde(default, skip_serializing)]
-    pub plans: bool,
     /// Enable the session-scoped, model-maintained checklist.
     #[serde(default)]
     pub todo: bool,
@@ -330,7 +326,7 @@ pub struct Create {
     pub workspace: WorkspaceSelection,
 }
 
-#[derive(Clone, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -359,6 +355,26 @@ pub enum WorkspaceSelection {
     Session {
         #[schemars(length(min = 1))]
         session_id: String,
+    },
+}
+
+/// Read-only completion context before or after a conversation is created.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentCompletionTarget")]
+pub enum CompletionTarget {
+    Session {
+        #[schemars(length(min = 1))]
+        session_id: String,
+    },
+    Draft {
+        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<WorkspaceSelection>")]
+        workspace: Option<WorkspaceSelection>,
     },
 }
 /// A directory on the Host: an absolute path, `~` standing for the home
@@ -517,12 +533,12 @@ pub enum GlobalInstructionsUpdated {
     Unavailable,
 }
 
-/// Read-only suggestions resolved against the session's actual skill context.
+/// Read-only suggestions resolved against the selected completion context.
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSkillCandidatesRead")]
 pub struct SkillCandidatesRead {
-    pub session_id: String,
+    pub target: CompletionTarget,
     pub backend: BackendPreference,
     pub query: String,
 }
@@ -617,7 +633,6 @@ pub enum Rejection {
     WorkspaceUnavailable,
     SessionUnavailable,
     HistoryUnavailable,
-    ManagedSession,
     Closed,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
@@ -639,9 +654,11 @@ pub enum MetadataResult {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentSendDelivery")]
 pub enum SendDelivery {
-    /// Steer an active model, Codex or Claude turn; agy interrupts and resumes where supported. Other executors queue.
+    /// Deliver additional context, corrections, progress updates or guidance to ongoing work.
+    /// Active model, Codex and Claude turns accept steering; agy interrupts and resumes where supported. Other executors queue.
     #[default]
     Steer,
+    /// Defer this message until the current turn ends.
     Queue,
 }
 
@@ -649,6 +666,8 @@ pub enum SendDelivery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSend")]
 pub struct Send {
+    /// Defaults to steer. Omit or use steer for updates to ongoing work;
+    /// use queue only when this message should wait until the current turn ends.
     #[serde(default)]
     pub delivery: SendDelivery,
     /// An active send must not start new work after Stop fences its original Run.
@@ -1824,6 +1843,10 @@ pub fn contract() -> Contract {
                 (
                     "openBot".into(),
                     method::<BotOpen, BotOpened>(MethodMode::Mutation),
+                ),
+                (
+                    "markBotRead".into(),
+                    method::<BotMarkRead, BotOutbox>(MethodMode::Mutation),
                 ),
                 (
                     "botOutbox".into(),

@@ -70,12 +70,6 @@ export const configurations = {
         type: 'boolean',
         default: false,
       },
-      plans: {
-        description:
-          "Retired with planning mode and ignored. Package updates keep a saved\ninstallation's parameters, so this key must keep validating.",
-        type: 'boolean',
-        writeOnly: true,
-      },
       todo: {
         description: 'Enable the session-scoped, model-maintained checklist.',
         type: 'boolean',

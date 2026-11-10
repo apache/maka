@@ -22,8 +22,20 @@ fn short_sha(value: &str) -> Option<String> {
         .then(|| value[..7].to_owned())
 }
 
+/// Main-thread stack of the `nsh` binary. The JS host lets QuickJS use up
+/// to 4 MB (`Limits::stack_bytes`), and the CLI evaluates on its main thread.
+/// Windows reserves only 1 MB for that thread, so QuickJS overflowed the real
+/// stack before its own limit tripped (#1191). Match the engine thread size.
+const MAIN_STACK_BYTES: u64 = 8 << 20;
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        match env::var("CARGO_CFG_TARGET_ENV").as_deref() {
+            Ok("msvc") => println!("cargo:rustc-link-arg-bins=/STACK:{MAIN_STACK_BYTES}"),
+            _ => println!("cargo:rustc-link-arg-bins=-Wl,--stack,{MAIN_STACK_BYTES}"),
+        }
+    }
     let manifest =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"));
     let root = manifest.parent().and_then(Path::parent);

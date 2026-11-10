@@ -68,8 +68,8 @@ pub fn Button(props: ButtonProps, cx: Scope<ButtonEvent>) -> impl IntoElement {
         })
         .selected_style(props.selected_style)
         .hit_slop(props.hit_slop)
-        .on_press(cx.forward(ButtonEvent::Press))
-        .on_press_down(cx.forward(ButtonEvent::PressDown))
-        .on_press_up(cx.forward(ButtonEvent::PressUp))
+        .on_press(move |_: &()| cx.emit(ButtonEvent::Press))
+        .on_press_down(move |_: &()| cx.emit(ButtonEvent::PressDown))
+        .on_press_up(move |_: &()| cx.emit(ButtonEvent::PressUp))
         .child(props.children)
 }

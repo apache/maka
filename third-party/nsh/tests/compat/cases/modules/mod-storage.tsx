@@ -1,4 +1,4 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh`
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh/storage`
 // (in memory on the headless runtime): values set, read back, listed in
 // order, removed and cleared, each call seeing the ones before it; a value
 // past the 5 MB quota rejects with `ERR_NSH_QUOTA_EXCEEDED` and is not kept.

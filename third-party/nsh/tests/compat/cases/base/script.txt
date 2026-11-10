@@ -589,10 +589,11 @@ prop scroll:text:"let a = 1;" scrollbar false
 prop scroll:text:"Alpha" horizontal true
 prop scroll:text:"Alpha" scrollbar false
 style text:"First item" color #0000ffff
-# A press on the link reports its URL; nothing opens it.
+# A press on the link reports its URL and the modifier keys held;
+# nothing opens it.
 expect Link: none
 tap span:the guide
-expect Link: https://example.com/guide
+expect Link: https://example.com/guide (Command: false)
 # HTML.
 expect From HTML
 expect An hypertext paragraph.
@@ -614,9 +615,6 @@ expect Math block: x^2
 expect Image Logo: https://example.com/logo.png
 tap label:Logo
 expect Image pressed: Logo
-# Default images still use the TextView image-press event.
-tap label:Default logo
-expect Image pressed: Default logo
 # Parts styled by `classes` and `styles`; `selectable` (its texts' `userSelect`).
 style text:"Classed heading" color #ff0000ff
 style text:"Classed heading" fontWeight 600
@@ -625,9 +623,13 @@ style text:"Styled paragraph." userSelect text
 # The static functions.
 expect Plain: a b
 expect Parsed: 1 paragraph
+expect Cited: paragraph
 expect Extended: text,custom
+expect CJK emphasis: strong,text
+expect CJK URL: https://example.com,text
 expect Math off: Math $x$
 expect From HTML: Hi there
+expect Unknown tag: <US tech> up
 covers [nsh/base] TextView
 covers [props] TextView.markdown
 covers [props] TextView.document
@@ -671,6 +673,21 @@ style text:"Area label" userSelect none
 nostyle text:"Inner text" userSelect
 style text:"Own selection" userSelect text
 nostyle text:"Outside text" userSelect
+# The selection each area reports: its text, empty once nothing is selected.
+expect Area selected: none
+expect Own selected: none
+listens id:area onSelectionChange
+event id:area onSelectionChange text=first
+expect Area selected: first
+event id:area onSelectionChange text=
+expect Area selected: nothing
+event id:own onSelectionChange text=Own
+expect Own selected: Own
+expect Own read: Own | **Own** | <p><strong>Own</strong></p>
+event id:own onSelectionChange text=
+expect Own read: nothing
+expect Area selected: nothing
+covers [events] onSelectionChange
 # base-popups
 tap id:case-base-popups
 # Shown at first: a controlled popover, one with `defaultOpen`, a tooltip
@@ -727,9 +744,11 @@ tap text:ShareItem
 expect MailItem
 expect BackRow
 absent NewItem
+expect Log: share true triggerPress
 tap text:BackRow
 expect NewItem
 absent MailItem
+expect Log: share false cancel
 # A disabled one does not open.
 tap text:LockedItem
 absent HiddenItem
@@ -762,6 +781,7 @@ covers [props] MenuItem.closeOnSelect
 covers [events] MenuItem.onSelect
 covers [props] Submenu.trigger
 covers [props] Submenu.back
+covers [events] Submenu.onOpenChange
 # The context menu: a finger held on its trigger.
 touch start text:HoldArea 5 5
 wait 600
@@ -1220,6 +1240,16 @@ tap label:Favorite
 expect Favorite: true
 tap label:Favorite
 expect Favorite: false
+# A press going down and ending, as the platform reports them: the app's
+# own press feedback, with no change of value.
+listens id:favorite onPressDown
+listens id:favorite onPressUp
+expect Downs: 0, ups: 0
+event label:Favorite onPressDown
+expect Downs: 1, ups: 0
+event label:Favorite onPressUp
+expect Downs: 1, ups: 1
+expect Favorite: false
 # `disabled`: dimmed for screen readers, `group-disabled:` on the marker
 # (10 wide), presses do nothing; `accessibilityLabel` names it.
 prop id:underline accessibilityLabel Underline text
@@ -1253,6 +1283,8 @@ covers [props] pressedStyle
 covers [props] disabled
 covers [props] accessibilityLabel
 covers [events] onChange
+covers [events] onPressDown
+covers [events] onPressUp
 
 # base-toolbar
 tap id:case-base-toolbar
@@ -2144,7 +2176,7 @@ tap id:case-base-date-picker
 # The trigger is a combobox named by `accessibilityLabel`, collapsed;
 # screen readers hear the app's value in its `dateFormat`.
 prop label:Due role combobox
-prop label:Due accessibilityState expanded=false
+prop label:Due accessibilityState expanded=false hasPopup=true
 prop label:Due accessibilityValue text=09.10.2026
 # A press opens the calendar, a sheet on a phone: every item the app's
 # (`renderItem`), the selected day marked and selected for screen
@@ -2152,7 +2184,7 @@ prop label:Due accessibilityValue text=09.10.2026
 # Monday, first in its row), each item as wide as `itemStyle` says.
 tap id:due
 expect Open: true triggerPress
-prop label:Due accessibilityState expanded=true
+prop label:Due accessibilityState expanded=true hasPopup=true
 expect M10
 expect Y2026
 expect D10.9
@@ -2300,7 +2332,7 @@ absent OpenAtStart
 expect Fruit: none
 prop label:Fruit role combobox
 prop label:Fruit accessibilityLabel Fruit
-prop label:Fruit accessibilityState expanded=false
+prop label:Fruit accessibilityState expanded=false hasPopup=true
 noprop label:Fruit accessibilityValue
 # A press opens the list, a sheet over a backdrop on a phone: the listbox
 # of the items' options under their sections' headers (the app's rows and
@@ -2311,7 +2343,7 @@ expect Life: open
 expect [Fruits]
 expect [Vegetables]
 expect Apple
-prop label:Fruit accessibilityState expanded=true
+prop label:Fruit accessibilityState expanded=true hasPopup=true
 prop scroll:label:Apple role listbox
 prop label:Apple role option
 prop label:Banana accessibilityState disabled=true
@@ -2335,7 +2367,7 @@ expect Life: closed
 absent Apple
 expect Fruit: Cherry
 prop label:Fruit accessibilityValue text=Cherry
-prop label:Fruit accessibilityState expanded=false
+prop label:Fruit accessibilityState expanded=false hasPopup=true
 # Opening again highlights the chosen item (`focus:`, 40 high; its
 # content's `group-focus:` color: `renderItem` draws what the item is, the
 # row's state its classes), which is selected for screen readers.
@@ -2426,7 +2458,7 @@ covers [props] Select.clearButtonStyle
 covers [props] Select.clearButton
 covers [props] Select.clearButtonAccessibilityLabel
 # `disabled`: dimmed for screen readers.
-prop label:Locked accessibilityState disabled=true expanded=false
+prop label:Locked accessibilityState disabled=true expanded=false hasPopup=true
 covers [props] disabled
 # `searchable`: a field above the items (its placeholder, name for screen
 # readers and look the app's; on a phone the keyboard comes when it is
@@ -3438,6 +3470,40 @@ style id:up backgroundColor #138a5aff
 style id:primary backgroundColor #17171780
 covers [nsh] token
 
+# base-set-theme
+# Another theme while the app runs, in place of nsh.json's and over
+# shadcn's `neutral`; `null` gives nsh.json's back.
+tap id:case-base-set-theme
+expect theme up #138a5aff
+expect theme radius-card 14
+style id:themed backgroundColor #138a5aff
+# `token()` reads it at once and classes follow. nsh.json's theme is not
+# under it (`radius-card` is gone), the default is (`primary`).
+tap id:set
+expect theme result set #2563ebff
+expect theme up #2563ebff
+expect theme radius-card undefined
+expect theme primary #171717ff
+style id:themed backgroundColor #2563ebff
+# Its dark value in the dark appearance.
+tap id:dark
+expect theme up #93c5fdff
+style id:themed backgroundColor #93c5fdff
+tap id:system
+expect theme up #2563ebff
+# A theme with a value NSH cannot read (no color in the dark appearance):
+# a TypeError, and the theme in force stays.
+tap id:bad
+expect theme result refused TypeError
+expect theme up #2563ebff
+style id:themed backgroundColor #2563ebff
+tap id:built
+expect theme result built
+expect theme up #138a5aff
+expect theme radius-card 14
+style id:themed backgroundColor #138a5aff
+covers [nsh] setTheme
+
 # base-resizable
 tap id:case-base-resizable
 # The sidebar starts at its `size`, the main panel takes the rest; the
@@ -4254,3 +4320,24 @@ covers [events] HoverCard.onOpenChange
 covers [events] HoverCard.onOpen
 covers [events] HoverCard.onClose
 covers [events] HoverCard.onPosition
+# base-terminal
+tap id:case-base-terminal
+# The output, its color and moves interpreted: `d` replaced the first
+# line's `n`; the title the program set; the size once laid out.
+expect red lide
+expect second
+expect Title Build
+expect Size truextrue
+# What the user types goes to the app as data.
+type label:Shell ls
+expect Typed [ls]
+# The ref's text, then a reset clears it.
+tap id:read
+expect Typed [red lide]
+tap id:reset
+absent second
+covers [nsh/base] Terminal
+covers [props] accessibilityLabel
+covers [events] Terminal.onData
+covers [events] Terminal.onResize
+covers [events] Terminal.onTitleChange

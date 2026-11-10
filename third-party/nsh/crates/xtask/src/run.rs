@@ -34,8 +34,7 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     section: Option<String>,
     /// Where to run: `macos` (the AppKit host), `catalyst`, `ios` (a
-    /// simulator), `android`, `linux`, `windows`, `gpui` (the GPUI host),
-    /// or `tui` (this terminal);
+    /// simulator), `android`, `linux`, `windows` or `gpui` (the GPUI host);
     /// default: the machine's own backend (`macos` on macOS, `linux` on
     /// Linux, `windows` on Windows), else `android`.
     #[arg(long)]
@@ -142,8 +141,6 @@ fn build_cli(root: &Path) -> anyhow::Result<()> {
 /// `nsh run`, started by [`launch`].
 struct App {
     child: Child,
-    #[cfg(unix)]
-    grouped: bool,
     /// Ends `nsh run` and the host with xtask, however xtask ends.
     #[cfg(windows)]
     _job: Option<win::Job>,
@@ -188,11 +185,7 @@ fn launch(root: &Path, args: &RunArgs) -> anyhow::Result<App> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
-        // A terminal reader must stay in the foreground process group;
-        // a separate group would receive SIGTTIN when reading stdin.
-        if args.target.as_deref() != Some("tui") {
-            cmd.process_group(0);
-        }
+        cmd.process_group(0);
     }
     #[cfg(windows)]
     {
@@ -201,8 +194,6 @@ fn launch(root: &Path, args: &RunArgs) -> anyhow::Result<App> {
     }
     let child = cmd.spawn().with_context(|| format!("launch {nsh}"))?;
     Ok(App {
-        #[cfg(unix)]
-        grouped: args.target.as_deref() != Some("tui"),
         #[cfg(windows)]
         _job: win::Job::assign(&child),
         child,
@@ -213,15 +204,13 @@ fn launch(root: &Path, args: &RunArgs) -> anyhow::Result<App> {
 /// host).
 #[cfg(unix)]
 fn stop(app: &mut App) {
-    let grouped = app.grouped;
     let app = &mut app.child;
     let Ok(pgid) = libc::pid_t::try_from(app.id()) else {
         let _ = app.kill();
         return;
     };
-    let recipient = if grouped { -pgid } else { pgid };
-    // SAFETY: the child pid, or the process group `launch` created.
-    unsafe { libc::kill(recipient, libc::SIGTERM) };
+    // SAFETY: plain syscalls on the process group `launch` created.
+    unsafe { libc::killpg(pgid, libc::SIGTERM) };
     for _ in 0..30 {
         if matches!(app.try_wait(), Ok(Some(_))) {
             return;
@@ -229,7 +218,7 @@ fn stop(app: &mut App) {
         std::thread::sleep(Duration::from_millis(100));
     }
     // SAFETY: as above.
-    unsafe { libc::kill(recipient, libc::SIGKILL) };
+    unsafe { libc::killpg(pgid, libc::SIGKILL) };
     let _ = app.wait();
 }
 

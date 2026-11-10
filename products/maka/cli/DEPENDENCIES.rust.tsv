@@ -1,16 +1,8 @@
 crate	0BSD	Apache-2.0	Apache-2.0 WITH LLVM-exception	BSD-2-Clause	BSD-3-Clause	BSL-1.0	BlueOak-1.0.0	CC0-1.0	CDLA-Permissive-2.0	GPL-2.0-only	ISC	MIT	MIT-0	MPL-2.0	Unicode-3.0	Unicode-DFS-2016	Unlicense	Zlib
-accesskit_atspi_common@0.19.1		X										X						
-accesskit_consumer@0.38.0		X										X						
-accesskit_macos@0.26.3		X										X						
-accesskit_unix@0.22.1		X										X						
-accesskit_windows@0.34.0		X										X						
-accesskit@0.24.1		X										X						
-addr2line@0.25.1		X										X						
 adler2@2.0.1	X	X										X						
 aead@0.6.1		X										X						
 aes-gcm@0.11.1		X										X						
 aes-kw@0.3.1		X										X						
-aes@0.8.4		X										X						
 aes@0.9.3		X										X						
 agent-client-protocol-derive@5.0.0		X																
 agent-client-protocol-schema@1.15.1		X																
@@ -24,6 +16,7 @@ alloc-stdlib@0.2.4					X
 alloc-stdlib@0.3.0					X													
 allocator-api2@0.2.21		X										X						
 ambient-authority@0.0.2		X	X									X						
+annotate-snippets@0.12.17		X										X						
 anstyle@1.0.14		X										X						
 anyhow@1.0.104		X										X						
 append-only-vec@0.1.10		X										X						
@@ -37,18 +30,14 @@ arcstr@1.2.0		X										X						X
 arraydeque@0.5.1		X										X						
 arrayref@0.3.9				X														
 arrayvec@0.7.8		X										X						
-as-raw-xcb-connection@1.0.1		X										X						
-ash@0.38.0+1.3.281		X										X						
 ashpd@0.13.13												X						
 async-broadcast@0.7.2		X										X						
 async-channel@2.5.0		X										X						
 async-compat@0.2.6		X										X						
 async-compression@0.4.51		X										X						
 async-executor@1.14.0		X										X						
-async-fs@2.2.0		X										X						
 async-io@2.6.0		X										X						
 async-lock@3.4.2		X										X						
-async-net@2.0.0		X										X						
 async-process@2.5.0		X										X						
 async-recursion@1.2.0		X										X						
 async-scoped@0.9.0		X										X						
@@ -57,13 +46,11 @@ async-task@4.7.1		X										X
 async-trait@0.1.92		X										X						
 asyncband@0.7.4		X																
 atoi@2.0.0												X						
+atomic_refcell@0.1.14		X										X						
 atomic-waker@1.1.2		X										X						
-atspi-common@0.13.0		X										X						
 atspi-common@0.14.0		X										X						
 atspi-connection@0.14.0		X										X						
-atspi-proxies@0.13.0		X										X						
 atspi-proxies@0.14.0		X										X						
-atspi@0.29.0		X										X						
 atspi@0.30.0		X										X						
 attribute-derive-macro@0.11.0												X						
 attribute-derive@0.11.0		X										X						
@@ -72,29 +59,24 @@ aws-lc-rs@1.18.2		X									X
 aws-lc-sys@0.46.0		X			X						X	X	X					
 axum-core@0.5.6												X						
 axum@0.8.9												X						
-backtrace@0.3.76		X										X						
 base-encode@0.3.1												X						
 base16ct@1.0.0		X										X						
+base62@2.2.6												X						
 base64-simd@0.8.0												X						
 base64@0.22.1		X										X						
 base64@0.23.1		X										X						
 base64ct@1.8.3		X										X						
 bincode@1.3.3												X						
 bindgen@0.72.1					X													
-bit_field@0.10.3		X										X						
-bit-set@0.10.0		X										X						
 bit-set@0.8.0		X										X						
 bit-vec@0.8.0		X										X						
-bit-vec@0.9.1		X										X						
 bitflags@1.3.2		X										X						
 bitflags@2.13.2		X										X						
 bitvec@1.1.1												X						
 blake3@1.8.7		X	X					X										
 block-buffer@0.10.4		X										X						
 block-buffer@0.12.1		X										X						
-block-padding@0.3.3		X										X						
 block-padding@0.4.2		X										X						
-block@0.1.6												X						
 block2@0.5.1												X						
 block2@0.6.2												X						
 blocking@1.7.0		X										X						
@@ -106,6 +88,7 @@ brotli-decompressor@6.0.1					X							X
 brotli@6.0.0					X							X						
 brotli@9.0.0					X							X						
 bstr@1.13.1		X										X						
+bumpalo@3.20.3		X										X						
 by_address@1.2.1		X										X						
 bytecount@0.6.9		X										X						
 bytemuck_derive@1.12.1		X										X						X
@@ -113,9 +96,9 @@ bytemuck@1.25.2		X										X						X
 byteorder-lite@0.1.0												X					X	
 byteorder@1.5.0												X					X	
 bytes@1.12.1												X						
+cairo-rs@0.22.9												X						
+cairo-sys-rs@0.22.9												X						
 calendrical_calculations@0.2.4		X																
-calloop-wayland-source@0.4.1												X						
-calloop@0.14.5												X						
 camino@1.2.6		X										X						
 cap-fs-ext@4.0.3		X	X									X						
 cap-primitives@4.0.3		X	X									X						
@@ -123,12 +106,11 @@ cap-std@4.0.3		X	X									X
 cargo_metadata@0.19.2												X						
 cargo-platform@0.1.9		X										X						
 castaway@0.2.4												X						
-cbc@0.1.2		X										X						
 cbc@0.2.1		X										X						
-cbindgen@0.28.0														X				
 cc@1.10.0		X										X						
 cexpr@0.6.0		X										X						
 cfg_aliases@0.2.2												X						
+cfg-expr@0.20.10		X										X						
 cfg-if@1.0.5		X										X						
 chacha20@0.10.2		X										X						
 chacha20poly1305@0.11.0		X										X						
@@ -139,7 +121,6 @@ ciborium-io@0.2.2		X
 ciborium-ll@0.2.2		X																
 ciborium@0.2.2		X																
 cidr@0.3.2												X						
-cipher@0.4.4		X										X						
 cipher@0.5.2		X										X						
 clang-sys@1.9.1		X																
 clap_builder@4.6.7		X										X						
@@ -152,9 +133,6 @@ clru@0.6.3												X
 cmake@0.1.58		X										X						
 cmov@0.5.4		X										X						
 cobs@0.3.0		X										X						
-cocoa-foundation@0.2.1		X										X						
-cocoa@0.26.0		X										X						
-codespan-reporting@0.13.1		X																
 collection_literals@1.0.3												X						
 color_quant@1.1.0												X						
 compact_str@0.10.0												X						
@@ -164,8 +142,6 @@ compression-core@0.4.34		X										X
 concurrent_lru@0.2.0												X						
 concurrent-queue@2.5.0		X										X						
 const-oid@0.10.2		X										X						
-const-random-macro@0.1.16		X										X						
-const-random@0.1.18		X										X						
 constant_time_eq@0.4.2		X						X					X					
 convert_case@0.10.0												X						
 convert_case@0.12.0												X						
@@ -175,9 +151,7 @@ core-foundation-sys@0.8.7		X										X
 core-foundation@0.10.1		X										X						
 core-graphics-types@0.2.0		X										X						
 core-graphics@0.24.0		X										X						
-core-text@21.0.0		X										X						
 coset@0.4.2		X																
-cosmic-text@0.19.0		X										X						
 cow-utils@0.1.3												X						
 cpubits@0.1.1		X										X						
 cpufeatures@0.2.17		X										X						
@@ -186,6 +160,7 @@ crc-catalog@2.5.0		X										X
 crc@3.4.0		X										X						
 crc32c@0.6.8		X										X						
 crc32fast@1.5.3		X										X						
+critical-section@1.2.0		X										X						
 crossbeam-channel@0.5.17		X										X						
 crossbeam-deque@0.8.8		X										X						
 crossbeam-epoch@0.9.21		X										X						
@@ -194,7 +169,6 @@ crossbeam-utils@0.8.23		X										X
 crossbeam@0.8.5		X										X						
 crossterm_winapi@0.9.1												X						
 crossterm@0.29.0												X						
-crunchy@0.2.4												X						
 crypto-bigint@0.7.8		X										X						
 crypto-common@0.1.7		X										X						
 crypto-common@0.2.2		X										X						
@@ -204,7 +178,6 @@ cssparser-macros@0.6.1														X
 cssparser-macros@0.7.1														X				
 cssparser@0.36.0														X				
 cssparser@0.37.0														X				
-ctor@1.0.13		X										X						
 ctr@0.10.1		X										X						
 ctutils@0.4.5		X										X						
 cua-cursor-motion@0.38.0												X						
@@ -246,7 +219,6 @@ dirs-sys@0.4.1		X										X
 dirs@5.0.1		X										X						
 dispatch2@0.3.1		X										X						X
 displaydoc@0.2.7		X										X						
-dlib@0.5.3												X						
 document-features@0.2.12		X										X						
 dom_query@0.28.0												X						
 dom_smoothie@0.18.2												X						
@@ -259,7 +231,6 @@ dtoa-short@0.3.5														X
 dtoa@1.0.11		X										X						
 dua-core@4.2.0												X						
 dunce@1.0.5		X						X					X					
-dwrote@0.11.5														X				
 dyn-clone@1.0.20		X										X						
 ecdsa@0.17.0		X										X						
 ed25519-dalek@2.2.0					X													
@@ -276,17 +247,13 @@ endi@1.1.1												X
 endian-type@0.2.0												X						
 enumflags2_derive@0.7.12		X										X						
 enumflags2@0.7.12		X										X						
-enumn@0.1.14		X										X						
 equivalent@1.0.3		X										X						
 errno@0.3.14		X										X						
 error-code@3.4.0						X												
 escape-simd@0.1.1		X										X						
-etagere@0.2.15		X										X						
-euclid@0.22.14		X										X						
 evdev@0.12.2		X										X						
 event-listener-strategy@0.5.4		X										X						
 event-listener@5.4.2		X										X						
-exr@1.74.2					X													
 fallible-iterator@0.3.0		X										X						
 fallible-streaming-iterator@0.1.9		X										X						
 fancy-regex@0.14.0												X						
@@ -300,24 +267,20 @@ fastrand@2.5.0		X										X
 fax@0.2.7												X						
 fdeflate@0.3.7		X										X						
 ff@0.14.0		X										X						
-filedescriptor@0.8.3												X						
+field-offset@0.3.6		X										X						
 filetime@0.2.29		X										X						
 find-msvc-tools@0.1.15		X										X						
 fixedbitset@0.5.7		X										X						
 flagset@0.4.7		X																
 flatbuffers@25.12.19		X																
 flate2@1.1.10		X										X						
-float_next_after@1.0.0												X						
 float-cmp@0.10.0												X						
 float-cmp@0.9.0												X						
-float-ord@0.3.2		X										X						
 fluent-uri@0.4.1												X						
 flume@0.12.0		X										X						
 fnv@1.0.7		X										X						
 foldhash@0.1.5																		X
 foldhash@0.2.0																		X
-font-types@0.11.3		X										X						
-font-types@0.12.7		X										X						
 fontconfig-parser@0.5.8												X						
 fontdb@0.23.0												X						
 fontdue@0.9.5		X										X						X
@@ -329,7 +292,6 @@ foreign-types@0.5.0		X										X
 form_urlencoded@1.2.2		X										X						
 fraction@0.15.4		X										X						
 fraction@0.17.0		X										X						
-freetype-sys@0.20.1												X						
 fs_extra@1.3.0												X						
 fs-err@2.11.0		X										X						
 fs-set-times@0.20.3		X	X									X						
@@ -349,6 +311,10 @@ futures-sink@0.3.34		X										X
 futures-task@0.3.34		X										X						
 futures-util@0.3.34		X										X						
 futures@0.3.34		X										X						
+gdk-pixbuf-sys@0.22.9												X						
+gdk-pixbuf@0.22.0												X						
+gdk4-sys@0.11.5												X						
+gdk4@0.11.5												X						
 generic-array@0.14.7												X						
 get-size-derive2@0.11.1		X										X						
 get-size2@0.11.1		X										X						
@@ -359,7 +325,8 @@ getrandom@0.3.4		X										X
 getrandom@0.4.3		X										X						
 ghash@0.6.0		X										X						
 gif@0.14.2		X										X						
-gimli@0.32.3		X										X						
+gio-sys@0.22.9												X						
+gio@0.22.10												X						
 gix-actor@0.44.1		X										X						
 gix-attributes@0.37.1		X										X						
 gix-bitmap@0.6.1		X										X						
@@ -412,38 +379,36 @@ gix-worktree@0.59.0		X										X
 gix-zlib@0.4.0		X										X						
 gix@0.90.0		X										X						
 gjson@0.8.1												X						
-gl_generator@0.14.0		X																
+glib-macros@0.22.9												X						
+glib-sys@0.22.9												X						
+glib@0.22.10												X						
 glob@0.3.4		X										X						
 globset@0.4.20												X					X	
-glow@0.17.0		X										X						X
-glutin_wgl_sys@0.6.1		X																
-gpu-allocator@0.28.0		X										X						
-gpui-fast-apple@0.1.10		X																
-gpui-fast-linux@0.1.10		X																
-gpui-fast-macos@0.1.10		X																
-gpui-fast-macros@0.1.10		X																
-gpui-fast-platform@0.1.10		X																
-gpui-fast-wgpu@0.1.10		X																
-gpui-fast-windows@0.1.10		X																
-gpui-fast@0.1.10		X																
-gpui-pre-collections@0.3.9		X																
-gpui-pre-derive-refineable@0.3.9		X																
-gpui-pre-http-client@0.3.9		X																
-gpui-pre-refineable@0.3.9		X																
-gpui-pre-scheduler@0.3.9		X																
-gpui-pre-shared-string@0.3.9		X																
-gpui-pre-sum-tree@0.3.9		X																
-gpui-pre-util@0.3.9		X																
-gpui-pre-ztracing-macro@0.3.9		X																
-gpui-pre-ztracing@0.3.9		X																
+globwalk@0.8.1												X						
+gobject-sys@0.22.9												X						
+granit-parser@1.3.0		X										X						
+graphene-rs@0.22.8												X						
+graphene-sys@0.22.9												X						
 grep-matcher@0.1.9												X					X	
 grep-regex@0.1.14												X					X	
 grep-searcher@0.1.17												X					X	
 group@0.14.0		X										X						
+gsk4-sys@0.11.5												X						
+gsk4@0.11.5												X						
+gstreamer-app-sys@0.25.4												X						
+gstreamer-app@0.25.2		X										X						
+gstreamer-audio-sys@0.25.4												X						
+gstreamer-audio@0.25.4		X										X						
+gstreamer-base-sys@0.25.4												X						
+gstreamer-base@0.25.4		X										X						
+gstreamer-sys@0.25.4												X						
+gstreamer@0.25.4		X										X						
+gtk4-macros@0.11.5												X						
+gtk4-sys@0.11.5												X						
+gtk4@0.11.5												X						
 gzip-header@1.1.0		X										X						
 half@2.7.1		X										X						
 halfbrown@0.4.0		X										X						
-harfrust@0.5.2												X						
 hash32@0.2.1		X										X						
 hash32@0.3.1		X										X						
 hashbrown@0.14.5		X										X						
@@ -454,8 +419,6 @@ hashlink@0.11.1		X										X
 hashlink@0.12.2		X										X						
 heapless@0.7.17		X										X						
 heapless@0.8.0		X										X						
-heapless@0.9.3		X										X						
-heck@0.4.1		X										X						
 heck@0.5.0		X										X						
 hex-simd@0.8.0												X						
 hex@0.4.3		X										X						
@@ -507,7 +470,6 @@ indoc@2.0.8		X										X
 infer@0.22.0												X						
 inotify-sys@0.1.8											X							
 inotify@0.11.5											X							
-inout@0.1.4		X										X						
 inout@0.2.5		X										X						
 instability@0.3.14												X						
 interpolator@0.5.0		X										X						
@@ -520,6 +482,7 @@ ipnet@2.12.2		X										X
 is-docker@0.2.0												X						
 is-macro@0.3.8		X																
 is-wsl@0.4.0												X						
+itertools@0.11.0		X										X						
 itertools@0.13.0		X										X						
 itertools@0.14.0		X										X						
 itertools@0.15.0		X										X						
@@ -542,13 +505,12 @@ kasuari@0.4.13		X										X
 keccak@0.2.2		X										X						
 keyring-core@1.0.1		X										X						
 keyring@4.2.0		X										X						
-khronos_api@3.1.0		X																
-khronos-egl@6.0.0		X										X						
+ksni@0.3.7																	X	
+kstring@2.0.5		X										X						
 kurbo@0.13.1		X										X						
 lazy_static@1.5.1		X										X						
 lazy-regex-proc_macros@3.6.2												X						
 lazy-regex@3.6.2												X						
-lebe@0.5.3					X													
 lexical-parse-float@1.0.6		X										X						
 lexical-parse-integer@1.0.6		X										X						
 lexical-util@1.0.7		X										X						
@@ -557,9 +519,6 @@ libloading@0.8.9											X
 libm@0.2.16												X						
 libsqlite3-sys@0.39.0												X						
 line-clipping@0.3.8		X										X						
-linebender_resource_handle@0.1.1		X										X						
-link-section@0.19.3		X										X						
-linktime-proc-macro@0.2.3		X										X						
 linux-raw-sys@0.12.1		X	X									X						
 linux-raw-sys@0.4.15		X	X									X						
 litemap@0.8.3															X			
@@ -567,12 +526,6 @@ litrs@1.0.1		X										X
 lock_api@0.4.14		X										X						
 log@0.4.34		X										X						
 lru@0.18.5												X						
-lyon_algorithms@1.0.22		X										X						
-lyon_geom@1.0.20		X										X						
-lyon_path@1.0.19		X										X						
-lyon_tessellation@1.0.23		X										X						
-lyon@1.0.19		X										X						
-mac-notification-sys@0.6.15		X										X						
 mac@0.1.1		X										X						
 mach2@0.6.0		X		X								X						
 maka-acp-native@0.2.0		X																
@@ -639,7 +592,6 @@ maka-web@0.2.0		X
 maka-workbench@0.2.0		X																
 maka-workspace-api@0.2.0		X																
 maka-workspace-support@0.2.0		X																
-malloc_buf@0.0.6												X						
 manyhow-macros@0.14.1		X										X						
 manyhow@0.14.1		X										X						
 markdown@1.0.0												X						
@@ -648,13 +600,11 @@ markup5ever@0.12.1		X										X
 markup5ever@0.39.0		X										X						
 matchit@0.8.4					X							X						
 maybe-owned@0.3.4		X										X						
-md-5@0.10.6		X										X						
 md-5@0.11.0		X										X						
 memchr@2.8.3												X					X	
 memmap2@0.9.12		X										X						
 memoffset@0.6.5												X						
 memoffset@0.9.1												X						
-metal@0.33.0		X										X						
 meval@0.2.0												X					X	
 micromap@0.3.0												X						
 mime@0.3.17		X										X						
@@ -671,9 +621,8 @@ monty-types@1.3.0												X
 monty@1.3.0												X						
 moxcms@0.8.1		X			X													
 msvc_spectre_libs@0.1.3		X										X						
+muldiv@1.0.1												X						
 mxc-sdk@1.0.1												X						
-naga-types@30.0.1		X										X						
-naga@30.0.1		X										X						
 native-tls@0.2.18		X										X						
 new_debug_unreachable@1.0.6												X						
 nibble_vec@0.1.0												X						
@@ -681,30 +630,32 @@ nix@0.23.2												X
 nix@0.29.0												X						
 nix@0.31.3												X						
 nodejs-built-in-modules@1.0.0												X						
+nohash-hasher@0.2.0		X										X						
 nom@1.2.4												X						
 nom@7.1.3												X						
 nom@8.0.0												X						
 nonempty@0.12.0												X						
 nonmax@0.5.5		X										X						
-notify-rust@4.18.2		X										X						
+normpath@1.5.2		X										X						
 notify-types@2.1.0		X										X						
 notify@8.2.1								X										
 nsh-base@0.4.0		X																
 nsh-bundler@0.4.0		X																
 nsh-core@0.4.0		X																
 nsh-engine@0.4.0		X																
-nsh-gpui-terminal@0.4.0		X																
+nsh-i18n@0.4.0		X																
 nsh-js@0.4.0		X																
 nsh-macros@0.4.0		X																
 nsh-package@0.4.0		X																
-nsh-platform-gpui@0.4.0		X																
+nsh-platform-apple@0.4.0		X																
+nsh-platform-linux@0.4.0		X																
 nsh-platform-macos@0.4.0		X																
 nsh-platform-tui@0.4.0		X																
 nsh-platform-windows@0.4.0		X																
+nsh-terminal@0.4.0		X																
+nsh-updater@0.4.0		X																
 ntapi@0.4.3		X										X						
 nu-ansi-term@0.50.3												X						
-num_cpus@1.17.0		X										X						
-num-bigint-dig@0.9.1		X										X						
 num-bigint@0.4.8		X										X						
 num-bigint@0.5.1		X										X						
 num-cmp@0.1.0		X										X						
@@ -716,7 +667,6 @@ num-rational@0.4.2		X										X
 num-traits@0.2.19		X										X						
 num@0.4.3		X										X						
 objc-sys@0.3.5												X						
-objc@0.2.7												X						
 objc2-app-kit@0.2.2												X						
 objc2-app-kit@0.3.2		X										X						X
 objc2-cloud-kit@0.3.2		X										X						X
@@ -732,23 +682,19 @@ objc2-foundation@0.2.2												X
 objc2-foundation@0.3.2												X						
 objc2-image-io@0.3.2		X										X						X
 objc2-io-kit@0.3.2		X										X						X
-objc2-metal@0.3.2		X										X						X
 objc2-quartz-core@0.2.2												X						
 objc2-quartz-core@0.3.2		X										X						X
-objc2-security@0.3.2		X										X						X
-objc2-user-notifications@0.3.2		X										X						X
 objc2@0.5.3												X						
 objc2@0.6.5												X						
-object@0.37.3		X										X						
 object@0.39.1		X										X						
 once_cell@1.21.4		X										X						
-oo7@0.6.0												X						
 open@5.4.5												X						
 openssl-macros@0.1.1		X										X						
 openssl-probe@0.2.1		X										X						
 openssl-sys@0.9.117												X						
 openssl@0.10.81		X																
 option-ext@0.2.0														X				
+option-operations@0.6.1		X										X						
 ordered-float@5.5.0												X						
 ordered-stream@0.2.0		X										X						
 ordermap@1.2.2		X										X						
@@ -787,15 +733,16 @@ p521@0.14.0		X										X
 palette_derive@0.7.7		X										X						
 palette_math@0.7.7		X										X						
 palette@0.7.7		X										X						
+pango-sys@0.22.9												X						
+pango@0.22.9												X						
+pangocairo-sys@0.22.9												X						
+pangocairo@0.22.9												X						
 parking_lot_core@0.9.12		X										X						
 parking_lot@0.12.5		X										X						
 parking@2.2.1		X										X						
 paste@1.0.15		X										X						
 pastey@0.2.3		X										X						
 pathdiff@0.2.3		X										X						
-pathfinder_geometry@0.5.1		X										X						
-pathfinder_simd@0.5.6		X										X						
-pbkdf2@0.12.2		X										X						
 pbkdf2@0.13.0		X										X						
 pem-rfc7468@1.0.0		X										X						
 percent-encoding@2.3.2		X										X						
@@ -832,7 +779,6 @@ png@0.17.16		X										X
 png@0.18.1		X										X						
 pnp@0.12.12				X														
 polling@3.11.0		X										X						
-pollster@0.4.0		X										X						
 poly1305@0.9.1		X										X						
 polycool@0.4.0		X										X						
 polyval@0.7.3		X										X						
@@ -841,7 +787,6 @@ potential_utf@0.1.6															X
 powerfmt@0.2.1		X										X						
 ppv-lite86@0.2.21		X										X						
 precomputed-hash@0.1.1												X						
-presser@0.3.1		X										X						
 prettyplease@0.2.37		X										X						
 primefield@0.14.0		X										X						
 primeorder@0.14.0		X										X						
@@ -849,21 +794,16 @@ proc-macro-crate@3.5.0		X										X
 proc-macro-utils@0.10.0		X										X						
 proc-macro2@1.0.107		X										X						
 prodash@31.0.1												X						
-profiling-procmacros@1.0.18		X										X						
-profiling@1.0.18		X										X						
 psm@0.1.32		X										X						
-pulp-wasm-simd-flag@0.1.1												X						
-pulp@0.22.3												X						
 pxfm@0.1.30		X			X													
-qoi@0.4.1		X										X						
 quantette@0.6.0		X										X						
 quick-error@2.0.1		X										X						
 quick-xml@0.41.0												X						
-quickjs-jit-core@0.14.1												X						
-quickjs-jit-macro@0.14.1												X						
-quickjs-jit-stdlib@0.14.1		X																
-quickjs-jit-sys@0.14.1												X						
-quickjs-jit@0.14.1												X						
+quickjs-jit-core@0.14.2												X						
+quickjs-jit-macro@0.14.2												X						
+quickjs-jit-stdlib@0.14.2		X																
+quickjs-jit-sys@0.14.2												X						
+quickjs-jit@0.14.2												X						
 quote-use-macros@0.9.0												X						
 quote-use@0.9.0												X						
 quote@1.0.47		X										X						
@@ -878,11 +818,8 @@ rand_xoshiro@0.8.1		X										X
 rand@0.10.3		X										X						
 rand@0.8.8		X										X						
 rand@0.9.5		X										X						
-range-alloc@0.1.5		X										X						
-rangemap@1.8.0		X										X						
 ratatui-core@0.1.2												X						
 ratatui-crossterm@0.1.2												X						
-ratatui-image@11.1.0												X						
 ratatui-widgets@0.3.2												X						
 ratatui@0.30.2												X						
 ratex-font@0.1.15												X						
@@ -890,14 +827,9 @@ ratex-layout@0.1.15												X
 ratex-lexer@0.1.15												X						
 ratex-parser@0.1.15												X						
 ratex-types@0.1.15												X						
-raw-cpuid@11.6.0												X						
 raw-window-handle@0.6.2		X										X						X
-raw-window-metal@1.1.0		X										X						
 rayon-core@1.13.0		X										X						
 rayon@1.12.0		X										X						
-read-fonts@0.37.0		X										X						
-read-fonts@0.41.0		X										X						
-reborrow@0.5.5												X						
 ref-cast-impl@1.0.27		X										X						
 ref-cast@1.0.27		X										X						
 referencing@0.46.10												X						
@@ -909,7 +841,6 @@ regex@1.13.1		X										X
 regorus@0.10.1		X			X							X						
 regress@0.12.0		X										X						
 relative-path@2.0.3		X										X						
-renderdoc-sys@1.1.0		X										X						
 reqwest@0.13.5		X										X						
 resb@0.1.2															X			
 resvg@0.46.0		X										X						
@@ -957,9 +888,10 @@ ruff_python_trivia@0.0.14												X
 ruff_source_file@0.0.14												X						
 ruff_text_size@0.0.14												X						
 rusqlite@0.41.0												X						
+rust-i18n-macro@4.2.4												X						
+rust-i18n-support@4.2.4												X						
+rust-i18n@4.2.4												X						
 rustc_version@0.4.1		X										X						
-rustc-demangle@0.1.28		X										X						
-rustc-hash@1.1.0		X										X						
 rustc-hash@2.1.3		X										X						
 rustix-linux-procfs@0.1.1		X	X									X						
 rustix-openpty@0.2.0		X	X									X						
@@ -979,10 +911,8 @@ same-file@1.0.6												X					X
 schannel@0.1.30												X						
 schemars_derive@1.2.3												X						
 schemars@1.2.3												X						
-scoped-tls@1.0.1		X										X						
 scopeguard@1.2.0		X										X						
 screencapturekit@8.0.1		X										X						
-seahash@4.1.0												X						
 sec1@0.8.1		X										X						
 seccompiler@0.5.0		X			X													
 secret-service@5.2.0		X										X						
@@ -1007,6 +937,7 @@ serde_with_macros@3.24.0		X										X
 serde_with@3.24.0		X										X						
 serde_yaml_ng@0.10.0												X						
 serde_yaml@0.9.34+deprecated		X										X						
+serde-saphyr@1.3.0		X										X						
 serde@1.0.229		X										X						
 servo_arc@0.4.3		X										X						
 sha1_smol@1.0.1					X													
@@ -1032,20 +963,15 @@ simd-json@0.18.1		X										X
 simdutf8@0.1.5		X										X						
 simplecss@0.2.2		X										X						
 siphasher@1.0.4		X										X						
-skrifa@0.40.0		X										X						
-skrifa@0.44.0		X										X						
 slab@0.4.12												X						
 slotmap@1.1.1																		X
 smallvec@1.16.4		X										X						
 smawk@0.3.3												X						
-smol_str@0.3.7		X										X						
-smol@2.0.2		X										X						
 socket2@0.6.5		X										X						
 sourcemap@9.3.2					X													
 speedate@0.17.0												X						
 spin@0.10.1												X						
 spin@0.9.9												X						
-spirv@0.4.0+sdk-1.4.341.0		X																
 spki@0.8.1		X										X						
 sponge-cursor@0.1.0		X										X						
 sqlx-core@0.9.0		X										X						
@@ -1074,9 +1000,7 @@ strum@0.27.2												X
 strum@0.28.0												X						
 subtle@2.6.1					X													
 sugar_path@3.0.0												X						
-svg_fmt@0.4.5		X										X						
 svgtypes@0.16.1		X										X						
-swash@0.2.10		X										X						
 syn-match@0.3.1												X						
 syn@2.0.119		X										X						
 syn@3.0.9		X										X						
@@ -1087,11 +1011,11 @@ sys_traits_macros@0.1.0												X
 sys_traits@0.1.29												X						
 sys-locale@0.3.2		X										X						
 sysinfo@0.31.4												X						
-taffy@0.14.0												X						
+system-deps@9.0.1		X										X						
 taffy@0.15.0												X						
 tap@1.0.1												X						
 tar@0.4.46		X										X						
-tauri-winrt-notification@0.8.1		X										X						
+target-lexicon@0.13.5			X															
 tempfile@3.27.0		X										X						
 temporal_capi@0.2.6		X										X						
 temporal_rs@0.2.6		X										X						
@@ -1111,11 +1035,8 @@ time-core@0.1.9		X										X
 time-macros@0.2.32		X										X						
 time@0.3.55		X										X						
 timezone_provider@0.2.6		X										X						
-tiny-keccak@2.0.2								X										
 tiny-skia-path@0.11.4					X													
-tiny-skia-path@0.12.0					X													
 tiny-skia@0.11.4					X													
-tiny-skia@0.12.0					X													
 tinystr@0.8.5															X			
 tinyvec@1.13.3		X										X						X
 tokio-macros@2.7.2												X						
@@ -1150,6 +1071,7 @@ tracing-serde@0.2.0												X
 tracing-subscriber@0.3.23												X						
 tracing@0.1.44												X						
 tree_magic_mini@3.2.2												X						
+triomphe@0.1.17		X										X						
 try-lock@0.2.5												X						
 ts-rs-macros@12.0.1												X						
 ts-rs@12.0.1												X						
@@ -1204,38 +1126,28 @@ v8@150.4.0												X
 value-trait@0.12.2		X										X						
 vcpkg@0.2.15		X										X						
 version_check@0.9.5		X										X						
+version-compare@0.2.1												X						
 vfs@0.13.0		X																
 vsimd@0.8.0												X						
 vswhom-sys@0.1.3												X						
 vswhom@0.1.0												X						
 vte@0.15.0		X										X						
-waker-fn@1.2.0		X										X						
 walkdir@2.5.0												X					X	
 want@0.3.2												X						
 wasm_dep_analyzer@0.4.0												X						
 wayland-backend@0.3.17												X						
 wayland-client@0.31.15												X						
-wayland-cursor@0.31.14												X						
-wayland-protocols-plasma@0.3.12												X						
 wayland-protocols-wlr@0.3.12												X						
 wayland-protocols@0.32.13												X						
 wayland-scanner@0.31.11												X						
 wayland-sys@0.31.11												X						
 web_atoms@0.2.6		X										X						
-web-time@1.1.0		X										X						
 webpki-roots@0.26.11									X									
 webpki-roots@1.0.11									X									
 webview2-com-macros@0.8.1												X						
 webview2-com-sys@0.39.1												X						
 webview2-com@0.39.1												X						
 weezl@0.1.12		X										X						
-wgpu-core-deps-apple@30.0.1		X										X						
-wgpu-core-deps-windows-linux-android@30.0.1		X										X						
-wgpu-core@30.0.1		X										X						
-wgpu-hal@30.0.1		X										X						
-wgpu-naga-bridge@30.0.1		X										X						
-wgpu-types@30.0.1		X										X						
-wgpu@30.0.1		X										X						
 which@6.0.3												X						
 which@8.0.6												X						
 wide@1.7.1		X										X						X
@@ -1265,7 +1177,6 @@ windows-link@0.1.3		X										X
 windows-link@0.2.1		X										X						
 windows-native-keyring-store@1.1.0		X										X						
 windows-numerics@0.3.1		X										X						
-windows-registry@0.6.1		X										X						
 windows-result@0.1.2		X										X						
 windows-result@0.2.0		X										X						
 windows-result@0.3.4		X										X						
@@ -1280,7 +1191,6 @@ windows-targets@0.48.5		X										X
 windows-targets@0.52.6		X										X						
 windows-targets@0.53.5		X										X						
 windows-threading@0.2.1		X										X						
-windows-version@0.1.7		X										X						
 windows-win@3.0.0						X												
 windows@0.57.0		X										X						
 windows@0.58.0		X										X						
@@ -1293,7 +1203,6 @@ winreg@0.56.0												X
 winresource@0.1.34												X						
 winsafe@0.0.19												X						
 winx@0.36.4			X															
-wio@0.2.2		X										X						
 wl-clipboard-rs@0.9.4		X										X						
 wnaf@0.14.1		X										X						
 writeable@0.6.4															X			
@@ -1303,19 +1212,11 @@ x11@2.21.0												X
 x11rb-protocol@0.13.2		X										X						
 x11rb@0.13.2		X										X						
 x25519-dalek@3.0.0					X													
-xcursor@0.3.11												X						
-xim-ctext@0.3.0												X						
-xim-parser@0.2.2												X						
-xkbcommon@0.8.0												X						
-xkeysym@0.2.1		X										X						X
-xml-rs@0.8.29												X						
 xml5ever@0.18.1		X										X						
 xmlwriter@0.1.0												X						
 xxhash-rust@0.8.19						X												
 yaml-rust2@0.13.0		X										X						
 yansi@1.0.1		X										X						
-yazi@0.2.1		X										X						
-yeslogic-fontconfig-sys@6.0.1												X						
 yoke-derive@0.8.4															X			
 yoke@0.8.4															X			
 zbus_macros@5.19.0												X						
@@ -1326,9 +1227,6 @@ zbus-lockstep@0.5.2												X
 zbus-secret-service-keyring-store@1.0.1		X										X						
 zbus@5.19.0												X						
 zcheapstr@1.1.0												X						
-zed-font-kit@0.14.1-zed		X										X						
-zed-xim@0.4.0-zed												X						
-zeno@0.3.3		X										X						
 zerocopy-derive@0.8.63		X		X								X						
 zerocopy@0.8.63		X		X								X						
 zerofrom-derive@0.1.8															X			
@@ -1342,13 +1240,13 @@ zip@9.1.0												X
 zlib-rs@0.6.8																		X
 zmij@1.0.23												X						
 zoneinfo64@0.3.0															X			
+zopfli@0.8.4		X																
 zstd-safe@7.3.0					X													
 zstd-safe@8.2.0					X													
 zstd-sys@2.1.2+zstd.1.5.7					X													
 zstd@0.13.3												X						
 zstd@0.14.3					X													
 zune-core@0.5.1		X										X						X
-zune-inflate@0.2.54		X										X						X
 zune-jpeg@0.5.15		X										X						X
 zvariant_derive@5.15.1												X						
 zvariant_utils@4.2.0												X						

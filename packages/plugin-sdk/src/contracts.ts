@@ -1488,6 +1488,19 @@ export const contracts: {
                 },
                 maxItems: 100,
               },
+              readThrough: {
+                description:
+                  'Durable, monotonic acknowledgement of messages actually shown to the user.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              preview: {
+                description:
+                  'Latest `SendUser` text, bounded for list previews. Never internal model output.',
+                type: 'string',
+                maxLength: 160,
+              },
               nextAfter: {
                 description: 'Pass as `after` to read the next page; absent when caught up.',
                 type: ['integer', 'null'],
@@ -1496,7 +1509,7 @@ export const contracts: {
               },
             },
             additionalProperties: false,
-            required: ['enabled', 'isBot', 'through', 'messages'],
+            required: ['enabled', 'isBot', 'through', 'messages', 'readThrough', 'preview'],
             $defs: {
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',
@@ -3305,7 +3318,6 @@ export const contracts: {
                   'workspace_unavailable',
                   'session_unavailable',
                   'history_unavailable',
-                  'managed_session',
                   'closed',
                 ],
               },
@@ -3329,6 +3341,11 @@ export const contracts: {
                 minimum: 0,
                 default: 0,
               },
+              limit: {
+                type: ['integer', 'null'],
+                format: 'uint',
+                minimum: 0,
+              },
             },
             additionalProperties: false,
             required: ['sessionId'],
@@ -3346,6 +3363,9 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              digest: {
+                type: ['string', 'null'],
+              },
               total: {
                 type: 'integer',
                 format: 'uint',
@@ -3353,6 +3373,11 @@ export const contracts: {
               },
               completed: {
                 type: 'integer',
+                format: 'uint',
+                minimum: 0,
+              },
+              activeIndex: {
+                type: ['integer', 'null'],
                 format: 'uint',
                 minimum: 0,
               },
@@ -3376,7 +3401,6 @@ export const contracts: {
                 items: {
                   $ref: '#/$defs/AgentTodoItem',
                 },
-                maxItems: 20,
               },
               nextOffset: {
                 type: ['integer', 'null'],
@@ -8045,7 +8069,6 @@ export const contracts: {
                   'workspace_unavailable',
                   'session_unavailable',
                   'history_unavailable',
-                  'managed_session',
                   'closed',
                 ],
               },
@@ -10163,11 +10186,11 @@ export const contracts: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             title: 'AgentFileCandidatesRead',
             description:
-              "Workspace-relative file suggestions from this Session's admitted directory.",
+              'Workspace-relative file suggestions from the selected completion context.',
             type: 'object',
             properties: {
-              sessionId: {
-                type: 'string',
+              target: {
+                $ref: '#/$defs/AgentCompletionTarget',
               },
               directory: {
                 description: 'Omission or null selects the workspace root.',
@@ -10187,8 +10210,136 @@ export const contracts: {
               },
             },
             additionalProperties: false,
-            required: ['sessionId', 'query'],
+            required: ['target', 'query'],
             $defs: {
+              AgentCompletionTarget: {
+                description:
+                  'Read-only completion context before or after a conversation is created.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'draft',
+                      },
+                      workspace: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/AgentWorkspaceSelection',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'workspace'],
+                  },
+                ],
+              },
+              AgentWorkspaceSelection: {
+                oneOf: [
+                  {
+                    description: 'A Git worktree of the directory at `path`, managed by the Host.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'isolated_git',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path'],
+                  },
+                  {
+                    description: 'A registered Project at one of its locations.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      project: {
+                        $ref: '#/$defs/AgentProjectRef',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'project', 'path'],
+                  },
+                  {
+                    description:
+                      'The directory at `path`: absolute, `~` standing for the home directory,\nwithin the configured workspace locations.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              AgentProjectRef: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
+              },
               WorkspacePath: {
                 type: 'object',
                 properties: {
@@ -11115,7 +11266,6 @@ export const contracts: {
                   'workspace_unavailable',
                   'session_unavailable',
                   'history_unavailable',
-                  'managed_session',
                   'closed',
                 ],
               },
@@ -12927,25 +13077,6 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
-                  {
-                    description:
-                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'plan',
-                      },
-                      executionId: {
-                        type: 'string',
-                      },
-                      title: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'executionId', 'title'],
-                  },
                 ],
               },
               ExecutionIdentity: {
@@ -14299,25 +14430,6 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
-                  },
-                  {
-                    description:
-                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'plan',
-                      },
-                      executionId: {
-                        type: 'string',
-                      },
-                      title: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'executionId', 'title'],
                   },
                 ],
               },
@@ -20213,25 +20325,6 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
-                  {
-                    description:
-                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'plan',
-                      },
-                      executionId: {
-                        type: 'string',
-                      },
-                      title: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'executionId', 'title'],
-                  },
                 ],
               },
               ExecutionIdentity: {
@@ -21110,25 +21203,6 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
-                  {
-                    description:
-                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'plan',
-                      },
-                      executionId: {
-                        type: 'string',
-                      },
-                      title: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'executionId', 'title'],
-                  },
                 ],
               },
               ExecutionIdentity: {
@@ -21975,6 +22049,121 @@ export const contracts: {
           },
           resources: {},
         },
+        markBotRead: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotMarkRead',
+            description:
+              'Acknowledge only the outbox sequence actually exposed in the foreground UI.',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              through: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                maximum: 9007199254740991,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'through'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutbox',
+            type: 'object',
+            properties: {
+              enabled: {
+                type: 'boolean',
+              },
+              sessionId: {
+                description: 'The current Bot Session, whatever `sessionId` was asked for.',
+                type: ['string', 'null'],
+              },
+              isBot: {
+                description: 'Whether the Session that was read is, or once was, a Bot Session.',
+                type: 'boolean',
+              },
+              through: {
+                description: 'Highest sequence recorded so far; 0 when empty.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              messages: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentBotMessage',
+                },
+                maxItems: 100,
+              },
+              readThrough: {
+                description:
+                  'Durable, monotonic acknowledgement of messages actually shown to the user.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              preview: {
+                description:
+                  'Latest `SendUser` text, bounded for list previews. Never internal model output.',
+                type: 'string',
+                maxLength: 160,
+              },
+              nextAfter: {
+                description: 'Pass as `after` to read the next page; absent when caught up.',
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['enabled', 'isBot', 'through', 'messages', 'readThrough', 'preview'],
+            $defs: {
+              AgentBotMessage: {
+                description: 'One message the Bot deliberately sent to its user.',
+                type: 'object',
+                properties: {
+                  sequence: {
+                    description: 'Monotonic position in the outbox, starting at 1.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    description: 'The model-chosen idempotency key of the `SendUser` call.',
+                    type: 'string',
+                  },
+                  index: {
+                    description: 'Position of this message within its `SendUser` call.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                  at: {
+                    description: 'Milliseconds since the Unix epoch when the message was recorded.',
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  turnId: {
+                    description:
+                      "The Turn whose work sent this message, so clients can show it as that\nTurn's reply.",
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['sequence', 'messageId', 'index', 'text', 'at'],
+              },
+            },
+          },
+          resources: {},
+        },
         markRead: {
           mode: 'mutation',
           input: {
@@ -22596,7 +22785,6 @@ export const contracts: {
                   'workspace_unavailable',
                   'session_unavailable',
                   'history_unavailable',
-                  'managed_session',
                   'closed',
                 ],
               },
@@ -23470,7 +23658,6 @@ export const contracts: {
                   'workspace_unavailable',
                   'session_unavailable',
                   'history_unavailable',
-                  'managed_session',
                   'closed',
                 ],
               },
@@ -24817,6 +25004,7 @@ export const contracts: {
                     type: 'null',
                   },
                 ],
+                default: null,
               },
               title: {
                 type: ['string', 'null'],
@@ -26055,25 +26243,6 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
-                  },
-                  {
-                    description:
-                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'plan',
-                      },
-                      executionId: {
-                        type: 'string',
-                      },
-                      title: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'executionId', 'title'],
                   },
                 ],
               },
@@ -32188,7 +32357,6 @@ export const contracts: {
                   'workspace_unavailable',
                   'session_unavailable',
                   'history_unavailable',
-                  'managed_session',
                   'closed',
                 ],
               },
@@ -32307,6 +32475,8 @@ export const contracts: {
             type: 'object',
             properties: {
               delivery: {
+                description:
+                  'Defaults to steer. Omit or use steer for updates to ongoing work;\nuse queue only when this message should wait until the current turn ends.',
                 $ref: '#/$defs/AgentSendDelivery',
               },
               expectedRunId: {
@@ -32355,14 +32525,15 @@ export const contracts: {
               AgentSendDelivery: {
                 oneOf: [
                   {
-                    type: 'string',
-                    enum: ['queue'],
-                  },
-                  {
                     description:
-                      'Steer an active model, Codex or Claude turn; agy interrupts and resumes where supported. Other executors queue.',
+                      'Deliver additional context, corrections, progress updates or guidance to ongoing work.\nActive model, Codex and Claude turns accept steering; agy interrupts and resumes where supported. Other executors queue.',
                     type: 'string',
                     const: 'steer',
+                  },
+                  {
+                    description: 'Defer this message until the current turn ends.',
+                    type: 'string',
+                    const: 'queue',
                   },
                 ],
               },
@@ -34224,7 +34395,6 @@ export const contracts: {
                   'workspace_unavailable',
                   'session_unavailable',
                   'history_unavailable',
-                  'managed_session',
                   'closed',
                 ],
               },
@@ -34237,12 +34407,11 @@ export const contracts: {
           input: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             title: 'AgentSkillCandidatesRead',
-            description:
-              "Read-only suggestions resolved against the session's actual skill context.",
+            description: 'Read-only suggestions resolved against the selected completion context.',
             type: 'object',
             properties: {
-              sessionId: {
-                type: 'string',
+              target: {
+                $ref: '#/$defs/AgentCompletionTarget',
               },
               backend: {
                 $ref: '#/$defs/AgentBackendPreference',
@@ -34252,8 +34421,136 @@ export const contracts: {
               },
             },
             additionalProperties: false,
-            required: ['sessionId', 'backend', 'query'],
+            required: ['target', 'backend', 'query'],
             $defs: {
+              AgentCompletionTarget: {
+                description:
+                  'Read-only completion context before or after a conversation is created.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'draft',
+                      },
+                      workspace: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/AgentWorkspaceSelection',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'workspace'],
+                  },
+                ],
+              },
+              AgentWorkspaceSelection: {
+                oneOf: [
+                  {
+                    description: 'A Git worktree of the directory at `path`, managed by the Host.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'isolated_git',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path'],
+                  },
+                  {
+                    description: 'A registered Project at one of its locations.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      project: {
+                        $ref: '#/$defs/AgentProjectRef',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'project', 'path'],
+                  },
+                  {
+                    description:
+                      'The directory at `path`: absolute, `~` standing for the home directory,\nwithin the configured workspace locations.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              AgentProjectRef: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
+              },
               AgentBackendPreference: {
                 description:
                   "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
@@ -34998,25 +35295,6 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
-                  },
-                  {
-                    description:
-                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'plan',
-                      },
-                      executionId: {
-                        type: 'string',
-                      },
-                      title: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'executionId', 'title'],
                   },
                 ],
               },
@@ -36863,25 +37141,6 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
-                  {
-                    description:
-                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'plan',
-                      },
-                      executionId: {
-                        type: 'string',
-                      },
-                      title: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'executionId', 'title'],
-                  },
                 ],
               },
               ExecutionIdentity: {
@@ -37235,6 +37494,19 @@ export const contracts: {
                 },
                 maxItems: 100,
               },
+              readThrough: {
+                description:
+                  'Durable, monotonic acknowledgement of messages actually shown to the user.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              preview: {
+                description:
+                  'Latest `SendUser` text, bounded for list previews. Never internal model output.',
+                type: 'string',
+                maxLength: 160,
+              },
               nextAfter: {
                 description: 'Pass as `after` to read the next page; absent when caught up.',
                 type: ['integer', 'null'],
@@ -37243,7 +37515,7 @@ export const contracts: {
               },
             },
             additionalProperties: false,
-            required: ['enabled', 'isBot', 'through', 'messages'],
+            required: ['enabled', 'isBot', 'through', 'messages', 'readThrough', 'preview'],
             $defs: {
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',
@@ -37302,6 +37574,11 @@ export const contracts: {
                 minimum: 0,
                 default: 0,
               },
+              limit: {
+                type: ['integer', 'null'],
+                format: 'uint',
+                minimum: 0,
+              },
             },
             additionalProperties: false,
             required: ['sessionId'],
@@ -37319,6 +37596,9 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              digest: {
+                type: ['string', 'null'],
+              },
               total: {
                 type: 'integer',
                 format: 'uint',
@@ -37326,6 +37606,11 @@ export const contracts: {
               },
               completed: {
                 type: 'integer',
+                format: 'uint',
+                minimum: 0,
+              },
+              activeIndex: {
+                type: ['integer', 'null'],
                 format: 'uint',
                 minimum: 0,
               },
@@ -37349,7 +37634,6 @@ export const contracts: {
                 items: {
                   $ref: '#/$defs/AgentTodoItem',
                 },
-                maxItems: 20,
               },
               nextOffset: {
                 type: ['integer', 'null'],
@@ -40613,6 +40897,148 @@ export const contracts: {
     interface: {
       kind: 'service',
       methods: {
+        candidates: {
+          mode: 'query',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              directory: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/SkillLibraryCandidateDirectory',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              tools: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+              },
+              query: {
+                type: 'string',
+              },
+            },
+            required: ['directory', 'tools', 'query'],
+            title: 'SkillLibraryCandidatesRead',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              SkillLibraryCandidateDirectory: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                },
+                required: ['path', 'directoryIdentity'],
+                description:
+                  'A read-only directory observation; it does not allocate an execution workspace.',
+              },
+            },
+          },
+          output: {
+            type: 'object',
+            properties: {
+              revision: {
+                type: 'string',
+              },
+              query: {
+                type: 'string',
+              },
+              matches: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/SearchMatch',
+                },
+              },
+              totalEligible: {
+                type: 'integer',
+                format: 'uint',
+                minimum: 0,
+              },
+              matchedCount: {
+                type: 'integer',
+                format: 'uint',
+                minimum: 0,
+              },
+              truncated: {
+                type: 'boolean',
+              },
+            },
+            required: [
+              'revision',
+              'query',
+              'matches',
+              'totalEligible',
+              'matchedCount',
+              'truncated',
+            ],
+            title: 'SkillModelSearchResult',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              SearchMatch: {
+                type: 'object',
+                properties: {
+                  ref: {
+                    type: 'string',
+                  },
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  description: {
+                    type: 'string',
+                  },
+                  scope: {
+                    $ref: '#/$defs/SkillScope',
+                  },
+                  source: {
+                    $ref: '#/$defs/SkillSource',
+                  },
+                  metadataTruncated: {
+                    type: 'boolean',
+                  },
+                  score: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                },
+                required: [
+                  'ref',
+                  'id',
+                  'name',
+                  'description',
+                  'scope',
+                  'source',
+                  'metadataTruncated',
+                  'score',
+                ],
+              },
+              SkillScope: {
+                type: 'string',
+                enum: ['project', 'workspace', 'user', 'custom'],
+              },
+              SkillSource: {
+                type: 'string',
+                enum: ['maka', 'agents', 'custom'],
+              },
+            },
+          },
+          resources: {},
+        },
         delete: {
           mode: 'mutation',
           input: {

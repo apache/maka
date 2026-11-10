@@ -65,7 +65,7 @@ export function CapabilityRequest(props: {
           alignItems: 'flex-start',
           gap: 12,
           padding: 16,
-          backgroundColor: C.raised,
+          backgroundColor: C.cardRaised,
           borderRadius: 12,
         }}
       >

@@ -14,7 +14,7 @@ use nsh_core::{
 use super::{
     resize_handle::{
         Drag, HANDLE_PADDING, HANDLE_SIZE, ResizeHandleContext, ResizeHandleState, band,
-        handle_thumb,
+        handle_thumb, straddle, terminal_cell,
     },
     state::{PANEL_MAX_SIZE, PANEL_MIN_SIZE, ResizableState},
 };
@@ -121,11 +121,19 @@ pub fn ResizablePanelGroup(
             group.model.borrow().handles()
         })
     };
+    // In a terminal the panes are a Cell apart, the handle's line between
+    // them: a column (8 points) beside each other, a row (24 points, the
+    // least a terminal gives a row of) one above the other.
+    let terminal = terminal_cell().is_some();
     view()
         .size_full()
-        .style_with(move |s| match props.axis.get() {
-            Axis::Horizontal => s.flex_row(),
-            Axis::Vertical => s.flex_col(),
+        .style_with(move |s| match (props.axis.get(), terminal) {
+            (Axis::Horizontal, false) => s.flex_row(),
+            (Axis::Vertical, false) => s.flex_col(),
+            // A terminal keeps no percentage height for a box of content:
+            // the group grows to fill its parent instead.
+            (Axis::Horizontal, true) => s.flex_row().flex_grow(1.0).gap(px(8.0)),
+            (Axis::Vertical, true) => s.flex_col().flex_grow(1.0).gap(px(24.0)),
         })
         .on_layout({
             let group = group.clone();
@@ -189,38 +197,44 @@ pub fn ResizablePanelGroup(
                 })
                 .absolute()
                 .style_with(move |s| {
-                    let at = spot.get().at;
+                    // The spot is where a band of `HANDLE_PADDING` either
+                    // side starts; a terminal's reaches half a Cell.
+                    let at = spot.get().at + HANDLE_PADDING - straddle(axis);
                     match axis {
                         Axis::Horizontal => s.top(px(0.0)).bottom(px(0.0)).left(at),
                         Axis::Vertical => s.left(px(0.0)).right(px(0.0)).top(at),
                     }
                 })
-                .child(
-                    // The line by default, so one class draws it on either
-                    // axis (`bg-border`); the app's classes win.
-                    view()
-                        .map(|v| match axis {
-                            Axis::Horizontal => v.w(HANDLE_SIZE),
-                            Axis::Vertical => v.h(HANDLE_SIZE),
-                        })
-                        .app_class(props.handle_class)
-                        .inline_style(props.handle_style)
-                        .child(dynamic(move || {
-                            props.render_handle.get().map(|render| {
-                                let handle = ResizeHandleContext {
-                                    index: index as u32,
-                                    axis,
-                                    state: state.get(),
-                                };
-                                render.render(index.to_string(), handle)
+                // A terminal draws the band as its own line
+                // (`terminal_band`), the app's line and thumb aside.
+                .when(!terminal, |v| {
+                    v.child(
+                        // The line by default, so one class draws it on either
+                        // axis (`bg-border`); the app's classes win.
+                        view()
+                            .map(|v| match axis {
+                                Axis::Horizontal => v.w(HANDLE_SIZE),
+                                Axis::Vertical => v.h(HANDLE_SIZE),
                             })
-                        }))
-                        .child(handle_thumb(
-                            axis,
-                            props.handle_thumb_class,
-                            props.handle_thumb_style,
-                        )),
-                )
+                            .app_class(props.handle_class)
+                            .inline_style(props.handle_style)
+                            .child(dynamic(move || {
+                                props.render_handle.get().map(|render| {
+                                    let handle = ResizeHandleContext {
+                                        index: index as u32,
+                                        axis,
+                                        state: state.get(),
+                                    };
+                                    render.render(index.to_string(), handle)
+                                })
+                            }))
+                            .child(handle_thumb(
+                                axis,
+                                props.handle_thumb_class,
+                                props.handle_thumb_style,
+                            )),
+                    )
+                })
             },
         ))
 }

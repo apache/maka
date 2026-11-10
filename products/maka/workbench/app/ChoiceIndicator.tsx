@@ -29,7 +29,7 @@ export function ChoiceIndicator(props: {
 }) {
   const width = () => (props.kind === 'switch' ? 32 : 16);
   const color = () => (props.disabled ? C.muted : props.checked ? C.accent : C.muted);
-  if (platform.isTerminal)
+  if (platform.idiom === 'terminal')
     return (
       <Text
         accessibilityElementsHidden

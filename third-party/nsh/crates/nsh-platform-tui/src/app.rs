@@ -1,2925 +1,2708 @@
-//! Embeddable engines and the standalone terminal runner. Terminal IO is
-//! exclusively owned by `run_app`; an `AppView` can render in a host's buffer.
-
 #[cfg(feature = "dev")]
-use std::sync::Mutex;
+#[path = "agent.rs"]
+mod agent;
+#[cfg(feature = "dev")]
+#[path = "dev.rs"]
+mod dev;
+
 use std::{
-    collections::VecDeque,
-    io::{self, IsTerminal, Write},
+    io,
+    ops::Range,
     path::PathBuf,
-    sync::{Arc, RwLock, mpsc},
+    sync::{Arc, atomic::Ordering},
     time::{Duration, Instant},
 };
 
-#[cfg(not(windows))]
-use crossterm::event::{
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
-use crossterm::{
-    cursor::{Hide, Show},
-    event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event,
-    },
-    execute,
-    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen, SetTitle},
-};
-use nsh_core::{
-    MountBatch,
-    platform::{Appearance, Locale, Renderer},
-};
-use nsh_engine::{
-    App, Bundle, ColorScheme, Engine, EngineConfig, EngineControl, Environment, Idiom, Limits,
-    MountSink, Os, Root,
-};
-use ratatui::{
-    backend::CrosstermBackend,
+use nsh_core::{Bounds, Point, Points, ROOT_ID, Size, ViewKind, text_edit};
+use nsh_engine::{App, AppError, Engine, EngineConfig, Environment, HostChannel, Idiom, Limits};
+use ratatui_core::{
     buffer::Buffer,
-    layout::Rect,
-    style::{Color, Style},
-    widgets::{Clear, Paragraph, Widget, Wrap},
+    layout::{Position, Rect},
+    terminal::Frame,
+    widgets::Widget,
 };
 
-pub use crate::image::AssetBase;
 use crate::{
-    CellMetrics, Surface, SurfaceEvent, TerminalTextEngine,
-    image::AssetReader,
-    services::{HostServices, ServiceManager, ServiceOutput, ServiceRequest},
+    Appearance, CellSize, CellTextEngine, ComponentFactory, Handled, Input,
+    input::Pointer,
+    mount::Mounter,
+    render::{self, Hit},
+    surface::{Message, Runtime, Sink, Surface},
 };
 
-static UI_SETS: RwLock<Option<Vec<nsh_core::element::Registry>>> = RwLock::new(None);
+/// The machine's operating system, reported as the desktop hosts report theirs:
+/// files, processes and OS-specific behavior follow it.
+pub(crate) const OS: nsh_core::platform::Os = if cfg!(target_os = "macos") {
+    nsh_core::platform::Os::MacOs
+} else if cfg!(target_os = "windows") {
+    nsh_core::platform::Os::Windows
+} else {
+    nsh_core::platform::Os::Linux
+};
 
-/// Sets the UI sets served by subsequently loaded apps. The default is
-/// `nsh/base`; app-specific hosts call this before creating views.
-pub fn set_ui_sets(sets: Vec<nsh_core::element::Registry>) {
-    *UI_SETS.write().unwrap_or_else(|e| e.into_inner()) = Some(sets);
+/// Called from the engine thread to schedule a render on the embedding thread.
+pub type WakeCallback = Arc<dyn Fn() + Send + Sync>;
+
+/// One accessible element in paint/tree order, scoped to the active modal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccessibleNode {
+    /// Mounted node identifier.
+    pub id: nsh_core::NodeId,
+    /// Shared point geometry.
+    pub frame: Bounds<Points>,
+    /// Semantic role, independent of terminal glyphs.
+    pub role: nsh_core::AccessibilityRole,
+    /// Accessible label, with secure input content omitted.
+    pub label: String,
+    /// Optional interaction hint.
+    pub hint: Option<String>,
+    /// Current interaction state.
+    pub state: nsh_core::AccessibilityState,
+    /// Range or descriptive value; secure fields omit it.
+    pub value: Option<nsh_core::AccessibilityValue>,
+    /// Whether the terminal assigned keyboard focus.
+    pub focused: bool,
+    /// Declared semantic actions.
+    pub actions: Vec<nsh_core::AccessibilityActionDef>,
 }
 
-fn ui_sets() -> Vec<nsh_core::element::Registry> {
-    UI_SETS
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .unwrap_or_else(|| vec![nsh_base::registry()])
+/// A focused input's native editing context for a host's completion,
+/// autocorrection or autofill service.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputContext {
+    /// The focused input.
+    pub node: nsh_core::NodeId,
+    /// Current text, redacted for secure inputs.
+    pub text: Option<String>,
+    /// Selected UTF-16 range, or the caret when empty.
+    pub selection: Range<u32>,
+    /// Native edit generation that a replacement must acknowledge.
+    pub event_count: u32,
+    /// Intended keyboard content.
+    pub keyboard: nsh_core::KeyboardType,
+    /// Capitalization hint for a host keyboard.
+    pub auto_capitalize: nsh_core::AutoCapitalize,
+    /// Whether the app requests correction suggestions.
+    pub auto_correct: bool,
+    /// Autofill content hint.
+    pub auto_fill: nsh_core::AutoFill,
+    /// The input hides its text; hosts keep automatic suggestions private.
+    pub secure: bool,
+    /// The mounted input currently accepts edits.
+    pub editable: bool,
+    /// The input accepts line breaks.
+    pub multiline: bool,
+    /// Maximum text length in UTF-16 units.
+    pub max_length: Option<u32>,
 }
 
-/// The app loaded by [`run_app`].
-#[derive(Debug)]
-pub enum AppSource {
-    /// A native Rust root component.
-    Rust(Root),
-    /// A JavaScript bundle from trusted app resources or source code.
-    Bundle(Box<Bundle>),
-    /// A development server that pushes full bundles and hot updates.
-    #[cfg(feature = "dev")]
-    DevServer(String),
-}
-
-/// Configuration shared by an embedded [`AppView`] and [`run_app`].
+/// Terminal information supplied by the host. Further capabilities are added with their renderers.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct TerminalCapabilities {
+    /// System appearance; dark when the host has no background information.
+    pub background: nsh_core::platform::ColorScheme,
+    /// The colors the terminal can show; app colors are drawn at this depth.
+    pub colors: ColorDepth,
+    /// The terminal's default background (OSC 11). At 256 colors or more
+    /// it is the base of the terminal's surfaces: app fills, selections,
+    /// hover and press drawn as steps of it mixed toward
+    /// [`Self::foreground_color`], secondary text as fades. Without it
+    /// the look is bandless: no fills, reverse video and dim text.
+    pub background_color: Option<[u8; 3]>,
+    /// The terminal's default foreground (OSC 10): what the surfaces' steps
+    /// mix toward (white or black against the background when unknown).
+    pub foreground_color: Option<[u8; 3]>,
+    /// The terminal reports the Command (Super) modifier, through the kitty
+    /// keyboard protocol. Without it, Ctrl stands in for Cmd in the app's
+    /// shortcuts on macOS.
+    pub command_key: bool,
+}
+
+/// The colors a terminal shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum ColorDepth {
+    /// 24-bit RGB (`COLORTERM=truecolor`).
+    #[default]
+    TrueColor,
+    /// The xterm 256-color palette.
+    Ansi256,
+    /// The 16 named colors.
+    Ansi16,
+    /// No colors (`NO_COLOR`): states and marks are drawn with reverse
+    /// video, bold, underline and dim alone.
+    Monochrome,
+}
+
+impl Default for TerminalCapabilities {
+    fn default() -> Self {
+        Self {
+            background: nsh_core::platform::ColorScheme::Dark,
+            colors: ColorDepth::default(),
+            background_color: None,
+            foreground_color: None,
+            command_key: false,
+        }
+    }
+}
+
+/// Configuration of one terminal surface. Embedding uses bounded engine limits.
+#[non_exhaustive]
 pub struct AppOptions {
-    /// Log engine commit timings through the `log` facade.
-    pub trace: bool,
-    /// Location of bundled `asset:/` resources.
-    pub asset_base: Option<AssetBase>,
-    /// The application's reverse-domain identifier.
-    pub app_id: String,
-    /// The standalone terminal's title.
-    pub title: String,
-    /// Initial width and height in terminal columns and rows. Interactive
-    /// runs use the terminal's actual size; headless scripts use this size.
-    pub size: (u16, u16),
-    /// Headless verification steps, for example
-    /// `wait 100; key Tab; type Hello; shot screen.txt; quit`.
-    pub script: Option<String>,
-    /// Initial appearance, before an app selects its own.
+    /// Grid scale, shared by layout, drawing and input.
+    pub cells: CellSize,
+    /// Terminal properties determined by the embedding host.
+    pub capabilities: TerminalCapabilities,
+    /// Optional image rendering protocol (Unicode half-blocks or Sixel).
+    pub image_protocol: Option<crate::ImageProtocol>,
+    /// App appearance override.
     pub appearance: Appearance,
-    /// Resource limits of a JavaScript app.
+    /// Notification that the surface has pending work.
+    pub wake: Option<WakeCallback>,
+    /// VM and core resource limits.
     pub limits: Limits,
-    /// Native modules and UI sets available to this view's JS VMs. `None`
-    /// uses [`set_ui_sets`]'s process default; `Some(Vec::new())` serves none.
-    /// Reloads construct new values from the same registry factories.
-    pub ui_sets: Option<Vec<nsh_core::element::Registry>>,
-    /// Virtual point dimensions of one terminal cell.
-    pub metrics: CellMetrics,
-    /// Native terminal components available through `nsh/native`, scoped
-    /// to this view and retained across app reloads.
-    pub components: crate::native::Components,
-    /// Requests reduced-motion presentation for navigation and layout.
-    pub reduce_motion: bool,
-    /// Where apps keep their data, each in `<dir>/<app id>` (`nsh.json`
-    /// `"id"`, carried by the bundle or Rust root). `None` uses the system's
-    /// data directory ([`nsh_engine::data_dir`]); an embedding host supplies
-    /// its own directory, such as its data directory plus `/nsh`.
+    /// Image and response cache policy.
+    pub cache: nsh_engine::CacheOptions,
+    /// Persistent app data directory.
     pub data_dir: Option<PathBuf>,
-    /// The app's storage (`nsh/storage`), overriding the `storage.json` in
-    /// its directory of [`data_dir`](Self::data_dir).
-    pub storage: Option<Arc<dyn nsh_engine::StorageBackend>>,
+    /// Registries available to app code.
+    pub ui_sets: Vec<nsh_core::element::Registry>,
+    /// Embedding app's channel, retained across loads.
+    pub host: HostChannel,
+    /// Optional app storage implementation.
+    pub storage: Option<Arc<dyn nsh_core::storage::StorageBackend>>,
+    /// Optional asset reader supplied by the embedding app.
+    pub assets: Option<Arc<dyn nsh_engine::Assets>>,
+    /// Clipboard implementation supplied by the host.
+    pub clipboard: Option<Arc<dyn nsh_core::clipboard::ClipboardBackend>>,
+    /// Log engine timings through `nsh::perf`.
+    pub trace: bool,
+    /// Show the terminal frame monitor.
+    pub fps: bool,
+    /// Root linked into an app-specific development host.
+    #[cfg(feature = "dev")]
+    pub root: Option<nsh_engine::Root>,
 }
 
 impl Default for AppOptions {
     fn default() -> Self {
         Self {
-            trace: false,
-            asset_base: None,
-            app_id: "com.longbridge.nsh.host".into(),
-            title: "Native Shell".into(),
-            size: (120, 40),
-            script: None,
+            cells: CellSize::default(),
+            capabilities: TerminalCapabilities::default(),
+            image_protocol: None,
             appearance: Appearance::System,
+            wake: None,
             limits: Limits::default(),
-            ui_sets: None,
-            metrics: CellMetrics::default(),
-            components: Default::default(),
-            reduce_motion: false,
+            cache: nsh_engine::CacheOptions::default(),
             data_dir: None,
+            ui_sets: vec![nsh_base::registry()],
+            host: HostChannel::default(),
             storage: None,
+            assets: None,
+            clipboard: None,
+            trace: false,
+            fps: false,
+            #[cfg(feature = "dev")]
+            root: None,
         }
     }
 }
 
-enum EngineEvent {
-    Batch(MountBatch),
-    Error(String),
-    Frame,
-    Reload,
-}
+type ErrorCallback = Box<dyn FnMut(&AppError)>;
+type TextErrorCallback = Box<dyn FnMut(&str)>;
 
-struct Sink(mpsc::Sender<EngineEvent>);
+/// How long a key waits for the engine to run a focus change before it is matched.
+const FOCUS_CATCH_UP: Duration = Duration::from_millis(100);
 
-impl MountSink for Sink {
-    fn submit(&self, batch: MountBatch) {
-        let _ = self.0.send(EngineEvent::Batch(batch));
-    }
-    fn report_error(&self, message: &str) {
-        let _ = self.0.send(EngineEvent::Error(message.into()));
-    }
-    fn request_frame(&self) {
-        let _ = self.0.send(EngineEvent::Frame);
-    }
-    fn hot_update_failed(&self) {
-        let _ = self.0.send(EngineEvent::Reload);
-    }
-}
-
-/// One independently running NSH app, rendered into a Ratatui buffer.
-///
-/// The embedding host owns its terminal, chooses the area to render and
-/// routes only that area's events to the view. Call [`Self::poll`] each
-/// host frame and [`Self::tick`] on animation frames. Dropping the view
-/// stops and joins its engine; neither construction nor drop changes the
-/// terminal mode.
+/// One passive NSH surface. Rendering applies pending engine commits and invokes callbacks; a key
+/// right after a focus change also applies the commits that change made.
+#[non_exhaustive]
 pub struct AppView {
-    surface: Surface,
     options: AppOptions,
-    environment: Environment,
-    host: nsh_engine::HostChannel,
-    engine: Option<Engine>,
-    receiver: Option<mpsc::Receiver<EngineEvent>>,
-    network: Arc<dyn nsh_engine::Network>,
-    assets: Arc<AssetsProvider>,
-    frame_requested: bool,
-    has_frame: bool,
-    last_error: Option<String>,
-    status: Option<String>,
-    theme: Option<nsh_base::Theme>,
-    image_protocol: Option<crate::ImageProtocol>,
-    /// Last path sent to this engine; transport deduplication only.
-    focus_path: Vec<nsh_core::NodeId>,
-    services: Option<ServiceManager>,
-    service_output: VecDeque<ServiceOutput>,
+    perf: Option<crate::perf::Monitor>,
+    output: crate::perf::SharedOutput,
     #[cfg(feature = "dev")]
-    dev: Option<DevSession>,
+    dev: Option<dev::DevSession>,
+    /// The development server's `asset:/` files, unless the embedder supplies a reader.
+    #[cfg(feature = "dev")]
+    dev_assets: Option<Arc<dyn nsh_engine::Assets>>,
+    #[cfg(feature = "dev")]
+    diagnostics: dev::Diagnostics,
+    #[cfg(feature = "dev")]
+    test: Option<agent::TestSession>,
+    surface: Surface,
+    tree: Mounter,
+    images: crate::image::ImageStore,
+    scratch: Buffer,
+    area: Rect,
+    focused: bool,
+    input_paused: bool,
+    clipboard: Arc<dyn nsh_core::clipboard::ClipboardBackend>,
+    kill: String,
+    field_drag: Option<FieldDrag>,
+    /// The press on a text field that listens to presses (a combobox's
+    /// field): the field takes the pointer, and the press still ends as
+    /// one does, `onPress` when the pointer comes up on the field. With
+    /// the field's view origin and its Cells.
+    field_press: Option<(
+        nsh_core::input::Press<nsh_core::NodeId>,
+        Point<Points>,
+        Rect,
+    )>,
+    /// The stop a primary press went down on (or inside), which takes the
+    /// focus as the press comes up: while it is held the view shows the
+    /// press, not the focus.
+    press_focus: Option<nsh_core::NodeId>,
+    /// The next `draw_terminal` repaints every Cell (the terminal came back to focus).
+    repaint: bool,
+    pointer: Pointer,
+    bar_drag: Option<crate::input::BarDrag>,
+    /// Scroll views moved since they last came to rest: settled (the
+    /// animator's `scroll_ended`) once no drag holds them.
+    unsettled: Vec<nsh_core::NodeId>,
+    cursor_style: crate::CursorStyle,
+    on_cursor_style: Option<Box<dyn FnMut(crate::CursorStyle)>>,
+    selection: crate::selection::Selection,
+    hits: Vec<Hit>,
+    geometry: Vec<crate::render::Geometry>,
+    keyboard: crate::keyboard::Keyboard,
+    minibuffer: crate::search::Minibuffer,
+    environment: Environment,
+    appearance_changed: bool,
+    last_error: Option<String>,
+    on_error: Option<TextErrorCallback>,
+    on_app_error: Option<ErrorCallback>,
+    on_appearance: Option<Box<dyn FnMut(Appearance)>>,
+}
+
+impl Default for AppView {
+    fn default() -> Self {
+        Self::new(AppOptions::default())
+    }
 }
 
 impl AppView {
-    /// Creates an empty view at `options.size`, without taking terminal IO.
+    /// Creates an empty surface; it takes over no terminal state or event loop.
     pub fn new(options: AppOptions) -> Self {
-        let mut surface = Surface::new(options.size.0, options.size.1, options.metrics);
-        let environment = initial_environment(&options);
-        surface.set_dark(environment.color_scheme == ColorScheme::Dark);
-        surface.set_components(options.components.clone());
-        surface.set_reduce_motion(options.reduce_motion);
-        let assets = Arc::new(AssetsProvider(RwLock::new(options.asset_base.clone())));
-        surface.set_assets(Some(assets.clone()));
+        let environment = Environment {
+            os: OS,
+            idiom: Idiom::Terminal,
+            color_scheme: options.appearance.resolve(options.capabilities.background),
+            reduce_motion: false,
+            native_focus_scopes: true,
+            fallback_key_bindings: true,
+            // The core lays out on the terminal's Cells: every frame here is
+            // whole Cells and every border owns its own.
+            cell: Some(nsh_core::Size::new(
+                options.cells.width(),
+                options.cells.height(),
+            )),
+            // Without the kitty keyboard protocol a macOS terminal cannot
+            // report Command: Ctrl stands in for it, and labels say so.
+            ctrl_for_command: OS == nsh_core::platform::Os::MacOs
+                && !options.capabilities.command_key,
+            ..Default::default()
+        };
+        let clipboard = options
+            .clipboard
+            .clone()
+            .unwrap_or_else(|| Arc::new(nsh_core::clipboard::MemoryClipboard::default()));
+        let surface = Surface::default();
+        surface.wake.set(options.wake.clone());
+        let fps = options.fps || nsh_engine::perf::enabled_by_env();
+        let output = crate::perf::SharedOutput::default();
+        output.enabled.set(fps);
+        let mut images = crate::image::ImageStore::default();
+        let _ = images.set_protocol(options.image_protocol);
         Self {
-            surface,
-            environment,
-            host: nsh_engine::HostChannel::new(),
+            perf: fps.then(crate::perf::Monitor::new),
+            output,
             options,
-            engine: None,
-            receiver: None,
-            network: crate::net::network(),
-            assets,
-            frame_requested: false,
-            has_frame: false,
-            last_error: None,
-            status: None,
-            theme: None,
-            image_protocol: None,
-            focus_path: Vec::new(),
-            services: None,
-            service_output: VecDeque::new(),
             #[cfg(feature = "dev")]
             dev: None,
+            #[cfg(feature = "dev")]
+            dev_assets: None,
+            #[cfg(feature = "dev")]
+            diagnostics: dev::Diagnostics::default(),
+            #[cfg(feature = "dev")]
+            test: None,
+            surface,
+            tree: {
+                let mut tree = Mounter::default();
+                tree.menus.ctrl_for_command = environment.ctrl_for_command;
+                tree
+            },
+            images,
+            scratch: Buffer::default(),
+            area: Rect::default(),
+            focused: true,
+            input_paused: false,
+            clipboard,
+            kill: String::new(),
+            field_drag: None,
+            field_press: None,
+            press_focus: None,
+            repaint: false,
+            pointer: Pointer::default(),
+            bar_drag: None,
+            unsettled: Vec::new(),
+            cursor_style: crate::CursorStyle::Default,
+            on_cursor_style: None,
+            selection: Default::default(),
+            hits: Vec::new(),
+            geometry: Vec::new(),
+            keyboard: Default::default(),
+            minibuffer: Default::default(),
+            environment,
+            appearance_changed: false,
+            last_error: None,
+            on_error: None,
+            on_app_error: None,
+            on_appearance: None,
         }
     }
 
-    /// The channel with the apps this view runs (`nsh/host`). Configure launch
-    /// parameters and call handlers before loading, or send events while an
-    /// app runs. Clones share this view's channel across subsequent loads.
-    pub fn host(&self) -> nsh_engine::HostChannel {
-        self.host.clone()
+    /// Replaces the app and starts its engine. Startup errors of app code arrive during render.
+    pub fn load(&mut self, app: impl Into<App>) -> io::Result<()> {
+        self.stop();
+        self.load_app(app.into())
     }
 
-    /// Runs `app`, replacing the current engine and retained views.
-    pub fn load(&mut self, app: App) -> io::Result<()> {
-        let assets: Arc<dyn nsh_engine::Assets> = self.assets.clone();
-        let config = EngineConfig {
-            viewport: self.surface.viewport(),
-            trace: self.options.trace,
-            network: Some(self.network.clone()),
-            assets: Some(assets),
-            environment: self.environment,
-            // Pages supply their own header content on the terminal.
-            header_heights: nsh_core::NO_NATIVE_HEADER,
-            limits: self.options.limits,
-            ui_sets: self.options.ui_sets.clone().unwrap_or_else(ui_sets),
-            runtime: None,
-            data_dir: self.options.data_dir.clone().or_else(nsh_engine::data_dir),
-            storage: self.options.storage.clone(),
-            host: self.host.clone(),
-            ..EngineConfig::new(app)
-        };
+    fn load_app(&mut self, app: App) -> io::Result<()> {
+        let mut config = EngineConfig::new(app);
+        config.viewport = self.size();
+        config.environment = self.environment;
+        config.ui_sets = self.options.ui_sets.clone();
+        config.limits = self.options.limits;
+        config.cache = self.options.cache.clone();
+        config.host = self.options.host.clone();
+        config.trace = self.options.trace;
         self.load_with_config(config)
     }
 
-    /// Runs a host-supplied engine configuration with this view's viewport and
-    /// terminal environment. Registries, assets, module loader, runtime and
-    /// engine context stay with the supplied configuration.
+    fn prepare_config(&mut self, config: &mut EngineConfig) {
+        let cells = self.options.cells;
+        if self.area.is_empty()
+            && config.viewport.width > Points(0.0)
+            && config.viewport.height > Points(0.0)
+        {
+            let columns = (config.viewport.width / cells.width()).round().max(1.0) as u16;
+            let rows = (config.viewport.height / cells.height()).round().max(1.0) as u16;
+            self.area = Rect::new(0, 0, columns, rows);
+        }
+        let viewport = self.size();
+        config.viewport = viewport;
+        config.header_heights = nsh_core::NO_NATIVE_HEADER;
+        if config.environment == Environment::default() {
+            config.environment = self.environment;
+        } else {
+            if config.environment.os == nsh_core::platform::Os::default() {
+                config.environment.os = OS;
+                if OS == nsh_core::platform::Os::MacOs && !self.options.capabilities.command_key {
+                    config.environment.ctrl_for_command = true;
+                }
+            }
+            if config.environment.idiom == Idiom::default() {
+                config.environment.idiom = Idiom::Terminal;
+            }
+        }
+        config.environment.window = viewport;
+        config.environment.native_focus_scopes = true;
+        config.environment.fallback_key_bindings = true;
+        config
+            .environment
+            .cell
+            .get_or_insert(Size::new(cells.width(), cells.height()));
+        self.environment = config.environment;
+        self.tree.menus.ctrl_for_command = self.environment.ctrl_for_command;
+        if config.ui_sets.is_empty() {
+            config.ui_sets = self.options.ui_sets.clone();
+        }
+        config.network.get_or_insert_with(nsh_engine::net::network);
+        if config.data_dir.is_none() {
+            config.data_dir = self.options.data_dir.clone();
+        }
+        if config.assets.is_some() {
+            self.options.assets = config.assets.clone();
+        } else {
+            config.assets = self.options.assets.clone();
+            #[cfg(feature = "dev")]
+            if config.assets.is_none() {
+                config.assets = self.dev_assets.clone();
+            }
+        }
+        if config.storage.is_none() {
+            config.storage = self.options.storage.clone();
+        }
+        if let Some(clipboard) = &config.clipboard {
+            self.clipboard = clipboard.clone();
+        } else {
+            config.clipboard = Some(self.clipboard.clone());
+        }
+        self.options.host = config.host.clone();
+    }
+
+    /// Starts a threaded [`Engine`] from an embedder-configured [`EngineConfig`].
     pub fn load_with_config(&mut self, mut config: EngineConfig) -> io::Result<()> {
         self.stop_engine();
-        let mut surface = Surface::new(
-            self.options.size.0,
-            self.options.size.1,
-            self.options.metrics,
-        );
-        surface.inherit_image_protocol(&mut self.surface);
-        self.surface = surface;
-        self.focus_path.clear();
-        self.surface
-            .set_dark(self.environment.color_scheme == ColorScheme::Dark);
-        self.surface.set_components(self.options.components.clone());
-        self.surface.set_reduce_motion(self.options.reduce_motion);
-        self.surface.set_image_protocol(self.image_protocol);
-        let access = match &config.app {
+        self.prepare_config(&mut config);
+        #[cfg(feature = "dev")]
+        if let Some(test) = &self.test {
+            test.model.set_up_engine(&mut config);
+        }
+        self.clipboard = config
+            .clipboard
+            .clone()
+            .unwrap_or_else(|| Arc::new(nsh_core::clipboard::MemoryClipboard::default()));
+        let access = Arc::new(match &config.app {
             App::Js(bundle) => bundle.policy.access(),
             App::Rust(_) => nsh_engine::Policy::default().access(),
-        };
-        self.surface.set_assets(config.assets.clone());
-        self.surface.set_access(access);
-        self.surface.services.enabled = self.services.is_some();
-        if let Some(services) = &self.services {
-            services.reset(self.surface.access.clone());
-        }
-        config.viewport = self.surface.viewport();
-        config.environment = self.environment;
-        config.header_heights = nsh_core::NO_NATIVE_HEADER;
-        self.host = config.host.clone();
-        let (tx, rx) = mpsc::channel();
-        let metrics = self.options.metrics;
-        let fonts = self.surface.fonts.clone();
-        let theme = self.theme.clone();
-        self.engine = Some(Engine::start_with(
-            config,
-            move || TerminalTextEngine::with_fonts(metrics, fonts),
-            Sink(tx),
-            move |control| {
-                if let Some(theme) = theme {
-                    control.set_tokens(Some(theme.into_tokens()));
-                }
-            },
-        )?);
-        self.receiver = Some(rx);
-        self.last_error = None;
-        self.has_frame = false;
-        self.frame_requested = false;
-        Ok(())
-    }
-
-    /// Starts a reconnecting dev-server session. Bundles and hot updates
-    /// are applied by [`Self::poll`]. Ctrl+R reloads the latest full build.
-    #[cfg(feature = "dev")]
-    pub fn connect(&mut self, url: String) -> io::Result<()> {
-        use nsh_dev::{DevClient, HostInfo, protocol::HostPlatform};
-        self.stop();
-        self.last_error = None;
-        self.has_frame = false;
-        let base = dev_asset_base(&url).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "a dev server URL must start with ws:// or wss:// and name a host",
-            )
-        })?;
-        self.set_asset_base(Some(AssetBase::Http(base)));
-        let host = HostInfo {
-            device: "Terminal".into(),
-            tests: false,
-            platform: HostPlatform::Tui,
-            bytecode_version: nsh_engine::BYTECODE_VERSION.into(),
-            ui_sets: self
-                .options
-                .ui_sets
-                .clone()
-                .unwrap_or_else(ui_sets)
-                .iter()
-                .flat_map(nsh_core::element::Registry::sets)
-                .filter_map(|set| set.specifier().map(str::to_owned))
-                .collect(),
-        };
-        let (tx, rx) = mpsc::channel();
-        let client = DevClient::start(url.clone(), host, move |event| {
-            let _ = tx.send(event);
-        })?;
-        self.dev = Some(DevSession {
-            client,
-            receiver: rx,
-            running: None,
-            latest: None,
         });
-        self.status = Some(format!("Connecting to {url}"));
+        let assets = config.assets.clone();
+        let viewport = config.viewport;
+        let cells = self.options.cells;
+        let (sender, inbox) = crossbeam_channel::unbounded();
+        let sink = Sink {
+            sender: sender.clone(),
+            wake: self.surface.wake.clone(),
+        };
+        self.surface.sink = sink.clone();
+        self.keyboard.sync = Some((sender, self.surface.wake.clone()));
+        let engine = Engine::start(config, move || CellTextEngine::new(cells), sink)?;
+        self.images
+            .set_resources(assets, access, engine.image_cache());
+        #[cfg(feature = "dev")]
+        if let Some(test) = &self.test {
+            test.model.engine_started(engine.control());
+        }
+        if let Some(perf) = &self.perf {
+            engine.control().set_perf_monitor(Some(perf.engine.clone()));
+        }
+        self.surface.runtime = Some(Runtime::Threaded(engine));
+        self.surface.inbox = inbox;
+        self.surface.laid_out = viewport;
         Ok(())
     }
 
-    /// Applies queued engine batches and development updates without
-    /// waiting for the engine. Returns whether the display changed.
-    pub fn poll(&mut self) -> io::Result<bool> {
+    /// Starts a single-threaded [`nsh_engine::LocalEngine`] owned by this surface.
+    pub fn load_local(&mut self, mut config: EngineConfig) -> Result<(), String> {
+        self.stop_engine();
+        self.prepare_config(&mut config);
+        let cells = self.options.cells;
+        let viewport = config.viewport;
+        let access = Arc::new(match &config.app {
+            App::Js(bundle) => bundle.policy.access(),
+            App::Rust(_) => nsh_engine::Policy::default().access(),
+        });
+        let assets = config.assets.clone();
+        let (sender, inbox) = crossbeam_channel::unbounded();
+        let sink = Sink {
+            sender: sender.clone(),
+            wake: self.surface.wake.clone(),
+        };
+        self.surface.sink = sink.clone();
+        self.surface.inbox = inbox;
+        self.keyboard.sync = Some((sender, self.surface.wake.clone()));
+        let mut local = nsh_engine::LocalEngine::start(config, CellTextEngine::new(cells), sink)
+            .ok_or_else(|| "NSH UI engine failed to start".to_owned())?;
+        let wake = Arc::clone(&self.surface.wake);
+        local.set_wake(Arc::new(move || wake.notify()));
+        if let Some(perf) = &self.perf {
+            local.control().set_perf_monitor(Some(perf.engine.clone()));
+        }
+        let disk = local.image_cache();
+        self.images.set_resources(assets, access, disk);
+        self.surface.local_deadline = local.pump();
+        self.surface.laid_out = viewport;
+        self.surface.runtime = Some(Runtime::Local(Box::new(local)));
+        Ok(())
+    }
+
+    /// Pumps a local engine, applies pending commits, and updates layout and hit geometry
+    /// without advancing `requestAnimationFrame` callbacks.
+    pub fn pump(&mut self) -> Result<bool, String> {
         let mut changed = false;
-        #[cfg(feature = "dev")]
-        {
-            let events: Vec<_> = self
-                .dev
-                .as_ref()
-                .map(|dev| dev.receiver.try_iter().collect())
-                .unwrap_or_default();
-            for event in events {
-                self.dev_event(event)?;
+        let mut first = true;
+        while first || (self.surface.is_local() && !self.keyboard.is_caught_up()) {
+            first = false;
+            if let Some(Runtime::Local(local)) = &mut self.surface.runtime {
+                self.surface.local_deadline = local.pump();
+            }
+            let had_messages = !self.surface.held.is_empty() || !self.surface.inbox.is_empty();
+            let area = self.area;
+            let mut next = Buffer::empty(area);
+            let first_err = self.draw_scene(area, &mut next, false);
+            if next != self.scratch || had_messages {
                 changed = true;
             }
-        }
-        let events: Vec<_> = self
-            .receiver
-            .as_ref()
-            .map(|rx| rx.try_iter().collect())
-            .unwrap_or_default();
-        for event in events {
-            match event {
-                EngineEvent::Batch(batch) => {
-                    self.surface.apply(batch);
-                    self.has_frame = true;
-                    changed = true;
-                }
-                EngineEvent::Error(message) => {
-                    self.last_error = Some(message);
-                    changed = true;
-                }
-                EngineEvent::Frame => self.frame_requested = true,
-                EngineEvent::Reload => {
-                    #[cfg(feature = "dev")]
-                    self.reload_after_update()?;
-                    // A reload replaced the receiver. Old-engine events
-                    // collected above must never enter the new surface.
-                    break;
-                }
+            self.scratch = next;
+            if let Some(text) = first_err {
+                return Err(text);
             }
-        }
-        self.dispatch_events();
-        changed |= self.poll_services();
-        #[cfg(feature = "dev")]
-        if let Some(dev) = &self.dev {
-            for record in take_logs() {
-                let record = record.terminal_safe();
-                dev.client
-                    .log(record.level.into(), &record.target, &record.message);
+            if !self.surface.is_local() {
+                break;
             }
         }
         Ok(changed)
     }
 
-    /// Advances native animations at monotonic time `now` in seconds and
-    /// delivers requested animation frames to the engine.
-    pub fn tick(&mut self, now: f64) -> io::Result<bool> {
-        let mut changed = self.poll()?;
-        changed |= self.surface.tick(now);
-        self.dispatch_events();
-        if self.frame_requested {
-            self.frame_requested = false;
-            if let Some(control) = self.control() {
-                control.frame();
-            }
-        }
-        Ok(changed)
+    /// Advances one `requestAnimationFrame` turn when a frame callback is pending.
+    pub fn begin_frame(&mut self) {
+        self.surface.begin_frame();
     }
 
-    /// Routes an event in coordinates local to this view. Embedders
-    /// subtract the rendered area's origin from mouse coordinates first.
-    pub fn handle_event(&mut self, event: Event) -> bool {
-        if let Event::Resize(columns, rows) = event {
-            self.resize(columns, rows);
-            return true;
-        }
-        #[cfg(feature = "dev")]
-        if let Event::Key(key) = &event
-            && key.kind != event::KeyEventKind::Release
-            && key.code == event::KeyCode::Char('r')
-            && key.modifiers.contains(event::KeyModifiers::CONTROL)
-            && self.dev.is_some()
-        {
-            if let Err(error) = self.reload_latest() {
-                self.last_error = Some(error.to_string());
-            }
-            return true;
-        }
-        let changed = self.surface.handle_event(event);
-        self.dispatch_events();
-        changed
-    }
-
-    /// Updates this view's viewport in terminal columns and rows.
+    /// Updates the grid dimensions for headless or explicitly sized hosts.
     pub fn resize(&mut self, columns: u16, rows: u16) {
-        self.options.size = (columns, rows);
-        self.surface.resize(columns, rows);
-        let size = self.surface.viewport();
-        self.environment.window = size;
-        if let Some(control) = self.control() {
-            self.publish_focus(&control);
-            control.resize(size);
+        let next = Rect::new(0, 0, columns, rows);
+        if self.area == next {
+            return;
+        }
+        let control = self.surface.control();
+        self.pointer.cancel(&mut self.tree, control.as_ref());
+        self.area = next;
+        let viewport = self.size();
+        self.environment.window = viewport;
+        if let Some(control) = control {
+            control.resize(viewport);
             control.set_environment(self.environment);
         }
-    }
-
-    /// Paints the retained scene, then any development status or error,
-    /// clipped to `area`; terminal flushing remains the host's concern.
-    pub fn render(&self, area: Rect, buffer: &mut Buffer) {
-        if self.last_error.is_some() || self.status.is_some() {
-            self.surface.render_plain(area, buffer);
-        } else {
-            self.surface.render(area, buffer);
+        if self.surface.is_local() {
+            self.surface.laid_out = viewport;
         }
-        if let Some(error) = &self.last_error {
-            Clear.render(area, buffer);
-            Paragraph::new(format!(
-                "Native Shell\n\n{}\n\nCtrl+R reloads a development app. Ctrl+Q exits.",
-                safe_diagnostic(error)
-            ))
-            .style(Style::default().fg(Color::Red))
-            .wrap(Wrap { trim: false })
-            .render(area, buffer);
-        } else if let Some(status) = &self.status {
-            let line = Rect::new(
-                area.x,
-                area.y.saturating_add(area.height.saturating_sub(1)),
-                area.width,
-                u16::from(area.height > 0),
-            );
-            Paragraph::new(safe_diagnostic(status))
-                .style(Style::default().fg(Color::Yellow).bg(Color::Black))
-                .render(line, buffer);
+        self.surface.wake.notify();
+    }
+
+    /// Configures the terminal image rendering protocol (`None` disables image rendering).
+    pub fn set_image_protocol(&mut self, protocol: Option<crate::ImageProtocol>) {
+        if !self.images.set_protocol(protocol) {
+            return;
+        }
+        if protocol.is_some() {
+            let control = self.surface.control();
+            let cells = self.options.cells;
+            let ids: Vec<nsh_core::NodeId> = self
+                .tree
+                .views
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, slot)| {
+                    slot.as_ref()
+                        .filter(|v| v.kind == ViewKind::Image)
+                        .map(|_| idx as nsh_core::NodeId)
+                })
+                .collect();
+            for id in ids {
+                if let Some(view) = self.tree.get(id) {
+                    self.images.sync_view(
+                        id,
+                        view.image.as_ref(),
+                        view.frame.size,
+                        view.events,
+                        cells,
+                        &self.surface.sink,
+                        control.as_ref(),
+                    );
+                }
+            }
+        }
+        self.surface.wake.notify();
+    }
+
+    /// Pauses or resumes user input routing (preserving focus lifecycle updates).
+    pub fn set_input_paused(&mut self, paused: bool) {
+        self.input_paused = paused;
+        if paused {
+            self.cancel_pointer();
         }
     }
 
-    /// Plain text of the current scene, suitable for snapshot checks.
-    pub fn snapshot(&self) -> String {
-        self.surface.snapshot()
+    /// Cancels active pointer, field-drag and scrollbar gestures.
+    pub fn cancel_pointer(&mut self) {
+        let control = self.surface.control();
+        if let Some(control) = &control {
+            self.pointer.leave(&mut crate::input::PointerContext {
+                area: self.area,
+                cells: self.options.cells,
+                hits: &self.hits,
+                geometry: &self.geometry,
+                tree: &mut self.tree,
+                control,
+            });
+        }
+        self.pointer.cancel(&mut self.tree, control.as_ref());
+        self.field_drag = None;
+        self.field_press = None;
+        self.press_focus = None;
+        self.bar_drag = None;
     }
 
-    /// The retained scene, for a host's own integration.
-    pub fn surface(&self) -> &Surface {
-        &self.surface
+    /// Whether the engine or inbox has pending work ready to pump immediately.
+    pub fn needs_pump(&self) -> bool {
+        !self.surface.inbox.is_empty()
+            || !self.surface.held.is_empty()
+            || matches!(&self.surface.runtime, Some(Runtime::Local(local)) if local.needs_pump())
     }
 
-    /// Mutably accesses the retained scene. [`Self::poll`] forwards its
-    /// queued input events to the app.
-    pub fn surface_mut(&mut self) -> &mut Surface {
-        &mut self.surface
+    /// Next timer deadline of a local engine, if any.
+    pub fn timer_deadline(&self) -> Option<Instant> {
+        self.surface.local_deadline
     }
 
-    /// A cloneable handle to the current engine, or `None` before loading.
-    pub fn control(&self) -> Option<EngineControl> {
-        self.engine.as_ref().map(Engine::control)
+    /// Whether app code has requested an animation frame.
+    pub fn frame_requested(&self) -> bool {
+        self.surface.frame.is_some()
     }
 
-    /// The most recently reported app or build error, if any.
+    /// Whether native animations, animated images, or selection autoscroll are active.
+    pub fn animating(&self) -> bool {
+        self.tree.animator.animating()
+            || self.selection.deadline().is_some()
+            || self.images.is_animating(Instant::now(), &self.tree)
+    }
+
+    /// Handle to the running engine's control channel, if loaded.
+    pub fn control(&self) -> Option<nsh_engine::EngineControl> {
+        self.surface.control()
+    }
+
+    /// Grid cell metrics configured for this surface.
+    pub fn cells(&self) -> CellSize {
+        self.options.cells
+    }
+
+    /// Current logical viewport in NSH points.
+    pub fn viewport(&self) -> Size<Points> {
+        self.size()
+    }
+
+    /// Last rendered terminal cell buffer, including Sixel cell options.
+    pub fn buffer(&self) -> &Buffer {
+        &self.scratch
+    }
+
+    /// Most recent app error reported on this surface, if any.
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
     }
 
-    /// Sets where resources of apps started with [`Self::load`] resolve.
-    /// Their running readers follow the new base. An app started with
-    /// [`Self::load_with_config`] keeps its supplied reader.
-    pub fn set_asset_base(&mut self, base: Option<AssetBase>) {
-        self.options.asset_base = base;
-        *self.assets.0.write().unwrap_or_else(|e| e.into_inner()) = self.options.asset_base.clone();
+    /// Currently focused node identifier, if any.
+    pub fn focused_node(&self) -> Option<nsh_core::NodeId> {
+        self.keyboard.focused
     }
 
-    /// Sets the host appearance. An app's explicit appearance still wins.
-    pub fn set_appearance(&mut self, appearance: Appearance) {
-        self.options.appearance = appearance;
-        self.environment.color_scheme = appearance.resolve(ColorScheme::Dark);
-        self.surface
-            .set_dark(self.environment.color_scheme == ColorScheme::Dark);
-        if let Some(control) = self.control() {
-            self.publish_focus(&control);
-            control.set_environment(self.environment);
+    /// Current native focus ancestry from focused leaf to `ROOT_ID`.
+    pub fn focus_path(&self) -> Vec<nsh_core::NodeId> {
+        if self.tree.dialogs.is_shown() || self.tree.menus.is_open() {
+            return Vec::new();
         }
+        self.keyboard.focus_path(&self.tree)
     }
 
-    /// Applies a host theme now and to subsequently loaded apps. `None`
-    /// restores the app's own theme.
-    pub fn set_theme(&mut self, theme: Option<nsh_base::Theme>) {
-        self.theme = theme.clone();
-        if let Some(control) = self.control() {
-            control.set_tokens(theme.map(nsh_base::Theme::into_tokens));
+    /// Current terminal cursor position for the active minibuffer or focused editable input.
+    pub fn cursor_position(&self) -> Option<Position> {
+        if !self.focused || self.tree.dialogs.is_shown() {
+            return None;
         }
+        self.minibuffer
+            .cursor()
+            .or_else(|| self.keyboard.cursor(&self.tree, &self.geometry))
     }
 
-    /// Updates the host's reduced-motion preference for this app and
-    /// subsequent reloads.
-    pub fn set_reduce_motion(&mut self, reduce_motion: bool) {
-        self.options.reduce_motion = reduce_motion;
-        self.environment.reduce_motion = reduce_motion;
-        self.surface.set_reduce_motion(reduce_motion);
-        if let Some(control) = self.control() {
-            self.publish_focus(&control);
-            control.set_environment(self.environment);
-        }
+    /// Enqueues a synthetic [`nsh_core::MountBatch`] onto this surface's inbox.
+    pub fn submit_batch(&self, batch: nsh_core::MountBatch) {
+        self.surface.sink.send(Message::Batch(batch));
     }
 
-    /// Supplies explicit host clipboard, title and accessibility transports.
-    /// Callbacks run on one worker and persist across app reloads. `None`
-    /// restores the local clipboard and stops pending host requests.
-    pub fn set_host_services(&mut self, host: Option<Arc<dyn HostServices>>) -> io::Result<()> {
-        self.services = host.map(ServiceManager::new).transpose()?;
-        if let Some(services) = &self.services {
-            services.reset(self.surface.access.clone());
+    /// Returns the focused input's hints and current generation, redacting secure text.
+    pub fn input_context(&self) -> Option<InputContext> {
+        if self.tree.dialogs.is_shown() {
+            return None;
         }
-        self.surface.services.enabled = self.services.is_some();
-        self.service_output.clear();
+        let id = self.keyboard.focused?;
+        let view = self.tree.get(id).filter(|v| v.kind == ViewKind::Input)?;
+        let config = view.input.as_ref()?;
+        let field = view.field.as_ref()?;
+        let (start, end) = field.model.selection();
+        let text = field.model.text();
+        let selection = text_edit::byte_to_utf16(text, start)..text_edit::byte_to_utf16(text, end);
+        Some(InputContext {
+            node: id,
+            text: (!config.secure).then(|| text.to_owned()),
+            selection,
+            event_count: field.count(),
+            keyboard: config.keyboard,
+            auto_capitalize: config.auto_capitalize,
+            auto_correct: config.auto_correct,
+            auto_fill: config.auto_fill,
+            secure: config.secure,
+            editable: config.editable,
+            multiline: config.multiline,
+            max_length: config.max_length,
+        })
+    }
+
+    /// Semantic snapshot of visible accessible nodes in paint/tree order, scoped to the active modal.
+    pub fn accessibility_snapshot(&self) -> Vec<AccessibleNode> {
+        let scope = crate::navigation::focus_scope(&self.tree);
+        let mut exposed = vec![false; self.tree.views.len()];
+        let is_visible = |g: &crate::render::Geometry| {
+            let host = self.tree.spans.get(&g.id).map_or(g.id, |span| span.view);
+            crate::keyboard::input_scope(&self.tree, host) == scope
+                && (!g.visible.is_empty()
+                    || (self
+                        .tree
+                        .get(g.id)
+                        .and_then(|v| v.input.as_ref())
+                        .is_some_and(|c| c.editable && c.caret_hidden)
+                        && crate::keyboard::sink_cursor(&self.tree, &self.geometry, g.id)
+                            .is_some()))
+        };
+        for g in &self.geometry {
+            if is_visible(g)
+                && let Some(slot) = exposed.get_mut(g.id as usize)
+            {
+                *slot = true;
+            }
+        }
+        self.geometry
+            .iter()
+            .filter(|g| is_visible(g))
+            .filter_map(|g| {
+                let id = g.id;
+                if let Some(span) = self.tree.spans.get(&id) {
+                    let mut anc = Some(span.view);
+                    while let Some(aid) = anc {
+                        let view = self.tree.get(aid)?;
+                        if view.props.accessibility.hidden
+                            || view.props.accessibility.accessible == Some(true)
+                        {
+                            return None;
+                        }
+                        anc = view.parent;
+                    }
+                    let text = &self.tree.get(span.view)?.text_content.as_ref()?.text;
+                    let mut offset = 0u32;
+                    let fallback: String = text
+                        .chars()
+                        .filter(|ch| {
+                            let start = offset;
+                            offset += ch.len_utf16() as u32;
+                            start < span.range.end && offset > span.range.start
+                        })
+                        .collect();
+                    return Some(AccessibleNode {
+                        id,
+                        frame: g.frame,
+                        role: nsh_core::AccessibilityRole::Link,
+                        label: plain(&fallback, true),
+                        hint: None,
+                        state: nsh_core::AccessibilityState::default(),
+                        value: None,
+                        focused: self.keyboard.focused == Some(id),
+                        actions: Vec::new(),
+                    });
+                }
+                let view = self.tree.get(id)?;
+                let a = &view.props.accessibility;
+                if a.hidden || a.accessible == Some(false) {
+                    return None;
+                }
+                let mut parent = view.parent;
+                while let Some(pid) = parent {
+                    let ancestor = self.tree.get(pid)?;
+                    if ancestor.props.accessibility.hidden
+                        || ancestor.props.accessibility.accessible == Some(true)
+                    {
+                        return None;
+                    }
+                    parent = ancestor.parent;
+                }
+                let fallback = view
+                    .text_content
+                    .as_ref()
+                    .map(|t| t.text.clone())
+                    .unwrap_or_else(|| {
+                        if view.kind == ViewKind::Input {
+                            view.input
+                                .as_ref()
+                                .map(|c| c.placeholder.clone())
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        }
+                    });
+                let label = a.label.as_deref().map(str::to_owned).unwrap_or(fallback);
+                let label = if label.is_empty() && a.accessible == Some(true) {
+                    semantic_text(&self.tree, id, 0, &exposed)
+                } else {
+                    label
+                };
+                let secure = view.input.as_ref().is_some_and(|c| c.secure);
+                if label.is_empty()
+                    && a.role == nsh_core::AccessibilityRole::None
+                    && view.kind != ViewKind::Input
+                    && !view.events.contains(nsh_core::EventKind::Press)
+                {
+                    return None;
+                }
+                Some(AccessibleNode {
+                    id,
+                    frame: g.frame,
+                    role: a.role,
+                    label: plain(&label, true),
+                    hint: a.hint.as_deref().map(|hint| plain(hint, true)),
+                    state: a.state,
+                    value: (!secure).then(|| a.value.clone()).flatten(),
+                    focused: self.keyboard.focused == Some(id),
+                    actions: a.actions.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Plain-text snapshot of the current terminal grid (with Sixel cells rendered as spaces).
+    pub fn snapshot(&self) -> String {
+        let area = self.scratch.area;
+        let mut output = String::new();
+        for row in 0..area.height {
+            let y = area.y + row;
+            let mut x = 0;
+            let mut line = String::new();
+            while x < area.width {
+                let symbol = self.scratch[(area.x + x, y)].symbol();
+                if symbol.contains('\x1b') {
+                    line.push(' ');
+                    x += 1;
+                } else {
+                    line.push_str(symbol);
+                    x =
+                        x.saturating_add(
+                            unicode_width::UnicodeWidthStr::width(symbol).max(1) as u16
+                        );
+                }
+            }
+            output.push_str(line.trim_end());
+            output.push('\n');
+        }
+        output
+    }
+
+    /// Connects to a development server, replacing the current app and connection.
+    #[cfg(feature = "dev")]
+    pub fn connect_dev_server(&mut self, url: impl Into<String>) -> io::Result<()> {
+        self.stop();
+        let url = url.into();
+        self.dev_assets = dev::ServerAssets::for_server(&url)
+            .map(|assets| Arc::new(assets) as Arc<dyn nsh_engine::Assets>);
+        self.dev = Some(dev::DevSession::start(
+            url,
+            &self.options,
+            self.surface.wake.clone(),
+        )?);
         Ok(())
     }
 
-    /// Drains explicit terminal/assistive effects. Embedding hosts own their
-    /// output transport; collecting these effects performs no terminal IO.
-    pub fn drain_service_output(&mut self) -> impl Iterator<Item = ServiceOutput> + '_ {
-        let clipboard = self.surface.access.allows_clipboard();
-        self.service_output
-            .drain(..)
-            .filter(move |output| clipboard || !matches!(output, ServiceOutput::Clipboard(_)))
+    /// Selects the development log shown by `C-h e`; the file is read only while the panel is open.
+    #[cfg(feature = "dev")]
+    pub fn set_dev_log_path(&mut self, path: PathBuf) {
+        self.diagnostics.log_path = Some(path);
     }
 
-    /// Semantic elements suitable for a host's accessibility bridge.
-    pub fn accessibility_snapshot(&self) -> Vec<crate::services::AccessibleNode> {
-        self.surface.accessibility_snapshot()
+    /// Shows or hides the performance line. Hiding it drops all samples and timers.
+    pub fn set_fps_monitor(&mut self, enabled: bool) {
+        if enabled == self.perf.is_some() {
+            return;
+        }
+        self.perf = enabled.then(crate::perf::Monitor::new);
+        self.output.enabled.set(enabled);
+        if let Some(control) = self.surface.control() {
+            control.set_perf_monitor(self.perf.as_ref().map(|p| p.engine.clone()));
+        }
+        self.surface.wake.notify();
     }
 
-    /// Enables a graphics protocol already selected by the embedding host,
-    /// using that terminal's physical cell dimensions. This performs no
-    /// terminal query and persists across app reloads. `None` restores the
-    /// universal half-block renderer. Standalone interactive apps detect
-    /// the protocol before starting their terminal event reader.
-    pub fn set_image_protocol(&mut self, protocol: Option<crate::ImageProtocol>) {
-        self.image_protocol = protocol;
-        self.surface.set_image_protocol(protocol);
+    /// The shared engine monitor while the performance line is enabled.
+    pub fn perf_monitor(&self) -> Option<Arc<nsh_engine::perf::PerfMonitor>> {
+        self.perf.as_ref().map(|p| p.engine.clone())
     }
 
-    /// Returns terminal commands that release this view's graphics
-    /// resources. The embedding host writes them before releasing its
-    /// terminal; this method performs no IO. The standalone runner owns
-    /// this cleanup through its terminal guard.
-    pub fn image_protocol_cleanup(&self) -> String {
-        self.surface.image_protocol_cleanup()
+    /// Timings and output of the last completed `draw_terminal`, if monitoring is enabled.
+    pub fn frame_metrics(&self) -> Option<crate::FrameMetrics> {
+        self.perf.as_ref().and_then(|p| p.last)
     }
 
-    /// Registers a terminal component factory for subsequent mounts in
-    /// this view, including after an app reload.
+    /// Wraps the host's backend to count the actual Cell diff without scanning the buffer again.
+    pub fn measure_backend<B>(&self, backend: B) -> crate::MeasuredBackend<B> {
+        self.output.cells.set(Some(0));
+        crate::MeasuredBackend {
+            inner: backend,
+            output: self.output.clone(),
+        }
+    }
+
+    /// Wraps the terminal writer to count successful bytes, including escape sequences.
+    pub fn measure_writer<W>(&self, writer: W) -> crate::MeasuredWriter<W> {
+        self.output.bytes.set(Some(0));
+        crate::MeasuredWriter {
+            inner: writer,
+            output: self.output.clone(),
+        }
+    }
+
+    /// Draws a full-terminal surface and completes its optional performance sample after flushing.
+    /// Embedders owning a larger layout may still use `render` or the Widget interface.
+    pub fn draw_terminal<B: ratatui_core::backend::Backend>(
+        &mut self,
+        terminal: &mut ratatui_core::terminal::Terminal<B>,
+    ) -> Result<(), B::Error> {
+        if std::mem::take(&mut self.repaint) {
+            terminal.clear()?;
+        }
+        if self.perf.is_none() {
+            terminal.draw(|frame| self.render(frame, frame.area()))?;
+            return Ok(());
+        }
+        let app_frame = self
+            .surface
+            .deadline()
+            .is_some_and(|due| due <= Instant::now())
+            || terminal.size()? != self.area.into();
+        self.output.bytes.set(self.output.bytes.get().map(|_| 0));
+        self.output.cells.set(self.output.cells.get().map(|_| 0));
+        let mut flush = None;
+        terminal.draw(|frame| {
+            self.render(frame, frame.area());
+            flush = Some(Instant::now());
+        })?;
+        let at = Instant::now();
+        if let Some(perf) = &mut self.perf {
+            let mut sample = perf.pending;
+            sample.flush = at.duration_since(flush.unwrap());
+            sample.bytes = self.output.bytes.get();
+            sample.cells = self.output.cells.get();
+            perf.finish(at, sample, app_frame);
+        }
+        Ok(())
+    }
+
+    /// The channel shared with the running app.
+    pub fn host(&self) -> HostChannel {
+        self.options.host.clone()
+    }
+
+    /// Registers an embedding app's component for subsequent mounts.
     pub fn register_component(
         &mut self,
-        name: &str,
-        factory: impl Fn() -> Box<dyn crate::native::NativeComponent> + Send + Sync + 'static,
-    ) {
-        self.options.components.register(name, factory);
-        self.surface.set_components(self.options.components.clone());
+        name: impl Into<String>,
+        factory: ComponentFactory,
+    ) -> Result<(), String> {
+        let name = name.into();
+        if nsh_core::platform::is_reserved_component(&name) {
+            return Err("component names under nsh/ are reserved".into());
+        }
+        self.tree.components.insert(name, factory);
+        Ok(())
     }
 
-    /// Stops the current app and disconnects development support.
+    /// Changes the appearance; its callback runs on the next render.
+    pub fn set_appearance(&mut self, appearance: Appearance) {
+        if self.options.appearance == appearance {
+            return;
+        }
+        self.options.appearance = appearance;
+        self.environment.color_scheme = appearance.resolve(self.options.capabilities.background);
+        if let Some(control) = self.surface.control() {
+            control.set_environment(self.environment);
+        }
+        self.appearance_changed = true;
+        self.surface.wake.notify();
+    }
+
+    /// Gives or removes the surface's keyboard focus.
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+        let lifecycle = if focused {
+            nsh_core::platform::Lifecycle::Active
+        } else {
+            nsh_core::platform::Lifecycle::Inactive
+        };
+        if self.environment.lifecycle != lifecycle {
+            self.environment.lifecycle = lifecycle;
+            if let Some(control) = self.surface.control() {
+                control.set_environment(self.environment);
+            }
+        }
+        if !focused {
+            self.minibuffer.end();
+            self.field_drag = None;
+            self.field_press = None;
+            self.press_focus = None;
+            self.bar_drag = None;
+            self.selection.clear();
+            let control = self.surface.control();
+            self.keyboard.set_scope(None, &self.tree);
+            if let Some(control) = &control {
+                self.keyboard.focus(None, &mut self.tree, control);
+                self.pointer.leave(&mut crate::input::PointerContext {
+                    area: self.area,
+                    cells: self.options.cells,
+                    hits: &self.hits,
+                    geometry: &self.geometry,
+                    tree: &mut self.tree,
+                    control,
+                });
+            }
+            self.surface.wake.notify();
+            self.pointer.cancel(&mut self.tree, control.as_ref());
+        }
+    }
+
+    /// Receives app errors as text, during rendering on the embedder's thread.
+    pub fn on_error(&mut self, callback: impl FnMut(&str) + 'static) {
+        self.on_error = Some(Box::new(callback));
+    }
+
+    /// Receives structured app errors during rendering on the embedder's thread.
+    pub fn on_app_error(&mut self, callback: impl FnMut(&AppError) + 'static) {
+        self.on_app_error = Some(Box::new(callback));
+    }
+
+    /// Receives appearance changes during rendering on the embedder's thread.
+    pub fn on_appearance_changed(&mut self, callback: impl FnMut(Appearance) + 'static) {
+        self.on_appearance = Some(Box::new(callback));
+    }
+
+    /// The terminal cursor's shape the surface wants: a bar while a text
+    /// field is edited, the user's own otherwise.
+    pub fn cursor_style(&self) -> crate::CursorStyle {
+        self.cursor_style
+    }
+
+    /// Receives cursor shape changes during rendering on the embedder's
+    /// thread; hosts write the shape to the terminal (`CSI Ps SP q`).
+    pub fn on_cursor_style_changed(&mut self, callback: impl FnMut(crate::CursorStyle) + 'static) {
+        self.on_cursor_style = Some(Box::new(callback));
+    }
+
+    /// Replaces the scheduler notification. It must only enqueue work, never render on the engine thread.
+    pub fn set_wake_callback(&mut self, callback: Option<WakeCallback>) {
+        self.surface.wake.set(callback);
+    }
+
+    /// Earliest requested render, or no deadline while idle. Pending commits are due now.
+    pub fn next_frame_deadline(&self) -> Option<Instant> {
+        let mut deadline = self.surface.deadline();
+        if let Some(due) = self.selection.deadline() {
+            deadline = Some(deadline.map_or(due, |other| other.min(due)));
+        }
+        if let Some(due) = self.images.next_deadline(Instant::now(), &self.tree) {
+            deadline = Some(deadline.map_or(due, |other| other.min(due)));
+        }
+        if let Some(refresh) = self.perf.as_ref().and_then(|p| p.refresh) {
+            deadline = Some(deadline.map_or(refresh, |due| due.min(refresh)));
+        }
+        #[cfg(feature = "dev")]
+        if self.diagnostics.open {
+            return Some(deadline.map_or(self.diagnostics.refresh, |due| {
+                due.min(self.diagnostics.refresh)
+            }));
+        }
+        deadline
+    }
+
+    /// Whether app code requested exit. Standalone loops close; embedders decide their own response.
+    pub fn exit_requested(&self) -> bool {
+        self.tree.exit
+    }
+
+    /// Routes input against the last completed render. Unused keys and outside-area events are ignored.
+    pub fn handle(&mut self, input: Input) -> Handled {
+        let user_input = !matches!(input, Input::Focus(_));
+        let focused_before = self.keyboard.focused;
+        let handled = self.handle_inner(input);
+        if user_input && self.keyboard.focused != focused_before {
+            self.tree.focus_requests.retain(|&(_, focus)| !focus);
+        }
+        handled
+    }
+
+    fn handle_inner(&mut self, input: Input) -> Handled {
+        if self.input_paused && !matches!(input, Input::Focus(_)) {
+            return Handled::Ignored;
+        }
+        // Ctrl+C is never the diagnostics panel's: it copies or quits.
+        #[cfg(feature = "dev")]
+        let interrupt = matches!(&input, Input::Key { key, modifiers, .. }
+            if key == "c" && modifiers.ctrl && !modifiers.alt && !modifiers.shift && !modifiers.cmd);
+        #[cfg(feature = "dev")]
+        if (self.dev.is_some() || self.diagnostics.log_path.is_some())
+            && !interrupt
+            && self.focused
+            && (self.diagnostics.open
+                || (self.editing_field().is_none() && !self.minibuffer.is_open()))
+            && self.diagnostics.handle(&input)
+        {
+            let control = self.surface.control();
+            self.pointer.cancel(&mut self.tree, control.as_ref());
+            if std::mem::take(&mut self.diagnostics.toggle_perf) {
+                self.set_fps_monitor(self.perf.is_none());
+            }
+            if self.diagnostics.reload {
+                self.diagnostics.reload = false;
+                if let Some(mut dev) = self.dev.take() {
+                    dev.reload_latest(self);
+                    self.dev = Some(dev);
+                }
+            }
+            self.surface.wake.notify();
+            return Handled::Yes;
+        }
+        if self.tree.dialogs.is_shown()
+            && let Some(handled) = self.handle_dialog(&input)
+        {
+            return handled;
+        }
+        if let Input::Mouse(mouse) = &input {
+            self.tree.menus.pointer = Some(Position::new(mouse.column, mouse.row));
+        }
+        // A press on the menu bar is the bar's, open or not.
+        let on_bar = matches!(&input, Input::Mouse(mouse)
+            if matches!(mouse.kind, crate::MouseKind::Down(_))
+                && self.tree.menus.on_bar(Position::new(mouse.column, mouse.row)));
+        if (self.tree.menus.is_open() || on_bar)
+            && let Some(handled) = self.handle_menu(&input)
+        {
+            return handled;
+        }
+        if self.minibuffer.is_open() {
+            match &input {
+                Input::Paste(text) => {
+                    self.search(|minibuffer, scene| minibuffer.paste(text, scene));
+                    return Handled::Yes;
+                }
+                Input::Mouse(_) => {
+                    self.minibuffer.end();
+                    self.surface.wake.notify();
+                }
+                _ => {}
+            }
+        }
+        match input {
+            Input::Focus(focused) => {
+                // The terminal may have drawn over the surface meanwhile.
+                self.repaint |= focused && !self.focused;
+                self.set_focused(focused);
+                Handled::Yes
+            }
+            Input::Mouse(mouse) => {
+                if matches!(mouse.kind, crate::MouseKind::Down(_)) {
+                    self.pointer.count_click(mouse);
+                }
+                if let Some(handled) = self.handle_scrollbar(mouse) {
+                    return handled;
+                }
+                if self.handle_field_mouse(mouse) {
+                    self.selection.clear();
+                    self.surface.wake.notify();
+                    return Handled::Yes;
+                }
+                let Some(control) = self.surface.control() else {
+                    return Handled::Ignored;
+                };
+                let scene = crate::selection::Scene {
+                    area: self.area,
+                    cells: self.options.cells,
+                    hits: &self.hits,
+                    geometry: &self.geometry,
+                    tree: &self.tree,
+                };
+                if self.selection.handle(mouse, scene, self.pointer.clicks()) {
+                    self.pointer.cancel(&mut self.tree, Some(&control));
+                    self.keyboard.focus(None, &mut self.tree, &control);
+                    self.surface.wake.notify();
+                    return Handled::Yes;
+                }
+                if matches!(mouse.kind, crate::MouseKind::Down(crate::MouseButton::Left)) {
+                    self.surface.wake.notify();
+                }
+                let handled = if matches!(
+                    mouse.kind,
+                    crate::MouseKind::Down(crate::MouseButton::Right)
+                ) {
+                    self.pointer.context_menu(
+                        mouse,
+                        &mut crate::input::PointerContext {
+                            area: self.area,
+                            cells: self.options.cells,
+                            hits: &self.hits,
+                            geometry: &self.geometry,
+                            tree: &mut self.tree,
+                            control: &control,
+                        },
+                    )
+                } else if matches!(mouse.kind, crate::MouseKind::Wheel { .. }) {
+                    let handled = self.keyboard.wheel(
+                        mouse,
+                        self.area,
+                        self.options.cells,
+                        &self.hits,
+                        &mut self.tree,
+                        &self.geometry,
+                        &control,
+                    );
+                    if handled == Handled::Yes {
+                        self.pointer.cancel(&mut self.tree, Some(&control));
+                    }
+                    handled
+                } else {
+                    self.pointer.handle(
+                        mouse,
+                        crate::input::PointerContext {
+                            area: self.area,
+                            cells: self.options.cells,
+                            hits: &self.hits,
+                            geometry: &self.geometry,
+                            tree: &mut self.tree,
+                            control: &control,
+                        },
+                    )
+                };
+                if handled == Handled::Yes {
+                    self.surface.wake.notify();
+                }
+                handled
+            }
+            Input::Key {
+                key,
+                modifiers,
+                release,
+            } => {
+                if release {
+                    Handled::Ignored
+                } else {
+                    self.handle_key(&key, modifiers, false)
+                }
+            }
+            Input::KeyRepeat { key, modifiers } => self.handle_key(&key, modifiers, true),
+            Input::Paste(text) => {
+                let Some(id) = self.editing_field() else {
+                    return Handled::Ignored;
+                };
+                let Some(control) = self.surface.control() else {
+                    return Handled::Ignored;
+                };
+                let view = self.tree.get_mut(id).unwrap();
+                let events = view.events;
+                view.field.as_mut().unwrap().paste(
+                    view.input.as_ref().unwrap(),
+                    events,
+                    &text,
+                    id,
+                    &control,
+                );
+                self.surface.wake.notify();
+                Handled::Yes
+            }
+        }
+    }
+
+    /// A shown system dialog is modal: it takes every key and press, and the
+    /// app's views get no input until it is answered. Ctrl+C still quits (unless
+    /// bound by an app fallback handler), and focus reports still reach the surface (`None`).
+    fn handle_dialog(&mut self, input: &Input) -> Option<Handled> {
+        let outcome = match input {
+            Input::Focus(_) => return None,
+            Input::Key {
+                key,
+                modifiers,
+                release,
+            } => {
+                if *release || !self.focused {
+                    return Some(Handled::Ignored);
+                }
+                if let Some(stroke) = crate::key_scheme::keystroke(key, *modifiers)
+                    && let Some(crate::key_scheme::Action::Quit) =
+                        crate::key_scheme::terminal(stroke)
+                {
+                    if let Some(control) = self.surface.control()
+                        && self.keyboard.fallback_shortcut(
+                            &self.tree,
+                            stroke,
+                            false,
+                            self.options.capabilities.command_key,
+                            &control,
+                        )
+                    {
+                        self.surface.wake.notify();
+                        return Some(Handled::Yes);
+                    }
+                    self.tree.exit = true;
+                    return Some(Handled::Yes);
+                }
+                self.tree.dialogs.key(key, *modifiers)
+            }
+            Input::KeyRepeat { key, modifiers } => self.tree.dialogs.key(key, *modifiers),
+            Input::Mouse(mouse) => {
+                let crate::MouseKind::Down(_) = mouse.kind else {
+                    return Some(Handled::Yes);
+                };
+                // Views behind the dialog lose a press or hover they held.
+                let control = self.surface.control();
+                self.pointer.cancel(&mut self.tree, control.as_ref());
+                self.tree
+                    .dialogs
+                    .press(Position::new(mouse.column, mouse.row))
+            }
+            Input::Paste(_) => return Some(Handled::Yes),
+        };
+        if let Some(crate::dialog::Outcome::Answered(answer)) = outcome
+            && let Some(control) = self.surface.control()
+        {
+            answer.dispatch(&control);
+        }
+        self.surface.wake.notify();
+        Some(Handled::Yes)
+    }
+
+    /// An open context menu takes every key and press until it closes, as
+    /// a system menu does; Ctrl+C still quits (unless bound by an app fallback
+    /// handler), and focus reports still reach the surface (`None`).
+    fn handle_menu(&mut self, input: &Input) -> Option<Handled> {
+        let outcome = match input {
+            Input::Focus(_) => return None,
+            Input::Key {
+                key,
+                modifiers,
+                release,
+            } => {
+                if *release || !self.focused {
+                    return Some(Handled::Ignored);
+                }
+                if let Some(stroke) = crate::key_scheme::keystroke(key, *modifiers)
+                    && let Some(crate::key_scheme::Action::Quit) =
+                        crate::key_scheme::terminal(stroke)
+                {
+                    if let Some(control) = self.surface.control()
+                        && self.keyboard.fallback_shortcut(
+                            &self.tree,
+                            stroke,
+                            false,
+                            self.options.capabilities.command_key,
+                            &control,
+                        )
+                    {
+                        self.tree.menus.clear();
+                        self.surface.wake.notify();
+                        return Some(Handled::Yes);
+                    }
+                    self.tree.exit = true;
+                    return Some(Handled::Yes);
+                }
+                if self.tree.menus.bar_active()
+                    && let Some(stroke) = crate::key_scheme::keystroke(key, *modifiers)
+                {
+                    let m = stroke.modifiers;
+                    // tmux joins two quick Escapes into Alt+Escape.
+                    if stroke.key == nsh_core::keymap::Key::Escape && m.alt && !m.ctrl && !m.cmd {
+                        let outcome = self.tree.menus.key("Escape", Default::default());
+                        if let Some(outcome) = outcome {
+                            self.menu_chosen(&outcome);
+                        }
+                        self.surface.wake.notify();
+                        return Some(Handled::Yes);
+                    }
+                    // A shortcut with a modifier chooses its item while the
+                    // bar has the keys (a letter alone is a title's initial).
+                    if (m.ctrl || m.alt || m.cmd) && self.menu_shortcut(stroke, false, true) {
+                        self.surface.wake.notify();
+                        return Some(Handled::Yes);
+                    }
+                }
+                self.tree.menus.key(key, *modifiers)
+            }
+            Input::KeyRepeat { key, modifiers } => self.tree.menus.key(key, *modifiers),
+            Input::Mouse(mouse) => {
+                let position = Position::new(mouse.column, mouse.row);
+                match mouse.kind {
+                    crate::MouseKind::Down(_) => {
+                        // Views behind the menu lose a press or hover they held.
+                        let control = self.surface.control();
+                        self.pointer.cancel(&mut self.tree, control.as_ref());
+                        self.tree.menus.press(position)
+                    }
+                    crate::MouseKind::Move => self.tree.menus.hover(position),
+                    _ => return Some(Handled::Yes),
+                }
+            }
+            Input::Paste(_) => return Some(Handled::Yes),
+        };
+        if let Some(outcome) = outcome {
+            self.menu_chosen(&outcome);
+        }
+        self.surface.wake.notify();
+        Some(Handled::Yes)
+    }
+
+    /// Reports what a menu closed with, and carries out a chosen item's
+    /// role: a quit or close role ends the app, an editing one is the
+    /// focused field's (or the selection's) as its key is.
+    fn menu_chosen(&mut self, outcome: &crate::menu::Outcome) {
+        let Some(control) = self.surface.control() else {
+            return;
+        };
+        if outcome.dispatch(&control) {
+            self.tree.exit = true;
+        }
+        let (crate::menu::Outcome::Closed(Some((_, Some(role))))
+        | crate::menu::Outcome::Left(Some((_, Some(role))))) = outcome
+        else {
+            return;
+        };
+        self.edit_role(*role);
+    }
+
+    /// An editing role (`copy`, `paste`, ...) chosen from a menu: the key
+    /// a field or the selection takes for it, Command's.
+    fn edit_role(&mut self, role: nsh_core::desktop::MenuRole) {
+        use nsh_core::desktop::MenuRole;
+        let (key, shift) = match role {
+            MenuRole::Undo => ("z", false),
+            MenuRole::Redo => ("z", true),
+            MenuRole::Cut => ("x", false),
+            MenuRole::Copy => ("c", false),
+            MenuRole::Paste => ("v", false),
+            MenuRole::SelectAll => ("a", false),
+            _ => return,
+        };
+        let modifiers = crate::Modifiers {
+            cmd: true,
+            shift,
+            ..Default::default()
+        };
+        self.handle_key(key, modifiers, false);
+    }
+
+    /// A shortcut of the application menu's items, after the app's own
+    /// bindings: it chooses its item, unless a field being edited uses the
+    /// keystroke itself.
+    fn menu_shortcut(
+        &mut self,
+        stroke: nsh_core::keymap::Keystroke,
+        repeat: bool,
+        bar: bool,
+    ) -> bool {
+        use nsh_core::{desktop::Key, keymap::Key as K};
+        let key = match stroke.key {
+            K::Char(' ') => Key::Space,
+            K::Char(c) => Key::Char(c),
+            K::Enter => Key::Enter,
+            K::Escape => Key::Escape,
+            K::Tab => Key::Tab,
+            K::Backspace => Key::Backspace,
+            K::Delete => Key::Delete,
+            K::Insert => Key::Insert,
+            K::Up => Key::Up,
+            K::Down => Key::Down,
+            K::Left => Key::Left,
+            K::Right => Key::Right,
+            K::Home => Key::Home,
+            K::End => Key::End,
+            K::PageUp => Key::PageUp,
+            K::PageDown => Key::PageDown,
+            K::F(n) => Key::F(n),
+        };
+        let m = stroke.modifiers;
+        let pressed = nsh_core::desktop::Shortcut {
+            key,
+            ctrl: m.ctrl,
+            alt: m.alt,
+            shift: m.shift,
+            meta: m.cmd,
+        };
+        // A terminal that cannot report Cmd sends Ctrl for it on macOS, as
+        // the keymap's `mod+` bindings take it (`Keyboard::shortcut`).
+        let command = (!self.options.capabilities.command_key
+            && OS == nsh_core::platform::Os::MacOs
+            && pressed.ctrl
+            && !pressed.meta)
+            .then_some(nsh_core::desktop::Shortcut {
+                ctrl: false,
+                meta: true,
+                ..pressed
+            });
+        let Some((id, role, fires)) = self
+            .tree
+            .menus
+            .shortcut(&pressed)
+            .or_else(|| command.and_then(|command| self.tree.menus.shortcut(&command)))
+        else {
+            return false;
+        };
+        // The edit roles' keys stay the field's and the selection's own
+        // (Ctrl+C copies, or quits with nothing selected).
+        if role.is_some_and(|role| {
+            use nsh_core::desktop::MenuRole;
+            matches!(
+                role,
+                MenuRole::Undo
+                    | MenuRole::Redo
+                    | MenuRole::Cut
+                    | MenuRole::Copy
+                    | MenuRole::Paste
+                    | MenuRole::SelectAll
+            )
+        }) {
+            return false;
+        }
+        if !bar && !fires && self.editing_field().is_some() {
+            return false;
+        }
+        if !repeat {
+            // Chosen from the bar, it folds the bar up.
+            self.tree.menus.clear();
+            self.menu_chosen(&crate::menu::Outcome::Left(Some((id, role))));
+        }
+        true
+    }
+
+    fn handle_key(&mut self, key: &str, modifiers: crate::Modifiers, repeat: bool) -> Handled {
+        if !self.focused {
+            return Handled::Ignored;
+        }
+        let Some(stroke) = crate::key_scheme::keystroke(key, modifiers) else {
+            return Handled::Ignored;
+        };
+        let Some(control) = self.surface.control() else {
+            // No app to ask: Ctrl+C still quits.
+            if let Some(crate::key_scheme::Action::Quit) = crate::key_scheme::terminal(stroke) {
+                self.tree.exit = true;
+                return Handled::Yes;
+            }
+            return Handled::Ignored;
+        };
+        if self.minibuffer.is_open()
+            && let Some(crate::search::Outcome::Consumed) =
+                self.search(|minibuffer, scene| minibuffer.key(key, stroke, scene))
+        {
+            return Handled::Yes;
+        }
+        // F10 gives the menu bar the keys (the open bar takes the next).
+        if stroke.key == nsh_core::keymap::Key::F(10)
+            && stroke.modifiers == nsh_core::keymap::Modifiers::default()
+            && let Some(outcome) = self.tree.menus.toggle_bar()
+        {
+            self.menu_chosen(&outcome);
+            self.surface.wake.notify();
+            return Handled::Yes;
+        }
+        self.catch_up_with_focus();
+        let command_key = self.options.capabilities.command_key;
+        let selecting = self.selection.is_active();
+        let mut handled =
+            if self
+                .keyboard
+                .shortcut(&self.tree, stroke, repeat, command_key, &control)
+                || self.menu_shortcut(stroke, repeat, false)
+                || self.handle_field_key(key, stroke, &control)
+                || self.selection.key(
+                    key,
+                    modifiers,
+                    &self.tree,
+                    &self.geometry,
+                    self.clipboard.as_ref(),
+                )
+                || crate::key_scheme::arrow(stroke).is_some_and(|arrow| {
+                    self.keyboard
+                        .shortcut(&self.tree, arrow, repeat, command_key, &control)
+                })
+            {
+                Handled::Yes
+            } else if let Some(crate::key_scheme::Action::Search(forward)) =
+                crate::key_scheme::terminal(stroke)
+            {
+                self.search(|minibuffer, scene| minibuffer.start(forward, scene));
+                Handled::Yes
+            } else if let Some(action) = crate::key_scheme::terminal(stroke)
+                .filter(|a| !matches!(a, crate::key_scheme::Action::Quit))
+            {
+                self.keyboard
+                    .action(action, &mut self.tree, &self.geometry, &control, modifiers)
+            } else {
+                Handled::Ignored
+            };
+        if handled == Handled::Ignored {
+            if self
+                .keyboard
+                .fallback_shortcut(&self.tree, stroke, repeat, command_key, &control)
+                || crate::key_scheme::arrow(stroke).is_some_and(|arrow| {
+                    self.keyboard.fallback_shortcut(
+                        &self.tree,
+                        arrow,
+                        repeat,
+                        command_key,
+                        &control,
+                    )
+                })
+            {
+                handled = Handled::Yes;
+            } else if let Some(crate::key_scheme::Action::Quit) =
+                crate::key_scheme::terminal(stroke)
+            {
+                handled = self.keyboard.action(
+                    crate::key_scheme::Action::Quit,
+                    &mut self.tree,
+                    &self.geometry,
+                    &control,
+                    modifiers,
+                );
+            }
+        }
+        if handled == Handled::Yes || (selecting && !self.selection.is_active()) {
+            self.surface.wake.notify();
+        }
+        handled
+    }
+
+    fn apply_batch(&mut self, batch: nsh_core::MountBatch) {
+        #[cfg(feature = "dev")]
+        let observed = self.test.as_ref().map(|test| {
+            (
+                test.model.clone(),
+                nsh_core::MountBatch {
+                    items: batch.items.clone(),
+                },
+            )
+        });
+        self.tree.apply(batch);
+        if let Some(enabled) = self.tree.perf_monitor.take() {
+            self.set_fps_monitor(enabled);
+        }
+        #[cfg(feature = "dev")]
+        if let Some((model, batch)) = observed {
+            model.apply(&batch);
+        }
+    }
+
+    /// Waits a moment for the engine to run the last focus change, applying
+    /// the batches it makes: the app's bindings that hold only while a
+    /// control is focused (an editor's Tab) follow the focus in effects, so
+    /// a key sent right after the change (Escape and Tab together) is
+    /// matched against the new focus's keymap. Other messages wait for the
+    /// next draw. An engine busy past the wait leaves the keymap as it is.
+    fn catch_up_with_focus(&mut self) {
+        if self.surface.is_local() {
+            while !self.keyboard.is_caught_up() {
+                if let Some(Runtime::Local(local)) = &mut self.surface.runtime {
+                    self.surface.local_deadline = local.pump();
+                }
+                let mut progressed = false;
+                while let Ok(message) = self.surface.inbox.try_recv() {
+                    progressed = true;
+                    match message {
+                        Message::Batch(batch) => self.apply_batch(batch),
+                        Message::Focused(moved) => self.keyboard.caught_up(moved),
+                        other => self.surface.held.push_back(other),
+                    }
+                }
+                if !progressed {
+                    break;
+                }
+            }
+            if !self.surface.held.is_empty() {
+                self.surface.wake.notify();
+            }
+            return;
+        }
+        let deadline = Instant::now() + FOCUS_CATCH_UP;
+        while !self.keyboard.is_caught_up() {
+            match self.surface.inbox.recv_deadline(deadline) {
+                Ok(Message::Batch(batch)) => self.apply_batch(batch),
+                Ok(Message::Focused(moved)) => self.keyboard.caught_up(moved),
+                Ok(message) => self.surface.held.push_back(message),
+                Err(_) => break,
+            }
+        }
+        if !self.surface.held.is_empty() {
+            self.surface.wake.notify();
+        }
+    }
+
+    fn search<R>(
+        &mut self,
+        act: impl FnOnce(&mut crate::search::Minibuffer, &mut crate::search::Scene) -> R,
+    ) -> Option<R> {
+        let control = self.surface.control()?;
+        let mut scene = crate::search::Scene {
+            tree: &mut self.tree,
+            geometry: &self.geometry,
+            keyboard: &mut self.keyboard,
+            control: &control,
+            cells: self.options.cells,
+            area: self.area,
+        };
+        let result = act(&mut self.minibuffer, &mut scene);
+        self.surface.wake.notify();
+        Some(result)
+    }
+
+    fn editing_field(&self) -> Option<nsh_core::NodeId> {
+        if !self.focused {
+            return None;
+        }
+        let id = self.keyboard.focused?;
+        let view = self.tree.get(id)?;
+        (view.input.as_ref().is_some_and(|config| config.editable)
+            && !view.props.accessibility.state.disabled)
+            .then_some(id)
+    }
+
+    fn handle_field_key(
+        &mut self,
+        key: &str,
+        stroke: nsh_core::keymap::Keystroke,
+        control: &nsh_engine::EngineControl,
+    ) -> bool {
+        let Some(id) = self.editing_field() else {
+            return false;
+        };
+        let view = self.tree.get_mut(id).unwrap();
+        let events = view.events;
+        let config = view.input.as_ref().unwrap();
+        let field = view.field.as_mut().unwrap();
+        // Ctrl+C copies a selection, as in the terminal's other programs;
+        // without one it is the terminal's interrupt (the Key scheme's quit).
+        let copy = stroke.key == nsh_core::keymap::Key::Char('c')
+            && stroke.modifiers.ctrl
+            && !stroke.modifiers.alt
+            && !stroke.modifiers.shift
+            && !stroke.modifiers.cmd;
+        if copy && !field.model.has_selection() {
+            return false;
+        }
+        let action = if copy {
+            Some(crate::key_scheme::EditAction::Copy)
+        } else {
+            crate::key_scheme::editing(stroke, config.multiline)
+        };
+        if let Some(action) = action {
+            if field.edit(
+                action,
+                stroke.modifiers.shift,
+                crate::text_input::EditContext {
+                    config,
+                    events,
+                    kill: &mut self.kill,
+                    clipboard: self.clipboard.as_ref(),
+                    id,
+                    control,
+                },
+            ) {
+                self.keyboard.set_scope(None, &self.tree);
+                self.keyboard.focus(None, &mut self.tree, control);
+            }
+            true
+        } else if !stroke.modifiers.ctrl
+            && !stroke.modifiers.alt
+            && !stroke.modifiers.cmd
+            && matches!(stroke.key, nsh_core::keymap::Key::Char(_))
+        {
+            field.insert(config, key, true, id, control);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Presses and drags on the scroll bars of the last render: a press on
+    /// a track jumps there, the thumb follows the pointer while it is held.
+    fn handle_scrollbar(&mut self, mouse: crate::MouseInput) -> Option<Handled> {
+        use crate::{MouseButton, MouseKind};
+        if let Some(drag) = &self.bar_drag {
+            match mouse.kind {
+                MouseKind::Move => {
+                    if drag.moved(mouse, &mut self.tree) {
+                        self.surface.wake.notify();
+                    }
+                    return Some(Handled::Yes);
+                }
+                MouseKind::Up(MouseButton::Left) => {
+                    self.bar_drag = None;
+                    return Some(Handled::Yes);
+                }
+                _ => self.bar_drag = None,
+            }
+        }
+        let position = Position::new(mouse.column, mouse.row);
+        if !self.area.contains(position) {
+            return None;
+        }
+        if !matches!(mouse.kind, MouseKind::Down(MouseButton::Left)) {
+            return None;
+        }
+        let bars = self.tree.scroll_bars.clone();
+        let control = self.surface.control();
+        let drag = crate::input::BarDrag::press(&bars, mouse, &mut self.tree)?;
+        if let Some(control) = control.as_ref() {
+            crate::keyboard::scroll_intent(&self.tree, drag.node, "scroll", control);
+        }
+        self.pointer.cancel(&mut self.tree, control.as_ref());
+        self.selection.clear();
+        self.minibuffer.end();
+        self.bar_drag = Some(drag);
+        self.surface.wake.notify();
+        Some(Handled::Yes)
+    }
+
+    fn handle_field_mouse(&mut self, mouse: crate::MouseInput) -> bool {
+        use crate::{MouseButton, MouseKind};
+        let Some(control) = self.surface.control() else {
+            return false;
+        };
+        let position = Position::new(mouse.column, mouse.row);
+        let scope = crate::navigation::focus_scope(&self.tree);
+        if matches!(mouse.kind, MouseKind::Up(MouseButton::Left))
+            && let Some((mut press, origin, cells)) = self.field_press.take()
+        {
+            let page = crate::input::page_point(mouse, self.area, self.options.cells);
+            let fire = self.tree.get(press.node).is_some() && cells.contains(position);
+            for event in press.press_out(fire) {
+                crate::input::dispatch(&control, &press, event, page, origin);
+            }
+        }
+        // The stop pressed takes the focus as the press comes up, before
+        // the press reaches it (what it opens gives the focus back there).
+        if matches!(mouse.kind, MouseKind::Up(MouseButton::Left))
+            && let Some(stop) = self.press_focus.take()
+            && self.keyboard.focused != Some(stop)
+            && self
+                .keyboard
+                .candidates(&self.tree, &self.geometry)
+                .iter()
+                .any(|g| g.id == stop)
+        {
+            self.keyboard.focus(Some(stop), &mut self.tree, &control);
+            self.surface.wake.notify();
+        }
+        if let Some(FieldDrag {
+            id,
+            last,
+            clicks,
+            anchor,
+        }) = self.field_drag
+        {
+            if self.keyboard.focused != Some(id)
+                || !crate::keyboard::contains(&self.tree, scope, id)
+            {
+                self.field_drag = None;
+            } else if matches!(
+                mouse.kind,
+                MouseKind::Move | MouseKind::Up(MouseButton::Left)
+            ) {
+                if position != last
+                    && let Some(view) = self.tree.get_mut(id)
+                {
+                    let field = view.field.as_mut().unwrap();
+                    field.drag(view.input.as_ref().unwrap(), position, clicks, anchor);
+                    field.report(id, &control, false);
+                }
+                self.field_drag = if matches!(mouse.kind, MouseKind::Up(_)) {
+                    None
+                } else {
+                    Some(FieldDrag {
+                        id,
+                        last: position,
+                        clicks,
+                        anchor,
+                    })
+                };
+                return true;
+            }
+        }
+        if !matches!(mouse.kind, MouseKind::Down(MouseButton::Left))
+            || !self.area.contains(position)
+        {
+            return false;
+        }
+        let hit = self.hits.iter().rev().find(|hit| {
+            hit.area.contains(position) && crate::keyboard::contains(&self.tree, scope, hit.node)
+        });
+        let id = hit.map(|hit| hit.node).filter(|&id| {
+            self.tree.get(id).is_some_and(|view| {
+                view.input.as_ref().is_some_and(|config| config.editable)
+                    && !view.props.accessibility.state.disabled
+            })
+        });
+        self.press_focus = None;
+        if let Some(id) = id {
+            // The press still goes down as a touch, so open popovers hear a
+            // press outside them, then the field takes the pointer.
+            self.pointer.handle(
+                mouse,
+                crate::input::PointerContext {
+                    area: self.area,
+                    cells: self.options.cells,
+                    hits: &self.hits,
+                    geometry: &self.geometry,
+                    tree: &mut self.tree,
+                    control: &control,
+                },
+            );
+            // A field that listens to presses keeps the one the pointer
+            // started on it: `onPressDown` went, `onPress` follows on the
+            // way up, after the focus the field takes now.
+            let press = self.pointer.take_press(id);
+            self.pointer.cancel(&mut self.tree, Some(&control));
+            self.keyboard.focus(Some(id), &mut self.tree, &control);
+            self.field_press = press.map(|(press, origin)| {
+                (press, origin, hit.map(|hit| hit.area).unwrap_or_default())
+            });
+            let clicks = self.pointer.clicks();
+            let view = self.tree.get_mut(id).unwrap();
+            let field = view.field.as_mut().unwrap();
+            let anchor = field.click(
+                view.input.as_ref().unwrap(),
+                position,
+                mouse.modifiers.shift,
+                clicks,
+            );
+            field.report(id, &control, false);
+            self.field_drag = Some(FieldDrag {
+                id,
+                last: position,
+                clicks: if mouse.modifiers.shift { 1 } else { clicks },
+                anchor,
+            });
+            true
+        } else {
+            // A press on a stop, or on what is inside one, gives it the
+            // focus as it comes up (Tab goes on from there), as a click
+            // does in terminal apps; one on nothing Tab stops at leaves a
+            // field.
+            // The view on top first, then what is under it: a stop over
+            // the view pressed (a table's hit layer over its rows) is the
+            // one under the pointer too.
+            let stop = self
+                .hits
+                .iter()
+                .rev()
+                .filter(|hit| {
+                    hit.area.contains(position)
+                        && crate::keyboard::contains(&self.tree, scope, hit.node)
+                })
+                .find_map(|hit| {
+                    self.keyboard
+                        .pressed_stop(hit.node, &self.tree, &self.geometry)
+                });
+            self.press_focus = stop;
+            if stop.is_none() {
+                self.keyboard.set_scope(hit.map(|h| h.node), &self.tree);
+                if self.editing_field().is_some() {
+                    self.keyboard.focus(None, &mut self.tree, &control);
+                    self.surface.wake.notify();
+                }
+            } else {
+                self.keyboard.set_scope(None, &self.tree);
+            }
+            false
+        }
+    }
+
+    /// Applies complete pending batches, resizes to `area`, and draws into the frame.
+    pub fn render(&mut self, frame: &mut Frame, area: Rect) {
+        self.draw(area, frame.buffer_mut());
+        #[cfg(feature = "dev")]
+        if self.diagnostics.open {
+            self.set_cursor_style(crate::CursorStyle::Default);
+            return;
+        }
+        let mut style = crate::CursorStyle::Default;
+        if self.focused {
+            if let Some(cursor) = self.minibuffer.cursor() {
+                frame.set_cursor_position(cursor);
+            } else if let Some(cursor) = self.keyboard.cursor(&self.tree, &self.geometry) {
+                frame.set_cursor_position(cursor);
+                style = crate::CursorStyle::Bar;
+            }
+        }
+        self.set_cursor_style(style);
+    }
+
+    fn set_cursor_style(&mut self, style: crate::CursorStyle) {
+        if self.cursor_style != style {
+            self.cursor_style = style;
+            if let Some(callback) = &mut self.on_cursor_style {
+                callback(style);
+            }
+        }
+    }
+
+    fn size(&self) -> Size<Points> {
+        Size::new(
+            self.options.cells.width() * f32::from(self.area.width),
+            self.options.cells.height() * f32::from(self.area.height),
+        )
+    }
+
+    fn draw(&mut self, area: Rect, buffer: &mut Buffer) {
+        let advance_frame = !self.surface.is_local();
+        let _ = self.draw_scene(area, buffer, advance_frame);
+        self.sync_scratch(area, buffer);
+    }
+
+    fn sync_scratch(&mut self, area: Rect, buffer: &Buffer) {
+        let clip = area.intersection(buffer.area);
+        if self.scratch.area != clip {
+            self.scratch = Buffer::empty(clip);
+        } else {
+            self.scratch.reset();
+        }
+        for y in clip.top()..clip.bottom() {
+            for x in clip.left()..clip.right() {
+                self.scratch[(x, y)] = buffer[(x, y)].clone();
+            }
+        }
+    }
+
+    fn report_error(&mut self, error: AppError, text: &str) {
+        #[cfg(feature = "dev")]
+        if let Some(test) = &self.test {
+            test.model.error(text.to_owned());
+        }
+        #[cfg(feature = "dev")]
+        if self.dev.is_some() || self.diagnostics.log_path.is_some() {
+            self.diagnostics.error("App error", text);
+        }
+        if let Some(callback) = &mut self.on_error {
+            callback(text);
+        }
+        if let Some(callback) = &mut self.on_app_error {
+            callback(&error);
+        }
+    }
+
+    fn draw_scene(
+        &mut self,
+        area: Rect,
+        buffer: &mut Buffer,
+        advance_frame: bool,
+    ) -> Option<String> {
+        let started = self.perf.as_ref().map(|_| Instant::now());
+        // The application menu's bar is the top row; the app has the rows
+        // below it (all of them while the bar hides itself).
+        let reserved = self.tree.menus.reserves_row() && area.height > 1;
+        self.tree
+            .menus
+            .set_bar_row(Rect::new(area.x, area.y, area.width, area.height.min(1)));
+        let area = if reserved {
+            Rect::new(area.x, area.y + 1, area.width, area.height - 1)
+        } else {
+            area
+        };
+        if advance_frame {
+            self.surface.begin_frame();
+        } else {
+            self.surface.wake.pending.store(false, Ordering::Release);
+        }
+        #[cfg(feature = "dev")]
+        if let Some(mut dev) = self.dev.take() {
+            while let Ok(event) = dev.inbox.try_recv() {
+                match event {
+                    dev::Message::Event(event) => dev.event(self, *event),
+                    dev::Message::Test(test) => self.test = Some(test),
+                }
+            }
+            self.dev = Some(dev);
+        }
+        if self.area != area {
+            let control = self.surface.control();
+            self.pointer.cancel(&mut self.tree, control.as_ref());
+            self.area = area;
+            self.environment.window = self.size();
+            if let Some(control) = control {
+                control.resize(self.size());
+                control.set_environment(self.environment);
+            }
+            if self.surface.is_local() {
+                self.surface.laid_out = self.size();
+            }
+        }
+        let mut first_error = None;
+        while let Some(message) = self
+            .surface
+            .held
+            .pop_front()
+            .or_else(|| self.surface.inbox.try_recv().ok())
+        {
+            match message {
+                Message::Batch(batch) => self.apply_batch(batch),
+                Message::Error(error) => {
+                    let text = error.to_string();
+                    if first_error.is_none() {
+                        self.last_error = Some(text.clone());
+                        first_error = Some(text.clone());
+                    }
+                    self.report_error(error, &text);
+                }
+                Message::Frame => self.surface.request_frame(),
+                Message::Resized(size) => self.surface.laid_out = size,
+                Message::Focused(moved) => self.keyboard.caught_up(moved),
+                Message::ImageProgress {
+                    id,
+                    load_id,
+                    loaded,
+                    total,
+                } => {
+                    let events = self
+                        .tree
+                        .get(id)
+                        .map_or_else(Default::default, |v| v.events);
+                    let control = self.surface.control();
+                    self.images
+                        .on_progress(id, load_id, loaded, total, events, control.as_ref());
+                }
+                Message::ImageLoaded {
+                    id,
+                    load_id,
+                    result,
+                } => {
+                    let (mount, events) = self
+                        .tree
+                        .get(id)
+                        .map(|v| (v.image.clone(), v.events))
+                        .unwrap_or_default();
+                    let control = self.surface.control();
+                    let _ = self.images.on_loaded(
+                        id,
+                        load_id,
+                        result,
+                        mount.as_ref(),
+                        events,
+                        control.as_ref(),
+                    );
+                }
+                Message::ImageInfo { request_id, result } => {
+                    let control = self.surface.control();
+                    crate::image::send_image_info(control.as_ref(), request_id, result);
+                }
+                Message::SixelEncoded { id, key, sixel } => {
+                    let _ = self.images.on_sixel_encoded(id, key, sixel);
+                }
+                #[cfg(feature = "dev")]
+                Message::Reload => {
+                    if let Some(mut dev) = self.dev.take() {
+                        dev.reload(self);
+                        self.dev = Some(dev);
+                    }
+                }
+            }
+        }
+        for id in std::mem::take(&mut self.tree.removed_images) {
+            self.images.remove(id);
+        }
+        let dirty_images = std::mem::take(&mut self.tree.dirty_images);
+        if !dirty_images.is_empty() {
+            let control = self.surface.control();
+            let cells = self.options.cells;
+            for id in dirty_images {
+                if let Some(view) = self.tree.get(id) {
+                    self.images.sync_view(
+                        id,
+                        view.image.as_ref(),
+                        view.frame.size,
+                        view.events,
+                        cells,
+                        &self.surface.sink,
+                        control.as_ref(),
+                    );
+                } else {
+                    self.images.remove(id);
+                }
+            }
+        }
+        let image_infos = std::mem::take(&mut self.tree.image_infos);
+        if !image_infos.is_empty() {
+            let control = self.surface.control();
+            for (request_id, uri) in image_infos {
+                self.images
+                    .image_info(request_id, &uri, &self.surface.sink, control.as_ref());
+            }
+        }
+        if self.tree.menus.reserves_row() != reserved {
+            // The bar came or went: the app is laid out again for its rows.
+            self.surface.wake.notify();
+        }
+        self.selection.autoscroll(
+            &mut self.tree,
+            self.area,
+            self.options.cells,
+            &self.geometry,
+        );
+        if let Some(control) = self.surface.control() {
+            for &id in &self.tree.scrolled {
+                if let Some(view) = self.tree.get(id)
+                    && let Some(scroll) = &view.scroll
+                {
+                    control.scroll(id, scroll.reported(view.frame.size), scroll.applied);
+                }
+            }
+        }
+        // A scroll view's offset feeds the animation graph's scroll values
+        // (a looping carousel's runway follows it), as on every platform; a
+        // terminal's scrolling is instant, so it comes to rest as soon as
+        // no drag holds it.
+        for &id in &self.tree.scrolled {
+            if let Some(view) = self.tree.get(id)
+                && let Some(scroll) = &view.scroll
+            {
+                let offset = scroll.reported(view.frame.size);
+                self.tree.animator.scrolled(id, offset);
+                if !self.unsettled.contains(&id) {
+                    self.unsettled.push(id);
+                }
+            }
+        }
+        self.tree.scrolled.clear();
+        if !self.pointer.dragging() && self.bar_drag.is_none() {
+            for id in std::mem::take(&mut self.unsettled) {
+                if self.tree.animator.scroll_ended(id) {
+                    self.surface.request_frame();
+                }
+            }
+        }
+        if let Some(control) = self.surface.control() {
+            for _ in 0..std::mem::take(&mut self.tree.back_requests) {
+                crate::navigation::back(&mut self.tree, &control, false);
+            }
+        }
+        if let Some(appearance) = self.tree.appearance.take() {
+            self.set_appearance(appearance);
+        }
+        if self.appearance_changed {
+            self.appearance_changed = false;
+            if let Some(callback) = &mut self.on_appearance {
+                callback(self.options.appearance);
+            }
+        }
+        let size = self.size();
+        if let Some(root) = self.tree.get_mut(ROOT_ID) {
+            root.frame = Bounds::new(Default::default(), size);
+        }
+        if let Some(control) = self.surface.control() {
+            crate::navigation::report_shown(&mut self.tree, &control);
+        }
+        let capabilities = &self.options.capabilities;
+        // The terminal's own colors give its surfaces (OSC 11 and 10, at
+        // 256 colors or more); the bandless look elsewhere.
+        let ramp = crate::palette::Ramp::new(
+            capabilities.colors,
+            capabilities.background_color,
+            capabilities.foreground_color,
+        );
+        // An app loaded before the surface had a size starts laid out for
+        // no room, every view at the origin: its views show from the layout
+        // at the drawn area on, which the engine reports a turn or two later.
+        let mut drawing = None;
+        if (self.surface.runtime.is_none() || self.surface.sized()) && !area.is_empty() {
+            self.surface.animate(&mut self.tree);
+            drawing = started.map(|start| {
+                let now = Instant::now();
+                if let Some(perf) = &mut self.perf {
+                    perf.pending.apply = now.duration_since(start);
+                }
+                now
+            });
+            let page =
+                crate::palette::Ground::page(self.environment.color_scheme, capabilities.colors)
+                    .with_ramp(ramp);
+            let bands = crate::palette::Bands::new(
+                self.environment.color_scheme,
+                capabilities.colors,
+                capabilities.background_color,
+                capabilities.foreground_color,
+            );
+            let look = render::Look {
+                cells: self.options.cells,
+                page,
+                bands,
+            };
+            render::draw(
+                &mut self.tree,
+                &mut self.images,
+                &self.surface.sink,
+                buffer,
+                area,
+                look,
+                &mut self.hits,
+                &mut self.geometry,
+            );
+            let scene = crate::selection::Scene {
+                area,
+                cells: self.options.cells,
+                hits: &self.hits,
+                geometry: &self.geometry,
+                tree: &self.tree,
+            };
+            self.selection.draw(scene, buffer);
+            let changes = self.selection.changes(&self.tree, &self.geometry);
+            if let Some(control) = self.surface.control() {
+                for (id, text, start) in changes {
+                    control.dispatch_event(
+                        id,
+                        nsh_core::EventKind::SelectionChange,
+                        nsh_core::EventPayload::Map(vec![
+                            ("text", nsh_core::PayloadValue::Str(text)),
+                            ("start", nsh_core::PayloadValue::Number(f64::from(start))),
+                        ]),
+                    );
+                }
+            }
+            // A view that moved under the pointer, or away from it, is drawn
+            // again in its new hover state.
+            if let Some(control) = self.surface.control()
+                && self.pointer.rehover(&mut crate::input::PointerContext {
+                    area,
+                    cells: self.options.cells,
+                    hits: &self.hits,
+                    geometry: &self.geometry,
+                    tree: &mut self.tree,
+                    control: &control,
+                })
+            {
+                self.surface.wake.notify();
+            }
+            if let Some(control) = self.surface.control()
+                && self
+                    .keyboard
+                    .reconcile(&mut self.tree, &self.geometry, &control)
+            {
+                self.surface.wake.notify();
+            }
+            if let Some(control) = self.surface.control() {
+                let scope = crate::navigation::focus_scope(&self.tree);
+                let mut keep = Vec::new();
+                for (id, focus) in std::mem::take(&mut self.tree.focus_requests) {
+                    // A target scrolled out of sight is focused and revealed,
+                    // as keyboard navigation reveals what it moves to.
+                    let target = focus
+                        .then(|| {
+                            self.keyboard
+                                .candidates(&self.tree, &self.geometry)
+                                .iter()
+                                .find(|g| g.id == id)
+                                .map(|g| g.frame)
+                        })
+                        .flatten();
+                    if let Some(frame) = target {
+                        keep.clear();
+                        self.keyboard.focus(Some(id), &mut self.tree, &control);
+                        crate::keyboard::reveal_frame(&mut self.tree, &self.geometry, id, frame);
+                        self.surface.wake.notify();
+                    } else if !focus && self.keyboard.focused == Some(id) {
+                        self.keyboard.set_scope(None, &self.tree);
+                        self.keyboard.focus(None, &mut self.tree, &control);
+                        self.surface.wake.notify();
+                    } else if focus
+                        && crate::keyboard::contains(&self.tree, nsh_core::ROOT_ID, id)
+                        && crate::keyboard::input_scope(&self.tree, id) == scope
+                        && crate::keyboard::covering_root(&self.tree, &self.geometry, id).is_none()
+                        && self.tree.get(id).is_some_and(|view| {
+                            view.props.accessibility.state.disabled
+                                || view.input.as_ref().is_some_and(|config| !config.editable)
+                                || !self.geometry.iter().any(|g| {
+                                    g.id == id
+                                        && g.bounds.right > g.bounds.left
+                                        && g.bounds.bottom > g.bounds.top
+                                })
+                        })
+                    {
+                        keep.retain(|&(pending, _)| pending != id);
+                        keep.push((id, true));
+                    }
+                }
+                self.tree.focus_requests.extend(keep);
+                if let Some(id) = self.keyboard.focused
+                    && let Some(field) = self.tree.get_mut(id).and_then(|view| view.field.as_mut())
+                {
+                    field.report(id, &control, false);
+                }
+            }
+        }
+        self.tree.menus.draw_bar(buffer, ramp);
+        self.minibuffer
+            .draw(&self.tree, &self.geometry, self.options.cells, area, buffer);
+        #[cfg(feature = "dev")]
+        self.diagnostics.draw(area, buffer);
+        if self.options.capabilities.colors == ColorDepth::Monochrome {
+            crate::palette::strip_colors(buffer, area);
+        }
+        if let (Some(drawing), Some(perf)) = (drawing, &mut self.perf) {
+            perf.pending.draw = drawing.elapsed();
+            perf.draw(area, buffer);
+        }
+        #[cfg(feature = "dev")]
+        {
+            let requests: Vec<_> = self
+                .test
+                .as_ref()
+                .map(|test| test.inbox.try_iter().collect())
+                .unwrap_or_default();
+            for request in requests {
+                request(self, buffer);
+            }
+        }
+        first_error
+    }
+
+    /// Stops the engine, drops queued commits, and clears the surface's app-owned state.
     pub fn stop(&mut self) {
         #[cfg(feature = "dev")]
         {
             self.dev = None;
+            self.test = None;
+            let log_path = self.diagnostics.log_path.take();
+            self.diagnostics = dev::Diagnostics::default();
+            self.diagnostics.log_path = log_path;
         }
         self.stop_engine();
     }
 
     fn stop_engine(&mut self) {
-        if let Some(services) = &self.services {
-            services.reset(self.surface.access.clone());
-        }
-        self.service_output.clear();
-        self.engine = None;
-        self.receiver = None;
-        self.frame_requested = false;
-    }
-
-    fn dispatch_events(&mut self) {
-        let events: Vec<_> = self.surface.drain_events().collect();
-        let Some(control) = self.control() else {
-            return;
-        };
-        self.publish_focus(&control);
-        for event in events {
-            match event {
-                SurfaceEvent::Event(id, kind, payload) => control.dispatch_event(id, kind, payload),
-                SurfaceEvent::HintObservation(observation) => control.observe_hint(observation),
-                SurfaceEvent::Scroll(id, offset, count) => control.scroll(id, offset, count),
-                SurfaceEvent::InputScroll(id, offset, content, viewport) => {
-                    control.input_scroll(id, offset, content, viewport);
-                }
-                SurfaceEvent::ListCellRetired(id, request, retired) => {
-                    control.set_focus_path(self.surface.focus_path());
-                    control.retire_list_cell(id, request, retired);
-                }
-                SurfaceEvent::States(id, states) => control.set_states(id, states),
-                SurfaceEvent::AnimationsFinished(finished) => control.animations_finished(finished),
-                SurfaceEvent::ComponentSize(id, size) => control.set_component_size(id, size),
-                SurfaceEvent::Zoom(id, scale) => control.zoom(id, scale),
-                SurfaceEvent::RootSize(id, size, insets) => control.set_root_size(id, size, insets),
-                SurfaceEvent::Service(request) => self.service_request(request),
-            }
-        }
-    }
-
-    fn publish_focus(&mut self, control: &EngineControl) {
-        let path = self.surface.focus_path();
-        if path != self.focus_path {
-            control.set_focus_path(path.clone());
-            self.focus_path = path;
-        }
-    }
-
-    fn service_request(&mut self, request: ServiceRequest) {
-        if let Some(services) = &self.services {
-            services.sync_access(self.surface.access.clone());
-            if let Err(request) = services.submit(request) {
-                self.complete_service(request, Err("terminal service queue is full".into()));
-            }
-        } else {
-            self.complete_service(request, Ok(None));
-        }
-    }
-
-    fn poll_services(&mut self) -> bool {
-        if let Some(services) = &self.services {
-            services.sync_access(self.surface.access.clone());
-        }
-        let completed: Vec<_> = self
-            .services
-            .as_ref()
-            .map(|services| services.poll().collect())
-            .unwrap_or_default();
-        let changed = !completed.is_empty();
-        for completion in completed {
-            self.complete_service(completion.request, completion.result);
-        }
-        self.dispatch_events();
-        changed
-    }
-
-    fn complete_service(
-        &mut self,
-        request: ServiceRequest,
-        result: Result<Option<crate::services::ClipboardContent>, String>,
-    ) {
-        match request {
-            ServiceRequest::ClipboardRead { id, has_only } => self.surface.complete_clipboard(
-                id,
-                has_only,
-                result.and_then(|value| {
-                    value.ok_or_else(|| "host clipboard returned no result".into())
-                }),
-            ),
-            ServiceRequest::ClipboardPaste(edit) => self.surface.complete_paste(
-                edit,
-                result.and_then(|value| {
-                    value.ok_or_else(|| "host clipboard returned no result".into())
-                }),
-            ),
-            ServiceRequest::ClipboardWrite(text) if self.surface.access.allows_clipboard() => self
-                .service_output
-                .push_back(ServiceOutput::Clipboard(text)),
-            ServiceRequest::Title(title) => {
-                self.service_output.push_back(ServiceOutput::Title(title))
-            }
-            ServiceRequest::Announce(text) => self
-                .service_output
-                .push_back(ServiceOutput::Announcement(text)),
-            _ => {}
-        }
-        while self.service_output.len() > 256 {
-            self.service_output.pop_front();
-        }
-    }
-
-    pub(crate) fn has_frame(&self) -> bool {
-        self.has_frame
+        let control = self.surface.control();
+        self.pointer.cancel(&mut self.tree, control.as_ref());
+        self.selection.clear();
+        self.pointer = Pointer::default();
+        self.surface.stop();
+        self.tree.clear();
+        self.images.clear();
+        self.hits.clear();
+        self.geometry.clear();
+        self.keyboard = Default::default();
+        self.minibuffer = Default::default();
+        self.kill.clear();
+        self.field_drag = None;
+        self.field_press = None;
+        self.press_focus = None;
+        self.last_error = None;
     }
 }
 
-impl Drop for AppView {
-    fn drop(&mut self) {
-        // Stop callbacks and component tasks before the retained surface
-        // releases its native components and graphical worker handles.
-        self.stop();
-        self.services = None;
-    }
-}
-
-struct AssetsProvider(RwLock<Option<AssetBase>>);
-
-impl nsh_engine::Assets for AssetsProvider {
-    fn read(&self, uri: &str) -> Result<Vec<u8>, String> {
-        let base = self.0.read().unwrap_or_else(|e| e.into_inner()).clone();
-        nsh_engine::Assets::read(&AssetReader(base), uri)
-    }
-}
-
-#[cfg(feature = "dev")]
-struct DevSession {
-    client: nsh_dev::DevClient,
-    receiver: mpsc::Receiver<nsh_dev::DevEvent>,
-    running: Option<(u64, u64)>,
-    latest: Option<(u64, u64, Bundle)>,
-}
-
-#[cfg(feature = "dev")]
-impl AppView {
-    fn dev_event(&mut self, event: nsh_dev::DevEvent) -> io::Result<()> {
-        use nsh_dev::{DevEvent, protocol::BundleFormat};
-        match event {
-            // Terminal scripts drive this host directly; it does not have
-            // the real-platform test agent that handles these messages.
-            DevEvent::Testing
-            | DevEvent::Root
-            | DevEvent::Step { .. }
-            | DevEvent::TestSetup { .. }
-            | DevEvent::Fetch { .. } => {}
-            DevEvent::Connected => self.status = None,
-            DevEvent::Disconnected => {
-                self.status = Some("Dev server disconnected; reconnecting".into())
-            }
-            DevEvent::Building => self.status = Some("Building".into()),
-            DevEvent::BuildFailed(message) | DevEvent::CannotRun { message, .. } => {
-                self.status = None;
-                self.last_error = Some(message);
-            }
-            DevEvent::Bundle {
-                session,
-                version,
-                format,
-                bytes,
-                source_map,
-                capabilities,
-                app_id,
-                limits,
-            } => {
-                let bundle = match format {
-                    // SAFETY: this developer-selected server negotiated
-                    // the bytecode version before compiling its bundle.
-                    BundleFormat::Bytecode => unsafe { Bundle::bytecode(bytes) },
-                    BundleFormat::Source => {
-                        Bundle::source(String::from_utf8(bytes).map_err(io::Error::other)?)
-                    }
-                }
-                .with_policy(nsh_engine::Policy::development())
-                .with_app_id(app_id.as_deref())
-                .with_capabilities_json(capabilities.as_deref())
-                .map_err(io::Error::other)?;
-                let bundle = match source_map {
-                    Some(map) => bundle.with_source_map(map),
-                    None => bundle,
-                };
-                self.options.limits =
-                    Limits::development(limits.as_deref()).map_err(io::Error::other)?;
-                let Some(dev) = &mut self.dev else {
-                    return Ok(());
-                };
-                let already_applied = dev.running == Some((session, version));
-                dev.latest = Some((session, version, bundle.clone()));
-                dev.running = Some((session, version));
-                self.status = None;
-                if !already_applied {
-                    self.load(App::Js(bundle))?;
-                }
-            }
-            DevEvent::Patch {
-                session,
-                version,
-                base,
-                code,
-                source_map,
-            } => {
-                if self
-                    .dev
-                    .as_ref()
-                    .is_some_and(|dev| dev.running == Some((session, base)))
-                    && let Some(control) = self.control()
-                {
-                    control.hot_update(nsh_engine::HotUpdate {
-                        name: format!("hot-{version}.js"),
-                        code,
-                        source_map: source_map.map(Into::into),
-                    });
-                    if let Some(dev) = &mut self.dev {
-                        dev.running = Some((session, version));
-                    }
-                    self.last_error = None;
-                    self.status = None;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn reload_latest(&mut self) -> io::Result<()> {
-        let latest = self.dev.as_ref().and_then(|dev| dev.latest.clone());
-        if let Some((session, version, bundle)) = latest {
-            if let Some(dev) = &mut self.dev {
-                dev.running = Some((session, version));
-            }
-            self.load(App::Js(bundle))?;
-        }
-        Ok(())
-    }
-
-    fn reload_after_update(&mut self) -> io::Result<()> {
-        let Some(dev) = &mut self.dev else {
-            return Ok(());
-        };
-        let running = dev.running.take();
-        if dev
-            .latest
-            .as_ref()
-            .is_some_and(|(session, version, _)| Some((*session, *version)) == running)
-        {
-            self.reload_latest()?;
-        }
-        Ok(())
-    }
-}
-
-fn initial_environment(options: &AppOptions) -> Environment {
-    let viewport = options.metrics.viewport(options.size.0, options.size.1);
-    let locale = ["LC_ALL", "LC_MESSAGES", "LANG"]
-        .into_iter()
-        .find_map(|key| {
-            std::env::var(key)
-                .ok()
-                .and_then(|value| Locale::parse(&value))
-        })
-        .unwrap_or_default();
-    Environment {
-        window: viewport,
-        renderer: Renderer::Terminal,
-        fallback_key_bindings: true,
-        color_scheme: options.appearance.resolve(ColorScheme::Dark),
-        os: if cfg!(target_os = "windows") {
-            Os::Windows
-        } else if cfg!(target_os = "macos") {
-            Os::MacOs
-        } else {
-            Os::Linux
-        },
-        idiom: Idiom::Desktop,
-        reduce_motion: options.reduce_motion,
-        locale,
-        ..Environment::default()
-    }
-}
-
-fn safe_diagnostic(text: &str) -> String {
+fn plain(text: &str, lines: bool) -> String {
     text.chars()
-        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .filter(|ch| !ch.is_control() || (lines && matches!(ch, '\n' | '\t')))
         .collect()
 }
 
-#[cfg(feature = "dev")]
-fn dev_asset_base(url: &str) -> Option<String> {
-    let (scheme, rest) = if let Some(rest) = url.strip_prefix("ws://") {
-        ("http", rest)
-    } else {
-        ("https", url.strip_prefix("wss://")?)
+fn semantic_text(tree: &Mounter, id: nsh_core::NodeId, depth: usize, exposed: &[bool]) -> String {
+    if depth > 128 || !exposed.get(id as usize).copied().unwrap_or(false) {
+        return String::new();
+    }
+    let Some(view) = tree.get(id) else {
+        return String::new();
     };
-    let host = rest.split('/').next().filter(|host| !host.is_empty())?;
-    Some(format!("{scheme}://{host}/assets/"))
+    if view.props.accessibility.hidden || view.input.as_ref().is_some_and(|c| c.secure) {
+        return String::new();
+    }
+    let mut text = view
+        .text_content
+        .as_ref()
+        .map(|t| t.text.clone())
+        .unwrap_or_default();
+    for &child in &view.children {
+        let child = semantic_text(tree, child, depth + 1, exposed);
+        if !child.is_empty() {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(&child);
+        }
+    }
+    text
 }
 
-/// Runs an app until Ctrl+Q or its quit command. Interactive mode
-/// owns raw mode, the alternate screen, mouse capture and bracketed paste,
-/// restoring them on every return or panic. A script runs headlessly and
-/// writes only its requested snapshots; it also works with redirected IO.
-/// Interactive startup queries image protocols and pixel cell dimensions
-/// for at most 600 ms before reading input events. `NSH_IMAGE_PROTOCOL`
-/// accepts `auto`, `halfblocks`, `kitty`, `sixel` or `iterm2`; `halfblocks`
-/// skips the query. Scripts and embedded views keep the half-block default.
-/// Returned errors retain their IO kind and strip terminal controls from
-/// diagnostic text, including errors produced by app code during a script.
-pub fn run_app(source: AppSource, options: AppOptions) -> io::Result<()> {
-    run_inner(source, options)
-        .map_err(|error| io::Error::new(error.kind(), safe_diagnostic(&error.to_string())))
+/// A primary press held in a text field: where it was last, its clicks and
+/// the unit (character, word, line) it pressed, which its drag extends.
+#[derive(Clone, Copy)]
+struct FieldDrag {
+    id: nsh_core::NodeId,
+    last: Position,
+    clicks: u32,
+    anchor: (usize, usize),
 }
 
-fn run_inner(source: AppSource, options: AppOptions) -> io::Result<()> {
-    let script = options
-        .script
-        .as_deref()
-        .map(crate::script::Script::parse)
-        .transpose()?;
-    let mut view = AppView::new(options);
-    let interactive = script.is_none();
-    if interactive && (!io::stdin().is_terminal() || !io::stdout().is_terminal()) {
-        return Err(io::Error::new(
-            io::ErrorKind::NotConnected,
-            "interactive NSH apps need a terminal; --script runs headlessly",
-        ));
+impl Widget for &mut AppView {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        self.draw(area, buffer);
     }
-    let signals = interactive.then(ShutdownSignals::new).transpose()?;
-    let mut session = if interactive {
-        Some(TerminalSession::enter(&view.options.title)?)
-    } else {
-        None
-    };
-    if interactive {
-        // Query synchronously before either app code or Crossterm can
-        // consume input; a timeout leaves no reader behind.
-        view.set_image_protocol(terminal_graphics::detect());
-        if let Some(session) = &mut session {
-            session.graphics_cleanup = view.image_protocol_cleanup();
-        }
-        view.set_host_services(Some(Arc::new(crate::services::SystemServices::default())))?;
-    }
-    match source {
-        AppSource::Rust(root) => view.load(App::Rust(root))?,
-        AppSource::Bundle(bundle) => view.load(App::Js(*bundle))?,
-        #[cfg(feature = "dev")]
-        AppSource::DevServer(url) => view.connect(url)?,
-    }
-    if let Some(script) = script {
-        return crate::script::run(&mut view, script);
-    }
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = ratatui::Terminal::new(backend)?;
-    let (columns, rows) = terminal::size()?;
-    view.resize(columns, rows);
-    let started = Instant::now();
-    let tmux = terminal_graphics::tmux();
-    let mut dirty = true;
-    while !view.surface.should_quit() && !signals.as_ref().is_some_and(ShutdownSignals::requested) {
-        dirty |= view.tick(started.elapsed().as_secs_f64())?;
-        let output: Vec<_> = view.drain_service_output().collect();
-        if !output.is_empty() {
-            let mut stdout = io::stdout().lock();
-            for effect in output {
-                stdout.write_all(effect.terminal_sequence(tmux).as_bytes())?;
-            }
-            stdout.flush()?;
-        }
-        if dirty {
-            terminal.draw(|frame| view.render(frame.area(), frame.buffer_mut()))?;
-            dirty = false;
-        }
-        if event::poll(Duration::from_millis(16))? {
-            dirty |= view.handle_event(event::read()?);
-        }
-    }
-    // Local drop order restores the terminal before joining the engine:
-    // an app task finishing IO must not hold raw mode open on shutdown.
-    Ok(())
-}
-
-/// Capability queries own stdin only during standalone startup. The
-/// upstream convenience query leaves a background reader after a timeout;
-/// polling here makes the deadline and transfer to Crossterm explicit.
-mod terminal_graphics {
-    use std::{
-        io::{self, Write},
-        time::{Duration, Instant},
-    };
-
-    use ratatui_image::picker::cap_parser::{Parser, QueryStdioOptions, Response};
-
-    use crate::{ImageProtocol, ProtocolType};
-
-    const QUERY_TIMEOUT: Duration = Duration::from_millis(600);
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum Preference {
-        Auto,
-        Halfblocks,
-        Forced(ProtocolType),
-    }
-
-    impl Preference {
-        fn parse(value: Option<&str>) -> Self {
-            match value.unwrap_or("auto").trim().to_ascii_lowercase().as_str() {
-                "auto" => Self::Auto,
-                "halfblocks" => Self::Halfblocks,
-                "kitty" => Self::Forced(ProtocolType::Kitty),
-                "sixel" => Self::Forced(ProtocolType::Sixel),
-                "iterm2" => Self::Forced(ProtocolType::Iterm2),
-                _ => {
-                    log::warn!("unknown NSH_IMAGE_PROTOCOL; using auto detection");
-                    Self::Auto
-                }
-            }
-        }
-    }
-
-    pub(super) fn detect() -> Option<ImageProtocol> {
-        let preference = Preference::parse(std::env::var("NSH_IMAGE_PROTOCOL").ok().as_deref());
-        if preference == Preference::Halfblocks
-            || (preference == Preference::Auto
-                && std::env::var("TERM").is_ok_and(|term| term == "dumb"))
-        {
-            return None;
-        }
-        let term = std::env::var("TERM").ok();
-        let program = std::env::var("TERM_PROGRAM").ok();
-        let tmux_session = std::env::var("TMUX").ok();
-        let tmux = tmux_hint(term.as_deref(), program.as_deref(), tmux_session.as_deref());
-        let blacklist = preference == Preference::Auto
-            && ["WEZTERM_EXECUTABLE", "KONSOLE_VERSION"]
-                .into_iter()
-                .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()));
-        let options = QueryStdioOptions {
-            timeout: QUERY_TIMEOUT,
-            blacklist_protocols: if blacklist {
-                vec![ProtocolType::Kitty, ProtocolType::Sixel]
-            } else {
-                Vec::new()
-            },
-            ..QueryStdioOptions::default()
-        };
-        let responses = match query(&Parser::query(tmux, options)) {
-            Ok(responses) => responses,
-            Err(error) => {
-                log::debug!("terminal graphics query failed: {error}");
-                Vec::new()
-            }
-        };
-        let iterm2 = std::env::var("TERM_PROGRAM").is_ok_and(|program| iterm2_hint(&program))
-            || std::env::var("LC_TERMINAL").is_ok_and(|program| program.contains("iTerm"))
-            || (tmux
-                && ["ITERM_SESSION_ID", "WEZTERM_EXECUTABLE"]
-                    .into_iter()
-                    .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty())));
-        resolve(&responses, preference, fallback_cell_size(), tmux, iterm2)
-    }
-
-    fn iterm2_hint(program: &str) -> bool {
-        [
-            "iTerm",
-            "WezTerm",
-            "mintty",
-            "vscode",
-            "Tabby",
-            "Hyper",
-            "rio",
-            "Bobcat",
-            "WarpTerminal",
-        ]
-        .into_iter()
-        .any(|name| program.contains(name))
-    }
-
-    fn tmux_hint(term: Option<&str>, program: Option<&str>, session: Option<&str>) -> bool {
-        term.is_some_and(|term| term.starts_with("tmux"))
-            || program == Some("tmux")
-            || session.is_some_and(|session| !session.is_empty())
-    }
-
-    pub(super) fn tmux() -> bool {
-        tmux_hint(
-            std::env::var("TERM").ok().as_deref(),
-            std::env::var("TERM_PROGRAM").ok().as_deref(),
-            std::env::var("TMUX").ok().as_deref(),
-        )
-    }
-
-    fn resolve(
-        responses: &[Response],
-        preference: Preference,
-        fallback: Option<(u16, u16)>,
-        tmux: bool,
-        iterm2: bool,
-    ) -> Option<ImageProtocol> {
-        let cells = responses
-            .iter()
-            .rev()
-            .find_map(|response| match response {
-                Response::CellSize(Some((width, height))) if *width > 0 && *height > 0 => {
-                    Some((*width, *height))
-                }
-                _ => None,
-            })
-            .or(fallback)?;
-        let protocol = match preference {
-            Preference::Halfblocks => return None,
-            Preference::Forced(protocol) => protocol,
-            Preference::Auto if responses.contains(&Response::Kitty) => ProtocolType::Kitty,
-            Preference::Auto if responses.contains(&Response::Sixel) => ProtocolType::Sixel,
-            Preference::Auto if iterm2 && (!tmux || responses.contains(&Response::Status)) => {
-                ProtocolType::Iterm2
-            }
-            Preference::Auto => return None,
-        };
-        ImageProtocol::new(protocol, cells.0, cells.1)
-            .ok()
-            .map(|protocol| protocol.with_tmux(tmux))
-    }
-
-    fn query(request: &str) -> io::Result<Vec<Response>> {
-        let mut output = io::stdout().lock();
-        output.write_all(request.as_bytes())?;
-        output.flush()?;
-        let deadline = Instant::now() + QUERY_TIMEOUT;
-        let mut parser = Parser::new();
-        let mut responses = Vec::new();
-        // The byte budget also bounds parser memory for a terminal that
-        // sends incomplete or unsolicited sequences during the probe.
-        for _ in 0..16_384 {
-            let Some(byte) = read_byte(deadline)? else {
-                break;
-            };
-            let parsed = parser.push(char::from(byte));
-            let done = parsed.contains(&Response::Status);
-            responses.extend(parsed);
-            if done {
-                break;
-            }
-        }
-        Ok(responses)
-    }
-
-    #[cfg(unix)]
-    fn read_byte(deadline: Instant) -> io::Result<Option<u8>> {
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(None);
-            }
-            let mut poll = libc::pollfd {
-                fd: libc::STDIN_FILENO,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: poll points to one initialized descriptor and the
-            // deadline is bounded. No other terminal reader has started.
-            let ready = unsafe {
-                libc::poll(
-                    &mut poll,
-                    1,
-                    remaining.as_millis().max(1).min(i32::MAX as u128) as i32,
-                )
-            };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error);
-            }
-            if ready == 0 || poll.revents & libc::POLLIN == 0 {
-                return Ok(None);
-            }
-            let mut byte = 0u8;
-            // SAFETY: poll established readable stdin and byte is a valid
-            // one-byte destination. The probe is the sole input reader.
-            let count = unsafe { libc::read(libc::STDIN_FILENO, (&mut byte as *mut u8).cast(), 1) };
-            if count == 1 {
-                return Ok(Some(byte));
-            }
-            if count == 0 {
-                return Ok(None);
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    fn read_byte(deadline: Instant) -> io::Result<Option<u8>> {
-        use windows_sys::Win32::System::Console::{
-            GetNumberOfConsoleInputEvents, GetStdHandle, INPUT_RECORD, KEY_EVENT,
-            ReadConsoleInputW, STD_INPUT_HANDLE,
-        };
-        // SAFETY: reads this process's existing console handle without
-        // taking ownership. The interactive runner verified terminal IO.
-        let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
-        while Instant::now() < deadline {
-            let mut pending = 0;
-            // SAFETY: input is the current console and pending is writable.
-            if unsafe { GetNumberOfConsoleInputEvents(input, &mut pending) } == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            if pending == 0 {
-                std::thread::sleep(Duration::from_millis(2));
-                continue;
-            }
-            let mut record = std::mem::MaybeUninit::<INPUT_RECORD>::uninit();
-            let mut count = 0;
-            // SAFETY: a queued record exists, the output covers one record,
-            // and no Crossterm event reader has started to compete for it.
-            if unsafe { ReadConsoleInputW(input, record.as_mut_ptr(), 1, &mut count) } == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            if count == 0 {
-                continue;
-            }
-            // SAFETY: ReadConsoleInputW initialized the single record above.
-            let record = unsafe { record.assume_init() };
-            if u32::from(record.EventType) != KEY_EVENT {
-                continue;
-            }
-            // SAFETY: EventType selects the KeyEvent union member.
-            let key = unsafe { record.Event.KeyEvent };
-            if key.bKeyDown == 0 {
-                continue;
-            }
-            // SAFETY: KEY_EVENT_RECORD's UnicodeChar member is valid for
-            // ReadConsoleInputW. Capability responses contain ASCII only.
-            let character = unsafe { key.uChar.UnicodeChar };
-            if let Ok(byte) = u8::try_from(character) {
-                return Ok(Some(byte));
-            }
-        }
-        Ok(None)
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    fn read_byte(_: Instant) -> io::Result<Option<u8>> {
-        Ok(None)
-    }
-
-    #[cfg(unix)]
-    fn fallback_cell_size() -> Option<(u16, u16)> {
-        let size = crossterm::terminal::window_size().ok()?;
-        if size.columns == 0 || size.rows == 0 {
-            return None;
-        }
-        let cell = (size.width / size.columns, size.height / size.rows);
-        (cell.0 > 0 && cell.1 > 0).then_some(cell)
-    }
-
-    #[cfg(windows)]
-    fn fallback_cell_size() -> Option<(u16, u16)> {
-        use windows_sys::Win32::System::Console::{
-            CONSOLE_FONT_INFOEX, GetCurrentConsoleFontEx, GetStdHandle, STD_OUTPUT_HANDLE,
-        };
-        let mut font = CONSOLE_FONT_INFOEX {
-            cbSize: std::mem::size_of::<CONSOLE_FONT_INFOEX>() as u32,
-            ..Default::default()
-        };
-        // SAFETY: retrieves the process's output handle without owning it;
-        // font is initialized with the size required by the console API.
-        if unsafe { GetCurrentConsoleFontEx(GetStdHandle(STD_OUTPUT_HANDLE), 0, &mut font) } == 0 {
-            return None;
-        }
-        let cell = (
-            u16::try_from(font.dwFontSize.X).ok()?,
-            u16::try_from(font.dwFontSize.Y).ok()?,
-        );
-        (cell.0 > 0 && cell.1 > 0).then_some(cell)
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    fn fallback_cell_size() -> Option<(u16, u16)> {
-        None
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        fn responses(bytes: &str) -> Vec<Response> {
-            let mut parser = Parser::new();
-            bytes.chars().flat_map(|ch| parser.push(ch)).collect()
-        }
-
-        #[test]
-        fn startup_probe_prefers_reported_kitty_then_sixel_and_exact_cells() {
-            let replies =
-                responses("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?1;2;4c\u{1b}[6;20;10t\u{1b}[0n");
-            let protocol = resolve(&replies, Preference::Auto, Some((8, 16)), false, true).unwrap();
-            assert_eq!(protocol.protocol_type(), ProtocolType::Kitty);
-            assert_eq!(protocol.cell_size(), (10, 20));
-            let sixel = resolve(
-                &responses("\u{1b}[?1;2;4c\u{1b}[6;18;9t\u{1b}[0n"),
-                Preference::Auto,
-                None,
-                false,
-                false,
-            )
-            .unwrap();
-            assert_eq!(sixel.protocol_type(), ProtocolType::Sixel);
-            assert_eq!(sixel.cell_size(), (9, 18));
-        }
-
-        #[test]
-        fn protocols_require_real_cell_dimensions_and_tmux_passthrough_evidence() {
-            assert!(resolve(&[Response::Kitty], Preference::Auto, None, false, false).is_none());
-            assert!(resolve(&[], Preference::Auto, Some((8, 16)), false, false).is_none());
-            assert!(resolve(&[], Preference::Auto, Some((8, 16)), true, true).is_none());
-            assert_eq!(
-                resolve(
-                    &[Response::Status],
-                    Preference::Auto,
-                    Some((8, 16)),
-                    true,
-                    true
-                )
-                .unwrap()
-                .protocol_type(),
-                ProtocolType::Iterm2
-            );
-            assert!(
-                resolve(
-                    &[Response::Kitty],
-                    Preference::Halfblocks,
-                    Some((8, 16)),
-                    false,
-                    false
-                )
-                .is_none()
-            );
-            assert_eq!(
-                Preference::parse(Some("halfblocks")),
-                Preference::Halfblocks
-            );
-            assert!(tmux_hint(
-                Some("screen-256color"),
-                Some("iTerm.app"),
-                Some("/tmp/tmux-1000/default,123,0")
-            ));
-            assert!(!tmux_hint(Some("screen-256color"), Some("iTerm.app"), None));
-        }
-    }
-}
-
-struct TerminalSession {
-    graphics_cleanup: String,
-    #[cfg(not(windows))]
-    keyboard_enhanced: bool,
-}
-
-impl TerminalSession {
-    fn enter(title: &str) -> io::Result<Self> {
-        terminal::enable_raw_mode()?;
-        // Construct the guard first: a partial setup also needs restoring.
-        let session = Self {
-            graphics_cleanup: String::new(),
-            #[cfg(not(windows))]
-            keyboard_enhanced: false,
-        };
-        #[cfg(not(windows))]
-        let mut session = session;
-        // An app title is data inside an OSC sequence. Strip terminal
-        // controls so a package title cannot inject another sequence.
-        let title: String = title.chars().filter(|ch| !ch.is_control()).collect();
-        execute!(
-            io::stdout(),
-            EnterAlternateScreen,
-            EnableMouseCapture,
-            EnableBracketedPaste,
-            Hide,
-            SetTitle(title)
-        )?;
-        // The Windows backend receives native console key records; its
-        // Crossterm transport cannot decode CSI-u keyboard events.
-        #[cfg(not(windows))]
-        {
-            session.keyboard_enhanced = true;
-            execute!(
-                io::stdout(),
-                PushKeyboardEnhancementFlags(
-                    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-                )
-            )?;
-        }
-        Ok(session)
-    }
-}
-
-impl Drop for TerminalSession {
-    fn drop(&mut self) {
-        let _ = io::stdout().write_all(self.graphics_cleanup.as_bytes());
-        #[cfg(not(windows))]
-        if self.keyboard_enhanced {
-            let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
-        }
-        let _ = execute!(
-            io::stdout(),
-            Show,
-            DisableBracketedPaste,
-            DisableMouseCapture,
-            LeaveAlternateScreen
-        );
-        let _ = terminal::disable_raw_mode();
-    }
-}
-
-struct ShutdownSignals {
-    #[cfg(not(windows))]
-    requested: Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(unix)]
-    registrations: Vec<signal_hook::SigId>,
-}
-
-impl ShutdownSignals {
-    fn new() -> io::Result<Self> {
-        #[cfg(not(windows))]
-        let requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        #[cfg(unix)]
-        {
-            let mut registrations = Vec::new();
-            for signal in [
-                signal_hook::consts::SIGINT,
-                signal_hook::consts::SIGTERM,
-                signal_hook::consts::SIGHUP,
-            ] {
-                match signal_hook::flag::register(signal, requested.clone()) {
-                    Ok(id) => registrations.push(id),
-                    Err(error) => {
-                        for id in registrations {
-                            signal_hook::low_level::unregister(id);
-                        }
-                        return Err(error);
-                    }
-                }
-            }
-            Ok(Self {
-                requested,
-                registrations,
-            })
-        }
-        #[cfg(windows)]
-        {
-            CONSOLE_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
-            // SAFETY: the handler lives for the process and only writes
-            // an atomic flag. Drop unregisters this exact handler.
-            if unsafe {
-                windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(console_stop), 1)
-            } == 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(Self {})
-        }
-        #[cfg(not(any(unix, windows)))]
-        Ok(Self { requested })
-    }
-
-    fn requested(&self) -> bool {
-        #[cfg(windows)]
-        {
-            CONSOLE_STOP.load(std::sync::atomic::Ordering::Relaxed)
-        }
-        #[cfg(not(windows))]
-        self.requested.load(std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
-#[cfg(windows)]
-static CONSOLE_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-#[cfg(windows)]
-unsafe extern "system" fn console_stop(event: u32) -> windows_sys::core::BOOL {
-    use windows_sys::Win32::System::Console::{
-        CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
-    };
-    if matches!(
-        event,
-        CTRL_C_EVENT
-            | CTRL_BREAK_EVENT
-            | CTRL_CLOSE_EVENT
-            | CTRL_LOGOFF_EVENT
-            | CTRL_SHUTDOWN_EVENT
-    ) {
-        CONSOLE_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
-        1
-    } else {
-        0
-    }
-}
-
-#[cfg(windows)]
-impl Drop for ShutdownSignals {
-    fn drop(&mut self) {
-        // SAFETY: removes the same process-static handler registered in new.
-        unsafe {
-            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(console_stop), 0);
-        }
-    }
-}
-
-#[cfg(unix)]
-impl Drop for ShutdownSignals {
-    fn drop(&mut self) {
-        for id in self.registrations.drain(..) {
-            signal_hook::low_level::unregister(id);
-        }
-    }
-}
-
-#[cfg(feature = "dev")]
-struct LogRecord {
-    level: log::Level,
-    target: String,
-    message: String,
-}
-
-#[cfg(feature = "dev")]
-impl LogRecord {
-    fn terminal_safe(mut self) -> Self {
-        self.target = safe_diagnostic(&self.target);
-        self.message = safe_diagnostic(&self.message);
-        self
-    }
-}
-#[cfg(feature = "dev")]
-static LOGS: Mutex<VecDeque<LogRecord>> = Mutex::new(VecDeque::new());
-
-/// Installs the standalone hosts' logger. Diagnostics are buffered and
-/// forwarded to a connected dev server; setting `NSH_LOG` additionally
-/// writes them to that file. Output strips terminal control characters
-/// while retaining newlines and tabs. No log line writes over the scene.
-/// Embedders keep their own logger instead.
-pub fn init_logging() {
-    struct Logger;
-    impl log::Log for Logger {
-        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
-            true
-        }
-        fn log(&self, record: &log::Record<'_>) {
-            let message = record.args().to_string();
-            if let Ok(path) = std::env::var("NSH_LOG")
-                && let Ok(mut file) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-            {
-                let _ = writeln!(
-                    file,
-                    "{} {}: {}",
-                    record.level(),
-                    safe_diagnostic(record.target()),
-                    safe_diagnostic(&message)
-                );
-            }
-            #[cfg(feature = "dev")]
-            {
-                let mut logs = LOGS.lock().unwrap_or_else(|e| e.into_inner());
-                if logs.len() >= 1024 {
-                    logs.pop_front();
-                }
-                logs.push_back(LogRecord {
-                    level: record.level(),
-                    target: record.target().into(),
-                    message,
-                });
-            }
-        }
-        fn flush(&self) {}
-    }
-    static LOGGER: Logger = Logger;
-    if log::set_logger(&LOGGER).is_ok() {
-        log::set_max_level(log::LevelFilter::Info);
-    }
-}
-
-#[cfg(feature = "dev")]
-fn take_logs() -> Vec<LogRecord> {
-    LOGS.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .drain(..)
-        .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use nsh_base::input;
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+
+    use nsh_base::rich_editor::view::rich_editor;
     use nsh_core::prelude::*;
+    use ratatui_core::{backend::TestBackend, terminal::Terminal};
 
-    use super::*;
+    use crate::{App, AppOptions, AppView, Handled, Input, Modifiers, Root};
 
-    fn wait_focus_probe(
+    fn test_surface() -> (AppView, crossbeam_channel::Receiver<()>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut options = AppOptions::default();
+        options.wake = Some(Arc::new(move || {
+            let _ = tx.send(());
+        }));
+        options.cache = nsh_engine::CacheOptions::off();
+        (AppView::new(options), rx)
+    }
+
+    fn draw_until(
         view: &mut AppView,
-        editor: &str,
-        loaded: Instant,
-        ready: impl Fn(&AppView) -> bool,
-        stage: &str,
+        terminal: &mut Terminal<TestBackend>,
+        rx: &crossbeam_channel::Receiver<()>,
+        expected: &str,
     ) {
-        let diagnostic = |view: &AppView| {
-            format!(
-                "{editor}: {stage}, {:?} since load; focused={:?}, error={:?}\n{}",
-                loaded.elapsed(),
-                view.surface().focused(),
-                view.last_error(),
-                view.snapshot()
-            )
-        };
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            view.poll()
-                .unwrap_or_else(|error| panic!("{error}: {}", diagnostic(view)));
-            let (tx, rx) = mpsc::channel();
-            view.control()
-                .unwrap()
-                .advance_clock(Duration::ZERO, move || {
-                    let _ = tx.send(());
-                });
-            rx.recv_timeout(Duration::from_secs(5))
-                .unwrap_or_else(|error| panic!("engine barrier {error:?}: {}", diagnostic(view)));
-            view.poll()
-                .unwrap_or_else(|error| panic!("{error}: {}", diagnostic(view)));
-            if ready(view) {
+            terminal
+                .draw(|frame| view.render(frame, frame.area()))
+                .unwrap();
+            let contents: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            if contents.contains(expected) {
                 return;
             }
-            assert!(Instant::now() < deadline, "{}", diagnostic(view));
+            assert!(
+                Instant::now() < deadline,
+                "expected {expected:?}, got {contents:?}"
+            );
+            let due = view
+                .next_frame_deadline()
+                .map_or(deadline, |due| due.min(deadline));
+            let _ = rx.recv_deadline(due);
         }
     }
 
     #[component]
-    fn PlainInputFocusProbe() -> impl IntoElement {
-        let value = signal(String::new());
-        let focused = signal(false);
+    fn DelayedComposer() -> impl IntoElement {
+        let editable = signal(false);
+        let focused = signal("none");
+        let enable = editable;
         view()
-            .flex_col()
-            .child(
-                input()
-                    .label("Focus probe input")
-                    .auto_focus(true)
-                    .h(px(32.0))
-                    .on_focus(move || focused.set(true))
-                    .on_change(move |text: &str| value.set(text.to_owned())),
-            )
+            .flex_1()
             .child(text(move || {
-                format!("Probe focused:{} value:{}", focused.get(), value.get())
+                format!("editable:{} focus:{}", editable.get(), focused.get())
             }))
-    }
-
-    #[component]
-    fn CodeEditorFocusProbe() -> impl IntoElement {
-        let value = signal(String::new());
-        let focused = signal(false);
-        view()
-            .flex_col()
             .child(
-                nsh_base::editor::editor()
-                    .accessibility_label("Focus probe input")
-                    .auto_focus(true)
-                    .font_family(Some(SharedString::from("Pacifico")))
-                    .w(px(400.0))
-                    .h(px(160.0))
-                    .on_focus(move || focused.set(true))
-                    .on_change(move |text: &SharedString| value.set(text.to_string())),
+                view()
+                    .h(px(16.0))
+                    .label("Enable")
+                    .on_focus(move |_: &()| focused.set("enable"))
+                    .on_press(move |_: &()| enable.set(true))
+                    .child(text("Enable")),
             )
-            .child(text(move || {
-                format!("Probe focused:{} value:{}", focused.get(), value.get())
-            }))
-    }
-
-    #[test]
-    fn code_editor_autofocus_reaches_its_native_sink_like_an_ordinary_input() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        use nsh_core::ViewKind;
-
-        for editor in [false, true] {
-            let app: App = if editor {
-                Root::of::<CodeEditorFocusProbe>()
-                    .font(
-                        include_bytes!(
-                            "../../../tests/compat/cases/layout/fonts/Pacifico-Regular.ttf"
-                        )
-                        .as_slice(),
-                    )
-                    .into()
-            } else {
-                Root::of::<PlainInputFocusProbe>().into()
-            };
-            let mut view = AppView::new(AppOptions::default());
-            let loaded = Instant::now();
-            view.load(app).unwrap();
-            let editor_name = if editor { "CodeEditor" } else { "Input" };
-            let sink = |view: &AppView| {
-                view.accessibility_snapshot()
-                    .into_iter()
-                    .find(|node| {
-                        node.label == "Focus probe input"
-                            && view
-                                .surface()
-                                .node(node.id)
-                                .is_some_and(|n| n.kind == ViewKind::Input)
-                    })
-                    .map(|node| node.id)
-            };
-            // Readiness comes from the real mounted Input and rendered callback state,
-            // not a guessed frame count, direct Surface focus assignment or a click.
-            wait_focus_probe(
-                &mut view,
-                editor_name,
-                loaded,
-                |view| sink(view).is_some() && view.snapshot().contains("Probe focused:"),
-                "probe did not mount",
-            );
-            let id = sink(&view).unwrap();
-            wait_focus_probe(
-                &mut view,
-                editor_name,
-                loaded,
-                |view| {
-                    view.surface().focused() == Some(id)
-                        && view.snapshot().contains("Probe focused:true")
-                },
-                if editor {
-                    "code Editor autofocus did not reach its native sink"
-                } else {
-                    "ordinary Input control autofocus failed"
-                },
-            );
-            view.handle_event(crossterm::event::Event::Key(KeyEvent::new(
-                KeyCode::Char('x'),
-                KeyModifiers::NONE,
-            )));
-            wait_focus_probe(
-                &mut view,
-                editor_name,
-                loaded,
-                |view| view.snapshot().contains("Probe focused:true value:x"),
-                if editor {
-                    "code Editor did not receive native typing"
-                } else {
-                    "ordinary Input control did not receive native typing"
-                },
-            );
-            if editor {
-                let surface = view.surface();
-                let frame = surface.global_frame(id).unwrap();
-                let x = frame.origin.x.0 + frame.size.width.0 / 2.0;
-                let y = frame.origin.y.0 + frame.size.height.0 / 2.0;
-                let hit = surface.hit_test(x, y);
-                assert!(
-                    hit.is_some(),
-                    "content beneath the sink remains a pointer target"
-                );
-                assert_ne!(hit, Some(id), "the native sink must not steal row presses");
-            }
-            view.stop();
-        }
-    }
-
-    #[component]
-    fn RichEditorFocusProbe() -> impl IntoElement {
-        use nsh_base::rich_editor::{
-            extensions::starter,
-            state::{EditorState, EditorStateConfig},
-            view::{EditorSession, NodeViews, RichEditorChange, rich_editor},
-        };
-
-        let state = EditorState::create(EditorStateConfig::new(starter::schema())).unwrap();
-        let session = EditorSession::new(state, NodeViews::default());
-        let changed = session.clone();
-        let value = signal(String::new());
-        let focused = signal(false);
-        view()
-            .flex_col()
             .child(
                 rich_editor()
-                    .editor(session)
-                    .accessibility_label("Focus probe input")
                     .auto_focus(true)
-                    .w(px(400.0))
-                    .h(px(160.0))
-                    .on_focus(move || focused.set(true))
-                    .on_change(move |_: &RichEditorChange| {
-                        value.set(changed.state().doc().text_content());
-                    }),
+                    .editable(move || editable.get())
+                    .accessibility_label(Some(SharedString::from("Message composer")))
+                    .on_focus(move |_: &()| focused.set("composer"))
+                    .flex_1(),
             )
-            .child(text(move || {
-                format!("Probe focused:{} value:{}", focused.get(), value.get())
-            }))
     }
 
     #[test]
-    fn rich_editor_autofocus_reaches_its_native_sink_like_an_ordinary_input() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        use nsh_core::ViewKind;
-
-        for editor in [false, true] {
-            let app: App = if editor {
-                Root::of::<RichEditorFocusProbe>().into()
-            } else {
-                Root::of::<PlainInputFocusProbe>().into()
-            };
-            let mut view = AppView::new(AppOptions::default());
-            let loaded = Instant::now();
-            view.load(app).unwrap();
-            let editor_name = if editor { "RichEditor" } else { "Input" };
-            let sink = |view: &AppView| {
-                view.accessibility_snapshot()
-                    .into_iter()
-                    .find(|node| {
-                        node.label == "Focus probe input"
-                            && view
-                                .surface()
-                                .node(node.id)
-                                .is_some_and(|n| n.kind == ViewKind::Input)
-                    })
-                    .map(|node| node.id)
-            };
-            // Readiness comes from the real mounted Input and rendered callback state,
-            // not a guessed frame count, direct Surface focus assignment or a click.
-            wait_focus_probe(
-                &mut view,
-                editor_name,
-                loaded,
-                |view| sink(view).is_some() && view.snapshot().contains("Probe focused:"),
-                "probe did not mount",
-            );
-            let id = sink(&view).unwrap();
-            wait_focus_probe(
-                &mut view,
-                editor_name,
-                loaded,
-                |view| {
-                    view.surface().focused() == Some(id)
-                        && view.snapshot().contains("Probe focused:true")
-                },
-                if editor {
-                    "RichEditor autofocus did not reach its native sink"
-                } else {
-                    "ordinary Input control autofocus failed"
-                },
-            );
-            view.handle_event(crossterm::event::Event::Key(KeyEvent::new(
-                KeyCode::Char('x'),
-                KeyModifiers::NONE,
-            )));
-            wait_focus_probe(
-                &mut view,
-                editor_name,
-                loaded,
-                |view| view.snapshot().contains("Probe focused:true value:x"),
-                if editor {
-                    "RichEditor did not receive native typing"
-                } else {
-                    "ordinary Input control did not receive native typing"
-                },
-            );
-            view.stop();
-        }
-    }
-
-    #[cfg(feature = "js")]
-    #[class]
-    struct ScopedHost {
-        label: String,
-        count: u32,
-        closed: Arc<std::sync::atomic::AtomicBool>,
-    }
-
-    #[cfg(feature = "js")]
-    #[class]
-    impl ScopedHost {
-        pub(crate) async fn query(this: Instance<Self>) -> Result<String, String> {
-            this.with_mut(|host| {
-                if host.closed.load(std::sync::atomic::Ordering::SeqCst) {
-                    return Err("owner closed".into());
-                }
-                host.count += 1;
-                Ok(format!("{}:{}", host.label, host.count))
-            })
-        }
-    }
-
-    #[cfg(feature = "js")]
-    #[test]
-    fn embedded_views_receive_their_own_host_objects_and_reload_them() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-        let (created, creations) = mpsc::channel();
-        let closed = Arc::new(AtomicBool::new(false));
-        let options = |label: &str| {
-            let (label, created, closed) = (label.to_owned(), created.clone(), closed.clone());
-            let mut registry = nsh_core::element::Registry::ui_set("test/host");
-            registry.value("host", move || {
-                created.send(std::thread::current().id()).unwrap();
-                Instance::new(ScopedHost {
-                    label: label.clone(),
-                    count: 0,
-                    closed: closed.clone(),
-                })
-            });
-            let declarations = nsh_core::element::declarations(&registry, &[]);
-            assert!(declarations.contains("export declare const host: ScopedHost;"));
-            assert!(declarations.contains("private constructor();"));
-            AppOptions {
-                ui_sets: Some(vec![registry]),
-                ..Default::default()
-            }
-        };
-        let app = || {
-            App::Js(Bundle::source(
-                r#"
-            import { host, ScopedHost } from 'test/host';
-            import { mount, Text, signal } from 'nsh';
-            import { keymap } from 'nsh';
-            let result = signal('loading');
-            try { new ScopedHost(); throw Error('constructor exposed'); } catch(e) {
-                if (e.message === 'constructor exposed') throw e;
-            }
-            mount(() => Text({children: () => result()}));
-            keymap.bind('ctrl+x', async () => {
-                try { result.set(await host.query()); } catch(e) { result.set(e.message); }
-            });
-            (async () => {
-                await host.query();
-                result.set(await host.query());
-            })();
-        "#
-                .into(),
-            ))
-        };
-        let wait = |view: &mut AppView, expected: &str| {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            loop {
-                view.poll().unwrap();
-                if view.snapshot().contains(expected) {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "{} / {:?}",
-                    view.snapshot(),
-                    view.last_error()
-                );
-                std::thread::sleep(Duration::from_millis(2));
-            }
-        };
-        let mut left = AppView::new(options("left"));
-        let mut right = AppView::new(options("right"));
-        left.load(app()).unwrap();
-        right.load(app()).unwrap();
-        wait(&mut left, "left:2");
-        wait(&mut right, "right:2");
-        left.load(app()).unwrap();
-        wait(&mut left, "left:2");
-        for _ in 0..3 {
-            assert_ne!(
-                creations.recv_timeout(Duration::from_secs(1)).unwrap(),
-                std::thread::current().id()
-            );
-        }
-        closed.store(true, Ordering::SeqCst);
-        for view in [&mut left, &mut right] {
-            view.handle_event(Event::Key(KeyEvent::new(
-                KeyCode::Char('x'),
-                KeyModifiers::CONTROL,
-            )));
-        }
-        wait(&mut left, "owner closed");
-        wait(&mut right, "owner closed");
-        let mut unbound = AppView::new(AppOptions {
-            ui_sets: Some(vec![]),
-            ..Default::default()
-        });
-        unbound.load(app()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while unbound.last_error().is_none() {
-            unbound.poll().unwrap();
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        assert!(unbound.last_error().unwrap().contains("test/host"));
-    }
-
-    #[component]
-    fn ScriptApp() -> impl IntoElement {
-        let typed = signal(String::new());
-        let count = signal(0_u32);
-        view()
-            .flex_col()
-            .child(text("Ready"))
-            .child(
-                input()
-                    .h(px(32.0))
-                    .value(move || typed.get())
-                    .on_change(move |value: &str| typed.set(value.to_owned())),
-            )
-            .child(text(move || format!("Echo:{}", typed.get())))
-            .child(
-                view()
-                    .h(px(32.0))
-                    .on_press(move |_: &()| count.update(|value| *value += 1))
-                    .child(text("Increment")),
-            )
-            .child(text(move || format!("Count:{}", count.get())))
-    }
-
-    #[component]
-    fn ReparentedTouchApp() -> impl IntoElement {
-        let phases = signal([0_u32; 4]);
-        view()
-            .flex_col()
-            .child(text(move || {
-                let counts = phases.get();
-                format!(
-                    "Touch phases:{}/{}/{}/{}",
-                    counts[0], counts[1], counts[2], counts[3]
-                )
-            }))
-            .child(
-                view()
-                    .label("Touch owner A")
-                    .h(px(32.0))
-                    .on_touch(move |touch: &nsh_core::TouchEvent| {
-                        let phase = match touch.phase {
-                            nsh_core::TouchPhase::Start => 0,
-                            nsh_core::TouchPhase::Move => 1,
-                            nsh_core::TouchPhase::End => 2,
-                            nsh_core::TouchPhase::Cancel => 3,
-                        };
-                        phases.update(|counts| counts[phase] += 1);
-                    })
-                    .child(view().label("Touch hit X").h(px(32.0))),
-            )
-            .child(view().label("Touch destination B").h(px(64.0)))
-    }
-
-    #[test]
-    fn admitted_touches_keep_their_owner_after_native_reparenting_until_end_or_retirement() {
-        use crossterm::event::{Event, MouseButton, MouseEvent, MouseEventKind};
-        use nsh_core::{EventMask, MountItem};
-
-        fn flush(view: &mut AppView) {
-            view.poll().unwrap();
-            let (tx, rx) = mpsc::channel();
-            view.control()
-                .unwrap()
-                .advance_clock(Duration::ZERO, move || tx.send(()).unwrap());
-            rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            view.poll().unwrap();
-        }
-        fn wait(view: &mut AppView, expected: &str) {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                flush(view);
-                if view.snapshot().contains(expected) {
-                    return;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "touch handler did not report {expected}: {:?}\n{}",
-                    view.last_error(),
-                    view.snapshot()
-                );
-            }
-        }
-
-        for retire in [false, true] {
-            let mut view = AppView::new(AppOptions {
-                size: (80, 24),
-                ..Default::default()
-            });
-            view.load(Root::of::<ReparentedTouchApp>().into()).unwrap();
-            wait(&mut view, "Touch phases:0/0/0/0");
-            let target = |label: &str| {
-                view.accessibility_snapshot()
-                    .into_iter()
-                    .find(|node| node.label == label)
-                    .unwrap_or_else(|| panic!("missing {label}: {}", view.snapshot()))
-            };
-            let (owner, hit, destination) = (
-                target("Touch owner A"),
-                target("Touch hit X"),
-                target("Touch destination B"),
-            );
-            let metrics = view.surface().metrics();
-            let column = ((hit.frame.origin.x.0 + hit.frame.size.width.0 / 2.0) / metrics.width().0)
-                .floor() as u16;
-            let row = ((hit.frame.origin.y.0 + hit.frame.size.height.0 / 2.0) / metrics.height().0)
-                .floor() as u16;
-            let mouse = |kind| {
-                Event::Mouse(MouseEvent {
-                    kind,
-                    column,
-                    row,
-                    modifiers: event::KeyModifiers::NONE,
-                })
-            };
-            view.handle_event(mouse(MouseEventKind::Down(MouseButton::Left)));
-            wait(&mut view, "Touch phases:1/0/0/0");
-
-            let mut items = vec![MountItem::Insert {
-                parent: destination.id,
-                child: hit.id,
-                before: None,
-            }];
-            if retire {
-                items.push(MountItem::RetireListCell {
-                    id: owner.id,
-                    request: 1,
-                    roots: vec![owner.id],
-                });
-            } else {
-                items.push(MountItem::Events {
-                    id: owner.id,
-                    events: EventMask::default(),
-                });
-            }
-            view.surface_mut().apply(MountBatch { items });
-            if retire {
-                wait(&mut view, "Touch phases:1/0/0/1");
-                view.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left)));
-            }
-            view.handle_event(mouse(MouseEventKind::Up(MouseButton::Left)));
-            let expected = if retire {
-                "Touch phases:1/0/0/1"
-            } else {
-                "Touch phases:1/0/1/0"
-            };
-            wait(&mut view, expected);
-            view.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left)));
-            view.handle_event(mouse(MouseEventKind::Up(MouseButton::Left)));
-            flush(&mut view);
-            assert!(view.snapshot().contains(expected), "{}", view.snapshot());
-        }
-    }
-
-    #[test]
-    fn headless_runner_mounts_edits_activates_and_resizes_a_real_app() {
-        run_app(AppSource::Rust(Root::of::<ScriptApp>()), AppOptions {
-            size: (80, 24),
-            script: Some("expect Ready; expect-focus; type 你好; expect Echo:你好; key Tab; key Enter; expect Count:1; resize 60 18; expect Count:1; quit".into()),
-            ..Default::default()
-        }).unwrap();
-    }
-
-    #[test]
-    fn view_keeps_terminal_size_in_virtual_points() {
-        let mut view = AppView::new(AppOptions {
-            size: (80, 24),
-            ..Default::default()
-        });
-        assert_eq!(
-            view.surface().viewport(),
-            nsh_core::Size::new(px(640.0), px(384.0))
-        );
-        view.resize(40, 10);
-        assert_eq!(
-            view.surface().viewport(),
-            nsh_core::Size::new(px(320.0), px(160.0))
-        );
-        assert!(view.control().is_none());
-        assert_eq!(view.environment.renderer, PlatformRenderer::Terminal);
-        assert!(view.image_protocol_cleanup().is_empty());
-    }
-
-    #[cfg(feature = "js")]
-    #[test]
-    fn recycled_list_rows_keep_keyboard_order_and_retire_replaced_focus() {
-        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-        use nsh_core::{EventKind, EventPayload};
-
-        const APP: &str = r#"
-            import { mount, signal, View, Text, List } from 'nsh';
-            import { LayoutAnimation } from 'nsh';
-            const rows = signal(Array.from({length: 40}, (_, i) => `row ${i}`));
-            const phase = signal('initial');
-            const presses = signal(0);
-            let list;
-            function action(label, run) {
-                const name = () => typeof label === 'function' ? label() : label;
-                return View({get accessibilityLabel() { return name(); }, onPress: run,
-                    style: {height: 32}, children: Text({children: name})});
-            }
-            mount(() => View({style: {flex: 1}, children: [
-                action('Scroll to twelve', () => {
-                    list.scrollToIndex({index: 12, animated: false}); phase.set('at twelve');
-                }),
-                action('Scroll to thirteen', () => {
-                    list.scrollToIndex({index: 13, animated: false}); phase.set('at thirteen');
-                }),
-                action('Scroll to thirty', () => {
-                    list.scrollToIndex({index: 30, animated: false}); phase.set('at thirty');
-                }),
-                action('Filter rows', () => {
-                    LayoutAnimation.configureNext(LayoutAnimation.Presets.linear);
-                    rows.set(['match alpha', 'match beta']); phase.set('filtered');
-                }),
-                action('Replace rows', () => {
-                    rows.set(Array.from({length: 40}, (_, i) => `replacement row ${i}`));
-                    phase.set('replaced');
-                }),
-                action('Restore rows', () => {
-                    rows.set(Array.from({length: 40}, (_, i) => `row ${i}`));
-                    phase.set('restored');
-                }),
-                List({get each() { return rows(); }, keyExtractor: row => row,
-                    ref: node => { list = node; }, estimatedItemSize: 32,
-                    style: {height: 128}, focusable: false,
-                    header: action('Header action', () => {}),
-                    footer: action('Footer action', () => {}),
-                    children: row => action(row, () => {
-                        presses.set(presses() + 1); phase.set(`Activated ${row()}`);
-                    })}),
-                Text({children: () => phase()}),
-                Text({children: () => `List presses:${presses()}`})
-            ]}));
-        "#;
-
-        fn wait(view: &mut AppView, started: Instant, ready: impl Fn(&AppView) -> bool) {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                view.tick(started.elapsed().as_secs_f64()).unwrap();
-                if ready(view) {
-                    return;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "list did not settle: {:?}\n{}",
-                    view.last_error(),
-                    view.snapshot()
-                );
-                std::thread::sleep(Duration::from_millis(2));
-            }
-        }
-        fn target(view: &AppView, label: &str) -> Option<nsh_core::NodeId> {
-            view.accessibility_snapshot()
-                .into_iter()
-                .find(|node| node.label == label)
-                .map(|node| node.id)
-        }
-        fn press(view: &AppView, label: &str) {
-            view.control().unwrap().dispatch_event(
-                target(view, label).unwrap(),
-                EventKind::Press,
-                EventPayload::None,
-            );
-        }
-        fn focused(view: &AppView) -> Option<String> {
-            view.accessibility_snapshot()
-                .into_iter()
-                .find(|node| node.focused)
-                .map(|node| node.label)
-        }
-        fn tab(view: &mut AppView, backwards: bool) {
-            view.handle_event(Event::Key(KeyEvent::new(
-                if backwards {
-                    KeyCode::BackTab
-                } else {
-                    KeyCode::Tab
-                },
-                KeyModifiers::NONE,
-            )));
-        }
-
-        let started = Instant::now();
-        let mut view = AppView::new(AppOptions::default());
-        view.load(App::Js(Bundle::source(APP.into()))).unwrap();
-        wait(&mut view, started, |view| target(view, "row 0").is_some());
-        press(&view, "Scroll to twelve");
-        wait(&mut view, started, |view| {
-            view.snapshot().contains("at twelve") && target(view, "row 20").is_some()
-        });
-        let retained = target(&view, "row 12").unwrap();
-        view.surface_mut().set_focus(Some(retained));
-        tab(&mut view, false);
-        assert_eq!(focused(&view).as_deref(), Some("row 13"));
-        tab(&mut view, true);
-        assert_eq!(focused(&view).as_deref(), Some("row 12"));
-
-        press(&view, "Scroll to thirteen");
-        wait(&mut view, started, |view| {
-            view.snapshot().contains("at thirteen") && target(view, "row 21").is_some()
-        });
-        assert_eq!(target(&view, "row 12"), Some(retained));
-        assert_eq!(focused(&view).as_deref(), Some("row 12"));
-
-        // Let the engine commit a distant window while the native surface
-        // still presents its preceding batch. A user can Tab and activate
-        // that displayed row before the queued mount reaches the surface.
-        let old_row = target(&view, "row 20").unwrap();
-        let before_old_row = target(&view, "row 19").unwrap();
-        press(&view, "Scroll to thirty");
-        let (committed, ready) = mpsc::channel();
-        view.control()
-            .unwrap()
-            .advance_clock(Duration::ZERO, move || {
-                let _ = committed.send(());
-            });
-        ready.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(target(&view, "row 20"), Some(old_row));
-        view.surface_mut().set_focus(Some(before_old_row));
-        tab(&mut view, false);
-        assert_eq!(focused(&view).as_deref(), Some("row 20"));
-        view.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::NONE,
-        )));
-        wait(&mut view, started, |view| {
-            view.snapshot().contains("Activated row 20") && target(view, "List presses:1").is_some()
-        });
-        assert_eq!(target(&view, "row 20"), Some(old_row));
-        assert_eq!(focused(&view).as_deref(), Some("row 20"));
-
-        // Once native focus leaves, the old row can retire and its cell
-        // can serve the distant window without delivering another press.
-        let outside = target(&view, "Scroll to thirty").unwrap();
-        view.surface_mut().set_focus(Some(outside));
-        view.dispatch_events();
-        press(&view, "Scroll to thirty");
-        wait(&mut view, started, |view| {
-            view.snapshot().contains("at thirty")
-                && target(view, "row 30").is_some()
-                && target(view, "row 20").is_none()
-        });
-        assert!(target(&view, "List presses:1").is_some());
-        assert_eq!(focused(&view).as_deref(), Some("Scroll to thirty"));
-        press(&view, "Scroll to thirteen");
-        wait(&mut view, started, |view| {
-            view.snapshot().contains("at thirteen") && target(view, "row 21").is_some()
-        });
-
-        // A source deletion ends the old item's lifetime even before the
-        // queued native batch is applied. Input from that last displayed
-        // frame must never activate its cell's replacement item.
-        let deleted_row = target(&view, "row 20").unwrap();
-        view.surface_mut().set_focus(Some(deleted_row));
-        view.dispatch_events();
-        press(&view, "Replace rows");
-        let (committed, ready) = mpsc::channel();
-        view.control()
-            .unwrap()
-            .advance_clock(Duration::ZERO, move || {
-                let _ = committed.send(());
-            });
-        ready.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(target(&view, "row 20"), Some(deleted_row));
-        view.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::NONE,
-        )));
-        let (processed, ready) = mpsc::channel();
-        view.control()
-            .unwrap()
-            .advance_clock(Duration::ZERO, move || {
-                let _ = processed.send(());
-            });
-        ready.recv_timeout(Duration::from_secs(5)).unwrap();
-        wait(&mut view, started, |view| {
-            target(view, "replacement row 21").is_some()
-        });
-        assert!(
-            target(&view, "List presses:1").is_some(),
-            "a deleted row activated its replacement:\n{}",
-            view.snapshot()
-        );
-        press(&view, "Restore rows");
-        wait(&mut view, started, |view| {
-            view.snapshot().contains("restored") && target(view, "row 21").is_some()
-        });
-
-        let replaced = target(&view, "row 20").unwrap();
-        view.surface_mut().set_focus(Some(replaced));
-        press(&view, "Filter rows");
-        wait(&mut view, started, |view| {
-            view.snapshot().contains("filtered") && target(view, "match beta").is_some()
-        });
-        assert_ne!(focused(&view).as_deref(), Some("match alpha"));
-        assert_ne!(focused(&view).as_deref(), Some("match beta"));
-        let header = target(&view, "Header action").unwrap();
-        view.surface_mut().set_focus(Some(header));
-        for label in ["match alpha", "match beta", "Footer action"] {
-            tab(&mut view, false);
-            assert_eq!(focused(&view).as_deref(), Some(label));
-        }
-        view.stop();
-    }
-
-    #[cfg(feature = "js")]
-    #[test]
-    fn nested_list_focus_reveals_the_canonical_row_after_a_membership_gap() {
-        use nsh_core::{EventKind, EventPayload};
-
-        const APP: &str = r#"
-            import { mount, signal } from 'nsh';
-            import { element, prop, insert, append, list } from 'nsh:rt';
-            const stage = signal('preview'), opened = signal(false), height = signal(416);
-            const phase = signal('initial');
-            let outer, inner, requestFocus = false;
-            function label(text) {
-                const node = element('text');
-                insert(node, text);
-                return node;
-            }
-            function action(name, run) {
-                const node = element('view');
-                prop(node, 'accessibilityLabel', name);
-                prop(node, 'onPress', run);
-                append(node, label(name));
-                return node;
-            }
-            mount(() => {
-                const root = element('view');
-                prop(root, 'style', {flex: 1});
-                append(root, action('Navigate', () => {
-                    opened.set(true);
-                    outer.scrollToIndex({index: 51, viewPosition: 0});
-                    requestFocus = true;
-                    if (inner) {
-                        requestFocus = false;
-                        inner.focus();
-                    } else outer.focus();
-                    phase.set('navigated');
-                }));
-                append(root, action('Settle', () => {
-                    if (GAPPED) stage.set('gap');
-                    phase.set('settled');
-                }));
-                append(root, action('Publish', () => {
-                    height.set(400);
-                    stage.set('canonical');
-                    phase.set('published');
-                }));
-                append(root, label(() => phase()));
-                append(root, list({
-                    get each() {
-                        return Array.from({length: stage() === 'gap' ? 51 : 52}, (_, i) => i);
-                    },
-                    estimatedItemSize: 96,
-                    maintainVisibleContentPosition: {autoscrollToBottomThreshold: 32},
-                    get style() { return {height: height()}; },
-                    accessibilityLabel: 'Outer history',
-                    ref: node => { outer = node; node.scrollToEnd({animated: false}); },
-                    children: id => {
-                        const row = element('view');
-                        insert(row, () => {
-                            if (id() !== 51) {
-                                const history = element('view');
-                                prop(history, 'style', {height: 320 + (id() % 3) * 16});
-                                append(history, label('HISTORY_' + id()));
-                                return history;
-                            }
-                            const group = element('view');
-                            prop(group, 'style', {paddingVertical: 16});
-                            append(group, label(() => stage() === 'canonical'
-                                ? 'WORKING_TARGET' : 'PREPARING_TARGET'));
-                            insert(group, () => opened() && stage() === 'canonical' ? list({
-                                each: ['canonical'],
-                                estimatedItemSize: 16,
-                                contentOffset: {y: 0},
-                                style: {height: 16},
-                                accessibilityLabel: 'Target activity',
-                                ref: node => {
-                                    inner = node;
-                                    node.scrollToEnd({animated: false});
-                                    if (requestFocus) { requestFocus = false; node.focus(); }
-                                },
-                                children: key => label(() => key() + ' literal body')
-                            }) : null);
-                            return group;
-                        });
-                        return row;
-                    }
-                }));
-                return root;
-            });
-        "#;
-
-        fn wait(view: &mut AppView, started: Instant, ready: impl Fn(&AppView) -> bool) -> bool {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                view.tick(started.elapsed().as_secs_f64()).unwrap();
-                if ready(view) {
-                    return true;
-                }
-                if Instant::now() >= deadline {
-                    return false;
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            }
-        }
-
-        fn press(view: &AppView, label: &str) {
-            let target = view
-                .accessibility_snapshot()
-                .into_iter()
-                .find(|node| node.label == label)
-                .expect("handoff action must be mounted");
-            view.control()
-                .unwrap()
-                .dispatch_event(target.id, EventKind::Press, EventPayload::None);
-        }
-
-        let mut outcomes = Vec::new();
-        for gap in [false, true] {
-            let started = Instant::now();
-            let mut view = AppView::new(AppOptions::default());
-            view.load(App::Js(Bundle::source(
-                APP.replace("GAPPED", if gap { "true" } else { "false" }),
-            )))
+    fn pending_autofocus_waits_for_editable_sink_unless_user_navigates() {
+        // 1. Intermediate render while read-only retains pending focus until editable flips true.
+        let (mut view, rx) = test_surface();
+        let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
+        view.load(App::Rust(Root::new::<DelayedComposer>(|| ())))
             .unwrap();
-            assert!(
-                wait(&mut view, started, |view| {
-                    view.snapshot().contains("PREPARING_TARGET") && !view.surface().animating()
-                }),
-                "initial target did not mount: gap={gap}, error={:?}",
-                view.last_error()
-            );
-            // Acknowledgments ensure the temporary removal reaches a real
-            // presentation before publication; no second reveal is issued.
-            for (action, phase) in [("Navigate", "navigated"), ("Settle", "settled")] {
-                press(&view, action);
-                assert!(
-                    wait(&mut view, started, |view| view.snapshot().contains(phase)),
-                    "handoff action did not commit: gap={gap}, action={action}, error={:?}",
-                    view.last_error()
-                );
-            }
-            press(&view, "Publish");
-            let visible_and_focused = wait(&mut view, started, |view| {
-                let snapshot = view.snapshot();
-                snapshot.contains("WORKING_TARGET")
-                    && snapshot.contains("canonical literal body")
-                    && view
-                        .accessibility_snapshot()
-                        .iter()
-                        .any(|node| node.label == "Target activity" && node.focused)
-                    && !view.surface().animating()
-            });
-            view.stop();
-            outcomes.push((gap, visible_and_focused));
-        }
-        assert_eq!(outcomes, [(false, true), (true, true)]);
-    }
+        draw_until(&mut view, &mut terminal, &rx, "editable:false focus:none");
+        // Wait for RichEditor's spawned `rv.focus()` command batch and render while still read-only.
+        let _ = rx.recv_timeout(Duration::from_millis(50));
+        terminal
+            .draw(|frame| view.render(frame, frame.area()))
+            .unwrap();
+        assert!(view.input_context().is_none());
 
-    #[cfg(feature = "js")]
-    #[test]
-    fn scoped_shortcuts_and_resize_read_the_same_native_focus_without_observing_it() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-        let mut view = AppView::new(AppOptions::default());
-        view.load(App::Js(Bundle::source(r#"
-            import { mount, signal, effect, View, Text } from 'nsh';
-import { Input } from 'nsh/base';
-            import { windowSize } from 'nsh';
-            import { keymap } from 'nsh';
-            const result = signal('starting');
-            let reads = 0;
-            const search = Input({autoFocus: true, style: {height: 32}});
-            const browser = View({children: search});
-            const composer = Input({style: {height: 32}});
-            keymap.bind('ctrl+k', () => result.set(`read ${keymap.focusedWithin(browser)} #${reads}`), {when: 'always'});
-            keymap.bind('ctrl+k', () => result.set(`scoped #${reads}`), {when: 'always', within: search});
-            effect(() => {
-                const width = windowSize().width;
-                result.set(`resize ${width} browser=${keymap.focusedWithin(browser)} #${++reads}`);
-            });
-            mount(() => View({children: [browser, composer, Text({children: () => result()})]}));
-        "#.into()))).unwrap();
-        let wait = |view: &mut AppView, expected: &str| {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            loop {
-                view.poll().unwrap();
-                if view.snapshot().contains(expected) {
-                    return;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "{} / {:?}",
-                    view.snapshot(),
-                    view.last_error()
-                );
-                std::thread::sleep(Duration::from_millis(2));
-            }
-        };
-        wait(&mut view, "resize 960 browser=false #1");
-        let key = |view: &mut AppView, code, modifiers| {
-            view.handle_event(crossterm::event::Event::Key(KeyEvent::new(code, modifiers)));
-        };
-        key(&mut view, KeyCode::Char('k'), KeyModifiers::CONTROL);
-        wait(&mut view, "scoped #1");
-        key(&mut view, KeyCode::Tab, KeyModifiers::NONE);
-        key(&mut view, KeyCode::Char('k'), KeyModifiers::CONTROL);
-        wait(&mut view, "read false #1");
-        view.resize(60, 30);
-        wait(&mut view, "resize 480 browser=false #2");
-        key(&mut view, KeyCode::BackTab, KeyModifiers::SHIFT);
-        view.resize(70, 30);
-        wait(&mut view, "resize 560 browser=true #3");
-    }
-
-    #[test]
-    fn graphics_cleanup_ids_survive_replacing_the_app() {
-        let mut view = AppView::new(AppOptions::default());
-        view.set_image_protocol(Some(
-            crate::ImageProtocol::new(crate::ProtocolType::Kitty, 8, 16).unwrap(),
-        ));
-        let cleanup = view.image_protocol_cleanup();
-        assert!(!cleanup.is_empty());
-        for _ in 0..2 {
-            view.load(App::Rust(Root::of::<ScriptApp>())).unwrap();
-            assert_eq!(view.image_protocol_cleanup(), cleanup);
-        }
-    }
-
-    #[component]
-    fn StorageApp() -> impl IntoElement {
-        use nsh_core::storage::Storage;
-
-        let launches = Storage::get_item("launches")
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(0)
-            + 1;
-        Storage::set_item("launches", launches.to_string()).unwrap();
-        text(format!("Launches:{launches}"))
-    }
-
-    fn storage_directory(name: &str) -> PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        // Trigger Enable via accessibility Press action (without moving keyboard focus),
+        // simulating an async host state update flipping `editable` to `true`.
+        let enable_id = view
+            .accessibility_snapshot()
+            .iter()
+            .find(|node| node.label == "Enable")
             .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "nsh-tui-storage-{name}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+            .id;
+        view.control().unwrap().dispatch_event(
+            enable_id,
+            nsh_core::EventKind::Press,
+            nsh_core::EventPayload::None,
+        );
+        draw_until(
+            &mut view,
+            &mut terminal,
+            &rx,
+            "editable:true focus:composer",
+        );
+        assert!(view.input_context().is_some_and(|ctx| ctx.editable));
+        assert_eq!(
+            view.handle(Input::Key {
+                key: "H".into(),
+                modifiers: Modifiers::default(),
+                release: false,
+            }),
+            Handled::Yes
+        );
+        assert_eq!(
+            view.handle(Input::Key {
+                key: "i".into(),
+                modifiers: Modifiers::default(),
+                release: false,
+            }),
+            Handled::Yes
+        );
+        draw_until(&mut view, &mut terminal, &rx, "Hi");
 
-    fn wait_for_storage(view: &mut AppView, file: &std::path::Path, launches: u32) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let expected = launches.to_string();
-        loop {
-            view.poll().unwrap();
-            assert_eq!(view.last_error(), None);
-            let stored = std::fs::read(file)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-            if stored.as_ref().and_then(|value| value["launches"].as_str())
-                == Some(expected.as_str())
-            {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "storage was {stored:?} at {file:?}"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    #[test]
-    fn storage_survives_view_reloads_and_keeps_app_ids_separate() {
-        let dir = storage_directory("app-ids");
-        let options = AppOptions {
-            data_dir: Some(dir.clone()),
-            ..Default::default()
-        };
-        let mut view = AppView::new(options.clone());
-        for (id, launches) in [
-            ("com.acme.orders", 1),
-            ("com.acme.notes", 1),
-            ("com.acme.orders", 2),
-        ] {
-            view.load(Root::of::<StorageApp>().app_id(id).into())
-                .unwrap();
-            wait_for_storage(&mut view, &dir.join(id).join("storage.json"), launches);
-        }
-        view.stop();
-        let mut next = AppView::new(options);
-        next.load(Root::of::<StorageApp>().app_id("com.acme.orders").into())
+        // 2. Explicit user Tab navigation before editable flips true cancels the pending focus.
+        let (mut view, rx) = test_surface();
+        let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
+        view.load(App::Rust(Root::new::<DelayedComposer>(|| ())))
             .unwrap();
-        wait_for_storage(&mut next, &dir.join("com.acme.orders/storage.json"), 3);
-        next.stop();
-        assert!(!dir.join("default").exists());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn embedding_storage_overrides_the_system_and_app_directories() {
-        let dir = storage_directory("embedding");
-        let mut view = AppView::new(AppOptions {
-            data_dir: Some(dir.join("apps")),
-            storage: Some(nsh_engine::FileStorage::open(dir.join("host-storage"))),
-            ..Default::default()
-        });
-        view.load(Root::of::<StorageApp>().app_id("com.acme.orders").into())
+        draw_until(&mut view, &mut terminal, &rx, "editable:false focus:none");
+        let _ = rx.recv_timeout(Duration::from_millis(50));
+        terminal
+            .draw(|frame| view.render(frame, frame.area()))
             .unwrap();
-        wait_for_storage(&mut view, &dir.join("host-storage/storage.json"), 1);
-        view.stop();
-        assert!(!dir.join("apps").exists());
-        drop(view);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[cfg(feature = "dev")]
-    #[test]
-    fn test_agent_messages_leave_the_terminal_app_unchanged() {
-        use nsh_dev::{DevEvent, protocol::FetchReply};
-
-        let mut view = AppView::new(AppOptions::default());
-        view.load(Root::of::<ScriptApp>().into()).unwrap();
-        let engine = view.engine.as_ref().unwrap() as *const Engine;
-        view.status = Some("Building".into());
-        view.last_error = Some("previous diagnostic".into());
-
-        for event in [
-            DevEvent::Testing,
-            DevEvent::Root,
-            DevEvent::TestSetup {
-                storage: vec![("launches".into(), "99".into())],
-                trace: true,
-                environment: Default::default(),
-            },
-            DevEvent::Fetch {
-                id: 1,
-                reply: FetchReply::Pass,
-            },
-            DevEvent::Fetch {
-                id: 1,
-                reply: FetchReply::Failed {
-                    message: "test request failed".into(),
-                },
-            },
-        ] {
-            view.dev_event(event).unwrap();
-            assert_eq!(view.engine.as_ref().unwrap() as *const Engine, engine);
-            assert_eq!(view.status.as_deref(), Some("Building"));
-            assert_eq!(view.last_error(), Some("previous diagnostic"));
-            assert!(view.options.storage.is_none());
-        }
-    }
-
-    #[cfg(feature = "dev")]
-    #[test]
-    fn development_bundles_enforce_the_hosts_requested_limits() {
-        use nsh_dev::{DevEvent, protocol::BundleFormat};
-
-        let mut view = AppView::new(AppOptions::default());
-        view.connect("ws://127.0.0.1:0/ws".into()).unwrap();
-        view.dev_event(DevEvent::Bundle {
-            session: 1,
-            version: 1,
-            format: BundleFormat::Source,
-            bytes: br#"import { mount, View, Text } from 'nsh';
-                mount(() => View({ children: Text({ children: 'over quota' }) }));"#
-                .to_vec(),
-            source_map: None,
-            capabilities: None,
-            app_id: None,
-            limits: Some("nodes=1".into()),
-        })
-        .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while view.last_error().is_none() {
-            view.poll().unwrap();
-            assert!(
-                Instant::now() < deadline,
-                "host node limit was not enforced"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
         assert_eq!(
-            view.last_error(),
-            Some("the app created more than 1 nodes and was stopped")
+            view.handle(Input::Key {
+                key: "Tab".into(),
+                modifiers: Modifiers::default(),
+                release: false,
+            }),
+            Handled::Yes
         );
-    }
-
-    #[cfg(feature = "dev")]
-    #[test]
-    fn development_bundles_keep_their_storage_identity_after_hot_updates_and_reload() {
-        use nsh_dev::{DevEvent, protocol::BundleFormat};
-
-        let dir = storage_directory("development");
-        let mut view = AppView::new(AppOptions {
-            data_dir: Some(dir.clone()),
-            ..Default::default()
-        });
-        view.connect("ws://127.0.0.1:0/ws".into()).unwrap();
-        let bundle = |version, app_id: &str| DevEvent::Bundle {
-            session: 1,
-            version,
-            format: BundleFormat::Source,
-            bytes: br#"import { Storage } from "nsh";
-                Storage.getItem("launches").then(value =>
-                    Storage.setItem("launches", String(Number(value ?? "0") + 1)));"#
-                .to_vec(),
-            source_map: None,
-            capabilities: None,
-            app_id: Some(app_id.into()),
-            limits: None,
-        };
-        view.dev_event(bundle(1, "com.acme.orders")).unwrap();
-        wait_for_storage(&mut view, &dir.join("com.acme.orders/storage.json"), 1);
-        view.dev_event(DevEvent::Patch {
-            session: 1,
-            version: 2,
-            base: 1,
-            code: "true".into(),
-            source_map: None,
-        })
-        .unwrap();
-        view.dev_event(bundle(2, "com.acme.orders")).unwrap();
-        assert_eq!(
-            view.dev
-                .as_ref()
-                .unwrap()
-                .latest
-                .as_ref()
-                .unwrap()
-                .2
-                .app_id
-                .as_deref(),
-            Some("com.acme.orders")
+        draw_until(&mut view, &mut terminal, &rx, "editable:false focus:enable");
+        let enable_id = view
+            .accessibility_snapshot()
+            .iter()
+            .find(|node| node.label == "Enable")
+            .unwrap()
+            .id;
+        view.control().unwrap().dispatch_event(
+            enable_id,
+            nsh_core::EventKind::Press,
+            nsh_core::EventPayload::None,
         );
-        view.reload_latest().unwrap();
-        wait_for_storage(&mut view, &dir.join("com.acme.orders/storage.json"), 2);
-        view.dev_event(bundle(3, "com.acme.notes")).unwrap();
-        wait_for_storage(&mut view, &dir.join("com.acme.notes/storage.json"), 1);
-        view.stop();
-        assert!(!dir.join("default").exists());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn app_errors_cannot_emit_terminal_control_sequences() {
-        assert_eq!(
-            safe_diagnostic("error\n\u{1b}]52;clipboard\u{7}\tline"),
-            "error\n]52;clipboard\tline"
-        );
-        // Parsing fails before mounting the source. The public runner
-        // must sanitize the error that a host prints after it returns.
-        let error = run_app(
-            AppSource::Rust(Root::of::<ScriptApp>()),
-            AppOptions {
-                script: Some("invalid\u{1b}]52\u{7}\u{9b}31m".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert_eq!(error.to_string(), "invalid script step: invalid]5231m");
-    }
-
-    #[cfg(feature = "dev")]
-    #[test]
-    fn forwarded_logs_cannot_inject_clipboard_or_c1_terminal_commands() {
-        let record = LogRecord {
-            level: log::Level::Info,
-            target: "js\u{1b}]52;target\u{7}\u{9b}31m".into(),
-            message: "hello\n\t\u{1b}]52;c;Y2xpcGJvYXJk\u{7}\u{9b}31m\u{9d}52;c;secret\u{9c}"
-                .into(),
-        }
-        .terminal_safe();
-        assert_eq!(record.target, "js]52;target31m");
-        assert_eq!(record.message, "hello\n\t]52;c;Y2xpcGJvYXJk31m52;c;secret");
-        assert!(!record.target.chars().any(char::is_control));
-        assert!(
-            !record
-                .message
-                .chars()
-                .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t'))
-        );
-    }
-
-    #[cfg(feature = "dev")]
-    #[test]
-    fn asset_urls_follow_dev_server_scheme() {
-        assert_eq!(
-            dev_asset_base("ws://localhost:8790/ws"),
-            Some("http://localhost:8790/assets/".into())
-        );
-        assert_eq!(
-            dev_asset_base("wss://example.org/path/ws"),
-            Some("https://example.org/assets/".into())
-        );
-        assert_eq!(dev_asset_base("http://localhost/ws"), None);
-        assert_eq!(dev_asset_base("ws:///ws"), None);
+        draw_until(&mut view, &mut terminal, &rx, "editable:true focus:enable");
+        assert!(view.input_context().is_none());
     }
 }

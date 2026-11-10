@@ -1067,48 +1067,43 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
             })
         }),
     });
-    let placed = stored(None::<u32>);
-    // Radial marks follow the pointer, not the rows' Cartesian scale.
-    let pointer_at_x = signal(None::<f32>);
+
     let place = TooltipPlace::new(props.tooltip_placement, props.tooltip_offset);
+    // `pointer_x`: a radial mark found the row, and the parts follow the
+    // pointer rather than the row (`gpui-base`'s pie puts the cross line at
+    // the cursor, and `gpui-component`'s pie tooltip follows it). `keys`:
+    // the keys or a screen reader moved the hover, which may glide; the
+    // pointer's moves land in the same frame.
     let follow = move |index: Option<u32>, pointer_x: Option<f32>, keys: bool| {
         keyed.replace(keys);
-        batch(|| {
-            pointer_at_x.set(index.and(pointer_x));
-            if hovered.get_untracked() != index {
-                hovered.set(index);
-                cx.emit(PlotEvent::HoverChange(index));
-            }
-        });
-    };
-    // Geometry can change under a stationary pointer. Only row selection
-    // notifies the app; the anchors also follow the current scales/marks.
-    effect(move || {
-        let selected = hovered.get();
-        let pointer_x = pointer_at_x.get();
-        let across = pointer_x.is_none() && hover_axis.get() == Axis::Y;
-        let at = selected
-            .and_then(|index| match pointer_x {
-                Some(x) => data.with(|rows| ((index as usize) < rows.len()).then_some(x)),
-                None => rows_at.with(|rows| rows.get(index as usize).copied()),
-            })
-            .filter(|at| at.is_finite());
-        let index = selected.filter(|_| at.is_some());
-        if selected != index {
-            follow(index, None, false);
-        }
-        let was = placed.get();
-        placed.replace(index);
-        let m = motion.get_untracked().unwrap_or_default();
-        let still = reduce_motion();
-        let Some(at) = at else {
-            if was.is_some() {
-                match m.exit.filter(|_| !still) {
-                    Some(exit) => drop(fade.timing_with(0.0, exit)),
-                    None => fade.set(0.0),
-                }
+        let was = hovered.get_untracked();
+        if was == index {
+            if let (Some(_), Some(x)) = (index, pointer_x) {
+                place.row_at(x);
+                cross.x.set(x);
             }
             return;
+        }
+        hovered.set(index);
+        cx.emit(PlotEvent::HoverChange(index));
+        let m = motion.get_untracked().unwrap_or_default();
+        let still = reduce_motion();
+        let Some(index) = index else {
+            match m.exit.filter(|_| !still) {
+                Some(exit) => drop(fade.timing_with(0.0, exit)),
+                None => fade.set(0.0),
+            }
+            return;
+        };
+        let (at, across) = match pointer_x {
+            Some(x) => (x, false),
+            None => {
+                let Some(at) = rows_at.with_untracked(|rows| rows.get(index as usize).copied())
+                else {
+                    return;
+                };
+                (at, hover_axis.get_untracked() == Axis::Y)
+            }
         };
         if !across {
             place.row_at(at);
@@ -1118,7 +1113,7 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
         // (`PlotHover::glide`); the pointer's moves snap to the row under
         // it in the same frame, so the hover never trails the hand.
         let entering = was.is_none();
-        let glide = keyed.get() && was != index && !entering && !still;
+        let glide = keys && !entering && !still;
         let to = |value: AnimatedValue, target: f32| match m.pointer.filter(|_| glide) {
             Some(spring) => drop(value.spring(target, spring)),
             None => value.set(target),
@@ -1131,16 +1126,15 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
         // cross line lies across the plot at the row's band.
         if pointer_x.is_some()
             && hover_axis.get_untracked() == Axis::Y
-            && let Some(row) = index
             && let Some(y) = rows_at
-                .with_untracked(|rows| rows.get(row as usize).copied())
+                .with_untracked(|rows| rows.get(index as usize).copied())
                 .filter(|y| y.is_finite())
         {
             to(cross.y, y);
         }
         // The dots of the series through the row (bars have none).
         if !across {
-            marks.with(|all| {
+            marks.with_untracked(|all| {
                 for mark in all {
                     if let Some(p) = mark.near(at) {
                         to(mark.dot_x, p.x.0);
@@ -1155,6 +1149,39 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
                 None => fade.set(1.0),
             }
         }
+    };
+    // The hovered row's parts stay on it as the rows or the scales change
+    // (at once: a domain's move carries them with the marks). Over a
+    // radial mark or across, they follow the pointer instead.
+    effect(move || {
+        rows_at.with(|_| ());
+        marks.with(|all| {
+            for mark in all {
+                let _ = mark.points.try_get();
+            }
+        });
+        let Some(index) = hovered.get_untracked() else {
+            return;
+        };
+        if hover_axis.get_untracked() != Axis::X || hits.with_untracked(|all| !all.is_empty()) {
+            return;
+        }
+        let Some(at) = rows_at
+            .with_untracked(|rows| rows.get(index as usize).copied())
+            .filter(|at| at.is_finite())
+        else {
+            return;
+        };
+        place.row_at(at);
+        cross.x.set(at);
+        marks.with_untracked(|all| {
+            for mark in all {
+                if let Some(p) = mark.near(at) {
+                    mark.dot_x.set(p.x.0);
+                    mark.dot_y.set(p.y.0);
+                }
+            }
+        });
     });
     let interactive = props.interactive;
     // The keyboard (`keys.rs`): the same hover, a row at a time, while the
@@ -1289,8 +1316,8 @@ pub fn Plot(props: PlotProps, cx: Scope<PlotEvent>) -> impl IntoElement {
             None => root,
         })
         .on_layout(move |b: &Bounds<Points>| {
-            place.plot_is(b.size);
             size.set(b.size);
+            place.plot_is(b.size);
         })
         // Hovering, not dragging: a drag leaves the hover where it was.
         .on_mouse_move(move |e: &MouseEvent| {
@@ -1713,6 +1740,18 @@ fn mark_canvas_with(
     before_layout: impl Fn() -> Painter + 'static,
     draw: impl Fn(Painter, f32) -> Painter + 'static,
 ) -> CanvasView {
+    // A terminal lays the canvas out in whole Cells: an inset of a few
+    // points past the plot rounds to none on one side and a Cell on the
+    // other, so the drawing, moved by the bleed, would reach into the
+    // padding beside the plot. Its dots cut nothing a stroke's half would
+    // show, so there the canvas is the plot's area.
+    let bleed = move || {
+        if crate::terminal::is_terminal() {
+            0.0
+        } else {
+            bleed()
+        }
+    };
     canvas(move || {
         if plot.is_some_and(|plot| !plot.is_sized()) {
             return before_layout();

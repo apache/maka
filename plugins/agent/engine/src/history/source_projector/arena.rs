@@ -25,7 +25,6 @@ pub(in crate::history) enum ArenaProjectedRow {
     User(List),
     Assistant(Node),
     Tool(Node),
-    AssistantMetadata(JsonSource),
     Skip,
 }
 
@@ -105,9 +104,6 @@ pub(in crate::history) async fn project_row(
                 .result(result, context.budget.clone(), context.cancellation)
                 .await?,
         )),
-        ProjectedRow::AssistantMetadata { options } => {
-            Ok(ArenaProjectedRow::AssistantMetadata(options))
-        }
         ProjectedRow::Skip => Ok(ArenaProjectedRow::Skip),
     }
 }

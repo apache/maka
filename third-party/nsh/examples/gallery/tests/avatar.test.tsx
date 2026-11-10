@@ -13,8 +13,8 @@ beforeEach(async () => {
 });
 
 test("an avatar shows the initials of its name until its picture loads", async () => {
-  await app.waitFor("AL");
-  expect(app.shows("GH")).toBe(true);
+  await app.waitFor("JL");
+  expect(app.shows("FW")).toBe(true);
   // Without a picture, at once; the one without a name shows the app's glyph.
   expect(app.shows("DK")).toBe(true);
   // The statuses the demo heard: the two without a picture are idle.
@@ -23,8 +23,9 @@ test("an avatar shows the initials of its name until its picture loads", async (
 
 test("screen readers hear an image named after the person", async () => {
   expect(app.count("role:image[Donald Knuth]")).toBe(1);
-  // A picture beside its name is decorative: the thread's are left out.
-  expect(app.count("role:image[Grace Hopper]")).toBe(1);
+  // A picture beside its name is decorative: the thread's is left out, the
+  // group's and the failed one's are heard.
+  expect(app.count("role:image[Alan Turing]")).toBe(2);
   // No name: the app's label.
   expect(app.count("role:image[Guest]")).toBe(1);
 });
@@ -42,7 +43,7 @@ test("the stacked group counts the members it does not show", async () => {
 
 test("a press changes a member's presence", async () => {
   await app.waitFor("2 online");
-  await app.press("text:Engineering lead");
-  await app.waitFor("Ada Lovelace: away");
+  await app.press("text:Jason Lee");
+  await app.waitFor("Jason Lee: away");
   await app.waitFor("1 online");
 });

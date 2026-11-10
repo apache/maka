@@ -109,6 +109,13 @@ char *_Nullable nsh_app_set_locale(NshApp *app, const char *_Nullable tag);
 /// for Dynamic Type's; 0 follows the system's again.
 void nsh_app_set_font_scale(NshApp *app, float scale);
 
+/// Registers a font file (TrueType, OpenType, WOFF or WOFF2) the host ships,
+/// so every app `app` loads can name its family without bundling the file.
+/// A font registered before a load is in that app's first frame; one
+/// registered while an app runs is used from the next layout. Returns why
+/// `bytes` is not a font, or NULL.
+char *_Nullable nsh_app_register_font(NshApp *app, const uint8_t *_Nullable bytes, size_t len);
+
 /// The embedding app's theme overrides: a theme file of shadcn/ui's
 /// (`{ "cssVars": { "theme": {...}, "light": {...}, "dark": {...} } }`, as
 /// `nsh.json`'s `"theme"`), whose tokens win over the app's of the same
@@ -233,6 +240,11 @@ char *_Nullable nsh_app_set_host_params(NshApp *app, const char *_Nullable json)
 /// (`host.on(name, ...)`); kept until it listens to `name`, or for the next
 /// app while none runs. Returns why it cannot, or NULL.
 char *_Nullable nsh_app_send_host_event(NshApp *app, const char *name, const char *_Nullable json);
+
+/// Hands `url`, one the embedding app was opened with, to the running app
+/// (`UrlScheme.on("open")`); before an app runs, the next one loaded gets it.
+/// Returns why it cannot, or NULL.
+char *_Nullable nsh_app_open_url(NshApp *app, const char *url);
 
 /// A call of the app (`host.call`), answered once from any thread with
 /// `nsh_host_call_resolve` or `nsh_host_call_reject`, which free it.

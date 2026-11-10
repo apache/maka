@@ -34,43 +34,45 @@ export function contextUsageText(usage: ComposerContextUsage): string {
     : `${context} · ${tr('{speed} tok/s', { speed: usage.outputTokensPerSecond.toFixed(1) })}`;
 }
 
-// A ring for how much of the model's context the conversation uses; the
-// numbers are in its tooltip. It turns to warning from 70% and danger from 90%.
+// A ring for how much of the model's context the conversation uses, shown
+// from 70% in warning and from 90% in danger; the numbers are in its tooltip.
 export function ContextGauge(props: { usage: () => ComposerContextUsage }) {
   const share = () => Math.min(1, props.usage().tokens / props.usage().window);
-  const color = () => (share() >= 0.9 ? C.danger : share() >= 0.7 ? C.warning : C.muted);
+  const color = () => (share() >= 0.9 ? C.danger : C.warning);
   return (
-    <View
-      role="progressbar"
-      accessibilityValue={{ min: 0, max: 100, now: share() * 100 }}
-      accessibilityLabel={contextUsageText(props.usage())}
-      tooltip={textTooltip(() => contextUsageText(props.usage()))}
-      style={{
-        width: 24,
-        height: 32,
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexShrink: 0,
-      }}
-    >
-      <Canvas
-        accessibilityElementsHidden
-        style={[{ width: 16, height: 16 }, { pointerEvents: 'none' }]}
-        draw={(cx) => {
-          cx.lineWidth = 1.5;
-          cx.lineCap = 'round';
-          cx.strokeStyle = C.line;
-          cx.beginPath();
-          cx.arc(8, 8, 6.25, 0, Math.PI * 2);
-          cx.stroke();
-          // A small share still shows as a short arc.
-          const start = -Math.PI / 2;
-          cx.strokeStyle = color();
-          cx.beginPath();
-          cx.arc(8, 8, 6.25, start, start + Math.max(0.04, share()) * Math.PI * 2);
-          cx.stroke();
+    <If when={share() >= 0.7}>
+      <View
+        role="progressbar"
+        accessibilityValue={{ min: 0, max: 100, now: share() * 100 }}
+        accessibilityLabel={contextUsageText(props.usage())}
+        tooltip={textTooltip(() => contextUsageText(props.usage()))}
+        style={{
+          width: 24,
+          height: 32,
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
         }}
-      />
-    </View>
+      >
+        <Canvas
+          accessibilityElementsHidden
+          style={[{ width: 16, height: 16 }, { pointerEvents: 'none' }]}
+          draw={(cx) => {
+            cx.lineWidth = 1.5;
+            cx.lineCap = 'round';
+            cx.strokeStyle = C.line;
+            cx.beginPath();
+            cx.arc(8, 8, 6.25, 0, Math.PI * 2);
+            cx.stroke();
+            // A small share still shows as a short arc.
+            const start = -Math.PI / 2;
+            cx.strokeStyle = color();
+            cx.beginPath();
+            cx.arc(8, 8, 6.25, start, start + Math.max(0.04, share()) * Math.PI * 2);
+            cx.stroke();
+          }}
+        />
+      </View>
+    </If>
   );
 }

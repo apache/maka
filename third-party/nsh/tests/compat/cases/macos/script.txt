@@ -8,6 +8,15 @@ prop id:bar desktop.windowDrag true
 prop id:body windowDrag false
 covers [props] desktop
 covers [props] desktop.windowDrag
+# mod-keymap-pass
+tap id:case-mod-keymap-pass
+expect Passed: 0 Focus: none
+# The binding hears Tab and the focus still moves, to the first view and on.
+key tab
+expect Passed: 1 Focus: first
+key tab
+expect Passed: 2 Focus: second
+covers [nsh] keymap
 # mod-standard-system
 tap id:case-mod-standard-system
 expect console.identity=true
@@ -153,6 +162,7 @@ tap id:run
 expect Clipboard: Error ERR_ACCESS_DENIED clipboard ""
 expect Clipboard denied: 7 of 7
 expect Picker: Error ERR_ACCESS_DENIED picker ""
+expect Picker files: Error ERR_ACCESS_DENIED picker ""
 expect Open: Error ERR_ACCESS_DENIED openUrl "https://example.com/docs"
 expect Image size: Error ERR_ACCESS_DENIED network "https://example.com/a.png"
 expect Image prefetch: Error ERR_ACCESS_DENIED network "https://example.com/b.png"
@@ -170,3 +180,27 @@ expect Input available: false
 tap id:send
 expect Sent input
 covers [nsh] WebView
+# material-composition
+tap id:case-material-composition
+expect Material composition
+prop id:material-surface macos.backdrop material=hudWindow blending=behindWindow state=followsWindowActiveState
+style id:material-surface glassTintColor #ff000080
+style id:material-surface glassEffect regular
+style id:material-surface mixBlendMode color
+tap id:material-restyle
+prop id:material-surface macos.backdrop material=hudWindow blending=behindWindow state=followsWindowActiveState
+style id:material-surface glassTintColor #ff000080
+tap id:material-change
+prop id:material-surface macos.backdrop material=sidebar state=inactive
+tap id:material-clear
+noprop id:material-surface macos.backdrop
+style id:material-surface backdropFilter blur(10)
+style id:material-surface glassEffect regular
+tap id:tint-change
+style id:material-surface glassTintColor #00ff0040
+tap id:tint-clear
+nostyle id:material-surface glassTintColor
+style id:material-surface glassEffect regular
+covers [props] macos
+covers [props] macos.backdrop
+covers [styles] glassTintColor

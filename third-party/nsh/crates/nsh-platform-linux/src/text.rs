@@ -871,6 +871,10 @@ impl TextEngine for PangoTextEngine {
         Size::new(Points(width), Points(from_pango(bottom).ceil()))
     }
 
+    fn breaks_lines_greedily(&self) -> bool {
+        true
+    }
+
     fn layout(&self, prepared: &Prepared, size: Size<Points>) -> TextLayout {
         let shown = self.configure(prepared, Some(size.width.0));
         let layout = &prepared.layout;
@@ -2867,5 +2871,38 @@ mod fallback_tests {
         let latin = h("Grace");
         assert_eq!(h("Grace你好世界"), latin, "CJK");
         assert_eq!(h("Grace😀"), latin, "emoji");
+    }
+    /// The core shares measurements between the widths from a text's widest
+    /// line to the one measured (`breaks_lines_greedily`): each of them
+    /// must measure the same.
+    #[test]
+    fn widths_that_hold_the_widest_line_measure_the_same() {
+        let engine = PangoTextEngine::new("sans-serif".into());
+        let texts = [
+            "The quick brown fox jumps over the lazy dog, and keeps running through the long grass until the evening comes.",
+            "第 12 条消息：开始处理 T-1012，很快完成。窗口尺寸变化时每一段文字都要按新的宽度重新折行，详情见 PR 的说明。",
+            "混合 mixed 文本 with `code` 和 punctuation，「引号」、括号（如此）以及 https://example.com/a/very/long/path/that/has/no/spaces/at/all 这样的链接。",
+            "first line\nsecond line that is rather longer than the first\n\nafter a blank line",
+        ];
+        for text in texts {
+            let mut attributed = nsh_core::AttributedText::default();
+            attributed.push(text, nsh_core::ResolvedTextStyle::default());
+            let prepared = engine.prepare(&attributed);
+            for width in (60..700).step_by(23) {
+                let measured = engine.measure(&prepared, Some(Points(width as f32)));
+                let narrowest = measured.width.0.ceil() as i32;
+                for narrower in narrowest..width {
+                    let size = engine.measure(&prepared, Some(Points(narrower as f32)));
+                    assert_eq!(
+                        size.height, measured.height,
+                        "{text} at {narrower}, from {width}"
+                    );
+                    assert_eq!(
+                        size.width, measured.width,
+                        "{text} at {narrower}, from {width}"
+                    );
+                }
+            }
+        }
     }
 }

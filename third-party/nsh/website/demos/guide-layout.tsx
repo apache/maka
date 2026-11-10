@@ -1,23 +1,36 @@
 import { mount, Scroll, signal, Text, View } from "nsh";
-import { button, buttonText, desktop, Inspector, tint, ui, wide } from "./palette";
+import { Toggle, ToggleGroup } from "nsh/base";
+import { Inspector, Segmented, tint, toggleLabel, toggleLook, ui, wide } from "./palette";
 
 type Direction = "column" | "row";
 type Justify = "flex-start" | "center" | "flex-end" | "space-between" | "space-evenly";
 type Align = "stretch" | "flex-start" | "center" | "flex-end";
 
+/** A choice's toggles: small, each its value, on a field's edge while off. */
+const chip = { size: "small", variant: "outline", text: true } as const;
+
+/**
+ * One of values too long for a segmented control's single row (five of
+ * CSS's `justifyContent`): a toggle group that wraps, exactly one pressed.
+ * Shorter choices are a `Segmented`.
+ */
 function Choice<T extends string>(props: { label: string; options: readonly T[]; value: T; onChange: (v: T) => void }) {
   return (
-    <View style={{ gap: 4 }}>
-      <Text style={{ fontSize: 12, fontWeight: "600", color: ui().muted }}>{props.label}</Text>
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+    <View style={{ gap: 6 }}>
+      <Text style={{ fontSize: 12, color: ui().muted }}>{props.label}</Text>
+      <ToggleGroup style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
         <Each of={props.options}>
-          {(o) => (
-            <View onPress={() => props.onChange(o())} {...button("secondary", { size: "sm", on: () => props.value === o() })}>
-              <Text style={buttonText("secondary", { on: () => props.value === o() })}>{o()}</Text>
-            </View>
-          )}
+          {(o) => {
+            const on = () => props.value === o();
+            return (
+              // Exactly one: the pressed value stays pressed.
+              <Toggle pressed={on()} onChange={({ pressed }) => pressed && props.onChange(o())} {...toggleLook(chip)}>
+                <Text style={toggleLabel(on, chip)}>{o()}</Text>
+              </Toggle>
+            );
+          }}
         </Each>
-      </View>
+      </ToggleGroup>
     </View>
   );
 }
@@ -87,8 +100,11 @@ function App() {
       onChange={(v) => justify.set(v)}
     />
   );
+  const directionChoice = () => (
+    <Segmented label="flexDirection" options={["row", "column"] as const} value={direction()} onChange={(v) => direction.set(v)} />
+  );
   const alignChoice = () => (
-    <Choice label="alignItems" options={["stretch", "flex-start", "center", "flex-end"] as const} value={align()} onChange={(v) => align.set(v)} />
+    <Segmented label="alignItems" options={["stretch", "flex-start", "center", "flex-end"] as const} value={align()} onChange={(v) => align.set(v)} />
   );
 
   return (
@@ -103,7 +119,7 @@ function App() {
               </View>
             </Scroll>
             <Inspector>
-              <Choice label="flexDirection" options={["row", "column"] as const} value={direction()} onChange={(v) => direction.set(v)} />
+              {directionChoice()}
               {justifyChoice()}
               {alignChoice()}
             </Inspector>
@@ -111,14 +127,7 @@ function App() {
         ) : (
           <Scroll style={{ flex: 1, backgroundColor: ui().page }}>
             <View style={{ padding: 20, paddingTop: 24, gap: 14 }}>
-              <View
-                onPress={() => direction.set(direction() === "row" ? "column" : "row")}
-                {...button("primary", { align: "flex-start" })}
-              >
-                <Text style={buttonText("primary")}>
-                  flexDirection: {direction()} ({desktop ? "click" : "tap"} to switch)
-                </Text>
-              </View>
+              {directionChoice()}
               {justifyChoice()}
               {alignChoice()}
               {box(220)}

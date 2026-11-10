@@ -160,11 +160,6 @@ impl Gate {
         self.outer
     }
 
-    /// The view that owns this gate, even if the pointer target moved.
-    pub fn id(&self) -> NodeId {
-        self.id
-    }
-
     /// Decides on a drag by `(dx, dy)` from where the pointer went down:
     /// the gated view when its pan activates (the candidates around it are
     /// dropped), and whether the gate is still undecided.
@@ -680,6 +675,31 @@ pub fn tab_stop(current: Option<usize>, n: usize, back: bool, wrap: bool) -> Opt
     })
 }
 
+/// Whether a key down asks for the context menu of the view with the
+/// keyboard focus: the Menu key (`menu_key`) or Shift+F10, as Windows, GTK
+/// and WAI-ARIA have it, with neither Control, Alt nor Command / Super
+/// held (Shift+Menu too).
+pub fn opens_context_menu(
+    menu_key: bool,
+    key: Option<crate::keymap::Key>,
+    modifiers: crate::keymap::Modifiers,
+) -> bool {
+    if modifiers.ctrl || modifiers.alt || modifiers.cmd {
+        return false;
+    }
+    menu_key || (modifiers.shift && key == Some(crate::keymap::Key::F(10)))
+}
+
+/// Where a context menu asked for without a pointer (the keyboard, an
+/// assistive technology) opens in a view of `size`: its bottom-start
+/// corner, the bottom right one right to left (`rtl`: the surface's
+/// direction, `MountItem::LayoutDirection`), so a menu placed below it
+/// starts where the view does.
+pub fn context_menu_anchor(size: Size<Points>, rtl: bool) -> Point<Points> {
+    let x = if rtl { size.width } else { Points(0.0) };
+    Point { x, y: size.height }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -956,5 +976,33 @@ mod tests {
         assert_eq!(tab_stop(Some(2), 3, false, false), None);
         assert_eq!(tab_stop(Some(0), 3, true, false), None);
         assert_eq!(tab_stop(Some(1), 3, true, false), Some(0));
+    }
+
+    #[test]
+    fn context_menu_keys() {
+        use crate::keymap::{Key, Modifiers};
+        let none = Modifiers::default();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let ctrl_shift = Modifiers {
+            ctrl: true,
+            ..shift
+        };
+        assert!(opens_context_menu(true, None, none));
+        assert!(opens_context_menu(true, None, shift));
+        assert!(opens_context_menu(false, Some(Key::F(10)), shift));
+        assert!(!opens_context_menu(false, Some(Key::F(10)), none));
+        assert!(!opens_context_menu(false, Some(Key::F(10)), ctrl_shift));
+        assert!(!opens_context_menu(true, None, ctrl_shift));
+        assert!(!opens_context_menu(false, Some(Key::F(9)), shift));
+    }
+
+    #[test]
+    fn context_menu_anchor_is_the_bottom_start_corner() {
+        let s = size(Points(120.0), Points(40.0));
+        assert_eq!(context_menu_anchor(s, false), p(0.0, 40.0));
+        assert_eq!(context_menu_anchor(s, true), p(120.0, 40.0));
     }
 }

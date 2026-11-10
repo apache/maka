@@ -143,6 +143,8 @@ fn fetch_round_trips_through_the_platform_network() {
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
+        windows: None,
     };
     let _engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).unwrap();
     assert_eq!(
@@ -202,16 +204,22 @@ impl Network for RedirectNetwork {
 }
 
 const CHECKED_APP: &str = r#"
-import { mount, signal, Text } from "nsh";
+import { mount, registerFont, signal, Text } from "nsh";
 const text = signal("loading");
 const outcome = (p) => p.then(
   (r) => r.text().then((t) => `${t}${r.redirected ? " (redirected)" : ""}`),
   (e) => `${e.name} ${e.code} ${e.permission} ${e.resource}: ${e.message}`,
 );
+const font = (p) => p.then(
+  ({ family }) => `registered ${family}`,
+  (e) => `${e.name} ${e.code} ${e.permission} ${e.resource}`,
+);
 Promise.all([
   outcome(fetch("https://evil.io/")),
   outcome(fetch("https://api.example.com/hop/https://api.example.com/final")),
   outcome(fetch("https://api.example.com/hop/https://evil.io/steal")),
+  font(registerFont("https://evil.io/font.woff2")),
+  font(registerFont("https://api.example.com/hop/https://evil.io/font.woff2")),
 ]).then((r) => text.set(r.join(" | ")));
 mount(() => <Text>{text()}</Text>);
 "#;
@@ -261,6 +269,8 @@ fn fetch_stays_within_the_capabilities() {
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
+        windows: None,
     };
     let _engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).unwrap();
     assert_eq!(
@@ -281,6 +291,17 @@ fn fetch_stays_within_the_capabilities() {
         parts[2].starts_with("TypeError ERR_ACCESS_DENIED network https://evil.io/steal: ")
             && parts[2].contains("https://evil.io/steal is not granted"),
         "{result}"
+    );
+    // `registerFont` reads its URL as `fetch` does, and its refusals carry
+    // the same fields, a redirect's too: an `Error`, as every module
+    // function's refusal.
+    assert_eq!(
+        parts[3],
+        "Error ERR_ACCESS_DENIED network https://evil.io/font.woff2"
+    );
+    assert_eq!(
+        parts[4],
+        "Error ERR_ACCESS_DENIED network https://evil.io/font.woff2"
     );
     // evil.io was never contacted.
     assert!(
@@ -339,6 +360,8 @@ fn rust_components_fetch_through_the_platform_network() {
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
+        windows: None,
     };
     let _engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).unwrap();
     let mut shown = Vec::new();

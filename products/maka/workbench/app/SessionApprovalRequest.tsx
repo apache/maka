@@ -81,7 +81,7 @@ export function SessionApprovalRequest(props: {
   const computerApp = request.kind === 'computer_app' ? request : null;
   return (
     <View style={{ gap: 16 }}>
-      <View style={{ gap: 8, padding: 12, backgroundColor: C.background, borderRadius: 8 }}>
+      <View style={{ gap: 8, padding: 12, backgroundColor: C.panel, borderRadius: 8 }}>
         <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Proposed child decision')}</Text>
         <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
           {decisionSummary(answer)}

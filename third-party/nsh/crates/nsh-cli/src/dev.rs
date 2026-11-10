@@ -29,6 +29,8 @@ pub(crate) struct DevSession {
     src_dir: PathBuf,
     release: bool,
     server: DevServer,
+    /// Whether other machines may connect.
+    network: bool,
     devices: Arc<Devices>,
     /// The modules of the last good development build: updates are
     /// computed against it.
@@ -42,13 +44,22 @@ pub(crate) struct DevSession {
     rust_root: bool,
 }
 
+/// Where a dev server listens.
+#[derive(Clone, Copy)]
+pub(crate) struct Listen {
+    /// Its port, zero for one the OS allocates.
+    pub(crate) port: u16,
+    /// Whether other machines may connect, or only this one.
+    pub(crate) network: bool,
+}
+
 impl DevSession {
     /// Starts the server and publishes the first build (or its error).
     /// Hosts run the app with `limits` as an embedding app that sets them
     /// would (`--limits`), or with none, as an app on its own.
     pub(crate) fn start(
         entry: &Path,
-        port: u16,
+        listen: Listen,
         release: bool,
         limits: Option<nsh_core::js::HostLimits>,
     ) -> anyhow::Result<DevSession> {
@@ -59,7 +70,7 @@ impl DevSession {
             .context("entry has no directory")?
             .to_path_buf();
         let devices = Arc::<Devices>::default();
-        let server = start_server(port, &src_dir, devices.clone())?;
+        let server = start_server(listen, &src_dir, devices.clone())?;
         server.serve_files(crate::build::crate_assets().map(|a| (a.path, a.source)));
         server.install_commands(install_commands(&src_dir));
         server.set_limits(limits.map(|l| l.to_string()));
@@ -76,6 +87,7 @@ impl DevSession {
             src_dir,
             release,
             server,
+            network: listen.network,
             devices,
             hot: Default::default(),
             watch_files: Default::default(),
@@ -83,6 +95,11 @@ impl DevSession {
             rust_root,
         };
         session.rebuild();
+        // A Rust app's hosts that connect (the terminal's) run the root
+        // they were built with: the server tells them so.
+        if session.rust_root {
+            session.server.publish_root();
+        }
         Ok(session)
     }
 
@@ -104,6 +121,11 @@ impl DevSession {
         format!("http://127.0.0.1:{}/", self.server.local_addr().port())
     }
 
+    /// This machine's addresses other machines reach the server on.
+    fn network_ips(&self) -> Vec<Ipv4Addr> {
+        if self.network { lan_ips() } else { Vec::new() }
+    }
+
     /// Prints where hosts can connect.
     pub(crate) fn print_urls(&self) {
         let port = self.server.local_addr().port();
@@ -112,7 +134,7 @@ impl DevSession {
         if web {
             ui::detail(format!("browsers: {}", self.web_url()));
         }
-        for ip in lan_ips() {
+        for ip in self.network_ips() {
             ui::detail(format!(
                 "devices on this network: ws://{ip}:{port}{WS_PATH}"
             ));
@@ -127,7 +149,7 @@ impl DevSession {
     pub(crate) fn print_web_url(&self) {
         let port = self.server.local_addr().port();
         ui::note(format!("open in a browser: {}", ui::link(&self.web_url())));
-        if let Some(ip) = lan_ips().first() {
+        if let Some(ip) = self.network_ips().first() {
             ui::detail(ui::dim(format!("on this network: http://{ip}:{port}/")));
         }
     }
@@ -211,6 +233,17 @@ impl DevSession {
         Ok(())
     }
 
+    /// Serves the assets `built` imports by name, whatever their type: the
+    /// app's directory itself serves only its media files.
+    fn serve_assets(&self, built: &build::Built) {
+        self.server.serve_files(
+            built
+                .assets
+                .iter()
+                .map(|asset| (asset.path.clone(), asset.source.clone())),
+        );
+    }
+
     fn rebuild(&self) {
         // A Rust app has no JS: its Rust code's changes restart the session.
         if self.rust_root {
@@ -227,6 +260,7 @@ impl DevSession {
                             .map(|asset| (asset.path.clone(), asset.source.clone())),
                     );
                     self.watch_files.replace(built.watch_files.clone());
+                    self.serve_assets(&built);
                     let capabilities = built.capabilities_json();
                     let summary = self.summary(&built);
                     self.server.publish(
@@ -236,6 +270,7 @@ impl DevSession {
                         nsh_dev::AppInfo {
                             capabilities,
                             id: crate::package::app_id(&self.entry).ok(),
+                            window: crate::package::window_json(&self.entry),
                         },
                         None,
                         built.ui_sets,
@@ -255,6 +290,7 @@ impl DevSession {
                         .map(|asset| (asset.path.clone(), asset.source.clone())),
                 );
                 self.watch_files.replace(built.watch_files.clone());
+                self.serve_assets(&built);
                 let summary = self.summary(&built);
                 // Other capabilities: the app starts again under them.
                 let patch = self
@@ -279,6 +315,7 @@ impl DevSession {
                     nsh_dev::AppInfo {
                         capabilities,
                         id: crate::package::app_id(&self.entry).ok(),
+                        window: crate::package::window_json(&self.entry),
                     },
                     patch,
                     built.ui_sets,
@@ -433,11 +470,23 @@ fn install_commands(dir: &Path) -> Vec<(HostPlatform, String)> {
     ]
 }
 
-fn start_server(port: u16, assets_root: &Path, devices: Arc<Devices>) -> anyhow::Result<DevServer> {
+fn start_server(
+    listen: Listen,
+    assets_root: &Path,
+    devices: Arc<Devices>,
+) -> anyhow::Result<DevServer> {
+    let Listen { port, network } = listen;
     if ui::stop_requested() {
         anyhow::bail!("development session is stopping");
     }
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = SocketAddr::from((
+        if network {
+            [0, 0, 0, 0]
+        } else {
+            [127, 0, 0, 1]
+        },
+        port,
+    ));
     DevServer::start(
         addr,
         nsh_js::BYTECODE_VERSION,
@@ -575,13 +624,36 @@ fn lan_ips() -> Vec<Ipv4Addr> {
 
 #[cfg(test)]
 mod tests {
+    use super::Listen;
+
+    fn on_network(port: u16) -> Listen {
+        Listen {
+            port,
+            network: true,
+        }
+    }
+
+    #[test]
+    fn only_a_network_listen_is_open_to_other_machines() {
+        let dir = std::env::temp_dir();
+        let local = Listen {
+            port: 0,
+            network: false,
+        };
+        let server = super::start_server(local, &dir, Default::default()).unwrap();
+        assert!(server.local_addr().ip().is_loopback());
+        let server = super::start_server(on_network(0), &dir, Default::default()).unwrap();
+        assert!(server.local_addr().ip().is_unspecified());
+    }
+
     #[test]
     fn occupied_port_fails_without_moving_or_stopping_the_listener() {
         let taken = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap();
         let port = taken.local_addr().unwrap().port();
-        let error = super::start_server(port, &std::env::temp_dir(), Default::default())
-            .err()
-            .expect("must not move to another port");
+        let error =
+            super::start_server(on_network(port), &std::env::temp_dir(), Default::default())
+                .err()
+                .expect("must not move to another port");
         assert!(error.to_string().contains(&format!("port {port}")));
         assert_eq!(
             error
@@ -597,11 +669,11 @@ mod tests {
     #[test]
     fn zero_allocates_a_port_and_an_explicit_port_is_kept() {
         let dir = std::env::temp_dir();
-        let server = super::start_server(0, &dir, Default::default()).unwrap();
+        let server = super::start_server(on_network(0), &dir, Default::default()).unwrap();
         let port = server.local_addr().port();
         assert_ne!(port, 0);
         drop(server);
-        let server = super::start_server(port, &dir, Default::default()).unwrap();
+        let server = super::start_server(on_network(port), &dir, Default::default()).unwrap();
         assert_eq!(server.local_addr().port(), port);
     }
 

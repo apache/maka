@@ -64,10 +64,24 @@ pub(crate) struct ThemeSetup {
     pub(crate) appearance: Option<&'static str>,
     /// `"statusBar"`, checked, as JSON: the status bar's default.
     pub(crate) status_bar: Option<String>,
+    /// The app's translations (`locales/`) and the language data it ships
+    /// (`"locales"`), as the runtime's `i18n` takes them: a module of their
+    /// own the entry imports first ([`I18N_MODULE`]).
+    pub(crate) i18n: Option<String>,
 }
+
+/// The module that hands the runtime the app's translations and language
+/// data, imported first by the entry so that it runs before any other
+/// module's code.
+pub(crate) const I18N_MODULE: &str = "virtual:nsh-i18n";
+const I18N_ID: &str = "\0nsh-i18n";
 
 /// File types imported as image assets.
 pub(crate) const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "heic", "svg"];
+
+/// File types imported as audio: the formats `Sound` and `AudioPlayer`
+/// play on every platform (`docs/dev/audio-design.md`).
+pub(crate) const AUDIO_EXTENSIONS: &[&str] = &["wav", "m4a", "aac", "mp3"];
 
 /// File types imported as fonts.
 pub(crate) const FONT_EXTENSIONS: &[&str] = &["ttf", "otf", "woff", "woff2"];
@@ -78,21 +92,9 @@ fn has_extension(path: &Path, extensions: &[&str]) -> bool {
         .is_some_and(|e| extensions.iter().any(|x| x.eq_ignore_ascii_case(e)))
 }
 
-/// The family name a font registers under: the typographic family (name
-/// 16) when present, else the legacy family (name 1). A WOFF or WOFF2 font
-/// is read from what it holds.
+/// The family name a font registers under ([`nsh_core::font_family`]).
 fn font_family(data: &[u8]) -> Result<String, String> {
-    let data = nsh_core::font_data(data)?;
-    let face = ttf_parser::Face::parse(&data, 0).map_err(|e| e.to_string())?;
-    let name = |id| {
-        face.names()
-            .into_iter()
-            .filter(|n| n.name_id == id && n.is_unicode())
-            .find_map(|n| n.to_string())
-    };
-    name(ttf_parser::name_id::TYPOGRAPHIC_FAMILY)
-        .or_else(|| name(ttf_parser::name_id::FAMILY))
-        .ok_or_else(|| "the font has no family name".to_owned())
+    nsh_core::font_family(data)
 }
 
 /// An SVG imported as `rel`: its size in points, as the native backends
@@ -325,7 +327,11 @@ impl NshPlugin {
             None => "null".to_owned(),
         };
         let setup = &self.tailwind;
-        (setup.json.is_some()
+        let i18n = setup
+            .i18n
+            .is_some()
+            .then(|| format!("import {I18N_MODULE:?};\n"));
+        let call = (setup.json.is_some()
             || setup.ui.is_some()
             || setup.appearance.is_some()
             || setup.status_bar.is_some())
@@ -337,7 +343,11 @@ impl NshPlugin {
                 json(&setup.appearance.map(str::to_owned)),
                 json(&setup.status_bar)
             )
-        })
+        });
+        match (i18n, call) {
+            (None, None) => None,
+            (i18n, call) => Some(i18n.unwrap_or_default() + &call.unwrap_or_default()),
+        }
     }
 
     /// Records `message` as the build's error (shown as it is).
@@ -413,6 +423,9 @@ impl Plugin for NshPlugin {
         args: &HookResolveIdArgs<'_>,
     ) -> HookResolveIdReturn {
         let spec = args.specifier;
+        if spec == I18N_MODULE && self.tailwind.i18n.is_some() {
+            return Ok(Some(HookResolveIdOutput::from_id(I18N_ID)));
+        }
         if self.modules.contains(spec) {
             // Hot factories keep external import() expressions. Preloading
             // their namespaces would turn an optional native API into an
@@ -465,6 +478,19 @@ impl Plugin for NshPlugin {
     }
 
     async fn load(&self, _cx: SharedLoadPluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {
+        if args.id == I18N_ID
+            && let Some(json) = &self.tailwind.i18n
+        {
+            let code = format!(
+                "import {{ i18n }} from \"nsh:rt\";\ni18n({});",
+                serde_json::Value::String(json.clone())
+            );
+            return Ok(Some(HookLoadOutput {
+                code: code.into(),
+                module_type: Some(ModuleType::Js),
+                ..Default::default()
+            }));
+        }
         let path = Path::new(args.id);
         let rel = self.rel(path);
         if has_extension(path, FONT_EXTENSIONS) {
@@ -476,6 +502,19 @@ impl Plugin for NshPlugin {
             let imported = self.asset_family(path, &[])?;
             let code = format!(
                 "import {{ font, assetUrl }} from \"nsh:rt\";\nexport default font(assetUrl({imported:?}, import.meta.assetBase), {family:?});",
+            );
+            return Ok(Some(HookLoadOutput {
+                code: code.into(),
+                module_type: Some(ModuleType::Js),
+                ..Default::default()
+            }));
+        }
+        if has_extension(path, AUDIO_EXTENSIONS) {
+            // An audio import is its URL, for `Sound.load` and `AudioPlayer`;
+            // the file ships with the app.
+            let imported = self.asset_family(path, &[])?;
+            let code = format!(
+                "import {{ assetUrl }} from \"nsh:rt\";\nexport default assetUrl({imported:?}, import.meta.assetBase);"
             );
             return Ok(Some(HookLoadOutput {
                 code: code.into(),
@@ -656,6 +695,24 @@ mod tests {
     fn svg(body: &str) -> Vec<u8> {
         format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{body}</svg>"#)
             .into_bytes()
+    }
+
+    /// An audio import is its `asset:/` URL, and the file ships.
+    #[test]
+    fn an_audio_import_is_its_url_and_ships() {
+        let dir = std::env::temp_dir().join(format!("nsh-audio-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sounds")).unwrap();
+        std::fs::write(dir.join("sounds/tap.wav"), b"RIFF").unwrap();
+        std::fs::write(
+            dir.join("App.tsx"),
+            "import { Sound, mount, View } from \"nsh\";\nimport tap from \"./sounds/tap.wav\";\nSound.load(tap);\nmount(() => <View />);\n",
+        )
+        .unwrap();
+        let bundle = bundled(&dir);
+        assert!(bundle.code.contains("tap.wav"), "{}", bundle.code);
+        assert_eq!(assets(&bundle), ["tap.wav"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

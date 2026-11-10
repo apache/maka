@@ -52,6 +52,8 @@ mod tests {
     use super::*;
 
     #[test]
+    // InputConfig is non-exhaustive outside nsh-core.
+    #[allow(clippy::field_reassign_with_default)]
     fn only_a_field_without_caret_text_or_placeholder_shows_nothing() {
         let mut c = InputConfig::default();
         c.caret_hidden = true;

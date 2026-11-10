@@ -281,13 +281,13 @@ export function executor(
 ) {
   const target = resolve(root, baseEnv.CARGO_TARGET_DIR ?? 'target');
   const env = { ...baseEnv, CARGO_TARGET_DIR: target };
-  if (['nsh', 'gpui'].includes(worker.workspace) || worker.id?.startsWith('native-')) {
+  if (worker.workspace === 'nsh' || worker.id?.startsWith('native-')) {
     Object.assign(env, {
       CARGO_BUILD_JOBS: '2',
       CARGO_INCREMENTAL: '0',
       CARGO_PROFILE_DEV_DEBUG: '0',
     });
-    if (['nsh', 'gpui'].includes(worker.workspace)) env.CARGO_PROFILE_TEST_DEBUG = '0';
+    if (worker.workspace === 'nsh') env.CARGO_PROFILE_TEST_DEBUG = '0';
   }
   const programFiles = baseEnv.ProgramFiles ?? baseEnv.PROGRAMFILES;
   const run = (exe, args, options = {}) => runCommand(exe, args, { cwd: root, env, ...options });
@@ -394,7 +394,12 @@ export function executor(
       [
         'root',
         'desktop',
-        'gpui',
+        'pixels',
+        'linux-nsh',
+        'linux-desktop',
+        'macos-nsh',
+        'macos-surface',
+        'macos-desktop',
         'windows-desktop',
         'windows-skills',
         'windows-nsh',
@@ -483,8 +488,45 @@ export function executor(
     } else if (id === 'bridge') {
       await run(join(target, 'ci/maka-bridge'), ['--version']);
       await nextest(id);
-    } else if (['gpui', 'windows-desktop', 'windows-skills', 'windows-nsh'].includes(id)) {
-      await nextest(id, false, filter, ['-j', '1', ...extra]);
+    } else if (
+      [
+        'desktop',
+        'pixels',
+        'macos-desktop',
+        'macos-nsh',
+        'macos-surface',
+        'windows-desktop',
+        'windows-skills',
+        'windows-nsh',
+      ].includes(id)
+    ) {
+      await nextest(id, false, filter, ['--no-tests=fail', '-j', '1', ...extra]);
+    } else if (id === 'linux-desktop') {
+      await run('xvfb-run', [
+        '-a',
+        'dbus-run-session',
+        '--',
+        'cargo',
+        'nextest',
+        'run',
+        ...suites[id].cargoArgs,
+        '--no-tests=fail',
+        '--run-ignored=all',
+        '-j',
+        '1',
+        ...extra,
+      ]);
+    } else if (id === 'linux-nsh') {
+      await run('xvfb-run', [
+        '-a',
+        'cargo',
+        'nextest',
+        'run',
+        ...suites[id].cargoArgs,
+        '--no-tests=fail',
+        '-j',
+        '1',
+      ]);
     } else if (id === 'termina') {
       await nextest(id);
     } else if (id === 'native' && ['darwin', 'win32'].includes(process.platform)) {
@@ -773,7 +815,7 @@ export function executor(
     const groups = [];
     for (const [group, shards, name] of [
       ['native', 8, 'maka-agent-native'],
-      ['cli', id === 'desktop' ? 4 : 6, 'maka-cli'],
+      ['cli', 6, 'maka-cli'],
     ]) {
       groups.push({
         group,

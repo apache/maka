@@ -54,6 +54,7 @@ const AGENT: &str = "agent";
 const EDITOR: &str = "composer";
 
 /// Own native tasks independently of a JavaScript view's lifetime.
+#[derive(Clone)]
 pub struct Bindings {
     owner: Arc<Owner>,
 }

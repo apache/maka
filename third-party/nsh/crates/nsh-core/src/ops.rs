@@ -5,7 +5,7 @@ use crate::{
     element::PropEnum,
     geometry::{Bounds, DevicePixels, Percentage, Point, Points, Size},
     js::host::HostProps,
-    overlay::{Align, HintWatchToken, OverlayAnchor, Placement, TooltipContent},
+    overlay::{Align, OverlayAnchor, Placement, TooltipContent},
     props::{AccessibilityProp, EdgeInsets, LayoutAnimation, PointerEvents},
     style::{Color, Style, StylePatch},
 };
@@ -191,8 +191,8 @@ events! {
     Error = "onError": "An image failed to load (payload: [`EventPayload::Error`]).",
     ChangeText = "onChangeText" as "onChange": "The user edited an input (payload: [`EventPayload::Text`]).",
     SubmitEditing = "onSubmitEditing" as "onSubmit": "The return key was pressed in an input (payload: [`EventPayload::Text`]).",
-    Focus = "onFocus": "An input, scroll view, list, or a view that takes presses, took the keyboard focus.",
-    Blur = "onBlur": "An input, scroll view, list, or a view that takes presses, lost the keyboard focus.",
+    Focus = "onFocus": "An input, or a view that takes presses, took the keyboard focus.",
+    Blur = "onBlur": "An input, or a view that takes presses, lost the keyboard focus.",
     PressDown = "onPressIn" as "onPressDown": "A press went down on a pressable view (a finger, a pen or a mouse button; payload as `Press`).",
     PressUp = "onPressOut" as "onPressUp": "The press ended: released, moved away or cancelled (payload as `Press`).",
     Layout = "onLayout": "The frame changed (payload: [`EventPayload::Layout`], relative to the parent).",
@@ -220,7 +220,7 @@ events! {
     MomentumEnd = "onMomentumEnd": "A scroll view stopped gliding (payload: [`EventPayload::Scroll`]).",
     Dialog = "onDialog": "An alert or action sheet closed (root only; payload: `id`, `index`, -1 when dismissed).",
     Touch = "onTouch": "Touches on the view or inside it, for the JS touch and responder handlers (payload: [`EventPayload::Touch`]).",
-    SelectionChange = "onSelectionChange": "The selection (or caret) of an input moved (payload: `start`, `end` in UTF-16 units).",
+    SelectionChange = "onSelectionChange": "The selection (or caret) of an input moved (payload: `start`, `end` in UTF-16 units), or the selection of a selectable view changed (payload: `text`, the selected text as a copy gives it, empty once nothing is selected; `start`, where it starts in the view's whole text).",
     KeyPress = "onKeyPress": "A key was pressed in an input (payload: `key`: the character, `Backspace` or `Enter`).",
     LoadEnd = "onLoadEnd": "An image finished loading, or failed.",
     ImageInfo = "onImageInfo": "An `Image.getSize` / `Image.prefetch` request finished (root only; payload: `id`, `width` and `height` in pixels, or `error`).",
@@ -242,8 +242,7 @@ events! {
     PressOutside = "onPressOutside": "A press went down outside an overlay, its anchor and the overlays inside it (payload: `pageX`, `pageY`; raised by the core).",
     Cancel = "onCancel": "Escape or the Android back button was pressed while the overlay was the top one listening to it (raised by the core).",
     Position = "onPosition": "The core placed an overlay (payload: `placement`, the side it went on, `x`, `y`, `width`, `height` in the root view, `availableWidth`, `availableHeight`: the room on that side).",
-    ScrollIntent = "onScrollIntent": "The user requested scrolling, before the offset changes, including at a boundary (payload: `intent`: `\"start\"`, `\"end\"` or `\"scroll\"`; once when a drag starts, before `onScrollDragStart`; programmatic scrolling does not emit it).",
-    Host = "onHost": "The embedding host answered a [`Command::HostCall`] or sent an event to `host`'s (`nsh`) listeners (root only; payload: [`EventPayload::Json`], `{ type: \"reply\", id, ok, value?, error? }` or `{ type: \"event\", event, payload }`).",
+    Host = "onHost": "The embedding host answered a [`Command::HostCall`] or sent an event to `host`'s listeners (`nsh`) (root only; payload: [`EventPayload::Json`], `{ type: \"reply\", id, ok, value?, error? }` or `{ type: \"event\", event, payload }`).",
     Pick = "onPick": "A picker closed (root only; payload: [`EventPayload::Picked`], no files when cancelled).",
     LoadMoreAtStart = "onLoadMoreAtStart": "A list was scrolled close to its start after the user or a scroll command moved it (raised by the core).",
     OpenUrl = "onOpenUrl": "A [`Command::OpenUrl`] request finished (root only; payload: `id`, `opened`: whether the platform opened the URL).",
@@ -253,6 +252,11 @@ events! {
     FileRequest = "onFileRequest": "A [`Command::FileRequest`] finished (root only; payload: [`EventPayload::FileRequest`]).",
     Speech = "onSpeech": "A speech recognition session reported (root only; payload: [`EventPayload::Speech`]).",
     Download = "onDownload": "A web view's download started, finished or failed (payload: `state`, `id`, `url`, `filename`, `path`; `bytes` once finished, `message` when it failed).",
+    Notification = "onNotification": "The platform answered a [`Command::Notification`], or the user pressed a notification (root only; payload: the fields of [`crate::notifications::NotificationEvent`]).",
+    UrlScheme = "onUrlScheme": "The system handed the app a URL that opens it (root only; payload: `url`, [`crate::url_scheme::URL`]); the core keeps those of the schemes the app claims ([`crate::url_scheme`]).",
+    Audio = "onAudio": "A sound or a player reported (root only; payload: [`EventPayload::Audio`]).",
+    Window = "onWindow" as "": "A window of the app's own reported its state, a close press or that it closed (on its root node; desktops; payload: [`EventPayload::Window`]).",
+    ScrollIntent = "onScrollIntent": "The user requested scrolling, before the offset changes, including at a boundary (payload: `intent`: `\"start\"`, `\"end\"` or `\"scroll\"`; once when a drag starts, before `onScrollDragStart`; programmatic scrolling does not emit it).",
 
 }
 
@@ -476,14 +480,77 @@ pub struct PressEvent {
 /// Where a context menu was asked for ([`EventKind::ContextMenu`]), in
 /// points.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[non_exhaustive]
 pub struct ContextMenuEvent {
-    /// Position in the view, its transforms undone.
+    /// Position in the view, its transforms undone: the pointer's, or, when
+    /// no pointer asked ([`ContextMenuEvent::pointer_type`] is `None`), the
+    /// view's bottom-start corner ([`crate::input::context_menu_anchor`]).
     pub position: Point<Points>,
     /// Position in the root view the view is in (the surface, or its
     /// modal): where `Menu.popup` opens a menu.
     pub page_position: Point<Points>,
     /// The modifier keys held.
     pub modifiers: crate::keymap::Modifiers,
+    /// The pointer that asked for the menu (the DOM's `pointerType`), or
+    /// `None` when none did: the keyboard (Shift+F10, the Menu key) or an
+    /// assistive technology's "show menu" action, which a menu answers
+    /// with the keyboard focus on its first item.
+    pub pointer_type: Option<PointerType>,
+}
+
+impl ContextMenuEvent {
+    /// A context menu asked for at `position` in the view and
+    /// `page_position` in its root view, with `modifiers` held, by
+    /// `pointer_type` (`None`: the keyboard or an assistive technology).
+    pub fn new(
+        position: Point<Points>,
+        page_position: Point<Points>,
+        modifiers: crate::keymap::Modifiers,
+        pointer_type: Option<PointerType>,
+    ) -> Self {
+        Self {
+            position,
+            page_position,
+            modifiers,
+            pointer_type,
+        }
+    }
+}
+
+/// The kind of pointer behind an event, as the DOM's `pointerType` (TS:
+/// `"mouse"`, `"pen"`, `"touch"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PointerType {
+    /// A mouse or a touchpad.
+    Mouse,
+    /// A pen or stylus.
+    Pen,
+    /// A finger on a touch screen.
+    Touch,
+}
+
+impl PointerType {
+    /// Its TS name.
+    pub fn name(self) -> &'static str {
+        match self {
+            PointerType::Mouse => "mouse",
+            PointerType::Pen => "pen",
+            PointerType::Touch => "touch",
+        }
+    }
+
+    /// The pointer type of TS name `name` (the DOM's `pointerType`), or
+    /// `None` for one NSH does not know and for the DOM's `""` (no
+    /// pointer).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "mouse" => PointerType::Mouse,
+            "pen" => PointerType::Pen,
+            "touch" => PointerType::Touch,
+            _ => return None,
+        })
+    }
 }
 
 /// Touches for the JS responder system.
@@ -635,38 +702,18 @@ fn image_type(data: &[u8]) -> (&'static str, &'static str) {
 // Every kind has a bit of [`EventMask`].
 const _: () = assert!(EventKind::ALL.len() <= 128, "EventMask has 128 bits");
 
-/// Events a view reports, retaining which subscriptions can call a listener.
-/// Each subscription set has room for 128 kinds, stored as two words rather
-/// than a `u128`: Objective-C ivars take no 16-byte alignment.
+/// A set of [`EventKind`]s: one bit per kind, room for 128. Two words, not
+/// a `u128`: views keep it in Objective-C ivars, which take no 16-byte
+/// alignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct EventMask {
-    listeners: [u64; 2],
-    observations: [u64; 2],
-    hint_watch: Option<HintWatchToken>,
-}
+pub struct EventMask([u64; 2]);
 
 impl std::ops::BitOr for EventMask {
     type Output = EventMask;
 
     #[inline]
     fn bitor(self, other: EventMask) -> EventMask {
-        let conflicted = (self.observations != [0; 2] && self.hint_watch.is_none())
-            || (other.observations != [0; 2] && other.hint_watch.is_none());
-        EventMask {
-            listeners: [
-                self.listeners[0] | other.listeners[0],
-                self.listeners[1] | other.listeners[1],
-            ],
-            observations: [
-                self.observations[0] | other.observations[0],
-                self.observations[1] | other.observations[1],
-            ],
-            hint_watch: match (self.hint_watch, other.hint_watch) {
-                _ if conflicted => None,
-                (Some(left), Some(right)) if left != right => None,
-                (left, right) => left.or(right),
-            },
-        }
+        EventMask([self.0[0] | other.0[0], self.0[1] | other.0[1]])
     }
 }
 
@@ -675,28 +722,13 @@ impl EventMask {
     #[inline]
     pub const fn contains(self, event: EventKind) -> bool {
         let k = event as usize;
-        (self.listeners[k / 64] | self.observations[k / 64]) & (1 << (k % 64)) != 0
-    }
-
-    /// Whether reporting `event` can invoke a listener, rather than only
-    /// update native presentation such as a callback-free tooltip.
-    #[inline]
-    pub const fn contains_listener(self, event: EventKind) -> bool {
-        let k = event as usize;
-        self.listeners[k / 64] & (1 << (k % 64)) != 0
-    }
-
-    /// The native hint watch paired with these observations, if any.
-    #[inline]
-    pub const fn hint_watch(self) -> Option<HintWatchToken> {
-        self.hint_watch
+        self.0[k / 64] & (1 << (k % 64)) != 0
     }
 
     /// The raw bit set, indexed by `EventKind as u8`.
     #[inline]
     pub const fn bits(self) -> u128 {
-        (self.listeners[0] | self.observations[0]) as u128
-            | ((self.listeners[1] | self.observations[1]) as u128) << 64
+        self.0[0] as u128 | (self.0[1] as u128) << 64
     }
 
     /// Adds or removes `event`.
@@ -704,33 +736,16 @@ impl EventMask {
     pub fn set(&mut self, event: EventKind, enabled: bool) {
         let k = event as usize;
         if enabled {
-            self.listeners[k / 64] |= 1 << (k % 64);
+            self.0[k / 64] |= 1 << (k % 64);
         } else {
-            self.listeners[k / 64] &= !(1 << (k % 64));
-            self.observations[k / 64] &= !(1 << (k % 64));
-            if self.observations == [0; 2] {
-                self.hint_watch = None;
-            }
+            self.0[k / 64] &= !(1 << (k % 64));
         }
-    }
-
-    /// Reports `event` for native presentation without adding a listener.
-    /// An existing listener of the same event retains its authority.
-    #[inline]
-    pub(crate) fn observe(&mut self, event: EventKind, watch: HintWatchToken) {
-        if self.observations == [0; 2] {
-            self.hint_watch = Some(watch);
-        } else if self.hint_watch != Some(watch) {
-            self.hint_watch = None;
-        }
-        let k = event as usize;
-        self.observations[k / 64] |= 1 << (k % 64);
     }
 
     /// Returns true if no event is set.
     #[inline]
     pub const fn is_empty(self) -> bool {
-        self.bits() == 0
+        self.0[0] == 0 && self.0[1] == 0
     }
 }
 
@@ -835,7 +850,7 @@ pub enum EventPayload {
     TextLayout(Vec<crate::text::TextLine>),
     /// The files the user picked ([`EventKind::Pick`]), with their bytes.
     Picked {
-        /// The request ([`Command::PickImages`]).
+        /// The request ([`Command::PickImages`], [`Command::PickFiles`]).
         id: u32,
         /// The files, in the order picked; none when cancelled.
         files: Vec<crate::picker::PickedFile>,
@@ -848,6 +863,16 @@ pub enum EventPayload {
         /// What it reported.
         event: crate::speech::SpeechEvent,
     },
+    /// What a sound or a player reported ([`EventKind::Audio`],
+    /// [`crate::audio`]).
+    Audio {
+        /// The sound or player ([`crate::audio::AudioCommand::id`]).
+        id: u32,
+        /// What it reported.
+        event: crate::audio::AudioEvent,
+    },
+    /// What a window of the app's own reported ([`EventKind::Window`]).
+    Window(Box<crate::desktop::WindowEvent>),
     /// The answer to a [`Command::FileRequest`] ([`EventKind::FileRequest`],
     /// [`crate::file_dialog`]).
     FileRequest {
@@ -1021,6 +1046,17 @@ impl ImageSource {
         match self.variant(pixel_ratio) {
             Some(scale) => variant_uri(&self.uri, scale).into(),
             None => self.uri.clone(),
+        }
+    }
+
+    /// This source for a screen of `pixel_ratio` device pixels per point:
+    /// the [`Self::uri_for`] the core picks for what it mounts, for what
+    /// goes around it (a menu item's icon).
+    #[must_use]
+    pub fn at_pixel_ratio(&self, pixel_ratio: f32) -> ImageSource {
+        ImageSource {
+            uri: self.uri_for(pixel_ratio),
+            ..self.clone()
         }
     }
 
@@ -1417,6 +1453,20 @@ pub struct ListContentStyle {
     pub column_gap: Points,
 }
 
+/// Where a list rests (`alignment`), as GPUI's `ListAlignment`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
+#[non_exhaustive]
+pub enum ListAlignment {
+    /// At the start of its content (default).
+    #[default]
+    Top,
+    /// At the end, like a chat log: the list opens there, stays there while
+    /// the content grows and content shorter than the viewport lies at its
+    /// bottom. Scrolled up, what is visible stays where it is; scrolled back
+    /// to the end, the list stays there again.
+    Bottom,
+}
+
 /// What a list scrolls in (`viewport`), fixed when the list is made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
 #[non_exhaustive]
@@ -1648,18 +1698,11 @@ pub enum OverlayProp {
     /// safe area (default 0).
     #[prop(js = "margin", on = OVERLAY)]
     Margin(Points),
-    /// A native popup focus-return scope (terminal and GPUI); set by
-    /// components such as `nsh-base`'s `Popover`.
-    #[prop(reset = OverlayProp::FocusReturn(false))]
-    FocusReturn(bool),
     /// A hint (a tooltip) shown after the pointer rested on the anchor this
     /// long ([`crate::overlay::OverlayConfig::hint`]); set by components
     /// (`nsh-base`'s `Tooltip`).
-    #[prop(js = "hintDelay", with = crate::js::host_values::hint_delay, reset = OverlayProp::Hint(None), ts = "number", on = OVERLAY)]
+    #[prop(reset = OverlayProp::Hint(None))]
     Hint(Option<std::time::Duration>),
-    /// Show the hint while its native anchor has keyboard focus too.
-    #[prop(js = "hintOnFocus", on = OVERLAY)]
-    HintOnFocus(bool),
     /// A hint shown or hidden whatever the pointer does
     /// ([`crate::overlay::OverlayConfig::open`]); set by components.
     #[prop(reset = OverlayProp::Open(None))]
@@ -1690,6 +1733,53 @@ pub enum WebInput {
     Text(String),
     /// A key pressed and released.
     Key(WebKey),
+}
+
+/// A page a web view loads with headers on its request (`WebView`'s
+/// `load`): the document request carries them; the page's subresources,
+/// its later navigations and reloads do not. Debug output names the
+/// headers but never shows their values (they are credentials, as
+/// `Authorization`).
+#[derive(Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WebLoad {
+    /// The URL to load.
+    pub src: String,
+    /// The request's headers, in order: names are HTTP tokens and values
+    /// have no line breaks or NULs ([`WebLoad::new`] checks).
+    pub headers: Vec<(String, String)>,
+}
+
+impl WebLoad {
+    /// A load of `src` with `headers`; `None` when a header's name is not
+    /// an HTTP token (RFC 9110's `tchar`s) or its value holds a CR, LF or
+    /// NUL, which would let it end the header and start another.
+    pub fn new(src: impl Into<String>, headers: Vec<(String, String)>) -> Option<Self> {
+        let token = |name: &str| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+        };
+        let value = |value: &str| !value.contains(['\r', '\n', '\0']);
+        headers
+            .iter()
+            .all(|(n, v)| token(n) && value(v))
+            .then(|| Self {
+                src: src.into(),
+                headers,
+            })
+    }
+}
+
+impl std::fmt::Debug for WebLoad {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.headers.iter().map(|(n, _)| n.as_str()).collect();
+        f.debug_struct("WebLoad")
+            .field("src", &self.src)
+            .field("headers", &names)
+            .finish()
+    }
 }
 
 /// A key `WebInput::Key` presses.
@@ -1759,6 +1849,8 @@ pub enum Command {
     PostMessage(String),
     /// Give a web view's page input as the user's own (trusted events).
     SendInput(WebInput),
+    /// Load a page in a web view with headers on its request.
+    Load(WebLoad),
     /// Seek a video to a time in seconds.
     Seek(f64),
     /// Scroll a list to an item (resolved by the core into `ScrollTo`).
@@ -1822,22 +1914,13 @@ pub enum Command {
         /// End.
         end: u32,
     },
-    /// Replace an input range as one undoable native edit, provided the
-    /// original text, selection and native edit generation still match.
-    ReplaceRange {
-        /// UTF-16 range to replace, on exact character boundaries.
-        range: std::ops::Range<u32>,
-        /// Literal replacement text.
-        text: String,
-        /// Text observed when the replacement was chosen.
-        expected_text: String,
-        /// UTF-16 selection observed when the replacement was chosen.
-        expected_selection: std::ops::Range<u32>,
-        /// The core fills in the input's latest observed native edit count.
-        count: u32,
-    },
     /// Have the screen reader read a message (on the root).
     Announce(String),
+    /// Turn the performance monitor on or off (on the root;
+    /// `setFpsEnabled`): what the platform has of one, the
+    /// macOS panel or the other platforms' `nsh::perf` lines. Platforms
+    /// without a monitor ignore it.
+    PerfMonitor(bool),
     /// Load the image at `uri` (keeping its bytes for views that show it
     /// next) and report its pixel size as [`EventKind::ImageInfo`] `id`
     /// (on the root).
@@ -1900,6 +1983,16 @@ pub enum Command {
         /// What to show and how to prepare the images.
         request: crate::picker::PickRequest,
     },
+    /// Show the system's picker for files of any type (on the root;
+    /// `Picker.pickFiles`) and report the picked ones, their bytes as they
+    /// are, as [`EventKind::Pick`] ([`EventPayload::Picked`] `id`; no files
+    /// when cancelled; [`crate::picker`]).
+    PickFiles {
+        /// The request.
+        id: u32,
+        /// What to show.
+        request: crate::picker::FilePickRequest,
+    },
     /// Open `url` outside the app (on the root; `openUrl` of `nsh/device`,
     /// [`crate::open_url`]): the browser, the mail or phone app, the app
     /// that registered its scheme. Report whether it opened as
@@ -1912,7 +2005,7 @@ pub enum Command {
         url: String,
     },
     /// Let the user pick a color anywhere on the screen (on the root; a
-    /// color picker's eyedropper, [`crate::element::pick_screen_color`]):
+    /// color picker's eyedropper, [`crate::element::ambient::pick_screen_color`]):
     /// the system's color sampler or the browser's `EyeDropper`. Report it
     /// as [`EventKind::ScreenColor`] `id`, with no `color` when the user
     /// cancelled. Sent only on platforms whose
@@ -1938,6 +2031,15 @@ pub enum Command {
     /// [`EventKind::Speech`] ([`EventPayload::Speech`]). Sent only on
     /// platforms whose [`crate::platform::Environment::speech`] is set.
     Speech(crate::speech::SpeechCommand),
+    /// Load, play and free sounds, open and drive players (on the root;
+    /// `Sound` and `AudioPlayer` of `nsh`, [`crate::audio`]) and report
+    /// what happens as [`EventKind::Audio`] ([`EventPayload::Audio`]). Sent
+    /// only on platforms whose [`crate::platform::Environment::audio`] is
+    /// set.
+    Audio(crate::audio::AudioCommand),
+    /// Show a notification, ask for the permission, set the app's badge
+    /// (on the root; `Notifications` of `nsh`, [`crate::notifications`]).
+    Notification(crate::notifications::NotificationCommand),
     /// A desktop command (on the root; `nsh/desktop`): the window, its
     /// title bar, menus. Mobile platforms ignore it.
     Desktop(Box<crate::desktop::DesktopCommand>),
@@ -2038,37 +2140,42 @@ impl StatusBarSetting {
     }
 
     /// The app's default (`nsh.json` `"statusBar"`): `{ "foreground":
-    /// "auto" | "light" | "dark", "hidden": bool }`, both optional. The
-    /// error says what is wrong, for `nsh.json: statusBar: …`.
-    pub fn from_json(value: &crate::JsonValue) -> Result<Self, String> {
-        let Some(object) = value.as_object() else {
-            return Err(format!(
-                "expected an object ({{ \"foreground\": \"light\", \"hidden\": false }}), got {value}"
-            ));
-        };
+    /// "auto" | "light" | "dark", "hidden": bool }`, both optional. What it
+    /// cannot read, an unknown key or a value of a form it does not know,
+    /// is left out and the rest applies: a bundle made by a newer NSH keeps
+    /// its setting on an older runtime.
+    pub fn from_json(value: &crate::JsonValue) -> Self {
+        Self::from_json_lenient(value).0
+    }
+
+    /// [`StatusBarSetting::from_json`], with what it left out
+    /// (`foreground: "dim" is not "auto", "light" or "dark"`), which the
+    /// toolchain warns of (a newer NSH's, or a typo).
+    pub fn from_json_lenient(value: &crate::JsonValue) -> (Self, Vec<String>) {
         let mut setting = Self::default();
+        let mut ignored = Vec::new();
+        let Some(object) = value.as_object() else {
+            ignored.push(format!(
+                "{value} is not an object ({{ \"foreground\": \"light\", \"hidden\": false }})"
+            ));
+            return (setting, ignored);
+        };
         for (key, v) in object {
             match key.as_str() {
-                "foreground" => {
-                    let style = v.as_str().and_then(StatusBarStyle::from_name);
-                    setting.style = Some(style.ok_or_else(|| {
-                        format!("foreground: {v} is not \"auto\", \"light\" or \"dark\"")
-                    })?);
-                }
-                "hidden" => {
-                    setting.hidden = Some(
-                        v.as_bool()
-                            .ok_or_else(|| format!("hidden: {v} is not true or false"))?,
-                    );
-                }
-                other => {
-                    return Err(format!(
-                        "unknown key {other:?} (\"foreground\" and \"hidden\" are known)"
-                    ));
-                }
+                "foreground" => match v.as_str().and_then(StatusBarStyle::from_name) {
+                    Some(style) => setting.style = Some(style),
+                    None => ignored.push(format!(
+                        "foreground: {v} is not \"auto\", \"light\" or \"dark\""
+                    )),
+                },
+                "hidden" => match v.as_bool() {
+                    Some(hidden) => setting.hidden = Some(hidden),
+                    None => ignored.push(format!("hidden: {v} is not true or false")),
+                },
+                other => ignored.push(format!("unknown key `{other}`")),
             }
         }
-        Ok(setting)
+        (setting, ignored)
     }
 
     /// This setting over `below`.
@@ -2211,8 +2318,7 @@ pub enum Prop {
     Scroll(ScrollProp),
     /// `scrollbar`: the scroll indicator shows (default true), or the
     /// app's built-in bar of a theme (an object, `nsh/base`'s
-    /// `ScrollbarTheme`). On the desktop a horizontal view keeps it: it is
-    /// the mouse's scroll bar. A multiline input's is its text's.
+    /// `ScrollbarTheme`). A multiline input's is its text's.
     #[prop(js = "scrollbar", with = crate::js::host_values::scrollbar, reset = Prop::Scrollbar(ScrollbarSetting::Shown), ts = "boolean | import(\"nsh/base\").ScrollbarTheme", on = SCROLL | LIST | INPUT)]
     Scrollbar(ScrollbarSetting),
     /// `refreshing`: the pull-to-refresh spinner shows.
@@ -2247,6 +2353,10 @@ pub enum Prop {
     /// content where it is. Items inserted above the visible ones never move them.
     #[prop(js = "maintainVisibleContentPosition", with = crate::js::host_values::visible_content, reset = Prop::FollowEnd(None), ts = "{ autoscrollToBottomThreshold?: number }", on = LIST)]
     FollowEnd(Option<Points>),
+    /// `alignment`: where the list rests; `bottom` for a chat in reading order
+    /// (an inverted list ignores it).
+    #[prop(js = "alignment", on = LIST)]
+    ListAlignment(ListAlignment),
     /// `stickyHeaderIndices`: items that stick to the start while scrolled past
     /// (one column, not inverted).
     #[prop(js = "stickyHeaderIndices", with = crate::js::host_values::sticky, reset = Prop::StickyIndices(Vec::new()), on = LIST)]
@@ -2338,9 +2448,6 @@ pub enum Prop {
     /// `multiline`: several lines; return inserts a line break.
     #[prop(js = "multiline", on = INPUT)]
     Multiline(bool),
-    /// Styled ranges matched against the native editor's current text.
-    #[prop(js = "tokens", on = INPUT)]
-    InputTokens(Vec<crate::input_tokens::InputTokenRule>),
     /// `maxLength`: the most characters the user can enter.
     #[prop(js = "maxLength", on = INPUT)]
     MaxLength(Option<u32>),
@@ -2520,6 +2627,10 @@ pub enum Prop {
     /// The system material of a backdrop blur (iOS, default `ultraThin`).
     #[prop(ios = "backdropMaterial")]
     BackdropMaterial(crate::BackdropMaterial),
+    /// `macos={{ backdrop }}`: the `NSVisualEffectView` material on macOS
+    /// (default `popover` / `withinWindow` / `active`; `None`: none).
+    #[prop(macos = "backdrop")]
+    MacOsBackdrop(Option<crate::MacOsBackdrop>),
     /// An accessibility property.
     #[prop(nested)]
     Accessibility(AccessibilityProp),
@@ -2533,6 +2644,16 @@ pub enum Prop {
     /// a draggable view stay clickable without it.
     #[prop(desktop = "windowDrag")]
     WindowDrag(Option<bool>),
+    /// `windowControl` (desktops): the view of a title bar the app draws
+    /// acts as one of the system's window buttons (minimize, maximize,
+    /// close): the platform hit-tests it as that button and carries out its
+    /// press.
+    #[prop(desktop = "windowControl")]
+    WindowControl(Option<crate::desktop::WindowControl>),
+    /// `windowResize` (desktops): pressing the view resizes a frameless
+    /// window by that edge or corner.
+    #[prop(desktop = "windowResize")]
+    WindowResize(Option<crate::desktop::ResizeEdge>),
     /// `tooltip`: a hint about the view, shown above it on the desktops
     /// while the pointer rests on it (after half a second) until the
     /// pointer leaves or presses it, never on touch screens; it never takes
@@ -2555,6 +2676,12 @@ pub enum Prop {
     /// another is part of the outer one.
     #[prop(js = "selectable", on = VIEW, shared)]
     SelectableView(bool),
+    /// The text continues the text before it in document order (a long
+    /// line's next wrapped part): a selection's copy joins the two with
+    /// nothing between them, and a double or triple click selects across
+    /// them ([`crate::selection`]). Set by components
+    /// (`Element::continues_text`), never by JS.
+    ContinuesText(bool),
     /// `allowFontScaling`: follow the system text size (default true).
     #[prop(js = "allowFontScaling", default = true, on = TEXT | INPUT)]
     AllowFontScaling(bool),
@@ -2657,6 +2784,18 @@ pub enum NativeProp {
         on = WEBVIEW
     )]
     BackForwardGestures(bool),
+    /// `incognito` (web views): the page's website data (cookies, storage,
+    /// the cache) lives only as long as the web view, apart from the app's
+    /// other web views; on Android, where every web view shares the app's
+    /// cookies and storage, it loads without the HTTP cache and saves no
+    /// form data. Read when the web view is made; a later change is ignored
+    /// (with a warning): render a new element to change it.
+    #[prop(js = "incognito", on = WEBVIEW)]
+    Incognito(bool),
+    /// The URL schemes a web view serves from the app (Rust's
+    /// `WebView::url_scheme`). Read when the web view is made, as
+    /// `incognito`.
+    UrlSchemes(Vec<crate::web_resource::WebUrlScheme>),
     /// `paused` (videos): playback is paused.
     #[prop(js = "paused", on = VIDEO, shared)]
     Paused(bool),
@@ -2786,122 +2925,4 @@ pub enum Op {
     /// posted during a synchronous call ([`crate::element::RustCall`]). Never
     /// reaches a platform.
     Rust(crate::element::RustOp),
-}
-
-#[cfg(test)]
-mod event_mask_tests {
-    use super::*;
-
-    #[test]
-    fn every_event_keeps_listeners_separate_from_observations() {
-        let watch = HintWatchToken::new(1, 1);
-        for &event in EventKind::ALL {
-            let mut mask = EventMask::default();
-            mask.observe(event, watch);
-            assert!(mask.contains(event));
-            assert!(!mask.contains_listener(event));
-            assert!(!mask.is_empty());
-            assert_eq!(mask.bits(), 1u128 << event as u8);
-            assert_eq!(mask.hint_watch(), Some(watch));
-            mask.set(event, true);
-            assert!(mask.contains_listener(event));
-            assert_eq!(mask.hint_watch(), Some(watch));
-            mask.set(event, false);
-            assert!(!mask.contains(event));
-            assert!(!mask.contains_listener(event));
-            assert!(mask.is_empty());
-            assert_eq!(mask.hint_watch(), None);
-        }
-    }
-
-    #[test]
-    fn union_preserves_both_words_without_granting_listener_authority() {
-        let watch = HintWatchToken::new(1, 1);
-        // Exercise bits beyond the currently declared kinds without making
-        // invalid EventKind values. Future kinds also run through the test above.
-        let listeners = EventMask {
-            listeners: [1, 1],
-            ..Default::default()
-        };
-        let observations = EventMask {
-            observations: [2, 1 << 63],
-            hint_watch: Some(watch),
-            ..Default::default()
-        };
-        let mask = listeners | observations;
-        assert_eq!(mask.listeners, [1, 1]);
-        assert_eq!(mask.observations, [2, 1 << 63]);
-        assert_eq!(mask.bits(), 3 | (1u128 << 64) | (1u128 << 127));
-        assert_eq!(mask.hint_watch(), Some(watch));
-        assert_eq!(mask, observations | listeners);
-        assert!(mask.contains_listener(EventKind::Press));
-        assert!(mask.contains(EventKind::LongPress));
-        assert!(!mask.contains_listener(EventKind::LongPress));
-        assert_eq!(
-            std::mem::align_of::<EventMask>(),
-            std::mem::align_of::<u64>()
-        );
-    }
-
-    #[test]
-    fn upper_word_observations_keep_their_watch_when_a_lower_event_is_removed() {
-        let watch = HintWatchToken::new(1, 1);
-        let mut mask = EventMask {
-            observations: [0, 1],
-            hint_watch: Some(watch),
-            ..Default::default()
-        };
-        mask.observe(EventKind::MouseEnter, watch);
-        mask.set(EventKind::MouseEnter, true);
-        mask.set(EventKind::MouseEnter, false);
-        assert!(!mask.is_empty());
-        assert_eq!(mask.bits(), 1u128 << 64);
-        assert_eq!(mask.listeners, [0; 2]);
-        assert_eq!(mask.hint_watch(), Some(watch));
-    }
-
-    #[test]
-    fn upper_word_watch_conflicts_cannot_be_reauthorized_by_a_union_or_observation() {
-        let first = HintWatchToken::new(1, 1);
-        let second = HintWatchToken::new(1, 2);
-        let upper = EventMask {
-            observations: [0, 1 << 63],
-            hint_watch: Some(first),
-            ..Default::default()
-        };
-        let mut lower = EventMask::default();
-        lower.observe(EventKind::MouseEnter, second);
-        let mut conflicted = upper | lower;
-        assert_eq!(conflicted.hint_watch(), None);
-        assert_eq!((conflicted | upper).hint_watch(), None);
-        assert_eq!((upper | conflicted).hint_watch(), None);
-        conflicted.set(EventKind::MouseEnter, false);
-        assert_eq!(conflicted.bits(), 1u128 << 127);
-        assert_eq!(conflicted.hint_watch(), None);
-        assert_eq!((conflicted | upper).hint_watch(), None);
-        assert_eq!((upper | conflicted).hint_watch(), None);
-        conflicted.observe(EventKind::MouseLeave, first);
-        assert_eq!(conflicted.hint_watch(), None);
-        assert_eq!(conflicted.listeners, [0; 2]);
-        let mut observed = upper;
-        observed.observe(EventKind::MouseEnter, second);
-        assert_eq!(observed.hint_watch(), None);
-        assert_eq!(observed, upper | lower);
-    }
-
-    #[test]
-    fn same_watch_unites_observations_across_both_words() {
-        let watch = HintWatchToken::new(1, 1);
-        let upper = EventMask {
-            observations: [0, 1],
-            hint_watch: Some(watch),
-            ..Default::default()
-        };
-        let mut lower = EventMask::default();
-        lower.observe(EventKind::MouseEnter, watch);
-        assert_eq!((upper | lower).hint_watch(), Some(watch));
-        assert_eq!((lower | upper).hint_watch(), Some(watch));
-        assert_eq!((upper | EventMask::default()).hint_watch(), Some(watch));
-        assert_eq!((EventMask::default() | upper).hint_watch(), Some(watch));
-    }
 }

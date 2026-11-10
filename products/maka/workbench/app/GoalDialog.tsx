@@ -229,7 +229,12 @@ export function createGoalContent(props: {
               <LoadingState />
             </If>
             <If when={creating()}>
-              <View style={{ gap: 8, height: platform.isTerminal ? 96 : compact() ? 120 : 160 }}>
+              <View
+                style={{
+                  gap: 8,
+                  height: platform.idiom === 'terminal' ? 96 : compact() ? 120 : 160,
+                }}
+              >
                 <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Objective')}</Text>
                 <SettingsEditor
                   label={tr('Objective')}

@@ -151,8 +151,10 @@ impl OpenOptions {
 }
 
 type Preparation = Box<dyn FnOnce() + Send>;
-type Job =
-    Box<dyn FnOnce(&mut Connection, Result<(), StoreError>, &watch::Sender<()>) -> bool + Send>;
+type Reply = Box<dyn FnOnce() + Send>;
+type Job = Box<
+    dyn FnOnce(&mut Connection, Result<(), StoreError>, &watch::Sender<()>) -> (bool, Reply) + Send,
+>;
 struct Envelope {
     command: Command,
     _custody: Option<Custody>,
@@ -179,7 +181,7 @@ impl PreparedWrite {
     }
 }
 type ReadOperation =
-    Box<dyn FnOnce(&mut Option<Connection>, Result<(), StoreError>) -> bool + Send>;
+    Box<dyn FnOnce(&mut Option<Connection>, Result<(), StoreError>) -> (bool, Reply) + Send>;
 struct ReadSlot {
     index: usize,
     idle: Sender<usize>,
@@ -350,8 +352,12 @@ impl WriterIngress {
                     if value.is_ok() && connection.total_changes() != before {
                         changed.send_replace(());
                     }
-                    let _ = reply.send(value);
-                    clean
+                    (
+                        clean,
+                        Box::new(move || {
+                            let _ = reply.send(value);
+                        }),
+                    )
                 });
                 let _ = prepared.send(job);
             }))
@@ -384,8 +390,12 @@ impl WriterIngress {
                     if result.is_ok() && connection.total_changes() != before {
                         changed.send_replace(());
                     }
-                    let _ = reply.send(result);
-                    clean
+                    (
+                        clean,
+                        Box::new(move || {
+                            let _ = reply.send(result);
+                        }),
+                    )
                 })),
             })
             .await
@@ -731,84 +741,107 @@ impl OwnedConnection {
                     if let Some(custody) = envelope._custody {
                         active.push(custody);
                     }
-                    let _permit = envelope._permit;
-                    let clean = catch_unwind(AssertUnwindSafe(|| match envelope.command {
-                        Command::Run(job) => job(&mut connection, authority.validate(), &changed),
-                        Command::PreparingRun(ready) => ready
-                            .blocking_recv()
-                            .map(|job| job(&mut connection, authority.validate(), &changed))
-                            .unwrap_or(true),
-                        Command::Write(first) => {
-                            let mut group = Vec::new();
-                            if let Some(request) = first.resolve() {
-                                group.push(request);
+                    let mut permits = Vec::new();
+                    if let Some(permit) = envelope._permit {
+                        permits.push(permit);
+                    }
+                    let (clean, notify): (bool, Option<Reply>) =
+                        catch_unwind(AssertUnwindSafe(|| match envelope.command {
+                            Command::Run(job) => {
+                                let (clean, reply) =
+                                    job(&mut connection, authority.validate(), &changed);
+                                (clean, Some(reply))
                             }
-                            let mut permits = Vec::new();
-                            while group.len() < WRITE_CAPACITY {
-                                match receiver.try_recv() {
-                                    Ok(Envelope {
-                                        command: Command::Write(next),
-                                        _custody,
-                                        _permit,
-                                    }) => {
-                                        if let Some(custody) = _custody {
-                                            active.push(custody);
+                            Command::PreparingRun(ready) => match ready.blocking_recv() {
+                                Ok(job) => {
+                                    let (clean, reply) =
+                                        job(&mut connection, authority.validate(), &changed);
+                                    (clean, Some(reply))
+                                }
+                                Err(_) => (true, None),
+                            },
+                            Command::Write(first) => {
+                                let mut group = Vec::new();
+                                if let Some(request) = first.resolve() {
+                                    group.push(request);
+                                }
+                                while group.len() < WRITE_CAPACITY {
+                                    match receiver.try_recv() {
+                                        Ok(Envelope {
+                                            command: Command::Write(next),
+                                            _custody,
+                                            _permit,
+                                        }) => {
+                                            if let Some(custody) = _custody {
+                                                active.push(custody);
+                                            }
+                                            if let Some(permit) = _permit {
+                                                permits.push(permit);
+                                            }
+                                            if let Some(request) = next.resolve() {
+                                                group.push(request);
+                                            }
                                         }
-                                        permits.push(_permit);
-                                        if let Some(request) = next.resolve() {
-                                            group.push(request);
+                                        Ok(other) => {
+                                            pending = Some(other);
+                                            break;
                                         }
+                                        Err(_) => break,
                                     }
-                                    Ok(other) => {
-                                        pending = Some(other);
-                                        break;
-                                    }
-                                    Err(_) => break,
+                                }
+                                if group.is_empty() {
+                                    (true, None)
+                                } else {
+                                    let (clean, finish) = crate::writeback::commit(
+                                        &mut connection,
+                                        group,
+                                        &|| authority.validate(),
+                                        &changed,
+                                    );
+                                    (clean, Some(Box::new(finish) as Reply))
                                 }
                             }
-                            if group.is_empty() {
-                                true
-                            } else {
-                                crate::writeback::commit(
-                                    &mut connection,
-                                    group,
-                                    &|| authority.validate(),
-                                    &changed,
-                                )
+                            Command::Wake => (true, None),
+                            Command::ReaderClosed(result) => {
+                                remaining_readers -= 1;
+                                if let Err(error) = result {
+                                    failure.get_or_insert(error);
+                                    accepting.store(false, Ordering::Release);
+                                    idle_readers.close();
+                                    for lane in &reads {
+                                        lane.close();
+                                    }
+                                }
+                                (true, None)
                             }
-                        }
-                        Command::Wake => true,
-                        Command::ReaderClosed(result) => {
-                            remaining_readers -= 1;
-                            if let Err(error) = result {
-                                failure.get_or_insert(error);
+                            Command::Take(reply) => {
                                 accepting.store(false, Ordering::Release);
                                 idle_readers.close();
                                 for lane in &reads {
                                     lane.close();
                                 }
+                                transfer = Some(reply);
+                                (true, None)
                             }
-                            true
+                        }))
+                        .unwrap_or_else(|_| {
+                            (
+                                connection.progress_handler(0, None::<fn() -> bool>).is_ok()
+                                    && (connection.is_autocommit()
+                                        || connection.execute_batch("ROLLBACK").is_ok()),
+                                None,
+                            )
+                        });
+                    let healthy = clean && connection.is_autocommit();
+                    if healthy {
+                        drop(active);
+                        drop(permits);
+                        if let Some(notify) = notify {
+                            notify();
                         }
-                        Command::Take(reply) => {
-                            accepting.store(false, Ordering::Release);
-                            idle_readers.close();
-                            for lane in &reads {
-                                lane.close();
-                            }
-                            transfer = Some(reply);
-                            true
-                        }
-                    }))
-                    .unwrap_or_else(|_| {
-                        connection.progress_handler(0, None::<fn() -> bool>).is_ok()
-                            && (connection.is_autocommit()
-                                || connection.execute_batch("ROLLBACK").is_ok())
-                    });
-                    if !clean {
+                    } else {
                         retained.extend(active);
-                    }
-                    if !clean || !connection.is_autocommit() {
+                        drop(permits);
                         idle_readers.close();
                         failure.get_or_insert("database transaction cleanup failed".into());
                         accepting.store(false, Ordering::Release);
@@ -816,6 +849,9 @@ impl OwnedConnection {
                             lane.close();
                         }
                         receiver.close();
+                        if let Some(notify) = notify {
+                            notify();
+                        }
                         break;
                     }
                 }
@@ -988,8 +1024,13 @@ impl OwnedConnection {
                 let connection = match db {
                     Some(connection) => connection,
                     None => {
-                        let _ = reply.send(Err(valid.err().unwrap_or(StoreError::Initialization)));
-                        return true;
+                        let error = valid.err().unwrap_or(StoreError::Initialization);
+                        return (
+                            true,
+                            Box::new(move || {
+                                let _ = reply.send(Err(error));
+                            }),
+                        );
                     }
                 };
                 let (value, clean, panicked) = execute(
@@ -998,8 +1039,12 @@ impl OwnedConnection {
                     operation,
                     interruptible.then_some(cancel),
                 );
-                let _ = reply.send(value);
-                clean && !panicked
+                (
+                    clean && !panicked,
+                    Box::new(move || {
+                        let _ = reply.send(value);
+                    }),
+                )
             }),
         })
         .await
@@ -1015,19 +1060,38 @@ fn read_loop(
     options.create = false;
     options.read_only = true;
     let mut connection = None;
-    while let Ok(job) = input.recv_blocking() {
+    while let Ok(ReadJob {
+        _slot,
+        open,
+        run,
+        _custody,
+    }) = input.recv_blocking()
+    {
         let mut valid = authority.validate();
-        if valid.is_ok() && job.open && connection.is_none() {
+        if valid.is_ok() && open && connection.is_none() {
             valid = (|| {
                 let db = options.open()?;
                 connection = Some(db);
                 Ok(())
             })();
         }
-        let clean =
-            catch_unwind(AssertUnwindSafe(|| (job.run)(&mut connection, valid))).unwrap_or(false);
+        let (clean, notify) = match catch_unwind(AssertUnwindSafe(|| run(&mut connection, valid))) {
+            Ok((clean, notify)) => (clean, Some(notify)),
+            Err(_) => (false, None),
+        };
         if !clean && let Some(db) = connection.take() {
-            close(db, &authority, job._custody.into_iter().collect())?;
+            let result = close(db, &authority, _custody.into_iter().collect());
+            drop(_slot);
+            if let Some(notify) = notify {
+                notify();
+            }
+            result?;
+            continue;
+        }
+        drop(_custody);
+        drop(_slot);
+        if let Some(notify) = notify {
+            notify();
         }
     }
     if let Some(db) = connection {

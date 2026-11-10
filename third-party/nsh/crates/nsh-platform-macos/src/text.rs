@@ -329,6 +329,11 @@ fn line_font(line: &CTLine) -> Option<CFRetained<CTFont>> {
 /// Typesetting state of one text content.
 pub struct Prepared {
     framesetter: CFRetained<CTFramesetter>,
+    /// Held while the framesetter works: the engine may measure a text at
+    /// a new width while the main thread lays it out at the old one
+    /// ([`CoreTextLayout`]), and a framesetter is not documented safe for
+    /// that. Uncontended but for that text, for the time of one layout.
+    typesetting: std::sync::Arc<std::sync::Mutex<()>>,
     string: CFRetained<CFMutableAttributedString>,
     /// String length in UTF-16 units.
     length: CFIndex,
@@ -354,8 +359,46 @@ pub(crate) struct LaidLine {
     hit_end: CFIndex,
 }
 
-/// Finished lines, drawn by [`draw`] on the main thread.
+/// A text's final layout, made when first read: drawing it, or anything
+/// asking about its lines. Text the core lays out and nothing shows (the
+/// rest of a long page, at every width of a window's resize) is never
+/// typeset twice. Texts with attachments are made at once: their
+/// placeholders' places go back to the core.
 pub(crate) struct CoreTextLayout {
+    laid: std::sync::OnceLock<LaidLines>,
+    framesetter: CFRetained<CTFramesetter>,
+    typesetting: std::sync::Arc<std::sync::Mutex<()>>,
+    string: CFRetained<CFMutableAttributedString>,
+    length: CFIndex,
+    max_lines: u32,
+    ellipsize: EllipsizeMode,
+    align: TextAlign,
+    placeholders: Vec<(CFIndex, CGFloat)>,
+    size: Size<Points>,
+}
+
+impl std::ops::Deref for CoreTextLayout {
+    type Target = LaidLines;
+
+    fn deref(&self) -> &LaidLines {
+        self.laid.get_or_init(|| {
+            let prepared = Prepared {
+                framesetter: self.framesetter.clone(),
+                typesetting: self.typesetting.clone(),
+                string: self.string.clone(),
+                length: self.length,
+                max_lines: self.max_lines,
+                ellipsize: self.ellipsize,
+                align: self.align,
+                attachments: self.placeholders.clone(),
+            };
+            lay_out(&prepared, self.size)
+        })
+    }
+}
+
+/// Finished lines, drawn by [`draw`] on the main thread.
+pub(crate) struct LaidLines {
     pub(crate) lines: Vec<LaidLine>,
     /// The box's height (lines are placed y up from its bottom).
     pub(crate) height: CGFloat,
@@ -376,6 +419,7 @@ unsafe impl Sync for CoreTextLayout {}
 #[derive(Default)]
 pub struct CoreTextEngine {
     fonts: FontCache,
+    paragraphs: ParagraphStyles,
 }
 
 const WHOLE: CFRange = CFRange {
@@ -476,7 +520,10 @@ impl CoreTextEngine {
             // because span offsets are UTF-16 units, like CFString.
             unsafe { CFMutableAttributedString::set_attribute(s, range, Some(key), Some(value)) }
         };
-        let paragraph = paragraph_style(text, self.tallest_attachment_line(text, alignments));
+        let paragraph = self.paragraphs.get(paragraph_key(
+            text,
+            self.tallest_attachment_line(text, alignments),
+        ));
         // SAFETY: immutable CoreText constants (here and below).
         set(
             CFRange {
@@ -682,9 +729,13 @@ fn line_height(text: &AttributedText) -> CGFloat {
     text.spans.first().map_or(0.0, |s| s.style.line_height.0) as CGFloat
 }
 
+/// The paragraph settings of a text: its alignment, writing direction and
+/// fixed line height bounds. The key of [`ParagraphStyles`].
+type ParagraphKey = (u8, i8, u64, u64);
+
 /// `tallest`: the height a line holding an attachment needs (see
 /// `CoreTextEngine::tallest_attachment_line`); lines may grow up to it.
-fn paragraph_style(text: &AttributedText, tallest: CGFloat) -> CFRetained<CTParagraphStyle> {
+fn paragraph_key(text: &AttributedText, tallest: CGFloat) -> ParagraphKey {
     let alignment = match text.align {
         // React Native: the right side in right-to-left layouts.
         TextAlign::Auto if text.rtl => CTTextAlignment::Right,
@@ -694,17 +745,30 @@ fn paragraph_style(text: &AttributedText, tallest: CGFloat) -> CFRetained<CTPara
         TextAlign::Right => CTTextAlignment::Right,
         TextAlign::Justify => CTTextAlignment::Justified,
     };
-    let line_height = line_height(text);
-    let setting = |spec, value: *const c_void, size| CTParagraphStyleSetting {
-        spec,
-        valueSize: size,
-        value: NonNull::new(value.cast_mut()).expect("non-null setting"),
-    };
     // `writingDirection`; natural (from the content) by default.
     let direction = match text.writing_direction {
         None => CTWritingDirection::Natural,
         Some(false) => CTWritingDirection::LeftToRight,
         Some(true) => CTWritingDirection::RightToLeft,
+    };
+    let line_height = line_height(text);
+    (
+        alignment.0,
+        direction.0,
+        line_height.to_bits(),
+        line_height.max(tallest).to_bits(),
+    )
+}
+
+fn paragraph_style(key: ParagraphKey) -> CFRetained<CTParagraphStyle> {
+    let alignment = CTTextAlignment(key.0);
+    let direction = CTWritingDirection(key.1);
+    let line_height = CGFloat::from_bits(key.2);
+    let max_line_height = CGFloat::from_bits(key.3);
+    let setting = |spec, value: *const c_void, size| CTParagraphStyleSetting {
+        spec,
+        valueSize: size,
+        value: NonNull::new(value.cast_mut()).expect("non-null setting"),
     };
     let mut settings = vec![
         setting(
@@ -718,7 +782,6 @@ fn paragraph_style(text: &AttributedText, tallest: CGFloat) -> CFRetained<CTPara
             size_of::<CTWritingDirection>(),
         ),
     ];
-    let max_line_height = line_height.max(tallest);
     if line_height > 0.0 {
         settings.push(setting(
             CTParagraphStyleSpecifier::MinimumLineHeight,
@@ -733,6 +796,32 @@ fn paragraph_style(text: &AttributedText, tallest: CGFloat) -> CFRetained<CTPara
     }
     // SAFETY: every setting points at a live value of the declared size.
     unsafe { CTParagraphStyle::new(settings.as_ptr(), settings.len()) }
+}
+
+/// Paragraph styles by their settings, shared by the texts that have them.
+/// Each attributed string retains its own, and a new one copies CoreText's
+/// default tab stops: about a kilobyte per text a page keeps. Immutable,
+/// so texts on any thread may share one. Bounded like [`FontCache`].
+#[derive(Default)]
+struct ParagraphStyles {
+    styles: RefCell<FxHashMap<ParagraphKey, CFRetained<CTParagraphStyle>>>,
+}
+
+impl ParagraphStyles {
+    const MAX: usize = 64;
+
+    fn get(&self, key: ParagraphKey) -> CFRetained<CTParagraphStyle> {
+        let mut styles = self.styles.borrow_mut();
+        if let Some(style) = styles.get(&key) {
+            return style.clone();
+        }
+        if styles.len() >= Self::MAX {
+            styles.clear();
+        }
+        let style = paragraph_style(key);
+        styles.insert(key, style.clone());
+        style
+    }
 }
 
 impl Prepared {
@@ -852,6 +941,7 @@ impl TextEngine for CoreTextEngine {
         let framesetter = unsafe { CTFramesetter::with_attributed_string(attributed) };
         Prepared {
             framesetter,
+            typesetting: Default::default(),
             length: text.text.encode_utf16().count() as CFIndex,
             string,
             max_lines: text.max_lines,
@@ -871,6 +961,10 @@ impl TextEngine for CoreTextEngine {
     }
 
     fn measure(&self, prepared: &Prepared, max_width: Option<Points>) -> Size<Points> {
+        let _typesetting = prepared
+            .typesetting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let width = max_width.map_or(CGFloat::MAX, |w| w.0 as CGFloat);
         let range = if prepared.max_lines > 0 {
             CFRange {
@@ -893,70 +987,27 @@ impl TextEngine for CoreTextEngine {
         Size::new(Points(size.width as f32), Points(size.height as f32))
     }
 
+    fn breaks_lines_greedily(&self) -> bool {
+        true
+    }
+
     fn layout(&self, prepared: &Prepared, size: Size<Points>) -> TextLayout {
-        let (width, height) = (size.width.0 as CGFloat, size.height.0 as CGFloat);
-        let rect = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(width, height));
-        // SAFETY: a valid rectangle path and whole-string range.
-        let frame: CFRetained<CTFrame> = unsafe {
-            let path = CGPath::with_rect(rect, std::ptr::null());
-            prepared.framesetter.frame(WHOLE, &path, None)
+        let layout = CoreTextLayout {
+            laid: std::sync::OnceLock::new(),
+            framesetter: prepared.framesetter.clone(),
+            typesetting: prepared.typesetting.clone(),
+            string: prepared.string.clone(),
+            length: prepared.length,
+            max_lines: prepared.max_lines,
+            ellipsize: prepared.ellipsize,
+            align: prepared.align,
+            placeholders: prepared.attachments.clone(),
+            size,
         };
-        let attributed: &CFAttributedString = &prepared.string;
-        // SAFETY: the frame's own line array (of CTLines) and origins.
-        let mut lines = unsafe {
-            let array = frame.lines();
-            let count = array.count();
-            let mut origins = vec![CGPoint::new(0.0, 0.0); count as usize];
-            if let Some(ptr) = NonNull::new(origins.as_mut_ptr()) {
-                frame.line_origins(WHOLE, ptr);
-            }
-            (0..count)
-                .map(|i| {
-                    let line = array.value_at_index(i).cast::<CTLine>();
-                    let line = CFRetained::retain(NonNull::new(line.cast_mut()).expect("line"));
-                    let range = line.string_range();
-                    LaidLine {
-                        line,
-                        origin: origins[i as usize],
-                        range,
-                        break_len: break_len(attributed, range),
-                        hit_end: range.location + range.length,
-                    }
-                })
-                .collect::<Vec<_>>()
-        };
-        if prepared.max_lines > 0 {
-            lines.truncate(prepared.max_lines as usize);
+        if !prepared.attachments.is_empty() {
+            let _ = layout.lines.len();
         }
-        // Text left over (cut by `numberOfLines` or the box): ellipsize the
-        // last line.
-        if let Some(last) = lines.last_mut() {
-            // SAFETY: a valid line.
-            let range = unsafe { last.line.string_range() };
-            if range.location + range.length < prepared.length
-                && let Some(truncated) = prepared.truncate(range.location, width)
-            {
-                // SAFETY: a valid line.
-                let x = unsafe { truncated.pen_offset_for_flush(prepared.flush_factor(), width) };
-                // A clipped line wider than the box starts at its start edge
-                // and overflows the end (CSS), centered or not.
-                last.origin.x = x.max(0.0);
-                last.line = truncated;
-                last.hit_end = prepared.length;
-                last.break_len = 0;
-            }
-        }
-        let attachments = if prepared.attachments.is_empty() {
-            Vec::new()
-        } else {
-            attachment_points(&lines, &prepared.attachments, height)
-        };
-        TextLayout(std::sync::Arc::new(CoreTextLayout {
-            strikethrough: has_strikethrough(prepared),
-            lines,
-            height,
-            attachments,
-        }))
+        TextLayout(std::sync::Arc::new(layout))
     }
 
     fn attachments(&self, layout: &TextLayout) -> Vec<Option<Point<Points>>> {
@@ -1101,6 +1152,77 @@ fn has_strikethrough(prepared: &Prepared) -> bool {
     false
 }
 
+/// Typesets a text at its final size ([`CoreTextLayout`]).
+fn lay_out(prepared: &Prepared, size: Size<Points>) -> LaidLines {
+    let _typesetting = prepared
+        .typesetting
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let (width, height) = (size.width.0 as CGFloat, size.height.0 as CGFloat);
+    let rect = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(width, height));
+    // SAFETY: a valid rectangle path and whole-string range.
+    let frame: CFRetained<CTFrame> = unsafe {
+        let path = CGPath::with_rect(rect, std::ptr::null());
+        prepared.framesetter.frame(WHOLE, &path, None)
+    };
+    let attributed: &CFAttributedString = &prepared.string;
+    // SAFETY: the frame's own line array (of CTLines) and origins.
+    let mut lines = unsafe {
+        let array = frame.lines();
+        let count = array.count();
+        let mut origins = vec![CGPoint::new(0.0, 0.0); count as usize];
+        if let Some(ptr) = NonNull::new(origins.as_mut_ptr()) {
+            frame.line_origins(WHOLE, ptr);
+        }
+        (0..count)
+            .map(|i| {
+                let line = array.value_at_index(i).cast::<CTLine>();
+                let line = CFRetained::retain(NonNull::new(line.cast_mut()).expect("line"));
+                let range = line.string_range();
+                LaidLine {
+                    line,
+                    origin: origins[i as usize],
+                    range,
+                    break_len: break_len(attributed, range),
+                    hit_end: range.location + range.length,
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    if prepared.max_lines > 0 {
+        lines.truncate(prepared.max_lines as usize);
+    }
+    // Text left over (cut by `numberOfLines` or the box): ellipsize the
+    // last line.
+    if let Some(last) = lines.last_mut() {
+        // SAFETY: a valid line.
+        let range = unsafe { last.line.string_range() };
+        if range.location + range.length < prepared.length
+            && let Some(truncated) = prepared.truncate(range.location, width)
+        {
+            // SAFETY: a valid line.
+            let x = unsafe { truncated.pen_offset_for_flush(prepared.flush_factor(), width) };
+            // A clipped line wider than the box starts at its start edge
+            // and overflows the end (CSS), centered or not.
+            last.origin.x = x.max(0.0);
+            last.line = truncated;
+            last.hit_end = prepared.length;
+            last.break_len = 0;
+        }
+    }
+    let attachments = if prepared.attachments.is_empty() {
+        Vec::new()
+    } else {
+        attachment_points(&lines, &prepared.attachments, height)
+    };
+    LaidLines {
+        strikethrough: has_strikethrough(prepared),
+        lines,
+        height,
+        attachments,
+    }
+}
+
 /// Warms up font and CoreText caches (process-wide) on a background thread
 /// so the first real layout does not pay for them.
 pub(crate) fn prewarm() {
@@ -1132,6 +1254,10 @@ pub(crate) struct DrawnText {
     pub(crate) layout: TextLayout,
     /// The content box in the view (inside padding and borders).
     pub(crate) content: nsh_core::Bounds<nsh_core::Points>,
+    /// It was last drawn in a layer narrower than its box (a view waiting
+    /// to be placed, `Mounter::unplaced`): its picture misses what passes
+    /// that layer, so it draws again once placed.
+    pub(crate) cut: std::cell::Cell<bool>,
     /// The selection of selectable text, kept across new content.
     selection: Option<Selection>,
     /// The part of a selectable view's selection in this text
@@ -1147,7 +1273,7 @@ pub(crate) fn set(
     content: nsh_core::Bounds<nsh_core::Points>,
 ) {
     let old = view.state_mut().text.take();
-    let was = old.as_ref().is_some_and(|o| o.text.is_selectable());
+    let cut = old.as_ref().is_some_and(|o| o.cut.get());
     // The area's selection is set again at the end of the batch; the same
     // content keeps its part until then.
     let area_range = old
@@ -1173,15 +1299,36 @@ pub(crate) fn set(
         text: text.clone(),
         layout: layout.clone(),
         content,
+        cut: std::cell::Cell::new(cut),
         selection,
         area_range: std::cell::Cell::new(area_range),
     });
-    if was != text.is_selectable() {
-        // The I-beam.
-        crate::input::style_changed(view);
-    }
     // The mounter draws it, when it shows.
     view.restyle();
+}
+
+/// Whether `view` already shows what it would draw with these: only its box's
+/// width changed, keeping the layout (`Core::flush_text`). A selection's rects
+/// reach the box's right edge, so a view with one draws again.
+pub(crate) fn draws_the_same(
+    view: &crate::view::NshView,
+    text: &std::sync::Arc<AttributedText>,
+    layout: &TextLayout,
+    content: nsh_core::Bounds<nsh_core::Points>,
+) -> bool {
+    let state = view.state();
+    let Some(drawn) = &state.text else {
+        return false;
+    };
+    std::sync::Arc::ptr_eq(&drawn.text, text)
+        && std::sync::Arc::ptr_eq(&drawn.layout.0, &layout.0)
+        && drawn.content.origin == content.origin
+        && drawn.content.size.height == content.size.height
+        && drawn.area_range.get().is_none()
+        && drawn
+            .selection
+            .as_ref()
+            .is_none_or(|s| s.range.get().is_none())
 }
 
 /// The view draws selectable text: mouse drags over it select rather
@@ -1200,6 +1347,10 @@ pub(crate) fn draw(cx: &CGContext, state: &crate::view::ViewState) {
     };
     let content = drawn.content;
     let c = Some(cx);
+    let drawn_width = CGContext::clip_bounding_box(c).size.width;
+    drawn
+        .cut
+        .set(drawn_width < (content.origin.x.0 + content.size.width.0) as CGFloat);
     CGContext::save_g_state(c);
     if drawn.text.has_backgrounds() {
         draw_backgrounds(cx, &drawn.text, text, content);
@@ -1720,7 +1871,7 @@ pub(crate) fn link_at(
     if text.links.is_empty() {
         return None;
     }
-    text.link_at(char_at(state, x, y)?).cloned()
+    text.link_at(char_at(state, x, y)?).copied()
 }
 
 /// The caret offset nearest `(x, y)` (view coordinates): on the nearest
@@ -2007,12 +2158,13 @@ pub(crate) fn selection_key(
     event: &objc2_app_kit::NSEvent,
 ) -> bool {
     use objc2_app_kit::NSEventModifierFlags;
-    let command = event
-        .modifierFlags()
-        .contains(NSEventModifierFlags::Command);
+    let flags = event.modifierFlags();
+    let shortcut = !flags.contains(NSEventModifierFlags::Option)
+        && (flags.contains(NSEventModifierFlags::Command)
+            || (surface.terminal.get() && flags.contains(NSEventModifierFlags::Control)));
     match crate::input::shortcut_key(event) {
-        Some('c') if command => copy(surface),
-        Some('a') if command => select_all(surface),
+        Some('c') if shortcut => copy(surface),
+        Some('a') if shortcut => select_all(surface),
         // Escape.
         _ if event.keyCode() == 53
             && (surface.selection.with_range().is_some()
@@ -2025,7 +2177,14 @@ pub(crate) fn selection_key(
     }
 }
 
-/// Copies the selection to the general pasteboard (the Edit menu's Copy).
+/// Whether the surface has a selection Copy could put on the clipboard: the
+/// Edit menu's Copy is offered then, whichever of the surface's views has
+/// the keyboard focus.
+pub(crate) fn has_selection(surface: &crate::surface::Surface) -> bool {
+    surface.selection.area.has_selection() || surface.selection.with_range().is_some()
+}
+
+/// Copies the selection to the surface clipboard (the Edit menu's Copy).
 /// False if there is none.
 pub(crate) fn copy(surface: &crate::surface::Surface) -> bool {
     let Some(text) = surface.selection.area.text().or_else(|| {
@@ -2036,11 +2195,7 @@ pub(crate) fn copy(surface: &crate::surface::Surface) -> bool {
     }) else {
         return false;
     };
-    let board = objc2_app_kit::NSPasteboard::generalPasteboard();
-    board.clearContents();
-    // SAFETY: an immutable AppKit constant.
-    let kind = unsafe { objc2_app_kit::NSPasteboardTypeString };
-    board.setString_forType(&objc2_foundation::NSString::from_str(&text), kind);
+    crate::system::write_clipboard(surface, &text);
     true
 }
 
@@ -2658,5 +2813,38 @@ mod hit_regressions {
             rects.is_empty(),
             "the token has no source character: {rects:?}"
         );
+    }
+    /// The core shares measurements between the widths from a text's widest
+    /// line to the one measured (`breaks_lines_greedily`): each of them
+    /// must measure the same.
+    #[test]
+    fn widths_that_hold_the_widest_line_measure_the_same() {
+        let engine = CoreTextEngine::default();
+        let texts = [
+            "The quick brown fox jumps over the lazy dog, and keeps running through the long grass until the evening comes.",
+            "第 12 条消息：开始处理 T-1012，很快完成。窗口尺寸变化时每一段文字都要按新的宽度重新折行，详情见 PR 的说明。",
+            "混合 mixed 文本 with `code` 和 punctuation，「引号」、括号（如此）以及 https://example.com/a/very/long/path/that/has/no/spaces/at/all 这样的链接。",
+            "first line\nsecond line that is rather longer than the first\n\nafter a blank line",
+        ];
+        for text in texts {
+            let mut attributed = nsh_core::AttributedText::default();
+            attributed.push(text, nsh_core::ResolvedTextStyle::default());
+            let prepared = engine.prepare(&attributed);
+            for width in (60..700).step_by(23) {
+                let measured = engine.measure(&prepared, Some(Points(width as f32)));
+                let narrowest = measured.width.0.ceil() as i32;
+                for narrower in narrowest..width {
+                    let size = engine.measure(&prepared, Some(Points(narrower as f32)));
+                    assert_eq!(
+                        size.height, measured.height,
+                        "{text} at {narrower}, from {width}"
+                    );
+                    assert_eq!(
+                        size.width, measured.width,
+                        "{text} at {narrower}, from {width}"
+                    );
+                }
+            }
+        }
     }
 }

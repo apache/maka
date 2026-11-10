@@ -552,6 +552,8 @@ impl Owner {
             }
         };
         let credentials = crate::model::Credentials {
+            #[cfg(test)]
+            observation: None,
             executor: models.clone(),
             inventory: Arc::new(crate::model::codex_inventory::Authority::new(
                 workers.clone(),
@@ -647,6 +649,18 @@ impl Owner {
         }
         Ok(owner)
     }
+    #[cfg(test)]
+    pub(crate) fn with_model_observation(
+        mut self: Arc<Self>,
+        observation: crate::model::Observation,
+    ) -> Arc<Self> {
+        Arc::get_mut(&mut self)
+            .expect("install fixture observation before publishing the Native owner")
+            .credentials
+            .observation = Some(observation);
+        self
+    }
+
     pub(crate) fn physical_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.physical_changes.subscribe()
     }
@@ -860,7 +874,8 @@ impl Owner {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(creation::PreparedCreation::Rejected(reason));
         }
-        if let Some(backend) = &input.backend
+        let backend = self.use_bot_model(scope, input.backend).await?;
+        if let Some(backend) = &backend
             && !self.backend_available(backend).await?
         {
             return Ok(creation::PreparedCreation::Rejected(
@@ -1019,7 +1034,7 @@ impl Owner {
             purpose,
             move |binding| StoredSessionConfiguration {
                 parent_session_id,
-                backend: input.backend,
+                backend,
                 compaction_prompt: None,
                 collaboration_mode: CollaborationMode::Agent,
                 tools,
@@ -1175,17 +1190,35 @@ impl Owner {
             Some(catalog) => catalog.clone(),
             None => self.mcp_projects.catalog(basis.mcp_revision.as_deref())?,
         };
-        // SendUser and sleep are granted by Bot identity, independent of the tool list.
-        let bot = self.bot.is(session);
+        let selected = self.select_catalog_tools(
+            &catalog.tools,
+            Some(session),
+            basis.allowed_tools.as_deref(),
+            editing,
+        );
+        let selected = if discovery {
+            selected.with_discovery()
+        } else {
+            selected
+        };
+        Ok(selected)
+    }
+    fn select_catalog_tools(
+        &self,
+        catalog: &maka_tools::ToolCatalog,
+        session: Option<&str>,
+        allowed_tools: Option<&[String]>,
+        editing: Option<maka_agent_facts::execution::EditingTools>,
+    ) -> maka_tools::ToolCatalog {
+        let bot = session.is_some_and(|session| self.bot.is(session));
         let excluded: Vec<_> = catalog
-            .tools
             .definitions()
             .map(|definition| definition.name.as_str())
             .filter(|name| {
                 let speaks = *name == bot::SEND_USER || *name == bot::SLEEP;
                 (speaks && !bot)
                     || (!(speaks && bot)
-                        && basis.allowed_tools.as_ref().is_some_and(|allowed| {
+                        && allowed_tools.is_some_and(|allowed| {
                             !allowed.iter().any(|allowed| allowed.as_str() == *name)
                         }))
                     || editing.is_some_and(|editing| {
@@ -1195,13 +1228,7 @@ impl Owner {
                     })
             })
             .collect();
-        let selected = catalog.tools.excluding(&excluded);
-        let selected = if discovery {
-            selected.with_discovery()
-        } else {
-            selected
-        };
-        Ok(selected)
+        catalog.excluding(&excluded)
     }
     fn external_catalog(&self, selected: maka_tools::ToolCatalog) -> maka_tools::ToolCatalog {
         let excluded = selected

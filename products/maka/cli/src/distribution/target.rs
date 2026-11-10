@@ -130,6 +130,7 @@ impl Target {
         }
     }
 
+    #[cfg(unix)]
     pub fn is_executable(self, name: &str) -> bool {
         name == self.executable()
             || name == self.python_worker()

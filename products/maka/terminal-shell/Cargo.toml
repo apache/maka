@@ -41,14 +41,20 @@ termina.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 
-gpui = { package = "gpui-fast", version = "0.1.10", default-features = false }
-gpui_wgpu = { package = "gpui-fast-wgpu", version = "0.1.10", default-features = false, features = ["offscreen"] }
-nsh-platform-gpui.workspace = true
-nsh-gpui-terminal.workspace = true
+nsh-terminal.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos = { workspace = true, features = ["terminal"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+maka-sandbox.workspace = true
+nsh-platform-windows = { workspace = true, features = ["terminal"] }
 
 [dev-dependencies]
 nsh-bundler = { workspace = true, features = ["bundle"] }
 tempfile.workspace = true
 
-[target.'cfg(windows)'.dependencies]
-maka-sandbox.workspace = true
+[[test]]
+name = "native-pixels"
+path = "tests/native_pixels.rs"
+harness = false

@@ -1,28 +1,27 @@
 # Website design
 
 Rules for `website/`, so later changes stay coherent. The site follows the
-shared example UI's design language (`examples/nsh-gallery-ui`): graphite surfaces lit
-from above, one citrus accent, tinted status colours — neutral and refined,
+shared example UI's design language (`examples/nsh-gallery-ui`) on one ink
+blue-black ground (white in light), one citrus accent, tinted status colours — neutral and refined,
 the look of the UI nsh draws.
 
 ## Principles
 
-1. **Say what it is, immediately.** The headline states the purpose in plain
-   words: a native UI framework for every platform — one app, native on
-   each. The home page follows the positioning in that order: what native
-   means (the platform's foundations and its interaction), cross-platform
-   from phone to desktop to the web, Rust first with TSX beside it, the
-   foundations, then the ways to ship (standalone apps first, dynamically
-   delivered and AI-generated UI on the same engine). Other frameworks are
-   named only on the comparison page. Architecture comes further down.
-2. **Show the real thing.** The hero runs the gallery's AI chat
-   (`demos/home-chat.tsx`, its files in `demos/hero-chat/`, copied from
-   `examples/gallery`) live on the web player: it plays one scenario on
-   load (a tool call and a streamed Markdown reply, fictional content) and
-   stays interactive. Documentation pages run their demos in a frame at
-   phone width; the code shown is always the source of what runs.
-   The product is written "Native Shell" in formal places and "NSH" in
-   prose; `nsh` stays as it is in code, commands and URLs.
+1. **Say what it is, immediately.** The headline is the name and the slogan,
+   the banners' composition; the lead says it in plain words: write TSX, ship
+   native clients that keep pace with Rust, on 8 platforms. The home page
+   follows that order: the numbers beside Rust, TSX with 0 dependencies, the
+   8 platforms and what each is built from, one chat app in three forms, Rust as
+   an equal way in, retained views, delivery, the ways to ship, the
+   foundations. Other frameworks are named only on the comparison page.
+2. **Show the real thing.** The picture says what NSH is, and the proof runs:
+   the chat band shows `demos/home-chat.tsx` live on the web player at the
+   desktop and the phone idioms, beside a terminal capture of the same
+   app, and the numbers come from `docs/performance-report.md` and
+   `docs/web.md`, which a change to them updates first. Documentation pages run
+   their demos in a frame at phone width; the code shown is always the source
+   of what runs. The product is written "Native Shell" in formal places and
+   "NSH" in prose; `nsh` stays as it is in code, commands and URLs.
 3. **Specifics over adjectives.** Every capability card names something a
    reader can check in the repository: a crate, an element, a module, a
    command (`Taffy`, `<List>`, `Animated`, `nsh publish`). Claims track
@@ -34,8 +33,12 @@ the look of the UI nsh draws.
 ## Colour
 
 The shared source is `examples/nsh-gallery-ui/theme.json`, with surfaces in `finishes.json`. The website
-loads their generated CSS through `virtual:nsh-gallery-ui.css`; its own semantic variables alias those values.
-The NSH gallery and runnable demos consume the same files.
+loads their generated CSS through `virtual:nsh-gallery-ui.css`; its text, accent and status variables alias
+those values, and the controls (`ui.css`) keep their finishes. The page surfaces are the site's own: every
+page, the home page included, sits on one ground (`--background`), and the cards, insets, raised fills,
+borders, hairlines, the sidebar, code and popovers are stepped from it in the same hue. No page overrides
+them. The NSH gallery and runnable demos consume the shared files as they are, so a demo frame's screen
+(`--screen`) keeps the demos' own background.
 
 Tokens live in `src/styles/global.css`: `:root` holds the dark theme,
 `html.light` its light variant. A pre-paint script in `BaseLayout.astro`
@@ -43,23 +46,29 @@ sets `dark` or `light` on `<html>` from `localStorage.theme` ("light",
 "dark", or absent for the system's), so nothing flashes; the nav's
 System / Light / Dark segmented control (`ThemeSwitch.astro`) sets it.
 
-The light variant keeps the design and its material: a warm off-white page
-`#f3f3ef` with a faint grain (`--grain`, both themes), cards `#ffffff →
-#fafaf7` with a 1px border, a crisp top highlight, a faint bottom edge and
-layered warm shadows; insets `#ecece7` with an inner shadow; raised
-controls `#ffffff → #f4f4f0` with a top highlight; text `#15161a`, muted
-`#565a61`, faint `#8c9097`. The accent token (`--citrus`) becomes `#4a6a0a`
+The light variant keeps the design and its material: a white page
+`#ffffff` and a white nav with a hairline, flat (no grain or light wash),
+and neutral grays, never tinted: cards and popovers `#ffffff` with a 1px
+border `#e2e2e6`, hairlines `#ececef`, input borders `#d8d8dd`; insets and
+muted fills `#f2f2f4`; raised fills and code `#f7f7f8`, the sidebar
+`#fafafa`. Only the home page uses the banners' pale green, echoing its
+art: the hero and the closing on `#f6f8f4`, the tinted bands on `#f2f5ef`
+(Home.astro), with the panels and code on them white under a green hairline.
+Text, muted and faint
+are the gallery's. The accent token (`--citrus`) becomes `#4f6e0c`
 so it reads as text and lines; the bright citrus stays the fill of accent
 badges and buttons (`--finish-accent-bg`, a `#a7cf3f` border, text
-`#1b2207`). Primary buttons are dark (`#2a2b30 → #16171a`). Status colours
-for white: up `#0f8a55`, danger `#d43345`, info `#3d63d1`, warn `#b26a00`.
+`#1b2207`). Status colours for light: up `#138a5a`, danger `#d43a4a`,
+info `#3d63d1`, warn `#b26a00`.
 The values below are the dark theme's.
 
-- **Surfaces**, as in the gallery: page `#101113`, card `#18191c`, inset
-  `#0c0d0f`, raised `#24262a`; border `#2c2e33`, hairline `#1f2124`; text
-  `#eceef1`, muted `#8d9198`, faint `#5a5e65`.
-- **Finishes** (`--finish-*`, the gallery's `finish`): cards take a
-  `#1d1e22 → #17181b` gradient, an inner top highlight and a soft shadow;
+- **Surfaces**, an ink blue-black ground and its steps: page `#0e1016`
+  (flat, every page), card `#161920`, popover `#181b22`, inset `#0b0d12`,
+  raised `#1c1f27`, muted `#1a1d24`, sidebar `#0c0e13`, tinted bands
+  `#12141b`, code `#0a0c10`; border `#282c35`, input border `#30343e`,
+  hairline `#1f222a`; text `#eceef1`, muted `#9a9ea5`, faint `#6b6f76`.
+- **Finishes** (`--finish-*`, the gallery's `finish`): cards take the
+  site's flat card fill (`--finish-card-bg`), an inner top highlight and a soft shadow;
   insets (code, the demo stage, the search field, segmented tracks) are
   recessed with an inner shadow; raised controls (secondary buttons, kbd,
   segmented thumbs) have a top highlight. Navigation stays quiet: the
@@ -99,14 +108,22 @@ The values below are the dark theme's.
   in docs they scroll inside `.diagram-scroll` rather than shrink below
   640px.
 - Radii: cards 16px, insets 12px, controls 10px.
-- The logo is the app icon's mark (`public/logo.svg`, inline in
-  `Logo.astro`): a citrus arch holding a light dot (on the light theme a
-  deeper citrus arch and a dark dot, `--logo-*`). The favicon
-  (`favicon.svg`) is the mark itself on a transparent background, its
-  colours switching with `prefers-color-scheme` inside the SVG;
-  `apple-touch-icon.png` and `icon-512.png` (og:image) are the light mark on
-  a plain `#f3f3ef` square. The graphite app icon is the gallery's, not
-  the site's.
+- The logo (`public/logo.svg`, inline in `Logo.astro`) is the banners' mark:
+  the shell as a lit citrus tube holding a bead, drawn in SVG layers that
+  hold at favicon size, its colours the theme's `--logo-*` (a deeper citrus
+  and a dark bead on the light theme). The favicon (`favicon.svg`) is the
+  mark on a transparent background, its colours switching with
+  `prefers-color-scheme` inside the SVG; `apple-touch-icon.png` and
+  `icon-512.png` are the light mark on a plain `#f3f3ef` square. The gallery's
+  app icon is `public/brand/nsh-app-icon-dark.png`: the mark on a top-lit
+  graphite ground.
+- The brand page (`/brand`, linked from the footer): the logo, solid logos,
+  app icons, README banners, social previews and link preview, downloadable
+  from `public/brand/`.
+- The link preview (`public/og-image.png`, 1200×630, `og:image` and the
+  large Twitter card on every page) is the mark as a lit citrus tube inside
+  seven glass arches, rendered with NSH's own `<Shader>` on a soft grey-green
+  wash, with the name, slogan and platforms in Figtree.
 
 ## Controls
 
@@ -133,7 +150,9 @@ widths) and picks a variant; a new kind of control is a new component.
 ## Typography
 
 The platform font (SF Pro, Segoe UI, Roboto; PingFang / Noto Sans SC for
-Chinese); `ui-monospace` / SF Mono for code. No webfonts. Base 15px.
+Chinese); `ui-monospace` / SF Mono for code. Base 15px. The home page's
+headings are in Figtree (`@fontsource-variable/figtree`), the banners' face,
+the site's one webfont.
 
 - Display: `clamp(2.3rem, 4.6vw, 3.75rem)`, weight 680, tracking −0.045em.
 - Section heading: `clamp(1.9rem, 3.4vw, 2.8rem)`, weight 660.
@@ -161,42 +180,25 @@ Chinese); `ui-monospace` / SF Mono for code. No webfonts. Base 15px.
 
 ## The hero
 
-The chat sits in a card frame of the site's design (a slim bar with the
-file name and a "Live" badge, the app on an inset surface; no device
-chrome) and follows the page's theme (the player's `?theme=`, then a
-message on every change); the gallery's palette has both. The caption says
-what runs; Replay reloads it, which plays the scenario again. Entrance
-motion only, 620ms `cubic-bezier(.16, 1, .3, 1)`. The copied chat imports
-`./clipboard`, a no-op, because this runtime has no `Clipboard` yet;
-the playground lists every demo but this one (it compiles single files).
+The home hero is the banners' composition drawn live: the name, the citrus
+slogan, the 8 platforms, on the banners' grounds: `#0e1016`, the whole site's
+`--background`, in dark; the pale green `#f6f8f4` in light, which only the
+home page's hero, tinted bands and closing use.
 
-Behind the hero, `HeroField.astro` draws the night sky from inside a galaxy
-with a fragment shader (WebGL, two passes: the clouds' field into a texture
-of a texel every 11 px, then the sky per pixel, sampling it). The hero's sky
-darkens toward the night, fading out along its bottom into the page. The
-nebula takes the site's own colors, slate blue and grey by region and teal in
-a few clouds, the primary's green tinting them and lighting their ridged
-wisps, which lie in belts as Jupiter's clouds do; darker reaches open here
-and there. Its light opens between the copy and the device from the first
-frame, dims behind the device, and is softly capped. The stars are crisp
-round discs (gravity bends the space they sit in, never their shape) in the
-blue, teal, red, orange and violet besides white, most faint and a few bright, the
-brightest, white or blue-white, with long diffraction spikes; some wear a tilted ring, some have
-companions orbiting them. They crowd where the clouds are, with a fine grain
-of star dust, gather in clusters and leave voids; they drift slowly, nearer
-ones faster, and now and then a meteor crosses. Presses act
-on gravity: a held press is a small mass that bends the starlight toward
-it; released, it sends a gentle wave that carries the stars outward as it
-passes before they settle back, and turns their drift to a new heading. The
-sky shows across the hero, about half as strong behind the copy, every mask
-a smooth gradient. The colors are the `--hero-*` tokens. It moves all the
-time, pauses off screen and in hidden tabs, draws one still frame and takes
-no presses with reduced motion, never takes pointer events itself, and
-draws nothing without WebGL (`?fieldperf` logs its frame time).
+`HeroArches.astro` draws the mark with a fragment shader (WebGL, one pass):
+eight glass arches around a lit citrus tube holding a bead, over a halftone
+field. The bead is the app, the tube the engine, each arch a platform, inner
+to outer in the order of the platform names beside it. Hovering or focusing a
+name lights its arch and names its stack; hovering an arch does the same. On
+load one ripple runs outward through the arches. Light slides slowly over the
+glass. It draws at 30 FPS, pauses off screen and in hidden tabs, draws still
+frames with reduced motion, never takes pointer events itself, and without
+WebGL the hero is its copy. On narrow screens the arch sits under the copy,
+in the room `--arch-room` keeps.
 
 ## Demo frames
 
-- Demos (`demos/*.tsx`), the hero's chat and the playground follow the
+- Demos (`demos/*.tsx`), the home page's live frames and the playground follow the
   page's theme: the player starts with `?theme=` and gets a message on every
   change (`themeDemos` in `src/lib/demo-client.ts`), and demos read their
   colours from `demos/palette.ts`, an adapter of `examples/nsh-gallery-ui`, inside JSX. Its palette reads the
@@ -224,6 +226,8 @@ inside `prefers-reduced-motion: no-preference`. The live dot pulses slowly
 
 - English and Chinese pages are written together; same file names, same
   `order` and `demo` (`tests/content.test.ts`).
-- Home copy is the bilingual `copy` object in `src/components/Home.astro`;
-  section names and blurbs are in `src/lib/sections.ts`.
+- Home copy is `src/home/en.json` and `src/home/zh-CN.json`, the same keys in
+  both (`tests/home.test.ts`); numbers, commands and code stay in
+  `src/components/Home.astro`, the same in every language. Section names and
+  blurbs are in `src/lib/sections.ts`.
 - The licence is Apache-2.0; no version number is shown anywhere.

@@ -48,7 +48,7 @@ view()
 | `.label(..)` | `accessibilityLabel` | `string` | 屏幕阅读器朗读的内容，代替内部的文字。 |
 | `.hint(..)` | `accessibilityHint` | `string` | 激活元素会发生什么，在停顿后朗读。 |
 | `.role(..)` | `role` | `AccessibilityRole` | 元素是什么。 |
-| `.accessibility_state(..)` | `accessibilityState` | `AccessibilityState` | 它的状态：禁用、选中、勾选、忙碌、展开、按下、当前项。`selected` 同时让选中样式生效，`checked` 为 true 时让勾选样式生效，为 `"mixed"` 时让半选样式生效，`pressed` 为 true 时让按下样式生效。 |
+| `.accessibility_state(..)` | `accessibilityState` | `AccessibilityState` | 它的状态：禁用、选中、勾选、忙碌、展开、按下、当前项、弹出层。`selected` 同时让选中样式生效，`checked` 为 true 时让勾选样式生效，为 `"mixed"` 时让半选样式生效，`pressed` 为 true 时让按下样式生效。 |
 | `.accessibility_level(..)` | `accessibilityLevel` | `number` | 标题的级别（1 为最高），树节点的深度（顶层为 1）。 |
 | `.accessibility_value(..)` | `accessibilityValue` | `{ min?, max?, now?, text? }` | 范围类或文本类元素的值。 |
 | | `accessibilityActions` | `{ name, label? }[]` | 提供给辅助技术的操作。 |
@@ -132,7 +132,7 @@ view()
 </View>
 ```
 
-状态在 Rust 中是 `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent> }`，在 TSX 中是 `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time" }`。`pressed` 让按钮成为切换按钮（ARIA 的 `aria-pressed`）；`current` 标出一组中的当前项（ARIA 的 `aria-current`）：分页的当前页、向导的当前步骤。禁用视图（`.disabled(..)`、`disabled`）也意味着禁用状态。带 `min`、`max` 和 `now` 的 `accessibilityValue` 以百分比朗读；带 `text` 时按原文朗读（"3 of 10"、"Medium"）。
+状态在 Rust 中是 `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent>, has_popup }`，在 TSX 中是 `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time", hasPopup? }`。`pressed` 让按钮成为切换按钮（ARIA 的 `aria-pressed`）；`current` 标出一组中的当前项（ARIA 的 `aria-current`）：分页的当前页、向导的当前步骤；`hasPopup` 标出打开弹出层、菜单或列表的触发器（ARIA 的 `aria-haspopup`），它的 `expanded` 表示弹出层是否打开，没有 `hasPopup` 的 `expanded` 元素是就地展开内容的折叠项（`Popover`、`Menu`、`HoverCard`、`Select`、`Combobox` 和 `DatePicker` 会在各自的触发器上设置它）。禁用视图（`.disabled(..)`、`disabled`）也意味着禁用状态。带 `min`、`max` 和 `now` 的 `accessibilityValue` 以百分比朗读；带 `text` 时按原文朗读（"3 of 10"、"Medium"）。
 
 ## 操作
 

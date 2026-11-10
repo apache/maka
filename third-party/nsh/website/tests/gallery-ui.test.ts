@@ -6,8 +6,11 @@ import { galleryUiCss } from '../../examples/nsh-gallery-ui/css.js';
 
 const root = join(import.meta.dir, '../..');
 const shared = join(root, 'examples/nsh-gallery-ui');
+// As the playground collects them: every module of the shared UI, its
+// subdirectories (`look/`) included, but its tests.
 const realSources = Object.fromEntries([
-  ...readdirSync(shared).filter((name) => /\.(?:ts|tsx|json)$/.test(name))
+  ...readdirSync(shared, { recursive: true, encoding: 'utf8' })
+    .filter((name) => /\.(?:ts|tsx|json)$/.test(name) && !name.startsWith('tests/') && !name.split('/').some((part) => part.startsWith('.')))
     .map((name) => [`examples/nsh-gallery-ui/${name}`, readFileSync(join(shared, name), 'utf8')]),
   ['website/demos/palette.ts', readFileSync(join(root, 'website/demos/palette.ts'), 'utf8')],
 ]);
@@ -50,6 +53,61 @@ test('every real palette-based demo can include the shared UI and its theme', ()
       expect(inlined).not.toMatch(/^import\s.*from\s*["']\.\.\/.*nsh-gallery-ui/m);
     }
   }
+});
+
+test('the shared looks in look/ inline with the demos that use them', () => {
+  const source = 'import { buttonLook, buttonLabel, iconButtonLook } from "./palette";\nmount(() => null);';
+  const inlined = inlineGalleryUi(source, realSources);
+  // look/button.ts is its own scope, reached through demo.ts's re-exports.
+  expect(inlined).toContain('const TOUCH_TARGET = 44;');
+  expect(inlined).toMatch(/buttonLook: __nshGalleryModule\d+\.buttonLook/);
+  expect(inlined).toContain('const { buttonLook: buttonLook, buttonLabel: buttonLabel, iconButtonLook: iconButtonLook } =');
+});
+
+test('the menu and overlay looks inline with their parts and the popup surface', () => {
+  const source = 'import { backdrop, MenuPanel, menuItemLook, popoverLook, SubmenuRow, toastActionLook } from "./palette";\nmount(() => null);';
+  const inlined = inlineGalleryUi(source, realSources);
+  // look/menu.tsx and look/overlay.ts are scopes of their own, with the
+  // popup surface, the icons and the button look they build on.
+  expect(inlined).toContain('function MenuPanel(');
+  expect(inlined).toContain('function popoverLook(');
+  expect(inlined).toContain('const popupSurface = ');
+  expect(inlined).toMatch(/menuItemLook: __nshGalleryModule\d+\.menuItemLook/);
+  expect(inlined).toMatch(/backdrop: __nshGalleryModule\d+\.backdrop/);
+  expect(inlined).not.toMatch(/^(?:import|export)\s.*from\s*["']\.\.?\//m);
+});
+
+test('the surface, choice and tab looks inline with the demos that use them', () => {
+  const source = 'import { CheckboxMark, listRow, sectionSurface, tabsLook } from "./palette";\nmount(() => null);';
+  const inlined = inlineGalleryUi(source, realSources);
+  // look/choice.tsx, look/surface.tsx and look/tabs.tsx: modules with JSX of their own.
+  expect(inlined).toContain('const MARK_WEIGHT = 3.2;');
+  expect(inlined).toContain('const ROW_BLEED =');
+  expect(inlined).toMatch(/tabsLook: __nshGalleryModule\d+\.tabsLook/);
+  expect(inlined).not.toMatch(/^import\s.*from\s*["']\.\.?\//m);
+});
+
+test('the field and listbox looks inline with the demos that use them', () => {
+  const source = 'import { datePickerLook, field, otpCellLook, Picker } from "./palette";\nmount(() => null);';
+  const inlined = inlineGalleryUi(source, realSources);
+  // look/field.tsx and look/listbox.tsx: JSX of their own; `nsh/base`'s types are only types.
+  expect(inlined).toContain('const STEP_GLYPHS =');
+  expect(inlined).toContain('const WEEKDAYS =');
+  expect(inlined).toMatch(/Picker: __nshGalleryModule\d+\.Picker/);
+  expect(inlined).not.toMatch(/^import\s.*from\s*["']\.\.?\//m);
+});
+
+test('the control families\' looks in look/ inline, their .tsx parts included', () => {
+  const source =
+    'import { progressLook, DisclosureChevron, LinkText, paginationItemClass, plotGrid, DockTab, richEditorClasses, photoUrl, scrollbarTheme } from "./palette";\nmount(() => null);';
+  const inlined = inlineGalleryUi(source, realSources);
+  expect(inlined).not.toMatch(/^import\s.*from\s*["'](?:\.\/|\.\.\/).*["']/m);
+  for (const name of ['progressLook', 'DisclosureChevron', 'LinkText', 'paginationItemClass', 'plotGrid', 'DockTab', 'richEditorClasses', 'photoUrl', 'scrollbarTheme']) {
+    expect(inlined).toMatch(new RegExp(`${name}: __nshGalleryModule\\d+\\.${name}`));
+  }
+  // Each family is its own scope: their private helpers do not collide.
+  expect(inlined).toContain('const slide =');
+  expect(inlined).toContain('const pageItem =');
 });
 
 test('a demo with only native NSH imports stays as written', () => {

@@ -81,7 +81,8 @@ export type TurnPresentation = {
   active: boolean;
   finalOutputIds: string[];
   interleavedInput: boolean;
-  answerKey?: string;
+  /** Whether the turn did anything besides its final answer: steps or text between them. */
+  worked: boolean;
 };
 export type ProcessProjection = {
   entries: ProcessEntry[];
@@ -244,6 +245,7 @@ export function projectProcessGroups(input: {
         active: input.activeTurnId === turnKey,
         finalOutputIds: [],
         interleavedInput: false,
+        worked: false,
       };
       turns.set(turnKey, value);
     }
@@ -275,10 +277,8 @@ export function projectProcessGroups(input: {
       row.role === 'assistant' &&
       row.field === 'body' &&
       !presentation.finalOutputIds.includes(rowId)
-    ) {
+    )
       presentation.finalOutputIds.push(rowId);
-      presentation.answerKey ??= rowId;
-    }
   }
   if (input.activeTurnId) turn(input.activeTurnId);
 
@@ -308,6 +308,7 @@ export function projectProcessGroups(input: {
   const flush = (closed: boolean) => {
     if (!current) return;
     const presentation = turn(current.turnKey);
+    presentation.worked = true;
     const { turnKey, members } = current;
     // A script is shown as the tools it ran, and as itself only when it fails.
     const callers = new Set(
@@ -385,6 +386,8 @@ export function projectProcessGroups(input: {
       row.role === 'compaction';
     if (!rowTurn || outside) {
       flush(true);
+      // A failure the turn recovered from folds away with its work.
+      if (row.role === 'failure' && rowTurn) turn(rowTurn).worked = true;
       // A provider that keeps refusing (a rate limit, an overload) fails each retry
       // with the same text; show the run once with its count.
       const last = entries.at(-1);
@@ -403,7 +406,10 @@ export function projectProcessGroups(input: {
       if (rowTurn) {
         if (row.role === 'user' && progressed.has(rowTurn)) turn(rowTurn).interleavedInput = true;
         if (body) {
-          if (!row.finalOutput) message.processTurnKey = rowTurn;
+          if (!row.finalOutput) {
+            message.processTurnKey = rowTurn;
+            turn(rowTurn).worked = true;
+          }
           progressed.add(rowTurn);
         }
       }

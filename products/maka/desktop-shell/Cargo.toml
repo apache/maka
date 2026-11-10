@@ -35,14 +35,17 @@ uuid.workspace = true
 [build-dependencies]
 embed-resource = "3.0"
 
-[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-# Shaders compile at run time, so building needs no Metal Toolchain (macOS).
-nsh-platform-gpui = { workspace = true, features = ["runtime-shaders"] }
-gpui_platform = { package = "gpui-fast-platform", version = "0.1.10", default-features = false, features = ["font-kit", "wayland", "x11"] }
+[target.'cfg(target_os = "linux")'.dependencies]
+nsh-platform-linux.workspace = true
+ksni = "0.3.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(windows)'.dependencies]
-nsh-platform-windows = { path = "../../../third-party/nsh/crates/nsh-platform-windows" }
+nsh-platform-windows.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos.workspace = true
 raw-window-handle = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSDraggingItem", "NSDraggingSession"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }

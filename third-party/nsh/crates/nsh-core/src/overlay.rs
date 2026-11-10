@@ -25,34 +25,6 @@ use crate::{
     ops::NodeId,
 };
 
-/// Native pointer observations for a callback-free hint watch.
-/// These update tooltip presentation without granting input callbacks
-/// authority, even if subscriptions change before the engine consumes them.
-#[derive(Debug, Clone)]
-pub enum HintObservation {
-    /// The pointer entered this hint anchor.
-    Enter(HintWatchToken),
-    /// The pointer left this hint anchor.
-    Leave(HintWatchToken),
-    /// A press began along these hint anchors.
-    Press(Vec<HintWatchToken>),
-}
-
-/// The exact native hint watch published by one Core.
-/// Retain it from the mounted event mask; the default token grants nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub struct HintWatchToken {
-    anchor: u64,
-    revision: u64,
-}
-
-impl HintWatchToken {
-    pub(crate) fn new(anchor: u64, revision: u64) -> Self {
-        Self { anchor, revision }
-    }
-}
-
 /// What an overlay is placed against (`anchor`).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum OverlayAnchor {
@@ -88,6 +60,17 @@ pub enum OverlayAnchor {
         /// The view whose edges it goes outside of.
         edges: NodeId,
     },
+}
+
+/// The resolved anchor and side delivered to native renderers for grid projection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlacedAnchor {
+    /// The anchor's frame in its root view's point coordinates.
+    pub bounds: Bounds<Points>,
+    /// The anchored view, when the anchor is its whole frame.
+    pub node: Option<NodeId>,
+    /// The final side, including a placement flipped to fit the viewport.
+    pub placement: Placement,
 }
 
 /// The side of the anchor an overlay goes on (`placement`), as
@@ -160,17 +143,12 @@ pub struct OverlayConfig {
     pub offset: Points,
     /// The distance it keeps from the edges of the root view's safe area.
     pub margin: Points,
-    /// Return native keyboard focus to the opener when this popup closes
-    /// (terminal and GPUI). This does not hide or block its background.
-    pub focus_return: bool,
     /// A hint (a tooltip), shown after the pointer rested on the anchor
     /// this long: placed against its parent when it has no anchor, shown
     /// while the pointer stays on the anchor (desktops) or [`Self::open`]
     /// says, never taking the pointer itself. `None`: shown whenever its
     /// views around it are.
     pub hint: Option<Duration>,
-    /// Also show this hint while its anchor has native keyboard focus.
-    pub hint_on_focus: bool,
     /// A hint shown (`Some(true)`) or hidden (`Some(false)`) whatever the
     /// pointer does: its owner decides from what the hint asks for
     /// (`EventKind::Show` / `EventKind::Dismiss`). `None`: the pointer

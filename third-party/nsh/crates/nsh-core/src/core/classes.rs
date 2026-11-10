@@ -396,6 +396,10 @@ impl<M: TextEngine> Core<M> {
         let node = &mut self.nodes[key as usize];
         if node.projected != states {
             node.projected = states;
+            if self.mount_projected && node.created {
+                let id = node.id;
+                self.mount.push(MountItem::ProjectStates { id, states });
+            }
             self.states_changed(key);
         }
     }
@@ -446,7 +450,7 @@ impl<M: TextEngine> Core<M> {
         let node = &self.nodes[key as usize];
         let mut style = node.mounted_view_style();
         if let Some(layout) = node.layout {
-            style.hidden |= self.layout.style(layout).display == taffy::Display::None;
+            style.hidden |= self.layout.displays_none(layout);
         }
         let parent = node.parent;
         if parent == NO_KEY || node.inline {
@@ -766,8 +770,15 @@ impl<M: TextEngine> Core<M> {
 
     /// Replaces the theme: every class is resolved again.
     pub(super) fn set_tailwind_theme(&mut self, json: &str) {
-        let theme = match Theme::from_json(json) {
-            Ok(t) => t,
+        // A newer NSH's theme: what this one cannot read is left out, the
+        // rest applies.
+        let theme = match Theme::from_json_lenient(json) {
+            Ok((theme, ignored)) => {
+                for what in ignored {
+                    log::warn!("tailwind theme: {what}, ignored");
+                }
+                theme
+            }
             Err(e) => {
                 log::warn!("tailwind theme: {e}");
                 return;
@@ -850,11 +861,6 @@ impl<M: TextEngine> Core<M> {
             .map_or(0, |c| c.tracked_states() & REPORTED)
             | if node.list.as_ref().is_some_and(|list| list.automatic) {
                 state::HOVERED | state::FOCUS_WITHIN
-            } else {
-                0
-            }
-            | if node.overlay_watched & super::overlay::watch::HINT_FOCUS != 0 {
-                state::FOCUSED
             } else {
                 0
             };

@@ -118,10 +118,10 @@ const data = JSON.stringify({
 
 <div class="apps-page" data-apps>
   <script type="application/json" data-apps-json set:html={data.replace(/</g, '\\u003c')} />
-  <div class="apps-hero">
-    <span class="apps-kicker">{t.kicker}</span>
+  <div class="apps-hero page-head">
+    <span class="apps-kicker page-head__kicker">{t.kicker}</span>
     <h1>{t.title}</h1>
-    <p class="apps-lead">{t.lead}</p>
+    <p class="apps-lead page-head__lead">{t.lead}</p>
     <details class="apps-policy">
       <summary>{t.selectionLabel}</summary>
       <p>{t.selectionPolicy}</p>
@@ -213,6 +213,7 @@ const data = JSON.stringify({
 
 <script>
   import { mountSelect } from '../lib/ui/select';
+  import { playSelect } from '../lib/sound';
   import { paginateAll, paginateFeatured, selectShowcases, type BrowsedApp, type ShowcaseSort } from '../lib/showcase-browser';
 
   interface Copy {
@@ -319,6 +320,7 @@ const data = JSON.stringify({
     sortRoot.addEventListener('change', refilter);
     for (const chip of chips) {
       chip.addEventListener('click', () => {
+        if (state.category !== chip.dataset.category) playSelect();
         state.category = chip.dataset.category!;
         refilter();
       });
@@ -343,7 +345,6 @@ const data = JSON.stringify({
   }
   .apps-hero { max-width: 46rem; margin-bottom: 2.5rem; }
   .apps-kicker { display: block; margin-bottom: 1rem; color: var(--muted-foreground); font: 600 0.6875rem/1 var(--font-mono); letter-spacing: 0.14em; text-transform: uppercase; }
-  .apps-hero h1 { margin: 0; font-size: clamp(2rem, 3.6vw, 3rem); font-weight: 660; letter-spacing: -0.045em; line-height: 1.15; text-wrap: balance; }
   .apps-lead { margin: 1rem 0 0; color: var(--muted-foreground); font-size: 1rem; line-height: 1.65; }
   .apps-policy { margin: 1rem 0 0; color: var(--muted-foreground); font-size: 0.875rem; }
   .apps-policy summary { width: fit-content; cursor: pointer; border-radius: var(--radius-control); }

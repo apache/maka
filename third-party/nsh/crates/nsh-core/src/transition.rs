@@ -123,6 +123,45 @@ impl Live {
             && self.keyframes.is_none()
     }
 
+    /// When what animates next ends (ms, the clock [`Live::step`] is
+    /// given), or `now` when a change has to be stepped to start: what a
+    /// surface that draws no frames (a hidden window) steps it at, so a
+    /// view animating out is removed on time without frames. `None` while
+    /// nothing animates, or only keyframes that repeat forever.
+    pub fn deadline(&self, now: f64) -> Option<f64> {
+        let keyframes = self.keyframes.as_ref().and_then(|run| {
+            let n = run.animation.iterations?;
+            let length = run.animation.delay.max(0.0) + n as f32 * run.animation.duration.max(0.0);
+            Some(run.start.map_or(now, |start| start + length as f64))
+        });
+        [
+            self.frame.as_ref().map(|t| t.timing.end(now)),
+            self.style.as_ref().map(|t| t.timing.end(now)),
+            self.color.0.as_ref().map(|t| t.timing.end(now)),
+            self.presence.as_ref().map(|p| p.timing.end(now)),
+            keyframes,
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(f64::min)
+        // A millisecond past it: a step there finds it ended whatever the
+        // rounding of the time elapsed.
+        .map(|t| t + 1.0)
+    }
+
+    /// The highest frame rate its animations need, in Hz: a keyframe
+    /// animation's `animationFrameRate` while it is all that runs; `None`
+    /// (the screen's highest) while a transition, a layout animation or an
+    /// uncapped keyframe animation runs.
+    pub fn frame_rate(&self) -> Option<f32> {
+        let keyframes_alone = self.frame.is_none()
+            && self.style.is_none()
+            && !self.color.running()
+            && self.presence.is_none();
+        let run = self.keyframes.as_ref().filter(|_| keyframes_alone)?;
+        crate::style::frame_rate(run.animation.frame_rate)
+    }
+
     /// True while a frame callback steps it.
     pub fn ticking(&self) -> bool {
         self.ticking
@@ -651,6 +690,12 @@ impl Timing {
 
     fn layout(t: &LayoutTransition) -> Self {
         Timing::new(t.delay_ms, t.duration_ms, Curve::of(t.curve))
+    }
+
+    /// When it ends (ms), `now` before its first step.
+    fn end(&self, now: f64) -> f64 {
+        self.start
+            .map_or(now, |start| start + (self.delay + self.duration) as f64)
     }
 
     /// Eased progress at `now` (ms): `None` while delayed, then the value
@@ -1191,6 +1236,7 @@ mod tests {
             delay: 0.0,
             easing: [0.0, 0.0, 1.0, 1.0],
             iterations,
+            frame_rate: None,
         };
         let spin = anim(Keyframes::Spin, None);
         assert!(close(
@@ -1227,6 +1273,24 @@ mod tests {
     }
 
     #[test]
+    fn keyframes_alone_ask_for_their_frame_rate() {
+        let spin = KeyframeAnimation::new(Keyframes::Spin);
+        let restyle = |animation| Restyle {
+            track: None,
+            keyframes: Some(animation),
+        };
+        let mut live = Live::default();
+        assert_eq!(live.frame_rate(), None);
+        live.restyle(restyle(Some(spin)));
+        assert_eq!(live.frame_rate(), None);
+        live.restyle(restyle(Some(spin.frame_rate(30.0))));
+        assert_eq!(live.frame_rate(), Some(30.0));
+        // With a layout animation running beside it: the screen's highest.
+        live.appear(LayoutTransition::new(LayoutCurve::Linear, 300.0));
+        assert_eq!(live.frame_rate(), None);
+    }
+
+    #[test]
     fn a_view_appears_and_disappears() {
         let t = LayoutAnimation::LINEAR.create.unwrap();
         let mut live = Live::default();
@@ -1242,6 +1306,48 @@ mod tests {
         assert!(close(live.opacity(), 0.5));
         let step = live.step(2000.0, &mut frame, &mut style);
         assert!(step.removed && step.finished && !live.ticking());
+    }
+
+    #[test]
+    fn a_view_animating_out_is_removed_at_its_deadline() {
+        let t = LayoutAnimation::LINEAR.create.unwrap();
+        let mut live = Live::default();
+        let (mut frame, mut style) = (Bounds::default(), Box::default());
+        assert_eq!(live.deadline(0.0), None);
+        live.appear(t);
+        live.step(0.0, &mut frame, &mut style);
+        live.disappear(t);
+        // Not started: step now, which starts it.
+        assert_eq!(live.deadline(100.0), Some(101.0));
+        live.step(100.0, &mut frame, &mut style);
+        let end = live.deadline(100.0).expect("it animates out");
+        assert!(close(end as f32, 100.0 + t.duration_ms + 1.0), "{end}");
+        let step = live.step(end, &mut frame, &mut style);
+        assert!(step.removed && step.finished);
+        assert_eq!(live.deadline(end), None);
+    }
+
+    #[test]
+    fn keyframes_that_repeat_forever_give_no_deadline() {
+        let mut live = Live::default();
+        let spin = |iterations| KeyframeAnimation {
+            keyframes: Keyframes::Spin,
+            duration: 1000.0,
+            delay: 0.0,
+            easing: [0.0, 0.0, 1.0, 1.0],
+            iterations,
+            frame_rate: None,
+        };
+        live.keyframes = Some(KeyframeRun {
+            animation: spin(None),
+            start: Some(0.0),
+        });
+        assert_eq!(live.deadline(10.0), None);
+        live.keyframes = Some(KeyframeRun {
+            animation: spin(Some(2)),
+            start: Some(0.0),
+        });
+        assert_eq!(live.deadline(10.0), Some(2001.0));
     }
 
     fn text(colors: &[Color]) -> AttributedText {

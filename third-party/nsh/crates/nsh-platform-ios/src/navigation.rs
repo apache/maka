@@ -45,7 +45,7 @@ use objc2_ui_kit::{
     UIViewControllerTransitionCoordinatorContext,
 };
 
-use crate::{mount::SharedMounter, native_view::NshView, target::EventTarget};
+use crate::{mount::SharedMounter, native_view::NshView};
 
 fn insets_payload(i: EdgeInsets) -> EventPayload {
     EventPayload::Map(vec![
@@ -91,8 +91,6 @@ pub(crate) struct ScreenIvars {
     /// The header height last reported to the core.
     measured: Cell<Option<f32>>,
     insets: Cell<Option<EdgeInsets>>,
-    /// A virtual list's logical owner is parked outside native navigation.
-    parked: Cell<bool>,
 }
 
 define_class!(
@@ -155,7 +153,6 @@ impl ScreenController {
             measure: Cell::new(false),
             measured: Cell::new(None),
             insets: Cell::new(None),
-            parked: Cell::new(false),
         });
         // SAFETY: UIViewController's designated initializer.
         unsafe {
@@ -171,9 +168,6 @@ impl ScreenController {
     /// `safeAreaInsets()` inside it; and where its content starts below
     /// the header.
     pub(crate) fn report_insets(&self) {
-        if self.ivars().parked.get() {
-            return;
-        }
         let Some(view) = self.view() else { return };
         let s = view.safeAreaInsets();
         self.report_header(&view, s.top as f32);
@@ -204,7 +198,6 @@ fn first_responder(view: &UIView) -> Option<Retained<UIView>> {
 pub(crate) struct ModalIvars {
     id: NodeId,
     control: EngineControl,
-    target: Retained<EventTarget>,
     reported: Cell<Option<(CGSize, EdgeInsets)>>,
     /// `supportedOrientations`; empty keeps the presenter's.
     orientations: Cell<UIInterfaceOrientationMask>,
@@ -217,12 +210,6 @@ pub(crate) struct ModalIvars {
     animated: Cell<bool>,
     /// The user closed it natively; the app has not hidden it yet.
     closed: Cell<bool>,
-    /// A close already admitted by UIKit still owes its completion event.
-    pending_dismiss: RefCell<Option<Box<dyn Fn()>>>,
-    /// Core confirmed the old logical assignment is gone. Only this exact
-    /// native shell can be collected; its node id may already be reused.
-    retired: Cell<bool>,
-    collecting: Cell<bool>,
 }
 
 define_class!(
@@ -246,10 +233,6 @@ define_class!(
         fn view_did_appear(&self, animated: bool) {
             // SAFETY: calling the superclass implementation.
             let _: () = unsafe { msg_send![super(self), viewDidAppear: animated] };
-            if self.ivars().closed.get() {
-                self.collect_retired();
-                return;
-            }
             let id = self.ivars().id;
             self.ivars().control.dispatch_event(id, EventKind::Show, EventPayload::None);
         }
@@ -310,30 +293,25 @@ define_class!(
         /// done), or let `open` decide (a swipe down only asks).
         #[unsafe(method(presentationControllerShouldDismiss:))]
         fn should_dismiss(&self, _controller: &UIPresentationController) -> bool {
-            !self.ivars().closed.get() && self.ivars().close_on_swipe.get()
+            self.ivars().close_on_swipe.get()
         }
 
         /// The user swiped a `closeOnSwipe` sheet away.
         #[unsafe(method(presentationControllerDidDismiss:))]
-        fn did_dismiss(&self, presentation: &UIPresentationController) {
+        fn did_dismiss(&self, _controller: &UIPresentationController) {
             let ivars = self.ivars();
-            if !ivars.closed.replace(true) {
-                ivars
-                    .control
-                    .dispatch_event(ivars.id, EventKind::RequestClose, close_reason("swipe"));
-                ivars
-                    .control
-                    .dispatch_event(ivars.id, EventKind::Dismiss, EventPayload::None);
-            }
-            self.dismissal_completed(Some(&presentation.presentingViewController()));
+            ivars.closed.set(true);
+            ivars
+                .control
+                .dispatch_event(ivars.id, EventKind::RequestClose, close_reason("swipe"));
+            ivars
+                .control
+                .dispatch_event(ivars.id, EventKind::Dismiss, EventPayload::None);
         }
 
         /// A swipe down on a sheet that stays (`closeOnSwipe` false).
         #[unsafe(method(presentationControllerDidAttemptToDismiss:))]
         fn did_attempt_to_dismiss(&self, _controller: &UIPresentationController) {
-            if self.ivars().closed.get() {
-                return;
-            }
             let id = self.ivars().id;
             self.ivars()
                 .control
@@ -343,77 +321,16 @@ define_class!(
 );
 
 impl ModalController {
-    pub(crate) fn modal_id(&self) -> NodeId {
-        self.ivars().id
-    }
-
-    pub(crate) fn flush_dismiss(&self) {
-        let done = self.ivars().pending_dismiss.borrow_mut().take();
-        if let Some(done) = done {
-            done();
-        }
-    }
-
-    fn dismissal_completed(&self, presenter: Option<&UIViewController>) {
-        self.flush_dismiss();
-        if let Some(parent) = presenter.and_then(|parent| parent.downcast_ref::<Self>()) {
-            parent.collect_retired();
-        }
-        self.ivars().target.navigation_completed();
-    }
-
-    pub(crate) fn retire(&self) {
-        self.ivars().closed.set(true);
-        self.ivars().retired.set(true);
-        self.flush_dismiss();
-        self.collect_retired();
-    }
-
-    /// A newer, independently owned modal keeps its original presenter.
-    /// Collect this exact empty shell only after every covering modal left.
-    fn collect_retired(&self) {
-        let ivars = self.ivars();
-        if !ivars.retired.get()
-            || ivars.collecting.get()
-            || self.presentedViewController().is_some()
-        {
-            return;
-        }
-        let Some(presenter) = self.presentingViewController() else {
-            return;
-        };
-        ivars.collecting.set(true);
-        let restore_focus = presenter.restoresFocusAfterTransition();
-        presenter.setRestoresFocusAfterTransition(false);
-        let controller = self.retain();
-        let parent = presenter.clone();
-        let block = block2::RcBlock::new(move || {
-            parent.setRestoresFocusAfterTransition(restore_focus);
-            controller.ivars().collecting.set(false);
-            controller.dismissal_completed(Some(&parent));
-        });
-        presenter.dismissViewControllerAnimated_completion(false, Some(&block));
-    }
-
-    fn new(
-        mtm: MainThreadMarker,
-        id: NodeId,
-        control: EngineControl,
-        target: Retained<EventTarget>,
-    ) -> Retained<Self> {
+    fn new(mtm: MainThreadMarker, id: NodeId, control: EngineControl) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ModalIvars {
             id,
             control,
-            target,
             reported: Cell::new(None),
             orientations: Cell::new(UIInterfaceOrientationMask::empty()),
             close_on_swipe: Cell::new(false),
             close_on_escape: Cell::new(false),
             animated: Cell::new(true),
             closed: Cell::new(false),
-            pending_dismiss: RefCell::new(None),
-            retired: Cell::new(false),
-            collecting: Cell::new(false),
         });
         // SAFETY: UIViewController's designated initializer.
         unsafe {
@@ -449,21 +366,14 @@ impl ModalController {
             return;
         }
         ivars.closed.set(true);
-        *ivars.pending_dismiss.borrow_mut() = Some(Box::new(move || {
+        let block = block2::RcBlock::new(move || {
             control.dispatch_event(id, EventKind::Dismiss, EventPayload::None);
-        }));
-        let controller = self.retain();
-        let presenter = self.presentingViewController();
-        let block =
-            block2::RcBlock::new(move || controller.dismissal_completed(presenter.as_deref()));
+        });
         self.dismissViewControllerAnimated_completion(ivars.animated.get(), Some(&block));
     }
 
     /// Lays the modal's content out at the size it is presented at.
     fn report_size(&self) {
-        if self.ivars().closed.get() {
-            return;
-        }
         let Some(view) = self.view() else { return };
         let size = view.bounds().size;
         let s = view.safeAreaInsets();
@@ -1096,31 +1006,6 @@ impl StackHost {
         defer_to_back_swipe(&self.nav);
     }
 
-    /// Removes a parked logical root from UIKit's controllers immediately,
-    /// without a pop transition or a synthetic back event.
-    pub(crate) fn park_screen(&mut self, id: NodeId) {
-        // App order and a back gesture already admitted by UIKit remain
-        // authoritative while parked. A cancellation must not revive a pop.
-        self.applied.borrow_mut().retain(|&screen| screen != id);
-        let desired: Vec<_> = self
-            .nav
-            .viewControllers()
-            .into_iter()
-            .filter(|controller| {
-                controller
-                    .downcast_ref::<ScreenController>()
-                    .is_none_or(|screen| screen.screen_id() != id)
-            })
-            .collect();
-        if let Some(view) = self.nav.view() {
-            view.layer().removeAllAnimations();
-        }
-        self.nav.ivars().applying.set(true);
-        self.nav
-            .setViewControllers_animated(&NSArray::from_retained_slice(&desired), false);
-        self.nav.ivars().applying.set(false);
-    }
-
     /// Puts the bar where this stack says it goes, if it is the stack on
     /// screen and no transition is running: a page can turn
     /// `hidesBottomBarWhenPushed` on while it is already shown, and nothing was
@@ -1287,24 +1172,6 @@ impl ScreenHost {
             config: ScreenConfig::default(),
             left_system: RefCell::new(None),
             right_system: RefCell::new(None),
-        }
-    }
-
-    pub(crate) fn park(&self) {
-        self.controller.ivars().parked.set(true);
-        if let Some(root) = self.controller.view() {
-            root.setHidden(true);
-            root.setUserInteractionEnabled(false);
-            root.layer().removeAllAnimations();
-        }
-    }
-
-    pub(crate) fn restore(&self) {
-        self.controller.ivars().parked.set(false);
-        if let Some(root) = self.controller.view() {
-            root.addSubview(&self.view);
-            root.setHidden(false);
-            root.setUserInteractionEnabled(true);
         }
     }
 
@@ -1492,28 +1359,12 @@ pub(crate) struct ModalHost {
     pub(crate) view: Retained<NshView>,
     pub(crate) config: ModalConfig,
     pub(crate) presented: bool,
-    /// Native presentation/close eligibility before a reversible park.
-    parked: Option<(bool, bool)>,
 }
 
 impl ModalHost {
-    pub(crate) fn new(
-        mtm: MainThreadMarker,
-        id: NodeId,
-        control: EngineControl,
-        target: Retained<EventTarget>,
-    ) -> Self {
-        Self::with_view(mtm, id, control, target, NshView::new(mtm))
-    }
-
-    fn with_view(
-        mtm: MainThreadMarker,
-        id: NodeId,
-        control: EngineControl,
-        target: Retained<EventTarget>,
-        view: Retained<NshView>,
-    ) -> Self {
-        let controller = ModalController::new(mtm, id, control, target);
+    pub(crate) fn new(mtm: MainThreadMarker, id: NodeId, control: EngineControl) -> Self {
+        let controller = ModalController::new(mtm, id, control);
+        let view = NshView::new(mtm);
         if let Some(root) = controller.view() {
             root.addSubview(&view);
         }
@@ -1522,36 +1373,7 @@ impl ModalHost {
             view,
             config: ModalConfig::default(),
             presented: false,
-            parked: None,
         }
-    }
-
-    /// Confirmation severs the old native shell from the active node table.
-    /// A future projection of this view uses a fresh controller, so an old
-    /// SDK completion can never withdraw a newer logical owner's content.
-    pub(crate) fn confirmed_retirement(&self) -> Self {
-        self.controller.ivars().closed.set(true);
-        self.controller.ivars().retired.set(true);
-        let mut current = Self::with_view(
-            self.controller.mtm(),
-            self.controller.modal_id(),
-            self.controller.ivars().control.clone(),
-            self.controller.ivars().target.clone(),
-            self.view.clone(),
-        );
-        current.configure(self.config);
-        self.controller.retire();
-        current
-    }
-
-    /// Source deletion of an already parked owner cannot wait for a Core
-    /// confirmation that source revocation has invalidated.
-    pub(crate) fn revoke_parked(&mut self) -> bool {
-        if self.parked.is_none() {
-            return false;
-        }
-        *self = self.confirmed_retirement();
-        true
     }
 
     /// Whether presenting it (`shown`) or dismissing it changes what shows.
@@ -1566,44 +1388,15 @@ impl ModalHost {
 
     /// Presents the modal over the controller showing `from` (at once
     /// when `at_once`: a shader draws its coming).
-    pub(crate) fn present(&mut self, from: &UIView, at_once: bool) -> bool {
-        if let Some((presented, closed)) = self.parked
-            && closed
-        {
-            // A native close was already admitted before parking. Repeated
-            // projections cannot revive it; real source removal clears it.
-            self.presented = presented;
-            return true;
-        }
-        self.parked = None;
+    pub(crate) fn present(&mut self, from: &UIView, at_once: bool) {
         if self.presented && !self.controller.ivars().closed.get() {
-            return true;
+            return;
         }
         self.controller.ivars().closed.set(false);
-        self.controller.set_flags(&self.config);
-        if let Some(root) = self.controller.view() {
-            root.addSubview(&self.view);
-            root.setHidden(false);
-            root.setUserInteractionEnabled(true);
-        }
-        if self.controller.presentingViewController().is_some() {
-            // Cancellation restored the original native presentation slot;
-            // never re-present it above an unrelated covering modal.
-            self.presented = true;
-            return true;
-        }
         let Some(mut presenter) = controller_of(from) else {
-            log::warn!("cannot present a modal: no view controller shows the app");
-            return false;
+            return log::warn!("cannot present a modal: no view controller shows the app");
         };
         while let Some(next) = presenter.presentedViewController() {
-            if let Some(retired) = next.downcast_ref::<ModalController>()
-                && retired.ivars().retired.get()
-                && retired.presentedViewController().is_none()
-            {
-                retired.collect_retired();
-                return false;
-            }
             presenter = next;
         }
         let c = self.config;
@@ -1677,28 +1470,12 @@ impl ModalHost {
             None,
         );
         self.presented = true;
-        true
     }
 
     /// Applies `config` (the close flags also while presented).
     pub(crate) fn configure(&mut self, config: ModalConfig) {
         self.controller.set_flags(&config);
         self.config = config;
-    }
-
-    /// Parks a virtual owner's native content without changing the original
-    /// SDK presentation slot. A cancellation restores that same slot.
-    pub(crate) fn park(&mut self) {
-        self.parked
-            .get_or_insert((self.presented, self.controller.ivars().closed.get()));
-        self.presented = false;
-        self.controller.ivars().closed.set(true);
-        self.controller.setModalInPresentation(true);
-        if let Some(root) = self.controller.view() {
-            root.setHidden(true);
-            root.setUserInteractionEnabled(false);
-            root.layer().removeAllAnimations();
-        }
     }
 
     /// Dismisses the modal (at once when `at_once`: a shader draws its
@@ -1716,11 +1493,7 @@ impl ModalHost {
         if let Some(view) = self.controller.view() {
             view.endEditing(true);
         }
-        *self.controller.ivars().pending_dismiss.borrow_mut() = Some(Box::new(done));
-        let controller = self.controller.clone();
-        let presenter = self.controller.presentingViewController();
-        let block =
-            block2::RcBlock::new(move || controller.dismissal_completed(presenter.as_deref()));
+        let block = block2::RcBlock::new(done);
         let animated = self.config.animation != ModalAnimation::None && !at_once;
         // Through the presenter: a modal that presents another one (a sheet
         // over it) would otherwise only dismiss that one, and stay on

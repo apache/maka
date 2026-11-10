@@ -21,19 +21,24 @@
 
 Maka is a desktop workspace for directing and supervising agents. The interface is calm, native and compact: generous around reading and decisions, dense where comparison matters. The task stays central; activity, permissions, failures and produced work stay inspectable without turning the window into a dashboard.
 
-The [NSH design guide](third-party/nsh/website/docs/design-guides.md) is the baseline. This file records what Maka decides on top of it. [`ui.tsx`](products/maka/workbench/app/ui.tsx) owns the values; when this file and the source disagree, fix the wrong one in the same change. The terminal shares the workbench but keeps its cell grid, so desktop geometry stays behind `platform.isTerminal`.
+The [NSH design guide](third-party/nsh/website/docs/design-guides.md) is the baseline. This file records what Maka decides on top of it. [`ui.tsx`](products/maka/workbench/app/ui.tsx) owns the values; when this file and the source disagree, fix the wrong one in the same change. The terminal shares the workbench but keeps its cell grid, so desktop geometry stays behind `platform.idiom === 'terminal'`.
 
 ## Hierarchy
 
 - One region has one focus. An element earns its place by changing what the user does next.
 - With accent and decoration removed, the primary task, current selection and next step must still read.
 - Assistant messages stay quiet and free of avatars. Language and continuity carry the product's character.
-- Messages between agents belong with tool activity, not in user bubbles. Keep their content folded by default, with source conversations and full text available on expansion. Expanded activity groups use the shared disclosure content inset for their members (32 points on desktop), matching tool details and thinking.
+- Messages between agents belong with tool activity, not in user bubbles. Keep their content folded by default, with source conversations and full text available on expansion.
+- A turn has one summary row from its first step to its end, and finishing changes only its text and fold. While it runs, the row reads `Working for 22s` and its steps and the messages between them follow in order below it, with no group headers. Once it completes it reads what it took and what it did (`Worked for 37s · 2 thoughts · 3 tools`) and folds to the final answer, unless the user has already opened or folded it. A turn that failed, stopped or took the user's input midway leads with its status (`Stopped after 12s`) and stays open, since it does not fold.
+- A turn is not indented. On desktop it has two lanes: the icon lane on the reading column's left edge holds the summary chevron, each step's icon and an expanded tool card's left edge; the text lane, 24 points to its right (`disclosureContentInset`), holds the summary text, step names, expanded thinking and the text inside the card. Thinking and tool steps share one row style and differ only by icon; a thinking step with nothing beyond its title does not expand.
+- A step's state sits in one fixed lane at the row's trailing edge and shows only error, rejection, stop or progress. A tool card names its tool and directory once, prefixes the command with `$`, and labels output only when it is stderr; an exit code shows only when non-zero.
 
 ## Surfaces and lines
 
 - Depth comes from the `background`, `surface` and `raised` tokens first, then a line, then a shadow.
 - Each boundary uses one separator: a fill step, a line or a shadow, never two on the same edge.
+- The desktop window is an inverted L: the sidebar and the window's top edge share one base (`chrome`), and the content is one `panel`, radius 12, inset 8 from the window's top, right and bottom edges. The sidebar, the panel and the panel's header part by fill alone; panes side by side in the panel part by a line.
+- In both appearances the sidebar sits one step below the panel, and what rests on the panel (the composer, message bubbles, tool cards, code) one step above it (`card`, then `cardRaised` for what is filled on a card). `ui.tsx` maps these regions onto the tokens; call sites inside the panel use the regions, not the tokens.
 - Resting surfaces are flat. Shadows belong to what floats (menus, popovers, dialogs, tooltips), and that family shares one recipe.
 - Generic gradients, glowing borders, neon edges, glassmorphism, sparkle and decorative "thinking" are out.
 
@@ -65,10 +70,14 @@ The composer is the reference:
 
 Elsewhere the same rule holds: icon buttons and disclosure rows reach 8 points past the reading column so their glyphs land on its edges, sidebar icons, workspace names and conversation titles share one left edge, and table text starts where code block text does.
 
+The shell keeps one header line. The window controls' row holds only the controls and the sidebar toggle at the sidebar's end (the panel's header takes the toggle while the sidebar is away). Each pane's header is the panel's first row, 32 points high, so its center is the window controls' center: the title, the workspace, then the pane's views as a compact segmented control at its end. Nothing else repeats the title.
+
+The sidebar recedes behind the conversations: navigation rows read in `secondary` with `muted` icons, conversation titles in `text`. Selected is a `raised` fill with the title at weight 500; unread and running show in one 16-point lane at the row's end (an accent dot, the loading indicator), the More button's place, so titles never move.
+
 ## States
 
 - Every control shows hover, press, focus and disabled through the shared styles in `ui.tsx`, and selected where it applies.
-- Actions stay reachable without hovering.
+- Hover only reveals. Actions that show on hover also show on keyboard focus, keep their space while hidden, and stay in a context menu with the same commands.
 - A loading state occupies the box of its ready state: the switch causes no layout shift.
 - Feedback reports real state. Immediate actions get no ceremony.
 
@@ -79,7 +88,7 @@ Settings pages are built from the parts in [`SettingsPage.tsx`](products/maka/wo
 - The rail names the page; the panel's title row repeats that name at the root, adds back when nested, and holds the page's one action. Nothing else repeats the title.
 - Rows put the label on the left and the control on the right. Rows sit in groups on `surface` over the panel's `background`, one inset line between rows; a group may carry a section name. The title, section names, row text and notes start on one left edge, the group's text inset; only group backgrounds reach past it. Descriptions only where the label alone would mislead.
 - Choose the control by purpose: a switch for on/off, a select for one of several (side-by-side buttons when there are two or three short ones), a chevron row for a page below, a button for a command. Destructive commands are a danger row at the end of the last group; lists open an item's page rather than carry per-row commands.
-- Switches and selections apply on change; typed values (names, keys, URLs, prompts) wait for Save in the page footer, which stays in view while the page scrolls and appears on a saved item only once something changed. A switch flipped while typed changes are unsaved joins them and waits for the same Save. A page whose values only make sense together (a server, a model, a proxy) is a form: there every control for those values waits for Save, while a switch that sets something outside the form, such as the default model, still applies on change.
+- Switches and selections apply on change; typed values (names, keys, URLs, prompts) wait for Save in the page footer, which stays in view while the page scrolls and appears on a saved item only once something changed. A switch flipped while typed changes are unsaved joins them and waits for the same Save. A page whose values only make sense together (a server, a model, a proxy) is a form: there every control for those values waits for Save, while a switch that sets something outside the form, such as the default model, still applies on change. Leaving with unsaved changes asks first.
 - There is no Refresh control. A page reads its data when it opens and again when the window returns to the foreground, unless a draft or confirmation is open. A failed read shows Retry where the data would have been; the reason shows under the title.
 - A row shows state only when it needs action, in `warning`. A healthy state is silent.
 - Search appears once a list is too long to scan, about eight items.
@@ -87,4 +96,4 @@ Settings pages are built from the parts in [`SettingsPage.tsx`](products/maka/wo
 
 ## Verification
 
-A visible change is reviewed in the real desktop renderer, in light and dark, at a narrow and a wide window. Geometry that must stay equal is asserted against resolved bounds, as `desktop_composer_keeps_one_inset` does: a screenshot judged by eye does not prove alignment. On macOS the headless test platform draws text in Helvetica rather than the system font, so judge typography and the centering of text beside icons with the real text system.
+A visible change is reviewed in the real desktop renderer, in light and dark, at a narrow and a wide window. Geometry that must stay equal is asserted against resolved bounds, as the desktop tests' `shell_shares_its_lines` does: a screenshot judged by eye does not prove alignment. On macOS the headless test platform draws text in Helvetica rather than the system font, so judge typography and the centering of text beside icons with the real text system.

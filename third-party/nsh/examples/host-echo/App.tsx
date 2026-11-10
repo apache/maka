@@ -15,7 +15,7 @@ function App() {
 
   return (
     <View style={{ flex: 1, backgroundColor: "#f4f5f7", padding: 24, paddingTop: 64, gap: 16 }}>
-      <Text style={{ fontSize: 28, fontWeight: "bold", color: "#1f2328" }}>nsh</Text>
+      <Text style={{ fontSize: 28, fontWeight: "bold", color: "#1f2328" }}>nsh/host</Text>
       <Text style={{ fontSize: 16, color: "#1f2328" }}>available: {String(host.available())}</Text>
       <View
         onPress={call}

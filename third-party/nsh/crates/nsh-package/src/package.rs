@@ -157,6 +157,20 @@ fn check_path(path: &str) -> Result<(), Error> {
     }
 }
 
+/// Checks that app id `id` is one path segment: devices name directories
+/// with it (`<assets>/<id>/`, the app's data), so a separator, a `:` (a
+/// drive or an NTFS stream on Windows), `.` or `..` would reach outside
+/// them, and a certificate's `prefix.*` matches such ids too.
+fn check_app_id(id: &str) -> Result<(), Error> {
+    if id.is_empty() || id == "." || id == ".." || id.contains(['/', '\\', ':', '\0']) {
+        return Err(Error::Format(format!(
+            "invalid app id `{}`",
+            id.escape_debug()
+        )));
+    }
+    Ok(())
+}
+
 /// Builds a package signed by `key`, which `certificate` certifies (it must
 /// cover the app now). A minimum runtime must pass
 /// [`crate::check_min_runtime`].
@@ -171,6 +185,7 @@ pub fn build(
     }
     let created_at = crate::now();
     // Devices would refuse it: fail here instead.
+    check_app_id(&contents.app.id)?;
     claimed.covers(&contents.app.id, created_at)?;
     if let Some(min) = &contents.min_runtime {
         crate::check_min_runtime(min).map_err(Error::Format)?;
@@ -202,6 +217,7 @@ pub fn resign(bytes: &[u8], key: &SecretKey, certificate: &Certificate) -> Resul
     }
     let created_at = crate::now();
     // Devices would refuse it: fail here instead.
+    check_app_id(&header.app.id)?;
     claimed.covers(&header.app.id, created_at)?;
     // The header as JSON: `Header` drops the fields this runtime does not
     // know, and dropping one `critical` names would lift its restriction.
@@ -492,6 +508,7 @@ pub(crate) fn open(
             "it needs `{field}`, which this runtime does not support (a newer runtime does)"
         )));
     }
+    check_app_id(&header.app.id)?;
     certified.covers(&header.app.id, header.created_at)?;
     if !crate::version_at_least(crate::RUNTIME_VERSION, &header.min_runtime) {
         return Err(Error::RuntimeTooOld {
@@ -603,6 +620,84 @@ mod tests {
             store.verify(&stolen, "v"),
             Err(Error::BadSignature)
         ));
+    }
+
+    /// The app id names directories on the device (its assets, its data):
+    /// one that is not a single path segment is refused, even when a
+    /// certificate's `prefix.*` would match it.
+    #[test]
+    fn app_ids_that_are_not_a_directory_name_are_refused() {
+        let root = SecretKey::generate().unwrap();
+        let release = SecretKey::generate().unwrap();
+        let mut store = TrustStore::new();
+        store.add_root(root.public());
+        let cert = certify(
+            &root,
+            &release.public(),
+            &["com.example.*".into()],
+            0,
+            u64::MAX,
+        );
+        for id in [
+            "com.example.x/../../../../tmp/escape",
+            "com.example.x\\..\\..",
+            "com.example.C:x",
+            "com.example.x\0",
+        ] {
+            let bytes = assemble(&contents(id), &release, &cert, 150).unwrap();
+            assert!(
+                matches!(store.verify(&bytes, "v"), Err(Error::Format(m)) if m.contains("app id")),
+                "{id:?}"
+            );
+            assert!(
+                matches!(build(&contents(id), &release, &cert), Err(Error::Format(m)) if m.contains("app id")),
+                "{id:?}"
+            );
+        }
+        let any = certify(&root, &release.public(), &["*".into()], 0, u64::MAX);
+        for id in ["", ".", ".."] {
+            let bytes = assemble(&contents(id), &release, &any, 150).unwrap();
+            assert!(
+                matches!(store.verify(&bytes, "v"), Err(Error::Format(m)) if m.contains("app id")),
+                "{id:?}"
+            );
+            assert!(
+                matches!(build(&contents(id), &release, &any), Err(Error::Format(m)) if m.contains("app id")),
+                "{id:?}"
+            );
+        }
+        // Reverse-DNS ids are kept: letters of either case, digits, `-`,
+        // `_` and any number of segments.
+        for id in [
+            "com.example.demo-2_b",
+            "com.example.a.b.c",
+            "com.example.App_2",
+        ] {
+            let ok = assemble(&contents(id), &release, &cert, 150).unwrap();
+            assert!(store.verify(&ok, "v").is_ok(), "{id:?}");
+            assert!(build(&contents(id), &release, &cert).is_ok(), "{id:?}");
+        }
+    }
+
+    /// Signing a package again refuses an id devices would refuse, as
+    /// `build` does, rather than signing a package no device accepts.
+    #[test]
+    fn signing_again_refuses_app_ids_devices_refuse() {
+        let root = SecretKey::generate().unwrap();
+        let first = SecretKey::generate().unwrap();
+        let platform = SecretKey::generate().unwrap();
+        let scope = ["com.example.*".into()];
+        let first_cert = certify(&root, &first.public(), &scope, 0, u64::MAX);
+        let platform_cert = certify(&root, &platform.public(), &scope, 0, u64::MAX);
+        for id in ["com.example.x/../../escape", "com.example.C:x"] {
+            let original = assemble(&contents(id), &first, &first_cert, 150).unwrap();
+            assert!(
+                matches!(resign(&original, &platform, &platform_cert), Err(Error::Format(m)) if m.contains("app id")),
+                "{id:?}"
+            );
+        }
+        let original = assemble(&contents("com.example.demo"), &first, &first_cert, 150).unwrap();
+        assert!(resign(&original, &platform, &platform_cert).is_ok());
     }
 
     /// A package for a newer runtime is refused with both versions named.

@@ -62,7 +62,7 @@ function Counter() {
 }
 ```
 
-Tapping updates the one text node that reads `count`. `counter()` / `Counter` itself runs once. A Rust signal is a `Copy` handle, so closures take it with `move` and use it freely.
+Tapping updates the one text node that reads `count`. `counter()` / `Counter` itself runs once. A Rust signal is a `Copy` handle, so closures take it with `move` and use it freely. In TSX `set` and `update` are bound to their signal, so they can be passed on their own: `[1, 2].forEach(count.set)`, `attempt(busy.set, …)`.
 
 A signal can count every write as a change, and TSX can compare values its own way:
 

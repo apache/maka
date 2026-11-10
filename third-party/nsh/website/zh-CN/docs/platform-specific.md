@@ -1,6 +1,6 @@
 ---
 title: 平台特定代码
-description: 为手机、桌面和浏览器编写同一个应用：ios={{}} / android={{}} / desktop={{}} / web={{}} 中的平台专属属性，nsh/mobile 与 nsh/desktop 模块，platform.os 与 platform.select，以及平台相关的 Tailwind 变体。
+description: 为手机、桌面和浏览器编写同一个应用：ios={{}} / android={{}} / macos={{}} / desktop={{}} / web={{}} 中的平台专属属性，nsh/mobile 与 nsh/desktop 模块，platform.os 与 platform.select，以及平台相关的 Tailwind 变体。
 order: 17
 group: platforms
 ---
@@ -11,22 +11,20 @@ group: platforms
 
 | Rust | TSX | 用途 |
 |---|---|---|
-| [构建方法（`.ripple(..)`、`.input_accessory(..)`）](#平台专属属性) | [`ios={{…}}`、`android={{…}}`、`desktop={{…}}`、`web={{…}}`](#平台专属属性) | 只有一个平台才有的属性。 |
+| [构建方法（`.ripple(..)`、`.input_accessory(..)`）](#平台专属属性) | [`ios={{…}}`、`android={{…}}`、`macos={{…}}`、`desktop={{…}}`、`web={{…}}`](#平台专属属性) | 只有一个平台才有的属性。 |
 | [`on_back_press`、`nsh_core::element::desktop`](#平台模块) | [`nsh/mobile`、`nsh/desktop`](#平台模块) | 只有移动平台或只有桌面才有的 API。 |
 | [`os()`、`idiom()`、`is_desktop()`](#platformos-与-platformselect) | [`platform.os`、`platform.desktop`、`platform.select`](#platformos-与-platformselect) | 按平台选择值或代码。 |
 | [`.when(os() == Os::Ios, ..)`](#tailwind-中的平台变体) | [`ios:` / `android:` / `web:` 类](#tailwind-中的平台变体) | 按平台设置样式。 |
 
 ## 桌面与移动端
 
-图形平台分为桌面和移动端，判断规则只有一条。桌面是 macOS、Windows、Linux，以及桌面形态的浏览器（有鼠标且窗口较宽，见 [Web](./web.md)）。移动端是 iOS、Android，以及手机或平板形态的浏览器；Mac Catalyst 运行 iOS 后端，因此也属于移动端，适用 `ios={{…}}` 属性。`desktop={{…}}` 属性、`platform.select({ desktop, mobile })` 和 `platform.desktop` 都遵循这条规则，`nsh/base` 的图形组件（菜单在桌面上是弹出层，在移动端是底部面板）和 Rust 中的 `is_desktop()` 也一样。
+每个平台不是桌面就是移动端，判断规则只有一条。桌面是 macOS、Windows、Linux，以及桌面形态的浏览器（有鼠标且窗口较宽，见 [Web](./web.md)）。移动端是 iOS、Android，以及手机或平板形态的浏览器；Mac Catalyst 运行 iOS 后端，因此也属于移动端，适用 `ios={{…}}` 属性。`desktop={{…}}` 属性、`platform.select({ desktop, mobile })`、`platform.desktop` 和 `platform.idiom === "desktop"` 都遵循这条规则，`nsh/base` 的组件（菜单在桌面上是弹出层，在移动端是底部面板）和 Rust 中的 `is_desktop()` 也一样。
 
-终端的 `platform.desktop === false`，依次选择 `terminal`、宿主操作系统、`native` 和 `default`。`platform.idiom` 表示设备类型，因此桌面操作系统上的终端仍报告 `"desktop"`。用 `platform.isTerminal` 判断终端呈现。
-
-`nsh/desktop` 的 `isAvailable` 表示原生桌面和终端的标题及菜单 API 可用。图形桌面布局、密度和输入方式用 `platform.desktop` 判断，调用标题和菜单 API 用 `isAvailable` 判断。
+`nsh/desktop` 的 `isAvailable` 回答的是一个更窄的问题：这个模块的窗口和菜单 API 是否可用，它们在 macOS、Windows 和 Linux 上可用。布局、密度和输入方式用 `platform.desktop` 判断，调用 `Window` 和 `Menu` 用 `isAvailable` 判断。
 
 ## 平台专属属性
 
-在 Rust 中，只有一个平台才有的属性和其他属性一样是构建方法（Android 的 `.ripple(..)`、`.elevation(..)`，iOS 的 `.input_accessory(..)`，桌面的 `.window_drag(..)`）；其他平台会忽略它。在 TSX 中，只存在于某一个平台的属性，归入以该平台命名的对象中。每个元素都接受 `ios`、`android`、`desktop`（macOS、Windows、Linux，以及界面风格为桌面的浏览器）和 `web`（浏览器）；在其他平台上这个对象会被忽略，在它自己的平台上只应用其中的键。桌面浏览器同时应用 `desktop` 和 `web`。
+在 Rust 中，只有一个平台才有的属性和其他属性一样是构建方法（Android 的 `.ripple(..)`、`.elevation(..)`，iOS 的 `.input_accessory(..)`，macOS 的 `.macos_backdrop(..)`，桌面的 `.window_drag(..)`）；其他平台会忽略它。在 TSX 中，只存在于某一个平台的属性，归入以该平台命名的对象中。每个元素都接受 `ios`、`android`、`macos`、`desktop`（macOS、Windows、Linux，以及界面风格为桌面的浏览器）和 `web`（浏览器）；在其他平台上这个对象会被忽略，在它自己的平台上只应用其中的键。macOS 同时应用 `macos` 和 `desktop`；桌面浏览器同时应用 `desktop` 和 `web`。
 
 ```rust tabs
 use nsh_base::dialog;
@@ -98,14 +96,17 @@ TSX 的这些对象和其他属性一样是响应式的；从对象中移除的�
 | `.header_left_symbol(..)` | `ios={{ headerLeftSymbol }}` | `NavPage` | 标题栏开头显示 UIKit 自带的 SF Symbol 按钮，按下即按下 `headerLeft`。 |
 | `.back_forward_gestures(..)` | `desktop={{ allowsBackForwardNavigationGestures }}` | `WebView` | macOS：双指在触控板上轻扫，在页面历史中前进后退；Windows：在触摸屏上轻扫；Linux：在触控板上轻扫。 |
 | `.window_drag(..)` | `desktop={{ windowDrag }}` | 所有元素 | 按住它拖动窗口，像系统标题栏一样（见 [nsh/desktop](../modules/nsh-desktop.md#自定义标题栏)）。 |
+| `.window_control(..)` | `desktop={{ windowControl }}` | 所有元素 | 这个视图就是窗口的最小化、最大化或关闭按钮，由应用绘制。 |
+| `.window_resize(..)` | `desktop={{ windowResize }}` | 所有元素 | 按住它从一条边或一个角调整无边框窗口的大小。 |
+| `.macos_backdrop(..)` | `macos={{ backdrop }}` | 所有元素 | macOS 上的 `NSVisualEffectView` 材质、混合方式与状态；见[滤镜与混合](./styling.md#滤镜与混合)。 |
 
-在 TSX 中，`desktop={{…}}` 和 `web={{…}}` 在所有地方都可以使用。类型（`IOSProps`、`AndroidProps`、`DesktopProps` 及其各元素的形式）会告诉编辑器每个元素接受什么。
+在 TSX 中，`macos={{…}}`、`desktop={{…}}` 和 `web={{…}}` 在所有地方都可以使用。类型（`IOSProps`、`AndroidProps`、`MacOSProps`、`DesktopProps` 及其各元素的形式）会告诉编辑器每个元素接受什么。
 
 元素在各平台上都要表达的意思是顶层属性（Rust 中是同名方法），在有意义的平台上生效：`NavPage` 的 `title`、`headerStyle`、`headerLargeTitle` 和 `headerBackTitle` 设置 iOS 和 Android 的系统标题栏，它的 `header` 插槽是桌面和 Web 上的标题栏，`Dialog` 的 `presentation` 选择 iOS 的表单样式。`AlertDialog.show` 的 `closeOnBackdropPress`、`pagingEnabled`、`refreshing`、`hitSlop` 等在所有平台上都可用。平台系统自带的功能放进该平台的对象；几个平台都有时，用同一个名字分别放进各自的对象：`WebView` 的 `allowsBackForwardNavigationGestures`（系统的滑动前进后退手势）同时在 `ios={{…}}` 和 `desktop={{…}}` 里。
 
 ## 平台模块
 
-在 Rust 中，只有一个平台才有的 API 是 `nsh_core::prelude` 的函数（`on_back_press`、`input_accessory_view`）和 `nsh_core::element::desktop` 的函数（窗口：`set_title`、`set_title_bar`、`title_bar`、`minimize`、`toggle_maximize`、`toggle_full_screen`、`set_frame`、`set_level`、`order_front`、`close_window`；菜单：`set_application_menu`、`popup_menu`）；在其他平台上它们什么都不做。在 TSX 中，`nsh/mobile` 存放 iOS 和 Android 的 API（其中一些只属于其中一个平台），`nsh/desktop` 存放桌面的 API。两者在所有平台上都可以导入，因此同一个包可以到处运行：在其他平台上，它们的函数会立即返回，组件不占空间。每个模块都导出 `isAvailable`，在自己的平台上为 `true`；`platform.os` 区分具体平台。
+在 Rust 中，只有一个平台才有的 API 是 `nsh_core::prelude` 的函数（`on_back_press`、`input_accessory_view`）和 `nsh_core::element::desktop` 的函数（窗口：`window`、`current_window` 及其 `WindowRef`、`title_bar`、`displays`；应用：`quit`、`restart`；菜单：`set_application_menu`、`popup_menu`）；在其他平台上它们什么都不做。在 TSX 中，`nsh/mobile` 存放 iOS 和 Android 的 API（其中一些只属于其中一个平台），`nsh/desktop` 存放桌面的 API。两者在所有平台上都可以导入，因此同一个包可以到处运行：在其他平台上，它们的函数会立即返回，组件不占空间。每个模块都导出 `isAvailable`，在自己的平台上为 `true`；`platform.os` 区分具体平台。
 
 ### nsh/mobile
 
@@ -165,9 +166,11 @@ Rust 应用用 `nsh_core::element::desktop` 绘制自己的标题栏（[用 Rust
 
 | 导出 | 说明 |
 |---|---|
-| `Window` | 窗口：`setTitle`、`setTitleBar({ style: "hidden" })`（自定义标题栏）、`minimize`、`toggleMaximize`、`toggleFullScreen`、`close`。 |
+| `Window` | 应用自己的窗口：组件树中的 `<Window>`、命令式的 `Window.open`，有五个种类（`normal`、`dialog`、`panel`、`popup`、`overlay`），都由应用唯一的引擎渲染。 |
+| `currentWindow`、`windows`、`focusedWindow` | 主窗口和应用自己的窗口的 `WindowRef`：`set({ title, titleBar, level, … })`、`setMode`、`setBounds`、`setPlacement`（按用户离开时的样子打开窗口）、`close` 以及事件。 |
 | `titleBar` | 隐藏的标题栏的高度，以及系统窗口按钮占用的空间（响应式）。 |
-| `Menu` | `setApplicationMenu(items)`（菜单栏，带快捷键）和 `popup(items, at?)`（右键菜单）。 |
+| `windowState`、`displays` | 当前窗口的外框、模式和所在显示器，以及各个显示器（响应式）。 |
+| `Menu` | `setApplicationMenu(items)`（菜单栏，带快捷键）和 `popup(items, at?)`（右键菜单）。菜单项的 `icon` 和 `<Image>` 的 `src` 一样是图片，菜单因此显示应用自己的图标：SVG 跟随菜单文字的颜色，位图保留自己的颜色。macOS 和 Windows 上会显示；GTK 的菜单不在文字旁显示图标。 |
 | `isAvailable` | 在窗口和菜单 API 可用的地方为 `true`：macOS、Windows 和 Linux。桌面浏览器的 `platform.desktop` 为 `true`，窗口和菜单仍是浏览器自己的。 |
 
 见 [nsh/desktop](../modules/nsh-desktop.md)。
@@ -226,8 +229,6 @@ if (platform.os === "android") {
 ### platform.select
 
 在 Rust 中用 `match os()` 选择值，桌面用 `is_desktop()`。在 TSX 中，`platform.select(spec)` 返回当前平台对应的值。它依次查找该操作系统自己的键，然后按[上面的规则](#桌面与移动端)（`platform.desktop`）查找 `desktop` 或 `mobile`，再是 `native`（除 Web 外的所有平台），最后是 `default`：
-
-终端界面报告 `platform.renderer === "terminal"`、`platform.isTerminal === true`，`platform.os` 为宿主操作系统。终端依次选择 `terminal`、宿主操作系统、`native` 和 `default`。图形桌面界面应用 `desktop={{…}}` 属性。
 
 ```rust tabs
 use nsh_core::{element::Os, prelude::*};

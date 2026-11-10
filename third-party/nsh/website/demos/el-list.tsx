@@ -1,5 +1,5 @@
 import { List, type ListRef, mount, signal, Text, View } from "nsh";
-import { button, buttonText, desktop, Inspector, Panel, size, tint, ui, wide } from "./palette";
+import { button, buttonText, desktop, Inspector, Panel, size, tint, ui, wide, sectionSurface } from "./palette";
 
 type Trade = { id: string; symbol: string; shares: number; change: number };
 
@@ -73,7 +73,7 @@ function App() {
         viewabilityConfig={{ itemVisibleThreshold: 0.5 }}
         onViewableItemsChange={viewable}
         header={
-          <View style={{ ...ui().card, borderRadius: 14, padding: 14, gap: 10, marginBottom: 4 }}>
+          <View style={{ ...sectionSurface({ padded: true }), gap: 10, marginBottom: 4 }}>
             <Text style={{ color: ui().muted }}>
               {desktop ? "Scroll with the wheel or trackpad" : "Swipe up; pull down to refresh"}: more rows load near the end, up to {LIMIT}.
             </Text>

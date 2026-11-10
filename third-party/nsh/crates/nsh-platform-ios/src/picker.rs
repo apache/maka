@@ -1,3 +1,7 @@
+//! `Picker.pickFiles`: the system's document picker,
+//! `UIDocumentPickerViewController`, which hands the app copies of the files
+//! picked; they are read as they are.
+//!
 //! `Picker.pickImages`: the system's photo picker, `PHPickerViewController`
 //! (no photo library permission: the picker runs out of process and hands
 //! over only what the user picks). PhotosUI is loaded on first use
@@ -15,9 +19,9 @@ use std::{
 
 use block2::RcBlock;
 use nsh_core::{
-    EventKind, EventPayload, ImageData,
+    EventKind, EventPayload, ImageData, file_dialog,
     geometry::{DevicePixels, Size},
-    picker::{Encoding, PickFormat, PickRequest, PickedFile},
+    picker::{Encoding, FilePickRequest, PickFormat, PickRequest, PickedFile},
 };
 use nsh_engine::EngineControl;
 use objc2::{
@@ -157,6 +161,156 @@ pub(crate) fn pick_images(id: u32, request: PickRequest, view: &UIView, control:
             let _: () = msg_send![&sheet, setDelegate: &*delegate];
         }
         SHOWN.with_borrow_mut(|shown| shown.push(delegate));
+        top.presentViewController_animated_completion(&picker, true, None);
+    }
+}
+
+fn uniform_types() -> bool {
+    static LOADED: OnceLock<bool> = OnceLock::new();
+    *LOADED.get_or_init(|| {
+        let path =
+            c"/System/Library/Frameworks/UniformTypeIdentifiers.framework/UniformTypeIdentifiers";
+        // SAFETY: loads a system framework; the handle is never closed.
+        let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_LAZY) };
+        if handle.is_null() {
+            log::error!("cannot load UniformTypeIdentifiers");
+        }
+        !handle.is_null()
+    })
+}
+
+thread_local! {
+    /// The delegates of the document pickers shown (a picker holds its
+    /// delegate weakly).
+    static SHOWN_DOCUMENTS: RefCell<Vec<Retained<DocumentDelegate>>> = const { RefCell::new(Vec::new()) };
+}
+
+pub(crate) struct DocumentIvars {
+    id: u32,
+    request: FilePickRequest,
+    control: EngineControl,
+}
+
+define_class!(
+    /// The delegate of one document picker: reads what the user picked.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = DocumentIvars]
+    pub(crate) struct DocumentDelegate;
+
+    unsafe impl NSObjectProtocol for DocumentDelegate {}
+
+    impl DocumentDelegate {
+        #[unsafe(method(documentPicker:didPickDocumentsAtURLs:))]
+        fn did_pick(&self, _picker: &UIViewController, urls: &NSArray<NSURL>) {
+            let paths: Vec<_> = urls
+                .iter()
+                .filter_map(|url| url.path())
+                .map(|path| std::path::PathBuf::from(path.to_string()))
+                .collect();
+            let DocumentIvars { id, request, control } = self.ivars();
+            let (id, request, control) = (*id, request.clone(), control.clone());
+            let spawned = std::thread::Builder::new()
+                .name("nsh-picker".into())
+                .spawn(move || {
+                    let files = nsh_core::picker::read_picked_files(&paths, &request);
+                    answer(&control, id, files);
+                });
+            if let Err(e) = spawned {
+                log::warn!("cannot read the picked files: {e}");
+            }
+            self.forget();
+        }
+
+        #[unsafe(method(documentPickerWasCancelled:))]
+        fn was_cancelled(&self, _picker: &UIViewController) {
+            let DocumentIvars { id, control, .. } = self.ivars();
+            answer(control, *id, Vec::new());
+            self.forget();
+        }
+
+        /// A sheet swiped down: no files. The picker's own callbacks may not
+        /// come then; whichever comes first answers.
+        #[unsafe(method(presentationControllerDidDismiss:))]
+        fn did_dismiss(&self, _controller: &AnyObject) {
+            let this: *const Self = self;
+            let shown = SHOWN_DOCUMENTS
+                .with_borrow(|shown| shown.iter().any(|d| std::ptr::eq(&**d, this)));
+            if shown {
+                let DocumentIvars { id, control, .. } = self.ivars();
+                answer(control, *id, Vec::new());
+                self.forget();
+            }
+        }
+    }
+);
+
+impl DocumentDelegate {
+    fn forget(&self) {
+        let this: *const Self = self;
+        SHOWN_DOCUMENTS.with_borrow_mut(|shown| shown.retain(|d| !std::ptr::eq(&**d, this)));
+    }
+}
+
+/// Shows the document picker over `view`'s window for pick `id`, as copies
+/// the app may read; a picker that cannot be shown answers with no files.
+pub(crate) fn pick_files(
+    id: u32,
+    request: FilePickRequest,
+    view: &UIView,
+    control: &EngineControl,
+) {
+    let mtm = MainThreadMarker::from(view);
+    let (Some(type_class), Some(picker_class), Some(top)) = (
+        uniform_types().then(|| class(c"UTType")).flatten(),
+        class(c"UIDocumentPickerViewController"),
+        crate::system::top_controller(view),
+    ) else {
+        log::warn!("the document picker cannot be shown");
+        answer(control, id, Vec::new());
+        return;
+    };
+    // SAFETY: UniformTypeIdentifiers' and UIKit's documented API (iOS 14+),
+    // sent dynamically.
+    unsafe {
+        let mut types: Vec<Retained<AnyObject>> = file_dialog::extensions(&request.filters)
+            .iter()
+            .filter_map(|extension| {
+                let extension = NSString::from_str(extension);
+                let found: Option<Retained<AnyObject>> =
+                    msg_send![type_class, typeWithFilenameExtension: &*extension];
+                found
+            })
+            .collect();
+        if types.is_empty() {
+            // Any file (`UTTypeData`; folders are no `public.data`).
+            let data = NSString::from_str("public.data");
+            let found: Option<Retained<AnyObject>> =
+                msg_send![type_class, typeWithIdentifier: &*data];
+            types.extend(found);
+        }
+        let types = NSArray::from_retained_slice(&types);
+        let alloc: Allocated<AnyObject> = msg_send![picker_class, alloc];
+        let picker: Option<Retained<AnyObject>> =
+            msg_send![alloc, initForOpeningContentTypes: &*types, asCopy: true];
+        let Some(picker) = picker else {
+            answer(control, id, Vec::new());
+            return;
+        };
+        let _: () = msg_send![&picker, setAllowsMultipleSelection: request.multiple()];
+        let picker: Retained<UIViewController> = Retained::cast_unchecked(picker);
+        let delegate = DocumentDelegate::alloc(mtm).set_ivars(DocumentIvars {
+            id,
+            request,
+            control: control.clone(),
+        });
+        let delegate: Retained<DocumentDelegate> = msg_send![super(delegate), init];
+        let _: () = msg_send![&picker, setDelegate: &*delegate];
+        picker.setOverrideUserInterfaceStyle(crate::system::appearance());
+        if let Some(sheet) = picker.presentationController() {
+            let _: () = msg_send![&sheet, setDelegate: &*delegate];
+        }
+        SHOWN_DOCUMENTS.with_borrow_mut(|shown| shown.push(delegate));
         top.presentViewController_animated_completion(&picker, true, None);
     }
 }

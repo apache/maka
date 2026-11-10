@@ -31,7 +31,6 @@ pub(super) struct Origin {
     package: String,
     scope: String,
     fingerprint: String,
-    managed: bool,
     authority_session_id: Option<String>,
 }
 impl From<&PluginSession> for Origin {
@@ -41,7 +40,6 @@ impl From<&PluginSession> for Origin {
             package: value.creator.package().into(),
             scope: String::from(value.creator.scope().clone()),
             fingerprint: value.fingerprint.clone(),
-            managed: value.managed,
             authority_session_id: value.authority_session_id.clone(),
         }
     }
@@ -65,7 +63,6 @@ impl Origin {
             creator: maka_plugin_core::storage::Namespace::new(self.package, scope)
                 .map_err(invalid)?,
             fingerprint: self.fingerprint,
-            managed: self.managed,
             authority_session_id: self.authority_session_id,
         })
     }
@@ -613,14 +610,14 @@ async fn committed_receipt(store: &EventLog, command: &Creation) -> Result<bool,
     };
     let origin = origin.clone();
     store.connection.read(move |db| {
-        let stored: Option<(String,String,String,bool,Option<String>)> = db.query_row(
-            "SELECT package_id,scope_id,fingerprint,managed,authority_session_id FROM plugin_sessions WHERE session_id=?",
+        let stored: Option<(String,String,String,Option<String>)> = db.query_row(
+            "SELECT package_id,scope_id,fingerprint,authority_session_id FROM plugin_sessions WHERE session_id=?",
             rusqlite::params![&origin.session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         ).optional()?;
-        Ok(stored.is_some_and(|(package,scope,fingerprint,managed,authority)| {
+        Ok(stored.is_some_and(|(package,scope,fingerprint,authority)| {
             package == origin.package && scope == origin.scope && fingerprint == origin.fingerprint
-                && managed == origin.managed && authority == origin.authority_session_id
+                && authority == origin.authority_session_id
         }))
     }).await
 }

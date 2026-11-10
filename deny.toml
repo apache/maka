@@ -52,9 +52,7 @@ confidence-threshold = 0.8
 # MPL sources are not vendored or included in Maka source releases. Binary
 # distributions must identify these components and provide their license/source.
 exceptions = [
-  # GPUI native/platform dependencies; no third-party source is vendored.
-  { crate = "cbindgen@0.28.0", allow = ["MPL-2.0"] },
-  { crate = "dwrote@0.11.5", allow = ["MPL-2.0"] },
+  # Native/platform dependencies; no MPL source is vendored.
   { crate = "cooked-waker@5.0.0", allow = ["MPL-2.0"] },
   { crate = "cssparser@0.36.0", allow = ["MPL-2.0"] },
   { crate = "cssparser@0.37.0", allow = ["MPL-2.0"] },
@@ -75,7 +73,6 @@ exceptions = [
 allow-git = [
   "https://github.com/microsoft/mxc",
   "https://github.com/maka-agent/cua",
-  "https://github.com/longbridge/gpui-fast",
   "https://github.com/proptest-rs/proptest",
   "https://github.com/zed-industries/font-kit",
   "https://github.com/zed-industries/scap",

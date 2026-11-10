@@ -146,8 +146,12 @@ impl OwnedConnection {
                         valid.and_then(|()| connection.as_ref().map(observe).transpose())
                     }));
                     let reusable = stats.is_ok();
-                    let _ = reply.send(stats.unwrap_or(Err(StoreError::OperationUnknown)));
-                    reusable
+                    (
+                        reusable,
+                        Box::new(move || {
+                            let _ = reply.send(stats.unwrap_or(Err(StoreError::OperationUnknown)));
+                        }),
+                    )
                 }),
             })
             .await

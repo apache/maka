@@ -72,7 +72,7 @@ node scripts/ci.mjs plan --base origin/rust-preview
 node scripts/ci.mjs run bridge
 ```
 
-PR 根据 Cargo 反向依赖和声明的运行时输入选择范围；共享或无法归属的变更执行完整已维护套件。分支 push 和手动运行也执行全量。包级测试筛选保留各套件原有的 workspace/features 编译配方。GPUI 套件覆盖选定的无窗口 platform 和 terminal 测试，不包含独立 host 的 webview/video 配置。
+PR 根据 Cargo 反向依赖和声明的运行时输入选择范围；共享或无法归属的变更执行完整已维护套件。分支 push 和手动运行也执行全量。包级测试筛选保留各套件原有的 workspace/features 编译配方。原生桌面和终端像素回归测试在 macOS、Windows 执行；GTK 测试在 Linux 的 Xvfb 中执行，共享原生终端传输测试随 NSH 套件运行。
 
 根 producer 生成包含运行时产品资源的 nextest 归档；测试 worker 执行同一产物的分片。最终 `test` 检查要求所有选中工作成功。Cargo 缓存用于加速构建，不代替测试产物。
 

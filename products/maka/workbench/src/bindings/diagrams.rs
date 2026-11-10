@@ -61,7 +61,7 @@ mod tests {
 
     fn fonts() -> Arc<usvg::fontdb::Database> {
         let mut fonts = usvg::fontdb::Database::new();
-        fonts.load_font_data(include_bytes!("../../../../../third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf").to_vec());
+        fonts.load_font_data(include_bytes!("../../tests/fonts/IBMPlexSans-Regular.ttf").to_vec());
         fonts.set_sans_serif_family("IBM Plex Sans");
         Arc::new(fonts)
     }
@@ -136,13 +136,13 @@ mod tests {
     }
 
     fn diagram_app(
-        renderer: nsh_core::platform::Renderer,
+        terminal: bool,
         pending: Option<std::sync::mpsc::Sender<PendingImage>>,
     ) -> nsh_testing::Headless {
         use nsh_core::{
             Size,
             element::Instance,
-            platform::{Environment, Os},
+            platform::{Environment, Idiom, Os},
             prelude::px,
         };
         let mut registry = nsh_core::element::Registry::ui_set("maka/host");
@@ -165,7 +165,11 @@ mod tests {
             viewport: Size::new(px(720.0), px(900.0)),
             environment: Environment {
                 os: Os::MacOs,
-                renderer,
+                idiom: if terminal {
+                    Idiom::Terminal
+                } else {
+                    Idiom::Desktop
+                },
                 ..Environment::default()
             },
             ui_sets: sets,
@@ -176,7 +180,7 @@ mod tests {
 
     #[test]
     fn diagram_source_and_parse_error_recovery() {
-        let mut app = diagram_app(nsh_core::platform::Renderer::Native, None);
+        let mut app = diagram_app(false, None);
         app.wait_for("label:Mermaid diagram").unwrap();
         app.press("role:button[Show diagram source]").unwrap();
         app.wait_for("text:/flowchart LR/").unwrap();
@@ -191,7 +195,7 @@ mod tests {
 
     #[test]
     fn terminal_diagrams_keep_readable_source() {
-        let mut app = diagram_app(nsh_core::platform::Renderer::Terminal, None);
+        let mut app = diagram_app(true, None);
         app.wait_for("text:/flowchart LR/").unwrap();
         assert!(!app.shows("Mermaid diagram"));
         assert!(!app.shows("Show diagram source"));
@@ -222,7 +226,7 @@ mod tests {
     fn superseded_conversion_never_reaches_the_image_view() {
         use std::sync::Mutex;
         let (send, pending) = std::sync::mpsc::channel();
-        let mut app = diagram_app(nsh_core::platform::Renderer::Native, Some(send));
+        let mut app = diagram_app(false, Some(send));
         let images = Arc::new(Mutex::new(Vec::new()));
         let observed = images.clone();
         app.observe(move |_, batch| {

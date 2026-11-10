@@ -325,10 +325,9 @@ export function RecallSearch(props: {
         style={{
           width: '100%',
           maxWidth: 760,
-          height: '100%',
+          flex: 1,
           maxHeight: '100%',
           minHeight: 0,
-          flexShrink: 1,
           backgroundColor: C.surface,
           padding: 16,
           gap: 12,

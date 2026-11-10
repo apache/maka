@@ -88,7 +88,7 @@ Host 工具使用会话级本地 HTTP MCP endpoint，同一 Host 激活期间保
 cargo nextest run -p maka-cli --bin maka -E 'test(independent_public_agent_client_reconnects_history_watch_and_pending_interaction)'
 ```
 
-Agent 接收消息时保存模型的 Code Mode 默认值或显式 `codeMode` 覆盖设置；排队消息和恢复运行保留原模式。服务工具可以通过 `nestable: true` 允许代码内调用，仍执行与直接调用相同的权限检查、操作回执和清理流程。JavaScript 收到声明的业务结果，持久日志保留原生操作的原始回执。省略该字段时仅允许直接调用。Maka 默认组合为文件、进程、Web 和 Skills 工具启用嵌套调用。
+Agent 接收消息时保存模型的 Code Mode 默认值或显式 `codeMode` 覆盖设置；排队消息和恢复运行保留原模式。服务工具可以通过 `nestable: true` 允许代码内调用，仍执行与直接调用相同的权限检查、操作回执和清理流程。JavaScript 收到声明的业务结果，持久日志保留原生操作的原始回执。省略该字段时仅允许直接调用。Maka 默认组合为文件、进程、Web、Skills、部署与 UI 插件管理以及 Session／Model 协调工具启用嵌套调用，内置的清单、Goal、Recall、定时任务和 Bot `SendUser` 同样支持代码内调用；由模型提供方远程执行的工具、结束轮次的工具（`sleep`）、Computer Use REPL 工具和 `AskUserQuestion` 保持仅直接调用。
 
 模型设置通过 `codeModeLanguage: "javascript" | "python"` 独立选择语言，`codeMode` 控制是否启用，默认语言仍为 JavaScript。Python 使用随包提供的 Monty 解释器，支持顶层 await、`asyncio.gather`、JSON 工具参数和相同的输出/存储辅助函数。消息接收时固定语言，排队和恢复运行沿用原选择；修改只影响新提交的消息。该设置不改变 `maka code`、插件 JavaScript 或 Computer Use REPL。
 
@@ -149,7 +149,8 @@ ChatGPT 冷缓存或到期刷新在逻辑请求准备时等待，后台压缩的
 只有生产流完整结束且存储验证同一来源边界和生产请求后，引擎才安装不透明 checkpoint。
 后续请求回放该 checkpoint 与保留的后续历史；再次压缩会替换基线。
 会话、全局和一次性文字压缩提示词仍可编辑、保存，但不进入 ChatGPT 原生压缩请求。
-关闭开关时，文字压缩提示词正常生效。当前原生回放要求生产模型；跨模型准入和切换预检由后续 stack 层实现。
+关闭开关时，文字压缩提示词正常生效。原生检查点和普通加密思考共用基于 hash 的回放准入，可跨订阅账号。
+不兼容原生状态会在推理前被拒绝；自动转换与小窗口切换预检留待后续实现。
 
 订阅 Provider 仅在连接开启该选项时，在解析后的能力中选择原生压缩。关闭后仍可回放已有原生 checkpoint；下一次压缩生成文字摘要。Host 冻结一个协议操作，Responses 适配器负责追加触发命令，
 并只在流完成时返回有类型的 `NativeCompaction`。Engine 和 EventLog 无需再从 provider options JSON 提取结果。

@@ -1,0 +1,598 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { AnimatedValue, mount, platform, signal, Text, View, windowSize, type JSX } from 'nsh';
+import { Button } from 'nsh/base';
+import { Composer } from '../../../../../plugins/agent/composer/ui/Composer';
+import type { MessageViewState } from '../../../workbench/app/MessageRow';
+import { TurnPanel, type GroupViewState } from '../../../workbench/app/TurnPanel';
+import type { ComposerSession } from '../../../../../packages/plugin-sdk/src/composer-view.js';
+import { host as nativeHost } from 'maka/host';
+import { SessionPermissionsSelect } from '../../../workbench/app/SessionPermissionsSelect';
+import { InteractionComposer } from '../../../workbench/app/InteractionComposer';
+import type { Row } from '../../../workbench/app/history';
+import { WorkspaceBrowser } from '../../../workbench/app/WorkspaceBrowser';
+import type { Browsing, BrowserSession } from '../../../workbench/app/browsing';
+import { HostProvider, type Host } from '../../../workbench/app/host';
+import type {
+  AgentBackendPreference,
+  AgentSession,
+  InteractionRecord,
+} from '../../../../../packages/plugin-sdk/src/index.js';
+
+function Sandbox() {
+  const session = signal({
+    id: 'original-session',
+    revision: 7,
+    permissions: {
+      access: 'read_only',
+      requestPermissions: true,
+    },
+  } as AgentSession);
+  const saved = signal('No permission change');
+  return (
+    <View style={{ flex: 1, justifyContent: 'space-between' }}>
+      <Text>{saved()}</Text>
+      <SessionPermissionsSelect
+        owner={{
+          sessionId: 'original-session',
+          snapshot: session,
+          pending: () => false,
+          error: () => '',
+          async select({ session: original, settings }) {
+            saved.set(
+              `${original.id}:${original.revision}:${settings.access}:${settings.requestPermissions}`,
+            );
+            session.set({ ...original, permissions: settings });
+          },
+        }}
+      />
+    </View>
+  );
+}
+
+function Consent() {
+  const sent = signal('No answer');
+  const record: InteractionRecord = {
+    execution: {
+      sessionId: 'original-session',
+      runId: '00000000-0000-4000-8000-000000000001',
+      turnId: 'original-turn',
+    },
+    createdAt: 1,
+    requestId: 'original-consent',
+    outcome: null,
+    request: {
+      kind: 'client_capability',
+      toolUseId: 'original-tool',
+      target: {
+        providerId: 'maka_workspace_computer',
+        contractId: 'maka_workspace_computer_v1',
+        serverId: 'maka_workspace_computer',
+        toolName: 'cua_repl',
+        capability: 'computer_use',
+        scope: { kind: 'capability' },
+      },
+      basis: {
+        boundaryRevision: 3,
+        binding: {
+          id: 'a7cb195a-de75-49b5-8691-905392cd5d9c',
+          permissionEpoch: 2,
+        },
+      },
+    },
+  };
+  const host = {
+    query: async (_endpoint: string, method: string) =>
+      method === 'interaction'
+        ? record
+        : {
+            entries: [{ requestId: record.requestId }],
+          },
+    pendingControls: async () => [],
+  } as unknown as Host;
+  return (
+    <HostProvider value={host}>
+      <View style={{ flex: 1 }}>
+        <Text>{sent()}</Text>
+        <InteractionComposer
+          sessionId={record.execution.sessionId}
+          requestId={record.requestId}
+          confirming={() => false}
+          focusComposer={() => {}}
+          control={async (_method, input) => {
+            if (input.answer.kind !== 'client_capability') throw new Error('Unexpected answer');
+            sent.set(`${input.sessionId}:${input.requestId}:${input.answer.decision}`);
+            return {
+              kind: 'recorded',
+              record: {
+                ...record,
+                outcome: {
+                  kind: 'client_capability_decision',
+                  decision: input.answer.decision,
+                  committedAt: 2,
+                },
+              },
+            };
+          }}
+        />
+      </View>
+    </HostProvider>
+  );
+}
+
+function CompletionComposer(props: { prediction?: boolean; switchBackend?: boolean }) {
+  const draft = signal('');
+  const prediction = signal<{ sourceTurnId: string; text: string } | null>(
+    props.prediction ? { sourceTurnId: 'prediction-turn', text: 'Review the changes.' } : null,
+  );
+  const action = signal('No command');
+  const lookup = signal('No lookup');
+  const unexpected = (): never => {
+    throw new Error('Unexpected service outside composer completion');
+  };
+  const backend = {
+    kind: 'model',
+    connectionId: 'original-route',
+    modelId: 'fixture-model',
+    thinkingLevel: null,
+  } satisfies AgentBackendPreference;
+  const selectedBackend = signal<AgentBackendPreference>(backend);
+  const owner: ComposerSession<JSX.Element> = {
+    sessionId: 'original-session',
+    connected: () => true,
+    draft,
+    changeDraft: (text) => draft.set(text),
+    editable: () => true,
+    loading: () => false,
+    empty: () => false,
+    workspace: () => '/workspace',
+    blockedReason: () => '',
+    error: () => '',
+    notice: () => '',
+    metrics: () => '',
+    recovering: () => false,
+    sends: () => [],
+    retrySend: unexpected,
+    checkSend: unexpected,
+    dismissSend: unexpected,
+    run: () => null,
+    execution: () => null,
+    prediction: {
+      current: prediction,
+      dismiss(sourceTurnId) {
+        if (prediction()?.sourceTurnId !== sourceTurnId) throw new Error('Wrong prediction source');
+        prediction.set(null);
+      },
+    },
+    stopping: () => false,
+    continuation: () => null,
+    continuing: () => false,
+    continueRun: unexpected,
+    adjudicating: () => false,
+    adjudicateRisk: unexpected,
+    backend: selectedBackend,
+    modelDetails: () => ({
+      kind: 'ready',
+      choice: {
+        selection: selectedBackend(),
+        sourceName: 'Original route',
+        label: 'Fixture model',
+        thinkingLevels: [],
+        defaultThinkingLevel: null,
+      },
+    }),
+    refreshModel: unexpected,
+    previewImage: unexpected,
+    submit: () => action.set('message:sent'),
+    sendRendered: () => action.set('message:sent'),
+    stop: unexpected,
+    permissions: {
+      sessionId: 'original-session',
+      snapshot: () => null,
+      pending: () => false,
+      error: () => '',
+      select: unexpected,
+    },
+    queue: {
+      sessionId: 'original-session',
+      snapshot: () => ({ revision: 1, entries: [] }),
+      running: () => false,
+      read: unexpected,
+      change: unexpected,
+    },
+    projectMcp: {
+      proposal: () => null,
+      pending: () => false,
+      error: () => '',
+      notice: () => '',
+      trust: unexpected,
+      dismiss: unexpected,
+    },
+    computerAccess: {
+      snapshot: () => ({ entries: [] }),
+      stop: unexpected,
+    },
+    checklist: {
+      read: unexpected,
+      async watch() {
+        let first = true;
+        let finish: ((value: null) => void) | undefined;
+        return {
+          next: () =>
+            first
+              ? ((first = false),
+                Promise.resolve({
+                  enabled: false,
+                  revision: 1,
+                  digest: null,
+                  total: 0,
+                  completed: 0,
+                  activeIndex: null,
+                  current: null,
+                  offset: 0,
+                  items: [],
+                  nextOffset: null,
+                }))
+              : new Promise<null>((resolve) => {
+                  finish = resolve;
+                }),
+          async close() {
+            finish?.(null);
+          },
+        };
+      },
+    },
+    attachments: {
+      sessionId: 'original-session',
+      files: () => [],
+      rows: () => [],
+      ids: () => [],
+      picker: () => false,
+      restoring: () => false,
+      error: () => '',
+      notice: () => '',
+      recovering: () => null,
+      renderPicker: () => null,
+      imageUri: unexpected,
+      pasteClipboard: unexpected,
+      dropFiles: unexpected,
+      open: unexpected,
+      remove: unexpected,
+      reportError: unexpected,
+      notify: unexpected,
+      clearNotice() {},
+    },
+    completion: {
+      async files(query, directory) {
+        lookup.set(`files:${query}:${directory?.bytesBase64 ?? 'root'}`);
+        let first = true;
+        return {
+          async next() {
+            if (!first) return null;
+            first = false;
+            return {
+              entries: [{ path: { bytesBase64: btoa('docs/Release Notes.md') }, kind: 'file' }],
+            };
+          },
+          async close() {},
+        };
+      },
+      async skills({ query, backend }) {
+        if (backend.kind !== 'model')
+          throw new Error('Expected a native model for skill completion');
+        lookup.set(`skills:${query}:${backend.connectionId}:${backend.modelId}`);
+        return {
+          skills: [
+            {
+              reference: 'review',
+              name: 'Review changes',
+              description: 'Review the selected changes',
+              invocation: '/skill:review',
+            },
+          ],
+        };
+      },
+      pathLabel: unexpected,
+    },
+  };
+  return (
+    <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+      <Text>{action()}</Text>
+      <Text>{lookup()}</Text>
+      <If when={props.switchBackend}>
+        <Button
+          accessibilityLabel={
+            selectedBackend().kind === 'model' ? 'Use external Agent' : 'Use native model'
+          }
+          onPress={() =>
+            selectedBackend.set(
+              selectedBackend().kind === 'model'
+                ? {
+                    kind: 'executor',
+                    selection: { executor: 'external', settings: { runtime: 'fixture' } },
+                  }
+                : backend,
+            )
+          }
+          style={{ minHeight: 32 }}
+        >
+          <Text>
+            {selectedBackend().kind === 'model' ? 'Use external Agent' : 'Use native model'}
+          </Text>
+        </Button>
+      </If>
+      <Text accessibilityLabel={`Draft ${draft()}`}>{draft()}</Text>
+      <Composer
+        session={() => owner}
+        active={() => true}
+        attach={() => {}}
+        commands={() => [
+          {
+            id: 'inspect',
+            title: 'Inspect draft',
+            trigger: 'inspect',
+            run() {
+              action.set('command:inspect');
+            },
+          },
+        ]}
+        models={<View />}
+        request={<View />}
+        stopAction={() => unexpected}
+        chooseWorkspace={unexpected}
+        settings={unexpected}
+      />
+    </View>
+  );
+}
+
+function WorkspacePages(props: { busy: boolean }) {
+  const session = (workspace: string, index: number): BrowserSession => ({
+    id: `${workspace}-${index}`,
+    parentSessionId: null,
+    title: `${workspace} conversation ${index}`,
+    revision: 1,
+    labels: [],
+    archived: false,
+    pinned: false,
+    hasUnread: false,
+    tailMessageId: null,
+    branch: null,
+    activity: 'idle',
+    updatedAt: index,
+    permissions: { access: 'workspace_write', requestPermissions: true },
+    boundaryRevision: 1,
+    binding: { id: '47a24946-26e1-4451-9584-19e5120dfab8', permissionEpoch: 1 },
+    dataSource: {
+      stateDomain: '0'.repeat(64),
+      deployment: '47a24946-26e1-4451-9584-19e5120dfab8',
+      namespace: [],
+    },
+    workspace: {
+      path: `/workspace/${workspace}`,
+      directoryIdentity: workspace,
+      identity: workspace,
+    },
+  });
+  const scope = { kind: 'all' } as const;
+  const sessions = signal(Array.from({ length: 32 }, (_, index) => session('A', index)));
+  const loading = signal(false);
+  const calls = signal(0);
+  const release = signal<(() => void) | null>(null);
+  let page = 1;
+  const browsing: Browsing = {
+    scope: () => scope,
+    filter: () => 'all',
+    needsYouCount: () => 0,
+    sessions,
+    loading,
+    projects: () =>
+      props.busy
+        ? Array.from({ length: 12 }, (_, index) => ({
+            reference: { id: `empty-${index}`, revision: 'original' },
+            name: `Empty ${index}`,
+            archived: false,
+            available: false,
+            path: null,
+          }))
+        : [],
+    error: () => '',
+    projectError: () => '',
+    setScope() {},
+    setFilter() {},
+    async refresh() {},
+    async loadMore() {
+      if (loading()) return 'waiting';
+      if (page === 3) return 'complete';
+      loading.set(true);
+      calls.set(calls() + 1);
+      await new Promise<void>((resolve) => release.set(resolve));
+      release.set(null);
+      page += 1;
+      sessions.set([
+        ...sessions(),
+        ...(page === 2
+          ? Array.from({ length: 32 }, (_, index) => session('A', index + 32))
+          : [session('B', 0)]),
+      ]);
+      loading.set(false);
+      return 'advanced';
+    },
+  };
+  if (props.busy) void browsing.loadMore();
+  return (
+    <View style={{ flex: 1 }}>
+      <Text>
+        {platform.idiom === 'terminal' ? 'TERMINAL_BRANCH' : 'DESKTOP_BRANCH'} requests:{calls()}
+      </Text>
+      <Button
+        accessibilityLabel="Publish requested page"
+        disabled={release() === null}
+        style={{ height: 32, flexShrink: 0 }}
+        onPress={() => release()?.()}
+      >
+        <Text>Publish requested page</Text>
+      </Button>
+      <WorkspaceBrowser
+        browsing={browsing}
+        docked={() => false}
+        connectionLost={() => false}
+        selected={() => null}
+        switching={() => false}
+        focusRequest={() => false}
+        focusHandled={() => {}}
+        attach={() => {}}
+        close={() => {}}
+        collapse={() => {}}
+        selectSession={async () => {}}
+        create={async () => {}}
+        newConversation={() => {}}
+        settings={() => {}}
+        search={() => {}}
+        changeSession={async () => {}}
+      />
+    </View>
+  );
+}
+
+function ActivityFollow() {
+  const atEnd = signal(false);
+  const count = signal(10);
+  const reading = signal(false);
+  const rows = new Map<string, Row>();
+  const states = new Map<string, MessageViewState>();
+  const state: GroupViewState = {
+    open: signal(true),
+    following: signal(true),
+    offset: new AnimatedValue(0),
+    measured: new Map(),
+    lease: 0,
+    opening: 'bottom',
+    visibleRows: signal(new Set<string>()),
+    rowNodes: new Map(),
+  };
+  const ids = () => ['tool', ...Array.from({ length: count() }, (_, i) => `activity-${i + 1}`)];
+  return (
+    <HostProvider value={{} as Host}>
+      <View style={{ flex: 1 }}>
+        <Text>{`Activity count: ${count()} · ${reading() ? 'Reading history' : 'Following latest'} · ${atEnd() ? 'At activity end' : 'Above activity end'}`}</Text>
+        <Button
+          accessibilityLabel="Read older activity"
+          style={{ height: 32, flexShrink: 0 }}
+          onPress={() => {
+            state.list?.scrollToIndex({ index: 0, viewPosition: 0, animated: false });
+            state.list?.focus();
+          }}
+        >
+          <Text>Read older activity</Text>
+        </Button>
+        <Button
+          accessibilityLabel="Append activity"
+          style={{ height: 32, flexShrink: 0 }}
+          onPress={() => count.set(count() + 1)}
+        >
+          <Text>Append activity</Text>
+        </Button>
+        <Button
+          accessibilityLabel="One line above latest"
+          style={{ height: 32, flexShrink: 0 }}
+          onPress={async () => {
+            const y = await state.offset.getValue();
+            state.list?.scrollToOffset({ offset: Math.max(0, y - 16), animated: false });
+          }}
+        >
+          <Text>One line above latest</Text>
+        </Button>
+        <TurnPanel
+          group={() => ({
+            kind: 'process',
+            key: 'process',
+            turnKey: 'turn',
+            members: [],
+            rowIds: ids(),
+            toolIds: ['tool'],
+            closed: false,
+          })}
+          turn={() => ({
+            turnKey: 'turn',
+            timing: null,
+            active: true,
+            finalOutputIds: [],
+            interleavedInput: false,
+            worked: true,
+          })}
+          toolActivity={() => undefined}
+          liveTools={() => []}
+          toolProgress={() => null}
+          state={state}
+          row={(id) => {
+            if (!rows.has(id))
+              rows.set(id, {
+                key: id,
+                messageId: id,
+                field: 'body',
+                role: id === 'tool' ? 'tool_call' : 'assistant',
+                text:
+                  id === 'tool'
+                    ? Array.from({ length: 25 }, (_, i) => `Tool source line ${i + 1}`).join('\n')
+                    : `Live ${id}`,
+              });
+            return rows.get(id);
+          }}
+          rowState={(id) => {
+            if (!states.has(id))
+              states.set(id, { expanded: signal(false), sourceMode: signal(false) });
+            return states.get(id)!;
+          }}
+          sessionId="activity-session"
+          through={() => 1}
+          viewport={windowSize}
+          activity={() => ({ kind: 'working', detail: '' })}
+          reveal={() => {}}
+          previewImage={() => {}}
+          openLink={async () => {}}
+          userScroll={() => {}}
+          reading={(away) => reading.set(away)}
+          settled={(end) => atEnd.set(end)}
+        />
+      </View>
+    </HostProvider>
+  );
+}
+
+const scenario = (nativeHost as unknown as { scenario: string }).scenario;
+mount(() =>
+  scenario === 'activity-follow' ? (
+    <ActivityFollow />
+  ) : scenario.startsWith('workspace-pages') ? (
+    <WorkspacePages busy={scenario === 'workspace-pages-busy'} />
+  ) : scenario === 'sandbox' ? (
+    <Sandbox />
+  ) : scenario === 'composer' ||
+    scenario === 'composer-prediction' ||
+    scenario === 'composer-backends' ? (
+    <CompletionComposer
+      prediction={scenario === 'composer-prediction'}
+      switchBackend={scenario === 'composer-backends'}
+    />
+  ) : (
+    <Consent />
+  ),
+);

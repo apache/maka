@@ -150,7 +150,6 @@ const defaultUiAliases = Object.fromEntries(
 ) as UiAliases;
 const settingsUiImports = [
   'agent',
-  'agents',
   'settings',
   'authentication',
   'setup',
@@ -320,10 +319,7 @@ export function composition(configuration: CompositionConfiguration): Applicatio
     receipts: [{ kind: 'instance' as const, path: ['receipts'], export: 'Receipts' }],
   };
   source.host.instances['conversations-ui']!.bindings = bindings;
-  source.host.instances['settings-ui']!.bindings = selectUiBindings(
-    { ...bindings, agents: bindings.agent ?? [] },
-    settingsUiImports,
-  );
+  source.host.instances['settings-ui']!.bindings = selectUiBindings(bindings, settingsUiImports);
   source.host.instances['workspace-files-ui']!.bindings = selectUiBindings(
     bindings,
     workspaceUiImports,
@@ -410,7 +406,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
   const skillCalls = [
     ...new Set([
       ...skillMethods,
-      ...(configuration.agent.skillLibrary ? ['prepare', 'search'] : []),
+      ...(configuration.agent.skillLibrary ? ['prepare', 'search', 'candidates'] : []),
     ]),
   ];
   if (skillCalls.length && !configuration.skills)
@@ -666,7 +662,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
             consumer: [keys.agent],
             provider: [keys.skills],
             export: 'skills',
-            methods: ['prepare', 'search'],
+            methods: ['prepare', 'search', 'candidates'],
             recovery: false,
           },
         ]

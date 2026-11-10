@@ -61,13 +61,19 @@ dist/nsh/runtime/macos/nsh-macos-host --bundle build/bundle.nshc --window-size 1
 screen stays yours; `--display <n>` picks another): each app a test opens gets a window of its own, at the size the
 test asks for even on a display shorter than it, and
 the steps click, type and scroll with the system's input at the views their selectors name
-([Testing](./testing-and-trace.md#on-a-real-platform)).
+([Testing](./testing-and-trace.md#on-a-real-platform)). The apps run in the background: their windows show while the
+keyboard stays with the app you type in (`--foreground` lets them become the active app), and clicks reach the app's
+views as they do in the active window, under a hidden title bar too.
 
 ### Performance monitor
 
 `--fps` (`AppOptions { fps: true, .. }` in a Rust app's `run_app`, `AppView::set_fps_monitor(true)` when embedding,
-`nsh run App.tsx --target macos --fps`, the host's `--fps`, or a packaged TSX app's `open -a MyApp --args --fps`) shows a panel at the top right of the
-app that updates twice a second:
+`nsh run App.tsx --target macos --fps`, the host's `--fps`, a packaged TSX app's `open -a MyApp --args --fps`, the
+environment variable `NSH_FPS=1`, or the app's own `setFpsEnabled(true)`) shows a panel at the top right of the app that
+updates twice a second. A packaged TSX app can also set `NSHPerformanceMonitor` to `true` in its `Info.plist` to show
+the panel however the app is opened. Add this key through `nsh.json`'s `macos.infoPlist`
+([Packaging](./packaging.md#infoplist-keys-and-entitlements)). A packaged app can also take `NSH_FPS` from its
+`Info.plist`'s `LSEnvironment`.
 
 | Row | Measures |
 |---|---|
@@ -151,15 +157,32 @@ For an app that is only an NSH app, `run_app(source, options)` (`AppSource::Rust
 (About, Hide, Quit, Edit, Minimize, Zoom, Enter Full Screen, Close), which the app can replace with
 `Menu.setApplicationMenu` ([`nsh/desktop`](../modules/nsh-desktop.md)), and runs until the window closes.
 By default, closing the window or choosing Quit stops the engine and returns from `run_app`;
-the caller can then finish cleanup or relaunch its executable.
+the caller can then finish cleanup or restart its executable.
 
 Set `AppOptions { keep_alive_on_close: true, ..Default::default() }` to keep the
 standalone session alive when its window closes. Closing hides the window;
 reopening from the Dock shows that same window and engine. For an explicit Exit
-or update relaunch, call `nsh_platform_macos::quit_app()` from any thread. It
+or update restart, call `nsh_platform_macos::quit_app()` from any thread. It
 closes the retained window, stops the engine and returns from `run_app`.
-`nsh_core::element::desktop::close_window()` follows the chosen window-close policy.
+The app's own code quits the same way with `nsh_core::element::desktop::quit()` (TS: `Application.quit()`), while
+`current_window().close()` (`nsh_core::element::desktop`) follows the chosen window-close policy.
+`nsh_core::element::desktop::restart()` (TS: `Application.restart()`) quits the same way, and once the process has
+exited `run_app`'s runner starts the app again with the same arguments: inside an `.app` bundle through Launch Services
+(`open -n`), as when the user opens it.
 
+`AppOptions { transparent: true, ..Default::default() }` opens `run_app`'s window nonopaque with a clear
+background, so what the app leaves unpainted shows what is behind the window (a HUD panel, a
+[`macos={{ backdrop }}`](./styling.md#filters-and-blending) with `behindWindow`). This option defaults to `false`.
+For a custom Rust host it supplies an initial default: explicit main-window attributes and later window updates
+take precedence. Standard hosts leave this option false but can request transparency through their window
+configuration. A view's `behindWindow` material never makes the window transparent by itself.
+An embedded `AppView` does not change the window it is put in: make your own `NSWindow` nonopaque with a clear
+`backgroundColor` for the same look.
+
+
+`AppOptions::notifications` hands the process's [notifications](../modules/nsh.md#notifications) to the app the view runs:
+its banners, presses and badge. It is off by default, so an embedded app's notifications are `unavailable` and your
+app's stay yours; `run_app` sets it.
 
 `AppOptions::cache` (or `AppView::set_cache`, for the apps loaded next) sets where the apps keep their caches, the
 [images they download](./images-and-assets.md#kept-on-disk), and how much each keeps (`CacheOptions`: the system's
@@ -194,6 +217,14 @@ point. `AlertDialog` shows an `NSAlert` sheet on the window: up to two alert act
 action leftmost, the last regular one the default for Return), more actions and an action sheet's actions stacked in
 their order with the cancel action last and no default; Escape chooses the cancel action.
 
+### Table accessibility
+
+VoiceOver and UI automation read `Table` and `Grid` as `AXTable`, `Row` as `AXRow`, and `Cell` and
+`ColumnHeader` as `AXCell`. The table exposes its mounted rows and columns, visible rows and cells, and headers.
+Row and cell indices follow tree order, starting at zero and including header rows, with each cell spanning one
+row and column. Column headers are linked from their table, column and cells. Rows with `onPress` keep their
+press action and their row role, and labels and text children remain available to accessibility clients.
+
 ### Keyboard
 
 | Keys | Do |
@@ -220,7 +251,13 @@ what React Native reports: the typed text, `"Enter"`, `"Backspace"`, and `"Escap
 Not supported, or different:
 
 - **Zooming scroll views** (`zoomTo`, the zoom props).
-- **`mixBlendMode`**, and `brightness()` above 1.
+- **`brightness()`** above 1 is not drawn. **`mixBlendMode`** and **backdrops** are drawn by Core Animation:
+  `mixBlendMode` as the view layer's compositing filter, `macos={{ backdrop: { material, blending, state } }}` as an
+  `NSVisualEffectView` below the view (any AppKit material and state, whether or not a `backdropFilter` is set), and
+  `glassTintColor` as `glassEffect`'s tint on macOS 26; before macOS 26 the blur stands in for glass. These are
+  compositor effects: the test agent's composited screenshots show them, but its in-process fallback cannot.
+  A `behindWindow` material shows the desktop only through a see-through window, requested by window attributes
+  or a custom host's `AppOptions::transparent`; the view's blending never enables transparency itself.
 - **Inputs**: content types and autofill, keyboard types, autocapitalization, letter spacing; input accessory views
   are never shown (there is no software keyboard) and `keyboardShouldPersistTaps` is ignored.
 - **`WebView`'s `scrollable={false}`** keeps the mouse wheel and the trackpad from scrolling the page: they scroll

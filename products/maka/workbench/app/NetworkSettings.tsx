@@ -25,6 +25,7 @@ import type { NetworkSettingsOwner } from './networkSettingsState.ts';
 import {
   SettingsBody,
   SettingsButton,
+  SettingsDiscard,
   SettingsInput,
   SettingsLede,
   SettingsProblem,
@@ -37,6 +38,18 @@ import {
 const protocols: ProxyProtocol[] = ['http', 'https', 'socks5'];
 
 export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
+  const owner = props.owner;
+  return (
+    <If
+      when={!owner.discarding.asking()}
+      else={<SettingsDiscard onDiscard={owner.discarding.discard} onKeep={owner.discarding.keep} />}
+    >
+      <NetworkForm owner={owner} />
+    </If>
+  );
+}
+
+function NetworkForm(props: { owner: NetworkSettingsOwner }) {
   const owner = props.owner;
   const value = () => owner.draft()!;
   const disabled = () => owner.disabled();
@@ -56,25 +69,24 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
       }
     >
       <SettingsBody
+        footerShown={owner.dirty()}
         footer={
-          owner.dirty() ? (
-            <>
-              <SettingsButton
-                label={tr('Discard')}
-                accessibilityLabel={tr('Reload network settings')}
-                tone="quiet"
-                disabled={disabled()}
-                onPress={inputAction(owner.reload, owner.action())}
-              />
-              <SettingsButton
-                label={tr('Save')}
-                accessibilityLabel={tr('Save network settings')}
-                tone="primary"
-                disabled={disabled()}
-                onPress={inputAction(owner.save, owner.action())}
-              />
-            </>
-          ) : undefined
+          <>
+            <SettingsButton
+              label={tr('Discard')}
+              accessibilityLabel={tr('Reload network settings')}
+              tone="quiet"
+              disabled={disabled()}
+              onPress={inputAction(owner.reload, owner.action())}
+            />
+            <SettingsButton
+              label={tr('Save')}
+              accessibilityLabel={tr('Save network settings')}
+              tone="primary"
+              disabled={disabled()}
+              onPress={inputAction(owner.save, owner.action())}
+            />
+          </>
         }
       >
         <SettingsLede>

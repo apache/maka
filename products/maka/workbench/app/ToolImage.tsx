@@ -110,7 +110,7 @@ export function ToolImageStrip(props: {
   preview(image: ImagePreview): void;
 }) {
   // Terminal cells are too coarse for thumbnails; expanded tools still show each image.
-  if (platform.isTerminal) return <View />;
+  if (platform.idiom === 'terminal') return <View />;
   const shown = () => props.images().slice(-stripLimit);
   const hidden = () => props.images().length - shown().length;
   return (

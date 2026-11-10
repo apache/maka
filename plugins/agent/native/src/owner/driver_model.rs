@@ -51,6 +51,8 @@ mod materialize;
 mod original;
 mod recovered;
 mod replay;
+mod replay_admission;
+use replay_admission::ReplayTarget;
 mod summary_repair;
 mod tool_projection;
 use compacted::CoveredPrefix;
@@ -789,10 +791,14 @@ impl DriverModel {
         summary: bool,
     ) -> BoxFuture<'a, Result<ProjectedStepInput<'a>, RunError>> {
         Box::pin(async move {
-            let target = model
-                .context
-                .as_ref()
-                .and_then(|context| context.codex.as_ref());
+            let target = ReplayTarget::new(
+                model,
+                if summary && model.provider.capabilities.native_compaction == Some(true) {
+                    ModelOperation::CodexCompaction
+                } else {
+                    ModelOperation::Inference
+                },
+            );
 
             let mut system: Option<SystemPrompt> =
                 self.decode(view.run, &view.spec.system_prompt).await?;
@@ -907,7 +913,7 @@ impl DriverModel {
                         .await?;
                 } else if let Some((after, request)) = self.latest_replan(reader, view).await? {
                     let (source, baseline) = self
-                        .request_base(reader, view.run, &request, &mut messages)
+                        .request_base(target, reader, view.run, &request, &mut messages)
                         .await?;
                     source_evidence = source;
                     source_evidence.current = history.capture().await?;
@@ -917,6 +923,7 @@ impl DriverModel {
                         self.request_checkpoint(reader, view.run, &request).await?;
                     recovered_cells = self
                         .semantic_tail(
+                            target,
                             reader,
                             view,
                             model.supports_vision,
@@ -963,6 +970,7 @@ impl DriverModel {
                     }
                     recovered_cells = self
                         .semantic_tail(
+                            target,
                             reader,
                             view,
                             model.supports_vision,
@@ -1236,6 +1244,7 @@ impl DriverModel {
     }
     async fn append_frozen_base(
         &self,
+        target: ReplayTarget<'_>,
         reader: &HistorySource<'_>,
         run: RunId,
         request: &RequestSpec,
@@ -1244,6 +1253,12 @@ impl DriverModel {
     ) -> Result<(), RunError> {
         let prompt = self.restore_frozen(reader, run, request, frozen).await?;
         let result = async {
+            let context: maka_agent_facts::context::RequestContextEvidence =
+                reader.decode(run, &request.provenance).await?;
+            let producer = context
+                .model_context
+                .as_ref()
+                .and_then(|context| context.codex.as_ref());
             let source = prompt
                 .recipes()
                 .ok_or_else(|| unsupported("frozen-recipe-source"))?;
@@ -1253,7 +1268,12 @@ impl DriverModel {
                     recipe,
                     maka_agent_facts::model::prompt_source::source::MessageRecipe::System { .. }
                 ) {
-                    messages.append_recipe(&recipe).await?;
+                    if let Some(recipe) = target
+                        .recipe(recipe, &request.accounting.model_id, producer)
+                        .await?
+                    {
+                        messages.append_recipe(&recipe).await?;
+                    }
                 }
             }
             Ok(())
@@ -1267,13 +1287,14 @@ impl DriverModel {
     }
     async fn request_base(
         &self,
+        target: ReplayTarget<'_>,
         reader: &HistorySource<'_>,
         run: RunId,
         request: &RequestSpec,
         messages: &mut preparation::PromptBuilder,
     ) -> Result<(RequestSource, Option<SystemPrompt>), RunError> {
         let frozen = self.frozen_input(reader, run, request).await?;
-        self.append_frozen_base(reader, run, request, &frozen, messages)
+        self.append_frozen_base(target, reader, run, request, &frozen, messages)
             .await?;
         let source: RequestSource = reader.decode(run, &request.source_capture).await?;
         let system = frozen.system;
@@ -1311,8 +1332,15 @@ impl DriverModel {
         {
             return Err(unsupported("replan-base-route-changed"));
         }
-        self.append_frozen_base(reader, view.run, &request, &frozen, messages)
-            .await?;
+        self.append_frozen_base(
+            ReplayTarget::new(&model, ModelOperation::Inference),
+            reader,
+            view.run,
+            &request,
+            &frozen,
+            messages,
+        )
+        .await?;
         let observed = self.canonical_parts(view, attempt).await?;
         let original_cells = self.recorded_inputs(reader, view, 0).await?.cells;
         let mut reports = Vec::with_capacity(inputs.len());
@@ -1468,10 +1496,7 @@ impl DriverModel {
             digest: capture.cut.digest.clone(),
         };
         let model = self.source.capture().await?;
-        let target = model
-            .context
-            .as_ref()
-            .and_then(|context| context.codex.as_ref());
+        let target = ReplayTarget::new(&model, ModelOperation::Inference);
         let mut messages = preparation::PromptBuilder::new(
             self.preparation_io()?,
             self.resources.clone(),
@@ -1603,7 +1628,7 @@ impl DriverModel {
     }
     async fn canonical_messages(
         &self,
-        target: Option<&maka_agent_facts::context::CodexRequestProvenance>,
+        target: ReplayTarget<'_>,
         cut: &maka_agent_state::session_history::HistoryCut,
         vision: bool,
         language: maka_agent_facts::language::Language,
@@ -1617,7 +1642,7 @@ impl DriverModel {
 
     async fn project_history(
         &self,
-        target: Option<&maka_agent_facts::context::CodexRequestProvenance>,
+        target: ReplayTarget<'_>,
         reader: &HistorySource<'_>,
         vision: bool,
         language: maka_agent_facts::language::Language,
@@ -1658,6 +1683,7 @@ impl DriverModel {
                     maka_agent_facts::history_snapshot::Origin::Imported { .. }
                 ) {
                     self.imported_messages(
+                        target,
                         snapshot,
                         reader.source_path(),
                         vision,
@@ -1723,7 +1749,8 @@ impl DriverModel {
                     run,
                     request,
                 }) => {
-                    self.request_base(reader, run, &request, messages).await?;
+                    self.request_base(target, reader, run, &request, messages)
+                        .await?;
                     (
                         Some(sequence),
                         self.request_checkpoint(reader, run, &request).await?,
@@ -1771,7 +1798,7 @@ impl DriverModel {
                         .await?;
                 }
                 let knowledge = self
-                    .semantic_tail(reader, &view, vision, &mut None, messages, after)
+                    .semantic_tail(target, reader, &view, vision, &mut None, messages, after)
                     .await?;
                 if run == self.execution.run_id {
                     recovered_cells = knowledge;
@@ -1821,7 +1848,7 @@ impl DriverModel {
 
     async fn inherited_messages(
         &self,
-        target: Option<&maka_agent_facts::context::CodexRequestProvenance>,
+        target: ReplayTarget<'_>,
         reader: &HistorySource<'_>,
         mut source_run: RunId,
         language: maka_agent_facts::language::Language,
@@ -1897,7 +1924,9 @@ impl DriverModel {
             let run = ancestry[index].0.run;
             let (previous, covered, request_after) = match base {
                 Base::Request { after, request } => {
-                    let (_, baseline) = self.request_base(reader, run, &request, messages).await?;
+                    let (_, baseline) = self
+                        .request_base(target, reader, run, &request, messages)
+                        .await?;
                     *system = baseline;
                     (
                         self.request_checkpoint(reader, run, &request).await?,
@@ -1937,7 +1966,7 @@ impl DriverModel {
                         .await?;
                 }
                 let _ = self
-                    .semantic_tail(reader, &prior, vision, system, messages, after)
+                    .semantic_tail(target, reader, &prior, vision, system, messages, after)
                     .await?;
             }
             Ok(previous)
@@ -1955,7 +1984,7 @@ impl DriverModel {
                 self.project_message_input(reader, &prior, &input, vision, false, messages)
                     .await?;
                 let _ = self
-                    .semantic_tail(reader, &prior, vision, system, messages, 0)
+                    .semantic_tail(target, reader, &prior, vision, system, messages, 0)
                     .await?;
             }
             Ok(previous)
@@ -1964,6 +1993,7 @@ impl DriverModel {
 
     fn semantic_tail<'a>(
         &'a self,
+        target: ReplayTarget<'a>,
         reader: &'a HistorySource<'_>,
         view: &'a RunView,
         vision: bool,
@@ -1973,8 +2003,9 @@ impl DriverModel {
     ) -> BoxFuture<'a, Result<Vec<FrozenCellKnowledge>, RunError>> {
         Box::pin(async move {
             let recorded = self.recorded_inputs(reader, view, after_revision).await?;
-            let mut replay =
-                replay::TailReplay::new(self, reader, view, vision, system, messages, recorded);
+            let mut replay = replay::TailReplay::new(
+                self, target, reader, view, vision, system, messages, recorded,
+            );
             let mut after = after_revision;
             loop {
                 let page = reader.history(view.run, after, 256).await?;

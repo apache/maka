@@ -28,6 +28,7 @@ use maka_agent_state::{Change, ContentBlob, Head};
 use maka_assistant::todo::{Document, Item, Repository, Status};
 use maka_event_log::writeback::{Prepared, Statement};
 use maka_plugin_core::storage::{Data, Mutation, Namespace, StoreError};
+use sha2::{Digest, Sha256};
 use std::sync::{OnceLock, Weak};
 
 pub(super) struct Todo {
@@ -426,22 +427,43 @@ impl Owner {
             vec![]
         };
         let total = items.len();
-        let offset = input.offset.min(total.saturating_sub(1) / 20 * 20);
+        let digest = (!items.is_empty()).then(|| {
+            let mut hasher = Sha256::new();
+            hasher.update((total as u64).to_le_bytes());
+            for item in &items {
+                hasher.update((item.content.len() as u64).to_le_bytes());
+                hasher.update(item.content.as_bytes());
+            }
+            hex::encode(hasher.finalize())
+        });
+        let completed = items
+            .iter()
+            .filter(|item| item.status == Status::Completed)
+            .count();
+        let active_index = items
+            .iter()
+            .position(|item| item.status == Status::InProgress)
+            .or_else(|| {
+                items
+                    .iter()
+                    .position(|item| item.status != Status::Completed)
+            });
+        let current = active_index.map(|index| items[index].clone());
+        let offset = input.offset.min(total);
+        let limit = input.limit.unwrap_or(20);
+        let next_offset =
+            (limit > 0 && offset.saturating_add(limit) < total).then_some(offset + limit);
         Ok(Checklist {
             enabled: self.settings.todo,
             revision: snapshot.revision,
+            digest,
             total,
-            completed: items
-                .iter()
-                .filter(|item| item.status == Status::Completed)
-                .count(),
-            current: items
-                .iter()
-                .find(|item| item.status == Status::InProgress)
-                .cloned(),
+            completed,
+            active_index,
+            current,
             offset,
-            items: items.into_iter().skip(offset).take(20).collect(),
-            next_offset: (offset + 20 < total).then_some(offset + 20),
+            items: items.into_iter().skip(offset).take(limit).collect(),
+            next_offset,
         })
     }
 }

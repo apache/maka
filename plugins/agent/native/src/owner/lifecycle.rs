@@ -87,18 +87,6 @@ impl Owner {
                 actual: record.metadata.revision,
             }));
         }
-        if self
-            .store
-            .session(&input.session_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .session_manager(&input.session_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .is_some()
-        {
-            return Ok(session_rejected(Rejection::SessionUnavailable));
-        }
         if !matches!(input.action, SessionAction::Restore) {
             self.titles
                 .cancel_and_wait(&input.session_id)

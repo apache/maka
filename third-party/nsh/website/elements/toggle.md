@@ -31,9 +31,12 @@ fn formatting() -> impl IntoElement {
             .items_center()
             .justify_center()
             .rounded(move || theme().radius)
-            .pressed_style(|s| s.bg(move || theme().accent))
+            .border_1()
+            .border_color(transparent_black())
+            .hover(|s| s.bg(move || theme().foreground.opacity(0.05)))
+            .pressed_style(|s| s.bg(move || theme().foreground.opacity(0.1)).border_color(move || theme().border))
             .child(text(&label[..1]).text_sm().text_color(move || {
-                if on.get() { theme().accent_foreground } else { theme().muted_foreground }
+                if on.get() { theme().foreground } else { theme().muted_foreground }
             }))
     };
     toggle_group()
@@ -58,9 +61,9 @@ function App() {
       onChange={({ pressed }) =>
         marks.set(pressed ? [...marks(), value] : marks().filter((m) => m !== value))
       }
-      class="group size-8 items-center justify-center rounded-(--radius) aria-pressed:bg-accent"
+      class="group size-8 items-center justify-center rounded-(--radius) border border-transparent hover:bg-foreground/5 aria-pressed:border-border aria-pressed:bg-foreground/10"
     >
-      <Text class="text-sm text-muted-foreground group-aria-pressed:text-accent-foreground">{label[0]}</Text>
+      <Text class="text-sm text-muted-foreground group-aria-pressed:text-foreground">{label[0]}</Text>
     </Toggle>
   );
   return (
@@ -110,6 +113,11 @@ typed style methods and `.child(..)` for their content.
 | Event | Rust | Description |
 |---|---|---|
 | `onChange` (`Toggle`) | `.on_change(\|pressed: &bool\| ..)` | The toggle was pressed: a tap, a click, Space or Return while it has the keyboard focus, or a screen reader's activation. `{ pressed }` is the value it asks for, the opposite of `pressed`. It runs before anything changes: the toggle shows the `pressed` the app passes back. |
+| `onPressDown` (`Toggle`) | `.on_press_down(\|\| ..)` | A press went down on it. |
+| `onPressUp` (`Toggle`) | `.on_press_up(\|\| ..)` | The press ended: released, moved away or cancelled. |
+
+`onPressDown` and `onPressUp` are for press feedback of your own, such as a spring or a shape that the state styles do
+not express.
 
 An arrow key of a `ToggleGroup` only moves the keyboard focus: it presses nothing. A disabled toggle reports nothing.
 
@@ -122,7 +130,8 @@ An arrow key of a `ToggleGroup` only moves the keyboard focus: it presses nothin
 | The icon or label | the toggle | its own elements (`children`) | `group-aria-pressed:`, `group-disabled:` and the other `group-*:` variants with `group` on the toggle's `class` |
 
 `aria-pressed:` is the toggle being on; `active:` is a press in progress, on or off. Show a pressed toggle through its
-own surface: a fill, a raised pill, a stronger icon (see [Design guides](../docs/design-guides.md#interaction-states)).
+own surface, clearly apart from its hover in light and dark themes alike: a deeper fill with an edge, a stronger icon
+or label (see [Design guides](../docs/design-guides.md#interaction-states)).
 
 ## Segmented
 
@@ -137,9 +146,9 @@ value and presses the toggle that names it. The joined look is the app's classes
         pressed={view() === value()}
         accessibilityLabel={`${value()} view`}
         onChange={({ pressed }) => pressed && view.set(value())}
-        class="-ml-px h-8 px-3 border border-border first:ml-0 first:rounded-l-(--radius) last:rounded-r-(--radius) aria-pressed:bg-accent"
+        class="group -ml-px h-8 px-3 border border-border first:ml-0 first:rounded-l-(--radius) last:rounded-r-(--radius) hover:bg-foreground/5 aria-pressed:bg-foreground/10"
       >
-        <Text class="text-sm">{value()}</Text>
+        <Text class="text-sm text-muted-foreground group-aria-pressed:text-foreground">{value()}</Text>
       </Toggle>
     )}
   </Each>

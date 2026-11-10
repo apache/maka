@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { AlertDialog, Button } from "nsh/base";
-import { button, buttonText, desktop, focusRing, hoverFill, Inspector, Panel, size, Stage, ui, wide } from "./palette";
+import { button, buttonText, desktop, focusRing, hoverFill, Inspector, Panel, pressSink, sectionSurface, size, Stage, ui, wide } from "./palette";
 
 type Options = Parameters<typeof AlertDialog.show>[0];
 
@@ -57,7 +57,9 @@ function App() {
     const { action } = await AlertDialog.show(options);
     answer.set(action === null ? "{ action: null } (closed without an action)" : `{ action: ${JSON.stringify(action)} }`);
   };
-  const row = () => ({ ...ui().row, borderRadius: 12, padding: 14, gap: 2 });
+  // A row sinks while pressed, natively, as every button does.
+  const press = pressSink();
+  const row = () => ({ ...ui().row, borderRadius: 12, padding: 14, gap: 2, ...press.transition });
   const hint = desktop ? "Escape or a click outside the action sheet closes it with { action: null }." : "A tap outside the action sheet closes it with { action: null }.";
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 12 }}>
@@ -69,15 +71,15 @@ function App() {
           <View style={{ flex: 1, flexDirection: "row", gap: 16 }}>
             {/* A row per alert: what it shows, and a button as wide as its label at the end. */}
             <Stage width={400}>
-              <View style={{ ...ui().card, borderRadius: 14, overflow: "hidden" }}>
+              <View style={{ ...sectionSurface(), overflow: "hidden" }}>
                 <Each of={alerts}>
                   {(a, i) => (
                     <>
                       {i() > 0 ? <View style={{ height: 1, marginLeft: 12, backgroundColor: ui().line }} /> : null}
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, height: size.row + 4, paddingHorizontal: 12 }}>
                         <Text style={{ flex: 1, fontSize: 13, color: ui().muted }}>{a().detail}</Text>
-                        <Button onPress={() => show(a().options)} {...button()}>
-                          <Text style={{ ...buttonText(), color: a().danger ? ui().down : ui().text }}>{a().label}</Text>
+                        <Button onPress={() => show(a().options)} {...button(a().danger ? "danger" : "secondary")}>
+                          <Text style={buttonText(a().danger ? "danger" : "secondary")}>{a().label}</Text>
                         </Button>
                       </View>
                     </>
@@ -96,8 +98,8 @@ function App() {
           <View style={{ gap: 10 }}>
             <Each of={alerts}>
               {(a) => (
-                <Button onPress={() => show(a().options)} style={row()} activeStyle={{ opacity: 0.7 }} hoverStyle={hoverFill()} focusStyle={focusRing()}>
-                  <Text style={{ color: a().danger ? ui().down : ui().text, fontSize: 16, fontWeight: "600" }}>{a().label}</Text>
+                <Button onPress={() => show(a().options)} style={row()} activeStyle={press.activeStyle} hoverStyle={hoverFill()} focusStyle={focusRing()}>
+                  <Text style={{ color: a().danger ? ui().danger : ui().text, fontSize: 16, fontWeight: "600" }}>{a().label}</Text>
                   <Text style={{ color: ui().muted, fontSize: 13 }}>{a().detail}</Text>
                 </Button>
               )}
