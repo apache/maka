@@ -17,13 +17,12 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
 import { errorText, message, renderText, type UiText } from './text';
 import { tr } from './locale';
 import { cleanup, effect, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import type { ViewRef } from 'nsh';
-import { Button, Dialog, Popover } from 'nsh/base';
+import { Button, Popover } from 'nsh/base';
 import { windowSize } from 'nsh';
 import { useHost } from './host';
 import { forkTitle, sessionActionTarget, SessionRevisionConflict } from './sessionLifecycle';
@@ -32,9 +31,6 @@ import {
   C,
   bodyTextStyle,
   captionTextStyle,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
   controlDisabledStyle,
   floatingStyle,
   inputTextStyle,
@@ -44,7 +40,8 @@ import {
   menuSeparatorStyle,
 } from './ui';
 import { Icon } from './Icon';
-import { dialogTop } from './chrome';
+import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
+import { SettingsButton } from './SettingsPage';
 import { SessionTree } from './SessionTree';
 import { SessionCompactionPrompt } from './SessionCompactionPrompt';
 
@@ -149,6 +146,20 @@ export function SessionActions(props: {
       if (alive) pending.set(false);
     }
   };
+  const titleAction = (): SessionAction =>
+    page() === 'fork'
+      ? { kind: 'fork', session: session(), title: title(), position: { kind: 'end' } }
+      : { kind: 'rename', session: session(), title: title() };
+  const Status = () => (
+    <>
+      <If when={renderText(error())}>
+        <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>{renderText(error())}</Text>
+      </If>
+      <If when={pending()}>
+        <Text style={{ color: C.muted }}>{tr('Confirming the original action…')}</Text>
+      </If>
+    </>
+  );
   return (
     <View>
       <If when={page() === 'actions' && !props.anchor() && pending()}>
@@ -360,198 +371,91 @@ export function SessionActions(props: {
           change={props.change}
         />
       </If>
-      <If when={page() !== 'actions' && page() !== 'compaction_prompt' && page() !== 'children'}>
-        <Dialog
-          animation="none"
-          closeOnEscape={false}
-          closeOnBackdropPress={false}
-          closeOnSwipe={false}
-          onCancel={() => back(page())}
-          style={{
-            flex: 1,
-            justifyContent: 'center',
-            alignItems: 'center',
-            padding: 16,
-            paddingTop: dialogTop(16),
-            backgroundColor: C.scrim,
-          }}
-        >
-          <View
+      <If when={page() === 'rename' || page() === 'fork'}>
+        <ModalDialog size="form" onCancel={() => back(page())}>
+          <DialogHeader
+            title={page() === 'fork' ? tr('Fork conversation') : tr('Rename conversation')}
+            detail={
+              page() === 'fork'
+                ? tr(
+                    'Copy the current history into an independent conversation. This draft stays with its original conversation.',
+                  )
+                : undefined
+            }
+          />
+          <Input
+            ref={(node) => {
+              node.focus();
+              node.setSelection(0, title().length);
+            }}
+            autoFocus
+            accessibilityLabel={tr('Conversation title')}
+            value={title()}
+            readonly={pending()}
+            onChange={({ value }) => title.set(value)}
+            // Enter saves, as the button below does.
+            onSubmit={() => void submit(titleAction())}
+            placeholder={tr('Conversation title')}
             style={{
-              width: '100%',
-              maxWidth: 560,
-              maxHeight: '100%',
-              padding: 16,
-              gap: 16,
-              backgroundColor: C.surface,
+              height: 32,
+              color: C.text,
+              backgroundColor: C.background,
+              paddingHorizontal: 8,
               borderWidth: 1,
               borderColor: C.line,
-              borderRadius: 16,
+              borderRadius: inputBorderRadius,
+              ...inputTextStyle,
             }}
-          >
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Button
-                disabled={pending()}
-                accessibilityLabel={tr('Back from conversation actions')}
-                tooltip={textTooltip(() => tr('Back · Esc'))}
-                onPress={inputAction(back, page())}
-                style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Icon name="back" color={C.secondary} />
-              </Button>
-              <Text
-                style={[
-                  { flex: 1, color: C.text, fontSize: 18, lineHeight: 24, fontWeight: '600' },
-                  { numberOfLines: 2 },
-                ]}
-              >
-                {page() === 'rename'
-                  ? tr('Rename conversation')
-                  : page() === 'fork'
-                    ? tr('Fork conversation')
-                    : page() === 'remove'
-                      ? tr('Delete conversation?')
-                      : tr('Conversation actions')}
-              </Text>
-              <Button
-                disabled={pending()}
-                accessibilityLabel={tr('Close conversation actions')}
-                tooltip={textTooltip(() => tr('Close'))}
-                onPress={inputAction(dismiss, page())}
-                style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Icon name="close" color={C.secondary} />
-              </Button>
-            </View>
-            <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
-              <View style={{ gap: 8 }}>
-                <Text style={[{ color: C.text }, { userSelect: 'text' }]}>
-                  {session().title || tr('Untitled conversation')}
-                </Text>
-                <Text style={[{ color: C.muted }, { numberOfLines: 2 }]}>
-                  {session().workspace.path}
-                </Text>
-                <If when={session().archived}>
-                  <Text style={{ color: C.warning }}>{tr('Archived conversation')}</Text>
-                </If>
-                <If when={renderText(error())}>
-                  <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
-                    {renderText(error())}
-                  </Text>
-                </If>
-                <If when={pending()}>
-                  <Text style={{ color: C.muted }}>{tr('Confirming the original action…')}</Text>
-                </If>
-                <If when={page() === 'rename' || page() === 'fork'}>
-                  <Input
-                    ref={(node) => {
-                      node.focus();
-                      node.setSelection(0, title().length);
-                    }}
-                    autoFocus
-                    accessibilityLabel={tr('Conversation title')}
-                    value={title()}
-                    readonly={pending()}
-                    onChange={({ value }) => title.set(value)}
-                    // Enter saves, as the button below does.
-                    onSubmit={() =>
-                      void submit(
-                        page() === 'fork'
-                          ? {
-                              kind: 'fork',
-                              session: session(),
-                              title: title(),
-                              position: { kind: 'end' },
-                            }
-                          : { kind: 'rename', session: session(), title: title() },
-                      )
-                    }
-                    placeholder={tr('Conversation title')}
-                    style={{
-                      height: 32,
-                      color: C.text,
-                      backgroundColor: C.background,
-                      paddingHorizontal: 8,
-                      borderWidth: 1,
-                      borderColor: C.line,
-                      borderRadius: inputBorderRadius,
-                      ...inputTextStyle,
-                    }}
-                    focusStyle={{ borderColor: C.accent }}
-                  />
-                  <If when={page() === 'fork'}>
-                    <Text style={{ color: C.muted }}>
-                      {tr(
-                        'Copy the current history into an independent conversation. This draft stays with its original conversation.',
-                      )}
-                    </Text>
-                  </If>
-                  <Button
-                    disabled={pending() || !title().trim()}
-                    accessibilityLabel={
-                      page() === 'fork'
-                        ? tr('Create conversation fork')
-                        : tr('Save conversation title')
-                    }
-                    style={{ ...controlStyle, alignSelf: 'flex-start', backgroundColor: C.accent }}
-                    hoverStyle={{ backgroundColor: C.accentHover }}
-                    focusStyle={{ backgroundColor: C.accentHover }}
-                    disabledStyle={controlDisabledStyle}
-                    onPress={inputAction(
-                      submit,
-                      page() === 'fork'
-                        ? {
-                            kind: 'fork',
-                            session: session(),
-                            title: title(),
-                            position: { kind: 'end' },
-                          }
-                        : { kind: 'rename', session: session(), title: title() },
-                    )}
-                  >
-                    <Text style={{ color: C.background }}>
-                      {page() === 'fork' ? tr('Create fork') : tr('Save title')}
-                    </Text>
-                  </Button>
-                </If>
-                <If when={page() === 'remove'}>
-                  <Text style={{ color: C.warning }}>
-                    {tr(
-                      'Permanently delete this conversation and its history. Workspace files and independent forks are kept.',
-                    )}
-                  </Text>
-                  <Button
-                    disabled={pending()}
-                    accessibilityLabel={tr('Confirm delete conversation')}
-                    style={controlStyle}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
-                    disabledStyle={controlDisabledStyle}
-                    onPress={inputAction(submit, { kind: 'remove', session: session() })}
-                  >
-                    <Text style={{ color: C.danger }}>{tr('Delete permanently')}</Text>
-                  </Button>
-                  <Button
-                    disabled={pending()}
-                    onPress={inputAction(back, 'remove')}
-                    style={controlStyle}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
-                    disabledStyle={controlDisabledStyle}
-                  >
-                    <Text style={{ color: C.text }}>{tr('Keep conversation')}</Text>
-                  </Button>
-                </If>
-              </View>
-            </Scroll>
-          </View>
-        </Dialog>
+            focusStyle={{ borderColor: C.accent }}
+          />
+          <Status />
+          <DialogFooter>
+            <SettingsButton
+              label={tr('Cancel')}
+              tone="quiet"
+              disabled={pending()}
+              onPress={() => back(page())}
+            />
+            <SettingsButton
+              label={page() === 'fork' ? tr('Create fork') : tr('Save')}
+              accessibilityLabel={
+                page() === 'fork' ? tr('Create conversation fork') : tr('Save conversation title')
+              }
+              tone="primary"
+              disabled={pending() || !title().trim()}
+              onPress={() => void submit(titleAction())}
+            />
+          </DialogFooter>
+        </ModalDialog>
+      </If>
+      <If when={page() === 'remove'}>
+        <ModalDialog size="alert" onCancel={() => back('remove')}>
+          <DialogHeader
+            title={tr('Delete “{title}”?', {
+              title: session().title || tr('Untitled conversation'),
+            })}
+            detail={tr(
+              'Permanently delete this conversation and its history. Workspace files and independent forks are kept.',
+            )}
+          />
+          <Status />
+          <DialogFooter>
+            <SettingsButton
+              label={tr('Cancel')}
+              tone="quiet"
+              autoFocus
+              disabled={pending()}
+              onPress={() => back('remove')}
+            />
+            <SettingsButton
+              label={tr('Delete')}
+              accessibilityLabel={tr('Confirm delete conversation')}
+              tone="danger"
+              disabled={pending()}
+              onPress={() => void submit({ kind: 'remove', session: session() })}
+            />
+          </DialogFooter>
+        </ModalDialog>
       </If>
     </View>
   );

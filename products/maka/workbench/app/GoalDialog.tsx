@@ -26,11 +26,11 @@ import {
   Text,
   View,
   Scroll,
-  inputAction,
   platform,
 } from 'nsh';
 import type { ViewRef } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
+import { DialogHeader, ModalDialog } from './ModalDialog';
+import { SettingsButton } from './SettingsPage';
 import type { ComposerGoal } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { GoalStatus } from '../../../../packages/plugin-sdk/src/index.js';
 import { formatDuration } from './duration';
@@ -38,17 +38,7 @@ import { tr, type MessageKey } from './locale';
 import { SettingsEditor, SettingsField } from './SettingsField';
 import { LoadingIndicator, LoadingState } from './Loading';
 import { Icon } from './Icon';
-import {
-  C,
-  compact,
-  bodyTextStyle,
-  captionTextStyle,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
-  controlDisabledStyle,
-  textTooltip,
-} from './ui';
+import { C, compact, bodyTextStyle, captionTextStyle } from './ui';
 
 export const goalStatusLabel = (status: GoalStatus): MessageKey =>
   (
@@ -65,34 +55,9 @@ export const goalStatusLabel = (status: GoalStatus): MessageKey =>
 export function GoalDialog(props: { goal: ComposerGoal; objective?: string; close(): void }) {
   const content = createGoalContent(props);
   return (
-    <Dialog
-      animation="none"
-      onCancel={props.close}
-      onOpenChange={({ open }) => {
-        if (!open) props.close();
-      }}
-      style={{
-        flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 16,
-        backgroundColor: C.scrim,
-      }}
-    >
-      <View
-        style={{
-          width: '100%',
-          maxWidth: 640,
-          maxHeight: '90%',
-          minHeight: 0,
-          backgroundColor: C.surface,
-          borderRadius: 12,
-          padding: 24,
-        }}
-      >
-        {content()}
-      </View>
-    </Dialog>
+    <ModalDialog size="form" onCancel={props.close}>
+      {content()}
+    </ModalDialog>
   );
 }
 
@@ -162,21 +127,12 @@ export function createGoalContent(props: {
     }
   };
   const action = (label: MessageKey, run: () => void | Promise<unknown>, primary = false) => (
-    <Button
-      accessibilityLabel={tr(label)}
+    <SettingsButton
+      label={tr(label)}
+      tone={primary ? 'primary' : label === 'Cancel editing' ? 'quiet' : undefined}
       disabled={props.goal.pending() || (label === 'Start Goal' && !objective().trim())}
-      onPress={inputAction(run, null)}
-      style={{
-        ...controlStyle,
-        ...(primary ? { backgroundColor: C.accent } : {}),
-      }}
-      hoverStyle={controlHoverStyle()}
-      focusStyle={controlFocusStyle()}
-      disabledStyle={controlDisabledStyle}
-      activeStyle={{ backgroundColor: C.line }}
-    >
-      <Text style={{ color: primary ? C.background : C.text }}>{tr(label)}</Text>
-    </Button>
+      onPress={() => void run()}
+    />
   );
   return () => {
     const root = signal<ViewRef | null>(null);
@@ -191,37 +147,7 @@ export function createGoalContent(props: {
     return (
       <View ref={(node) => root.set(node)} style={{ minHeight: 0, flexShrink: 1, gap: 16 }}>
         <If when={!!props.close}>
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-            }}
-          >
-            <Text
-              style={{
-                ...bodyTextStyle,
-                fontSize: 18,
-                fontWeight: '600',
-                color: C.text,
-              }}
-            >
-              {tr(creating() ? 'New Goal' : 'Goal')}
-            </Text>
-            <Button
-              accessibilityLabel={tr('Close Goal')}
-              tooltip={textTooltip(() => tr('Close Goal'))}
-              onPress={inputAction(() => props.close!(), null)}
-              style={controlStyle}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-              disabledStyle={controlDisabledStyle}
-              activeStyle={{ backgroundColor: C.line }}
-            >
-              <Icon name="close" color={C.secondary} />
-            </Button>
-          </View>
+          <DialogHeader title={tr(creating() ? 'New Goal' : 'Goal')} />
         </If>
         <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
           <View style={{ gap: 16 }}>
@@ -381,6 +307,13 @@ export function createGoalContent(props: {
                 {action('Resume Goal', () => props.goal.change('resume'), true)}
               </If>
             </If>
+          </If>
+          <If when={!!props.close && !creating() && !changingBudget()}>
+            <SettingsButton
+              label={tr('Close')}
+              accessibilityLabel={tr('Close Goal')}
+              onPress={() => props.close!()}
+            />
           </If>
         </View>
       </View>

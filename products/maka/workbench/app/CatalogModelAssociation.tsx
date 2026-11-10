@@ -17,18 +17,9 @@
  * under the License.
  */
 
-import {
-  cleanup,
-  inputAction,
-  keymap,
-  List,
-  signal,
-  Text,
-  View,
-  windowSize,
-  type ListRef,
-} from 'nsh';
-import { Button, Dialog, Input } from 'nsh/base';
+import { cleanup, inputAction, keymap, List, signal, Text, windowSize, type ListRef } from 'nsh';
+import { Button, Input } from 'nsh/base';
+import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
 import type { CatalogModelReference } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { ModelAction, ModelSettingsOwner } from './settings';
 import type { ServiceMethods } from '../../../../packages/plugin-sdk/src/index.js';
@@ -158,158 +149,111 @@ function CatalogModelPicker(props: {
   };
   void search('');
   return (
-    <Dialog
-      animation="none"
-      onOpenChange={({ open }) => {
-        if (!open) props.close();
-      }}
-      style={{
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: C.scrim,
-        padding: 16,
-      }}
-    >
-      <View
+    <ModalDialog size="form" height={windowSize().height * 0.75} onCancel={props.close}>
+      <DialogHeader title={tr('Associate catalog model')} />
+      <Input
+        accessibilityLabel={tr('Search catalog models')}
+        value={query()}
+        placeholder={tr('Search catalog models')}
+        autoFocus
+        onChange={({ value }) => {
+          void search(value);
+        }}
+        onSubmit={() => {
+          const model = models()[selected()];
+          if (model) choose(model.reference);
+        }}
+        submitBehavior="submit"
         style={{
-          width: '100%',
-          maxWidth: 560,
-          flex: 1,
-          maxHeight: windowSize().height * 0.75,
-          minHeight: 0,
-          backgroundColor: C.surface,
+          color: C.text,
+          height: 32,
+          backgroundColor: C.background,
+          paddingHorizontal: 12,
           borderWidth: 1,
           borderColor: C.line,
-          borderRadius: 12,
-          padding: 16,
-          gap: 12,
+          borderRadius: 8,
+          ...captionTextStyle,
         }}
-      >
-        <View
-          style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}
-        >
-          <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '500' }}>
-            {tr('Associate catalog model')}
+        focusStyle={{ borderColor: C.accent }}
+        ref={(node) => {
+          removeKeys();
+          const keys = [
+            keymap.bind('up', () => move(-1), { within: node, when: 'always', repeat: true }),
+            keymap.bind('down', () => move(1), { within: node, when: 'always', repeat: true }),
+            keymap.bind('escape', props.close, { within: node, when: 'always' }),
+          ];
+          removeKeys = () => keys.forEach((remove) => remove());
+        }}
+      />
+      <List
+        each={models()}
+        estimatedItemSize={64}
+        ref={(node) => {
+          list = node;
+        }}
+        style={{ flex: 1, minHeight: 0 }}
+        empty={
+          <Text style={{ ...captionTextStyle, color: C.muted }}>
+            {loading() ? tr('Loading…') : tr('No matches.')}
           </Text>
+        }
+      >
+        {(item, index) => (
           <Button
-            accessibilityLabel={tr('Close catalog models')}
-            onPress={props.close}
-            style={controlStyle}
-            hoverStyle={controlHoverStyle()}
-            activeStyle={{ backgroundColor: C.line }}
-            focusStyle={controlFocusStyle()}
-          >
-            <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Close')}</Text>
-          </Button>
-        </View>
-        <Input
-          accessibilityLabel={tr('Search catalog models')}
-          value={query()}
-          placeholder={tr('Search catalog models')}
-          autoFocus
-          onChange={({ value }) => {
-            void search(value);
-          }}
-          onSubmit={() => {
-            const model = models()[selected()];
-            if (model) choose(model.reference);
-          }}
-          submitBehavior="submit"
-          style={{
-            color: C.text,
-            height: 32,
-            backgroundColor: C.background,
-            paddingHorizontal: 12,
-            borderWidth: 1,
-            borderColor: C.line,
-            borderRadius: 8,
-            ...captionTextStyle,
-          }}
-          focusStyle={{ borderColor: C.accent }}
-          ref={(node) => {
-            removeKeys();
-            const keys = [
-              keymap.bind('up', () => move(-1), { within: node, when: 'always', repeat: true }),
-              keymap.bind('down', () => move(1), { within: node, when: 'always', repeat: true }),
-              keymap.bind('escape', props.close, { within: node, when: 'always' }),
-            ];
-            removeKeys = () => keys.forEach((remove) => remove());
-          }}
-        />
-        <List
-          each={models()}
-          estimatedItemSize={64}
-          ref={(node) => {
-            list = node;
-          }}
-          style={{ flex: 1, minHeight: 0 }}
-          empty={
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
-              {loading() ? tr('Loading…') : tr('No matches.')}
-            </Text>
-          }
-        >
-          {(item, index) => (
-            <Button
-              accessibilityLabel={`${item().reference.provider} / ${item().reference.modelId}`}
-              selected={selected() === index()}
-              disabled={props.settings.busy()}
-              onPress={inputAction(choose, item().reference)}
-              style={{
-                ...controlStyle,
-                height: 64,
-                gap: 4,
-                justifyContent: 'center',
-                backgroundColor: selected() === index() ? C.raised : C.surface,
-              }}
-              hoverStyle={controlHoverStyle()}
-              activeStyle={{ backgroundColor: C.line }}
-              focusStyle={controlFocusStyle()}
-              disabledStyle={controlDisabledStyle}
-            >
-              <Text
-                style={{
-                  ...bodyTextStyle,
-                  color: C.text,
-                  numberOfLines: 1,
-                  textOverflow: 'ellipsis',
-                }}
-              >
-                {item().label}
-              </Text>
-              <Text
-                style={{
-                  ...captionTextStyle,
-                  color: C.muted,
-                  numberOfLines: 1,
-                  textOverflow: 'ellipsis',
-                }}
-              >{`${item().reference.provider} / ${item().reference.modelId}`}</Text>
-            </Button>
-          )}
-        </List>
-        <If when={failure()}>
-          <Text style={{ ...captionTextStyle, color: C.danger }}>{failure()}</Text>
-        </If>
-        <If when={after() || failure()}>
-          <Button
-            disabled={loading()}
-            onPress={() => {
-              void search(query(), !!after());
+            accessibilityLabel={`${item().reference.provider} / ${item().reference.modelId}`}
+            selected={selected() === index()}
+            disabled={props.settings.busy()}
+            onPress={inputAction(choose, item().reference)}
+            style={{
+              ...controlStyle,
+              height: 64,
+              gap: 4,
+              justifyContent: 'center',
+              backgroundColor: selected() === index() ? C.raised : C.surface,
             }}
-            style={controlStyle}
             hoverStyle={controlHoverStyle()}
             activeStyle={{ backgroundColor: C.line }}
             focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
-            <Text style={{ ...captionTextStyle, color: C.text }}>
-              {loading() ? tr('Loading…') : failure() ? tr('Retry') : tr('Load more')}
+            <Text
+              style={{
+                ...bodyTextStyle,
+                color: C.text,
+                numberOfLines: 1,
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {item().label}
             </Text>
+            <Text
+              style={{
+                ...captionTextStyle,
+                color: C.muted,
+                numberOfLines: 1,
+                textOverflow: 'ellipsis',
+              }}
+            >{`${item().reference.provider} / ${item().reference.modelId}`}</Text>
           </Button>
+        )}
+      </List>
+      <If when={failure()}>
+        <Text style={{ ...captionTextStyle, color: C.danger }}>{failure()}</Text>
+      </If>
+      <DialogFooter>
+        <If when={after() || failure()}>
+          <SettingsButton
+            label={loading() ? tr('Loading…') : failure() ? tr('Retry') : tr('Load more')}
+            disabled={loading()}
+            onPress={() => void search(query(), !!after())}
+          />
         </If>
-      </View>
-    </Dialog>
+        <SettingsButton
+          label={tr('Close')}
+          accessibilityLabel={tr('Close catalog models')}
+          onPress={props.close}
+        />
+      </DialogFooter>
+    </ModalDialog>
   );
 }
