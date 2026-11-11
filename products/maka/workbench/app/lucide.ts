@@ -132,6 +132,11 @@ export const lucide = {
     { tag: 'rect', x: 8.0, y: 8.0, width: 14.0, height: 14.0, rx: 2.0 },
     { tag: 'path', d: 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2' },
   ],
+  download: [
+    { tag: 'path', d: 'M12 15V3' },
+    { tag: 'path', d: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' },
+    { tag: 'path', d: 'm7 10 5 5 5-5' },
+  ],
   ellipsis: [
     { tag: 'circle', cx: 12.0, cy: 12.0, r: 1.0 },
     { tag: 'circle', cx: 19.0, cy: 12.0, r: 1.0 },
@@ -190,6 +195,13 @@ export const lucide = {
     { tag: 'path', d: 'M20.561 10.222a9 9 0 1 1-12.55-5.29' },
     { tag: 'path', d: 'M8.002 9.997a5 5 0 1 0 8.9 2.02' },
   ],
+  'grid-3x3': [
+    { tag: 'rect', x: 3.0, y: 3.0, width: 18.0, height: 18.0, rx: 2.0 },
+    { tag: 'path', d: 'M3 9h18' },
+    { tag: 'path', d: 'M3 15h18' },
+    { tag: 'path', d: 'M9 3v18' },
+    { tag: 'path', d: 'M15 3v18' },
+  ],
   hand: [
     { tag: 'path', d: 'M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2' },
     { tag: 'path', d: 'M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2' },
@@ -204,6 +216,10 @@ export const lucide = {
     { tag: 'line', x1: 4.0, y1: 15.0, x2: 20.0, y2: 15.0 },
     { tag: 'line', x1: 10.0, y1: 3.0, x2: 8.0, y2: 21.0 },
     { tag: 'line', x1: 16.0, y1: 3.0, x2: 14.0, y2: 21.0 },
+  ],
+  highlighter: [
+    { tag: 'path', d: 'm9 11-6 6v3h9l3-3' },
+    { tag: 'path', d: 'm22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4' },
   ],
   image: [
     { tag: 'rect', x: 3.0, y: 3.0, width: 18.0, height: 18.0, rx: 2.0 },
@@ -228,6 +244,14 @@ export const lucide = {
     { tag: 'path', d: 'm16 16-3 3 3 3' },
     { tag: 'path', d: 'M21 5v12a2 2 0 0 1-2 2h-6' },
   ],
+  'list-ordered': [
+    { tag: 'path', d: 'M11 5h10' },
+    { tag: 'path', d: 'M11 12h10' },
+    { tag: 'path', d: 'M11 19h10' },
+    { tag: 'path', d: 'M4 4h1v5' },
+    { tag: 'path', d: 'M4 9h2' },
+    { tag: 'path', d: 'M6.5 20H3.4c0-1 2.6-1.925 2.6-3.5a1.5 1.5 0 0 0-2.6-1.02' },
+  ],
   'list-tree': [
     { tag: 'path', d: 'M8 5h13' },
     { tag: 'path', d: 'M13 12h8' },
@@ -250,6 +274,10 @@ export const lucide = {
   'move-right': [
     { tag: 'path', d: 'M18 8L22 12L18 16' },
     { tag: 'path', d: 'M2 12H22' },
+  ],
+  'move-up-right': [
+    { tag: 'path', d: 'M13 5H19V11' },
+    { tag: 'path', d: 'M19 5L5 19' },
   ],
   'panel-left': [
     { tag: 'rect', x: 3.0, y: 3.0, width: 18.0, height: 18.0, rx: 2.0 },
@@ -299,6 +327,10 @@ export const lucide = {
   plus: [
     { tag: 'path', d: 'M5 12h14' },
     { tag: 'path', d: 'M12 5v14' },
+  ],
+  'redo-2': [
+    { tag: 'path', d: 'm15 14 5-5-5-5' },
+    { tag: 'path', d: 'M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13' },
   ],
   'refresh-cw': [
     { tag: 'path', d: 'M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8' },
@@ -365,6 +397,15 @@ export const lucide = {
     { tag: 'path', d: 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6' },
     { tag: 'path', d: 'M3 6h18' },
     { tag: 'path', d: 'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' },
+  ],
+  type: [
+    { tag: 'path', d: 'M12 4v16' },
+    { tag: 'path', d: 'M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2' },
+    { tag: 'path', d: 'M9 20h6' },
+  ],
+  'undo-2': [
+    { tag: 'path', d: 'M9 14 4 9l5-5' },
+    { tag: 'path', d: 'M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11' },
   ],
   x: [
     { tag: 'path', d: 'M18 6 6 18' },

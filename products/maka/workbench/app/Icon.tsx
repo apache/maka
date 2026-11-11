@@ -77,6 +77,17 @@ const icons = {
   note: { lucide: 'sticky-note', glyph: '▭' },
   snippet: { lucide: 'text-quote', glyph: '❝' },
   symbol: { lucide: 'hash', glyph: '#' },
+  rectangle: { lucide: 'square', glyph: '□' },
+  ellipse: { lucide: 'circle', glyph: '○' },
+  arrow: { lucide: 'move-up-right', glyph: '↗' },
+  pen: { lucide: 'pencil', glyph: '✎' },
+  marker: { lucide: 'highlighter', glyph: '▌' },
+  text: { lucide: 'type', glyph: 'T' },
+  mosaic: { lucide: 'grid-3x3', glyph: '▦' },
+  number: { lucide: 'list-ordered', glyph: '①' },
+  undo: { lucide: 'undo-2', glyph: '↶' },
+  redo: { lucide: 'redo-2', glyph: '↷' },
+  download: { lucide: 'download', glyph: '↓' },
 } satisfies Record<string, { lucide: keyof typeof lucide; glyph: string }>;
 
 const paths = new Map<string, Path2D>();

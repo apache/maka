@@ -218,16 +218,6 @@ pub async fn open_local_path(path: String) -> Result<(), String> {
     }
 }
 
-pub async fn capture_screen_region() -> Result<(), String> {
-    // A cancelled selection also exits unsuccessfully, and leaves the clipboard alone.
-    Command::new("/usr/sbin/screencapture")
-        .args(["-i", "-c"])
-        .status()
-        .await
-        .map(drop)
-        .map_err(|error| format!("Could not start the screenshot: {error}"))
-}
-
 #[cfg(any(target_os = "macos", test))]
 fn is_private_clipboard(types: &[String]) -> bool {
     types

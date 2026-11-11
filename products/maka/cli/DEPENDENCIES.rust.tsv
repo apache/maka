@@ -683,6 +683,7 @@ objc2-image-io@0.3.2		X										X						X
 objc2-io-kit@0.3.2		X										X						X
 objc2-quartz-core@0.2.2												X						
 objc2-quartz-core@0.3.2		X										X						X
+objc2-screen-capture-kit@0.3.2		X										X						X
 objc2@0.5.3												X						
 objc2@0.6.5												X						
 object@0.39.1		X										X						

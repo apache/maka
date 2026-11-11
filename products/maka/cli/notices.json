@@ -655,6 +655,7 @@
     "cargo:objc2-metal@0.2.2 registry+https://github.com/rust-lang/crates.io-index": "2c7b9885b90ba28dc660c84fc51945cc72cf5e946102e55d18e1e42fbf0af339",
     "cargo:objc2-quartz-core@0.2.2 registry+https://github.com/rust-lang/crates.io-index": "2b5b159a6f255c7d2b06c1c86e74a9d9efb145ac6d793f0bf36f442d8efdb501",
     "cargo:objc2-quartz-core@0.3.2 registry+https://github.com/rust-lang/crates.io-index": "b458bb9fe6c1821fc3b5205741928957f5e8e57d2fee1f95b66f52746e14deff",
+    "cargo:objc2-screen-capture-kit@0.3.2 registry+https://github.com/rust-lang/crates.io-index": "d3c7982a10d97534a9486f76284009dfac66cd48f4a6b783e6d8422551e13c48",
     "cargo:objc2@0.5.3 registry+https://github.com/rust-lang/crates.io-index": "0300028f5f513b17b95e54de3eb5b5f03a7d5db46026d05190da4a614b13ae05",
     "cargo:objc2@0.6.5 registry+https://github.com/rust-lang/crates.io-index": "d312775235eaac6f77e8babd83fcc79df883a66c94cbea4a3a963a0e84989d68",
     "cargo:object@0.39.1 registry+https://github.com/rust-lang/crates.io-index": "251262d91975d8db89e2dde22e31d903dce979a674db4ffa3d2afc666a5c6811",
@@ -1248,5 +1249,5 @@
     "npm:ajv@8.20.0 https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==": "e0b7c0627c7c460c99e8d7b8ac586e4c975ea2a2fae3859fdc94e67ec3aa69cc",
     "npm:pele@1.13.0 https://registry.npmjs.org/pele/-/pele-1.13.0.tgz sha512-Ie8UKY9x00MsuR3jO6AzUwzK2Z6MIV3Tf4EDdITiuk8Uaz8K7g0R082WqsqNaSU8DdgkrRvZThzhit83mi/uiw==": "4fa75f9a04ed6fb14b9abd85c484443e73dfb84762d829f77406ee9a1b31189b"
   },
-  "sha256": "89be5c2a2c59e92a70a0726c3f96f3df3a4f841769a5f941e5adad3f89426db4"
+  "sha256": "89e43c19af73e5557047f98ae8d4f7b5d894a65fa053a533564797a0369c9424"
 }

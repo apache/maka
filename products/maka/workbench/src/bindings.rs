@@ -385,12 +385,6 @@ impl ApplicationHost {
         execute(owner, quick_tools::open_local_path(path)).await
     }
 
-    pub async fn capture_screen_region(this: Instance<Self>) -> Result<(), String> {
-        let owner = this.with(|host| host.owner.clone());
-        drop(this);
-        execute(owner, quick_tools::capture_screen_region()).await
-    }
-
     pub async fn clipboard_text_change(
         this: Instance<Self>,
         seen: Option<f64>,
