@@ -305,7 +305,7 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
             </Button>
             <Text style={noteStyle()}>
               {owner.snapshot()?.session
-                ? tr('Applies to this conversation; changing it clears earlier approvals.')
+                ? tr('Applies to this conversation; changing the sandbox clears earlier approvals.')
                 : tr('New conversations also start with this sandbox.')}
             </Text>
             <If when={saving()}>

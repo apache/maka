@@ -1793,10 +1793,10 @@ export const conversationMessages = {
     '不使用沙箱，可读写任意文件。',
     '不使用沙箱，可讀寫任意檔案。',
   ],
-  'Applies to this conversation; changing it clears earlier approvals.': [
-    'Applies to this conversation; changing it clears earlier approvals.',
-    '仅作用于此对话；更改会清除已有授权。',
-    '僅作用於此對話；變更會清除已有授權。',
+  'Applies to this conversation; changing the sandbox clears earlier approvals.': [
+    'Applies to this conversation; changing the sandbox clears earlier approvals.',
+    '仅作用于此对话；更改沙箱会清除已有授权。',
+    '僅作用於此對話；變更沙箱會清除已有授權。',
   ],
   'New conversations also start with this sandbox.': [
     'New conversations also start with this sandbox.',
