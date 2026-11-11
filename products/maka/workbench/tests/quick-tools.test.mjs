@@ -31,6 +31,13 @@ import {
 import { symbols } from '../../../../plugins/application/symbols/symbols.ts';
 import { afterKeyword, search } from '../../../../plugins/shared/quick-search.ts';
 import { MAX_USAGE, parseUsage, ranked, recommended, recordUse } from '../app/quick-results.ts';
+import {
+  choose,
+  expandAlias,
+  normalAlias,
+  parseChoices,
+  recordable,
+} from '../app/quick-commands.ts';
 
 const names = (item) => [item];
 const find = (items, query) =>
@@ -151,4 +158,37 @@ test('clipboard history keeps the newest copy of each text and stays bounded', (
   assert.equal(history.length, DEFAULT_LIMIT);
   assert.equal(history[0], `${DEFAULT_LIMIT + 4}`);
   assert.equal(remember(history, 'new', 20).length, 20);
+});
+
+test('a command keeps its shortcut and alias until both are cleared', () => {
+  let choices = choose({}, 'shot', { shortcut: 'cmd+shift+2' });
+  choices = choose(choices, 'shot', { alias: 'ss' });
+  assert.deepEqual(choices, { shot: { shortcut: 'cmd+shift+2', alias: 'ss' } });
+  choices = choose(choices, 'shot', { shortcut: null });
+  assert.deepEqual(choices, { shot: { alias: 'ss' } });
+  assert.deepEqual(choose(choices, 'shot', { alias: '' }), {});
+  assert.deepEqual(parseChoices(JSON.stringify(choices)), choices);
+  assert.deepEqual(parseChoices(null), {});
+  assert.throws(() => parseChoices('[]'));
+  assert.throws(() => parseChoices('{"shot":{"alias":1}}'));
+});
+
+test('an alias stands for its keyword in what tools see', () => {
+  const aliases = [{ alias: 'jb', keyword: 'cb' }];
+  assert.equal(expandAlias('jb', aliases), 'cb');
+  assert.equal(expandAlias('  JB hello', aliases), 'cb hello');
+  assert.equal(expandAlias('jbx', aliases), 'jbx');
+  assert.equal(normalAlias(' My Alias '), 'myalias');
+});
+
+test('a recorded shortcut needs a modifier that does not type text', () => {
+  const keys = new Set(recordable(true));
+  for (const taken of ['cmd+shift+s', 'ctrl+alt+space', 'alt+1', 'f5', 'cmd+ctrl+alt+shift+f12'])
+    assert.ok(keys.has(taken), taken);
+  for (const typed of ['s', 'shift+s', 'space', 'enter']) assert.ok(!keys.has(typed), typed);
+  // The platform keeps these, and binding one throws.
+  for (const kept of ['cmd+q', 'cmd+h', 'cmd+alt+h', 'cmd+m', 'cmd+ctrl+f'])
+    assert.ok(!keys.has(kept), kept);
+  assert.ok(!new Set(recordable(false)).has('alt+f4'));
+  assert.ok(new Set(recordable(false)).has('cmd+q'));
 });
