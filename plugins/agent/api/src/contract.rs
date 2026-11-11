@@ -877,9 +877,6 @@ pub enum SendResult {
 pub enum CompletionRegistration {
     /// The notification watch was persisted; delivery remains best effort.
     Registered,
-    /// The task was admitted but notification registration could not be confirmed.
-    /// Inspect the returned message ID if needed; do not resend the task.
-    Unconfirmed,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]

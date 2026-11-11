@@ -4028,7 +4028,7 @@ export type AgentSendRejection =
   | 'skills_unavailable'
   | 'turn_stopped'
   | 'original_operation_unsettled';
-export type AgentCompletionRegistration = 'registered' | 'unconfirmed';
+export type AgentCompletionRegistration = 'registered';
 export type AgentDeliveryFact =
   | {
       kind: 'opened';

@@ -17,7 +17,10 @@
  * under the License.
  */
 use super::*;
-use maka_agent_facts::{durable::RunId, message::MessageOrigin};
+use maka_agent_facts::{
+    durable::{RunId, Terminal},
+    message::MessageOrigin,
+};
 use maka_agent_state::{NotificationAttention, NotificationState, queue::MessageResolution};
 use maka_event_log::root_store::completions::Completion;
 
@@ -29,6 +32,75 @@ pub(super) struct CompletionRequest {
     workspace: Workspace,
     binding: maka_sandbox::workspace::BindingStamp,
 }
+enum Notice<'a> {
+    Finished(Terminal),
+    Unavailable,
+    Attention {
+        run: RunId,
+        reason: &'a NotificationAttention,
+    },
+}
+impl Notice<'_> {
+    fn identity(&self, task: &Completion) -> String {
+        let mut key = format!("session-completion/{}/{}", task.session_id, task.message_id);
+        if let Self::Attention { run, reason } = self {
+            let cause = match reason {
+                NotificationAttention::Interaction { request } => format!("interaction/{request}"),
+                NotificationAttention::Authority { blocker } => format!("authority/{blocker}"),
+            };
+            key.push_str(&format!("/{run}/{cause}"));
+        }
+        hex::encode(Sha256::digest(key.as_bytes()))[..32].to_owned()
+    }
+
+    fn message(&self, task: &Completion, language: Language) -> String {
+        let work = format!(
+            "SessionWork({})",
+            serde_json::json!({
+                "sessionId": task.session_id,
+                "target": {"kind": "message", "messageId": task.message_id}
+            })
+        );
+        let status = match self {
+            Self::Finished(Terminal::Completed) => "completed",
+            Self::Finished(Terminal::Failed) => "failed",
+            Self::Finished(Terminal::Cancelled) => "cancelled",
+            Self::Unavailable => "unavailable",
+            Self::Attention { reason, .. } => {
+                let instruction = match reason {
+                    NotificationAttention::Interaction { request } => format!(
+                        "SessionInteraction({})",
+                        serde_json::json!({"sessionId": task.session_id, "requestId": request})
+                    ),
+                    NotificationAttention::Authority { .. } => work,
+                };
+                return match language {
+                    Language::ZhCn => format!(
+                        "你派发的任务需要介入，尚未结束。使用 {instruction} 查看原因，在现有权限内处理，需要人工操作时转告用户；不要重复派发任务。任务结束后仍会通知你。"
+                    ),
+                    Language::ZhTw => format!(
+                        "你派發的任務需要介入，尚未結束。使用 {instruction} 查看原因，在現有權限內處理，需要人工操作時轉告使用者；不要重複派發任務。任務結束後仍會通知你。"
+                    ),
+                    _ => format!(
+                        "Your delegated task needs attention and has not finished. Inspect {instruction} and handle it within your existing authority; ask the user if human action is required. Do not redispatch the task. You will still be notified when it ends."
+                    ),
+                };
+            }
+        };
+        match language {
+            Language::ZhCn => format!(
+                "你派发的任务已结束，状态：{status}。使用 {work} 读取实际结果，再继续处理。"
+            ),
+            Language::ZhTw => format!(
+                "你派發的任務已結束，狀態：{status}。使用 {work} 讀取實際結果，再繼續處理。"
+            ),
+            _ => format!(
+                "Your delegated task ended with status {status}. Read the actual result using {work}, then continue."
+            ),
+        }
+    }
+}
+
 impl Owner {
     pub(super) async fn completion_request(
         &self,
@@ -224,35 +296,28 @@ impl Owner {
         {
             serde_json::from_value(notification).map_err(|e| e.to_string())?
         } else {
-            use maka_agent_facts::durable::Terminal;
-            let mut attention = None;
-            let state = if self
+            let notice = if self
                 .store
                 .get_session::<StoredSessionConfiguration>(&entry.session_id)
                 .await
                 .map_err(|e| e.to_string())?
                 .is_none()
             {
-                "unavailable"
+                Notice::Unavailable
             } else {
                 match resolution {
-                    MessageResolution::Cancelled => "cancelled",
+                    MessageResolution::Cancelled => Notice::Finished(Terminal::Cancelled),
                     MessageResolution::Delivered { run, .. } => {
                         let state = states
                             .get(&run)
                             .filter(|state| state.session_id == entry.session_id)
                             .ok_or("agent_completion_run_missing")?;
-                        match &state.terminal {
-                            Some(Terminal::Completed) => "completed",
-                            Some(Terminal::Failed) => "failed",
-                            Some(Terminal::Cancelled) => "cancelled",
-                            None => match &state.attention {
-                                Some(reason) if !state.stopped => {
-                                    attention = Some((run, reason));
-                                    "needs_attention"
-                                }
-                                _ => return Ok(()),
-                            },
+                        match (&state.terminal, &state.attention) {
+                            (Some(terminal), _) => Notice::Finished(terminal.clone()),
+                            (None, Some(reason)) if !state.stopped => {
+                                Notice::Attention { run, reason }
+                            }
+                            _ => return Ok(()),
                         }
                     }
                     _ => return Ok(()),
@@ -262,21 +327,9 @@ impl Owner {
             {
                 return Ok(());
             }
-            let mut key = format!(
-                "session-completion/{}/{}",
-                entry.session_id, entry.message_id
-            );
-            if let Some((run, reason)) = attention {
-                let cause = match reason {
-                    NotificationAttention::Interaction { request } => {
-                        format!("interaction/{request}")
-                    }
-                    NotificationAttention::Authority { blocker } => format!("authority/{blocker}"),
-                };
-                key.push_str(&format!("/{run}/{cause}"));
-            }
-            let identity = hex::encode(Sha256::digest(key.as_bytes()))[..32].to_owned();
-            if attention.is_some()
+            let identity = notice.identity(&entry);
+            let attention = matches!(notice, Notice::Attention { .. });
+            if attention
                 && self
                     .durable
                     .queue()
@@ -308,33 +361,7 @@ impl Owner {
                     &request.source,
                     &route,
                     &identity,
-                    |language| {
-                        let reference = format!("SessionWork({})", serde_json::json!({
-                            "sessionId": entry.session_id,
-                            "target": {"kind": "message", "messageId": entry.message_id}
-                        }));
-                        if let Some((_, reason)) = attention {
-                            let instruction = match reason {
-                                NotificationAttention::Interaction { request } => format!(
-                                    "SessionInteraction({})", serde_json::json!({
-                                        "sessionId": entry.session_id, "requestId": request
-                                    })
-                                ),
-                                NotificationAttention::Authority { .. } => reference.clone(),
-                            };
-                            match language {
-                                Language::ZhCn => format!("你派发的任务需要介入，尚未结束。使用 {instruction} 查看原因，在现有权限内处理，需要人工操作时转告用户；不要重复派发任务。任务结束后仍会通知你。"),
-                                Language::ZhTw => format!("你派發的任務需要介入，尚未結束。使用 {instruction} 查看原因，在現有權限內處理，需要人工操作時轉告使用者；不要重複派發任務。任務結束後仍會通知你。"),
-                                _ => format!("Your delegated task needs attention and has not finished. Inspect {instruction} and handle it within your existing authority; ask the user if human action is required. Do not redispatch the task. You will still be notified when it ends."),
-                            }
-                        } else {
-                            match language {
-                                Language::ZhCn => format!("你派发的任务已结束，状态：{state}。使用 {reference} 读取实际结果，再继续处理。"),
-                                Language::ZhTw => format!("你派發的任務已結束，狀態：{state}。使用 {reference} 讀取實際結果，再繼續處理。"),
-                                _ => format!("Your delegated task ended with status {state}. Read the actual result using {reference}, then continue."),
-                            }
-                        }
-                    },
+                    |language| notice.message(&entry, language),
                     MessageOrigin::SessionCompletion {
                         session_id: entry.session_id.clone(),
                         message_id: entry.message_id.clone(),
@@ -344,7 +371,7 @@ impl Owner {
             else {
                 return Ok(());
             };
-            if attention.is_some() {
+            if attention {
                 // Admission identity is the durable deduplication record; keep the completion watch.
                 self.admit_notification(&notification).await?;
                 return Ok(());

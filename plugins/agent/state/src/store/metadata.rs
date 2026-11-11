@@ -95,52 +95,46 @@ struct NotificationStates(RunOwner, BTreeSet<RunId>);
 impl Query for NotificationStates {
     type Output = BTreeMap<RunId, NotificationState>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        let mut statement = c.prepare_cached(
-            "SELECT wanted.value,s.schema_version,s.owner,s.session,
-                json_object('schemaVersion',json_extract(CAST(b.payload AS TEXT),'$.schemaVersion'),
-                    'owner',json_extract(CAST(b.payload AS TEXT),'$.owner'),
-                    'sessionId',json_extract(CAST(b.payload AS TEXT),'$.sessionId'),
-                    'origin',json_extract(CAST(b.payload AS TEXT),'$.origin'),
-                    'trigger',json_extract(CAST(b.payload AS TEXT),'$.trigger'),
-                    'mcpRevision',json_extract(CAST(b.payload AS TEXT),'$.mcpRevision')),
-                r.run,r.schema_version,r.owner,r.session,r.local,r.terminal,r.stopped,
-                (SELECT q.request FROM agent_interaction_requests q
-                    JOIN agent_interaction_pending p ON p.request=q.request
-                    WHERE q.run=r.run ORDER BY q.created_at,q.request LIMIT 1),
-                (SELECT key FROM agent_blockers WHERE run=r.run AND pending=1
-                    AND json_extract(body,'$.reason.kind')='current_authority_unavailable'
-                    AND json_extract(body,'$.decision') IS NULL
-                    AND json_extract(body,'$.resolvedBy') IS NULL ORDER BY key LIMIT 1)
-             FROM json_each(?1) wanted
-             LEFT JOIN agent_run_specs s ON s.run=wanted.value
-             LEFT JOIN contents b ON b.id=s.spec_content_id
-             LEFT JOIN agent_runs r ON r.run=wanted.value",
-        )?;
+        let mut statement = c.prepare_cached(RUN_STATES_SQL)?;
         let mut rows = statement.query([serde_json::to_string(&self.1)?])?;
         let mut states = BTreeMap::new();
         while let Some(row) = rows.next()? {
-            let original: String = row.get(0)?;
-            let runtime: Option<String> = row.get(5)?;
-            if row.get::<_, Option<u32>>(1)?.is_none() {
-                if runtime.is_some() {
-                    return Err(invalid("Run status has no original canonical RunSpec"));
-                }
+            let Some(state) = run_state(row, &self.0)? else {
                 continue;
-            }
-            let spec = run_metadata(row, &self.0)?;
-            let Some(runtime) = runtime else { continue };
-            if runtime != original
-                || row.get::<_, u32>(6)? != crate::sql::HEADER_SCHEMA_VERSION
-                || serde_json::from_str::<RunOwner>(&row.get::<_, String>(7)?)? != self.0
-                || row.get::<_, String>(8)? != spec.session_id
-                || row.get::<_, bool>(9)? != matches!(spec.origin, RunOrigin::Local)
-            {
-                return Err(invalid(
-                    "Run notification status differs from its canonical identity",
-                ));
-            }
-            let interaction: Option<String> = row.get(12)?;
-            let authority: Option<String> = row.get(13)?;
+            };
+            states.insert(
+                state.run,
+                NotificationState {
+                    session_id: state.metadata.session_id,
+                    stopped: state.stopped,
+                    terminal: state.terminal,
+                    attention: None,
+                },
+            );
+        }
+        let pending: BTreeMap<_, _> = states
+            .iter()
+            .filter(|(_, state)| !state.stopped && state.terminal.is_none())
+            .map(|(run, state)| (run, &state.session_id))
+            .collect();
+        // Keep the outer lookup on pending requests, independent of answered history.
+        let mut statement = c.prepare_cached(
+            "SELECT wanted.key,
+                (SELECT p.request FROM agent_interaction_pending p
+                    CROSS JOIN agent_interaction_requests q ON q.request=p.request
+                    WHERE p.session=wanted.value AND q.run=wanted.key
+                    ORDER BY p.created_at,p.request LIMIT 1),
+                (SELECT key FROM agent_blockers WHERE run=wanted.key AND pending=1
+                    AND json_extract(body,'$.reason.kind')='current_authority_unavailable'
+                    AND json_extract(body,'$.decision') IS NULL
+                    AND json_extract(body,'$.resolvedBy') IS NULL ORDER BY key LIMIT 1)
+             FROM json_each(?1) wanted",
+        )?;
+        let mut rows = statement.query([serde_json::to_string(&pending)?])?;
+        while let Some(row) = rows.next()? {
+            let run = run_id(row.get(0)?)?;
+            let interaction: Option<String> = row.get(1)?;
+            let authority: Option<String> = row.get(2)?;
             let attention = match (interaction, authority) {
                 (Some(request), _) => Some(NotificationAttention::Interaction { request }),
                 (_, Some(blocker)) => Some(NotificationAttention::Authority {
@@ -152,18 +146,7 @@ impl Query for NotificationStates {
                 }),
                 _ => None,
             };
-            states.insert(
-                run_id(original)?,
-                NotificationState {
-                    session_id: spec.session_id,
-                    stopped: row.get(11)?,
-                    terminal: row
-                        .get::<_, Option<String>>(10)?
-                        .map(|body| serde_json::from_str(&body))
-                        .transpose()?,
-                    attention,
-                },
-            );
+            states.get_mut(&run).expect("requested Run").attention = attention;
         }
         Ok(states)
     }
@@ -464,43 +447,75 @@ struct FinishedOrStopped(RunOwner, BTreeSet<RunId>);
 impl Query for FinishedOrStopped {
     type Output = BTreeSet<RunId>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        // json_each avoids the SQLite variable limit; every join is an original
-        // requested Run PK lookup in this single writer snapshot.
-        let mut statement=c.prepare_cached("SELECT wanted.value,s.schema_version,s.owner,s.session,json_object('schemaVersion',json_extract(CAST(b.payload AS TEXT),'$.schemaVersion'),'owner',json_extract(CAST(b.payload AS TEXT),'$.owner'),'sessionId',json_extract(CAST(b.payload AS TEXT),'$.sessionId'),'origin',json_extract(CAST(b.payload AS TEXT),'$.origin'),'trigger',json_extract(CAST(b.payload AS TEXT),'$.trigger'),'mcpRevision',json_extract(CAST(b.payload AS TEXT),'$.mcpRevision')),r.run,r.schema_version,r.owner,r.session,r.local,r.terminal,r.stopped FROM json_each(?1) wanted LEFT JOIN agent_run_specs s ON s.run=wanted.value LEFT JOIN contents b ON b.id=s.spec_content_id LEFT JOIN agent_runs r ON r.run=wanted.value")?;
+        let mut statement = c.prepare_cached(RUN_STATES_SQL)?;
         let mut rows = statement.query([serde_json::to_string(&self.1)?])?;
         let mut finished = BTreeSet::new();
         while let Some(row) = rows.next()? {
-            let original: String = row.get(0)?;
-            let runtime: Option<String> = row.get(5)?;
-            if row.get::<_, Option<u32>>(1)?.is_none() {
-                if runtime.is_some() {
-                    return Err(invalid("Run status has no original canonical RunSpec"));
-                }
-                continue;
-            }
-            let spec = run_metadata(row, &self.0)?;
-            let Some(runtime) = runtime else {
+            let Some(state) = run_state(row, &self.0)? else {
                 continue;
             };
-            let local: bool = row.get(9)?;
-            if runtime != original
-                || row.get::<_, u32>(6)? != crate::sql::HEADER_SCHEMA_VERSION
-                || serde_json::from_str::<RunOwner>(&row.get::<_, String>(7)?)? != self.0
-                || row.get::<_, String>(8)? != spec.session_id
-                || local != matches!(spec.origin, RunOrigin::Local)
+            if matches!(state.metadata.origin, RunOrigin::Local)
+                && (state.stopped || state.terminal.is_some())
             {
-                return Err(invalid(
-                    "Run status differs from its canonical identity/owner/session/schema/origin",
-                ));
-            }
-            let terminal: Option<Terminal> = row
-                .get::<_, Option<String>>(10)?
-                .map(|body| serde_json::from_str(&body))
-                .transpose()?;
-            if local && (terminal.is_some() || row.get::<_, bool>(11)?) {
-                finished.insert(run_id(original)?);
+                finished.insert(state.run);
             }
         }
         Ok(finished)
     }
+}
+
+struct RunState {
+    run: RunId,
+    metadata: Metadata,
+    stopped: bool,
+    terminal: Option<Terminal>,
+}
+// Each requested Run is a PK lookup; both readers share the same canonical identity check.
+const RUN_STATES_SQL: &str = "SELECT wanted.value,s.schema_version,s.owner,s.session,
+        json_object('schemaVersion',json_extract(CAST(b.payload AS TEXT),'$.schemaVersion'),
+            'owner',json_extract(CAST(b.payload AS TEXT),'$.owner'),
+            'sessionId',json_extract(CAST(b.payload AS TEXT),'$.sessionId'),
+            'origin',json_extract(CAST(b.payload AS TEXT),'$.origin'),
+            'trigger',json_extract(CAST(b.payload AS TEXT),'$.trigger'),
+            'mcpRevision',json_extract(CAST(b.payload AS TEXT),'$.mcpRevision')),
+        r.run,r.schema_version,r.owner,r.session,r.local,r.terminal,r.stopped
+     FROM json_each(?1) wanted
+     LEFT JOIN agent_run_specs s ON s.run=wanted.value
+     LEFT JOIN contents b ON b.id=s.spec_content_id
+     LEFT JOIN agent_runs r ON r.run=wanted.value";
+
+fn run_state(row: &Row<'_>, owner: &RunOwner) -> Result<Option<RunState>, StoreError> {
+    let original: String = row.get(0)?;
+    let runtime: Option<String> = row.get(5)?;
+    if row.get::<_, Option<u32>>(1)?.is_none() {
+        if runtime.is_some() {
+            return Err(invalid("Run status has no original canonical RunSpec"));
+        }
+        return Ok(None);
+    }
+    let spec = run_metadata(row, owner)?;
+    let Some(runtime) = runtime else {
+        return Ok(None);
+    };
+    let local: bool = row.get(9)?;
+    if runtime != original
+        || row.get::<_, u32>(6)? != crate::sql::HEADER_SCHEMA_VERSION
+        || serde_json::from_str::<RunOwner>(&row.get::<_, String>(7)?)? != *owner
+        || row.get::<_, String>(8)? != spec.session_id
+        || local != matches!(spec.origin, RunOrigin::Local)
+    {
+        return Err(invalid(
+            "Run status differs from its canonical identity/owner/session/schema/origin",
+        ));
+    }
+    let terminal: Option<Terminal> = row
+        .get::<_, Option<String>>(10)?
+        .map(|body| serde_json::from_str(&body))
+        .transpose()?;
+    Ok(Some(RunState {
+        run: run_id(original)?,
+        metadata: spec,
+        stopped: row.get(11)?,
+        terminal,
+    }))
 }

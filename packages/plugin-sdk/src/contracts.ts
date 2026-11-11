@@ -31734,12 +31734,6 @@ export const contracts: {
                     type: 'string',
                     const: 'registered',
                   },
-                  {
-                    description:
-                      'The task was admitted but notification registration could not be confirmed.\nInspect the returned message ID if needed; do not resend the task.',
-                    type: 'string',
-                    const: 'unconfirmed',
-                  },
                 ],
               },
             },
