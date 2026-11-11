@@ -43,11 +43,11 @@ use nsh_platform_macos::{
         NSForegroundColorAttributeName, NSGraphicsContext, NSImage, NSImageInterpolation,
         NSImageScaling, NSImageView, NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString,
         NSPasteboardTypeTIFF, NSResponder, NSScreen, NSStringDrawing, NSTrackingArea,
-        NSTrackingAreaOptions, NSView, NSWindingRule,
+        NSTrackingAreaOptions, NSView, NSWindingRule, NSWorkspace,
     },
     objc2_foundation::{
-        NSArray, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSPoint, NSRect,
-        NSSize, NSString,
+        NSArray, NSBundle, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSPoint,
+        NSRect, NSSize, NSString,
     },
 };
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
@@ -634,6 +634,7 @@ impl Stage {
 
 struct StageComponent {
     container: Retained<NSView>,
+    stage: Retained<Stage>,
 }
 
 impl StageComponent {
@@ -647,7 +648,7 @@ impl StageComponent {
         stage.setAutoresizingMask(fill);
         container.addSubview(&stage.ivars().picture);
         container.addSubview(&stage);
-        Self { container }
+        Self { container, stage }
     }
 }
 
@@ -657,6 +658,17 @@ impl NativeComponent for StageComponent {
     }
 
     fn set_prop(&mut self, _name: &str, _value: Option<&JsonValue>) {}
+
+    fn command(&mut self, name: &str, _args: &JsonValue) {
+        // A build macOS has not seen is missing from the privacy list until it is dragged in.
+        if name == "revealApplication" {
+            let application = NSBundle::mainBundle().bundleURL();
+            NSWorkspace::sharedWorkspace()
+                .activateFileViewerSelectingURLs(&NSArray::from_retained_slice(&[application]));
+            // The stage floats above Finder.
+            self.stage.emit("cancel");
+        }
+    }
 }
 
 fn deliver(stage: Arc<MainThreadBound<Retained<Stage>>>, shot: Result<Shot, String>) {

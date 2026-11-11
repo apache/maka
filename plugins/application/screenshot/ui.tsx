@@ -17,7 +17,16 @@
  * under the License.
  */
 
-import { nativeComponent, openUrl, platform, signal, Text, View, type JSX } from 'nsh';
+import {
+  nativeComponent,
+  openUrl,
+  type NativeComponentRef,
+  platform,
+  signal,
+  Text,
+  View,
+  type JSX,
+} from 'nsh';
 import { Button } from 'nsh/base';
 import { currentWindow, displays, Window, type WindowRef } from 'nsh/desktop';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
@@ -40,13 +49,37 @@ const Stage = nativeComponent<{}, { ready: null; copied: null; cancel: null; fai
   { props: [], events: ['ready', 'copied', 'cancel', 'failed'] },
 );
 
+const hint = { fontSize: 12, lineHeight: 18, color: 'rgba(255, 255, 255, 0.6)' } as const;
+
+function CardButton(props: { label: string; primary?: boolean; onPress(): void }) {
+  return (
+    <Button
+      accessibilityLabel={props.label}
+      onPress={props.onPress}
+      style={{
+        paddingVertical: 5,
+        paddingHorizontal: 12,
+        borderRadius: 6,
+        backgroundColor: props.primary ? '#2A8FFF' : 'rgba(255, 255, 255, 0.14)',
+      }}
+      hoverStyle={{ backgroundColor: props.primary ? '#4AA0FF' : 'rgba(255, 255, 255, 0.22)' }}
+    >
+      <Text style={{ fontSize: 13, lineHeight: 18, fontWeight: '500', color: '#FFFFFF' }}>
+        {props.label}
+      </Text>
+    </Button>
+  );
+}
+
 function Overlay(props: { finish(): void }) {
+  let stage: NativeComponentRef | undefined;
   // The stage takes the keys without activating Maka, which would bring its main window forward.
   currentWindow().focus();
   const failure = signal<Failure | null>(null);
   return (
     <View style={{ flex: 1 }}>
       <Stage
+        ref={(node) => (stage = node)}
         style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
         onCopied={props.finish}
         onCancel={props.finish}
@@ -77,31 +110,32 @@ function Overlay(props: { finish(): void }) {
                 : tr('The screenshot failed: {reason}', { reason: failure()!.message })}
             </Text>
             <If when={failure()!.permission}>
-              <Button
-                accessibilityLabel={tr('Open System Settings')}
-                onPress={() => {
-                  // The stage floats above System Settings, so it closes first.
-                  props.finish();
-                  void openUrl(SCREEN_RECORDING_SETTINGS);
-                }}
-                style={{
-                  alignSelf: 'flex-start',
-                  marginVertical: 4,
-                  paddingVertical: 5,
-                  paddingHorizontal: 12,
-                  borderRadius: 6,
-                  backgroundColor: '#2A8FFF',
-                }}
-                hoverStyle={{ backgroundColor: '#4AA0FF' }}
-              >
-                <Text style={{ fontSize: 13, lineHeight: 18, fontWeight: '500', color: '#FFFFFF' }}>
-                  {tr('Open System Settings')}
-                </Text>
-              </Button>
+              <Text style={hint}>
+                {tr(
+                  'If the app is missing from the privacy list, choose Show in Finder and drag the selected app into System Settings.',
+                )}
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginVertical: 4 }}>
+                <CardButton
+                  label={tr('Open System Settings')}
+                  primary
+                  onPress={() => {
+                    // The stage floats above System Settings, so it closes first.
+                    props.finish();
+                    void openUrl(SCREEN_RECORDING_SETTINGS);
+                  }}
+                />
+                <CardButton
+                  label={tr('permissionSetup.finder')}
+                  onPress={() => {
+                    // The stage closes itself once Finder shows Maka.
+                    stage?.command('revealApplication');
+                    void openUrl(SCREEN_RECORDING_SETTINGS);
+                  }}
+                />
+              </View>
             </If>
-            <Text style={{ fontSize: 12, lineHeight: 18, color: 'rgba(255, 255, 255, 0.6)' }}>
-              {tr('Press any key to close')}
-            </Text>
+            <Text style={hint}>{tr('Press any key to close')}</Text>
           </View>
         </View>
       </If>
