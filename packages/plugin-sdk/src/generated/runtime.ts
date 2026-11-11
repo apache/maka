@@ -911,6 +911,7 @@ export type AgentGlobalInstructionsUpdated =
   | {
       kind: 'unavailable';
     };
+export type AgentNativeRuntime = 'antigravity' | 'codex' | 'claude';
 export type AgentExternalAgentsState =
   | {
       kind: 'disabled';
@@ -5814,9 +5815,10 @@ export interface AgentDataSource {
   namespace: InstanceId;
 }
 export interface AgentExternalRuntimeOption {
-  id: string;
+  id: AgentNativeRuntime;
   name: string;
   enabled: boolean;
+  usageLimits: boolean;
 }
 export interface AgentExternalRuntime {
   id: string;

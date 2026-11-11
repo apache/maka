@@ -444,7 +444,7 @@ impl External {
             .get("kind")
             .and_then(Value::as_str)
             .ok_or_else(|| Error::Invalid("Missing external query kind".into()))?;
-        if !matches!(kind, "status" | "catalog" | "models") {
+        if !matches!(kind, "status" | "catalog" | "models" | "usage_limits") {
             return Err(Error::Invalid("Unsupported external query kind".into()));
         }
         let selected = request
@@ -453,6 +453,11 @@ impl External {
             .transpose()?;
         if selected.is_none() && kind == "models" {
             return Err(Error::Invalid("Models require a runtime selection".into()));
+        }
+        if kind == "usage_limits" && !selected.is_some_and(NativeRuntime::reports_usage_limits) {
+            return Err(Error::Invalid(
+                "Usage limits require a supported runtime".into(),
+            ));
         }
         if kind == "catalog" {
             let (discovery, catalog_runtime) = {

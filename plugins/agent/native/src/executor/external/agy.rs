@@ -913,12 +913,146 @@ pub(super) async fn models(
     cwd: &str,
     cancellation: CancellationToken,
 ) -> Result<Value, Error> {
+    let stdout = read_command(config, cwd, &["models"], cancellation).await?;
+    let models = tokio::task::spawn_blocking(move || parse_models(&stdout))
+        .await
+        .map_err(|_| Error::Provider("agy model parser task failed".into()))??;
+    Ok(serde_json::json!({
+        "installation":{"kind":"available"},
+        "authentication":{"kind":"unknown","source":"agy models"},
+        "models":{"kind":"ok","models":models}
+    }))
+}
+
+pub(super) async fn usage_limits(
+    config: &runtime::ResolvedCommand<'_>,
+    cwd: &str,
+    cancellation: CancellationToken,
+) -> Result<Value, Error> {
+    let stdout = read_command(
+        config,
+        cwd,
+        &["-p", "/usage", "--output-format", "stream-json"],
+        cancellation,
+    )
+    .await?;
+    tokio::task::spawn_blocking(move || parse_usage(&stdout))
+        .await
+        .map_err(|_| Error::Provider("agy usage parser task failed".into()))?
+}
+
+fn parse_usage(stdout: &[u8]) -> Result<Value, Error> {
+    use maka_agent_api::external::ExternalUsageLimits;
+    use maka_agent_ports::provider::{UsageLimit, UsagePeriod};
+
+    #[derive(Deserialize)]
+    struct ResultEnvelope {
+        status: String,
+        num_turns: u64,
+        command: UsageCommand,
+    }
+    #[derive(Deserialize)]
+    struct UsageCommand {
+        name: String,
+        data: Groups,
+    }
+    #[derive(Deserialize)]
+    struct Groups {
+        groups: Vec<Group>,
+    }
+    #[derive(Deserialize)]
+    struct Group {
+        name: String,
+        buckets: Vec<Bucket>,
+    }
+    #[derive(Deserialize)]
+    struct Bucket {
+        window: Window,
+        remaining_fraction: f64,
+        reset_time: Option<String>,
+        #[serde(default)]
+        disabled: bool,
+    }
+    #[derive(Deserialize)]
+    enum Window {
+        #[serde(rename = "weekly")]
+        Weekly,
+        #[serde(rename = "5h")]
+        FiveHours,
+    }
+    let invalid = || Error::Invalid("agy returned invalid usage limits".into());
+    let output = std::str::from_utf8(stdout).map_err(|_| invalid())?;
+    let mut result = None;
+    for line in output.lines() {
+        let mut event: Value = serde_json::from_str(line).map_err(|_| invalid())?;
+        if event["event"] == "result" {
+            if result.is_some() {
+                return Err(invalid());
+            }
+            result = Some(
+                serde_json::from_value::<ResultEnvelope>(event["result"].take())
+                    .map_err(|_| invalid())?,
+            );
+        }
+    }
+    let result = result.ok_or_else(invalid)?;
+    if result.status != "SUCCESS" || result.num_turns != 0 || result.command.name != "usage" {
+        return Err(invalid());
+    }
+    let mut limits = Vec::new();
+    for group in result.command.data.groups {
+        let label = group.name.trim();
+        if label.is_empty() || label.chars().any(char::is_control) {
+            return Err(invalid());
+        }
+        for bucket in group.buckets {
+            let period = UsagePeriod::Duration {
+                seconds: match bucket.window {
+                    Window::Weekly => 7 * 24 * 3600,
+                    Window::FiveHours => 5 * 3600,
+                },
+            };
+            if bucket.disabled {
+                limits.push(UsageLimit::Disabled {
+                    label: label.into(),
+                    period,
+                });
+            } else {
+                if !(0.0..=1.0).contains(&bucket.remaining_fraction) {
+                    return Err(invalid());
+                }
+                let resets_at = bucket
+                    .reset_time
+                    .map(|reset| {
+                        let timestamp: jiff::Timestamp = reset.parse().map_err(|_| invalid())?;
+                        u64::try_from(timestamp.as_second()).map_err(|_| invalid())
+                    })
+                    .transpose()?;
+                limits.push(UsageLimit::Window {
+                    label: Some(label.into()),
+                    period: Some(period),
+                    resets_at,
+                    used_percent: (1.0 - bucket.remaining_fraction) * 100.0,
+                    quantity: None,
+                });
+            }
+        }
+    }
+    serde_json::to_value(ExternalUsageLimits::Ready { limits }).map_err(|_| invalid())
+}
+
+async fn read_command(
+    config: &runtime::ResolvedCommand<'_>,
+    cwd: &str,
+    args: &[&str],
+    cancellation: CancellationToken,
+) -> Result<Vec<u8>, Error> {
     use tokio::io::AsyncWriteExt;
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
     let mut command = config.command(cwd);
-    command.arg("models");
+    command.args(args);
     let mut process = maka_process::pipe::spawn(command)
         .await
         .map_err(runtime::process_error)?;
@@ -927,7 +1061,7 @@ pub(super) async fn models(
             .stdin
             .shutdown()
             .await
-            .map_err(|_| Error::Provider("Could not close agy discovery input".into()))?;
+            .map_err(|_| Error::Provider("Could not close agy query input".into()))?;
         let status = async {
             process
                 .child
@@ -937,15 +1071,15 @@ pub(super) async fn models(
         };
         tokio::try_join!(
             status,
-            catalog_output(&mut process.stdout, true),
-            catalog_output(&mut process.stderr, false),
+            query_output(&mut process.stdout, true),
+            query_output(&mut process.stderr, false),
         )
     };
     let observed = tokio::select! {
         biased;
         () = cancellation.cancelled() => Err(Error::Cancelled),
         result = tokio::time::timeout(runtime::SETUP_TIMEOUT, observed) => {
-            result.unwrap_or_else(|_| Err(Error::Provider("agy model discovery timed out".into())))
+            result.unwrap_or_else(|_| Err(Error::Provider("agy query timed out".into())))
         }
     };
     let (status, stdout, _) = match observed {
@@ -977,19 +1111,12 @@ pub(super) async fn models(
     };
     if !status.success() {
         // Native diagnostics may contain account information; they are never surfaced.
-        return Err(Error::Provider("agy models failed".into()));
+        return Err(Error::Provider("agy query failed".into()));
     }
-    let models = tokio::task::spawn_blocking(move || parse_models(&stdout))
-        .await
-        .map_err(|_| Error::Provider("agy model parser task failed".into()))??;
-    Ok(serde_json::json!({
-        "installation":{"kind":"available"},
-        "authentication":{"kind":"unknown","source":"agy models"},
-        "models":{"kind":"ok","models":models}
-    }))
+    Ok(stdout)
 }
 
-async fn catalog_output(
+async fn query_output(
     reader: &mut (impl tokio::io::AsyncRead + Unpin),
     retain: bool,
 ) -> Result<Vec<u8>, Error> {
@@ -1001,14 +1128,14 @@ async fn catalog_output(
         let count = reader
             .read(&mut buffer)
             .await
-            .map_err(|_| Error::Provider("Could not read agy model discovery".into()))?;
+            .map_err(|_| Error::Provider("Could not read agy query output".into()))?;
         if count == 0 {
             return Ok(result);
         }
         observed += count;
         if observed > runtime::MAX_MESSAGE_BYTES {
             return Err(Error::Invalid(
-                "agy model discovery exceeds the 256 MiB observation budget".into(),
+                "agy query output exceeds the 256 MiB observation budget".into(),
             ));
         }
         if retain {
@@ -1039,6 +1166,21 @@ fn parse_models(bytes: &[u8]) -> Result<Vec<Value>, Error> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn headless_usage_keeps_account_groups_and_disabled_windows() {
+        let output = br#"{"event":"command_result","command":{"name":"usage"}}
+{"event":"result","result":{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"window":"weekly","remaining_fraction":0,"reset_time":"2026-11-12T00:00:00Z"},{"window":"5h","remaining_fraction":0,"disabled":true}]},{"name":"Claude and GPT models","buckets":[{"window":"5h","remaining_fraction":0.75}]}]}}}}
+"#;
+        assert_eq!(
+            parse_usage(output).unwrap(),
+            json!({"kind":"ready","limits":[
+                {"kind":"window","label":"Gemini Models","period":{"kind":"duration","seconds":604800},"usedPercent":100.0,"resetsAt":1794441600u64},
+                {"kind":"disabled","label":"Gemini Models","period":{"kind":"duration","seconds":18000}},
+                {"kind":"window","label":"Claude and GPT models","period":{"kind":"duration","seconds":18000},"usedPercent":25.0}
+            ]})
+        );
+    }
 
     #[derive(Default)]
     struct Sink(std::sync::Mutex<Vec<Output>>);

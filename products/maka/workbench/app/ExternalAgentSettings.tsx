@@ -22,6 +22,8 @@ import type { AgentExternalRuntime } from '../../../../packages/plugin-sdk/src/g
 import type { ExternalAgentSettingsOwner } from './externalAgentSettingsState';
 import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
+import { useHost } from './host';
+import { UsageLimits } from './UsageLimits';
 import {
   SettingsBody,
   SettingsButton,
@@ -98,6 +100,7 @@ function attention(value: AgentExternalRuntime) {
 }
 
 export function ExternalAgentSettings(props: { owner: ExternalAgentSettingsOwner }) {
+  const host = useHost();
   const owner = props.owner;
   const unavailable = () => {
     const state = owner.catalog()?.state;
@@ -151,6 +154,18 @@ export function ExternalAgentSettings(props: { owner: ExternalAgentSettingsOwner
                           })
                     }
                   />
+                  <If when={runtime().enabled && runtime().usageLimits}>
+                    <SettingsRow
+                      label={tr('Usage limits')}
+                      detail={
+                        <UsageLimits
+                          query={() =>
+                            host.query('agent', 'externalUsageLimits', { runtime: runtime().id })
+                          }
+                        />
+                      }
+                    />
+                  </If>
                   <If when={runtime().enabled && owner.status(runtime().id)}>
                     <SettingsRow
                       label={owner.details() === runtime().id ? tr('Hide details') : tr('Details')}
