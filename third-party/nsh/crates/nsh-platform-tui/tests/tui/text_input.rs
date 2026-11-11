@@ -67,6 +67,17 @@ fn field(
     Terminal<TestBackend>,
     crossbeam_channel::Receiver<()>,
 ) {
+    field_with_height(props, 48)
+}
+
+fn field_with_height(
+    props: &str,
+    height: u32,
+) -> (
+    nsh_platform_tui::AppView,
+    Terminal<TestBackend>,
+    crossbeam_channel::Receiver<()>,
+) {
     let code = nsh_bundler::compile_module(
         "App.tsx",
         &format!(
@@ -76,7 +87,7 @@ fn field(
         const value = signal(""), changes = signal(0), selection = signal("0-0");
         const submitted = signal("no"), pressed = signal("none");
         mount(() => <View>
-            <Input {props} style={{{{ width: 160, height: 48, placeholderColor: "#123456" }}}}
+            <Input {props} style={{{{ width: 160, height: {height}, placeholderColor: "#123456" }}}}
                 onChange={{({{ value: v }}) => {{ value.set(v); changes.set(changes()+1); }}}}
                 onSelectionChange={{(e) => selection.set(`${{e.start}}-${{e.end}}`)}}
                 onKeyPress={{(e) => pressed.set(e.key)}} onSubmit={{() => submitted.set("yes")}} />
@@ -319,7 +330,7 @@ fn input_content_padding_and_embedding_origin_position_the_real_cursor() {
 
 #[test]
 fn multiline_wrapping_keeps_the_caret_visible_and_shift_up_selects_a_visual_line() {
-    let (mut view, mut terminal, rx) = field("multiline");
+    let (mut view, mut terminal, rx) = field_with_height("multiline", 16);
     // 160pt is 20 columns: 19 for the text and the column the layout keeps
     // after it, where the caret of a full line stays.
     view.handle(Input::Paste("abcdefghijklmnopqrs".into()));

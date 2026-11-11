@@ -19,11 +19,14 @@
 
 mod controls;
 use super::*;
-use futures_util::FutureExt;
+use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use maka_agent_facts::durable::*;
 use maka_agent_facts::tools::ToolError;
 use maka_agent_state::{Admission, ReadyCause, queue::Consume};
 use maka_plugin_core::operation::OperationCleanup;
+
+type AdmissionWaits = FuturesUnordered<BoxFuture<'static, ()>>;
+type AdmissionGuards = (runs::Ordered, Option<tokio::sync::OwnedMutexGuard<()>>);
 
 impl Owner {
     pub fn activated(self: &Arc<Self>) {
@@ -71,12 +74,16 @@ impl Owner {
                     "Agent model cleanup reconciliation failed"
                 ),
             }
-            if self.schedule_ready_at(at, cause).await.is_err() {
-                tracing::error!(
-                    stage = "ready_reconciliation_failed",
-                    "Agent ready reconciliation failed"
-                );
-            }
+            let mut admission_waits = match self.schedule_ready_at(at, cause).await {
+                Ok(waits) => waits,
+                Err(_) => {
+                    tracing::error!(
+                        stage = "ready_reconciliation_failed",
+                        "Agent ready reconciliation failed"
+                    );
+                    AdmissionWaits::new()
+                }
+            };
             if cause == ReadyCause::CapabilitySourceChanged {
                 match self
                     .durable
@@ -119,6 +126,7 @@ impl Owner {
                 },
                 changed = changes.changed() => if changed.is_err() { return; },
                 _ = self.wake_notify.notified() => {},
+                _ = admission_waits.next(), if !admission_waits.is_empty() => {},
                 _ = deadline => {
                     if authority_due.is_some_and(|due| due.0 <= now() as i64) {
                         cause = ReadyCause::CapabilitySourceChanged;
@@ -133,7 +141,9 @@ impl Owner {
         self: &Arc<Self>,
         at: UnixMillis,
         cause: ReadyCause,
-    ) -> Result<(), String> {
+    ) -> Result<AdmissionWaits, String> {
+        let waits = AdmissionWaits::new();
+        let mut sessions = BTreeSet::new();
         let mut after = None;
         loop {
             let page = self
@@ -187,17 +197,18 @@ impl Owner {
                 if !ready.entry.placement.is_followup() {
                     continue;
                 }
-                let goal = if matches!(ready.entry.request.spec.trigger, Trigger::Goal { .. }) {
-                    match self.goals.gate.clone().try_lock_owned() {
-                        Ok(goal) => Some(goal),
-                        Err(_) => continue,
+                if !sessions.insert(session.clone()) || self.runs.state().await.busy(&session) {
+                    continue;
+                }
+                let (ordered, goal) = match self.queue_admission(
+                    &session,
+                    matches!(ready.entry.request.spec.trigger, Trigger::Goal { .. }),
+                ) {
+                    Ok(guards) => guards,
+                    Err(wait) => {
+                        waits.push(wait);
+                        continue;
                     }
-                } else {
-                    None
-                };
-                let ordered = match self.runs.try_ordered(&session) {
-                    Ok(ordered) => ordered,
-                    Err(_) => continue,
                 };
                 let owner = self.clone();
                 self.workers.spawn(async move {
@@ -207,7 +218,35 @@ impl Owner {
                 });
             }
         }
-        Ok(())
+        // A queue write can wake us before its admission locks are released.
+        // Retry on unlock even if there are no further durable changes.
+        Ok(waits)
+    }
+
+    pub(super) fn queue_admission(
+        &self,
+        session: &str,
+        is_goal: bool,
+    ) -> Result<AdmissionGuards, BoxFuture<'static, ()>> {
+        let goal = if is_goal {
+            match self.goals.gate.clone().try_lock_owned() {
+                Ok(goal) => Some(goal),
+                Err(_) => {
+                    let gate = self.goals.gate.clone();
+                    return Err(async move { drop(gate.lock_owned().await) }.boxed());
+                }
+            }
+        } else {
+            None
+        };
+        match self.runs.try_ordered(session) {
+            Ok(ordered) => Ok((ordered, goal)),
+            Err(_) => {
+                let runs = self.runs.clone();
+                let session = session.to_owned();
+                Err(async move { drop(runs.ordered(&session).await) }.boxed())
+            }
+        }
     }
 
     async fn admit_queued(
