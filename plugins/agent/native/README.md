@@ -175,3 +175,5 @@ compaction produces a text summary. Host freezes a single protocol operation; th
 `NativeCompaction` only at stream completion. Engine and EventLog do not extract provider-options
 JSON for this result. Checkpoint headers retain the producing-step reference, digest and token
 estimate; baseline reads derive producer/model facts from that original request.
+
+Disabling new requests preserves existing valid grants and can take effect during a Run. Enabling requests requires an idle Session because live Runs retain their original approval ceiling. Changing base access or explicitly revoking grants advances the permission boundary.

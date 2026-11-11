@@ -414,7 +414,15 @@ impl Rig {
         let methods: &[&str] = if model_test {
             &["create", "models", "send", "work", "workReadiness", "queue"]
         } else {
-            &["create", "history", "source", "search", "list", "execution"]
+            &[
+                "create",
+                "history",
+                "source",
+                "search",
+                "list",
+                "execution",
+                "metadata",
+            ]
         };
         let mut endpoints = BTreeMap::from([(
             "agent".into(),
@@ -3543,6 +3551,8 @@ mod replay_origin_regressions {
 }
 
 mod tool_history;
+
+mod permission_boundary;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completion_watch_retires_when_original_caller_is_stopped() {

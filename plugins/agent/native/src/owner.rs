@@ -1105,10 +1105,14 @@ impl Owner {
         let configuration: StoredSessionConfiguration =
             serde_json::from_value(record.metadata.configuration.clone())
                 .map_err(|error| format!("agent_session_configuration_invalid: {error}"))?;
-        let policy_changed = input.permissions.as_ref().is_some_and(|change| {
-            change.settings != configuration.permissions || change.revoke_grants
+        let invalidate_grants = input.permissions.as_ref().is_some_and(|change| {
+            change.settings.access != configuration.permissions.access || change.revoke_grants
         });
-        let guard = if policy_changed {
+        // Live Runs retain their original approval ceiling.
+        let enabling_requests = input.permissions.as_ref().is_some_and(|change| {
+            change.settings.request_permissions && !configuration.permissions.request_permissions
+        });
+        let guard = if invalidate_grants || enabling_requests {
             let busy = self.runs.state().await.busy(&input.session_id)
                 || self.mcp_projects.has_any_client(&input.session_id);
             let guard = self
@@ -1141,7 +1145,7 @@ impl Owner {
             if let Some(pinned) = input.pinned {
                 configuration.pinned = pinned;
             }
-            if policy_changed {
+            if invalidate_grants {
                 configuration.boundary_revision = configuration
                     .boundary_revision
                     .checked_add(1)
