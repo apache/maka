@@ -850,7 +850,7 @@ impl ComputerAccess for BoundCall {
                     owner: self.access.spec.owner.clone(),
                     session: self.call.execution.session_id.clone(),
                 },
-                self.call.operation_id.clone(),
+                owner.operation_id(original),
                 artifact,
                 bytes,
                 provenance,

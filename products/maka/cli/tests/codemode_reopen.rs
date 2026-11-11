@@ -412,6 +412,7 @@ fn cell_wire_rejects_unknown_parts_and_does_not_search_child_input_for_markers()
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
+    ResetComputer,
     Baseline,
     Draft,
     Interrupted,
@@ -565,8 +566,8 @@ impl Model {
             self.step = Step::Report;
             return self.wait(self.draft.clone().unwrap());
         }
-        if self.step == Step::Baseline && self.pending.is_empty() {
-            return self.exec(self.baseline_code.clone());
+        if self.step == Step::ResetComputer && self.pending.is_empty() {
+            return self.tool("cua_reset", json!({}));
         }
         assert_ne!(
             self.step,
@@ -577,6 +578,16 @@ impl Model {
             .iter()
             .find(|message| message["role"] == "tool" && message["tool_call_id"] == self.pending)
             .expect("actual result of the exact previous call");
+        if self.step == Step::ResetComputer {
+            assert!(
+                output["content"]
+                    .to_string()
+                    .contains("Computer Use REPL reset. Bind targets again."),
+                "model must receive the saved CUA output: {output}"
+            );
+            self.step = Step::Baseline;
+            return self.exec(self.baseline_code.clone());
+        }
         let values = tool_objects(&output["content"])
             .unwrap_or_else(|error| panic!("{error}; actual tool result: {output}"));
         let (summary, cell) = cell_observation(&values)
@@ -1429,7 +1440,7 @@ async fn cold_root(language: CodeLanguage) {
         draft_code,
         read_code,
         nonce,
-        step: Step::Baseline,
+        step: Step::ResetComputer,
         serial: 0,
         pending: String::new(),
         baseline: None,
