@@ -42,6 +42,9 @@ pub(crate) enum Event {
         expected_revision: u64,
         edit: QueueEdit,
     },
+    CallerStopped {
+        caller: RunId,
+    },
     Consumed {
         cut: Consume,
         run: RunId,
@@ -403,7 +406,7 @@ fn pending(
 }
 fn placement_columns(placement: &Placement) -> (&'static str, Option<String>) {
     match placement {
-        Placement::Followup => ("followup", None),
+        Placement::Followup | Placement::Completion { .. } => ("followup", None),
         Placement::Steering { run, .. } => ("steering", Some(run.to_string())),
     }
 }
@@ -454,7 +457,28 @@ fn project(
                         request: *request.clone(),
                         placement: placement.clone(),
                     };
-                    let (lane, target) = placement_columns(placement);
+                    let (lane, mut target) = placement_columns(placement);
+                    if let Placement::Completion { caller } = placement {
+                        let (original, _, stopped, _) = run_head(c, *caller)?;
+                        if !matches!(
+                            &source.message.origin,
+                            Some(
+                                maka_agent_facts::message::MessageOrigin::SessionCompletion { .. }
+                            )
+                        ) || original.session_id != session
+                            || original.owner != request.spec.owner
+                            || !matches!(original.origin, RunOrigin::Local)
+                            || !matches!(original.backend, BackendSpec::Model { .. })
+                            || (check && stopped)
+                        {
+                            return Err(invalid("completion does not match its original caller"));
+                        }
+                        if original.workspace == request.spec.workspace
+                            && original.permission_basis == request.spec.permission_basis
+                        {
+                            target = Some(caller.to_string());
+                        }
+                    }
                     c.execute("INSERT INTO agent_queue_items(session,request,message,owner,position,lane,target_run,state,entry_json) VALUES(?,?,?,?,?,?,?,'pending',?)",params![session,request.id.0,request.message_id,serde_json::to_string(&request.spec.owner)?,to_sql_integer(next)?,lane,target,serde_json::to_string(&entry)?])?;
                 }
                 QueueEdit::Update { request } => {
@@ -483,11 +507,20 @@ fn project(
                     {
                         return Err(invalid("queue edit changed immutable request provenance"));
                     }
+                    if matches!(old.placement, Placement::Completion { .. })
+                        && (old.request.spec.workspace != request.spec.workspace
+                            || old.request.spec.permission_basis != request.spec.permission_basis)
+                    {
+                        return Err(invalid("queue edit changed the completion workspace basis"));
+                    }
                     for reference in references(request) {
                         pin(c, session, &request.id, reference)?;
                     }
                     old.request = *request.clone();
-                    update_entry(c, session, &old)?;
+                    c.execute(
+                        "UPDATE agent_queue_items SET entry_json=? WHERE session=? AND request=?",
+                        params![serde_json::to_string(&old)?, session, request.id.0],
+                    )?;
                 }
                 QueueEdit::Retract { request } => {
                     pending(c, session, request)?;
@@ -554,7 +587,10 @@ fn project(
                         )?;
                     }
                 }
-            }
+            };
+        }
+        Event::CallerStopped { caller } => {
+            retract_completions(c, session, *caller)?;
         }
         Event::Consumed { cut, run, target } => {
             for request in &cut.requests {
@@ -565,15 +601,65 @@ fn project(
     }
     Ok(())
 }
+fn retract_completions(c: &Connection, session: &str, caller: RunId) -> Result<usize, StoreError> {
+    Ok(c.execute(
+        "UPDATE agent_queue_items SET state='cancelled'
+         WHERE session=?1 AND state='pending' AND lane='followup'
+           AND json_extract(entry_json,'$.placement.kind')='completion'
+           AND json_extract(entry_json,'$.placement.caller')=?2",
+        params![session, caller.to_string()],
+    )?)
+}
+
+pub(crate) fn stop_completions(
+    c: &Connection,
+    session: &str,
+    caller: RunId,
+    at: UnixMillis,
+) -> Result<(), StoreError> {
+    if retract_completions(c, session, caller)? == 0 {
+        return Ok(());
+    }
+    let current = revision(c, session)?;
+    let next = cas(c, session, current)?;
+    record(
+        c,
+        session,
+        next,
+        FactId::new(),
+        at,
+        &Event::CallerStopped { caller },
+    )
+}
+
+fn steering_entries(
+    c: &Connection,
+    session: &str,
+    run: RunId,
+    limit: i64,
+) -> Result<Vec<QueueEntry>, StoreError> {
+    c.prepare_cached(
+        "SELECT entry_json FROM agent_queue_items
+         WHERE session=? AND target_run=? AND state='pending'
+         ORDER BY position,request LIMIT ?",
+    )?
+    .query_map(params![session, run.to_string(), limit], |row| {
+        row.get::<_, String>(0)
+    })?
+    .map(|row| Ok(serde_json::from_str(&row?)?))
+    .collect()
+}
+
 pub(super) fn read(c: &Connection, session: &str, run: Option<RunId>) -> Result<Queue, StoreError> {
     id(session)?;
-    let mut statement = c.prepare_cached("SELECT entry_json FROM agent_queue_items WHERE session=?1 AND state='pending' AND (?2 IS NULL OR target_run=?2) ORDER BY CASE lane WHEN 'steering' THEN 0 ELSE 1 END,position,request")?;
-    let entries = statement
-        .query_map(params![session, run.map(|run| run.to_string())], |r| {
-            r.get::<_, String>(0)
-        })?
-        .map(|row| Ok(serde_json::from_str(&row?)?))
-        .collect::<Result<Vec<_>, StoreError>>()?;
+    let entries = if let Some(run) = run {
+        steering_entries(c, session, run, -1)?
+    } else {
+        c.prepare_cached("SELECT entry_json FROM agent_queue_items WHERE session=? AND state='pending' ORDER BY CASE lane WHEN 'steering' THEN 0 ELSE 1 END,position,request")?
+            .query_map([session], |row| row.get::<_, String>(0))?
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect::<Result<_, StoreError>>()?
+    };
     Ok(Queue {
         revision: revision(c, session)?,
         entries,
@@ -712,10 +798,18 @@ pub(crate) fn consume(
     }
     let next = cas(c, &cut.session, cut.expected_revision)?;
     let (entry, _) = pending(c, &cut.session, &cut.requests[0])?;
-    if !matches!(entry.placement, Placement::Followup) || entry.request.spec != *spec {
+    if !entry.placement.is_followup() || entry.request.spec != *spec {
         return Err(invalid(
             "Run admission does not match frozen followup request",
         ));
+    }
+    if let Placement::Completion { caller } = entry.placement {
+        let (_, _, stopped, terminal) = run_head(c, caller)?;
+        if stopped || !terminal {
+            return Err(invalid(
+                "completion followup requires a finished, unstopped caller",
+            ));
+        }
     }
     project(c, &cut.session, next, &event, true)?;
     record(c, &cut.session, next, command, at, &event)
@@ -784,20 +878,25 @@ fn steering_requests(
         ));
     }
     // The enclosing Append already checks the live claim and exact Run head.
-    let prefix: Vec<String> = c.prepare_cached("SELECT request FROM agent_queue_items WHERE session=? AND target_run=? AND state='pending' ORDER BY position,request LIMIT ?")?
-        .query_map(params![cut.session,run.to_string(),i64::try_from(cut.requests.len()).map_err(|_|invalid("steering prefix exceeds SQLite range"))?],|r|r.get(0))?.collect::<Result<_,_>>()?;
+    let limit = i64::try_from(cut.requests.len())
+        .map_err(|_| invalid("steering prefix exceeds SQLite range"))?;
+    let prefix = steering_entries(c, &cut.session, run, limit)?;
     if prefix.len() != cut.requests.len()
-        || prefix.iter().zip(&cut.requests).any(|(a, b)| a != &b.0)
+        || prefix
+            .iter()
+            .zip(&cut.requests)
+            .any(|(entry, id)| &entry.request.id != id)
     {
         return Err(invalid(
             "steering consume does not name the exact ordered pending prefix",
         ));
     }
     let mut entries = Vec::with_capacity(cut.requests.len());
-    for request in &cut.requests {
-        let (entry, _) = pending(c, &cut.session, request)?;
+    for entry in prefix {
         if entry.request.spec.owner != run_spec.owner
-            || !matches!(entry.placement,Placement::Steering{run:target,..} if target==run)
+            || !matches!(entry.placement,
+                Placement::Steering { run: target, .. } | Placement::Completion { caller: target }
+                if target == run)
         {
             return Err(invalid("steering request belongs to another Run or owner"));
         }

@@ -182,6 +182,13 @@ impl Owner {
             return Err("notification_notification_route_changed".into());
         }
         basis.model = Some(route.model.clone());
+        let placement = if matches!(origin, MessageOrigin::SessionCompletion { .. }) {
+            QueuePlacement::Completion {
+                caller: source.run_id,
+            }
+        } else {
+            QueuePlacement::Followup
+        };
         let message: MessageInput = render(basis.language).into();
         let source = RootSourceMessage {
             message: DeliveredMessage {
@@ -195,9 +202,16 @@ impl Owner {
             disposition: MessageDisposition::TurnStarted,
             submitted_intent: None,
         };
-        self.enqueue_background(session_id, source, &basis, identity, Default::default())
-            .await
-            .map(Some)
+        self.enqueue_background(
+            session_id,
+            source,
+            &basis,
+            identity,
+            Default::default(),
+            placement,
+        )
+        .await
+        .map(Some)
     }
 
     /// Original requests are observed, never re-frozen from a stored execution grant.
@@ -239,6 +253,7 @@ impl Owner {
         basis: &CapturedRun,
         key: &str,
         required_tools: BTreeSet<String>,
+        placement: QueuePlacement,
     ) -> Result<PreparedRequest, String> {
         let _ordered = self.runs.ordered(session).await;
         let queue = self.durable.queue();
@@ -291,7 +306,7 @@ impl Owner {
                     expected_revision: current.revision,
                     edit: QueueEdit::Enqueue {
                         request: Box::new(request.clone()),
-                        placement: QueuePlacement::Followup,
+                        placement,
                     },
                 },
                 contents,

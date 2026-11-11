@@ -323,10 +323,6 @@ impl Owner {
                     _ => return Ok(()),
                 }
             };
-            if self.runs.lock().await.busy(&request.source.session_id) || source.terminal.is_none()
-            {
-                return Ok(());
-            }
             let identity = notice.identity(&entry);
             let attention = matches!(notice, Notice::Attention { .. });
             if attention
