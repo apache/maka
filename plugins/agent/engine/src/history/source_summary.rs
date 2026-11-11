@@ -522,10 +522,6 @@ impl Plan {
         )?;
         add(
             &mut bytes,
-            array::<[u8; 32]>(systems.checked_add(2).ok_or_else(overflow)?)?,
-        )?;
-        add(
-            &mut bytes,
             FrozenDirectory::fixed_metadata_bytes()
                 + arc::<Owner>()
                 + arc::<Allocation>()
