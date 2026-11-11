@@ -133,6 +133,14 @@ pub(super) fn project(item: &HistoryItem, turn_id: String) -> Result<Delivery, S
             tool_use_id: tool_id(run, tool),
             settlement: *settlement,
         },
+        Fact::ToolResultAccepted {
+            tool,
+            outcome: AcceptedResult::Failed,
+            ..
+        } => DeliveryFact::ToolSettled {
+            tool_use_id: tool_id(run, tool),
+            settlement: ToolSettlement::Failed,
+        },
         Fact::RunTerminated { terminal, .. } => DeliveryFact::Ended {
             failed: *terminal != Terminal::Completed,
         },

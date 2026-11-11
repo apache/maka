@@ -483,19 +483,24 @@ impl Session {
                 )
                 .await
             }
-            Command::ListWindows { .. } => Ok(json!(
-                self.windows(
-                    session,
-                    cancellation,
-                    language,
-                    #[cfg(target_os = "windows")]
-                    invocation,
-                )
-                .await?
-                .iter()
-                .map(window_info)
-                .collect::<Vec<_>>()
-            )),
+            Command::ListWindows { .. } => {
+                let windows = self
+                    .windows(
+                        session,
+                        cancellation,
+                        language,
+                        #[cfg(target_os = "windows")]
+                        invocation,
+                    )
+                    .await?;
+                Ok(json!(
+                    window_rows(windows, language)
+                        .await?
+                        .into_iter()
+                        .map(|(_, row)| row)
+                        .collect::<Vec<_>>()
+                ))
+            }
             Command::GetState { .. } => {
                 let (browsers, mut errors) = self.browsers.state().await;
                 let apps = match self
@@ -697,21 +702,24 @@ impl Session {
                     }
                 };
                 if candidates.len() != 1 {
+                    let windows = window_rows(candidates, language)
+                        .await?
+                        .into_iter()
+                        .filter(|(_, row)| row["bindable"].as_bool() == Some(true))
+                        .map(|(_, row)| row)
+                        .collect::<Vec<_>>();
                     return Err(failed(match language {
                         Language::En => format!(
-                            "App selection requires exactly one open window; found {}. Choose cua.getApp({{windowId}}) from {}",
-                            candidates.len(),
-                            json!(candidates.iter().map(window_info).collect::<Vec<_>>())
+                            "App selection requires one exact open window. Bindable windows: {}",
+                            json!(windows)
                         ),
                         Language::ZhCn => format!(
-                            "应用选择需要恰好一个打开的窗口；找到 {} 个。请从 {} 中选择 cua.getApp({{windowId}})",
-                            candidates.len(),
-                            json!(candidates.iter().map(window_info).collect::<Vec<_>>())
+                            "应用选择需要指定一个打开的窗口。可绑定窗口：{}",
+                            json!(windows)
                         ),
                         Language::ZhTw => format!(
-                            "應用程式選擇需要恰好一個開啟的視窗；找到 {} 個。請從 {} 中選擇 cua.getApp({{windowId}})",
-                            candidates.len(),
-                            json!(candidates.iter().map(window_info).collect::<Vec<_>>())
+                            "應用程式選擇需要指定一個開啟的視窗。可繫結視窗：{}",
+                            json!(windows)
                         ),
                     }));
                 }
@@ -1015,9 +1023,15 @@ impl Session {
                 invocation,
             )
             .await?;
+        let mut by_pid = HashMap::<u32, Vec<Value>>::new();
+        for (pid, row) in window_rows(windows, language).await? {
+            if let Some(pid) = pid {
+                by_pid.entry(pid).or_default().push(row);
+            }
+        }
         Ok(json!(apps.apps.into_iter().map(|app| json!({
             "id":app_id(&app), "displayName":app.name,
-            "isRunning":app.running, "windows":windows.iter().filter(|w| w.pid == Some(app.pid)).map(window_info).collect::<Vec<_>>()
+            "isRunning":app.running, "windows":by_pid.get(&app.pid).map_or(&[][..], Vec::as_slice)
         })).collect::<Vec<_>>()))
     }
     async fn retire_target(&mut self, handle: &str) -> Result<(), ToolError> {
@@ -2555,8 +2569,106 @@ fn windows_scroll_point(point: [f64; 2]) -> Result<[f64; 2], ToolError> {
     }))
 }
 
+async fn window_rows(
+    windows: Vec<WindowInfo>,
+    language: Language,
+) -> Result<Vec<(Option<u32>, Value)>, ToolError> {
+    if windows.is_empty() {
+        return Ok(Vec::new());
+    }
+    tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        let inventory = platform_macos::apps::list_all_apps();
+        #[cfg(not(target_os = "macos"))]
+        let _ = language;
+        let mut owners = HashMap::new();
+        windows
+            .into_iter()
+            .map(|window| {
+                let mut row = window_info(&window);
+                if let Some(pid) = window.pid {
+                    let owner = owners.entry(pid).or_insert_with(|| {
+                        crate::identity::process(pid)?;
+                        #[cfg(target_os = "macos")]
+                        return crate::macos::permission_subject::window_owner(
+                            i32::try_from(pid).map_err(failed)?,
+                            &inventory,
+                            language,
+                        );
+                        #[cfg(not(target_os = "macos"))]
+                        Ok(())
+                    });
+                    match owner {
+                        Ok(_owner) => {
+                            row["bindable"] = json!(true);
+                            #[cfg(target_os = "macos")]
+                            {
+                                row["applicationId"] = json!(_owner.identity.application_id);
+                                row["appPath"] = json!(_owner.display.app_path);
+                            }
+                        }
+                        Err(error) => {
+                            row["bindingError"] = json!(error.to_string());
+                        }
+                    }
+                }
+                (window.pid, row)
+            })
+            .collect()
+    })
+    .await
+    .map_err(failed)
+}
+
 fn window_info(window: &WindowInfo) -> Value {
-    json!({"id":window.window_id,"app":window.app_name,"title":window.title,"isOnScreen":window.is_on_screen,"minimized":window.minimized,"onCurrentSpace":window.on_current_space,"zIndex":window.z_index})
+    let mut row = json!({"id":window.window_id,"app":window.app_name,"pid":window.pid,"bindable":false,"title":window.title,"isOnScreen":window.is_on_screen,"minimized":window.minimized,"onCurrentSpace":window.on_current_space,"zIndex":window.z_index});
+    if window.pid.is_none() {
+        row["bindingError"] = json!("window process identity unavailable");
+    }
+    row
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[tokio::test]
+async fn window_inventory_marks_unbundled_owners_as_unbindable() {
+    use cua_driver_contract::WindowBounds;
+
+    let pid = std::process::id();
+    let rows = window_rows(
+        vec![WindowInfo {
+            window_id: 42,
+            pid: Some(pid),
+            app_name: "unbundled test process".into(),
+            title: String::new(),
+            bounds: WindowBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
+            is_on_screen: true,
+            z_index: None,
+            layer: None,
+            minimized: None,
+            current_space_id: None,
+            on_current_space: None,
+            space_ids: None,
+        }],
+        Language::En,
+    )
+    .await
+    .unwrap();
+    let [(owner, row)] = rows.as_slice() else {
+        panic!("expected one window inventory entry");
+    };
+    assert_eq!(*owner, Some(pid));
+    assert_eq!(row["id"], 42);
+    assert_eq!(row["pid"], pid);
+    assert_eq!(row["bindable"], false);
+    assert_eq!(
+        row["bindingError"],
+        "tool failed: window owner has no resolved application bundle identity"
+    );
 }
 fn decode<T: DeserializeOwned>(result: CallResult) -> Result<T, ToolError> {
     serde_json::from_value(

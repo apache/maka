@@ -356,15 +356,22 @@ fn outcome(tool: &maka_agent_state::fold::Tool) -> Option<AcceptedResult> {
             AcceptedResult::Succeeded
         });
     }
+    // A successful Host operation can return a normalized tool error.
     match &tool.receipt {
         Some(Receipt::Recorded {
             outcome: OperationOutcome::Returned { result },
             ..
-        }) => Some(if result.is_error() {
-            AcceptedResult::Failed
-        } else {
-            AcceptedResult::Succeeded
-        }),
+        }) => Some(
+            if tool
+                .host_returned
+                .as_ref()
+                .map_or_else(|| result.is_error(), |returned| returned.is_error)
+            {
+                AcceptedResult::Failed
+            } else {
+                AcceptedResult::Succeeded
+            },
+        ),
         Some(Receipt::Recorded {
             outcome: OperationOutcome::NotExecuted { .. },
             ..

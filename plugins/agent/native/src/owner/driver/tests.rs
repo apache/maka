@@ -1754,13 +1754,13 @@ mod source_recovery {
                 "busy recovery admitted work"
             );
             assert!(
-                owner.finish_local_probe(run, &session, true, &probe).await,
+                owner.finish_local_probe(run, &session, true, None, &probe).await,
                 "scheduler-consumed source change was lost when the old probe retired"
             );
             assert!(!owner.runs.state().await.busy(&session));
             probe.borrow_and_update();
             assert!(
-                !owner.finish_local_probe(run, &session, true, &probe).await,
+                !owner.finish_local_probe(run, &session, true, None, &probe).await,
                 "unchanged authority failure must not reintroduce an unconditional retry"
             );
             Ok::<_, Box<dyn Error + Send + Sync>>(())

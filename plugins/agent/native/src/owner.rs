@@ -171,6 +171,8 @@ struct Runs {
     closing: bool,
     controls: BTreeMap<String, Control>,
     preparing: BTreeMap<String, PreparingRun>,
+    /// A failed probe only becomes runnable again after its Run gains evidence.
+    failed_frontiers: BTreeMap<String, (maka_agent_facts::durable::RunId, u64)>,
     /// Original execution custody retained after its worker has ended.
     retained_cleanup: BTreeMap<String, Vec<Arc<driver_cleanup::RetainedScope>>>,
 }

@@ -30,6 +30,8 @@ const tab = await cua.getTab({ url: "https://example.com" });
 ```
 
 These are alternative entry points. `getApp({windowId})` selects an exact window.
+Use a `bindable: true` entry from `cua.listWindows()`. On macOS, use `pid`,
+`applicationId` and `appPath` to distinguish similarly named windows.
 macOS can launch a named app; Linux requires an open window. Windows can launch
 an inventory app ID with `cua.computer.launch_app`, then bind its open window.
 Browser IDs identify configured CDP providers and their existing profiles; when
