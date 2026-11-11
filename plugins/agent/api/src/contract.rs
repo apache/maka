@@ -667,8 +667,10 @@ pub enum SendDelivery {
 #[schemars(rename = "AgentSend")]
 pub struct Send {
     /// Best-effort notification to the native model caller when this message finishes,
-    /// fails or is cancelled. When registration is confirmed, the caller can yield
-    /// rather than poll. The watch and task admission commit together;
+    /// fails or is cancelled, and once per pending interaction or authority blocker
+    /// that needs attention. An attention notification keeps the completion watch.
+    /// When registration is confirmed, the caller can yield rather than poll.
+    /// The watch and task admission commit together;
     /// check the completion field of the send receipt.
     #[serde(default)]
     pub on_complete: Option<OnComplete>,

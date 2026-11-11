@@ -1700,6 +1700,9 @@ mod source_recovery {
                 true
             );
             let owner = driver.state.frontier(run).await?.spec.owner;
+            let states = driver.state.notification_states(owner.clone(), [run].into()).await?;
+            assert!(matches!(states[&run].attention,
+                Some(maka_agent_state::NotificationAttention::Authority { blocker }) if blocker == authority));
             let ordinary = driver
                 .state
                 .ready_runs(owner.clone(), at(), None, 64)
@@ -2446,6 +2449,154 @@ mod model_recovery {
             .with_graceful_shutdown(stop.cancelled_owned())
             .await?;
         Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delegated_message_notifies_attention_once_and_still_notifies_completion() {
+        use maka_agent_facts::interaction::{InteractionOutcome, InteractionRecord};
+        use maka_plugin_core::contract::ServiceTarget;
+        let mut rig = Rig::new().unwrap();
+        let stop = CancellationToken::new();
+        let (requests, mut observed) = tokio::sync::mpsc::channel(4);
+        let mut wire = None;
+        let result = tokio::time::timeout(Duration::from_secs(90), async {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+            let base = rig.directory.path().to_path_buf();
+            let boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), false).await?;
+            let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(
+                move |request: axum::extract::Request| {
+                    let requests = requests.clone();
+                    async move {
+                        let body = axum::body::to_bytes(request.into_body(), usize::MAX).await.unwrap();
+                        let request: Value = serde_json::from_slice(&body).unwrap();
+                        let (reply, response) = oneshot::channel::<String>();
+                        requests.send((request, reply)).await.unwrap();
+                        let text = response.await.unwrap();
+                        let body = format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                            json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
+                                "choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]}),
+                            json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
+                                "choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
+                                "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}}));
+                        ([("content-type", "text/event-stream")], body)
+                    }
+                }));
+            let shutdown = stop.clone();
+            wire = Some(tokio::spawn(async move {
+                axum::serve(listener, app).with_graceful_shutdown(shutdown.cancelled_owned()).await
+            }));
+            rig.attach_host(root(&base, false).await?, boot.deployment, boot.gateway, true, None).await?;
+            let client = rig.client.as_ref().unwrap();
+            let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+            let connection = call(client, "settings", "create", json!({
+                "expectedCatalogRevision":catalog["revision"],
+                "connection":{"slug":"delegation", "name":"delegation",
+                    "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                    "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2"],
+                    "modelOverrides":{"llama3.2":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
+            })).await?;
+            assert_eq!(connection["kind"], "committed");
+            let backend = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"});
+            let mut sessions = Vec::new();
+            for title in ["Caller", "Worker"] {
+                let created = call(client, "agent", "create", json!({
+                    "title":title,"automaticTitle":false,"labels":[],"tools":[],
+                    "workspace":{"kind":"directory","path":base.join("workspace")}
+                })).await?;
+                assert_eq!(created["kind"], "created");
+                sessions.push(created["session"]["id"].as_str().ok_or("session missing")?.to_owned());
+            }
+            let caller = &sessions[0];
+            let worker = &sessions[1];
+            let sent = call(client, "agent", "send", json!({
+                "sessionId":caller,"message":"Delegate the work, then rest.","backend":backend
+            })).await?;
+            assert_eq!(sent["kind"], "queued");
+            let (_, caller_reply) = observed.recv().await.ok_or("caller HTTP request missing")?;
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let access = owner.runs.state().await.controls.get(caller)
+                .and_then(|control| control.access.upgrade()).ok_or("caller access missing")?;
+            let services = owner.services.select_method(&ServiceTarget::Export {name:"agent".into()}, "send")?;
+            let request = services.request_with_work(
+                maka_capabilities::call::Identity::Agent {execution:access.execution().clone(),operation_id:None},
+                CancellationToken::new(), access.custody().clone())?;
+            let completed = request.begin_mutation_target(&ServiceTarget::Export {name:"agent".into()},
+                "send".into(), json!({"sessionId":worker,"message":"Do the delegated task.","backend":backend,
+                    "onComplete":"notify_caller"}), Uuid::new_v4(), json!({"test":"delegated-completion"}),
+                Attachments::new())?.await?.completion().await;
+            completed.cleanup?;
+            request.finish().await?;
+            let receipt = completed.reply;
+            let Receipt::Recorded {outcome:OperationOutcome::Returned {
+                result:OperationResult::Success {value:delegated}}, cleanup:OperationCleanup::Confirmed} = receipt.receipt else {
+                return Err(format!("delegation did not commit: {:?}", receipt.receipt).into());
+            };
+            assert_eq!(delegated["kind"], "queued");
+            assert_eq!(delegated["completion"], "registered");
+            let (_, worker_reply) = observed.recv().await.ok_or("worker HTTP request missing")?;
+            let entries = owner.store.message_completions(&owner.prefix, None).await?;
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].message_id, delegated["messageId"].as_str().unwrap());
+            caller_reply.send("The task is delegated; I am resting.".into()).unwrap();
+            completed_message(client, caller, &sent["messageId"]).await?;
+            owner.deliver_completions().await?;
+            assert!(owner.durable.queue().read(caller.clone()).await?.entries.is_empty(),
+                "ordinary running work must not wake the caller");
+
+            let worker_access = owner.runs.state().await.controls.get(worker)
+                .and_then(|control| control.access.upgrade()).ok_or("worker access missing")?;
+            let worker_run = worker_access.execution().run_id;
+            let view = owner.durable.frontier(worker_run).await?;
+            let question = InteractionRecord {
+                execution:worker_access.execution().clone(),request_id:"delegated-question".into(),created_at:now(),
+                request:serde_json::from_value(json!({"kind":"question","toolUseId":"delegated-question-tool",
+                    "questions":[{"question":"Which result do you need?","options":[{"label":"Brief"},{"label":"Detailed"}]}]}))?,
+                outcome:None,
+            };
+            owner.durable.interactions().establish(worker_access.claim(), (&view).into(), question, None, vec![]).await?;
+            owner.deliver_completions().await?;
+            let (attention, attention_reply) = observed.recv().await.ok_or("attention HTTP request missing")?;
+            let messages = serde_json::to_string(&attention["messages"])?;
+            assert!(messages.contains("needs attention") && messages.contains("delegated-question"), "{messages}");
+            let attention_run = owner.durable.latest_run(caller.clone()).await?.ok_or("attention Run missing")?;
+            let attention_view = owner.durable.frontier(attention_run).await?;
+            let Trigger::Message {message_id} = attention_view.spec.trigger else {return Err("attention trigger missing".into())};
+            attention_reply.send("I have seen the pending question.".into()).unwrap();
+            completed_message(client, caller, &json!(message_id)).await?;
+            for _ in 0..2 { owner.deliver_completions().await?; }
+            assert!(owner.durable.queue().read(caller.clone()).await?.entries.is_empty(),
+                "the same pending question must not enqueue another notification");
+            assert_eq!(owner.durable.latest_run(caller.clone()).await?, Some(attention_run));
+            assert_eq!(owner.store.message_completions(&owner.prefix, None).await?.len(), 1,
+                "attention must keep the terminal completion watch");
+            owner.durable.interactions().commit_outcome(worker, "delegated-question",
+                InteractionOutcome::QuestionAnswer {answers:vec![Some("Brief".into())],committed_at:now()}).await?;
+            worker_reply.send("Delegated task completed.".into()).unwrap();
+            completed_message(client, worker, &delegated["messageId"]).await?;
+            owner.deliver_completions().await?;
+            let (completion, completion_reply) = observed.recv().await.ok_or("completion HTTP request missing")?;
+            let messages = serde_json::to_string(&completion["messages"])?;
+            assert!(messages.contains("ended with status completed") && messages.contains(delegated["messageId"].as_str().unwrap()), "{messages}");
+            let final_run = owner.durable.latest_run(caller.clone()).await?.ok_or("completion Run missing")?;
+            assert_ne!(final_run, attention_run);
+            let final_view = owner.durable.frontier(final_run).await?;
+            let Trigger::Message {message_id} = final_view.spec.trigger else {return Err("completion trigger missing".into())};
+            completion_reply.send("The delegated result is ready.".into()).unwrap();
+            completed_message(client, caller, &json!(message_id)).await?;
+            owner.deliver_completions().await?;
+            assert!(owner.store.message_completions(&owner.prefix, None).await?.is_empty());
+            assert!(owner.durable.queue().read(caller.clone()).await?.entries.is_empty());
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }).await;
+        stop.cancel();
+        let cleanup = rig.finish().await;
+        if let Some(wire) = wire {
+            wire.await.unwrap().unwrap();
+        }
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        result
+            .expect("delegated notification fixture timed out")
+            .unwrap();
     }
 
     async fn completed_message(
