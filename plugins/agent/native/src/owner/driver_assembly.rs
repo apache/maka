@@ -201,12 +201,6 @@ impl Owner {
                 })
                 .map_err(|error| RunError::InvalidInput(error.to_string()))?;
         }
-        if self.settings.bot {
-            live.tools = live
-                .tools
-                .with_always_visible(&[super::bot::SEND_USER, super::bot::SLEEP])
-                .map_err(|error| RunError::InvalidInput(error.to_string()))?;
-        }
         let live_tools = mcp
             .for_run(access, live.tools)
             .map_err(RunError::InvalidInput)?;

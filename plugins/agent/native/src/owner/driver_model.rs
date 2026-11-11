@@ -2595,7 +2595,8 @@ impl DriverModel {
                 // Preparation failure and lost local observation are not upstream closure.
                 if !stream_opened
                     || !matches!(&error, RunError::Model(_))
-                    || matches!(&error, RunError::Model(maka_model::ModelError::Cancelled))
+                    || (cancellation.is_cancelled()
+                        && matches!(&error, RunError::Model(maka_model::ModelError::Cancelled)))
                 {
                     emit(&send, &cancellation, Err(error)).await;
                     return;
