@@ -34,7 +34,9 @@ import {
   type ViewRef,
 } from 'nsh';
 import { Input } from 'nsh/base';
-import { Button, Dialog } from 'nsh/base';
+import { Button } from 'nsh/base';
+import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
+import { SettingsButton } from './SettingsPage';
 import { Clipboard } from 'nsh';
 import { keymap } from 'nsh';
 import type {
@@ -55,6 +57,7 @@ import {
   controlHoverStyle,
   controlFocusStyle,
   controlDisabledStyle,
+  defaultColors,
 } from './ui';
 
 type Color = { named: number } | { indexed: number } | { rgb: number[] };
@@ -77,6 +80,8 @@ type Frame = {
   scrollbackRows: number;
   firstLine: number;
 };
+// Output keeps the dark colors in every appearance, like the ANSI palette.
+const SURFACE = defaultColors(true);
 const CELL = 8;
 const LINE = 16;
 const ANSI = [
@@ -110,7 +115,7 @@ function color(value: Color, palette: [number, number[]][], foreground: boolean)
         const levels = [0, 95, 135, 175, 215, 255];
         rgb = [levels[Math.floor(n / 36)]!, levels[Math.floor(n / 6) % 6]!, levels[n % 6]!];
       } else if (index < 256) rgb = Array(3).fill(8 + (index - 232) * 10);
-      else return foreground ? C.text : '#151517';
+      else return foreground ? SURFACE.text : SURFACE.background;
     }
   }
   return '#' + rgb.map((channel) => channel.toString(16).padStart(2, '0')).join('');
@@ -474,7 +479,12 @@ export function Terminal(props: { model: TerminalModel }) {
         onResponderRelease={(event) => void mouse(event, 'release')}
         onResponderTerminate={() => model.release()}
         accessibilityLabel={tr('Terminal output')}
-        style={{ flex: 1, minHeight: LINE, backgroundColor: '#151517', overflow: 'hidden' }}
+        style={{
+          flex: 1,
+          minHeight: LINE,
+          backgroundColor: SURFACE.background,
+          overflow: 'hidden',
+        }}
       >
         <If when={model.entry().result.mode === 'pty'}>
           <Scroll
@@ -571,7 +581,7 @@ export function Terminal(props: { model: TerminalModel }) {
                               width: CELL,
                               height: LINE,
                               borderBottomWidth: 2,
-                              borderBottomColor: C.text,
+                              borderBottomColor: SURFACE.text,
                             }}
                           />
                         </If>
@@ -585,7 +595,7 @@ export function Terminal(props: { model: TerminalModel }) {
         </If>
         <If when={model.entry().result.mode === 'pipes'}>
           <Scroll style={{ flex: 1 }}>
-            <Text style={[{ ...codeTextStyle, color: C.text }, { userSelect: 'text' }]}>
+            <Text style={[{ ...codeTextStyle, color: SURFACE.text }, { userSelect: 'text' }]}>
               {pipes()}
             </Text>
           </Scroll>
@@ -618,59 +628,32 @@ export function Terminal(props: { model: TerminalModel }) {
         </If>
       </View>
       <If when={confirmation()}>
-        <Dialog
-          animation="none"
-          onOpenChange={() => confirmation.set(false)}
-          style={{
-            flex: 1,
-            justifyContent: 'center',
-            alignItems: 'center',
-            backgroundColor: '#000000cc',
-          }}
-        >
-          <View
-            style={{
-              padding: 24,
-              width: '90%',
-              maxWidth: 480,
-              gap: 24,
-              borderRadius: 16,
-              backgroundColor: C.surface,
-            }}
-          >
-            <Text style={{ ...bodyTextStyle, color: C.text }}>
-              {model.agentOwned()
+        <ModalDialog size="alert" onCancel={() => confirmation.set(false)}>
+          <DialogHeader
+            title={
+              model.agentOwned()
                 ? tr('Stop the agent’s running terminal? This interrupts its command.')
-                : tr('Stop this terminal and its running process?')}
-            </Text>
-            <View
-              style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}
-            >
-              <Button
-                onPress={() => confirmation.set(false)}
-                style={{ ...controlStyle, backgroundColor: C.raised }}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-              >
-                <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                  {tr('Keep running')}
-                </Text>
-              </Button>
-              <Button
-                accessibilityLabel={tr('Confirm stop terminal process')}
-                onPress={() => {
-                  confirmation.set(false);
-                  void model.stop();
-                }}
-                style={controlStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-              >
-                <Text style={{ ...captionTextStyle, color: C.danger }}>{tr('Stop process')}</Text>
-              </Button>
-            </View>
-          </View>
-        </Dialog>
+                : tr('Stop this terminal and its running process?')
+            }
+          />
+          <DialogFooter>
+            <SettingsButton
+              label={tr('Cancel')}
+              tone="quiet"
+              autoFocus
+              onPress={() => confirmation.set(false)}
+            />
+            <SettingsButton
+              label={tr('Stop process')}
+              accessibilityLabel={tr('Confirm stop terminal process')}
+              tone="danger"
+              onPress={() => {
+                confirmation.set(false);
+                void model.stop();
+              }}
+            />
+          </DialogFooter>
+        </ModalDialog>
       </If>
     </View>
   );

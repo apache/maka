@@ -17,13 +17,11 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
 import { batch, cleanup, computed, inputAction, List, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import type { InputRef, ListRef } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
+import { Button } from 'nsh/base';
 import { keymap } from 'nsh';
-import { windowSize } from 'nsh';
 import type {
   AgentRecallPage,
   AgentRecallPassage,
@@ -34,7 +32,7 @@ import type {
 import { useHost } from './host';
 import { tr } from './locale';
 import { createText, errorText, renderText, UiError, type UiText } from './text';
-import { Icon } from './Icon';
+import { ModalDialog } from './ModalDialog';
 import {
   C,
   bodyTextStyle,
@@ -306,301 +304,243 @@ export function RecallSearch(props: {
     input?.focus();
   };
   return (
-    <Dialog
-      animation="none"
-      onOpenChange={({ open }) => {
-        if (!open) close();
-      }}
-      style={{
-        flex: 1,
-        justifyContent: 'flex-start',
-        alignItems: 'center',
-        backgroundColor: C.scrim,
-        paddingHorizontal: 16,
-        paddingTop: compact() ? 16 : windowSize().height / 8,
-        paddingBottom: 16,
-      }}
-    >
-      <View
-        style={{
-          width: '100%',
-          maxWidth: 760,
-          flex: 1,
-          maxHeight: '100%',
-          minHeight: 0,
-          backgroundColor: C.surface,
-          padding: 16,
-          gap: 12,
-          borderWidth: 1,
-          borderRadius: 16,
-          borderColor: C.line,
-        }}
-      >
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          <Text
-            style={{
-              flex: 1,
-              color: C.text,
-              fontSize: 18,
-              lineHeight: 24,
-              fontWeight: '600',
-            }}
-          >
-            {within() ? tr('Find in conversation') : tr('Search conversations')}
+    <ModalDialog size="form" launcher onCancel={close} style={{ maxWidth: 640, flex: 1, gap: 12 }}>
+      <If
+        when={origin !== null}
+        else={
+          <Text style={{ ...captionTextStyle, color: C.muted }}>
+            {tr('Search every conversation you can read, including archived conversations.')}
           </Text>
-          <Button
-            accessibilityLabel={tr('Close conversation search')}
-            tooltip={textTooltip(() => tr('Close · Esc'))}
-            onPress={close}
-            style={{
-              ...controlStyle,
-              width: 32,
-              paddingHorizontal: 8,
-              alignItems: 'center',
-            }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-          >
-            <Icon name="close" color={C.muted} />
-          </Button>
+        }
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <Each of={[true, false]} key={(value) => String(value)}>
+            {(value) => (
+              <Button
+                accessibilityLabel={value() ? tr('This conversation') : tr('All conversations')}
+                selected={within() === value()}
+                disabled={opening()}
+                onPress={inputAction(widen, value())}
+                style={{ ...controlStyle, paddingHorizontal: 10 }}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+              >
+                <Text
+                  style={{
+                    ...captionTextStyle,
+                    color: within() === value() ? C.text : C.muted,
+                  }}
+                >
+                  {value() ? tr('This conversation') : tr('All conversations')}
+                </Text>
+              </Button>
+            )}
+          </Each>
+          <Text style={[{ ...captionTextStyle, flex: 1, color: C.muted }, { numberOfLines: 1 }]}>
+            {within() ? '' : tr('Including archived conversations.')}
+          </Text>
         </View>
-        <If
-          when={origin !== null}
-          else={
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
-              {tr('Search every conversation you can read, including archived conversations.')}
-            </Text>
-          }
+      </If>
+      <Input
+        ref={(node) => {
+          input = node;
+          removeKeys();
+          const keys = [
+            keymap.bind('up', () => move(-1), {
+              when: 'always',
+              repeat: true,
+              within: node,
+            }),
+            keymap.bind('down', () => move(1), {
+              when: 'always',
+              repeat: true,
+              within: node,
+            }),
+            // One Escape closes the search, as its close button says; a
+            // text field alone would only lose the focus.
+            keymap.bind('escape', close, { when: 'always', within: node }),
+          ];
+          removeKeys = () => keys.forEach((remove) => remove());
+        }}
+        testID="recall-search"
+        accessibilityLabel={tr('Search conversation history')}
+        autoFocus
+        value={query()}
+        onChange={({ value: text }) => search(text)}
+        onSubmit={submit}
+        submitBehavior="submit"
+        readonly={opening()}
+        placeholder={within() ? tr('Search messages…') : tr('Search titles and messages…')}
+        style={{
+          color: C.text,
+          placeholderColor: C.muted,
+          height: compact() ? 32 : 40,
+          backgroundColor: C.background,
+          borderRadius: inputBorderRadius,
+          paddingHorizontal: 12,
+          fontSize: 14,
+        }}
+      />
+      <If when={state().kind === 'empty'}>
+        <Text style={{ ...bodyTextStyle, color: C.muted }}>
+          {tr('Type words to search conversation history.')}
+        </Text>
+      </If>
+      <If when={state().kind === 'loading'}>
+        <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('Searching conversations…')}</Text>
+      </If>
+      <If when={state().kind === 'failed'}>
+        <Text style={{ ...bodyTextStyle, color: C.danger }}>
+          {failure() ? renderText(failure()!.error) : ''}
+        </Text>
+        <Button
+          accessibilityLabel={tr('Retry')}
+          onPress={inputAction(retry, failure()?.request.id)}
+          style={controlStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-            <Each of={[true, false]} key={(value) => String(value)}>
-              {(value) => (
+          <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+        </Button>
+      </If>
+      <If when={partial()}>
+        <Text style={{ ...captionTextStyle, color: C.warning }}>
+          {tr('Search is incomplete. Available matches are shown.')}
+        </Text>
+      </If>
+      <If when={openError()}>
+        <Text style={{ ...bodyTextStyle, color: C.danger }}>{openError()}</Text>
+      </If>
+      <If when={opening()}>
+        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Opening conversation…')}</Text>
+      </If>
+      <List
+        each={rows()}
+        estimatedItemSize={128}
+        ref={(node) => {
+          list = node;
+        }}
+        style={{ flex: 1, minHeight: 0, opacity: state().kind === 'ready' ? 1 : 0.5 }}
+        empty={
+          <If when={state().kind === 'ready'}>
+            <Text style={{ ...bodyTextStyle, color: C.muted }}>
+              {within()
+                ? tr('No matching messages.')
+                : tr('No matching conversations or messages.')}
+            </Text>
+          </If>
+        }
+      >
+        {(item) => (
+          <Each of={[item()]} key={(row: Row) => row.id}>
+            {(value) => {
+              const row = value();
+              if (row.kind === 'gap')
+                return (
+                  <View style={{ padding: 12 }}>
+                    <Text style={{ ...captionTextStyle, color: C.warning }}>{row.reason}</Text>
+                  </View>
+                );
+              const result = row.result;
+              const session = result.kind === 'title' ? result.session : result.passage.session;
+              const preview = result.kind === 'passage' ? excerptRuns(result.passage) : [];
+              const title = () => session.title || tr('Untitled conversation');
+              return (
                 <Button
-                  accessibilityLabel={value() ? tr('This conversation') : tr('All conversations')}
-                  selected={within() === value()}
-                  disabled={opening()}
-                  onPress={inputAction(widen, value())}
-                  style={{ ...controlStyle, paddingHorizontal: 10 }}
+                  accessibilityLabel={
+                    result.kind === 'title'
+                      ? tr('Open conversation {title}', { title: title() })
+                      : tr('Open matching passage in {title}', { title: title() })
+                  }
+                  onPress={inputAction(choose, {
+                    request: row.request,
+                    index: row.index,
+                  })}
+                  disabled={opening() || state().kind !== 'ready'}
+                  selected={index() === row.index}
+                  style={{
+                    height: result.kind === 'title' || row.within ? 72 : 128,
+                    minWidth: 0,
+                    flexDirection: 'column',
+                    alignItems: 'stretch',
+                    justifyContent: 'center',
+                    padding: 12,
+                    gap: 4,
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    borderColor: 'transparent',
+                    backgroundColor: index() === row.index ? C.raised : C.surface,
+                  }}
                   hoverStyle={controlHoverStyle()}
                   focusStyle={controlFocusStyle()}
                 >
-                  <Text
-                    style={{
-                      ...captionTextStyle,
-                      color: within() === value() ? C.text : C.muted,
-                    }}
-                  >
-                    {value() ? tr('This conversation') : tr('All conversations')}
-                  </Text>
-                </Button>
-              )}
-            </Each>
-            <Text style={[{ ...captionTextStyle, flex: 1, color: C.muted }, { numberOfLines: 1 }]}>
-              {within() ? '' : tr('Including archived conversations.')}
-            </Text>
-          </View>
-        </If>
-        <Input
-          ref={(node) => {
-            input = node;
-            removeKeys();
-            const keys = [
-              keymap.bind('up', () => move(-1), {
-                when: 'always',
-                repeat: true,
-                within: node,
-              }),
-              keymap.bind('down', () => move(1), {
-                when: 'always',
-                repeat: true,
-                within: node,
-              }),
-              // One Escape closes the search, as its close button says; a
-              // text field alone would only lose the focus.
-              keymap.bind('escape', close, { when: 'always', within: node }),
-            ];
-            removeKeys = () => keys.forEach((remove) => remove());
-          }}
-          testID="recall-search"
-          accessibilityLabel={tr('Search conversation history')}
-          autoFocus
-          value={query()}
-          onChange={({ value: text }) => search(text)}
-          onSubmit={submit}
-          submitBehavior="submit"
-          readonly={opening()}
-          placeholder={within() ? tr('Search messages…') : tr('Search titles and messages…')}
-          style={{
-            color: C.text,
-            placeholderColor: C.muted,
-            height: compact() ? 32 : 40,
-            backgroundColor: C.background,
-            borderRadius: inputBorderRadius,
-            paddingHorizontal: 12,
-            fontSize: 14,
-          }}
-        />
-        <If when={state().kind === 'empty'}>
-          <Text style={{ ...bodyTextStyle, color: C.muted }}>
-            {tr('Type words to search conversation history.')}
-          </Text>
-        </If>
-        <If when={state().kind === 'loading'}>
-          <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('Searching conversations…')}</Text>
-        </If>
-        <If when={state().kind === 'failed'}>
-          <Text style={{ ...bodyTextStyle, color: C.danger }}>
-            {failure() ? renderText(failure()!.error) : ''}
-          </Text>
-          <Button
-            accessibilityLabel={tr('Retry')}
-            onPress={inputAction(retry, failure()?.request.id)}
-            style={controlStyle}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-          >
-            <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
-          </Button>
-        </If>
-        <If when={partial()}>
-          <Text style={{ ...captionTextStyle, color: C.warning }}>
-            {tr('Search is incomplete. Available matches are shown.')}
-          </Text>
-        </If>
-        <If when={openError()}>
-          <Text style={{ ...bodyTextStyle, color: C.danger }}>{openError()}</Text>
-        </If>
-        <If when={opening()}>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Opening conversation…')}</Text>
-        </If>
-        <List
-          each={rows()}
-          estimatedItemSize={128}
-          ref={(node) => {
-            list = node;
-          }}
-          style={{ flex: 1, minHeight: 0, opacity: state().kind === 'ready' ? 1 : 0.5 }}
-          empty={
-            <If when={state().kind === 'ready'}>
-              <Text style={{ ...bodyTextStyle, color: C.muted }}>
-                {within()
-                  ? tr('No matching messages.')
-                  : tr('No matching conversations or messages.')}
-              </Text>
-            </If>
-          }
-        >
-          {(item) => (
-            <Each of={[item()]} key={(row: Row) => row.id}>
-              {(value) => {
-                const row = value();
-                if (row.kind === 'gap')
-                  return (
-                    <View style={{ padding: 12 }}>
-                      <Text style={{ ...captionTextStyle, color: C.warning }}>{row.reason}</Text>
-                    </View>
-                  );
-                const result = row.result;
-                const session = result.kind === 'title' ? result.session : result.passage.session;
-                const preview = result.kind === 'passage' ? excerptRuns(result.passage) : [];
-                const title = () => session.title || tr('Untitled conversation');
-                return (
-                  <Button
-                    accessibilityLabel={
-                      result.kind === 'title'
-                        ? tr('Open conversation {title}', { title: title() })
-                        : tr('Open matching passage in {title}', { title: title() })
-                    }
-                    onPress={inputAction(choose, {
-                      request: row.request,
-                      index: row.index,
-                    })}
-                    disabled={opening() || state().kind !== 'ready'}
-                    selected={index() === row.index}
-                    style={{
-                      height: result.kind === 'title' || row.within ? 72 : 128,
-                      minWidth: 0,
-                      flexDirection: 'column',
-                      alignItems: 'stretch',
-                      justifyContent: 'center',
-                      padding: 12,
-                      gap: 4,
-                      borderRadius: 8,
-                      borderWidth: 1,
-                      borderColor: 'transparent',
-                      backgroundColor: index() === row.index ? C.raised : C.surface,
-                    }}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
-                  >
-                    <If when={!row.within}>
-                      <View
+                  <If when={!row.within}>
+                    <View
+                      style={[
+                        { flexDirection: 'row', gap: 8, alignItems: 'center' },
+                        { pointerEvents: 'none' },
+                      ]}
+                    >
+                      <Text
                         style={[
-                          { flexDirection: 'row', gap: 8, alignItems: 'center' },
-                          { pointerEvents: 'none' },
+                          {
+                            ...bodyTextStyle,
+                            flex: 1,
+                            color: C.text,
+                            fontWeight: '500',
+                          },
+                          { numberOfLines: 1, textOverflow: 'ellipsis' },
                         ]}
                       >
-                        <Text
-                          style={[
-                            {
-                              ...bodyTextStyle,
-                              flex: 1,
-                              color: C.text,
-                              fontWeight: '500',
-                            },
-                            { numberOfLines: 1, textOverflow: 'ellipsis' },
-                          ]}
-                        >
-                          {title()}
+                        {title()}
+                      </Text>
+                      <If when={session.archived}>
+                        <Text style={{ ...captionTextStyle, color: C.muted }}>
+                          {tr('Archived')}
                         </Text>
-                        <If when={session.archived}>
-                          <Text style={{ ...captionTextStyle, color: C.muted }}>
-                            {tr('Archived')}
+                      </If>
+                    </View>
+                    <Text
+                      style={[
+                        { ...captionTextStyle, color: C.muted },
+                        { pointerEvents: 'none', numberOfLines: 1, textOverflow: 'ellipsis' },
+                      ]}
+                    >
+                      {session.workspace.path}
+                    </Text>
+                  </If>
+                  <If when={result.kind === 'passage'}>
+                    <Text
+                      style={[
+                        { ...captionTextStyle, color: C.secondary },
+                        { pointerEvents: 'none', numberOfLines: 3, textOverflow: 'ellipsis' },
+                      ]}
+                    >
+                      <Each of={preview}>
+                        {(run) => (
+                          <Text
+                            style={
+                              run().matched
+                                ? {
+                                    backgroundColor: `${C.accent}33`,
+                                    color: C.text,
+                                    fontWeight: '600',
+                                  }
+                                : {}
+                            }
+                          >
+                            {run().text}
                           </Text>
-                        </If>
-                      </View>
-                      <Text
-                        style={[
-                          { ...captionTextStyle, color: C.muted },
-                          { pointerEvents: 'none', numberOfLines: 1, textOverflow: 'ellipsis' },
-                        ]}
-                      >
-                        {session.workspace.path}
-                      </Text>
-                    </If>
-                    <If when={result.kind === 'passage'}>
-                      <Text
-                        style={[
-                          { ...captionTextStyle, color: C.secondary },
-                          { pointerEvents: 'none', numberOfLines: 3, textOverflow: 'ellipsis' },
-                        ]}
-                      >
-                        <Each of={preview}>
-                          {(run) => (
-                            <Text
-                              style={
-                                run().matched
-                                  ? {
-                                      backgroundColor: `${C.accent}33`,
-                                      color: C.text,
-                                      fontWeight: '600',
-                                    }
-                                  : {}
-                              }
-                            >
-                              {run().text}
-                            </Text>
-                          )}
-                        </Each>
-                      </Text>
-                    </If>
-                  </Button>
-                );
-              }}
-            </Each>
-          )}
-        </List>
-      </View>
-    </Dialog>
+                        )}
+                      </Each>
+                    </Text>
+                  </If>
+                </Button>
+              );
+            }}
+          </Each>
+        )}
+      </List>
+    </ModalDialog>
   );
 }

@@ -230,6 +230,21 @@ pub struct ConnectionSummary {
     pub provider: maka_agent_facts::provider::Identity,
     pub enabled: bool,
     pub enabled_model_count: usize,
+    pub usage_limits: bool,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "SettingsConnectionUsageLimits")]
+pub enum ConnectionUsageLimits {
+    Ready {
+        limits: Vec<maka_agent_ports::provider::UsageLimit>,
+    },
+    Unsupported,
+    Superseded,
+    AuthenticationRequired,
+    UsageCredentialRequired,
+    Unavailable,
 }
 #[derive(Serialize, JsonSchema)]
 #[serde(
@@ -546,6 +561,10 @@ pub fn contract() -> Contract {
                     method::<ConnectionRead, ConnectionDetail>(MethodMode::Query),
                 ),
                 (
+                    "connectionUsageLimits".into(),
+                    method::<ConnectionVersionBasis, ConnectionUsageLimits>(MethodMode::Query),
+                ),
+                (
                     "providers".into(),
                     method::<ProvidersRead, ProvidersPage>(MethodMode::Query),
                 ),
@@ -597,6 +616,23 @@ pub fn contract() -> Contract {
                             .required(),
                         )]),
                         ..method::<SaveCredential, CredentialSaveResult>(MethodMode::Mutation)
+                    },
+                ),
+                (
+                    "saveUsageCredential".into(),
+                    Method {
+                        resources: BTreeMap::from([(
+                            "secret".into(),
+                            maka_plugin_core::contract::ResourceType {
+                                name: "maka.text.utf8".into(),
+                                version: 1,
+                            }
+                            .required(),
+                        )]),
+                        ..method::<
+                            SaveCredential,
+                            maka_agent_facts::configuration::CredentialMutationResult,
+                        >(MethodMode::Mutation)
                     },
                 ),
                 (

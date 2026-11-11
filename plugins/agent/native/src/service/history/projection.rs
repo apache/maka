@@ -66,7 +66,7 @@ pub(super) fn visible(fact: &Fact) -> bool {
         Fact::OperationObserved { reply, .. } => {
             super::super::delivery::recorded_settlement(reply).is_some()
         }
-        Fact::Cell { .. } => false,
+        Fact::Cell { .. } | Fact::ModelInterrupted { .. } => false,
         Fact::ExternalEffect { event } => matches!(
             event,
             maka_agent_facts::external_effects::ExternalEffectEvent::Prepared { .. }
@@ -841,16 +841,8 @@ pub(super) async fn project(
                 .push((SourceField::Body, Field::Content(baseline.clone())));
             result.push(row);
         }
-        Fact::ModelInterrupted { diagnostic, .. } => {
-            let mut row = base(item, turn, 0, Role::Failure, address)?;
-            text(
-                &mut row,
-                SourceField::FailureMessage,
-                diagnostic.clone().into(),
-            );
-            result.push(row);
-        }
-        Fact::RunTerminated {
+        Fact::ModelInterrupted { diagnostic, .. }
+        | Fact::RunTerminated {
             diagnostic: Some(diagnostic),
             ..
         } => {

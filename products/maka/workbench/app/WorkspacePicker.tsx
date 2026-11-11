@@ -47,6 +47,7 @@ import {
 import { Icon } from './Icon';
 import { WorkspaceLocations } from './WorkspaceLocations';
 import { dialogTop, ownTitleBar } from './chrome';
+import { dialogCardStyle } from './ModalDialog';
 import { createSettingsOperations } from './settingsOperations';
 
 type Location = {
@@ -426,14 +427,11 @@ export function WorkspacePicker(props: {
               }}
               style={{
                 width: '100%',
-                maxWidth: 680,
+                maxWidth: 720,
                 flex: 1,
                 minHeight: 0,
                 maxHeight: Math.min(500, windowSize().height - 32),
-                backgroundColor: C.surface,
-                borderWidth: 1,
-                borderRadius: 16,
-                borderColor: C.line,
+                ...dialogCardStyle(),
               }}
             >
               <View

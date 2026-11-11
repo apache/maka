@@ -22,6 +22,10 @@ use maka_agent_facts::durable::{ExecutionIdentity, UnixMillis};
 use maka_agent_state::{Head, queue as durable_queue};
 
 impl Owner {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "steering keeps message input, target execution, captured policy and original call authority explicit"
+    )]
     pub(super) async fn steer_message(
         self: &Arc<Self>,
         mut unprepared: MessageInput,
@@ -30,6 +34,7 @@ impl Owner {
         basis: &CapturedRun,
         operation: &maka_plugin_core::operation::RecoveryRef,
         parent: &maka_capabilities::call::Scope,
+        completion_request: Option<completions::CompletionRequest>,
     ) -> Result<NativeMutation<SendResult>, String> {
         let session = execution.session_id.as_str();
         let target = self
@@ -129,8 +134,25 @@ impl Owner {
                 },
             },
         };
+        let completion = completion_request
+            .as_ref()
+            .map(|_| CompletionRegistration::Registered);
+        let writer = self.durable.queue();
+        let change = if let Some(completion_request) = completion_request {
+            writer.prepare_with(
+                session.into(),
+                command,
+                contents,
+                None,
+                None,
+                self.completion_statement(session, &request.message_id, completion_request)?,
+            )
+        } else {
+            writer.prepare(session.into(), command, contents)
+        };
         Ok(NativeMutation::Commit {
             value: SendResult::Queued {
+                completion,
                 session_id: session.into(),
                 message_id: request.message_id,
                 revision: queue
@@ -138,10 +160,7 @@ impl Owner {
                     .checked_add(1)
                     .ok_or("agent_queue_revision_exhausted")?,
             },
-            change: self
-                .durable
-                .queue()
-                .prepare(session.into(), command, contents),
+            change,
         })
     }
 }

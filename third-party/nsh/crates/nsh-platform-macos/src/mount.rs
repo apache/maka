@@ -215,6 +215,15 @@ impl Mounter {
         crate::system::end_batch(surface);
         crate::input::content_moved(surface, None);
         crate::selectable_view::end_batch(surface);
+        // Suppressed terminal windows never attach; their autofocus must not
+        // keep the main editor's input queued waiting for a native window.
+        if !self.terminal_windows.is_empty() && crate::text_input::has_pending_auto_focus(surface) {
+            for id in &self.terminal_windows {
+                if let Some(view) = self.views.get(id) {
+                    crate::text_input::cancel_auto_focus(view);
+                }
+            }
+        }
         crate::text_input::end_batch(surface);
         surface.control(|control| control.set_focus_path(crate::input::focus_path(surface)));
     }

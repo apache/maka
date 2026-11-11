@@ -360,6 +360,13 @@ impl RunAccess {
             tools.push(super::discovery::MEMORY.into());
         }
         current.tools = intersect_tools(current.tools, self.spec.allowed_tools.clone());
+        // These controls are granted by the registered Bot's identity.
+        if let Some(tools) = &mut current.tools
+            && owner.settings.bot
+            && owner.bot.is(&self.execution.session_id)
+        {
+            tools.extend([bot::SEND_USER.to_owned(), bot::SLEEP.to_owned()]);
+        }
         current.permissions.request_permissions &= self
             .spec
             .permission_ceiling

@@ -233,6 +233,7 @@ impl Owner {
                                 &basis,
                                 &key,
                                 ["GoalStatus".to_owned()].into(),
+                                maka_agent_state::queue::Placement::Followup,
                             )
                             .await?;
                             return Ok(());
@@ -243,6 +244,11 @@ impl Owner {
             let view = self.durable.frontier(run).await.map_err(reason)?;
             if view.spec.session_id != session || view.spec.owner != self.run_owner() {
                 return Err("goal_execution_identity_changed".into());
+            }
+            // A failed recovery is not a completed iteration: retain the original
+            // pending Run instead of redispatching an unobserved call.
+            if view.terminal == Some(Terminal::Failed) && view.recovery_failure().is_some() {
+                return Ok(());
             }
             if let Some(terminal) = view.terminal.clone() {
                 let retry_at = if terminal == Terminal::Failed {

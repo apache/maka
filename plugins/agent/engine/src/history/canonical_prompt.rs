@@ -471,21 +471,6 @@ impl MessageSource for Directory {
             index: start,
         })
     }
-    fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_> {
-        Box::pin(async move {
-            if messages == 0 {
-                let mut hash = Sha256::new();
-                hash.update(b"maka.logical-prefix\0");
-                return Ok(hex::encode(hash.finalize()));
-            }
-            let record = self
-                .store
-                .get(self.list, messages - 1)
-                .await?
-                .ok_or_else(invalid)?;
-            Ok(hex::encode(digest(&record[15..19])))
-        })
-    }
 }
 struct MetadataCursor {
     store: Store,

@@ -636,11 +636,9 @@ pub struct MessageMetadata {
     pub local_tool_names: Arc<dyn RecipeSource<IdentifiedText>>,
     pub settled_tool_call_ids: Arc<dyn RecipeSource<IdentifiedText>>,
 }
-pub type RecipeIdentity<'a> = Pin<Box<dyn Future<Output = io::Result<String>> + Send + 'a>>;
 /// Frozen message recipes and the body-independent metadata used by transports.
 pub trait MessageSource: RecipeSource<MessageRecipe> {
     fn open_metadata(&self, start: usize) -> Box<dyn RecipeCursor<MessageMetadata>>;
-    fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_>;
 }
 
 #[cfg(test)]

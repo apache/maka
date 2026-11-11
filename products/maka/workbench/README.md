@@ -51,6 +51,8 @@ The composer shares one collapsible detail area for Goal, Todo, computer access 
 
 Use **Pin** in a conversation’s action menu to keep it in the **Pinned** group at the top of the browser. **Unpin** returns it to the ordinary list. The Host stores the choice and orders pages consistently across interfaces and restarts.
 
+On the desktop, editing a user message opens an editor in its place and creates nothing until the edit is sent. Sending forks the conversation before that message's turn, opens the fork and sends the edited text there; the original conversation is unchanged. Escape or Cancel closes the editor, and a failed fork keeps the edited text. A message with attachments or references forks at once and puts its text in the fork's composer, where they can be added again.
+
 **Child conversations** in the sidebar action menu opens a separate outline, so deep ancestry does not consume the sidebar. Expand a disclosure arrow to load children, including archived conversations and children in other workspaces; click a title to open that conversation. Branches page through the existing session directory and the outline scrolls horizontally when needed. Creation ancestry comes from `parentSessionId`, independently of fork-source history.
 
 **Settings → Skills** discovers skills from a GitHub `owner/repository`, a Git URL or GitHub subdirectory URL, or a directory on the connected Host. Select the skills and their installation location: global or project `.agents/skills` or `.maka/skills`. Same-named skills resolve in this order: project `.maka`, project `.agents`, global `.maka`, global `.agents`. Cards retain every physical instance and indicate which one is effective. Deleting an override reveals the next instance.

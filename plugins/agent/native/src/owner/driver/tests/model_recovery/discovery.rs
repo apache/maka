@@ -589,7 +589,11 @@ async fn discovery_recovery_delivers_an_authorized_notification_once() {
         panic!("missing original worker");
     };
     f.query("send", json!({"sessionId":worker_id,"message":"A later independent turn", "backend":f.model,"delivery":"queue"})).await;
-    let (_later_worker, _) = next(&listener).await;
+    let (mut later_worker, _) = next(&listener).await;
+    finish_text(&mut later_worker, "Independent turn complete.").await;
+    tokio::time::timeout(Duration::from_secs(45), f.quiescent(&worker_id))
+        .await
+        .expect("independent worker Run did not settle before Host teardown");
     f.reopen().await;
     f.query("stop", json!({"sessionId":f.bot,"runId":busy}))
         .await;
@@ -610,10 +614,13 @@ async fn discovery_recovery_delivers_an_authorized_notification_once() {
         .resolve_message(f.bot.clone(), report.message_id.clone())
         .await
         .unwrap();
-    assert!(matches!(
-        delivered,
-        maka_agent_state::queue::MessageResolution::Delivered { shared: false, .. }
-    ));
+    assert!(
+        matches!(
+            delivered,
+            maka_agent_state::queue::MessageResolution::Delivered { shared: false, .. }
+        ),
+        "expected the recovered report to start its own Bot Run, got {delivered:?}"
+    );
     f.reopen().await;
     assert_eq!(
         f.owner()

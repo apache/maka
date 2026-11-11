@@ -102,11 +102,12 @@ impl ServiceOwner {
         serde_json::json!({"kind":kind,"owner":self})
     }
 }
-const SETTINGS_METHODS: [&str; 10] = [
+const SETTINGS_METHODS: [&str; 11] = [
     "create",
     "update",
     "remove",
     "saveCredential",
+    "saveUsageCredential",
     "deleteCredential",
     "updateModelSettings",
     "setDefault",
@@ -217,6 +218,11 @@ fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Res
                             .get("turnId")
                             .and_then(Value::as_str)
                             .is_some_and(|turn| !turn.is_empty())
+                }
+                // The Host validates the qualified row address itself.
+                Some("before_source_turn" | "through_source_turn") => {
+                    position.as_object().is_some_and(|value| value.len() == 2)
+                        && position.get("position").is_some_and(Value::is_object)
                 }
                 _ => false,
             };
@@ -664,7 +670,7 @@ impl Client {
         if !settings_route(endpoint, method) {
             return Err("unsupported settings mutation method".into());
         }
-        if endpoint == "settings" && method == "saveCredential" {
+        if endpoint == "settings" && matches!(method, "saveCredential" | "saveUsageCredential") {
             if resources.len() != 1
                 || !resources.get("secret").is_some_and(|secret| {
                     secret.resource_type() == text_resource_type()
@@ -1768,4 +1774,96 @@ impl Subscription {
 }
 fn error(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod fork_position_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn owner() -> ServiceOwner {
+        ServiceOwner {
+            namespace: InstanceId(vec![Uuid::new_v4()]),
+            export: "agent".into(),
+        }
+    }
+    fn fork(position: Value) -> Value {
+        json!({"sessionId": "s", "expectedRevision": 3, "position": position, "title": "t", "labels": []})
+    }
+    fn row() -> Value {
+        json!({"kind": "live", "path": [], "sequence": 7})
+    }
+
+    #[test]
+    fn fork_accepts_positions_qualified_by_a_source_row() {
+        let owner = owner();
+        for kind in ["before_source_turn", "through_source_turn"] {
+            let position = json!({"kind": kind, "position": row()});
+            let correlation = control_correlation("fork", &fork(position.clone()), &owner)
+                .unwrap_or_else(|error| panic!("{kind}: {error}"));
+            assert_eq!(correlation["position"], position);
+            for invalid in [
+                json!({"kind": kind}),
+                json!({"kind": kind, "position": "row"}),
+                json!({"kind": kind, "position": row(), "turnId": "t"}),
+            ] {
+                assert!(control_correlation("fork", &fork(invalid), &owner).is_err());
+            }
+        }
+        for position in [
+            json!({"kind": "start"}),
+            json!({"kind": "end"}),
+            json!({"kind": "before_turn", "turnId": "t"}),
+            json!({"kind": "through_turn", "turnId": "t"}),
+        ] {
+            assert!(control_correlation("fork", &fork(position), &owner).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn unresolved_source_row_forks_are_recovered_from_the_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = Journal::open(&directory.path().join("client.sqlite"))
+            .await
+            .unwrap();
+        let host = DeploymentRef {
+            state_domain: "a".repeat(64),
+            deployment: Uuid::new_v4(),
+            revision: 1,
+        };
+        let owner = owner();
+        let mut reserved = Vec::new();
+        for kind in ["before_source_turn", "through_source_turn", "before_turn"] {
+            let position = if kind == "before_turn" {
+                json!({"kind": kind, "turnId": "t"})
+            } else {
+                json!({"kind": kind, "position": row()})
+            };
+            let operation = Operation {
+                id: Uuid::new_v4(),
+                host: host.clone(),
+                endpoint: "agent".into(),
+                method: "fork".into(),
+                session_id: Some("s".into()),
+                correlation: control_correlation("fork", &fork(position), &owner).unwrap(),
+                draft: None,
+                upload: None,
+                abandoned: false,
+                reference: None,
+                receipt: None,
+            };
+            journal.reserve(&operation).await.unwrap();
+            reserved.push(operation.id);
+        }
+        let mut pending: Vec<_> = journal
+            .pending_controls(&host, &owner)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|operation| operation.id)
+            .collect();
+        pending.sort();
+        reserved.sort();
+        assert_eq!(pending, reserved);
+    }
 }

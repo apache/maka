@@ -857,6 +857,36 @@ export type SettingsAssistantPreferencesOutput_Mode =
   | 'danger-full-access';
 export type SettingsAssistantPreferencesOutput_ShellPreference = 'auto' | 'git_bash';
 export type SettingsCatalogModelsInput_CatalogModelReference = Runtime.CatalogModelReference;
+export type SettingsConnectionUsageLimitsOutput_UsageLimit =
+  | {
+      kind: 'window';
+      label?: string | null;
+      period?: SettingsConnectionUsageLimitsOutput_UsagePeriod | null;
+      /**
+       * Reset time in Unix seconds.
+       */
+      resetsAt?: number | null;
+      usedPercent: number;
+      quantity?: SettingsConnectionUsageLimitsOutput_UsageQuantity | null;
+    }
+  | {
+      kind: 'balance';
+      label?: string | null;
+      amount: number;
+      unit?: string | null;
+    }
+  | {
+      kind: 'unlimited';
+      label?: string | null;
+    };
+export type SettingsConnectionUsageLimitsOutput_UsagePeriod =
+  | {
+      kind: 'duration';
+      seconds: number;
+    }
+  | {
+      kind: 'monthly';
+    };
 export type SettingsResolveModelInput_ModelOverride = Runtime.ModelOverride;
 export type SettingsUpdateInput_Nullable_MapOf_ModelOverride = {
   [k: string]: SettingsUpdateInput_ModelOverride | undefined;
@@ -1053,6 +1083,10 @@ export type SettingsUsageOutput_OperationCleanup =
  * Breakdown selected for a bounded summary page.
  */
 export type SettingsUsageSummaryOutput_UsageGroup = 'byProvider' | 'byModel' | 'byTool';
+export type SettingsAuthenticationProviderOutput_UsageAuthentication =
+  | 'provider'
+  | 'access_key'
+  | 'team_access_key';
 /**
  * A finite transfer of one captured durable display. End installs it; these
  * parts never claim an original-output cursor or a parser continuation point.
@@ -2274,6 +2308,30 @@ export interface ServiceMethods {
       };
       output: Runtime.SettingsConnectionDetail;
     };
+    connectionUsageLimits: {
+      mode: 'query';
+      input: Runtime.ConnectionVersionBasis;
+      output:
+        | {
+            kind: 'ready';
+            limits: SettingsConnectionUsageLimitsOutput_UsageLimit[];
+          }
+        | {
+            kind: 'unsupported';
+          }
+        | {
+            kind: 'superseded';
+          }
+        | {
+            kind: 'authentication_required';
+          }
+        | {
+            kind: 'usage_credential_required';
+          }
+        | {
+            kind: 'unavailable';
+          };
+    };
     connections: {
       mode: 'query';
       input: Runtime.SettingsConnectionsRead;
@@ -2344,6 +2402,11 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.SettingsSaveCredential;
       output: Runtime.SettingsCredentialSaveResult;
+    };
+    saveUsageCredential: {
+      mode: 'mutation';
+      input: Runtime.SettingsSaveCredential;
+      output: Runtime.CredentialMutationResult;
     };
     setDefault: {
       mode: 'mutation';
@@ -3427,6 +3490,11 @@ export interface SettingsCatalogModelsOutput_CatalogModelReference {
   provider: string;
   modelId: string;
 }
+export interface SettingsConnectionUsageLimitsOutput_UsageQuantity {
+  used: number;
+  limit: number;
+  unit?: string | null;
+}
 export interface SettingsUpdateInput_ConnectionVersionBasis {
   connectionId: string;
   revision: number;
@@ -3772,6 +3840,7 @@ export interface SettingsAuthenticationProviderOutput_Descriptor {
    */
   anonymous: boolean;
   discovery: boolean;
+  usageAuthentication?: SettingsAuthenticationProviderOutput_UsageAuthentication | null;
 }
 export interface SettingsAuthenticationProviderOutput_Method {
   id: string;

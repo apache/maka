@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
+import { mergeChunks, readHistoryTail } from '../app/history.ts';
 
 const { createHistoryPrefetch } = await import(
   '../../../../plugins/agent/conversations/ui/historyPrefetch.ts'
@@ -134,4 +135,84 @@ test('a superseded or failed read leaves the active window free to page', async 
   );
   reads[2].resolve(null);
   await retry;
+});
+
+const chunk = (sequence, role, text, offset = 0) => ({
+  position: { kind: 'live', sequence, fact: `fact-${sequence}`, itemIndex: 0 },
+  order: { path: [sequence], itemIndex: 0 },
+  field: 'body',
+  turnId: 'latest',
+  role,
+  text,
+  offset,
+  totalBytes: offset + text.length,
+});
+const historyPage = (chunks, before) => ({
+  kind: 'ready',
+  through: 12,
+  chunks,
+  before,
+  after: null,
+});
+
+test('opening a tail publishes the latest turn together after its older pages arrive', async () => {
+  const tail = historyPage([chunk(12, 'assistant', 'Final answer')], 'tools');
+  const tools = Promise.withResolvers();
+  const opening = Promise.withResolvers();
+  const reads = [];
+  let visible = [];
+  const pending = readHistoryTail(tail, (cursor) => {
+    reads.push(cursor);
+    return reads.length === 1 ? tools.promise : opening.promise;
+  }).then((page) => {
+    visible = mergeChunks([], page.chunks).map((row) => row.text);
+    return page;
+  });
+  assert.deepEqual(visible, []);
+  tools.resolve(historyPage([chunk(11, 'tool_result', 'Tool output')], 'opening'));
+  await setImmediate();
+  assert.deepEqual(visible, []);
+  opening.resolve(historyPage([chunk(10, 'user', 'Question')], 'previous-turn'));
+  const page = await pending;
+  assert.deepEqual(reads, ['tools', 'opening']);
+  assert.deepEqual(visible, ['Question', 'Tool output', 'Final answer']);
+  assert.equal(page.before, 'previous-turn');
+  assert.equal(page.after, null);
+  assert.deepEqual(
+    tail.chunks.map((row) => row.text),
+    ['Final answer'],
+  );
+});
+
+test('a tail with its complete opening needs no extra read, including imported turns', async () => {
+  const opening = {
+    ...chunk(10, 'user', 'Question'),
+    position: { kind: 'imported', path: [], snapshot: 'import', messageOrdinal: 0, partOrdinal: 0 },
+    turnId: null,
+    importedTurn: 4,
+  };
+  const answer = {
+    ...chunk(12, 'assistant', 'Final answer'),
+    position: { ...opening.position, messageOrdinal: 1 },
+    turnId: null,
+    importedTurn: 4,
+  };
+  const tail = historyPage([opening, answer], 'previous-turn');
+  const page = await readHistoryTail(tail, () => assert.fail('The latest turn is already loaded'));
+  assert.deepEqual(page.chunks, [opening, answer]);
+});
+
+test('an opening fragment is completed before display and a revoked read publishes nothing', async () => {
+  const tail = historyPage(
+    [chunk(10, 'user', 'tion', 4), chunk(12, 'assistant', 'Answer')],
+    'prefix',
+  );
+  const page = await readHistoryTail(tail, async () =>
+    historyPage([chunk(10, 'user', 'Ques')], null),
+  );
+  assert.deepEqual(
+    mergeChunks([], page.chunks).map((row) => row.text),
+    ['Question', 'Answer'],
+  );
+  assert.equal(await readHistoryTail(tail, async () => null), null);
 });

@@ -122,8 +122,23 @@ impl Owner {
         render: impl FnOnce(Language) -> String,
         origin: MessageOrigin,
     ) -> Result<Option<PreparedRequest>, String> {
-        self.prepare_notification_checked(&source.session_id, route, identity, render, origin, None)
-            .await
+        let placement = if matches!(origin, MessageOrigin::SessionCompletion { .. }) {
+            QueuePlacement::Completion {
+                caller: source.run_id,
+            }
+        } else {
+            QueuePlacement::Followup
+        };
+        self.prepare_notification_checked(
+            &source.session_id,
+            route,
+            identity,
+            render,
+            origin,
+            placement,
+            None,
+        )
+        .await
     }
     pub(super) async fn prepare_notification_checked(
         &self,
@@ -132,6 +147,7 @@ impl Owner {
         identity: &str,
         render: impl FnOnce(Language) -> String,
         origin: MessageOrigin,
+        placement: QueuePlacement,
         boundary: Option<&ScheduledTarget>,
     ) -> Result<Option<PreparedRequest>, String> {
         if let Some(original) = self
@@ -212,6 +228,7 @@ impl Owner {
             &basis,
             identity,
             Default::default(),
+            placement,
             boundary,
         )
         .await
@@ -233,7 +250,11 @@ impl Owner {
             .await
             .map_err(|e| e.to_string())?
             .ok_or("agent_notification_missing")?;
-        if original.request != *request {
+        // Queue edits may replace content while preserving the admitted identity.
+        if original.request.message_id != request.message_id
+            || original.request.spec.owner != request.spec.owner
+            || original.request.spec.turn_id != request.spec.turn_id
+        {
             return Err("agent_message_identity_changed".into());
         }
         Ok(!matches!(
@@ -253,9 +274,18 @@ impl Owner {
         basis: &CapturedRun,
         key: &str,
         required_tools: BTreeSet<String>,
+        placement: QueuePlacement,
     ) -> Result<PreparedRequest, String> {
-        self.enqueue_background_checked(session, source, basis, key, required_tools, None)
-            .await
+        self.enqueue_background_checked(
+            session,
+            source,
+            basis,
+            key,
+            required_tools,
+            placement,
+            None,
+        )
+        .await
     }
     async fn enqueue_background_checked(
         &self,
@@ -264,6 +294,7 @@ impl Owner {
         basis: &CapturedRun,
         key: &str,
         required_tools: BTreeSet<String>,
+        placement: QueuePlacement,
         boundary: Option<&ScheduledTarget>,
     ) -> Result<PreparedRequest, String> {
         let _ordered = self.runs.ordered(session).await;
@@ -320,7 +351,7 @@ impl Owner {
                     expected_revision: current.revision,
                     edit: QueueEdit::Enqueue {
                         request: Box::new(request.clone()),
-                        placement: QueuePlacement::Followup,
+                        placement,
                     },
                 },
                 contents,

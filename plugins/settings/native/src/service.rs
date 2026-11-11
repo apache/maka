@@ -350,6 +350,22 @@ impl Handler for Settings {
                     super::connections::page(&store, input, snapshot).await
                 }
                 "connection" => super::connections::detail(&store, input).await,
+                "connectionUsageLimits" => {
+                    let snapshot = public_catalog
+                        .snapshot
+                        .read()
+                        .await
+                        .as_ref()
+                        .map_err(|_| "settings_store_unavailable")?
+                        .clone();
+                    super::connections::usage_limits(
+                        &store,
+                        input,
+                        snapshot,
+                        context.scope().cancellation.clone(),
+                    )
+                    .await
+                }
                 "providers" => {
                     let snapshot = public_catalog
                         .snapshot
@@ -478,6 +494,16 @@ impl Handler for Settings {
                         .map_err(|_| "settings_store_unavailable")?
                         .clone();
                     super::credential::save(&store, snapshot, input, context).await
+                }
+                "saveUsageCredential" => {
+                    let snapshot = public_catalog
+                        .snapshot
+                        .read()
+                        .await
+                        .as_ref()
+                        .map_err(|_| "settings_store_unavailable")?
+                        .clone();
+                    super::credential::save_usage(&store, snapshot, input, context).await
                 }
                 "updateModelSettings" => {
                     context.operation().ok_or("settings_mutation_required")?;

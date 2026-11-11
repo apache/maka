@@ -32,6 +32,11 @@ impl Owner {
         input: ChangeSession,
         _operation: &RecoveryRef,
     ) -> Result<NativeMutation<SessionChanged>, String> {
+        let _producer = if matches!(input.action, SessionAction::Restore) {
+            Some(self.producer_gate.lock().await)
+        } else {
+            None
+        };
         if !self.owns(&input.session_id) {
             return Ok(session_rejected(Rejection::SessionUnavailable));
         }
@@ -92,6 +97,9 @@ impl Owner {
                 .cancel_and_wait(&input.session_id)
                 .await
                 .map_err(|()| "agent_session_change_unknown".to_owned())?;
+        }
+        if record.metadata.archived && matches!(input.action, SessionAction::Restore) {
+            self.retire_caller_completions(&input.session_id).await?;
         }
         let writer = guard.data_writer().clone();
         let cleanup = matches!(input.action, SessionAction::Remove).then(|| {

@@ -591,31 +591,32 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent, x: f32, y: f32) -> bo
 /// towards `sign` along an axis can move; for vertical keys one along
 /// that axis first, then a horizontal one (as vertical wheels move those).
 fn key_scroll_view(view: &NshView, horizontal: bool, sign: f32) -> Option<NshView> {
-    let mut chain = Vec::new();
-    let mut current = Some(view.clone());
-    while let Some(v) = current {
-        current = v.parent_view();
-        if v.kind() != ViewKind::Scroll {
-            continue;
-        }
-        let (dx, dy) = {
-            let state = v.state();
-            let mirrored = state.scroll.as_ref().is_some_and(|s| s.mirrored);
-            if horizontal {
+    nsh_core::input::key_scroll_target(
+        std::iter::successors(Some(view.clone()), NshView::parent_view),
+        horizontal,
+        |v| v.state().scroll.as_ref().map(|s| s.horizontal),
+        |v| {
+            if v.kind() != ViewKind::Scroll {
+                return false;
+            }
+            let (dx, dy) = if horizontal {
                 // can_scroll mirrors horizontal deltas; keys are mirrored
                 // in `key`, so undo it here.
+                let mirrored = v.state().scroll.as_ref().is_some_and(|s| s.mirrored);
                 (if mirrored { -sign } else { sign }, 0.0)
             } else {
                 (0.0, sign)
-            }
-        };
-        if can_scroll(&v, dx, dy) {
-            chain.push(v);
-        }
-    }
-    let along = |v: &NshView| v.state().scroll.as_ref().is_some_and(|s| s.horizontal) == horizontal;
-    let first = chain.iter().position(along).unwrap_or(0);
-    chain.into_iter().nth(first)
+            };
+            can_scroll(v, dx, dy)
+        },
+        listens_to_scroll_intent,
+    )
+}
+
+pub(crate) fn listens_to_scroll_intent(view: &NshView) -> bool {
+    let state = view.state();
+    state.events.contains(EventKind::ScrollIntent)
+        && state.scroll.as_ref().is_some_and(|s| s.behavior.enabled)
 }
 
 /// The innermost view at `(x, y)` (`view`'s coordinates).

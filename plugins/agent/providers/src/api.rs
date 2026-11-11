@@ -43,6 +43,7 @@ mod options;
 mod output;
 mod preferred;
 mod route;
+mod usage;
 
 pub const ID: &str = "maka.providers";
 
@@ -187,6 +188,7 @@ impl ApiProvider {
                 AuthKind::None | AuthKind::OptionalApiKey
             ),
             discovery: true,
+            usage_authentication: usage::authentication(self.id),
         })
         .map(Arc::new)
         .map_err(|error| error.to_string())
@@ -308,6 +310,14 @@ impl Provider for ApiProvider {
         context: maka_agent_ports::provider::Context,
     ) -> BoxFuture<'_, Result<Vec<ModelInfo>, Error>> {
         Box::pin(async move { effects::discover(self, request, context).await })
+    }
+
+    fn usage_limits(
+        &self,
+        request: maka_agent_ports::provider::UsageLimitsRequest,
+        context: maka_agent_ports::provider::Context,
+    ) -> BoxFuture<'_, Result<Vec<maka_agent_ports::provider::UsageLimit>, Error>> {
+        Box::pin(usage::read(self, request, context))
     }
 
     fn verify(

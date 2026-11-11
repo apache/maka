@@ -977,7 +977,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deferred_compaction_finds_a_summary_outside_the_working_set() -> TestResult<()> {
+    async fn deferred_compaction_reads_summary_without_reopening_protocol_blockers()
+    -> TestResult<()> {
         use maka_agent_facts::context::{ModelClosureProtocol, SummaryResult, TextSummary};
         let (_temp, root, store, claim, _, _) = fixture(false).await?;
         let result = AssertUnwindSafe(async {
@@ -1128,14 +1129,37 @@ mod tests {
             )
             .await?;
             let parked = store.frontier(run).await?;
+            let evidence = ContentBlob::json(&attempt)?;
+            let resolution = Fact::BlockerResolved {
+                blocker,
+                evidence: evidence.reference().clone(),
+            };
+            let error = store
+                .append(
+                    &claim,
+                    (&parked).into(),
+                    vec![Change::new(resolution.clone(), at())],
+                    vec![evidence],
+                )
+                .await
+                .unwrap_err();
             assert!(
-                engine
-                    .recover_legacy_compaction(&claim, &parked, at())
-                    .await?
+                error
+                    .to_string()
+                    .contains("requires an observation from its original source")
             );
-            let recovered = store.frontier(run).await?;
-            assert_eq!(recovered.current_step, Some(main.step));
-            assert!(recovered.terminal.is_none() && recovered.recovery_failure().is_none());
+            assert_eq!(store.frontier(run).await?.revision, parked.revision);
+
+            let mut replay = parked.clone();
+            replay.apply(&RecordedFact {
+                schema_version: SCHEMA_VERSION,
+                id: FactId::new(),
+                run,
+                revision: parked.revision + 1,
+                at: at(),
+                fact: resolution,
+            })?;
+            assert!(replay.recovery_failure().is_none());
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         })
         .catch_unwind()

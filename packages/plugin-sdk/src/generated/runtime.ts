@@ -1544,7 +1544,7 @@ export type CredentialLocator =
       scope: 'network_proxy';
       kind: PasswordKind;
     };
-export type ConnectionCredentialKind = 'provider' | 'request_headers';
+export type ConnectionCredentialKind = 'provider' | 'request_headers' | 'usage';
 export type PasswordKind = 'password';
 export type SettingsNetworkCredentialAction = 'keep' | 'delete' | 'replace';
 export type SettingsNetworkUpdated =
@@ -2005,6 +2005,7 @@ export type SettingsConnectionDetail =
 export type ApiProtocol = 'openai-chat-completions' | 'openai-responses' | 'anthropic-messages';
 export type ModelModality = 'text' | 'image' | 'audio' | 'pdf' | 'video';
 export type RelayServiceTier = 'fast';
+export type UsageAuthentication = 'provider' | 'access_key' | 'team_access_key';
 export type SettingsCredentialLoginResult =
   | {
       kind: 'saved';
@@ -3338,6 +3339,7 @@ export type AgentSessionChanged =
       kind: 'rejected';
       reason: AgentRejection;
     };
+export type AgentOnComplete = 'notify_caller';
 export type AgentSendDelivery = 'steer' | 'queue';
 export type AgentExecutionResult =
   | {
@@ -4026,12 +4028,14 @@ export type AgentSendResult =
       sessionId: string;
       runId: RunId;
       messageId: string;
+      completion?: AgentCompletionRegistration | null;
     }
   | {
       kind: 'queued';
       sessionId: string;
       messageId: string;
       revision: number;
+      completion?: AgentCompletionRegistration | null;
     }
   | {
       kind: 'not_your_worker';
@@ -4042,6 +4046,7 @@ export type AgentSendRejection =
   | 'skills_unavailable'
   | 'turn_stopped'
   | 'original_operation_unsettled';
+export type AgentCompletionRegistration = 'registered';
 export type AgentDeliveryFact =
   | {
       kind: 'opened';
@@ -4285,6 +4290,11 @@ export type HistoryView = 'text' | 'conversation';
  * Trusted producer attribution, preserved independently of editable content.
  */
 export type MessageOrigin =
+  | {
+      kind: 'session_completion';
+      sessionId: string;
+      messageId: string;
+    }
   | {
       kind: 'session';
       execution: ExecutionIdentity;
@@ -6478,6 +6488,7 @@ export interface SettingsConnectionSummary {
   provider: Identity;
   enabled: boolean;
   enabledModelCount: number;
+  usageLimits: boolean;
 }
 /**
  * Durable recipient, not a registration lease. Re-loading the same package can
@@ -6632,6 +6643,7 @@ export interface Descriptor {
    */
   anonymous: boolean;
   discovery: boolean;
+  usageAuthentication?: UsageAuthentication | null;
 }
 export interface Method2 {
   id: string;
@@ -7400,6 +7412,15 @@ export interface AgentChangeSession {
   action: AgentSessionAction;
 }
 export interface AgentSend {
+  /**
+   * Best-effort notification to the native model caller when this message finishes,
+   * fails or is cancelled, and once per pending interaction or authority blocker
+   * that needs attention. An attention notification keeps the completion watch.
+   * When registration is confirmed, the caller can yield rather than poll.
+   * The watch and task admission commit together;
+   * check the completion field of the send receipt.
+   */
+  onComplete?: AgentOnComplete | null;
   /**
    * Immutable user-selected excerpts; source metadata grants no read authority.
    *
