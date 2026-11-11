@@ -34,6 +34,7 @@ members = [
     "plugins/workspace/workspace-files/native",
     "plugins/workspace/support",
     "products/maka/acp",
+    "products/eval",
     "plugins/agent/engine",
     "plugins/agent/native",
     "plugins/workspace/workspace-files/patch",
@@ -149,6 +150,7 @@ imagesize = { version = "=0.15.0", default-features = false, features = ["png", 
 jsonschema = { version = "0.60.1", default-features = false }
 libc = "0.2.191"
 maka-acp = { path = "products/maka/acp" }
+maka-eval = { path = "products/eval" }
 maka-agent-engine = { path = "plugins/agent/engine" }
 maka-agent-native = { path = "plugins/agent/native" }
 maka-assistant = { path = "plugins/agent/assistant" }
