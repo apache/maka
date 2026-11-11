@@ -412,7 +412,16 @@ impl Rig {
             }),
         )?;
         let methods: &[&str] = if model_test {
-            &["create", "models", "send", "work", "workReadiness", "queue"]
+            &[
+                "create",
+                "models",
+                "send",
+                "work",
+                "workReadiness",
+                "queue",
+                "openBot",
+                "botOutbox",
+            ]
         } else {
             &[
                 "create",
@@ -1844,6 +1853,7 @@ mod source_recovery {
 }
 
 mod model_recovery {
+    mod bot_tools;
 
     use super::*;
     use maka_process::lifetime::{ProcessIdentity, ProcessObservation};
@@ -1897,6 +1907,19 @@ mod model_recovery {
         ))
     }
     async fn bootstrap(base: &Path, base_url: String, todo: bool) -> TestResult<Boot> {
+        bootstrap_with(base, base_url, |config| config["todo"] = json!(todo)).await
+    }
+    async fn bootstrap_with(
+        base: &Path,
+        base_url: String,
+        configure: impl FnOnce(&mut Value),
+    ) -> TestResult<Boot> {
+        let mut configuration = json!({
+            "permissions": {"access": "read_only", "requestPermissions": false},
+            "workspaceRoots": [{"label": "model test", "path": base.join("workspace")}],
+            "tools": [],
+        });
+        configure(&mut configuration);
         let mut boot = Boot {
             deployment: Uuid::new_v4(),
             agent: Uuid::new_v4(),
@@ -1945,10 +1968,7 @@ mod model_recovery {
                     node(
                         boot.agent,
                         agent.application_ref(),
-                        json!({
-                            "permissions":{"access":"read_only","requestPermissions":false},
-                            "workspaceRoots":[{"label":"model test","path":base.join("workspace")}], "tools":[], "todo":todo
-                        }),
+                        configuration,
                         BTreeMap::new(),
                     ),
                 ),
