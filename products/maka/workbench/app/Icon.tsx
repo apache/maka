@@ -69,6 +69,14 @@ const icons = {
   statusPending: { lucide: 'circle', glyph: '○' },
   loader: { lucide: 'loader-circle', glyph: '◌' },
   unread: { lucide: 'circle', glyph: '●' },
+  app: { lucide: 'app-window', glyph: '▢' },
+  calculator: { lucide: 'calculator', glyph: '=' },
+  camera: { lucide: 'camera', glyph: '◉' },
+  clipboard: { lucide: 'clipboard-list', glyph: '▤' },
+  link: { lucide: 'link', glyph: '∞' },
+  note: { lucide: 'sticky-note', glyph: '▭' },
+  snippet: { lucide: 'text-quote', glyph: '❝' },
+  symbol: { lucide: 'hash', glyph: '#' },
 } satisfies Record<string, { lucide: keyof typeof lucide; glyph: string }>;
 
 const paths = new Map<string, Path2D>();

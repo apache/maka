@@ -17,12 +17,18 @@
  * under the License.
  */
 
-import { Canvas, Path2D, Text, type JSX } from 'nsh';
+import { Canvas, Image, Path2D, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
+import type { QuickIcon } from '../../../../packages/plugin-sdk/src/workbench-views.js';
+import { Icon } from './Icon';
+import { tr } from './locale';
 import { C, bodyTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
 
 /** The height controls in the bar center on, however tall its input grows. */
 export const QUICK_BAR_SLOT = 40;
+/** Fixed, so the launcher can place the selection without measuring rows. */
+export const QUICK_ROW_HEIGHT = 40;
+export const QUICK_SECTION_HEIGHT = 28;
 
 export const quickBarStyle = {
   flexDirection: 'row',
@@ -42,12 +48,30 @@ export const quickRowStyle = {
   paddingHorizontal: 16,
 } as const;
 
-/** A launcher row; without an icon its title lines up with the input's text. */
+export function QuickSectionTitle(props: { title: string }) {
+  return (
+    <Text
+      style={{
+        height: QUICK_SECTION_HEIGHT,
+        lineHeight: QUICK_SECTION_HEIGHT,
+        paddingHorizontal: 16,
+        fontSize: 12,
+        color: C.muted,
+      }}
+    >
+      {props.title}
+    </Text>
+  );
+}
+
 export function QuickRow(props: {
   label: string;
   title: string;
-  hint?: string;
-  icon?: JSX.Element;
+  detail?: string | undefined;
+  trailing?: string | undefined;
+  icon: QuickIcon | 'maka';
+  image?: string | undefined;
+  unread: boolean;
   selected: boolean;
   onPress(): void;
 }) {
@@ -56,17 +80,35 @@ export function QuickRow(props: {
       accessibilityLabel={props.label}
       selected={props.selected}
       onPress={props.onPress}
-      style={props.icon ? quickRowStyle : { ...quickRowStyle, paddingLeft: 42 }}
+      style={[quickRowStyle, { height: QUICK_ROW_HEIGHT, paddingVertical: 0 }]}
       selectedStyle={{ backgroundColor: C.raised }}
       hoverStyle={controlHoverStyle()}
       focusStyle={controlFocusStyle()}
     >
-      {props.icon}
+      <If
+        when={props.image !== undefined}
+        else={
+          <If
+            when={props.icon === 'maka'}
+            else={<Icon name={props.icon as QuickIcon} color={C.secondary} size={16} />}
+          >
+            <MakaMark />
+          </If>
+        }
+      >
+        <Image
+          src={props.image!}
+          style={[
+            { width: 20, height: 20, marginHorizontal: -2, flexShrink: 0 },
+            { objectFit: 'contain' },
+          ]}
+        />
+      </If>
       <Text
         style={{
           ...bodyTextStyle,
-          flex: 1,
-          minWidth: 0,
+          flexShrink: 0,
+          maxWidth: '60%',
           fontWeight: '500',
           color: C.text,
           numberOfLines: 1,
@@ -75,12 +117,56 @@ export function QuickRow(props: {
       >
         {props.title}
       </Text>
-      <If when={props.hint !== undefined}>
+      <Text
+        style={{
+          ...bodyTextStyle,
+          flex: 1,
+          minWidth: 0,
+          color: C.muted,
+          numberOfLines: 1,
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {props.detail ?? ''}
+      </Text>
+      <If when={props.unread}>
+        <View
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: 3,
+            flexShrink: 0,
+            backgroundColor: C.accent,
+          }}
+        />
+      </If>
+      <If when={props.trailing !== undefined}>
         <Text style={{ fontSize: 12, lineHeight: 18, flexShrink: 0, color: C.muted }}>
-          {props.hint}
+          {props.trailing}
         </Text>
       </If>
     </Button>
+  );
+}
+
+export function QuickFooter(props: { action: string }) {
+  const hint = { fontSize: 12, lineHeight: 18, color: C.muted } as const;
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        alignItems: 'center',
+        gap: 16,
+        height: 32,
+        paddingHorizontal: 16,
+        borderTopWidth: 1,
+        borderTopColor: C.line,
+      }}
+    >
+      <Text style={hint}>{`${props.action} ↵`}</Text>
+      <Text style={hint}>{`${tr('Navigate')} ↑↓`}</Text>
+    </View>
   );
 }
 

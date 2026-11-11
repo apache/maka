@@ -23,30 +23,32 @@ import {
   quickToolView,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { QuickRow } from '../../../products/maka/workbench/app/QuickBar';
 import { tr } from '../../../products/maka/workbench/app/locale';
 import { calculate } from './calculate';
 
 function Calculator(props: { input: QuickToolInput }) {
   const { input } = props;
   const result = computed(() => calculate(input.query()));
-  const copy = () => {
-    const value = result();
-    if (value === null) return;
-    Clipboard.writeText(value).then(input.close, input.report);
-  };
-  input.attach({ rows: () => (result() === null ? 0 : 1), activate: copy });
-  return (
-    <If when={result() !== null}>
-      <QuickRow
-        label={`${tr('Copy')} ${result()}`}
-        title={result()!}
-        hint={tr('Copy')}
-        selected={input.selected() === 0}
-        onPress={copy}
-      />
-    </If>
-  );
+  input.attach({
+    items() {
+      const value = result();
+      if (value === null) return [];
+      return [
+        {
+          id: 'result',
+          title: value,
+          detail: input.query().trim(),
+          icon: 'calculator',
+          source: tr('Calculator'),
+          action: tr('Copy and close'),
+          match: 0,
+          run: () => void Clipboard.writeText(value).then(input.close, input.report),
+        },
+      ];
+    },
+    entries: () => [],
+  });
+  return null;
 }
 
 export const activate: UiModule<JSX.Element>['activate'] = () => ({

@@ -1,6 +1,12 @@
 {
   "workbench": "products/maka/workbench",
   "calculator": "plugins/application/calculator",
+  "applications": "plugins/application/applications",
+  "quick-library": "plugins/application/quick-library",
+  "screenshot": "plugins/application/screenshot",
+  "symbols": "plugins/application/symbols",
+  "clipboard-history": "plugins/application/clipboard-history",
+  "file-search": "plugins/application/file-search",
   "host-logs": "plugins/application/host-logs",
   "recovery-gateway": "plugins/agent/recovery-gateway",
   "host-deployment-manager": "plugins/application/host-deployment-manager",

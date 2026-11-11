@@ -9,6 +9,12 @@ export type LucideElement =
   | { tag: 'line'; x1: number; y1: number; x2: number; y2: number }
   | { tag: 'polyline' | 'polygon'; points: string };
 export const lucide = {
+  'app-window': [
+    { tag: 'rect', x: 2.0, y: 4.0, width: 20.0, height: 16.0, rx: 2.0 },
+    { tag: 'path', d: 'M10 4v4' },
+    { tag: 'path', d: 'M2 8h20' },
+    { tag: 'path', d: 'M6 4v4' },
+  ],
   archive: [
     { tag: 'rect', x: 2.0, y: 3.0, width: 20.0, height: 5.0, rx: 1.0 },
     { tag: 'path', d: 'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8' },
@@ -46,6 +52,25 @@ export const lucide = {
     { tag: 'path', d: 'M6 18a4 4 0 01-2-7.465' },
     { tag: 'path', d: 'M6.004 5.125a4 4 0 00-2.526 5.77' },
   ],
+  calculator: [
+    { tag: 'rect', x: 4.0, y: 2.0, width: 16.0, height: 20.0, rx: 2.0 },
+    { tag: 'line', x1: 8.0, y1: 6.0, x2: 16.0, y2: 6.0 },
+    { tag: 'line', x1: 16.0, y1: 14.0, x2: 16.0, y2: 18.0 },
+    { tag: 'path', d: 'M16 10h.01' },
+    { tag: 'path', d: 'M12 10h.01' },
+    { tag: 'path', d: 'M8 10h.01' },
+    { tag: 'path', d: 'M12 14h.01' },
+    { tag: 'path', d: 'M8 14h.01' },
+    { tag: 'path', d: 'M12 18h.01' },
+    { tag: 'path', d: 'M8 18h.01' },
+  ],
+  camera: [
+    {
+      tag: 'path',
+      d: 'M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z',
+    },
+    { tag: 'circle', cx: 12.0, cy: 13.0, r: 3.0 },
+  ],
   check: [{ tag: 'path', d: 'M20 6 9 17l-5-5' }],
   'chevron-down': [{ tag: 'path', d: 'm6 9 6 6 6-6' }],
   'chevron-left': [{ tag: 'path', d: 'm15 18-6-6 6-6' }],
@@ -79,6 +104,14 @@ export const lucide = {
     { tag: 'circle', cx: 12.0, cy: 12.0, r: 10.0 },
     { tag: 'path', d: 'm15 9-6 6' },
     { tag: 'path', d: 'm9 9 6 6' },
+  ],
+  'clipboard-list': [
+    { tag: 'rect', x: 8.0, y: 2.0, width: 8.0, height: 4.0, rx: 1.0 },
+    { tag: 'path', d: 'M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2' },
+    { tag: 'path', d: 'M12 11h4' },
+    { tag: 'path', d: 'M12 16h4' },
+    { tag: 'path', d: 'M8 11h.01' },
+    { tag: 'path', d: 'M8 16h.01' },
   ],
   clock: [
     { tag: 'circle', cx: 12.0, cy: 12.0, r: 10.0 },
@@ -166,6 +199,12 @@ export const lucide = {
       d: 'M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15',
     },
   ],
+  hash: [
+    { tag: 'line', x1: 4.0, y1: 9.0, x2: 20.0, y2: 9.0 },
+    { tag: 'line', x1: 4.0, y1: 15.0, x2: 20.0, y2: 15.0 },
+    { tag: 'line', x1: 10.0, y1: 3.0, x2: 8.0, y2: 21.0 },
+    { tag: 'line', x1: 16.0, y1: 3.0, x2: 14.0, y2: 21.0 },
+  ],
   image: [
     { tag: 'rect', x: 3.0, y: 3.0, width: 18.0, height: 18.0, rx: 2.0 },
     { tag: 'circle', cx: 9.0, cy: 9.0, r: 2.0 },
@@ -177,6 +216,10 @@ export const lucide = {
       tag: 'path',
       d: 'M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z',
     },
+  ],
+  link: [
+    { tag: 'path', d: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71' },
+    { tag: 'path', d: 'M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' },
   ],
   'list-end': [
     { tag: 'path', d: 'M16 5H3' },
@@ -296,6 +339,19 @@ export const lucide = {
     { tag: 'path', d: 'm7 11 2-2-2-2' },
     { tag: 'path', d: 'M11 13h4' },
     { tag: 'rect', x: 3.0, y: 3.0, width: 18.0, height: 18.0, rx: 2.0 },
+  ],
+  'sticky-note': [
+    {
+      tag: 'path',
+      d: 'M21 9a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 15 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2z',
+    },
+    { tag: 'path', d: 'M15 3v5a1 1 0 0 0 1 1h5' },
+  ],
+  'text-quote': [
+    { tag: 'path', d: 'M17 5H3' },
+    { tag: 'path', d: 'M21 12H8' },
+    { tag: 'path', d: 'M21 19H8' },
+    { tag: 'path', d: 'M3 12v7' },
   ],
   'text-wrap': [
     { tag: 'path', d: 'm16 16-3 3 3 3' },
