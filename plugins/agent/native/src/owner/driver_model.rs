@@ -1654,7 +1654,7 @@ impl DriverModel {
                     }
                     Some(Base::Compacted { id, run, baseline }) => {
                         let capture = self
-                            .append_compacted(reader, run, &baseline, target, messages)
+                            .append_compacted(reader, run, &baseline, target, language, messages)
                             .await?;
                         (Some(capture.current.through_sequence), Some(id.to_string()))
                     }
@@ -1842,7 +1842,7 @@ impl DriverModel {
                     }
                     Base::Compacted { id, baseline } => {
                         let capture = self
-                            .append_compacted(reader, run, &baseline, target, messages)
+                            .append_compacted(reader, run, &baseline, target, language, messages)
                             .await?;
                         (
                             Some(id.to_string()),
