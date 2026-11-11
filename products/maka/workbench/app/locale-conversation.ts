@@ -1767,7 +1767,6 @@ export const conversationMessages = {
     '正在保存沙箱设置…',
     '正在儲存沙箱設定…',
   ],
-  'Sandbox off': ['Sandbox off', '沙箱已关闭', '沙箱已關閉'],
   'Full access · Sandbox off': [
     'Full access · Sandbox off',
     '完全访问 · 沙箱已关闭',
@@ -1798,6 +1797,16 @@ export const conversationMessages = {
     'Applies to this conversation; changing it clears earlier approvals.',
     '仅作用于此对话；更改会清除已有授权。',
     '僅作用於此對話；變更會清除已有授權。',
+  ],
+  'New conversations also start with this sandbox.': [
+    'New conversations also start with this sandbox.',
+    '之后的新对话也会默认使用此沙箱。',
+    '之後的新對話也會預設使用此沙箱。',
+  ],
+  'The default sandbox setting could not be saved.': [
+    'The default sandbox setting could not be saved.',
+    '无法保存默认沙箱设置。',
+    '無法儲存預設沙箱設定。',
   ],
   'Sandbox settings rejected: {reason}': [
     'Sandbox settings rejected: {reason}',

@@ -172,14 +172,8 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
   const changeOpen = (next: boolean) => {
     if (!owner.pending()) open.set(next);
   };
-  const label = () => {
-    const access = owner.snapshot()?.permissions.access;
-    return access === 'danger_full_access'
-      ? tr('Sandbox off')
-      : access
-        ? accessLabel(access)
-        : tr('Sandbox');
-  };
+  const access = () => owner.snapshot()?.permissions.access ?? null;
+  const tone = () => (access() === 'danger_full_access' ? C.warning : C.secondary);
   return (
     <Popover
       open={open()}
@@ -219,13 +213,13 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
           focusStyle={{ backgroundColor: C.line }}
           disabledStyle={controlDisabledStyle}
         >
+          <If when={access()}>
+            <Icon name={accessIcon[access()!]} color={tone()} />
+          </If>
           <Text
-            style={[
-              { ...captionTextStyle, color: C.secondary, flexShrink: 1 },
-              { numberOfLines: 1 },
-            ]}
+            style={[{ ...captionTextStyle, color: tone(), flexShrink: 1 }, { numberOfLines: 1 }]}
           >
-            {label()}
+            {access() ? accessLabel(access()!) : tr('Sandbox')}
           </Text>
           <Icon name="down" color={C.muted} />
         </Button>
@@ -262,7 +256,7 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
                   >
                     <Icon name={accessIcon[access()]} color={tone() ?? C.secondary} />
                     <View style={[{ flex: 1, minWidth: 0, gap: 2 }, { pointerEvents: 'none' }]}>
-                      <Text style={{ ...captionTextStyle, color: C.text }}>
+                      <Text style={{ ...captionTextStyle, color: tone() ?? C.text }}>
                         {accessLabel(access())}
                       </Text>
                       <Text style={{ ...menuDetailTextStyle, color: tone() ?? C.muted }}>
@@ -310,7 +304,9 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
               </If>
             </Button>
             <Text style={noteStyle()}>
-              {tr('Applies to this conversation; changing it clears earlier approvals.')}
+              {owner.snapshot()?.session
+                ? tr('Applies to this conversation; changing it clears earlier approvals.')
+                : tr('New conversations also start with this sandbox.')}
             </Text>
             <If when={saving()}>
               <Text style={noteStyle()}>{tr('Saving sandbox settings…')}</Text>

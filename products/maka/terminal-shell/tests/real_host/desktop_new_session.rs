@@ -2532,6 +2532,34 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
     fixture.finish().await;
 }
 
+async fn desktop_composer_sandbox_choice_becomes_the_default() {
+    let fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.press("Sandbox and approvals").await;
+    desktop.press("Full access · Sandbox off").await;
+    desktop
+        .wait(
+            "the composer's sandbox choice did not become the Host default",
+            async {
+                loop {
+                    let preferences = desktop
+                        .client
+                        .query("settings", "assistantPreferences", json!({}))
+                        .await
+                        .unwrap();
+                    if preferences["defaultSandboxMode"] == "danger-full-access" {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            },
+        )
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
     "desktop_remembers_folders_without_restoring_unsent_drafts",
@@ -2554,6 +2582,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_changes",
     "desktop_composer_large_paste_keeps_controls_on_screen",
     "desktop_system_permission_guidance_uses_native_actions_without_paths",
+    "desktop_composer_sandbox_choice_becomes_the_default",
 ];
 
 pub(crate) fn run(name: &str) {
@@ -2626,6 +2655,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_system_permission_guidance_uses_native_actions_without_paths" => {
             runtime.block_on(desktop_system_permission_guidance_uses_native_actions_without_paths())
+        }
+        "desktop_composer_sandbox_choice_becomes_the_default" => {
+            runtime.block_on(desktop_composer_sandbox_choice_becomes_the_default())
         }
         _ => panic!("unknown native test: {name}"),
     }
