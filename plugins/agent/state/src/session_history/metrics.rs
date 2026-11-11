@@ -134,7 +134,7 @@ fn trace_diagnostic(
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelRequestContextTrace {
-    pub estimated_input_tokens: Option<u64>,
+    pub estimated_input_tokens: u64,
     pub model_context: Option<maka_agent_facts::context::ModelRequestContext>,
 }
 

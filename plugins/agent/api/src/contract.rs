@@ -1517,7 +1517,7 @@ pub struct HistoryRequest {
     pub started_at: Option<u64>,
     pub first_token_at: Option<u64>,
     pub finished: Option<HistoryRequestFinished>,
-    pub estimated_input_tokens: Option<u64>,
+    pub estimated_input_tokens: u64,
     pub context_window: Option<u64>,
     pub input_limit: Option<u64>,
 }

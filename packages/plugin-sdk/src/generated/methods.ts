@@ -3113,7 +3113,7 @@ export interface AgentHistoryRequestsOutput_AgentHistoryRequest {
   startedAt?: number | null;
   firstTokenAt?: number | null;
   finished?: AgentHistoryRequestsOutput_AgentHistoryRequestFinished | null;
-  estimatedInputTokens?: number | null;
+  estimatedInputTokens: number;
   contextWindow?: number | null;
   inputLimit?: number | null;
   [k: string]: unknown | undefined;

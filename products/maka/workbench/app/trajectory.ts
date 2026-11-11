@@ -20,7 +20,12 @@
 import type { AgentHistoryRequestsOutput_AgentHistoryRequest as AgentHistoryRequest } from '../../../../packages/plugin-sdk/src/generated/methods.js';
 export type { AgentHistoryRequest };
 import { compareHistoryOrder, historyTurnKey } from './history.ts';
-import type { ProcessProjection, ProcessRow, TurnPresentation } from './processGroups.ts';
+import {
+  displayOrder,
+  type ProcessProjection,
+  type ProcessRow,
+  type TurnPresentation,
+} from './processGroups.ts';
 
 export type ScopedTrajectoryRequest = { turnKey: string; request: AgentHistoryRequest };
 export type TrajectoryDetailEntry =
@@ -86,9 +91,7 @@ export function projectTrajectory(
     });
   };
   for (const [rowId, row] of projection.rowsById) {
-    const sequence = row.startSequence ?? row.sequence;
-    const order =
-      row.order ?? (sequence === undefined ? undefined : { path: [sequence], itemIndex: 0 });
+    const order = displayOrder(row);
     while (
       nextRequest < orderedRequests.length &&
       (order === undefined ||

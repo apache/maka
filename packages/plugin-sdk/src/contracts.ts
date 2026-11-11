@@ -13669,7 +13669,7 @@ export const contracts: {
                     ],
                   },
                   estimatedInputTokens: {
-                    type: ['integer', 'null'],
+                    type: 'integer',
                     format: 'uint64',
                     minimum: 0,
                   },
@@ -13684,7 +13684,14 @@ export const contracts: {
                     minimum: 0,
                   },
                 },
-                required: ['order', 'stepId', 'attemptId', 'modelId', 'purpose'],
+                required: [
+                  'order',
+                  'stepId',
+                  'attemptId',
+                  'modelId',
+                  'purpose',
+                  'estimatedInputTokens',
+                ],
               },
               HistoryOrder: {
                 description:

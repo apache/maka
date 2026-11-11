@@ -77,8 +77,6 @@ pub struct Attempt {
     pub step: StepId,
     pub admission: Option<ModelAdmission>,
     pub observed: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_token_at: Option<UnixMillis>,
     pub semantic: bool,
     pub has_tools: bool,
     pub recovery: Option<AttemptRecovery>,
@@ -872,7 +870,6 @@ impl RunView {
                         step: *step,
                         admission: None,
                         observed: 0,
-                        first_token_at: None,
                         semantic: false,
                         has_tools: false,
                         recovery: None,
@@ -999,14 +996,6 @@ impl RunView {
                     current.admission.is_some() && current.closed.is_none(),
                     "first token has no open original attempt",
                 )?;
-                require(
-                    current.first_token_at.is_none(),
-                    "first token already recorded",
-                )?;
-                self.attempts
-                    .get_mut(attempt)
-                    .expect("validated attempt")
-                    .first_token_at = Some(recorded.at);
             }
             Fact::ModelObserved {
                 attempt,
