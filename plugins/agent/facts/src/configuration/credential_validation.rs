@@ -103,6 +103,18 @@ pub fn validate_set_credential(value: &SetCredentialInput) -> ValidationResult {
     ) {
         normalize_headers(&value.secret)?;
     }
+    if matches!(
+        value.locator,
+        CredentialLocator::Connection {
+            kind: ConnectionCredentialKind::Usage,
+            ..
+        }
+    ) {
+        UsageAccessKey::parse(&value.secret)?;
+        if value.expected_connection.is_none() {
+            return Err("usage credentials require their connection basis".into());
+        }
+    }
     Ok(())
 }
 pub fn normalize_set_credential(value: &mut SetCredentialInput) -> ValidationResult {

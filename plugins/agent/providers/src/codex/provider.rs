@@ -38,9 +38,11 @@ use maka_agent_ports::provider::Verification;
 use maka_agent_ports::provider::authentication::Authenticate;
 use maka_agent_ports::provider::authentication::Credential;
 use maka_agent_ports::provider::authentication::Method;
+use maka_agent_ports::provider::{UsageLimit, UsageLimitsRequest};
 use maka_capabilities::http;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
 const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex";
@@ -92,6 +94,7 @@ impl Codex {
             }],
             anonymous: false,
             discovery: true,
+            usage_authentication: Some(maka_agent_ports::provider::UsageAuthentication::Provider),
         })
         .map(Arc::new)
         .map_err(|e| e.to_string())
@@ -238,20 +241,7 @@ impl Provider for Codex {
                 request_headers,
             } = request;
             let base_url = configuration(&connection)?.base_url;
-            let tokens = login::Tokens::read(&credential.ok_or(Error::AuthenticationRequired)?)?;
-            let mut headers = super::request_headers(&tokens.access_token, &connection.id)?;
-            for (name, value) in request_headers {
-                if headers
-                    .iter()
-                    .any(|(key, existing)| key.eq_ignore_ascii_case(&name) && existing != &value)
-                {
-                    return Err(Error::Invalid(
-                        "request headers conflict with provider authentication".into(),
-                    ));
-                }
-                headers.retain(|key, _| !key.eq_ignore_ascii_case(&name));
-                headers.insert(name, value);
-            }
+            let headers = inspection_headers(&connection, credential, request_headers)?;
             let response = context
                 .transport
                 .request(
@@ -294,6 +284,14 @@ impl Provider for Codex {
         })
     }
 
+    fn usage_limits(
+        &self,
+        request: UsageLimitsRequest,
+        context: Context,
+    ) -> BoxFuture<'_, Result<Vec<UsageLimit>, Error>> {
+        Box::pin(super::usage::read(request, context))
+    }
+
     fn verify(&self, request: Verification, context: Context) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(async move {
             self.resolve(Resolve {
@@ -322,4 +320,26 @@ impl Provider for Codex {
             }
         })
     }
+}
+
+pub(super) fn inspection_headers(
+    connection: &Connection,
+    credential: Option<Credential>,
+    request_headers: BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, Error> {
+    let tokens = login::Tokens::read(&credential.ok_or(Error::AuthenticationRequired)?)?;
+    let mut headers = super::request_headers(&tokens.access_token, &connection.id)?;
+    for (name, value) in request_headers {
+        if headers
+            .iter()
+            .any(|(key, existing)| key.eq_ignore_ascii_case(&name) && existing != &value)
+        {
+            return Err(Error::Invalid(
+                "request headers conflict with provider authentication".into(),
+            ));
+        }
+        headers.retain(|key, _| !key.eq_ignore_ascii_case(&name));
+        headers.insert(name, value);
+    }
+    Ok(headers)
 }
