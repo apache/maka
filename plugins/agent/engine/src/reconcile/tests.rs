@@ -339,6 +339,57 @@ fn budget_child_wait_survives_until_the_failed_terminal_batch() {
 }
 
 #[test]
+fn failed_model_call_gives_the_failed_run_its_diagnostic() {
+    use maka_agent_facts::{accounting::Outcome, context::ModelPurpose, model::ModelFinishReason};
+    let terminated = |facts: Vec<Fact>| match facts.as_slice() {
+        [Fact::RunTerminated { diagnostic, .. }] => diagnostic.clone(),
+        other => panic!("unexpected termination facts: {other:?}"),
+    };
+    let quota = "provider failed (QuotaExhausted): usage limit reached";
+    let (mut view, _, attempt) = budget_closure(
+        ModelPurpose::Main,
+        ModelFinishReason::Stop,
+        Outcome::Error,
+        false,
+    );
+    view.attempts
+        .get_mut(&attempt)
+        .and_then(|attempt| attempt.closed.as_mut())
+        .unwrap()
+        .diagnostic = Some(quota.into());
+    let failed = |view: &RunView, diagnostic| {
+        terminated(crate::driver::termination_facts(
+            view,
+            Terminal::Failed,
+            diagnostic,
+        ))
+    };
+    assert_eq!(failed(&view, None).as_deref(), Some(quota));
+    // A diagnostic the caller already has wins.
+    assert_eq!(
+        failed(&view, Some("external task failed".into())).as_deref(),
+        Some("external task failed")
+    );
+    // Only a failed run reports the call's error.
+    assert_eq!(
+        terminated(crate::driver::termination_facts(
+            &view,
+            Terminal::Cancelled,
+            None
+        )),
+        None
+    );
+    // A call that succeeded (e.g. stopped at its output length) has no error to report.
+    let (view, _, _) = budget_closure(
+        ModelPurpose::Main,
+        ModelFinishReason::Length,
+        Outcome::Success,
+        false,
+    );
+    assert_eq!(failed(&view, None), None);
+}
+
+#[test]
 fn spent_budget_does_not_consume_authorized_replan_or_active_non_authority_blocker() {
     use maka_agent_facts::{accounting::Outcome, context::ModelPurpose, model::ModelFinishReason};
     let (mut view, request, attempt) = budget_closure(

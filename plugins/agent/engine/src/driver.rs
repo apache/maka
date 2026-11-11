@@ -1872,6 +1872,16 @@ pub(super) fn termination_facts(
                 }),
         );
     }
+    // A run that fails on its model call (a quota or auth refusal, retries spent)
+    // carries that call's error, so the conversation can say why it stopped.
+    let diagnostic = diagnostic.or_else(|| {
+        (terminal == Terminal::Failed)
+            .then(|| view.current_attempt.and_then(|id| view.attempts.get(&id)))
+            .flatten()
+            .and_then(|attempt| attempt.closed.as_ref())
+            .filter(|closed| closed.outcome == maka_agent_facts::accounting::Outcome::Error)
+            .and_then(|closed| closed.diagnostic.clone())
+    });
     facts.push(Fact::RunTerminated {
         terminal,
         diagnostic,
