@@ -213,7 +213,14 @@ impl Owner {
             })
             .map(|definition| definition.name.as_str())
             .collect();
-        Ok(live_tools.excluding(&excluded))
+        let catalog = live_tools.excluding(&excluded);
+        let bot_controls: Vec<_> = [bot::SEND_USER, bot::SLEEP]
+            .into_iter()
+            .filter(|name| catalog.contains(name))
+            .collect();
+        catalog
+            .with_always_visible(&bot_controls)
+            .map_err(|error| RunError::InvalidInput(error.to_string()))
     }
 
     async fn unavailable_current(
