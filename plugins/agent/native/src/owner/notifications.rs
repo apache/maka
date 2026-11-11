@@ -233,7 +233,11 @@ impl Owner {
             .await
             .map_err(|e| e.to_string())?
             .ok_or("agent_notification_missing")?;
-        if original.request != *request {
+        // Queue edits may replace content while preserving the admitted identity.
+        if original.request.message_id != request.message_id
+            || original.request.spec.owner != request.spec.owner
+            || original.request.spec.turn_id != request.spec.turn_id
+        {
             return Err("agent_message_identity_changed".into());
         }
         Ok(!matches!(

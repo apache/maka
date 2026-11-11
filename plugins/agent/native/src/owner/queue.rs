@@ -38,6 +38,7 @@ impl Owner {
         self.start_goals();
         self.start_schedules();
         self.start_bot_wake();
+        self.start_completion_notifications();
         let owner = self.clone();
         self.producers.spawn(async move { owner.schedule().await });
     }

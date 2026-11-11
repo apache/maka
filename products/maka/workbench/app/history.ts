@@ -83,6 +83,35 @@ export function historyTurnKey(
     ? JSON.stringify(['snapshot-turn', position.path, position.snapshot, row.turnId])
     : row.turnId;
 }
+
+/** Prepare the latest turn before exposing its first history window. */
+export async function readHistoryTail(
+  page: AgentHistoryPage,
+  readOlder: (cursor: NonNullable<AgentHistoryPage['before']>) => Promise<AgentHistoryPage | null>,
+): Promise<AgentHistoryPage | null> {
+  const chunks = [...page.chunks];
+  const turnKey = historyTurnKey(chunks.at(-1));
+  let before = page.before;
+  for (let olderPages = 0; olderPages < 8 && before !== null && turnKey !== undefined; ) {
+    if (
+      chunks.some(
+        (chunk) =>
+          chunk.role === 'user' &&
+          chunk.field === 'body' &&
+          chunk.offset === 0 &&
+          historyTurnKey(chunk) === turnKey,
+      )
+    )
+      break;
+    const older = await readOlder(before);
+    if (older === null) return null;
+    chunks.unshift(...older.chunks);
+    before = older.before;
+    if (older.chunks.length) olderPages++;
+  }
+  return { ...page, chunks, before };
+}
+
 export function rootEventSequence(row: Pick<Row, 'position' | 'sequence'>): number | undefined {
   return row.position?.kind === 'live'
     ? row.position.sequence
@@ -132,7 +161,9 @@ export type Row = {
 export function senderSession(origin: MessageOrigin | null | undefined): string | null {
   if (origin?.kind === 'session') return origin.execution.sessionId;
   // A Bot Turn started because a worker finished names that worker.
-  return origin?.kind === 'bot_worker' ? origin.sessionId : null;
+  return origin?.kind === 'bot_worker' || origin?.kind === 'session_completion'
+    ? origin.sessionId
+    : null;
 }
 
 /** Closed native text can commit behind the loaded tail, at its message-start seat. */

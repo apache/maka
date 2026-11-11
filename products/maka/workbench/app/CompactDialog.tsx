@@ -18,14 +18,15 @@
  */
 
 import { LoadingState } from './Loading';
-import { cleanup, inputAction, signal, Text, View } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
+import { cleanup, signal, Text } from 'nsh';
 import type { ConversationHandle } from '../../../../plugins/agent/conversations/ui/Conversation';
 import { useHost } from './host';
 import { tr } from './locale';
 import { SettingsEditor } from './SettingsField';
 import { createText, errorText } from './text';
-import { C, bodyTextStyle, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
+import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
+import { SettingsButton } from './SettingsPage';
+import { C, bodyTextStyle } from './ui';
 
 export function CompactDialog(props: {
   owner: ConversationHandle;
@@ -74,86 +75,44 @@ export function CompactDialog(props: {
     }
   };
   return (
-    <Dialog
-      animation="none"
-      closeOnEscape={false}
-      closeOnBackdropPress={false}
-      closeOnSwipe={false}
-      onCancel={close}
-      style={{
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        padding: 16,
-        backgroundColor: C.scrim,
-      }}
-    >
-      <View
-        style={{
-          width: '100%',
-          maxWidth: 720,
-          flex: 1,
-          maxHeight: 560,
-          minHeight: 0,
-          padding: 16,
-          gap: 12,
-          backgroundColor: C.surface,
-          borderWidth: 1,
-          borderColor: C.line,
-          borderRadius: 12,
-        }}
-      >
-        <Text style={{ color: C.text, ...bodyTextStyle }}>{tr('Compact conversation')}</Text>
-        <Text style={{ color: C.muted, ...bodyTextStyle }}>
-          {tr('Instructions for this compaction only')}
-        </Text>
-        <If when={state() === 'loading'}>
-          <LoadingState />
+    <ModalDialog size="editor" height={560} onCancel={close}>
+      <DialogHeader
+        title={tr('Compact conversation')}
+        detail={tr('Instructions for this compaction only')}
+      />
+      <If when={state() === 'loading'}>
+        <LoadingState />
+      </If>
+      <If when={state() === 'ready' || state() === 'submitting'}>
+        <SettingsEditor
+          label={tr('One-time compaction prompt')}
+          value={draft()}
+          change={(value) => draft.set(value)}
+          disabled={state() === 'submitting'}
+          autoFocus
+        />
+      </If>
+      <If when={error()}>
+        <Text style={{ color: C.danger, ...bodyTextStyle }}>{error()}</Text>
+      </If>
+      <DialogFooter>
+        <If when={state() === 'failed'}>
+          <SettingsButton label={tr('Retry compaction prompt')} onPress={() => void load()} />
         </If>
-        <If when={state() === 'ready' || state() === 'submitting'}>
-          <SettingsEditor
-            label={tr('One-time compaction prompt')}
-            value={draft()}
-            change={(value) => draft.set(value)}
-            disabled={state() === 'submitting'}
-            autoFocus
-          />
-        </If>
-        <If when={error()}>
-          <Text style={{ color: C.danger, ...bodyTextStyle }}>{error()}</Text>
-        </If>
-        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
-          <Button
-            accessibilityLabel={tr('Cancel compaction')}
-            disabled={state() === 'submitting'}
-            onPress={inputAction(close, null)}
-            style={controlStyle}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-          >
-            <Text style={{ color: C.text }}>{tr('Cancel compaction')}</Text>
-          </Button>
-          <If when={state() === 'failed'}>
-            <Button
-              accessibilityLabel={tr('Retry compaction prompt')}
-              onPress={inputAction(load, null)}
-              style={controlStyle}
-            >
-              <Text style={{ color: C.text }}>{tr('Retry compaction prompt')}</Text>
-            </Button>
-          </If>
-          <Button
-            accessibilityLabel={tr('Compact now')}
-            disabled={state() !== 'ready'}
-            onPress={inputAction(submit, draft())}
-            style={controlStyle}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-          >
-            <Text style={{ color: C.accent }}>{tr('Compact now')}</Text>
-          </Button>
-        </View>
-      </View>
-    </Dialog>
+        <SettingsButton
+          label={tr('Cancel')}
+          accessibilityLabel={tr('Cancel compaction')}
+          tone="quiet"
+          disabled={state() === 'submitting'}
+          onPress={close}
+        />
+        <SettingsButton
+          label={tr('Compact now')}
+          tone="primary"
+          disabled={state() !== 'ready'}
+          onPress={() => void submit(draft())}
+        />
+      </DialogFooter>
+    </ModalDialog>
   );
 }

@@ -2584,20 +2584,14 @@ fn mouse_event(surface: &Surface, view: &NshView, kind: EventKind, x: f32, y: f3
 /// vertical wheels only where nothing around scrolls vertically.
 fn scroll_target(surface: &Surface, x: f32, y: f32, dx: f32, dy: f32) -> Option<NshView> {
     let hit = pick(&event_root(surface), x, y)?;
-    let views = chain(&hit.view);
-    let horizontal = dx.abs() > dy.abs();
-    let along = |v: &NshView| {
-        v.state()
-            .scroll
-            .as_ref()
-            .is_some_and(|s| s.horizontal == horizontal)
-    };
-    let any_along = views.iter().any(along);
-    views.into_iter().find(|v| {
-        v.kind() == ViewKind::Scroll
-            && (!any_along || along(v))
-            && crate::scroll::can_scroll(v, dx, dy)
-    })
+    input::scroll_target(
+        chain(&hit.view),
+        Points(dx),
+        Points(dy),
+        |v| v.state().scroll.as_ref().map(|s| s.horizontal),
+        |v| v.kind() == ViewKind::Scroll && crate::scroll::can_scroll(v, dx, dy),
+        crate::scroll::listens_to_scroll_intent,
+    )
 }
 
 /// The scroll view a trackpad gesture by `(dx, dy)` at `(x, y)` moves:
@@ -2671,6 +2665,7 @@ fn wheel_step(surface: &Rc<Surface>, x: f32, y: f32, dx: f32, dy: f32, time: f64
         return;
     };
     *input.latch.borrow_mut() = Some((view.clone(), horizontal, time));
+    crate::scroll::scroll_intent(surface, &view, "scroll");
     // Without a begin, the scroll module takes it as a mouse wheel: it
     // settles (and snaps) by itself once the steps stop.
     crate::scroll::wheel(surface, &view, dx, dy, time);
