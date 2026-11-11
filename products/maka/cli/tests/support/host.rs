@@ -78,6 +78,7 @@ pub fn command(sandbox: &Sandbox) -> Result<Command> {
         .env("CODEX_HOME", sandbox.home.join("codex"))
         .env("CLAUDE_CONFIG_DIR", sandbox.home.join("claude"))
         .env("ZDOTDIR", &sandbox.home)
+        .env("LC_ALL", "en_US.UTF-8")
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env("no_proxy", "127.0.0.1,localhost");
     if let Some(path) = std::env::var_os("PATH") {

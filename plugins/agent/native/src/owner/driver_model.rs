@@ -732,7 +732,10 @@ impl DriverModel {
                 source_digest: source_evidence.cut.digest.clone(),
                 effective_source_digest: projection.reference().digest.clone(),
                 provenance: provenance.reference().clone(),
-                projection: Some(projection.reference().clone()),
+                projection: Some(match &mode {
+                    Preparation::Prefix { proof, .. } => proof.clone(),
+                    _ => projection.reference().clone(),
+                }),
                 adjudications: Vec::new(),
                 steering: steering_refs,
                 request: body.reference().clone(),
@@ -1275,7 +1278,7 @@ impl DriverModel {
         &self,
         source_run: RunId,
         mut system: Option<SystemPrompt>,
-        visible_defs: Vec<maka_agent_facts::tools::ToolDefinition>,
+        catalog: maka_tools::ToolCatalog,
     ) -> Result<PreparedContinuation, RunError> {
         let reader = &self.history_reader(source_run).await?;
         use maka_agent_facts::continuation::{
@@ -1314,6 +1317,37 @@ impl DriverModel {
             digest: capture.cut.digest.clone(),
         };
         let model = self.source.capture().await?;
+        let availability = maka_tools::availability::Availability::new(
+            catalog,
+            maka_tools::availability::LoadedTools::new(self.state.cells().reader(
+                self.execution.session_id.clone(),
+                tokio::runtime::Handle::current(),
+            )),
+        )
+        .capture(
+            Some(model.provider.tool_context()),
+            self.execution.clone(),
+            Some(
+                self.log
+                    .work_custody()
+                    .map_err(|error| RunError::Internal(error.to_string()))?,
+            ),
+            original.spec.workspace.clone(),
+            self.cancellation.clone(),
+        )
+        .await
+        .map_err(RunError::Tool)?;
+        let visible = availability.snapshot().await.map_err(RunError::Tool)?;
+        let visible_defs =
+            if self.source.accepted.tool_mode == maka_agent_facts::execution::ToolMode::CodeMode {
+                maka_tools::CodeCells::definitions_for(&visible, self.source.accepted.code_language)
+            } else {
+                let mut definitions: Vec<_> = visible.definitions().cloned().collect();
+                if let Some(search) = availability.definition() {
+                    definitions.push(search);
+                }
+                definitions
+            };
         let target = ReplayTarget::new(&model, ModelOperation::Inference);
         let mut messages = preparation::PromptBuilder::new(
             self.preparation_io()?,
@@ -2559,7 +2593,10 @@ impl DriverModel {
             if let Err(error) = result {
                 cleanup.observe(&error);
                 // Preparation failure and lost local observation are not upstream closure.
-                if !stream_opened || !matches!(&error, RunError::Model(_)) {
+                if !stream_opened
+                    || !matches!(&error, RunError::Model(_))
+                    || matches!(&error, RunError::Model(maka_model::ModelError::Cancelled))
+                {
                     emit(&send, &cancellation, Err(error)).await;
                     return;
                 }
@@ -2804,7 +2841,16 @@ impl DriverModel {
             let parts = self
                 .validate_cold_contract(view, attempt, &request, &frozen)
                 .await?;
-            if parts.is_empty() {
+            let steered = original.cleanup
+                == maka_plugin_core::operation::OperationCleanup::Confirmed
+                && !self
+                    .state
+                    .queue()
+                    .steering(view.spec.session_id.clone(), view.run)
+                    .await?
+                    .entries
+                    .is_empty();
+            if parts.is_empty() && !steered {
                 return Ok(RecoveryEvidence {
                     recovery: AttemptRecovery::Blocked {
                         diagnostic:

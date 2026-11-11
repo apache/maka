@@ -576,3 +576,6 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
         Err(panic) => std::panic::resume_unwind(panic),
     }
 }
+
+#[path = "mainline_reopen/steering.rs"]
+mod steering;
