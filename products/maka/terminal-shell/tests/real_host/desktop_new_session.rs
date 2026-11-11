@@ -1153,7 +1153,10 @@ async fn desktop_edits_a_message_in_place_and_forks_only_when_sent() {
     desktop.key("escape", false);
     desktop
         .until("escape did not close the message editor", || {
-            desktop.controls("Send edited message in a fork").is_empty().then_some(())
+            desktop
+                .controls("Send edited message in a fork")
+                .is_empty()
+                .then_some(())
         })
         .await;
     assert_eq!(desktop.sessions().await.len(), 2);

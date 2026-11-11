@@ -17,7 +17,14 @@
  * under the License.
  */
 
-import { createText, UiError, errorText, message as uiMessage } from './text';
+import {
+  createText,
+  UiError,
+  errorText,
+  message as uiMessage,
+  renderText,
+  type UiText,
+} from './text';
 import { tr } from './locale';
 import { cleanup, computed, effect, inputAction, keymap, signal, Text, untracked, View } from 'nsh';
 import type { Signal } from 'nsh';
@@ -60,7 +67,7 @@ const sameTarget = (left: Target | null, right: Target | null) =>
  * row state, so it outlasts the row scrolling out of view. `text` is null
  * while the original loads.
  */
-export type InlineEdit = { text: string | null; sending: boolean; notice: string };
+export type InlineEdit = { text: string | null; sending: boolean; notice: UiText };
 
 type EditProps = {
   /** The user message; for a regenerated reply, the one that opened its turn. */
@@ -324,7 +331,7 @@ export function MessageEditor(props: EditProps & { state: Signal<InlineEdit | nu
               when={current().text !== null}
               else={
                 <Text style={{ ...bodyTextStyle, color: C.muted }}>
-                  {current().notice ? '' : tr('Loading…')}
+                  {current().notice !== '' ? '' : tr('Loading…')}
                 </Text>
               }
             >
@@ -363,16 +370,17 @@ export function MessageEditor(props: EditProps & { state: Signal<InlineEdit | nu
               style={[
                 {
                   ...captionTextStyle,
-                  color: current().notice ? C.danger : C.muted,
+                  color: current().notice !== '' ? C.danger : C.muted,
                   flexShrink: 1,
                 },
                 { userSelect: 'text' },
               ]}
             >
-              {current().notice ||
-                (current().sending
+              {current().notice !== ''
+                ? renderText(current().notice)
+                : current().sending
                   ? tr('Creating fork…')
-                  : tr('Sending continues in a new conversation. This one stays as it is.'))}
+                  : tr('Sending continues in a new conversation. This one stays as it is.')}
             </Text>
             <Button
               accessibilityLabel={tr('Cancel')}
