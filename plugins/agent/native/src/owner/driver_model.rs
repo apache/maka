@@ -1337,11 +1337,16 @@ impl DriverModel {
         )
         .await
         .map_err(RunError::Tool)?;
-        let visible = availability.snapshot().await.map_err(RunError::Tool)?;
         let visible_defs =
             if self.source.accepted.tool_mode == maka_agent_facts::execution::ToolMode::CodeMode {
-                maka_tools::CodeCells::definitions_for(&visible, self.source.accepted.code_language)
+                maka_tools::CodeCells::definitions_for(
+                    &availability,
+                    self.source.accepted.code_language,
+                )
+                .await
+                .map_err(RunError::Tool)?
             } else {
+                let visible = availability.snapshot().await.map_err(RunError::Tool)?;
                 let mut definitions: Vec<_> = visible.definitions().cloned().collect();
                 if let Some(search) = availability.definition() {
                     definitions.push(search);

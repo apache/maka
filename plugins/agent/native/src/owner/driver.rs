@@ -429,12 +429,16 @@ impl NativeDriver {
             .map_err(|error| RunError::Internal(error.to_string()))?
             .map_err(RunError::Tool)?;
         self.access.live_configuration().await?;
-        let visible = bound.snapshot().await.map_err(RunError::Tool)?;
         let definitions = match &self.backend {
             NativeBackend::Model {
                 cells: Some(cells), ..
-            } => cells.coordinator.definitions(&visible),
+            } => cells
+                .coordinator
+                .definitions(&bound)
+                .await
+                .map_err(RunError::Tool)?,
             NativeBackend::Model { cells: None, .. } => {
+                let visible = bound.snapshot().await.map_err(RunError::Tool)?;
                 let mut definitions: Vec<_> = visible.definitions().cloned().collect();
                 if let Some(search) = bound.definition() {
                     definitions.push(search);
