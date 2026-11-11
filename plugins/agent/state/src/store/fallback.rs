@@ -508,24 +508,55 @@ fn valid_summary(
         && matches!(&protocol.summary,Some(SummaryResult::Text{summary}) if !summary.text.trim().is_empty()))
 }
 
+pub(super) struct ReadySummary(pub RunId, pub StepId, pub Option<ModelAttemptId>);
+impl Query for ReadySummary {
+    type Output = Option<ModelAttemptId>;
+
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let Self(run, step, current_attempt) = self;
+        let current = sql::request(c, run, step)?;
+        let marker = match current.accounting.purpose {
+            ModelPurpose::Main => current.compaction_recovery,
+            ModelPurpose::Summary => current_attempt,
+        };
+        let Some(marker) = marker else {
+            return Ok(None);
+        };
+        let attempt = sql::model_attempt(c, run, marker)?;
+        if current.accounting.purpose == ModelPurpose::Summary && attempt.step != step {
+            return Ok(None);
+        }
+        let request = if attempt.step == step {
+            current
+        } else {
+            sql::request(c, run, attempt.step)?
+        };
+        Ok((request.accounting.purpose == ModelPurpose::Summary
+            && valid_summary(c, run, &request, &attempt)?)
+        .then_some(marker))
+    }
+}
+
 pub(crate) fn deferred_summary(
     c: &Connection,
     view: &RunView,
     summary_step: StepId,
     at: UnixMillis,
+    saving_for_next_run: bool,
 ) -> Result<(RequestSpec, Attempt), StoreError> {
-    if view.stopped
-        || view.terminal.is_some()
-        || view
-            .spec
-            .budget
-            .deadline
-            .is_some_and(|deadline| at >= deadline)
-        || view
-            .spec
-            .budget
-            .tokens
-            .is_some_and(|limit| view.tokens >= limit)
+    if view.terminal.is_some()
+        || (!saving_for_next_run
+            && (view.stopped
+                || view
+                    .spec
+                    .budget
+                    .deadline
+                    .is_some_and(|deadline| at >= deadline)
+                || view
+                    .spec
+                    .budget
+                    .tokens
+                    .is_some_and(|limit| view.tokens >= limit)))
     {
         return Err(invalid(
             "deferred compaction cannot advance a stopped, closed or exhausted Run",
@@ -629,6 +660,9 @@ pub(crate) fn deferred_summary(
         return Err(invalid(
             "deferred Summary projection differs from its canonical original closure",
         ));
+    }
+    if saving_for_next_run {
+        return Ok((summary.request, attempt));
     }
     let attempted: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_session_history INDEXED BY agent_session_history_run WHERE owner=? AND session=? AND run=? AND step=? AND kind='model_attempt_prepared' AND sequence<=?)",params![scope.owner,scope.session,view.run.to_string(),current.request.step.to_string(),scope.sequence],|r|r.get(0))?;
     if attempted {

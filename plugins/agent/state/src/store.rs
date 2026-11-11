@@ -411,6 +411,16 @@ impl Store {
     ) -> Result<Option<FactId>, StoreError> {
         fallback::compaction_progress(&self.data, run, current_main).await
     }
+    pub async fn ready_summary(
+        &self,
+        run: RunId,
+        step: StepId,
+        current_attempt: Option<ModelAttemptId>,
+    ) -> Result<Option<ModelAttemptId>, StoreError> {
+        self.data
+            .query(fallback::ReadySummary(run, step, current_attempt))
+            .await
+    }
     pub async fn finished_or_stopped(
         &self,
         owner: RunOwner,

@@ -287,12 +287,55 @@ impl Engine {
         attempt: ModelAttemptId,
         at: UnixMillis,
     ) -> Result<bool, RunError> {
+        let Some(content) = self.compaction_checkpoint(view, attempt).await? else {
+            return Ok(false);
+        };
+        self.publish(
+            Some(claim),
+            view,
+            vec![Fact::ContextCompacted {
+                baseline: content.reference().clone(),
+            }],
+            vec![content],
+            at,
+        )
+        .await
+    }
+
+    pub(super) async fn checkpoint_for_next_run(
+        &self,
+        view: &RunView,
+    ) -> Result<Option<ContentBlob>, RunError> {
+        if view.cancelled_by_risk
+            || !view.compaction_frontier_is_closed()
+            || !matches!(view.spec.backend, BackendSpec::Model { .. })
+        {
+            return Ok(None);
+        }
+        let Some(step) = view.current_step else {
+            return Ok(None);
+        };
+        let Some(attempt) = self
+            .store
+            .ready_summary(view.run, step, view.current_attempt)
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.compaction_checkpoint(view, attempt).await
+    }
+
+    async fn compaction_checkpoint(
+        &self,
+        view: &RunView,
+        attempt: ModelAttemptId,
+    ) -> Result<Option<ContentBlob>, RunError> {
         let original = self.store.model_attempt(view.run, attempt).await?;
         if let Some(reference) = &view.baseline {
             let baseline: CompactedContext =
                 decode(self, view.run, reference, "compacted-context-schema").await?;
             if baseline.checkpoint.summary_step_id == original.step {
-                return Ok(false);
+                return Ok(None);
             }
         }
         let request = self.store.request(view.run, original.step).await?;
@@ -424,17 +467,7 @@ impl Engine {
             native,
         };
         compacted.validate().map_err(unsupported)?;
-        let content = ContentBlob::json(&compacted)?;
-        self.publish(
-            Some(claim),
-            view,
-            vec![Fact::ContextCompacted {
-                baseline: content.reference().clone(),
-            }],
-            vec![content],
-            at,
-        )
-        .await
+        Ok(Some(ContentBlob::json(&compacted)?))
     }
 }
 

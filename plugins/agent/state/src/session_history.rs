@@ -266,6 +266,16 @@ impl SessionHistory {
         run: RunId,
         step: StepId,
     ) -> Result<RequestSpec, StoreError> {
+        self.request_preparation(cut, run, step)
+            .await
+            .map(|(request, _)| request)
+    }
+    pub async fn request_preparation(
+        &self,
+        cut: &HistoryCut,
+        run: RunId,
+        step: StepId,
+    ) -> Result<(RequestSpec, UnixMillis), StoreError> {
         self.data
             .query(Request(self.clone(), cut.clone(), run, step))
             .await
@@ -421,9 +431,9 @@ impl Query for Source {
 }
 struct Request(SessionHistory, HistoryCut, RunId, StepId);
 impl Query for Request {
-    type Output = RequestSpec;
+    type Output = (RequestSpec, UnixMillis);
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        sql::request(c, &self.0.namespace, &self.1, self.2, self.3)
+        sql::request_preparation(c, &self.0.namespace, &self.1, self.2, self.3)
     }
 }
 struct Content(SessionHistory, RunId, ContentRef);
