@@ -34,7 +34,9 @@ import {
   type ViewRef,
 } from 'nsh';
 import { Input } from 'nsh/base';
-import { Button, Dialog } from 'nsh/base';
+import { Button } from 'nsh/base';
+import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
+import { SettingsButton } from './SettingsPage';
 import { Clipboard } from 'nsh';
 import { keymap } from 'nsh';
 import type {
@@ -618,59 +620,32 @@ export function Terminal(props: { model: TerminalModel }) {
         </If>
       </View>
       <If when={confirmation()}>
-        <Dialog
-          animation="none"
-          onOpenChange={() => confirmation.set(false)}
-          style={{
-            flex: 1,
-            justifyContent: 'center',
-            alignItems: 'center',
-            backgroundColor: '#000000cc',
-          }}
-        >
-          <View
-            style={{
-              padding: 24,
-              width: '90%',
-              maxWidth: 480,
-              gap: 24,
-              borderRadius: 16,
-              backgroundColor: C.surface,
-            }}
-          >
-            <Text style={{ ...bodyTextStyle, color: C.text }}>
-              {model.agentOwned()
+        <ModalDialog size="alert" onCancel={() => confirmation.set(false)}>
+          <DialogHeader
+            title={
+              model.agentOwned()
                 ? tr('Stop the agent’s running terminal? This interrupts its command.')
-                : tr('Stop this terminal and its running process?')}
-            </Text>
-            <View
-              style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}
-            >
-              <Button
-                onPress={() => confirmation.set(false)}
-                style={{ ...controlStyle, backgroundColor: C.raised }}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-              >
-                <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                  {tr('Keep running')}
-                </Text>
-              </Button>
-              <Button
-                accessibilityLabel={tr('Confirm stop terminal process')}
-                onPress={() => {
-                  confirmation.set(false);
-                  void model.stop();
-                }}
-                style={controlStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-              >
-                <Text style={{ ...captionTextStyle, color: C.danger }}>{tr('Stop process')}</Text>
-              </Button>
-            </View>
-          </View>
-        </Dialog>
+                : tr('Stop this terminal and its running process?')
+            }
+          />
+          <DialogFooter>
+            <SettingsButton
+              label={tr('Cancel')}
+              tone="quiet"
+              autoFocus
+              onPress={() => confirmation.set(false)}
+            />
+            <SettingsButton
+              label={tr('Stop process')}
+              accessibilityLabel={tr('Confirm stop terminal process')}
+              tone="danger"
+              onPress={() => {
+                confirmation.set(false);
+                void model.stop();
+              }}
+            />
+          </DialogFooter>
+        </ModalDialog>
       </If>
     </View>
   );

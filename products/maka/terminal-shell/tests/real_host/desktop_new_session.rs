@@ -2093,7 +2093,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop
         .retry(
             "the Goal dialog did not open",
-            || !desktop.controls("Close Goal").is_empty(),
+            || !desktop.controls("Cancel editing").is_empty(),
             || {
                 let goal = desktop.controls("Goal");
                 let add = desktop.controls("Add to message");
@@ -2223,7 +2223,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop
         .retry(
             "/goal did not open the Goal dialog",
-            || !desktop.controls("Close Goal").is_empty(),
+            || !desktop.controls("Start Goal").is_empty(),
             || desktop.key("enter", false),
         )
         .await;
@@ -2231,7 +2231,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.key("escape", false);
     desktop
         .until("the Goal dialog did not close", || {
-            desktop.controls("Close Goal").is_empty().then_some(())
+            desktop.controls("Start Goal").is_empty().then_some(())
         })
         .await;
     drop(first);

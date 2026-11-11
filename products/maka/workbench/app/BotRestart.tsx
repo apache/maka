@@ -17,20 +17,13 @@
  * under the License.
  */
 
-import { cleanup, inputAction, signal, Text, View } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
+import { cleanup, inputAction, signal, Text } from 'nsh';
+import { Button } from 'nsh/base';
 import { tr } from './locale';
 import { Icon } from './Icon';
-import { dialogTop } from './chrome';
-import {
-  C,
-  controlDisabledStyle,
-  controlFocusStyle,
-  controlHoverStyle,
-  controlStyle,
-  textTooltip,
-  toolbarControlStyle,
-} from './ui';
+import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
+import { SettingsButton } from './SettingsPage';
+import { C, textTooltip, toolbarControlStyle } from './ui';
 import { errorText, renderText } from './text';
 
 /**
@@ -77,72 +70,35 @@ export function BotRestart(props: { restart(): Promise<void> }) {
         <Icon name="refresh" color={C.secondary} />
       </Button>
       <If when={asking()}>
-        <Dialog
-          animation="none"
-          closeOnEscape={false}
-          closeOnBackdropPress={false}
-          closeOnSwipe={false}
-          onCancel={cancel}
-          style={{
-            flex: 1,
-            justifyContent: 'center',
-            alignItems: 'center',
-            padding: 16,
-            paddingTop: dialogTop(16),
-            backgroundColor: C.scrim,
-          }}
-        >
-          <View
-            style={{
-              width: '100%',
-              maxWidth: 480,
-              padding: 16,
-              gap: 12,
-              backgroundColor: C.surface,
-              borderWidth: 1,
-              borderColor: C.line,
-              borderRadius: 16,
-            }}
-          >
-            <Text style={{ color: C.text, fontWeight: '500' }}>{tr('Start the Bot over?')}</Text>
-            <Text style={{ color: C.muted }}>
-              {tr(
-                'This opens a new Bot. The current Bot is archived with its conversation. Its checklist and scheduled tasks are not carried over.',
-              )}
+        <ModalDialog size="alert" onCancel={cancel}>
+          <DialogHeader
+            title={tr('Start the Bot over?')}
+            detail={tr(
+              'This opens a new Bot. The current Bot is archived with its conversation. Its checklist and scheduled tasks are not carried over.',
+            )}
+          />
+          <If when={error() !== null}>
+            <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
+              {renderText(errorText(error()))}
             </Text>
-            <If when={error() !== null}>
-              <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
-                {renderText(errorText(error()))}
-              </Text>
-            </If>
-            <View style={{ flexDirection: 'row', gap: 8, justifyContent: 'flex-end' }}>
-              <Button
-                disabled={pending()}
-                accessibilityLabel={tr('Keep the current Bot')}
-                onPress={inputAction(cancel, null)}
-                style={controlStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Text style={{ color: C.text }}>{tr('Keep the current Bot')}</Text>
-              </Button>
-              <Button
-                disabled={pending()}
-                accessibilityLabel={tr('Start over')}
-                onPress={inputAction(confirm, null)}
-                style={controlStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Text style={{ color: C.danger }}>
-                  {pending() ? tr('Starting over…') : tr('Start over')}
-                </Text>
-              </Button>
-            </View>
-          </View>
-        </Dialog>
+          </If>
+          <DialogFooter>
+            <SettingsButton
+              label={tr('Cancel')}
+              tone="quiet"
+              autoFocus
+              disabled={pending()}
+              onPress={cancel}
+            />
+            <SettingsButton
+              label={pending() ? tr('Starting over…') : tr('Start over')}
+              accessibilityLabel={tr('Start over')}
+              tone="danger"
+              disabled={pending()}
+              onPress={() => void confirm()}
+            />
+          </DialogFooter>
+        </ModalDialog>
       </If>
     </>
   );

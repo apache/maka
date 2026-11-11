@@ -1675,6 +1675,17 @@ pub fn key_scroll(host: &impl ScrollHost, m: KeyMove, flip: bool) {
         m => m,
     };
     let to = key_target(m, base, viewport, min, max);
+    if host.listens(EventKind::ScrollIntent) {
+        let intent = match m {
+            KeyMove::Start => "start",
+            KeyMove::End => "end",
+            _ => "scroll",
+        };
+        host.event(
+            EventKind::ScrollIntent,
+            EventPayload::Map(vec![("intent", crate::PayloadValue::Str(intent.into()))]),
+        );
+    }
     interrupt(host);
     animate_to(host, to, KEY_ANIMATION, false, true);
 }

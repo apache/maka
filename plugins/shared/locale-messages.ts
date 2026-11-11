@@ -1430,7 +1430,6 @@ export const msg_paletteEmpty: Message = [
 ];
 
 export const msg_paletteRefresh: Message = ['Refresh search', '刷新搜索', '重新整理搜尋'];
-export const msg_paletteClose: Message = ['Close commands', '关闭命令面板', '關閉命令面板'];
 export const msg_studioTitle: Message = ['Configuration Studio', '配置工作台', '設定工作台'];
 export const msg_studioOverview: Message = ['Overview', '概览', '總覽'];
 export const msg_studioIntro: Message = [
@@ -2346,7 +2345,6 @@ export const msg_renameSession: Message = ['Rename…', '重命名…', '重新�
 export const msg_archiveSession: Message = ['Archive conversation', '归档会话', '封存對話'];
 export const msg_restoreSession: Message = ['Restore conversation', '恢复会话', '還原對話'];
 export const msg_deleteSession: Message = ['Delete conversation…', '删除会话…', '刪除對話…'];
-export const msg_deleteSessionTitle: Message = ['Delete conversation?', '删除会话？', '刪除對話？'];
 export const msg_deleteSessionHelp: Message = [
   'This permanently removes this conversation from Maka. Workspace files and independent copies are kept.',
   '将从 Maka 永久移除此会话。工作区文件和独立副本会保留。',

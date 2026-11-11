@@ -698,17 +698,19 @@ fn nearest_view(widget: &gtk::Widget) -> Option<NshView> {
 /// `(dx, dy)` can move; for vertical keys one along that axis first, then
 /// a horizontal one (as vertical wheels move those).
 fn key_scroll_view(view: &NshView, horizontal: bool, dx: f32, dy: f32) -> Option<NshView> {
-    let mut chain = Vec::new();
-    let mut current = Some(view.clone());
-    while let Some(v) = current {
-        current = v.parent_view();
-        if v.kind() == ViewKind::Scroll && can_scroll(&v, dx, dy) {
-            chain.push(v);
-        }
-    }
-    let along = |v: &NshView| v.state().scroll.as_ref().is_some_and(|s| s.horizontal) == horizontal;
-    let first = chain.iter().position(along).unwrap_or(0);
-    chain.into_iter().nth(first)
+    nsh_core::input::key_scroll_target(
+        std::iter::successors(Some(view.clone()), NshView::parent_view),
+        horizontal,
+        |v| v.state().scroll.as_ref().map(|s| s.horizontal),
+        |v| v.kind() == ViewKind::Scroll && can_scroll(v, dx, dy),
+        listens_to_scroll_intent,
+    )
+}
+
+pub(crate) fn listens_to_scroll_intent(view: &NshView) -> bool {
+    let state = view.state();
+    state.events.contains(EventKind::ScrollIntent)
+        && state.scroll.as_ref().is_some_and(|s| s.behavior.enabled)
 }
 
 /// The pointer in `root`'s coordinates, if it is over its window.
