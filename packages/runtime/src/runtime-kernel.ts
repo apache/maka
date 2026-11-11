@@ -98,6 +98,8 @@ import type { ShellRunProcessManager } from './shell-run-manager.js';
 import { buildStatusPatch, normalizeStopSessionSource } from './session-projection-helpers.js';
 import { buildToolsForAgentDefinition } from './agent-catalog.js';
 import { loadLatestHistoryCompactCheckpointFromRunLedger } from './history-compact-ledger.js';
+import { resolveContinuationHeadAnchor } from './history-compact-head-anchor.js';
+import { buildPriorRuntimeContext } from './prior-run-context.js';
 import { loadModelProjectionTransitionsFromRunLedger } from './model-projection-transition-ledger.js';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 import {
@@ -1536,6 +1538,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
 
     let continuationMetadata: RuntimeContinuationMetadata;
+    let historyCompactContext: BackendSendInput['historyCompactContext'];
     try {
       continuationMetadata = consumeAdmittedRuntimeContinuation({
         continuation,
@@ -1549,6 +1552,14 @@ export class RuntimeKernel implements RuntimeKernelLike {
         ...(run.toolBoundaryProtocol ? { toolBoundaryProtocol: run.toolBoundaryProtocol } : {}),
       });
       continuationMetadata.sandboxBoundaryDenied = inheritedSandboxBoundaryDenied;
+      historyCompactContext = await buildPriorRuntimeContext({
+        sessionId: continuation.sessionId,
+        currentRunId: continuation.runId,
+        currentTurnId: continuation.turnId,
+        includeCurrentTurn: true,
+        runtimeEventStore: this.deps.runtimeEventStore,
+        runtimeEventStoreAvailable: true,
+      });
     } catch (error) {
       releaseExecutionAbort();
       await this.finalizeFailedRunStart(owners, run, execution, error);
@@ -1587,24 +1598,18 @@ export class RuntimeKernel implements RuntimeKernelLike {
         text: '',
         runtimeContext: continuation.runtimeContext,
         runtimeContextInvocations: admissionRoute.invocations,
+        historyCompactContext,
         continuation: continuationMetadata,
         ...runtimeSteeringInput(owners.messageOwner),
         ...(continuation.handoffRootRunId !== undefined
-          ? {
-              maxSteps: continuation.handoffRemainingSteps,
-              // The original user anchor remains in the authenticated replay;
-              // a physical successor must not invent another user message.
-              headAnchorRuntimeEvent: continuation.runtimeContext.find(
-                (event) =>
-                  event.runId === continuation.handoffRootRunId &&
-                  event.turnId === continuation.turnId &&
-                  event.role === 'user' &&
-                  (event.author === 'user' || event.author === 'host') &&
-                  event.content?.kind === 'text' &&
-                  event.content.steering !== true,
-              ),
-            }
+          ? { maxSteps: continuation.handoffRemainingSteps }
           : {}),
+        headAnchorRuntimeEvent: resolveContinuationHeadAnchor({
+          sessionId: continuation.sessionId,
+          continuation: continuationMetadata,
+          runtimeContext: continuation.runtimeContext,
+          invocations: admissionRoute.invocations,
+        }),
         handoffBoundary: (signal, remainingSteps) =>
           run.reachHandoffBoundary(signal, remainingSteps),
       },

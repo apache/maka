@@ -71,7 +71,8 @@ export interface BackendSendInput {
   /** Trusted per-run tool protocol override. Direct remains the default. */
   toolMode?: ToolMode;
   /**
-   * The persisted initial user RuntimeEvent for this turn (the head anchor).
+   * The persisted initial user RuntimeEvent for this task (the head anchor).
+   * A continuation reuses its original task's event, including the old turnId.
    * Mid-turn capacity compaction keeps this event verbatim in every projection
    * and needs its exact ledger identity for replay-checkable coverage.
    */
@@ -100,11 +101,21 @@ export interface BackendSendInput {
    */
   allowPriorUnknownToolOutcomes?: boolean;
   /**
-   * The invocations `runtimeContext` came from, used only to verify
-   * provider-owned replay against the current model route. RuntimeEvents stay
-   * the transcript authority; route provenance is read off each opening fact.
+   * The invocations `runtimeContext` came from, used to verify provider-owned
+   * replay and continuation ancestry. RuntimeEvents stay the transcript
+   * authority; route provenance and source edges live in each opening fact.
    */
   runtimeContextInvocations?: readonly RuntimeInvocationRecord[];
+  /**
+   * Canonical session-inline history before this physical run, for durable
+   * compaction coverage. Continuation replay may omit earlier tasks or trim
+   * an interrupted suffix, so it cannot define a session-wide checkpoint.
+   * This snapshot does not replace the admitted runtimeContext replay.
+   */
+  historyCompactContext?: {
+    events: readonly RuntimeEvent[];
+    invocations: readonly RuntimeInvocationRecord[];
+  };
   /** Continue from an already committed RuntimeEvent boundary without adding another user turn. */
   continuation?: RuntimeContinuationMetadata;
   /** Runtime-owned reversible gate, called only before another provider step,

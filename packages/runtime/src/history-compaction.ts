@@ -58,6 +58,8 @@ import {
  */
 
 export interface SafePrefixOptions {
+  /** Exact calls in sealed prior runs proved never dispatched by Runtime recovery. */
+  undispatchedToolCallEventIds?: ReadonlySet<string>;
   /** Keep at least this many trailing events uncovered as the verbatim tail. */
   reserveTailEvents?: number;
   /** Retry a smaller prefix after the summarizer provider rejects its input. */
@@ -107,7 +109,7 @@ export function selectSafeCompactionPrefix(
     firstPartialIndex === -1 ? events.length : firstPartialIndex,
     firstPinnedIndex === -1 ? events.length : firstPinnedIndex,
   );
-  const pairSpans = toolPairSpans(events);
+  const pairSpans = toolPairSpans(events, options.undispatchedToolCallEventIds);
   for (let cut = maxCut; cut >= 1; cut -= 1) {
     if (straddlesToolPair(pairSpans, cut)) continue;
     return { ok: true, coveredCount: cut };
@@ -118,15 +120,20 @@ export function selectSafeCompactionPrefix(
 interface ToolPairSpan {
   callIndex?: number;
   responseIndex?: number;
+  undispatched?: boolean;
 }
 
-function toolPairSpans(events: readonly RuntimeEvent[]): ToolPairSpan[] {
+function toolPairSpans(
+  events: readonly RuntimeEvent[],
+  undispatchedToolCallEventIds?: ReadonlySet<string>,
+): ToolPairSpan[] {
   const byCallId = new Map<string, ToolPairSpan>();
   events.forEach((event, index) => {
     const content = event.content;
     if (content?.kind === 'function_call') {
       const span = byCallId.get(content.id) ?? {};
       span.callIndex = index;
+      span.undispatched = undispatchedToolCallEventIds?.has(event.id) === true;
       byCallId.set(content.id, span);
     } else if (content?.kind === 'function_response') {
       const span = byCallId.get(content.id) ?? {};
@@ -141,13 +148,15 @@ function toolPairSpans(events: readonly RuntimeEvent[]): ToolPairSpan[] {
  * A cut at exclusive index `cut` straddles a pair if exactly one side is
  * covered. A call whose response is not in the pool yet is an OPEN span:
  * covering it would orphan the response that arrives later (a result with no
- * call in the projection), so any cut past the call is unsafe. A response
+ * call in the projection), so any cut past the call is unsafe. Recovery-proven
+ * undispatched calls in sealed runs are closed: no response can arrive. A response
  * without a call is inert — its call lives before the pool, so no cut inside
  * the pool can split that pair.
  */
 function straddlesToolPair(spans: readonly ToolPairSpan[], cut: number): boolean {
   for (const span of spans) {
     if (span.callIndex !== undefined && span.responseIndex === undefined) {
+      if (span.undispatched) continue;
       if (span.callIndex < cut) return true;
       continue;
     }
@@ -179,11 +188,15 @@ export interface PlanHistoryCompactionInput {
   phase?: 'standalone' | 'pre_turn' | 'mid_turn';
   /**
    * Full ordered content-event projection for the compaction pool:
-   * `[...prior turns, head anchor, ...current-turn completed steps]`.
+   * `[...prior tasks, head anchor, ...task steps across its continuation turns]`.
    */
   orderedEvents: readonly RuntimeEvent[];
-  /** The current turn's user message; required for pre_turn and mid_turn. */
+  /** Recovery-proven abandoned calls stay covered but no longer hold a boundary open. */
+  undispatchedToolCallEventIds?: ReadonlySet<string>;
+  /** The task's original user message; required for pre_turn and mid_turn. */
   headAnchor?: { runtimeEventId: string; turnId: string };
+  /** The executing turn whose live steering is pinned; defaults to the anchor's turn. */
+  activeTurnId?: string;
   reserveTailEvents?: number;
   charsPerToken?: number;
   now?: number;
@@ -311,11 +324,12 @@ export async function planHistoryCompaction(
   let maxCoveredCount = input.orderedEvents.length;
   while (maxCoveredCount > 0) {
     const boundary = selectSafeCompactionPrefix(input.orderedEvents, {
+      undispatchedToolCallEventIds: input.undispatchedToolCallEventIds,
       reserveTailEvents: input.reserveTailEvents ?? (phase === 'standalone' ? 0 : 1),
       maxCoveredCount,
       isPinned: (event) =>
         (phase === 'pre_turn' && event.id === input.headAnchor?.runtimeEventId) ||
-        (event.turnId === input.headAnchor?.turnId &&
+        (event.turnId === (input.activeTurnId ?? input.headAnchor?.turnId) &&
           event.content?.kind === 'text' &&
           event.content.steering === true),
     });

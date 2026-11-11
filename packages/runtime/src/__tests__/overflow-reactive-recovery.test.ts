@@ -853,7 +853,15 @@ async function runTurn(
     context: [],
     runtimeContext: [...fixture.priorEvents],
     runtimeContextInvocations: [...fixture.priorInvocations],
-    ...(fixture.continuation ? { continuation: fixture.continuation } : {}),
+    ...(fixture.continuation
+      ? {
+          continuation: fixture.continuation,
+          historyCompactContext: {
+            events: [...fixture.priorEvents],
+            invocations: [...fixture.priorInvocations],
+          },
+        }
+      : {}),
     ...(pullSteering ? { pullSteering } : {}),
   })) {
     if (consumer === 'slow') {
