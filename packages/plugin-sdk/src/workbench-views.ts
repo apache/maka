@@ -156,6 +156,8 @@ export const conversationPreviewView = defineUiViewContract<ConversationPreviewI
 );
 
 export const quickToolView = defineUiViewContract<QuickToolInput>('maka.quick-launcher.tool');
+/** The workbench's settings page of every quick tool, which holds the tools' own pages. */
+export const quickToolsSettings = 'quickTools';
 
 export interface SettingsRoute {
   readonly instance: InstanceId;

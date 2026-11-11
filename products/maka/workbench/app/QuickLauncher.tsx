@@ -36,20 +36,13 @@ import {
 } from 'nsh';
 import { Button, Input } from 'nsh/base';
 import { GlobalShortcut, Window, currentWindow } from 'nsh/desktop';
-import type {
-  UiContributionRef,
-  UiRuntime,
-} from '../../../../packages/plugin-sdk/src/workbench.js';
+import type { UiContributionRef } from '../../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
   type QuickIcon,
-  type QuickToolHandle,
-  type SettingsPageNavigation,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { afterKeyword, matchOf } from '../../../../plugins/shared/quick-search';
-import { sameValue } from '../../../../plugins/shared/value';
 import { Icon } from './Icon';
-import { contributionTitle } from './plugins/context';
 import { loadDraft, saveDraft, type Output } from './host';
 import {
   MakaMark,
@@ -63,16 +56,9 @@ import {
   quickInputStyle,
 } from './QuickBar';
 import { tr } from './locale';
-import {
-  CommandSettings,
-  createCommands,
-  entryKey,
-  LAUNCHER_SHORTCUT,
-  type Commands,
-  type ToolEntry,
-} from './QuickCommands';
+import { LAUNCHER_SHORTCUT } from './QuickCommands';
 import { expandAlias } from './quick-commands';
-import { settingsGutter } from './SettingsPage';
+import { createToolNavigation, QuickToolSettings, type QuickTools } from './QuickTools';
 import {
   isFrequent,
   parseUsage,
@@ -201,30 +187,16 @@ function LauncherRow(props: {
   );
 }
 
-/**
- * A tool's settings in place of the results: its commands' aliases and shortcuts, then the page
- * its plugin contributes, if any. Escape or the back button returns to the results.
- */
-function QuickSettings(props: {
-  runtime: UiRuntime<JSX.Element>;
-  page: UiContributionRef | undefined;
-  entries: readonly ToolEntry[];
-  all: readonly ToolEntry[];
-  commands: Commands;
-  back(): void;
-}) {
-  const navigation = signal<SettingsPageNavigation | null>(null);
-  const recording = signal<string | null>(null);
-  const busy = () => navigation()?.busy?.() ?? false;
+/** A tool's settings in place of the results; Escape or the back button returns to them. */
+function QuickSettings(props: { quick: QuickTools; tool: UiContributionRef; back(): void }) {
+  const navigation = createToolNavigation();
+  const busy = () => navigation.inner()?.busy?.() ?? false;
   const back = () => {
-    if (recording() !== null) return recording.set(null);
-    if (busy() || !(navigation()?.back() ?? true)) return;
-    const current = navigation();
-    if (current?.leave) current.leave(props.back);
-    else props.back();
+    if (busy() || !navigation.back()) return;
+    navigation.leave(props.back);
   };
   cleanup(keymap.bind('escape', back, { when: 'always' }));
-  const action = () => navigation()?.action?.() ?? null;
+  const action = () => navigation.inner()?.action?.() ?? null;
   return (
     <View>
       <View
@@ -240,7 +212,7 @@ function QuickSettings(props: {
         }}
       >
         <Button
-          accessibilityLabel={navigation()?.backLabel?.() ?? tr('Back')}
+          accessibilityLabel={navigation.inner()?.backLabel?.() ?? tr('Back')}
           tooltip={textTooltip(() => tr('Back'))}
           disabled={busy()}
           onPress={back}
@@ -261,10 +233,7 @@ function QuickSettings(props: {
             { numberOfLines: 1, textOverflow: 'ellipsis' },
           ]}
         >
-          {navigation()?.title() ??
-            (props.page
-              ? contributionTitle(props.page)
-              : props.entries.map((item) => item.entry.title).join(' · '))}
+          {navigation.inner()?.title() ?? props.quick.title(props.tool)}
         </Text>
         <If when={action() !== null}>
           <Button
@@ -279,51 +248,25 @@ function QuickSettings(props: {
         </If>
       </View>
       <View style={{ height: SETTINGS_HEIGHT, paddingTop: 12 }}>
-        <If when={props.entries.length > 0}>
-          <View style={{ paddingHorizontal: settingsGutter, paddingBottom: 24 }}>
-            <CommandSettings
-              entries={props.entries}
-              all={props.all}
-              commands={props.commands}
-              recording={recording}
-            />
-          </View>
-        </If>
-        <If when={props.page !== undefined}>
-          <View style={{ flex: 1, minHeight: 0 }}>
-            {props.runtime.render(props.page!, {
-              sessionId: null,
-              input: {
-                settings: {
-                  attach(value: SettingsPageNavigation) {
-                    navigation.set(value);
-                    return () => {
-                      if (navigation() === value) navigation.set(null);
-                    };
-                  },
-                },
-              },
-            })}
-          </View>
-        </If>
+        <QuickToolSettings
+          quick={props.quick}
+          tool={props.tool}
+          recording={navigation.recording}
+          attach={navigation.attach}
+        />
       </View>
     </View>
   );
 }
 
-type Attached = { tool: UiContributionRef; handle: QuickToolHandle };
-
 function Launcher(
   props: Navigation & {
-    runtime: UiRuntime<JSX.Element>;
+    quick: QuickTools;
     usage: UsageStore;
     query: Signal<string>;
     /** The query as tools see it, a leading alias replaced by its keyword. */
     toolQuery(): string;
     failure: Signal<ReturnType<typeof errorText> | null>;
-    attached(): readonly Attached[];
-    entries(): readonly ToolEntry[];
-    commands: Commands;
     /** The tool whose settings show in place of the results. */
     page: Signal<UiContributionRef | null>;
   },
@@ -332,15 +275,9 @@ function Launcher(
   currentWindow().focus();
   const { query, failure } = props;
   const unread = watchUnread((reason) => failure.set(errorText(reason)));
-  const settingsOf = (tool: UiContributionRef) =>
-    props.runtime
-      .settings()
-      .find((page) => sameValue(page.instance.instance, tool.instance.instance));
-  /** Tools with something to set: commands, or a page of their own. */
-  const configurable = (tool: UiContributionRef) =>
-    settingsOf(tool) !== undefined || props.entries().some((item) => item.tool.key === tool.key);
+  const { quick } = props;
   const candidates = computed(() =>
-    props.attached().flatMap(({ tool, handle }) =>
+    quick.attached().flatMap(({ tool, handle }) =>
       handle.items().map((item) => {
         const key = `${tool.instance.path.join('/')}/${tool.id}/${item.id}`;
         return {
@@ -351,7 +288,7 @@ function Launcher(
           detail: item.detail,
           trailing: item.source,
           action: item.action,
-          tool: configurable(tool) ? tool : undefined,
+          tool: quick.configurable(tool) ? tool : undefined,
           match: item.match,
           remembered: item.remembered === true,
           run() {
@@ -363,8 +300,8 @@ function Launcher(
     ),
   );
   const entries = computed(() =>
-    props.entries().map(({ key, tool, entry }) => {
-      const choice = props.commands.choice(key);
+    quick.entries().map(({ key, tool, entry }) => {
+      const choice = quick.commands.choice(key);
       const word = choice?.alias ?? entry.keywords[0]!;
       return {
         key,
@@ -522,14 +459,7 @@ function Launcher(
       <If
         when={props.page() === null}
         else={
-          <QuickSettings
-            runtime={props.runtime}
-            page={settingsOf(props.page()!)}
-            entries={props.entries().filter((item) => item.tool.key === props.page()!.key)}
-            all={props.entries()}
-            commands={props.commands}
-            back={() => props.page.set(null)}
-          />
+          <QuickSettings quick={quick} tool={props.page()!} back={() => props.page.set(null)} />
         }
       >
         <View style={quickBarStyle}>
@@ -642,38 +572,23 @@ export function QuickLauncher(
     /** Closes the popup once a conversation in it has saved its draft. */
     close(): Promise<boolean>;
     closed(): void;
-    runtime: UiRuntime<JSX.Element>;
+    quick: QuickTools;
     report(reason: unknown): void;
   },
 ) {
+  const { quick } = props;
+  const { commands, handles } = quick;
   const usage = createUsageStore(props.report);
-  const commands = createCommands(props.report);
+  effect(() => {
+    if (commands.failure() !== null) props.report(commands.failure());
+  });
   const page = signal<UiContributionRef | null>(null);
   const query = signal('');
   const failure = signal<ReturnType<typeof errorText> | null>(null);
   // Tools live as long as the app, not the popup, so their commands run from shortcuts too.
-  const tools = computed(() =>
-    props.runtime
-      .contributions()
-      .filter(
-        (item) =>
-          item.declaration.kind === 'view' && item.declaration.contract === quickToolView.id,
-      ),
-  );
-  const handles = signal<ReadonlyMap<string, QuickToolHandle>>(new Map());
-  const attached = computed(() =>
-    tools().flatMap((tool) => {
-      const handle = handles().get(tool.key);
-      return handle === undefined ? [] : [{ tool, handle }];
-    }),
-  );
-  const entries = computed(() =>
-    attached().flatMap(({ tool, handle }) =>
-      handle.entries().map((entry) => ({ key: entryKey(tool, entry), tool, entry })),
-    ),
-  );
+  const tools = computed(() => quick.tools());
   const aliases = computed(() =>
-    entries().flatMap(({ key, entry }) => {
+    quick.entries().flatMap(({ key, entry }) => {
       const alias = commands.choice(key)?.alias;
       return alias ? [{ alias, keyword: entry.keywords[0]! }] : [];
     }),
@@ -685,7 +600,7 @@ export function QuickLauncher(
       remaining.delete(tool.key);
       handles.set(remaining);
     });
-    return props.runtime.renderView({ path: tool.instance.path, id: tool.id }, quickToolView, {
+    return quick.runtime.renderView({ path: tool.instance.path, id: tool.id }, quickToolView, {
       query: toolQuery,
       close: () => void props.close(),
       report: (reason) => failure.set(errorText(reason)),
@@ -704,7 +619,7 @@ export function QuickLauncher(
   };
   /** A command's shortcut: runs it, or opens the launcher inside its tool. */
   const launch = (key: string) => {
-    const found = untracked(entries).find((item) => item.key === key);
+    const found = untracked(quick.entries).find((item) => item.key === key);
     if (!found) return;
     if (found.entry.run) found.entry.run();
     else show(`${found.entry.keywords[0]} `);
@@ -775,14 +690,11 @@ export function QuickLauncher(
               openBot={props.openBot}
               vacate={props.vacate}
               open={props.open}
-              runtime={props.runtime}
+              quick={quick}
               usage={usage}
               query={query}
               toolQuery={toolQuery}
               failure={failure}
-              attached={attached}
-              entries={entries}
-              commands={commands}
               page={page}
             />
           }

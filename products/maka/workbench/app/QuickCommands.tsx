@@ -55,6 +55,8 @@ export const entryKey = (tool: UiContributionRef, entry: QuickEntry) =>
   `${tool.instance.path.join('/')}/${tool.id}/${entry.id}`;
 
 export type Commands = {
+  /** Why the choices could not be read or saved. */
+  failure(): unknown;
   choices(): CommandChoices;
   choice(key: string): CommandChoice | undefined;
   choose(key: string, patch: Partial<Record<keyof CommandChoice, string | null>>): void;
@@ -63,7 +65,9 @@ export type Commands = {
   registered(shortcut: string, taken: boolean): void;
 };
 
-export function createCommands(report: (reason: unknown) => void): Commands {
+export function createCommands(): Commands {
+  const failure = signal<unknown>(null);
+  const report = (reason: unknown) => failure.set(reason);
   const choices = signal<CommandChoices>({});
   const refused = signal<ReadonlySet<string>>(new Set());
   // A choice made before the stored ones arrive wins over them.
@@ -75,6 +79,7 @@ export function createCommands(report: (reason: unknown) => void): Commands {
     .catch(report);
   let saving: Promise<void> = Promise.resolve();
   return {
+    failure,
     choices,
     choice: (key) => choices()[key],
     choose(key, patch) {

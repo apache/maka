@@ -221,6 +221,17 @@ export const commonMessages = {
     '搜尋工具，或詢問 Maka',
   ],
   'Copy and close': ['Copy and close', '复制并关闭', '複製並關閉'],
+  'Quick tools': ['Quick tools', '快捷工具', '快速工具'],
+  'In the quick launcher, {shortcut} on a selected tool opens these same settings.': [
+    'In the quick launcher, {shortcut} on a selected tool opens these same settings.',
+    '在快捷面板中选中工具后按 {shortcut} 可打开同样的设置。',
+    '在快速面板中選取工具後按 {shortcut} 可開啟同樣的設定。',
+  ],
+  'No quick tools to set up.': [
+    'No quick tools to set up.',
+    '没有可设置的快捷工具。',
+    '沒有可設定的快速工具。',
+  ],
   'Record shortcut': ['Record shortcut', '录制快捷键', '錄製快速鍵'],
   'Press keys…': ['Press keys…', '请按下快捷键…', '請按下快速鍵…'],
   'Remove shortcut': ['Remove shortcut', '移除快捷键', '移除快速鍵'],
