@@ -432,6 +432,26 @@ export class AiSdkCompaction {
       const diagnosticShell = (events: readonly RuntimeEvent[]) =>
         buildContextBudgetDiagnosticShell(runtimeContext, events, policy);
       if (plan.decision !== 'compacted') {
+        if (plan.reason === 'already_compacted') {
+          // The safe boundary retreated to exactly the previous checkpoint's
+          // coverage — e.g. an unsettled tool call pins it there (#6254): the
+          // fold has nothing new to summarize and must neither mint a
+          // duplicate checkpoint nor report progress.
+          return {
+            outcome: { kind: 'unchanged', reason: 'already_compacted' },
+            contextBudget: mergeContextBudgetDiagnostic(diagnosticShell(runtimeContext), {
+              ...compactionDecisionDiagnosticPatch({
+                stage: 'priorReplay',
+                sourceKind: 'runtimeEvents',
+                decision: 'unchanged',
+                phase: 'pre_turn',
+                boundaryKind: 'historyCompact',
+                ...(previousCheckpoint ? { boundaryIds: [previousCheckpoint.checkpointId] } : {}),
+                reason: 'already_compacted',
+              }),
+            }),
+          };
+        }
         const failureReason = plan.diagnosticReason ?? plan.reason;
         return {
           outcome: { kind: 'failed', reason: failureReason },
