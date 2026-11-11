@@ -2730,6 +2730,25 @@ mod model_recovery {
             drop(request);
             drop(access);
 
+            let caller_reply = if caller_finish == "length" {
+                // Settle failure before the worker asks for attention. A notice
+                // delivered earlier may now legitimately interrupt the model
+                // and continue the same Run before its length limit is observed.
+                let mut changes = owner.durable.subscribe()?;
+                caller_reply.send(("The task is delegated.", caller_finish)).unwrap();
+                loop {
+                    changes.borrow_and_update();
+                    if let Some(terminal) = owner.durable.frontier(caller_run).await?.terminal {
+                        assert_eq!(terminal, Terminal::Failed);
+                        break;
+                    }
+                    changes.changed().await?;
+                }
+                None
+            } else {
+                Some(caller_reply)
+            };
+
             let worker_access = owner.runs.state().await.controls.get(worker)
                 .and_then(|control| control.access.upgrade()).ok_or("worker access missing")?;
             let worker_run = worker_access.execution().run_id;
@@ -2742,7 +2761,9 @@ mod model_recovery {
             };
             owner.durable.interactions().establish(worker_access.claim(), (&view).into(), question, None, vec![]).await?;
             owner.deliver_completions().await?;
-            caller_reply.send(("The task is delegated.", caller_finish)).unwrap();
+            if let Some(caller_reply) = caller_reply {
+                caller_reply.send(("The task is delegated.", caller_finish)).unwrap();
+            }
             let (attention, attention_reply) = observed.recv().await.ok_or("attention HTTP request missing")?;
             let messages = serde_json::to_string(attention["messages"].as_array()
                 .and_then(|messages| messages.iter().rev().find(|message| message["role"] == "user"))
