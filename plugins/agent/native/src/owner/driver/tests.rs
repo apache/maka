@@ -207,7 +207,7 @@ struct Rig {
     captured: Arc<StdMutex<Option<Arc<Owner>>>>,
     lease: Option<SessionWorkLease>,
     work_effects: Option<WorkEffects>,
-    driver: Option<NativeDriver>,
+    driver: Option<Arc<NativeDriver>>,
     cells: Option<Arc<RunCells>>,
     ordinary: Option<effects::OriginalEffects>,
     gate: Option<oneshot::Sender<()>>,
@@ -468,6 +468,24 @@ impl Rig {
     }
 
     async fn assemble_budget(&mut self, session: &str, tokens: Option<u64>) -> TestResult<()> {
+        self.assemble_model(
+            session,
+            Budget {
+                tokens,
+                retries: 0,
+                deadline: None,
+            },
+            true,
+        )
+        .await
+    }
+
+    async fn assemble_model(
+        &mut self,
+        session: &str,
+        budget: Budget,
+        with_ordinary_tool: bool,
+    ) -> TestResult<()> {
         let owner = self
             .captured
             .lock()
@@ -526,21 +544,24 @@ impl Rig {
             source_messages: vec![],
         })?;
         let system = ContentBlob::json(&Option::<maka_agent_facts::execution::SystemPrompt>::None)?;
-        let (sender, receiver) = oneshot::channel();
-        self.gate = Some(sender);
-        let catalog = maka_tools::ToolCatalog::new([ToolRegistration {
-            definition: ToolDefinition {
-                name: "ordinary_local".into(),
-                description: "Finite private regression callback".into(),
-                input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
-                provider: None,
-                freeform: None,
-                output_schema: None,
-            },
-            nesting: ToolNesting::DirectOnly,
-            semantics: ToolSemantics::Parallel,
-            handler: ToolHandler::Prepared(Arc::new(OrdinaryTool(StdMutex::new(Some(receiver))))),
-        }])?;
+        let ordinary_tool = with_ordinary_tool.then(|| {
+            let (sender, receiver) = oneshot::channel();
+            self.gate = Some(sender);
+            ToolRegistration {
+                definition: ToolDefinition {
+                    name: "ordinary_local".into(),
+                    description: "Finite private regression callback".into(),
+                    input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
+                    provider: None,
+                    freeform: None,
+                    output_schema: None,
+                },
+                nesting: ToolNesting::DirectOnly,
+                semantics: ToolSemantics::Parallel,
+                handler: ToolHandler::Prepared(Arc::new(OrdinaryTool(StdMutex::new(Some(receiver))))),
+            }
+        });
+        let catalog = maka_tools::ToolCatalog::new(ordinary_tool)?;
         let tools = ContentBlob::json(&crate::tools::SelectionSnapshot {
             definitions: catalog.definitions().cloned().collect(),
             direct_only: catalog.names().into_iter().collect(),
@@ -583,11 +604,7 @@ impl Rig {
             system_prompt: system.reference().clone(),
             tool_selection: tools.reference().clone(),
             input: empty.reference().clone(),
-            budget: Budget {
-                tokens,
-                retries: 0,
-                deadline: None,
-            },
+            budget,
             budget_basis: None,
         };
         let admission = Admission::new(spec, at(), vec![backend, empty, system, tools]);
@@ -625,7 +642,7 @@ impl Rig {
             owner.services.clone(),
             access.clone(),
         ));
-        self.driver = Some(NativeDriver::new(
+        self.driver = Some(Arc::new(NativeDriver::new(
             owner.clone(),
             state,
             access,
@@ -638,7 +655,7 @@ impl Rig {
             CancellationToken::new(),
             cleanup,
             workers,
-        ));
+        )));
         Ok(())
     }
 

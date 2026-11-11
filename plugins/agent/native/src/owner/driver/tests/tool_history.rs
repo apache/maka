@@ -60,6 +60,133 @@ fn tools(page: &Value) -> Vec<wire::Tool> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
+    use maka_agent_engine::DriverExit;
+
+    for recover in [true, false] {
+        let mut rig = Rig::new()?;
+        let first_request = Arc::new(AtomicBool::new(true));
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |_: axum::body::Bytes| {
+                let first = first_request.swap(false, Ordering::SeqCst);
+                async move {
+                    let body = if recover && !first {
+                        concat!(
+                            "data: {\"id\":\"retry\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Recovered after retry.\"},\"finish_reason\":null}]}\n\n",
+                            "data: {\"id\":\"retry\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                            "data: [DONE]\n\n",
+                        )
+                    } else {
+                        ": stream ended before completion\n\n"
+                    };
+                    ([("content-type", "text/event-stream")], body)
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+        let stop = CancellationToken::new();
+        let server_stop = stop.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(server_stop.cancelled_owned())
+                .await
+        });
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            let budget = Budget {
+                tokens: None,
+                retries: 1,
+                deadline: None,
+            };
+            rig.assemble_model(&session, budget, false).await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let engine = maka_agent_engine::Engine::new(driver.state.clone());
+            let advance = || async {
+                let mut changes = driver.state.subscribe()?;
+                loop {
+                    changes.borrow_and_update();
+                    let exit = engine
+                        .drive(
+                            driver.access.claim().clone(),
+                            driver.clone(),
+                            CancellationToken::new(),
+                        )
+                        .await?;
+                    if !matches!(exit, DriverExit::Waiting { due_at: None, .. }) {
+                        return Ok::<_, Box<dyn Error + Send + Sync>>(exit);
+                    }
+                    changes.changed().await?;
+                }
+            };
+
+            let waiting = advance().await?;
+            let DriverExit::Waiting {
+                due_at: Some(due), ..
+            } = waiting
+            else {
+                return Err(format!("Expected a retry wait, got {waiting:?}").into());
+            };
+            let pending = live(&rig, &session, wire::Position::Tail).await?;
+            let roles: Vec<_> = pending["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|chunk| chunk["role"].as_str().unwrap())
+                .collect();
+            assert_eq!(roles, ["user"]);
+
+            tokio::time::sleep(Duration::from_millis(
+                due.0.saturating_sub(at().0).max(0) as u64
+            ))
+            .await;
+            let expected = if recover {
+                Terminal::Completed
+            } else {
+                Terminal::Failed
+            };
+            let exit = advance().await?;
+            assert!(
+                matches!(&exit, DriverExit::Terminal { terminal, .. } if *terminal == expected),
+                "{exit:?}"
+            );
+            let page = live(&rig, &session, wire::Position::Tail).await?;
+            let transcript: Vec<_> = page["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|chunk| {
+                    (
+                        chunk["role"].as_str().unwrap(),
+                        chunk["text"].as_str().unwrap(),
+                    )
+                })
+                .collect();
+            let last = if recover {
+                ("assistant", "Recovered after retry.")
+            } else {
+                (
+                    "failure",
+                    "provider failed (StreamTruncated): model stream ended without finish",
+                )
+            };
+            assert_eq!(
+                transcript,
+                [("user", "native wait original read failure"), last]
+            );
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        stop.cancel();
+        server.await??;
+        assert_eq!(rig.finish().await, Vec::<String>::new());
+        result.expect("retry history assertion failed")??;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn named_cell_tools_survive_receipt_only_pages_and_frozen_history() {
     let mut rig = Rig::new().unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
