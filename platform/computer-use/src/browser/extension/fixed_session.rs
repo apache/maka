@@ -99,6 +99,10 @@ pub(in crate::browser) struct FixedResource {
 }
 
 #[derive(Clone, Default)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one preparation slot per claimed tab; inline pending data avoids a transient allocation before the already-boxed retained state"
+)]
 pub(in crate::browser) enum FixedPreparation {
     #[default]
     NotAttempted,
