@@ -46,6 +46,7 @@ pub(crate) enum WorkKey {
     Publication(ExternalPublicationId),
     Cell(CellId),
     Model(ModelAttemptId),
+    Assess(ModelAttemptId),
     Tool(ToolKey),
 }
 pub(crate) struct ModelLevel {
@@ -431,7 +432,10 @@ impl Live {
                             || (!publication.items.is_empty()
                                 && publication.items.values().all(|item| item.known())))
                 }),
-            WorkKey::Prepare | WorkKey::PrepareProactiveSummary | WorkKey::CancelModel(_) => false,
+            WorkKey::Prepare
+            | WorkKey::PrepareProactiveSummary
+            | WorkKey::CancelModel(_)
+            | WorkKey::Assess(_) => false,
         })
     }
 }
@@ -1347,6 +1351,9 @@ fn next_action(
                 || closed.outcome != maka_agent_facts::accounting::Outcome::Success
         })
     {
+        if live.work.contains(&WorkKey::Assess(id)) {
+            return Action::Idle;
+        }
         return Action::Assess(id);
     }
     if attempt.closed.is_none() && attempt.interrupted.is_none() {
