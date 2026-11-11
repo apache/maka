@@ -1266,6 +1266,7 @@ impl Owner {
     ) -> Option<Box<dyn maka_host_runtime::application::NativeRetirement>> {
         let producer = self.producer_gate.clone().try_lock_owned().ok()?;
         let runs = self.runs.clone().try_lock_owned().ok()?;
+        // Close makes the final probe of retained cleanup and reports any failure.
         if self
             .completion_epoch
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -1274,7 +1275,6 @@ impl Owner {
                 .load(std::sync::atomic::Ordering::SeqCst)
             || !runs.controls.is_empty()
             || !runs.preparing.is_empty()
-            || !runs.retained_cleanup.is_empty()
             || !self.workers.is_empty()
             || !self.cleanup_workers.is_empty()
             || self.auxiliary.resources.has_pending()

@@ -191,6 +191,154 @@ async fn resolution(store: &Store, message: &str) -> MessageResolution {
 }
 
 #[tokio::test]
+async fn pausing_a_goal_preserves_pending_steering_as_an_independent_turn() {
+    use crate::queue::{GOAL_CONTROL_STOP, SteeringTarget};
+
+    let directory = tempfile::tempdir().unwrap();
+    let (root, store) = open(directory.path(), true).await;
+    let (mut spec, contents) = spec();
+    spec.trigger = Trigger::Goal {
+        goal_id: Uuid::new_v4(),
+    };
+    let goal = Admission::new(spec.clone(), UnixMillis(1), contents);
+    store.admit(goal.clone()).await.unwrap();
+
+    let request = enqueue(&store, &spec, "keep-this-message", false).await;
+    let view = store.frontier(goal.run()).await.unwrap();
+    let head = Head::from(&view);
+    let queue = store.queue();
+    let before = queue.read(spec.session_id.clone()).await.unwrap();
+    queue
+        .execute(
+            spec.session_id.clone(),
+            QueueCommand {
+                id: FactId::new(),
+                at: UnixMillis(2),
+                expected_revision: before.revision,
+                edit: QueueEdit::Promote {
+                    request: request.id.clone(),
+                    target: SteeringTarget {
+                        run: goal.run(),
+                        expected_head: head,
+                    },
+                },
+            },
+            vec![],
+        )
+        .await
+        .unwrap();
+    let stop = Change::new(
+        Fact::StopRequested {
+            diagnostic: GOAL_CONTROL_STOP.into(),
+        },
+        UnixMillis(3),
+    );
+    store
+        .control(goal.run(), head, vec![stop.clone()], vec![])
+        .await
+        .unwrap();
+    store
+        .control(goal.run(), head, vec![stop], vec![])
+        .await
+        .unwrap();
+    let pending = queue.read(spec.session_id.clone()).await.unwrap();
+    assert_eq!(pending.revision, before.revision + 2);
+    assert_eq!(
+        pending.entries,
+        vec![crate::queue::QueueEntry {
+            request: request.clone(),
+            placement: Placement::Followup
+        }]
+    );
+    queue.rebuild(spec.session_id.clone()).await.unwrap();
+    assert_eq!(queue.read(spec.session_id.clone()).await.unwrap(), pending);
+
+    // Before the handoff existed, the Stop fact was committed without the last queue event.
+    struct LegacyQueue(String, u64);
+    impl Statement for LegacyQueue {
+        type Value = ();
+        type Output = ();
+
+        fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+            assert_eq!(
+                c.execute(
+                    "DELETE FROM agent_queue_events WHERE session=? AND revision=?",
+                    rusqlite::params![self.0, i64::try_from(self.1).unwrap()],
+                )?,
+                1
+            );
+            Ok(Prepared {
+                value: (),
+                changed: true,
+                notification: Notification::NONE,
+            })
+        }
+
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+    store
+        .data
+        .write(LegacyQueue(spec.session_id.clone(), pending.revision))
+        .await
+        .unwrap();
+    queue.rebuild(spec.session_id.clone()).await.unwrap();
+    assert_eq!(
+        queue
+            .steering(spec.session_id.clone(), goal.run())
+            .await
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
+    for _ in 0..2 {
+        queue
+            .recover_stopped_goal_steering(spec.owner.clone(), UnixMillis(4))
+            .await
+            .unwrap();
+        assert_eq!(queue.read(spec.session_id.clone()).await.unwrap(), pending);
+    }
+
+    let claim = store.claim(goal.run()).await.unwrap();
+    let stopped = store.frontier(goal.run()).await.unwrap();
+    store
+        .append(
+            &claim,
+            Head::from(&stopped),
+            vec![Change::new(
+                Fact::RunTerminated {
+                    terminal: Terminal::Cancelled,
+                    diagnostic: None,
+                },
+                UnixMillis(4),
+            )],
+            vec![],
+        )
+        .await
+        .unwrap();
+    drop(claim);
+    let followup = Admission::new(request.spec, UnixMillis(5), vec![]).with_queue(Consume {
+        session: spec.session_id,
+        requests: vec![request.id],
+        expected_revision: pending.revision,
+    });
+    store.admit(followup.clone()).await.unwrap();
+    assert_eq!(
+        resolution(&store, "keep-this-message").await,
+        MessageResolution::Delivered {
+            run: followup.run(),
+            shared: false
+        },
+    );
+    drop(queue);
+    drop(store);
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let (root, store) = open(directory.path(), true).await;

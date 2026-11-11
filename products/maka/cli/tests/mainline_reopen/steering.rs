@@ -107,8 +107,8 @@ async fn steering(prefix: bool) {
     let (requests, mut received) = mpsc::unbounded_channel();
     let count = Arc::new(AtomicUsize::new(0));
     let posted = count.clone();
-    let release = Arc::new(tokio::sync::Notify::new());
-    let gate = release.clone();
+    let retired = Arc::new(tokio::sync::Notify::new());
+    let retirement = retired.clone();
     let server = tokio::spawn(async move {
         let mut connections = JoinSet::new();
         loop {
@@ -119,17 +119,15 @@ async fn steering(prefix: bool) {
                     let requests = requests.clone();
                     let posted = posted.clone();
                     let count = posted.clone();
-                    let gate = gate.clone();
+                    let retirement = retirement.clone();
                     connections.spawn(async move {
                         let upgrade = Arc::new(std::sync::Mutex::new(None));
                         let handle = upgrade.clone();
                         let observed = requests.clone();
-                        let http_gate = gate.clone();
                         let service = service_fn(move |mut request: Request<Incoming>| {
                             let requests = requests.clone();
                             let handle = handle.clone();
                             let posted = posted.clone();
-                            let gate = http_gate.clone();
                             async move {
                                 if request.headers().contains_key("upgrade") {
                                     let key = request.headers()["sec-websocket-key"].as_bytes();
@@ -153,8 +151,7 @@ async fn steering(prefix: bool) {
                                 if body.to_string().contains("steering-correction") {
                                     return Ok(response(finish("Corrected answer."), "text/event-stream"));
                                 }
-                                gate.notified().await;
-                                Ok(response(finish("Original answer."), "text/event-stream"))
+                                std::future::pending().await
                             }
                         });
                         if let Err(error) = hyper::server::conn::http1::Builder::new().keep_alive(false)
@@ -167,6 +164,7 @@ async fn steering(prefix: bool) {
                                 TokioIo::new(pending.await.unwrap()),
                                 tokio_tungstenite::tungstenite::protocol::Role::Server, None,
                             ).await;
+                            let mut held = false;
                             while let Some(message) = ws.next().await {
                                 use tokio_tungstenite::tungstenite::{Message, Error, error::ProtocolError};
                                 let message = match message {
@@ -184,18 +182,14 @@ async fn steering(prefix: bool) {
                                     observed.send(body.clone()).unwrap();
                                     match phase {
                                         0 => {
-                                            let command = "printf 'once\\n' >> steering-effects.log; printf 'effect-result'";
-                                            responses_events("tool-response", json!({"id":"effect","type":"function_call","call_id":"steering-effect","name":"Shell","arguments":json!({"command":command}).to_string(),"status":"completed"}))
+                                            let mut events = responses_events("held-response", responses_text("accepted-prefix"));
+                                            events.pop();
+                                            let command = "printf 'once\\n' >> steering-effects.log && while [ ! -f release-steering-tool ]; do sleep 0.05; done && printf 'effect-result'";
+                                            events.push(json!({"type":"response.output_item.done","output_index":1,"item":{"id":"effect","type":"function_call","call_id":"steering-effect","name":"Shell","arguments":json!({"command":command}).to_string(),"status":"completed"}}));
+                                            held = true;
+                                            events
                                         }
                                         1 => {
-                                            assert!(prompt.contains("effect-result"), "{body}");
-                                            let mut events = responses_events("held-response", responses_text("accepted-prefix"));
-                                            let completed = events.pop().unwrap();
-                                            for event in events { ws.send(Message::Text(event.to_string().into())).await.unwrap(); }
-                                            gate.notified().await;
-                                            vec![completed]
-                                        }
-                                        2 => {
                                             assert!(prompt.contains("steering-correction"), "{body}");
                                             responses_events("corrected-response", responses_text("Corrected answer."))
                                         }
@@ -206,6 +200,7 @@ async fn steering(prefix: bool) {
                                 };
                                 for event in events { ws.send(Message::Text(event.to_string().into())).await.unwrap(); }
                             }
+                            if held { retirement.notify_one(); }
                         }
                     });
                 }
@@ -231,12 +226,11 @@ async fn steering(prefix: bool) {
         assert!(!original.to_string().contains("steering-correction"));
 
         if prefix {
-            let followup = received.recv().await.unwrap();
-            assert!(followup.to_string().contains("effect-result"), "{followup}");
-            assert_eq!(tokio::fs::read_to_string(sandbox.workspace.join("steering-effects.log")).await.unwrap(), "once\n");
             loop {
-                let history = call(&client, "agent", "history", json!({"sessionId":session,"position":{"kind":"tail"}}), Attachments::new()).await;
-                if history.to_string().contains("accepted-prefix") { break; }
+                if let Ok(output) = tokio::fs::read_to_string(sandbox.workspace.join("steering-effects.log")).await {
+                    assert_eq!(output, "once\n");
+                    break;
+                }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }
@@ -244,9 +238,11 @@ async fn steering(prefix: bool) {
         let run = original["execution"]["runId"].clone();
         let correction = call(&client, "agent", "send", json!({"sessionId":session,"message":"steering-correction","delivery":"steer","expectedRunId":run}), Attachments::new()).await;
         assert_eq!(correction["kind"], "queued", "{correction}");
-        let premature = tokio::time::timeout(Duration::from_millis(100), received.recv()).await;
-        assert!(premature.is_err(), "steering consumed before the active model response completed: {premature:?}");
-        release.notify_one();
+        if prefix {
+            retired.notified().await;
+            assert!(received.try_recv().is_err(), "continuation must wait for the admitted tool");
+            tokio::fs::write(sandbox.workspace.join("release-steering-tool"), b"").await.unwrap();
+        }
         let corrected = received.recv().await.unwrap();
         let messages = corrected.to_string();
         assert_eq!(messages.matches("steering-original").count(), 1);
@@ -254,20 +250,19 @@ async fn steering(prefix: bool) {
         if prefix {
             assert!(messages.contains("effect-result"), "{messages}");
             assert!(messages.contains("accepted-prefix"), "{messages}");
-        } else {
-            assert!(messages.contains("Original answer."), "{messages}");
         }
         let completed = work(&client, session, json!({"kind":"run","runId":run}), Some("completed")).await;
         assert_eq!(completed["execution"]["runId"], run);
-        assert_eq!(count.load(Ordering::SeqCst), if prefix {3} else {2}, "original request must not be replayed");
+        assert_eq!(count.load(Ordering::SeqCst), 2, "original request must not be replayed");
         let queue = call(&client, "agent", "queue", json!({"sessionId":session}), Attachments::new()).await;
         assert_eq!(queue["entries"], json!([]));
         if prefix { assert_eq!(tokio::fs::read_to_string(sandbox.workspace.join("steering-effects.log")).await.unwrap(), "once\n"); }
         host.quit(&mut client).await.unwrap();
         let facts = identities(&sandbox, session, &run).await;
-        assert_eq!(facts.iter().filter(|fact| fact["kind"] == "model_closed").count(), if prefix {3} else {2}, "steering must preserve every completed model response");
+        let outcomes: Vec<_> = facts.iter().filter(|fact| fact["kind"] == "model_closed").map(|fact| &fact["outcome"]).collect();
+        assert_eq!(outcomes, vec![&json!("aborted"), &json!("success")]);
         let attempts: Vec<_> = facts.iter().filter(|fact| fact["kind"] == "model_attempt_prepared").collect();
-        assert_eq!(attempts.len(), if prefix {3} else {2});
+        assert_eq!(attempts.len(), 2);
         for attempt in attempts {
             assert!(facts.iter().any(|fact| fact["kind"] == "model_cleanup_observed" && fact["attempt"] == attempt["attempt"] && fact["cleanup"]["kind"] == "confirmed"), "{facts:?}");
         }
@@ -277,18 +272,18 @@ async fn steering(prefix: bool) {
     host.cleanup().await.unwrap();
     match result {
         Ok(result) => {
-            result.expect("steering must continue after the active model response completes")
+            result.expect("steering must continue without waiting for the original model finish")
         }
         Err(panic) => std::panic::resume_unwind(panic),
     }
 }
 
 #[tokio::test]
-async fn steering_waits_for_response_before_consumption() {
+async fn steering_preempts_an_open_http_request() {
     steering(false).await;
 }
 
 #[tokio::test]
-async fn steering_waits_for_completed_turn_without_repeating_effects() {
+async fn steering_keeps_accepted_prefix_and_drains_the_running_tool() {
     steering(true).await;
 }

@@ -246,7 +246,6 @@ impl Owner {
         diagnostic: String,
     ) -> Result<DriverExit, RunError> {
         let engine = Engine::new(state.clone());
-        let mut notices = state.subscribe()?;
         loop {
             match engine
                 .current_authority_unavailable(
@@ -257,18 +256,9 @@ impl Owner {
                 )
                 .await
             {
-                Err(RunError::PublicationUncertain { publication, .. }) => loop {
-                    notices.borrow_and_update();
-                    match publication.reconcile(&state).await {
-                        Ok(_) => break,
-                        Err(error) => {
-                            tracing::error!(%error, "Original preflight publication remains unresolved");
-                            if notices.changed().await.is_err() {
-                                std::future::pending::<()>().await;
-                            }
-                        }
-                    }
-                },
+                Err(RunError::PublicationUncertain { publication, .. }) => {
+                    publication.reconcile(&state).await?;
+                }
                 result => return result,
             }
         }
@@ -428,17 +418,13 @@ impl Owner {
                     let driven = engine.drive(claim.clone(), driver.clone(), cancellation.clone()).await;
                     match driven {
                         Err(RunError::PublicationUncertain { publication, .. }) => {
-                            loop {
-                                changes.borrow_and_update();
-                                match publication.reconcile(&state).await {
-                                    Ok(_) => break,
-                                    Err(error) => {
-                                        tracing::error!(run = %view.run, %error, "Original canonical publication remains unresolved");
-                                        if changes.changed().await.is_err() { std::future::pending::<()>().await; }
-                                    }
-                                }
+                            if let Err(source) = publication.reconcile(&state).await {
+                                break match source.underlying() {
+                                    maka_event_log::StoreError::EventConflict
+                                    | maka_event_log::StoreError::InvalidTransition(_) => Err(source.into()),
+                                    _ => Err(RunError::PublicationUncertain { publication, source }),
+                                };
                             }
-                            drop(publication);
                         }
                         Ok(exit @ (DriverExit::Waiting { due_at, .. } | DriverExit::Blocked { due_at, .. })) => {
                             let resources_live = driver.has_live_resources();
@@ -507,7 +493,10 @@ impl Owner {
                 }
                 let cleaned = driver.finish().await;
                 cleanup_confirmed = cleaned.is_ok();
-                cleaned?;
+                // Preserve an uncertain original batch alongside its cleanup state.
+                if !matches!(&driven, Err(RunError::PublicationUncertain { .. })) {
+                    cleaned?;
+                }
                 driven
             }
             .await;
@@ -521,8 +510,8 @@ impl Owner {
             // Constructors before NativeDriver only assemble ports; none dispatch Run-owned work.
             // A pending canonical batch still owns its original payload independently of that proof.
             if original_driver.is_none() && !matches!(&result, Err(RunError::PublicationUncertain { .. })) { cleanup_confirmed = true; }
-            if !cleanup_confirmed {
-                let pending = match &result { Err(RunError::PublicationUncertain { publication, .. }) => Some(publication.as_ref().clone()), _ => None };
+            let pending = match &result { Err(RunError::PublicationUncertain { publication, .. }) => Some(publication.as_ref().clone()), _ => None };
+            if !cleanup_confirmed || pending.is_some() {
                 let _historical_failure = effects.seal();
                 self.retain_original_scope(
                     view.spec.session_id.clone(),

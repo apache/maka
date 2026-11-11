@@ -1671,6 +1671,51 @@ mod source_recovery {
     use maka_agent_state::ReadyCause;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disconnected_host_retires_with_unconfirmed_cleanup_reported() {
+        let mut rig = Rig::new().expect("owned retirement fixture");
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
+            let session = rig.start().await?;
+            let owner = rig
+                .captured
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or("Native owner missing")?;
+            let current = owner.mutable_session(&session).await?;
+            let scope = owner
+                .current_work_scope(&session, &current.configuration)
+                .await?;
+            let (lease, effects) = scope.accept(CancellationToken::new());
+            effects.settle().await?;
+            owner
+                .retain_original_preparation(session, lease, None)
+                .await;
+            rig.client.as_mut().unwrap().close().await?;
+            let host = rig.host.as_ref().unwrap();
+            let error = host
+                .wait_until_idle(Duration::ZERO, Duration::ZERO)
+                .await
+                .unwrap_err();
+            assert!(error.contains("agent_cleanup_unconfirmed"), "{error}");
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .await;
+        let cleanup = tokio::time::timeout(Duration::from_secs(10), rig.finish())
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, Ok(Ok(()))),
+            "idle Host failed to report cleanup: {result:?}"
+        );
+        assert!(
+            cleanup
+                .iter()
+                .any(|error| error.contains("agent_cleanup_unconfirmed")),
+            "{cleanup:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn source_consumed_while_authority_probe_is_busy_is_retried_after_retirement() {
         let mut rig = Rig::new().expect("owned source recovery fixture");
         let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {

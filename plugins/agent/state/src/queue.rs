@@ -33,9 +33,11 @@ use std::{collections::BTreeSet, sync::Arc};
 
 mod sql;
 pub(crate) use sql::{
-    DeliveryTarget, Event, consume, consume_external_steering, consume_steering,
+    DeliveryTarget, Event, consume, consume_external_steering, consume_steering, release_steering,
     retract_interactive, stop_completions,
 };
+
+pub const GOAL_CONTROL_STOP: &str = "goal_control";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -278,8 +280,48 @@ impl QueueStore {
     pub async fn steering(&self, session: String, run: RunId) -> Result<Queue, StoreError> {
         self.data.query(Steering(session, run)).await
     }
+    pub async fn has_pending_steering(
+        &self,
+        session: String,
+        run: RunId,
+    ) -> Result<bool, StoreError> {
+        self.data.query(HasPendingSteering(session, run)).await
+    }
     pub async fn rebuild(&self, session: String) -> Result<QueueCommit, StoreError> {
         self.data.write(Rebuild(session)).await
+    }
+    pub async fn recover_stopped_goal_steering(
+        &self,
+        owner: RunOwner,
+        at: UnixMillis,
+    ) -> Result<(), StoreError> {
+        self.data
+            .write(RecoverStoppedGoalSteering { owner, at })
+            .await
+    }
+}
+struct RecoverStoppedGoalSteering {
+    owner: RunOwner,
+    at: UnixMillis,
+}
+impl Statement for RecoverStoppedGoalSteering {
+    type Value = ();
+    type Output = ();
+    fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+        let sessions = sql::recover_stopped_goal_steering(c, &self.owner, self.at)?;
+        Ok(Prepared {
+            value: (),
+            changed: !sessions.is_empty(),
+            notification: if sessions.is_empty() {
+                Notification::NONE
+            } else {
+                Notification::METADATA.with_sessions(sessions)
+            },
+        })
+    }
+    fn committed(_: ()) {}
+    fn isolated_rejection(error: &StoreError) -> bool {
+        Write::isolated_rejection(error)
     }
 }
 struct Write {
@@ -356,6 +398,20 @@ impl Query for Steering {
     type Output = Queue;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::read(c, &self.0, Some(self.1))
+    }
+}
+struct HasPendingSteering(String, RunId);
+impl Query for HasPendingSteering {
+    type Output = bool;
+    fn execute(self, c: &Connection) -> Result<bool, StoreError> {
+        c.prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM agent_queue_items
+             WHERE session=? AND target_run=? AND state='pending' AND lane='steering')",
+        )?
+        .query_row(rusqlite::params![self.0, self.1.to_string()], |row| {
+            row.get(0)
+        })
+        .map_err(Into::into)
     }
 }
 struct ReadEntry(String, RequestId);
