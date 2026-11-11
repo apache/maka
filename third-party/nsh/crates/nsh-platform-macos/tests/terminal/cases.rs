@@ -1214,7 +1214,7 @@ mount(App);
 
 pub(super) fn unfocused_readonly_input_preserves_focused_target() {
     const SIDE_DRAFT_APP: &str = r#"
-import { Clipboard, keymap, mount, signal, View } from "nsh";
+import { Clipboard, host, keymap, mount, signal, View } from "nsh";
 import { Input } from "nsh/base";
 
 function App() {
@@ -1223,14 +1223,14 @@ function App() {
   const sideMounted = signal(false);
   const sideReady = signal(false);
   let sideRef = null;
-  keymap.bind("f6", () => {
+  host.on("mount-side", () => {
     sideMounted.set(true);
     Clipboard.writeText("side-mounted");
-  }, { when: "always" });
-  keymap.bind("f7", () => {
+  });
+  host.on("ready-side", () => {
     sideReady.set(true);
     Clipboard.writeText("side-ready");
-  }, { when: "always" });
+  });
   keymap.bind("f8", () => {
     sideRef?.focus();
     Clipboard.writeText("side-focused");
@@ -1264,6 +1264,7 @@ mount(App);
     let code = nsh_bundler::compile_module("SideDraft.tsx", SIDE_DRAFT_APP, &[]).unwrap();
     let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
     config.ui_sets = vec![nsh_base::registry()];
+    let host = config.host.clone();
     let surface = TerminalSurface::new(
         config,
         size(DevicePixels(320), DevicePixels(240)),
@@ -1284,11 +1285,11 @@ mount(App);
 
     // Mounting a read-only background input and flipping it editable while unfocused
     // must not advance or revoke the focused main editor's target or preedit.
-    key(&surface, "f6");
+    host.send("mount-side", serde_json::Value::Null).unwrap();
     clipboard(&surface, "side-mounted");
     assert_eq!(surface.text_input_target().as_ref(), Some(&main_target));
 
-    key(&surface, "f7");
+    host.send("ready-side", serde_json::Value::Null).unwrap();
     clipboard(&surface, "side-ready");
     assert_eq!(surface.text_input_target().as_ref(), Some(&main_target));
     assert!(

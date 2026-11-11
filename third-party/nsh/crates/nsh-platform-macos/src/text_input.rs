@@ -1211,26 +1211,6 @@ define_text_view!(
             }
         }
 
-        /// Where an input method opens its candidates. TextKit 2 lays out
-        /// only the text near the visible part and has no rect for the
-        /// rest (a point-wide view, a line per character, soon holds
-        /// such text): the visible part, not the screen's corner.
-        #[unsafe(method(firstRectForCharacterRange:actualRange:))]
-        fn first_rect(&self, range: NSRange, actual: *mut NSRange) -> NSRect {
-            // SAFETY: NSTextView's own method (NSTextInputClient); `actual`
-            // is the caller's.
-            let rect: NSRect = unsafe {
-                msg_send![super(self), firstRectForCharacterRange: range, actualRange: actual]
-            };
-            if rect != NSRect::ZERO {
-                return rect;
-            }
-            let Some(window) = self.window() else {
-                return rect;
-            };
-            window.convertRectToScreen(self.convertRect_toView(self.visibleRect(), None))
-        }
-
         /// A paste (Edit > Paste, Command+V, the context menu): reported,
         /// and its text pasted as `pasteBehavior` says.
         #[unsafe(method(paste:))]

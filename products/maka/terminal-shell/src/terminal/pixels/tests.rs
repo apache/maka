@@ -51,14 +51,14 @@ use std::{
 
 fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     const APP: &str = r#"
-        import { mount, signal } from 'nsh';
+        import { host, mount, signal } from 'nsh';
         import { Clipboard } from 'nsh';
         import { keymap } from 'nsh';
         import { element, prop, bindProp, append } from 'nsh:rt';
         const value = signal('');
         const second = signal('B');
         keymap.bind('mod+k', () => value.set(keymap.label('mod+k')), { when: 'always' });
-        keymap.bind('mod+j', () => Clipboard.writeText(value()), { when: 'always' });
+        host.on('report-value', () => Clipboard.writeText(value()));
         mount(() => {
             const root = element('view');
             prop(root, 'style', {flex: 1, padding: 16, backgroundColor: '#111111'});
@@ -97,11 +97,11 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     let owner = std::thread::current().id();
     let wakes = Arc::new(AtomicUsize::new(0));
     let wake = wakes.clone();
+    let mut config = EngineConfig::new(App::Js(Bundle::source(APP.into())));
+    config.ui_sets = vec![nsh_base::registry()];
+    let host = config.host.clone();
     let platform = TerminalSurface::new(
-        EngineConfig {
-            ui_sets: vec![nsh_base::registry()],
-            ..EngineConfig::new(App::Js(Bundle::source(APP.into())))
-        },
+        config,
         size(
             nsh_terminal::DevicePixels(320),
             nsh_terminal::DevicePixels(160),
@@ -360,7 +360,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     assert_eq!(candidate.origin.y, composing_caret.origin.y);
     assert_eq!(candidate.size.height, composing_caret.size.height);
     assert!(candidate.size.height > px(0.0));
-    stroke("j", None, true);
+    host.send("report-value", serde_json::Value::Null).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         platform.pump_with_draw(false);
