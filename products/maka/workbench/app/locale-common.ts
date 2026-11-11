@@ -140,6 +140,7 @@ export const commonMessages = {
     '截圖失敗：{reason}',
   ],
   'Press any key to close': ['Press any key to close', '按任意键关闭', '按任意鍵關閉'],
+  'Open System Settings': ['Open System Settings', '打开系统设置', '打開系統設定'],
   'Confirm delete': ['Confirm delete', '确认删除', '確認刪除'],
   Content: ['Content', '内容', '內容'],
   'Enter a URL starting with http:// or https://': [
