@@ -757,7 +757,7 @@ mod tests {
         let code = nsh_bundler::compile_module("TerminalIsolation.tsx", r#"
             import { View, mount } from "nsh";
             import { Input } from "nsh/base";
-            mount(() => <View style={{flex: 1}}><Input autoFocus defaultValue="terminal" style={{height: 40}} /></View>);
+            mount(() => <View style={{flex: 1, padding: 16}}><Input autoFocus defaultValue="terminal" style={{height: 40}} /></View>);
         "#, &[]).unwrap();
         let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
         config.ui_sets = vec![nsh_base::registry()];
@@ -1007,11 +1007,33 @@ mod tests {
         let target = terminal.text_input_target().unwrap();
         assert!(
             terminal
-                .apply_composition(&target, "", "中文", Some(0..1), true)
+                .apply_composition(&target, "", "中文", Some(0..0), true)
                 .unwrap()
         );
+        until("preedit starts", &mut || {
+            crate::text_input::terminal_is_composing(terminal.view.surface())
+                && !terminal.has_pending()
+        });
         assert_eq!(terminal.editor_text().as_deref(), Some("a😀b"));
-        assert!(terminal.input_candidate_bounds().is_some());
+        let candidate = terminal.input_candidate_bounds().unwrap();
+        assert_eq!(Some(candidate), terminal.input_caret_bounds());
+        assert!(candidate.size.height.0 > 0.0);
+        assert!(
+            terminal
+                .apply_composition(&target, "", "中文", Some(2..2), true)
+                .unwrap()
+        );
+        until("preedit caret moves", &mut || {
+            terminal
+                .input_caret_bounds()
+                .is_some_and(|caret| caret.origin.x.0 > candidate.origin.x.0)
+                && !terminal.has_pending()
+        });
+        assert_eq!(
+            terminal.input_candidate_bounds(),
+            Some(candidate),
+            "candidate window stays at the composition start"
+        );
         assert!(
             terminal
                 .apply_composition(&target, "", "", None, false)
@@ -1020,6 +1042,10 @@ mod tests {
         until(
             "composition cancellation restores selected text",
             &mut || terminal.editor_text().as_deref() == Some("a😀b") && !terminal.has_pending(),
+        );
+        assert_eq!(
+            terminal.input_candidate_bounds(),
+            terminal.input_caret_bounds()
         );
         terminal.set_selected_text_range(1..3).unwrap();
         assert!(

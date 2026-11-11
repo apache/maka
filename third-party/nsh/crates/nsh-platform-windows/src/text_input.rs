@@ -2579,7 +2579,42 @@ pub(crate) fn terminal_target(surface: &Surface) -> Option<(u64, Bounds<Points>)
 
 #[cfg(feature = "terminal")]
 pub(crate) fn terminal_candidate(surface: &Surface) -> Option<Bounds<Points>> {
-    terminal_target(surface).map(|(_, bounds)| bounds)
+    use windows::Win32::{Foundation::POINTL, UI::WindowsAndMessaging::WM_USER};
+
+    // RichEdit.h's message; win32metadata exposes only the plain Edit variant.
+    const EM_POSFROMCHAR: u32 = WM_USER + 38;
+
+    let view = focused(surface)?;
+    let input = input_of(&view)?;
+    if !input.config.borrow().editable {
+        return None;
+    }
+    let (mut x, mut y, width, height) = input.caret_rect()?;
+    if let Some((start, _)) = input.composing.get() {
+        let mut position = POINTL::default();
+        // RichEdit owns the layout and scrolling; a candidate window follows
+        // the composition's start, independently of its selected range.
+        let (_, handled) = input.send(
+            EM_POSFROMCHAR,
+            (&mut position as *mut POINTL) as usize,
+            start as isize,
+        );
+        if !handled {
+            return None;
+        }
+        let (ox, oy) = input.origin.get();
+        let scale = input.scale.get();
+        x = (position.x - ox) as f32 / scale;
+        y = (position.y - oy) as f32 / scale;
+    }
+    let content = content_rect(&view, &input);
+    let (x, y, width, height) = view.to_root()?.bounds(
+        content.origin.x.0 + x,
+        content.origin.y.0 + y,
+        width,
+        height,
+    )?;
+    Some(crate::geom::rect(x, y, width, height))
 }
 
 #[cfg(feature = "terminal")]
