@@ -1113,6 +1113,86 @@ async fn desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu() 
     fixture.finish().await;
 }
 
+async fn desktop_edits_a_message_in_place_and_forks_only_when_sent() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("ORIGINAL_EDIT_MESSAGE").await;
+    desktop.submit().await;
+    let mut reply = desktop.request(&mut fixture).await;
+    reply.delta("ORIGINAL_EDIT_REPLY").await;
+    desktop
+        .wait("the reply did not finish", reply.finish())
+        .await;
+    let sessions = desktop.sessions().await;
+    assert_eq!(sessions.len(), 2);
+    let session = sessions
+        .iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fixture.idle(&desktop.client, &session).await;
+
+    // Opening the editor and leaving it creates nothing.
+    let pencil = desktop.control("Edit and resend in a fork").await;
+    desktop.hover_at(pencil.center());
+    desktop
+        .retry(
+            "the pencil did not open the message editor",
+            || !desktop.controls("Send edited message in a fork").is_empty(),
+            || desktop.press_at(pencil.center()),
+        )
+        .await;
+    desktop.expect_text("ORIGINAL_EDIT_MESSAGE").await;
+    desktop.artifact("message-editor");
+    assert!(desktop.controls("Edit and resend in a fork").is_empty());
+    assert_eq!(desktop.sessions().await.len(), 2);
+    desktop.key("escape", false);
+    desktop
+        .until("escape did not close the message editor", || {
+            desktop
+                .controls("Send edited message in a fork")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    assert_eq!(desktop.sessions().await.len(), 2);
+
+    // Sending the edit forks once, before the edited turn, and sends the new text there.
+    let pencil = desktop.control("Edit and resend in a fork").await;
+    desktop.hover_at(pencil.center());
+    desktop
+        .retry(
+            "the pencil did not open the message editor",
+            || !desktop.controls("Send edited message in a fork").is_empty(),
+            || desktop.press_at(pencil.center()),
+        )
+        .await;
+    desktop.type_text("EDITED_IN_PLACE_MESSAGE").await;
+    assert_eq!(desktop.sessions().await.len(), 2);
+    desktop.press("Send edited message in a fork").await;
+    let edited = desktop.request(&mut fixture).await;
+    let body = edited.body.to_string();
+    assert!(body.contains("EDITED_IN_PLACE_MESSAGE"), "{body}");
+    assert!(!body.contains("ORIGINAL_EDIT_MESSAGE"), "{body}");
+    edited.finish().await;
+    let sessions = desktop.sessions().await;
+    assert_eq!(sessions.len(), 3);
+    let fork = sessions
+        .iter()
+        .find(|item| item["id"] != fixture.session && item["id"] != session.as_str())
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fixture.idle(&desktop.client, &fork).await;
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     let mut fixture = Fixture::configured(Options {
         code_mode: true,
@@ -2605,6 +2685,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
     "desktop_continues_a_failed_run_without_duplicating_the_user_message",
     "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu",
+    "desktop_edits_a_message_in_place_and_forks_only_when_sent",
     "desktop_lists_a_scripts_tool_calls_in_place_of_the_script",
     "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
@@ -2651,6 +2732,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu" => {
             runtime.block_on(desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu())
+        }
+        "desktop_edits_a_message_in_place_and_forks_only_when_sent" => {
+            runtime.block_on(desktop_edits_a_message_in_place_and_forks_only_when_sent())
         }
         "desktop_lists_a_scripts_tool_calls_in_place_of_the_script" => {
             runtime.block_on(desktop_lists_a_scripts_tool_calls_in_place_of_the_script())
