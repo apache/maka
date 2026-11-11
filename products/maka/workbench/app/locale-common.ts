@@ -221,7 +221,13 @@ export const commonMessages = {
     '搜尋工具，或詢問 Maka',
   ],
   'Copy and close': ['Copy and close', '复制并关闭', '複製並關閉'],
+  'Maka plugins': ['Maka plugins', 'Maka 插件', 'Maka 外掛'],
   'Quick tools': ['Quick tools', '快捷工具', '快速工具'],
+  'Tools in the quick launcher. Their commands and settings are under Quick tools.': [
+    'Tools in the quick launcher. Their commands and settings are under Quick tools.',
+    '快捷面板里的工具。它们的命令和设置在“快捷工具”中。',
+    '快速面板裡的工具。它們的命令和設定在「快速工具」中。',
+  ],
   'In the quick launcher, {shortcut} on a selected tool opens these same settings.': [
     'In the quick launcher, {shortcut} on a selected tool opens these same settings.',
     '在快捷面板中选中工具后按 {shortcut} 可打开同样的设置。',

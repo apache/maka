@@ -19,11 +19,12 @@
 
 import { cleanup, effect, keymap, lifecycle, signal, untracked, type JSX } from 'nsh';
 import type { UiModule, UiViewProps } from '../../../packages/plugin-sdk/src/workbench.js';
-import type {
-  SettingsPageInput,
-  SettingsPageNavigation,
-  SettingsRoute,
-  SettingsViewInput,
+import {
+  quickToolView,
+  type SettingsPageInput,
+  type SettingsPageNavigation,
+  type SettingsRoute,
+  type SettingsViewInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
 import { ModelSettings } from '../../../products/maka/workbench/app/ModelSettings';
 import { ConnectionSettings } from '../../../products/maka/workbench/app/ConnectionSettings';
@@ -431,7 +432,21 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               backLabel: () => tr('Back from plugins settings'),
               busy: () => operations.busy() || plugins.rootUi.busy(),
             },
-            () => <PluginSettings owner={plugins} />,
+            () => (
+              <PluginSettings
+                owner={plugins}
+                quickTool={(instance) =>
+                  runtime
+                    .contributions()
+                    .some(
+                      (item) =>
+                        item.declaration.kind === 'view' &&
+                        item.declaration.contract === quickToolView.id &&
+                        sameValue(item.instance.instance, instance.instance),
+                    )
+                }
+              />
+            ),
           ),
       },
     },
