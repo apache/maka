@@ -663,7 +663,7 @@ impl DriverModel {
             })?;
             let capture = ContentBlob::json(&source_evidence)?;
             let projection = ContentBlob::json(&json!({
-                "execution": self.execution, "canonicalRevision": view.revision,
+                "execution": self.execution, "canonicalRevision": source_evidence.current_revision,
                 "input": view.spec.input, "historicalSourceDigest": source_evidence.cut.digest,
                 "steering": steering_refs,
                 "notifications": &frozen.notifications,
@@ -800,9 +800,43 @@ impl DriverModel {
                 .state
                 .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
             let root = self.ancestry_root(view.run, input).await?;
+            let mut current = history.capture().await?;
+            let mut summary_view = None;
+            if summary && !matches!(input, RunInput::ContextCompact { .. }) {
+                let mut revision = view.revision;
+                if let Some(step) = view.current_step {
+                    let pending = self.state.request(view.run, step).await?;
+                    if pending.accounting.purpose == ModelPurpose::Main {
+                        let source: RequestSource =
+                            self.decode(view.run, &pending.source_capture).await?;
+                        revision = source.current_revision;
+                    }
+                }
+                // An automatic Summary starts from the same source as its pending
+                // Main. Later results and newly consumed inputs remain in the tail.
+                let before = revision
+                    .checked_sub(1)
+                    .ok_or_else(|| unsupported("summary-source-revision"))?;
+                let anchor = self
+                    .state
+                    .history(view.run, before, 1)
+                    .await?
+                    .pop()
+                    .filter(|record| record.revision == revision)
+                    .ok_or_else(|| unsupported("summary-source-revision"))?;
+                let sequence = history
+                    .fact_sequence(&current, view.run, anchor.id)
+                    .await?
+                    .ok_or_else(|| unsupported("summary-source-sequence"))?;
+                current = history.capture_at(sequence).await?;
+                if revision != view.revision {
+                    summary_view = Some(history.view_at(&current, view.run).await?);
+                }
+            }
+            let view = summary_view.as_ref().unwrap_or(view);
             let mut source_evidence = RequestSource {
                 cut: history.capture_before(root).await?,
-                current: history.capture().await?,
+                current,
                 current_revision: view.revision,
             };
             let captured = HistorySource::live(&self.state, &source_evidence.current);
@@ -873,9 +907,7 @@ impl DriverModel {
                 let (source, baseline) = self
                     .request_base(target, reader, view.run, &request, &mut messages)
                     .await?;
-                source_evidence = source;
-                source_evidence.current = history.capture().await?;
-                source_evidence.current_revision = view.revision;
+                source_evidence.cut = source.cut;
                 system = baseline;
                 previous_checkpoint_id =
                     self.request_checkpoint(reader, view.run, &request).await?;
@@ -2250,9 +2282,9 @@ impl DriverModel {
             cut.through_sequence,
         )?;
         // Bind in admission order, not when an arbitrarily delayed stream first emits.
-        preview.send_replace(
-            (request.accounting.purpose == ModelPurpose::Main).then(|| writer.snapshot()),
-        );
+        if request.accounting.purpose == ModelPurpose::Main {
+            preview.send_replace(Some(writer.snapshot()));
+        }
         let (send, recv) = mpsc::channel(4);
         let original_cleanup = self.original_cleanup.clone();
         self.workers.spawn(work.worker.track_future(async move {

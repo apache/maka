@@ -23,7 +23,7 @@ use maka_agent_facts::operation::RecordedReceipt;
 use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::{
     cells::{CellId, CellOwner, CellStatus},
-    context::{ModelClosureProtocol, SummaryResult},
+    context::{ModelClosureProtocol, SummaryOrigin, SummaryResult},
     durable::*,
     external_publication::{
         ExternalPublicationBlocker, ExternalPublicationKey, ExternalPublicationOutcome,
@@ -40,6 +40,7 @@ pub(crate) mod tests;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum WorkKey {
     Prepare,
+    PrepareProactiveSummary,
     CancelModel(ModelAttemptId),
     External,
     Publication(ExternalPublicationId),
@@ -78,6 +79,11 @@ pub(crate) enum CompactionLevel {
     None,
     Fresh {
         prepare: bool,
+        adopt: bool,
+    },
+    Pending {
+        attempt: ModelAttemptId,
+        adopt: bool,
     },
     Summary {
         main: Option<StepId>,
@@ -85,7 +91,7 @@ pub(crate) enum CompactionLevel {
         native: bool,
     },
     Candidate {
-        summary: ModelAttemptId,
+        origin: SummaryOrigin,
         adopt: bool,
     },
     Adopted {
@@ -124,7 +130,13 @@ fn summary_effects(view: &RunView) -> Option<Action> {
     if view.cancelled_by_risk {
         return None;
     }
-    let id = view.current_attempt?;
+    [view.current_attempt, view.proactive_summary]
+        .into_iter()
+        .flatten()
+        .find_map(|id| summary_effects_for(view, id))
+}
+
+fn summary_effects_for(view: &RunView, id: ModelAttemptId) -> Option<Action> {
     let closed = view.attempts.get(&id)?.closed.as_ref()?;
     if closed
         .protocol
@@ -167,6 +179,8 @@ fn summary_effects(view: &RunView) -> Option<Action> {
 #[derive(Default)]
 pub(crate) struct Live {
     pub work: BTreeSet<WorkKey>,
+    pub proactive_preparation_failed: bool,
+    pub rejected_summaries: Vec<SummaryOrigin>,
     /// At most one read per physical activation. Further observations are due waits.
     pub observed: BTreeSet<ToolKey>,
     pub looked_up: BTreeSet<ToolKey>,
@@ -181,10 +195,12 @@ pub(crate) struct Live {
 }
 pub(crate) enum Action {
     Prepare(Preparation),
+    PrepareProactiveSummary,
     ObserveCell(CellId),
     AcceptCellFinal(CellId),
     ReportCellInterruption(CellId),
     Compact(ModelAttemptId),
+    AdoptCandidate(SummaryOrigin),
     PreparePublication(ExternalPublicationId),
     ValidatePublication(ExternalPublicationKey),
     LookupPublication(ExternalPublicationKey),
@@ -234,7 +250,12 @@ fn waiting(view: &RunView, reason: &WaitReason, due: Option<UnixMillis>, now: Un
             }
     })
 }
-fn wait(view: &RunView, reason: WaitReason, due: Option<UnixMillis>, now: UnixMillis) -> Action {
+pub(crate) fn wait(
+    view: &RunView,
+    reason: WaitReason,
+    due: Option<UnixMillis>,
+    now: UnixMillis,
+) -> Action {
     if waiting(view, &reason, due, now) {
         Action::Idle
     } else {
@@ -410,7 +431,7 @@ impl Live {
                             || (!publication.items.is_empty()
                                 && publication.items.values().all(|item| item.known())))
                 }),
-            WorkKey::Prepare | WorkKey::CancelModel(_) => false,
+            WorkKey::Prepare | WorkKey::PrepareProactiveSummary | WorkKey::CancelModel(_) => false,
         })
     }
 }
@@ -699,8 +720,9 @@ pub(crate) fn next(
     {
         return Action::Idle;
     }
-    if let Some((attempt, original)) = view.attempts.iter().find(|(_, attempt)| {
-        attempt.admission.is_some()
+    if let Some((attempt, original)) = view.attempts.iter().find(|(id, attempt)| {
+        Some(**id) != view.proactive_summary
+            && attempt.admission.is_some()
             && attempt.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed
     }) {
         if original.closed.is_none() && original.interrupted.is_none() {
@@ -1278,13 +1300,34 @@ fn next_action(
             return wait(view, WaitReason::Model { attempt }, None, now);
         }
         match model.map(|model| model.compaction) {
-            Some(CompactionLevel::Fresh { prepare: true }) => {
+            Some(CompactionLevel::Fresh { adopt: true, .. })
+                if live.work.contains(&WorkKey::PrepareProactiveSummary) =>
+            {
+                return Action::Idle;
+            }
+            Some(CompactionLevel::Fresh { adopt: true, .. }) => {
                 return Action::Prepare(Preparation::Summary);
             }
-            Some(CompactionLevel::Candidate {
-                summary,
+            Some(CompactionLevel::Fresh {
+                prepare: true,
+                adopt: false,
+            }) if !live.proactive_preparation_failed
+                && !live.work.contains(&WorkKey::PrepareProactiveSummary) =>
+            {
+                return Action::PrepareProactiveSummary;
+            }
+            Some(CompactionLevel::Pending {
+                attempt,
                 adopt: true,
-            }) => return Action::Compact(summary),
+            }) => {
+                return wait(view, WaitReason::Model { attempt }, None, now);
+            }
+            Some(CompactionLevel::Candidate {
+                origin,
+                adopt: true,
+            }) => {
+                return Action::AdoptCandidate(origin);
+            }
             _ => {}
         }
         return Action::Attempt(step);
@@ -1461,10 +1504,19 @@ fn next_action(
     match &attempt.recovery {
         Some(AttemptRecovery::ContextOverflow { observed_output }) => {
             if !observed_output
-                && let Some(CompactionLevel::Candidate { summary, .. }) =
+                && let Some(CompactionLevel::Pending { attempt, .. }) =
                     model.map(|model| model.compaction)
             {
-                return Action::Compact(summary);
+                return wait(view, WaitReason::Model { attempt }, None, now);
+            }
+            if !observed_output && live.work.contains(&WorkKey::PrepareProactiveSummary) {
+                return Action::Idle;
+            }
+            if !observed_output
+                && let Some(CompactionLevel::Candidate { origin, .. }) =
+                    model.map(|model| model.compaction)
+            {
+                return Action::AdoptCandidate(origin);
             }
             if !observed_output
                 && model.is_some_and(|model| {

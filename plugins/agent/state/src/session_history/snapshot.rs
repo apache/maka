@@ -235,16 +235,18 @@ impl Snapshot {
             access: self.access.clone(),
         }
     }
-    pub(in crate::session_history) async fn compaction_started_at(
+    pub(in crate::session_history) async fn compaction_duration_ms(
         &self,
         run: RunId,
+        summary_run: RunId,
         step: StepId,
         sequence: u64,
-    ) -> Result<UnixMillis, StoreError> {
+    ) -> Result<u64, StoreError> {
         self.data
-            .query(super::source_tree::CompactionStarted(
+            .query(super::source_tree::CompactionDuration(
                 super::source_tree::HistoryDataSource::Snapshot(self.clone()),
                 run,
+                summary_run,
                 step,
                 sequence,
             ))

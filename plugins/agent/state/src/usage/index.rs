@@ -386,7 +386,8 @@ pub(crate) fn index_fact(
     }
     let run = record.run;
     match &record.fact {
-        Fact::ModelAttemptPrepared { attempt, .. } => {
+        Fact::ModelAttemptPrepared { attempt, .. }
+        | Fact::ProactiveSummaryPrepared { attempt, .. } => {
             let (step, model) = evidence(c, run, *attempt)?;
             insert_model(
                 c,

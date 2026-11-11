@@ -19,7 +19,7 @@
 use super::*;
 mod address;
 mod data_source;
-pub(in crate::session_history) use data_source::CompactionStarted;
+pub(in crate::session_history) use data_source::CompactionDuration;
 mod queries;
 use crate::store::invalid;
 use address::coordinate;

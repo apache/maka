@@ -23,7 +23,7 @@ use crate::{
     reconcile::{self, Action, Live, WorkKey},
 };
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
-use maka_agent_facts::{durable::*, tool_call::ToolRejection};
+use maka_agent_facts::{context::SummaryOrigin, durable::*, tool_call::ToolRejection};
 use maka_agent_state::{
     Change, Commit, ContentBlob, DriverClaim, Head, Store,
     fold::{RunView, Tool, tool_key},
@@ -260,6 +260,10 @@ enum Completion {
         control: u64,
         result: Result<PreparedStep, RunError>,
     },
+    ProactiveSummaryPrepared {
+        control: u64,
+        result: Result<PreparedStep, RunError>,
+    },
     Decided {
         key: ToolKey,
         control: u64,
@@ -411,6 +415,7 @@ impl Engine {
         let mut authority_checked = false;
         let mut model_level: Option<(Option<StepId>, Option<ContentRef>, reconcile::ModelLevel)> =
             None;
+        let mut summary_key = None;
         let mut model_failure_key: Option<(ModelAttemptId, Option<ContentRef>, bool)> = None;
         let mut changes = self.store.subscribe()?;
         'drive: loop {
@@ -533,11 +538,34 @@ impl Engine {
                     .values()
                     .any(|b| b.decision.is_none() && b.resolved_by.is_none())
             {
-                let reload = model_level.as_ref().is_none_or(|(step, baseline, _)| {
-                    *step != view.current_step || *baseline != view.baseline
+                let current_summary = view.proactive_summary_attempt().map(|(id, attempt)| {
+                    (
+                        id,
+                        attempt.closed.is_some(),
+                        attempt.interrupted.is_some(),
+                        attempt.cleanup == maka_plugin_core::operation::OperationCleanup::Confirmed,
+                    )
                 });
+                let overflow = view
+                    .current_attempt
+                    .and_then(|id| view.attempts.get(&id))
+                    .is_some_and(|attempt| {
+                        matches!(
+                            attempt.recovery,
+                            Some(AttemptRecovery::ContextOverflow {
+                                observed_output: false
+                            })
+                        )
+                    });
+                let reload = summary_key != Some((current_summary, overflow))
+                    || model_level.as_ref().is_none_or(|(step, baseline, _)| {
+                        *step != view.current_step || *baseline != view.baseline
+                    });
                 if reload {
-                    let level = match self.model_level(&view).await {
+                    let level = match self
+                        .model_level(&view, &live.rejected_summaries, overflow)
+                        .await
+                    {
                         Ok(level) => level,
                         Err(error) => {
                             self.port_failure(&claim, &view, error, now).await?;
@@ -545,6 +573,7 @@ impl Engine {
                         }
                     };
                     model_level = Some((view.current_step, view.baseline.clone(), level));
+                    summary_key = Some((current_summary, overflow));
                 }
                 // A canonical closure is immutable for its attempt; presence identifies
                 // its one protocol body without cloning or hashing that body each loop.
@@ -612,6 +641,32 @@ impl Engine {
                     action = Action::Prepare(Preparation::Steering { attempt });
                 }
             }
+            if !retiring
+                && !fenced
+                && !view.finish_requested()
+                && let Some((attempt, summary)) = view.proactive_summary_attempt()
+            {
+                let active = live.work.contains(&WorkKey::Model(attempt));
+                let open = summary.closed.is_none() && summary.interrupted.is_none();
+                let terminating = matches!(action, Action::Terminate(_));
+                if open && !active && (summary.admission.is_some() || terminating) {
+                    action = Action::Interrupt(attempt, "Background summary did not finish".into());
+                } else if terminating && open && active && !live.models_cancelled.contains(&attempt)
+                {
+                    action = Action::CancelModel(attempt);
+                } else if matches!(action, Action::Terminate(Terminal::Completed))
+                    && summary.admission.is_some()
+                    && summary.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed
+                {
+                    action = reconcile::wait(&view, WaitReason::Model { attempt }, None, now);
+                } else if open
+                    && summary.admission.is_none()
+                    && !matches!(action, Action::Terminate(_) | Action::Block(_))
+                    && view.check_effect_admission().is_ok()
+                {
+                    action = Action::Start(attempt);
+                }
+            }
             let idle = matches!(action, Action::Idle);
             match action {
                 action @ (Action::PrepareExternal(_)
@@ -640,9 +695,20 @@ impl Engine {
                     )
                     .await?;
                 }
-                Action::Compact(attempt) => {
-                    if let Err(error) = self.complete_compaction(&claim, &view, attempt, now).await
-                    {
+                action @ (Action::Compact(_) | Action::AdoptCandidate(_)) => {
+                    let origin = match action {
+                        Action::AdoptCandidate(origin) => {
+                            if !ports.proactive_summary_matches(&view, origin).await? {
+                                live.rejected_summaries.push(origin);
+                                model_level = None;
+                                continue;
+                            }
+                            origin
+                        }
+                        Action::Compact(attempt) => SummaryOrigin { run, attempt },
+                        _ => unreachable!(),
+                    };
+                    if let Err(error) = self.complete_compaction(&claim, &view, origin, now).await {
                         match error {
                             RunError::CompactionFailed(diagnostic) => {
                                 self.publish(
@@ -678,6 +744,20 @@ impl Engine {
                             Completion::Prepared {
                                 control: snapshot.control_version,
                                 result: ports.prepare_step(&snapshot, preparation).await,
+                            }
+                        }
+                        .boxed(),
+                    );
+                }
+                Action::PrepareProactiveSummary => {
+                    live.work.insert(WorkKey::PrepareProactiveSummary);
+                    let ports = ports.clone();
+                    let snapshot = view.clone();
+                    work.push(
+                        async move {
+                            Completion::ProactiveSummaryPrepared {
+                                control: snapshot.control_version,
+                                result: ports.prepare_step(&snapshot, Preparation::Summary).await,
                             }
                         }
                         .boxed(),
@@ -1133,6 +1213,17 @@ impl Engine {
                 }
                 let prepared = match result {
                     Ok(value) => value,
+                    Err(RunError::CompactionFailed(diagnostic)) => {
+                        self.publish(
+                            Some(claim),
+                            &view,
+                            termination_facts(&view, Terminal::Failed, Some(diagnostic)),
+                            vec![],
+                            now,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
                     Err(error) => return self.port_failure(claim, &view, error, now).await,
                 };
                 let request = ContentBlob::json(&prepared.request)?;
@@ -1185,6 +1276,40 @@ impl Engine {
                     }
                     Err(error) => return Err(error.into()),
                 }
+            }
+            Completion::ProactiveSummaryPrepared { control, result } => {
+                live.work.remove(&WorkKey::PrepareProactiveSummary);
+                if retiring
+                    || control != view.control_version
+                    || view.recovery_failure().is_some()
+                    || reconcile::budget_exhausted(&view)
+                    || view.check_effect_admission().is_err()
+                {
+                    return Ok(());
+                }
+                let prepared = match result {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        tracing::warn!(%run, cause = %error, "Background summary preparation failed");
+                        live.proactive_preparation_failed = true;
+                        return Ok(());
+                    }
+                };
+                let request = ContentBlob::json(&prepared.request)?;
+                let mut contents = prepared.contents;
+                contents.push(request.clone());
+                self.publish(
+                    Some(claim),
+                    &view,
+                    vec![Fact::ProactiveSummaryPrepared {
+                        step: prepared.request.step,
+                        request: request.reference().clone(),
+                        attempt: ModelAttemptId::new(),
+                    }],
+                    contents,
+                    now,
+                )
+                .await?;
             }
             Completion::Decided {
                 key,
@@ -1687,7 +1812,9 @@ impl Engine {
                             }
                         };
                         self.block(claim, &view, reason, now).await?;
-                    } else if let RunError::Blocked(reason) = error {
+                    } else if view.proactive_summary != Some(attempt)
+                        && let RunError::Blocked(reason) = error
+                    {
                         self.block(claim, &view, *reason, now).await?;
                     } else {
                         self.publish(
