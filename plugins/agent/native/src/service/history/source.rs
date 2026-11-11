@@ -41,6 +41,7 @@ pub(super) struct Cache {
         RunId,
     )>,
     source: Option<maka_agent_state::session_history::RunSource>,
+    timing: Option<wire::TurnTiming>,
     views: std::collections::BTreeMap<RunId, maka_agent_state::fold::RunView>,
     tools: std::collections::BTreeMap<ToolScope, Option<wire::Tool>>,
 }
@@ -82,15 +83,16 @@ async fn unpaired(
         SourceItem::Canonical(item) => {
             let key = (snapshot_id(address), item.recorded.run);
             if cache.key.as_ref() != Some(&key) {
-                cache.source = Some(
-                    data.run_source(item.recorded.run)
-                        .await
-                        .map_err(|error| error.to_string())?,
-                );
+                let source = data
+                    .run_source(item.recorded.run)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                cache.timing = Some(timing(&data, &source).await?);
+                cache.source = Some(source);
                 cache.views.clear();
                 cache.key = Some(key);
             }
-            projection::project(
+            let mut row = projection::project(
                 &data,
                 item,
                 cache.source.as_ref().expect("current original Run"),
@@ -101,7 +103,9 @@ async fn unpaired(
             .await?
             .into_iter()
             .find(|row| row.chunk.position == *address)
-            .ok_or("agent_history_source_missing")?
+            .ok_or("agent_history_source_missing")?;
+            row.chunk.timing = cache.timing.clone();
+            row
         }
         SourceItem::Imported {
             message,
@@ -134,6 +138,33 @@ async fn unpaired(
     }
     row.chunk.order = qualified.order;
     Ok(Selected { data, item, row })
+}
+/// A Turn is one Run: it starts at admission and ends at termination.
+async fn timing(
+    data: &data::DataSource,
+    source: &maka_agent_state::session_history::RunSource,
+) -> Result<wire::TurnTiming, String> {
+    let millis =
+        |at: UnixMillis| u64::try_from(at.0).map_err(|_| "agent_history_timestamp_invalid");
+    let finished = data
+        .terminated(source.run)
+        .await
+        .map_err(|error| error.to_string())?
+        .map(|(at, terminal)| {
+            Ok::<_, String>(wire::TurnFinished {
+                at: millis(at)?,
+                outcome: match terminal {
+                    Terminal::Completed => wire::TurnOutcome::Completed,
+                    Terminal::Failed => wire::TurnOutcome::Failed,
+                    Terminal::Cancelled => wire::TurnOutcome::Aborted,
+                },
+            })
+        })
+        .transpose()?;
+    Ok(wire::TurnTiming {
+        started_at: millis(source.admission.at)?,
+        finished,
+    })
 }
 pub(super) async fn visible(
     tree: &SourceTree,

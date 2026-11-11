@@ -154,6 +154,30 @@ impl Query for EventExists {
     }
 }
 
+pub(super) struct TerminatedAt(
+    pub(super) HistoryNamespace,
+    pub(super) HistoryCut,
+    pub(super) RunId,
+);
+impl Query for TerminatedAt {
+    type Output = Option<(UnixMillis, Terminal)>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::validate_cut(c, &self.0.owner, &self.0.session, &self.1)?;
+        let row: Option<(u32, Vec<u8>, String)> = c.query_row("SELECT f.schema_version,b.payload,b.content_sha256 FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id WHERE h.owner=? AND h.session=? AND h.run=? AND h.step IS NULL AND h.kind='run_terminated' AND h.sequence<=?",params![serde_json::to_string(&self.0.owner)?,self.0.session,self.2.to_string(),sql::bind_u64(self.1.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        let Some((version, bytes, digest)) = row else {
+            return Ok(None);
+        };
+        sql::check_bytes(&bytes, &digest)?;
+        let record = sql::decode_record(version, &bytes)?;
+        match record.fact {
+            Fact::RunTerminated { terminal, .. } if record.run == self.2 => {
+                Ok(Some((record.at, terminal)))
+            }
+            _ => Err(invalid("Run termination index names another fact")),
+        }
+    }
+}
+
 pub(super) struct RunAt(
     pub(super) HistoryNamespace,
     pub(super) HistoryCut,

@@ -58,6 +58,17 @@ fn tools(page: &Value) -> Vec<wire::Tool> {
         .map(|chunk| serde_json::from_value(chunk["tool"].clone()).unwrap())
         .collect()
 }
+fn timing(page: &Value) -> wire::TurnTiming {
+    let mut timings = page["chunks"].as_array().unwrap().iter().map(|chunk| {
+        serde_json::from_value::<Option<wire::TurnTiming>>(chunk["timing"].clone()).unwrap()
+    });
+    let first = timings
+        .next()
+        .unwrap()
+        .expect("a native Turn row has timing");
+    assert!(timings.all(|timing| timing.as_ref() == Some(&first)));
+    first
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
@@ -135,6 +146,8 @@ async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
                 .map(|chunk| chunk["role"].as_str().unwrap())
                 .collect();
             assert_eq!(roles, ["user"]);
+            let running = timing(&pending);
+            assert!(running.finished.is_none(), "{running:?}");
 
             tokio::time::sleep(Duration::from_millis(
                 due.0.saturating_sub(at().0).max(0) as u64
@@ -173,6 +186,18 @@ async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
             assert_eq!(
                 transcript,
                 [("user", "native wait original read failure"), last]
+            );
+            let ended = timing(&page);
+            assert_eq!(ended.started_at, running.started_at);
+            let finished = ended.finished.expect("a terminated Turn has an end");
+            assert!(finished.at >= ended.started_at);
+            assert_eq!(
+                finished.outcome,
+                if recover {
+                    wire::TurnOutcome::Completed
+                } else {
+                    wire::TurnOutcome::Failed
+                }
             );
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         }))
@@ -470,7 +495,9 @@ async fn named_cell_tools_survive_receipt_only_pages_and_frozen_history() {
             &CancellationToken::new(),
         )
         .await?;
-        let frozen_child = tools(&serde_json::to_value(snapshot)?)
+        let snapshot = serde_json::to_value(snapshot)?;
+        assert_eq!(timing(&snapshot), timing(&done));
+        let frozen_child = tools(&snapshot)
             .into_iter()
             .find(|tool| tool.call.as_ref().is_some_and(|call| call.name == "Recall"))
             .unwrap();

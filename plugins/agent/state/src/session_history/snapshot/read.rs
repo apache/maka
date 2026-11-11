@@ -800,6 +800,31 @@ impl Query for ImportedItem {
         decode(c, &self.0, &message, None)
     }
 }
+pub(super) struct Terminated(pub Snapshot, pub RunId);
+impl Query for Terminated {
+    type Output = Option<(UnixMillis, Terminal)>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        authorize(c, &self.0)?;
+        // Only Run-level facts have no Step, so this scan stays small.
+        let mut statement=c.prepare_cached("SELECT entry_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_step WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.step') IS NULL ORDER BY sequence DESC")?;
+        let mut rows = statement.query(params![self.0.id.to_string(), self.1.to_string()])?;
+        while let Some(row) = rows.next()? {
+            let Entry::Fact { run, id, body, .. } =
+                serde_json::from_str(&row.get::<_, String>(0)?)?
+            else {
+                return Err(invalid("snapshot fact index kind corrupt"));
+            };
+            let record: RecordedFact = decode_registered(c, self.0.id, &body, Some(self.1))?;
+            if record.run != run || run != self.1 || record.id != id {
+                return Err(invalid("snapshot fact identity corrupt"));
+            }
+            if let Fact::RunTerminated { terminal, .. } = record.fact {
+                return Ok(Some((record.at, terminal)));
+            }
+        }
+        Ok(None)
+    }
+}
 pub(super) struct View(pub Snapshot, pub RunId);
 impl Query for View {
     type Output = crate::fold::RunView;

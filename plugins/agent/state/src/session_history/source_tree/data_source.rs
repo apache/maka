@@ -35,6 +35,24 @@ impl HistoryDataSource {
             Self::Snapshot(source) => source.view_at(run).await,
         }
     }
+    pub async fn terminated(
+        &self,
+        run: RunId,
+    ) -> Result<Option<(UnixMillis, Terminal)>, StoreError> {
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(queries::TerminatedAt(
+                        history.namespace.clone(),
+                        cut.clone(),
+                        run,
+                    ))
+                    .await
+            }
+            Self::Snapshot(source) => source.terminated(run).await,
+        }
+    }
     pub async fn request(&self, run: RunId, step: StepId) -> Result<RequestSpec, StoreError> {
         match self {
             Self::Live { history, cut } => {
