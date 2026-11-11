@@ -69,6 +69,8 @@ export function QuickRow(props: {
   title: string;
   detail?: string | undefined;
   trailing?: string | undefined;
+  /** What to type for the row, such as a command's alias, shown before `trailing`. */
+  badge?: string | undefined;
   icon: QuickIcon | 'maka';
   image?: string | undefined;
   unread: boolean;
@@ -152,6 +154,22 @@ export function QuickRow(props: {
               backgroundColor: C.accent,
             }}
           />
+        </If>
+        <If when={props.badge !== undefined}>
+          <Text
+            style={{
+              fontSize: 12,
+              lineHeight: 18,
+              flexShrink: 0,
+              paddingHorizontal: 6,
+              borderRadius: 4,
+              borderWidth: 1,
+              borderColor: C.line,
+              color: C.secondary,
+            }}
+          >
+            {props.badge}
+          </Text>
         </If>
         <If when={props.trailing !== undefined}>
           <Text style={{ fontSize: 12, lineHeight: 18, flexShrink: 0, color: C.muted }}>

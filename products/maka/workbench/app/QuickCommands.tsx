@@ -217,7 +217,8 @@ function CommandRow(props: {
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, width: 300 }}>
           <SettingsInlineInput
             label={tr('Alias')}
-            placeholder={tr('Alias')}
+            // The first keyword is the built-in alias, until the user gives their own.
+            placeholder={item.entry.keywords[0]}
             value={alias()}
             change={changeAlias}
           />
@@ -248,7 +249,7 @@ export function CommandSettings(props: {
     <SettingsSection
       title={tr('Commands')}
       note={tr(
-        'A shortcut runs the command from any app. An alias is typed in place of its keyword.',
+        'A shortcut runs the command from any app. Typing the alias finds it; left empty, the built-in alias is used.',
       )}
     >
       <Each of={props.entries} key={(item: ToolEntry) => item.key}>

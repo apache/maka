@@ -238,11 +238,12 @@ export const commonMessages = {
   'Used by {title}': ['Used by {title}', '已被“{title}”使用', '已被「{title}」使用'],
   'Taken by another app': ['Taken by another app', '已被其他应用占用', '已被其他 App 佔用'],
   Alias: ['Alias', '别名', '別名'],
-  'A shortcut runs the command from any app. An alias is typed in place of its keyword.': [
-    'A shortcut runs the command from any app. An alias is typed in place of its keyword.',
-    '快捷键可在任何应用中直接运行命令；别名可代替关键词输入。',
-    '快速鍵可在任何 App 中直接執行命令；別名可代替關鍵字輸入。',
-  ],
+  'A shortcut runs the command from any app. Typing the alias finds it; left empty, the built-in alias is used.':
+    [
+      'A shortcut runs the command from any app. Typing the alias finds it; left empty, the built-in alias is used.',
+      '快捷键可在任何应用中直接运行命令。输入别名即可找到命令；留空时使用内置别名。',
+      '快速鍵可在任何 App 中直接執行命令。輸入別名即可找到命令；留空時使用內建別名。',
+    ],
   Navigate: ['Navigate', '切换', '切換'],
   Application: ['Application', '应用', '應用程式'],
   'Search applications': ['Search applications', '搜索应用', '搜尋應用程式'],

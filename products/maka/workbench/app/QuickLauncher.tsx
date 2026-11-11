@@ -157,6 +157,7 @@ type Row = {
   title: string;
   detail?: string | undefined;
   trailing?: string | undefined;
+  badge?: string | undefined;
   unread?: boolean;
   action: string;
   /** The tool behind the row, whose settings the row opens. */
@@ -177,6 +178,7 @@ function LauncherRow(props: {
       title={props.row.title}
       detail={props.row.detail}
       trailing={props.row.trailing}
+      badge={props.row.badge}
       icon={props.row.icon}
       image={props.row.image?.()}
       unread={props.row.unread === true}
@@ -309,7 +311,11 @@ function Launcher(
         alias: choice?.alias,
         icon: entry.icon,
         title: entry.title,
-        trailing: choice?.shortcut ? `${word}   ${keymap.label(choice.shortcut)}` : word,
+        badge: word,
+        // As Raycast does: the kind of row, after its shortcut.
+        trailing: choice?.shortcut
+          ? `${keymap.label(choice.shortcut)}   ${tr('Command')}`
+          : tr('Command'),
         action: tr('Open'),
         tool,
         run:
