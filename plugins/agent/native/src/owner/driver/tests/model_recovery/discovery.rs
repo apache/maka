@@ -19,6 +19,7 @@
 
 use super::*;
 use maka_agent_api::session::StoredSessionConfiguration;
+use maka_plugin_core::storage::{Mutation, Scan, Store};
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
@@ -806,6 +807,90 @@ async fn discovery_memory_serializes_bot_append_with_settlement() {
             .collect::<Vec<_>>(),
         [3, 2, 1]
     );
+    quiet(&f, &listener, &mut socket).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_memory_retries_a_rejected_head_revision_without_partial_writes() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let task = f.create("Discovery record conflict").await;
+    f.change(&task, "trigger_now").await;
+    let (mut worker, _) = next(&listener).await;
+    tool(
+        &mut worker,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"Original finding"}),
+    )
+    .await;
+    f.settled(&task, 1).await;
+    f.send("Review records", json!([])).await;
+    let (mut socket, _) = next(&listener).await;
+    let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
+    let record = &page["records"][0]["id"];
+    let decision = json!({"action":"withhold","record":record,"reason":"No new action"});
+    let owner = f.owner();
+    let storage = &owner.scheduler.storage;
+    let scan = Scan {
+        prefix: "discovery/memory/".into(),
+        after: None,
+    };
+    let mut expected = storage.scan(scan.clone()).await.unwrap();
+    assert!(expected.next_after.is_none());
+    let head = expected
+        .entries
+        .iter_mut()
+        .find(|entry| entry.key.ends_with("/head"))
+        .unwrap();
+
+    let (entered, release) = storage.hold_before("withheld");
+    tool(&mut socket, "DiscoveryMemory", decision.clone()).await;
+    tokio::time::timeout(Duration::from_secs(45), entered)
+        .await
+        .unwrap()
+        .unwrap();
+    // Advance the storage revision without changing the record sequence.
+    let advanced = storage
+        .batch(vec![Mutation {
+            key: head.key.clone(),
+            expected_revision: Some(head.record.revision),
+            data: head.record.data.clone(),
+        }])
+        .await
+        .unwrap();
+    head.record = advanced.into_iter().next().unwrap();
+    release.send(()).unwrap();
+
+    let (mut socket, body) = next(&listener).await;
+    let rejected = output(&body);
+    assert!(
+        rejected
+            .to_string()
+            .contains("plugin data revision conflict"),
+        "{rejected}"
+    );
+    let after = storage.scan(scan).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(after).unwrap(),
+        serde_json::to_value(expected).unwrap(),
+        "rejected append left a record, index, or receipt"
+    );
+
+    let (mut socket, saved) = memory(&listener, &mut socket, decision).await;
+    assert_eq!(saved["recorded"], true, "{saved}");
+    let (mut socket, page) = memory(
+        &listener,
+        &mut socket,
+        json!({"action":"list","related":record}),
+    )
+    .await;
+    let entries = page["records"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{page}");
+    assert_eq!(entries[0]["id"], saved["record"]);
+    assert_eq!(entries[0]["sequence"], 2);
+    assert_eq!(entries[0]["content"]["kind"], "withheld");
+    assert_eq!(entries[1]["id"], *record);
     quiet(&f, &listener, &mut socket).await;
     f.close().await;
 }
