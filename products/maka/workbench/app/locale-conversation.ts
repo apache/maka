@@ -639,6 +639,18 @@ export const conversationMessages = {
     '在分支中编辑后重发',
     '在分支中編輯後重新傳送',
   ],
+  'Message editor': ['Message editor', '消息编辑框', '訊息編輯框'],
+  'Sending continues in a new conversation. This one stays as it is.': [
+    'Sending continues in a new conversation. This one stays as it is.',
+    '发送后在新对话中继续，原对话保持不变。',
+    '傳送後在新對話中繼續，原對話保持不變。',
+  ],
+  'Send edited message in a fork': [
+    'Send edited message in a fork',
+    '在分支中发送编辑后的消息',
+    '在分支中傳送編輯後的訊息',
+  ],
+  Send: ['Send', '发送', '傳送'],
   'Send or clear the draft first.': [
     'Send or clear the draft first.',
     '请先发送或清空草稿。',

@@ -50,6 +50,7 @@ import type { ToolActivity } from './toolActivity';
 import { ToolCard } from './ToolCard';
 import { MessageCopy } from './MessageCopy';
 import type { ImagePreview } from './ImageThumbnail';
+import type { InlineEdit } from './MessageEdit';
 
 /** What names a message the Host generated in place of its text; null for the user's own. */
 export function originLabel(origin: MessageOrigin | null | undefined): string | null {
@@ -84,6 +85,8 @@ function SenderLink(props: { sessionId(): string; senders?: MessageSenders }) {
 export type MessageViewState = {
   expanded: Signal<boolean>;
   sourceMode: Signal<boolean>;
+  /** An edit open in place of a user message. */
+  edit?: Signal<InlineEdit | null>;
 };
 type MessageRowToggle = {
   sessionId: string;
@@ -108,6 +111,7 @@ export function MessageRow({
   onToolReading,
   finalActions,
   editMessage,
+  messageEditor,
   failureActions,
 }: {
   item: () => Row;
@@ -128,6 +132,8 @@ export function MessageRow({
   finalActions?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
   /** An action on a user message, beside its copy button. */
   editMessage?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
+  /** What takes a user message's place while `viewState.edit` holds an edit of it. */
+  messageEditor?(row: () => Row, ownerKey: () => string): JSX.Element;
   /** An action beside a failure notice. */
   failureActions?(row: () => Row): JSX.Element;
 }) {
@@ -469,59 +475,68 @@ export function MessageRow({
                 </If>
               }
             >
-              <View
-                style={{
-                  alignSelf: 'flex-end',
-                  maxWidth: '78%',
-                  paddingHorizontal: 16,
-                  paddingVertical: 16,
-                  borderRadius: 20,
-                  backgroundColor: C.card,
-                  gap: 8,
-                }}
+              <If
+                when={!!messageEditor && (viewState?.edit?.() ?? null) !== null}
+                else={
+                  <>
+                    <View
+                      style={{
+                        alignSelf: 'flex-end',
+                        maxWidth: '78%',
+                        paddingHorizontal: 16,
+                        paddingVertical: 16,
+                        borderRadius: 20,
+                        backgroundColor: C.card,
+                        gap: 8,
+                      }}
+                    >
+                      <SkillMessage row={row} sourceId={sourceId()} />
+                      <If when={(row().attachments?.length ?? 0) > 0}>
+                        <HistoryAttachments
+                          userScroll={userScroll}
+                          sessionId={sessionId}
+                          through={row().metadataThrough ?? through()}
+                          position={row().position}
+                          attachments={row().attachments!}
+                          preview={previewImage}
+                        />
+                      </If>
+                    </View>
+                    <View
+                      class={revealed}
+                      style={{
+                        alignSelf: 'flex-end',
+                        width: '78%',
+                        minWidth: 0,
+                        flexDirection: 'row',
+                        flexWrap: 'wrap',
+                        alignItems: 'center',
+                        justifyContent: 'flex-end',
+                        gap: 8,
+                        paddingTop: 4,
+                        // The last glyph ends where the bubble does.
+                        marginRight: platform.idiom === 'terminal' ? 0 : -8,
+                      }}
+                    >
+                      <If when={timestamp()}>
+                        <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
+                          {timestamp()}
+                        </Text>
+                      </If>
+                      <MessageCopy
+                        row={row}
+                        ownerKey={() => rowKey(row())}
+                        sessionId={sessionId}
+                        through={through}
+                        menu={menu}
+                      />
+                      {editMessage?.(row, () => rowKey(row()), menu)}
+                    </View>
+                  </>
+                }
               >
-                <SkillMessage row={row} sourceId={sourceId()} />
-                <If when={(row().attachments?.length ?? 0) > 0}>
-                  <HistoryAttachments
-                    userScroll={userScroll}
-                    sessionId={sessionId}
-                    through={row().metadataThrough ?? through()}
-                    position={row().position}
-                    attachments={row().attachments!}
-                    preview={previewImage}
-                  />
-                </If>
-              </View>
-              <View
-                class={revealed}
-                style={{
-                  alignSelf: 'flex-end',
-                  width: '78%',
-                  minWidth: 0,
-                  flexDirection: 'row',
-                  flexWrap: 'wrap',
-                  alignItems: 'center',
-                  justifyContent: 'flex-end',
-                  gap: 8,
-                  paddingTop: 4,
-                  // The last glyph ends where the bubble does.
-                  marginRight: platform.idiom === 'terminal' ? 0 : -8,
-                }}
-              >
-                <If when={timestamp()}>
-                  <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
-                    {timestamp()}
-                  </Text>
-                </If>
-                <MessageCopy
-                  row={row}
-                  ownerKey={() => rowKey(row())}
-                  sessionId={sessionId}
-                  through={through}
-                  menu={menu}
-                />
-                {editMessage?.(row, () => rowKey(row()), menu)}
-              </View>
+                {messageEditor?.(row, () => rowKey(row()))}
+              </If>
             </If>
           </View>
         );

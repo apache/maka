@@ -254,6 +254,8 @@ export function createConversationUi(
   const status = createTransientText();
   const switching = signal(false);
   const busy = signal(false);
+  // The method being confirmed, so the feedback can say what is happening.
+  const busyMethod = signal<string | null>(null);
   // Shown only when saving a draft or confirming an action takes a while, so a
   // quick one does not flash the feedback row and move the page.
   const working = delayed(() => switching() || busy());
@@ -600,7 +602,10 @@ export function createConversationUi(
     if (!urgent && busy())
       throw new UiError('An action is being confirmed. Try again in a moment.');
     const pendingCreation = method === 'create' && pendingSending() && pendingWorkspace() !== null;
-    if (!urgent) busy.set(true);
+    if (!urgent) {
+      busy.set(true);
+      busyMethod.set(method);
+    }
     try {
       let result: any;
       if (pendingCreation) {
@@ -642,7 +647,10 @@ export function createConversationUi(
         controlsKnown.set(false);
         report(reason);
       });
-      if (!urgent && alive) busy.set(false);
+      if (!urgent && alive) {
+        busy.set(false);
+        busyMethod.set(null);
+      }
     }
   };
   const closeOverlay = (instance: number) => {
@@ -2259,7 +2267,11 @@ export function createConversationUi(
               </If>
               <If when={working()}>
                 <Text style={{ ...bodyTextStyle, color: C.muted }}>
-                  {switching() ? tr('Saving draft before switching…') : tr('Confirming action…')}
+                  {switching()
+                    ? tr('Saving draft before switching…')
+                    : busyMethod() === 'fork'
+                      ? tr('Creating fork…')
+                      : tr('Confirming action…')}
                 </Text>
               </If>
               <If when={forkNotice()?.id === selected()}>
