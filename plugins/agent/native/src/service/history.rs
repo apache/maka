@@ -108,6 +108,101 @@ pub(super) async fn read(
     Ok(page.into())
 }
 
+pub(super) async fn requests(
+    owner: &Owner,
+    scope: &Scope,
+    input: ui::HistoryRequestsRead,
+) -> Result<ui::HistoryRequests, String> {
+    use maka_agent_state::session_history::source_tree::{SourceItem, SourceTree};
+    const LIMIT: u32 = 24;
+    let history = open(owner, scope, &input.session_id).await?;
+    let cut = cut(&history, Some(input.through)).await?;
+    let tree = SourceTree::live(&history, &cut)
+        .await
+        .map_err(|error| error.to_string())?;
+    let item = tree
+        .item(&input.position)
+        .await
+        .map_err(|error| error.to_string())?;
+    let SourceItem::Canonical(item) = item else {
+        authorize(owner, scope, &input.session_id).await?;
+        return Ok(ui::HistoryRequests {
+            requests: Vec::new(),
+            next: None,
+        });
+    };
+    let qualified = tree
+        .positions(Some(input.position.clone()), false, true, 1)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|row| row.address == input.position)
+        .ok_or("agent_history_source_missing")?;
+    let data = tree
+        .source_for_path(input.position.path(), source::snapshot_id(&input.position))
+        .await
+        .map_err(|error| error.to_string())?;
+    let traces = data
+        .model_request_traces(item.recorded.run, input.after.unwrap_or(0), LIMIT + 1)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut path = qualified.order.path;
+    let leaf = path
+        .len()
+        .checked_sub(1)
+        .ok_or("agent_history_source_missing")?;
+    let mut result = Vec::new();
+    let mut last = None;
+    let more = traces.len() > LIMIT as usize;
+    let millis =
+        |value: UnixMillis| u64::try_from(value.0).map_err(|_| "agent_history_timestamp_invalid");
+    for trace in traces.into_iter().take(LIMIT as usize) {
+        if scope.cancellation.is_cancelled() {
+            return Err("agent_history_cancelled".into());
+        }
+        path[leaf] = trace.sequence;
+        last = Some(trace.sequence);
+        result.push(ui::HistoryRequest {
+            order: wire::HistoryOrder {
+                path: path.clone(),
+                item_index: 0,
+            },
+            step_id: trace.step,
+            attempt_id: trace.attempt,
+            model_id: trace.model_id,
+            purpose: trace.purpose,
+            started_at: trace.started_at.map(millis).transpose()?,
+            first_token_at: trace.first_token_at.map(millis).transpose()?,
+            estimated_input_tokens: trace.context.estimated_input_tokens,
+            context_window: trace
+                .context
+                .model_context
+                .as_ref()
+                .and_then(|model| model.model_context_window),
+            input_limit: trace
+                .context
+                .model_context
+                .and_then(|model| model.context_window),
+            finished: trace
+                .finished
+                .map(|finished| {
+                    Ok::<_, String>(ui::HistoryRequestFinished {
+                        at: millis(finished.at)?,
+                        outcome: finished.outcome,
+                        usage: finished.usage,
+                        diagnostic: finished.diagnostic,
+                    })
+                })
+                .transpose()?,
+        });
+    }
+    authorize(owner, scope, &input.session_id).await?;
+    Ok(ui::HistoryRequests {
+        requests: result,
+        next: if more { last } else { None },
+    })
+}
+
 pub(crate) async fn read_page(
     owner: &Owner,
     scope: &Scope,

@@ -249,6 +249,7 @@ function ActivityLog(props: {
   previewImage(image: ImagePreview): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   senders?: MessageSenders;
+  inspectTool?(key: string): void;
   userScroll(): void;
   reading(away: boolean): void;
   /** Whether the activity list is scrolled to its end, following or not. */
@@ -463,6 +464,7 @@ function ActivityLog(props: {
                       viewState={props.rowState(ownedId())}
                       toolMaxHeight={bodyMaxHeight}
                       toolProgress={props.toolProgress}
+                      inspectTool={props.inspectTool}
                       onToolReading={(key) => {
                         if (
                           !alive ||
@@ -529,6 +531,7 @@ type TurnPanelProps = {
   previewImage(image: ImagePreview): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   senders?: MessageSenders;
+  inspectTool?(key: string): void;
   userScroll(): void;
   reading(away: boolean): void;
   settled?(atEnd: boolean): void;

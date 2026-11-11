@@ -354,6 +354,12 @@ impl Snapshot {
             .query(read::ImportedItem(self.clone(), ordinal))
             .await
     }
+    pub(super) async fn query_request_traces(
+        &self,
+        query: super::metrics::ReadRequestTraces,
+    ) -> Result<Vec<super::metrics::ModelRequestTrace>, StoreError> {
+        self.data.query(query).await
+    }
     pub async fn view_at(&self, run: RunId) -> Result<crate::fold::RunView, StoreError> {
         self.data.query(read::View(self.clone(), run)).await
     }

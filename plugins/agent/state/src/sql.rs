@@ -292,6 +292,7 @@ impl Targets {
             | Fact::ModelPrivatePartialCaptured { attempt, .. }
             | Fact::ModelInterrupted { attempt, .. }
             | Fact::ModelAttemptAdmitted { attempt, .. }
+            | Fact::ModelFirstTokenObserved { attempt }
             | Fact::ModelClosed { attempt, .. }
             | Fact::ModelCleanupObserved { attempt, .. }
             | Fact::AttemptRecoveryRecorded { attempt, .. }

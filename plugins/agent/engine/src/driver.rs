@@ -1730,7 +1730,8 @@ impl Engine {
                         Fact::ModelCleanupObserved {
                             attempt: source, ..
                         } if source == attempt => read_model(work, attempt, index, connection),
-                        Fact::ModelPrivatePartialCaptured {
+                        Fact::ModelFirstTokenObserved { attempt: source }
+                        | Fact::ModelPrivatePartialCaptured {
                             attempt: source, ..
                         } if source == attempt => read_model(work, attempt, index, connection),
                         Fact::ModelSourceFailureCaptured {

@@ -13474,6 +13474,319 @@ export const contracts: {
           },
           resources: {},
         },
+        historyRequests: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryRequestsRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              through: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              position: {
+                description: 'Any original row in the Run being inspected.',
+                $ref: '#/$defs/HistoryRowAddress',
+              },
+              after: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+                maximum: 9007199254740991,
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'through', 'position'],
+            $defs: {
+              HistoryRowAddress: {
+                description:
+                  'An original row within the actual read capability supplied by the caller.\nMarker paths are relative to that capability; none of these fields grants access.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'live',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'snapshot',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      fact: {
+                        $ref: '#/$defs/FactId',
+                      },
+                      itemIndex: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'sequence', 'fact', 'itemIndex'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/RunId',
+                        },
+                      },
+                      snapshot: {
+                        type: 'string',
+                        format: 'uuid',
+                      },
+                      messageOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      partOrdinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'snapshot', 'messageOrdinal', 'partOrdinal'],
+                  },
+                ],
+              },
+              FactId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryRequests',
+            type: 'object',
+            properties: {
+              requests: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentHistoryRequest',
+                },
+              },
+              next: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            required: ['requests'],
+            $defs: {
+              AgentHistoryRequest: {
+                type: 'object',
+                properties: {
+                  order: {
+                    $ref: '#/$defs/HistoryOrder',
+                  },
+                  stepId: {
+                    $ref: '#/$defs/StepId',
+                  },
+                  attemptId: {
+                    $ref: '#/$defs/ModelAttemptId',
+                  },
+                  modelId: {
+                    type: 'string',
+                  },
+                  purpose: {
+                    $ref: '#/$defs/ModelPurpose',
+                  },
+                  startedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  firstTokenAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  finished: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentHistoryRequestFinished',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  estimatedInputTokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  contextWindow: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  inputLimit: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                required: ['order', 'stepId', 'attemptId', 'modelId', 'purpose'],
+              },
+              HistoryOrder: {
+                description:
+                  'Lexicographic tree order: original marker sequences followed by the leaf\nsequence/ordinal. This is presentation order, never a fabricated Root sequence.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'integer',
+                      format: 'uint64',
+                      minimum: 0,
+                    },
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'itemIndex'],
+              },
+              StepId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelAttemptId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              ModelPurpose: {
+                type: 'string',
+                enum: ['main', 'summary'],
+              },
+              AgentHistoryRequestFinished: {
+                type: 'object',
+                properties: {
+                  at: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  outcome: {
+                    $ref: '#/$defs/UsageOutcome',
+                  },
+                  usage: {
+                    $ref: '#/$defs/ModelUsage',
+                  },
+                  diagnostic: {
+                    type: ['string', 'null'],
+                  },
+                },
+                required: ['at', 'outcome', 'usage'],
+              },
+              UsageOutcome: {
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['success', 'error', 'aborted'],
+                  },
+                  {
+                    description: 'The admission ended without a recorded provider outcome.',
+                    type: 'string',
+                    const: 'unknown',
+                  },
+                ],
+              },
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+              },
+            },
+          },
+          resources: {},
+        },
         import: {
           mode: 'mutation',
           input: {

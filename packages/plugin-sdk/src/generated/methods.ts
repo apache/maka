@@ -347,6 +347,11 @@ export type AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceCons
   | 'unverified';
 export type AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentHistoryRequestsInput_HistoryRowAddress = Runtime.HistoryRowAddress;
+export type AgentHistoryRequestsOutput_StepId = string;
+export type AgentHistoryRequestsOutput_ModelAttemptId = string;
+export type AgentHistoryRequestsOutput_ModelPurpose = 'main' | 'summary';
+export type AgentHistoryRequestsOutput_UsageOutcome = ('success' | 'error' | 'aborted') | 'unknown';
 export type AgentLoadHistoryCheckpointOutput_AgentCheckpointLoadState =
   | {
       kind: 'preparing';
@@ -1402,6 +1407,23 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentHistoryPromptRead;
       output: Runtime.AgentHistoryPrompt | null;
+    };
+    historyRequests: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        through: number;
+        /**
+         * Any original row in the Run being inspected.
+         */
+        position: AgentHistoryRequestsInput_HistoryRowAddress;
+        after?: number | null;
+      };
+      output: {
+        requests: AgentHistoryRequestsOutput_AgentHistoryRequest[];
+        next?: number | null;
+        [k: string]: unknown | undefined;
+      };
     };
     import: {
       mode: 'mutation';
@@ -3081,6 +3103,43 @@ export interface AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspac
   consistency: AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentHistoryCheckpointLoadReceiptOutput_AgentHistoryCheckpointObject;
+}
+export interface AgentHistoryRequestsOutput_AgentHistoryRequest {
+  order: AgentHistoryRequestsOutput_HistoryOrder;
+  stepId: AgentHistoryRequestsOutput_StepId;
+  attemptId: AgentHistoryRequestsOutput_ModelAttemptId;
+  modelId: string;
+  purpose: AgentHistoryRequestsOutput_ModelPurpose;
+  startedAt?: number | null;
+  firstTokenAt?: number | null;
+  finished?: AgentHistoryRequestsOutput_AgentHistoryRequestFinished | null;
+  estimatedInputTokens?: number | null;
+  contextWindow?: number | null;
+  inputLimit?: number | null;
+  [k: string]: unknown | undefined;
+}
+/**
+ * Lexicographic tree order: original marker sequences followed by the leaf
+ * sequence/ordinal. This is presentation order, never a fabricated Root sequence.
+ */
+export interface AgentHistoryRequestsOutput_HistoryOrder {
+  path: number[];
+  itemIndex: number;
+}
+export interface AgentHistoryRequestsOutput_AgentHistoryRequestFinished {
+  at: number;
+  outcome: AgentHistoryRequestsOutput_UsageOutcome;
+  usage: AgentHistoryRequestsOutput_ModelUsage;
+  diagnostic?: string | null;
+  [k: string]: unknown | undefined;
+}
+export interface AgentHistoryRequestsOutput_ModelUsage {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  cache_write_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  [k: string]: unknown | undefined;
 }
 export interface AgentLoadHistoryCheckpointOutput_AgentHistoryCheckpointHead {
   revision: string;
