@@ -999,11 +999,26 @@ impl Engine {
                             terminal == Terminal::Failed && closed.outcome == Terminal::Failed
                         })
                         .and_then(|closed| closed.diagnostic.clone());
+                    let checkpoint =
+                        if matches!(terminal, Terminal::Completed | Terminal::Cancelled) {
+                            self.checkpoint_for_next_run(&view).await?
+                        } else {
+                            None
+                        };
+                    let mut facts = termination_facts(&view, terminal, diagnostic);
+                    if let Some(content) = &checkpoint {
+                        facts.insert(
+                            0,
+                            Fact::ContextCompacted {
+                                baseline: content.reference().clone(),
+                            },
+                        );
+                    }
                     self.publish(
                         Some(&claim),
                         &view,
-                        termination_facts(&view, terminal, diagnostic),
-                        vec![],
+                        facts,
+                        checkpoint.into_iter().collect(),
                         now,
                     )
                     .await?;

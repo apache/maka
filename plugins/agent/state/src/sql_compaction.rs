@@ -34,6 +34,16 @@ use serde::de::DeserializeOwned;
 use super::{decode, owned_content, pin, request};
 use crate::{fold::RunView, store::invalid};
 
+pub(super) fn ends_run(fact: &Fact) -> bool {
+    matches!(
+        fact,
+        Fact::RunTerminated {
+            terminal: Terminal::Completed | Terminal::Cancelled,
+            ..
+        }
+    )
+}
+
 fn original<T: DeserializeOwned>(
     c: &Connection,
     run: RunId,
@@ -47,7 +57,13 @@ pub(super) fn validate(
     view: &RunView,
     reference: &ContentRef,
     at: UnixMillis,
+    saving_for_next_run: bool,
 ) -> Result<(), StoreError> {
+    if view.stopped && !saving_for_next_run {
+        return Err(invalid(
+            "stopped Run can only save compaction for the next Run",
+        ));
+    }
     let material: CompactedContext = decode(c, reference)?;
     material.validate().map_err(invalid)?;
     let checkpoint = &material.checkpoint;
@@ -67,8 +83,13 @@ pub(super) fn validate(
         }
         (request(c, view.run, attempt.step)?, attempt)
     } else {
-        deferred =
-            crate::store::fallback::deferred_summary(c, view, checkpoint.summary_step_id, at)?;
+        deferred = crate::store::fallback::deferred_summary(
+            c,
+            view,
+            checkpoint.summary_step_id,
+            at,
+            saving_for_next_run,
+        )?;
         (deferred.0, &deferred.1)
     };
     let closed = attempt

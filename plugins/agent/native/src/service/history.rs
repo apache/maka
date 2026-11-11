@@ -21,6 +21,7 @@
 //! disposable values, never a second execution log or a recovery authority.
 use crate::{contract as ui, owner::Owner};
 use maka_agent_facts::{
+    context::ModelPurpose,
     durable::*,
     input::RunInput,
     model::{ModelPart, TextKind, body::TextBody},
@@ -458,16 +459,37 @@ pub(super) async fn observation(
             .view_at(&cut, latest.run)
             .await
             .map_err(|e| e.to_string())?;
-        if view.terminal.is_none() && matches!(view.spec.trigger, Trigger::ContextCompact) {
-            compacting = Some(ui::CompactionProgress {
-                id: latest.admission.id.to_string(),
-                started_at: latest
-                    .admission
-                    .at
-                    .0
-                    .try_into()
-                    .map_err(|_| "agent_compaction_timestamp_invalid")?,
-            });
+        if view.terminal.is_none() {
+            let progress = if matches!(view.spec.trigger, Trigger::ContextCompact) {
+                Some((latest.admission.id.to_string(), latest.admission.at))
+            } else if !view.stopped
+                && let Some(step) = view.current_step
+                && !view
+                    .current_attempt
+                    .and_then(|id| view.attempts.get(&id))
+                    .is_some_and(|attempt| {
+                        attempt.step == step
+                            && (attempt.closed.is_some() || attempt.interrupted.is_some())
+                    })
+            {
+                let (request, prepared_at) = history
+                    .request_preparation(&cut, view.run, step)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                (request.accounting.purpose == ModelPurpose::Summary)
+                    .then(|| (step.to_string(), prepared_at))
+            } else {
+                None
+            };
+            if let Some((id, started)) = progress {
+                compacting = Some(ui::CompactionProgress {
+                    id,
+                    started_at: started
+                        .0
+                        .try_into()
+                        .map_err(|_| "agent_compaction_timestamp_invalid")?,
+                });
+            }
         }
         let backend = match &view.spec.backend {
             BackendSpec::Model { .. } => Some(ui::RunBackend::Model),

@@ -588,6 +588,17 @@ impl RunView {
         )
     }
 
+    pub fn compaction_frontier_is_closed(&self) -> bool {
+        self.blockers
+            .values()
+            .all(|blocker| blocker.decision.is_some() || blocker.resolved_by.is_some())
+            && self.tools.values().all(|tool| tool.accepted.is_some())
+            && self
+                .attempts
+                .values()
+                .all(|attempt| attempt.closed.is_some() || attempt.interrupted.is_some())
+    }
+
     /// Store deduplicates FactId before invoking this method. An error leaves this view unchanged.
     /// Sparse callers load all open obligations and every object referenced by the batch.
     pub fn apply(&mut self, recorded: &RecordedFact) -> Result<(), StoreError> {
@@ -723,16 +734,7 @@ impl RunView {
             | Fact::ExternalTaskCleanupDeferred { .. } => self.apply_external(recorded)?,
             Fact::ContextCompacted { baseline } => {
                 require(
-                    !self.stopped
-                        && self
-                            .blockers
-                            .values()
-                            .all(|b| b.decision.is_some() || b.resolved_by.is_some())
-                        && self.tools.values().all(|t| t.accepted.is_some())
-                        && self
-                            .attempts
-                            .values()
-                            .all(|a| a.closed.is_some() || a.interrupted.is_some()),
+                    self.compaction_frontier_is_closed(),
                     "context compaction requires a closed unblocked frontier",
                 )?;
                 self.baseline = Some(baseline.clone());

@@ -436,6 +436,9 @@ impl Rig {
             &[
                 "create",
                 "history",
+                "observe",
+                "send",
+                "work",
                 "source",
                 "search",
                 "fork",
@@ -725,6 +728,15 @@ impl Rig {
         mode: maka_agent_engine::ports::Preparation,
         summary: Option<&str>,
     ) -> TestResult<(RequestSpec, ModelAttemptId)> {
+        let (request, attempt, _) = self.record_model_request(mode).await?;
+        self.finish_model_request(attempt, summary).await?;
+        Ok((request, attempt))
+    }
+
+    async fn record_model_request(
+        &self,
+        mode: maka_agent_engine::ports::Preparation,
+    ) -> TestResult<(RequestSpec, ModelAttemptId, UnixMillis)> {
         let driver = self.driver.as_ref().unwrap();
         let view = driver
             .state
@@ -735,15 +747,49 @@ impl Rig {
         let body = ContentBlob::json(request)?;
         prepared.contents.push(body.clone());
         let attempt = ModelAttemptId::new();
+        let started = at();
+        driver
+            .state
+            .append(
+                driver.access.claim(),
+                (&view).into(),
+                vec![
+                    Change::new(
+                        Fact::StepPrepared {
+                            step: request.step,
+                            request: body.reference().clone(),
+                            adjudications: vec![],
+                        },
+                        started,
+                    ),
+                    Change::new(
+                        Fact::ModelAttemptPrepared {
+                            attempt,
+                            step: request.step,
+                        },
+                        started,
+                    ),
+                    Change::new(
+                        Fact::ModelAttemptAdmitted {
+                            attempt,
+                            upstream: json!({"test":"compaction"}),
+                        },
+                        started,
+                    ),
+                ],
+                prepared.contents,
+            )
+            .await?;
+        Ok((prepared.request, attempt, started))
+    }
+
+    async fn finish_model_request(
+        &self,
+        attempt: ModelAttemptId,
+        summary: Option<&str>,
+    ) -> TestResult<()> {
         self.append(
             vec![
-                Fact::StepPrepared {
-                    step: request.step,
-                    request: body.reference().clone(),
-                    adjudications: vec![],
-                },
-                Fact::ModelAttemptPrepared { attempt, step: request.step },
-                Fact::ModelAttemptAdmitted { attempt, upstream: json!({"test":"compaction"}) },
                 Fact::ModelClosed {
                     attempt,
                     outcome: maka_agent_facts::accounting::Outcome::Success,
@@ -756,9 +802,9 @@ impl Rig {
                 },
                 Fact::ModelCleanupObserved { attempt, cleanup: OperationCleanup::Confirmed },
             ],
-            prepared.contents,
+            vec![],
         ).await?;
-        Ok((prepared.request, attempt))
+        Ok(())
     }
 
     async fn attempt(&self) -> TestResult<ModelAttemptId> {
@@ -2174,13 +2220,18 @@ mod model_recovery {
         listener: tokio::net::TcpListener,
         posts: Arc<std::sync::atomic::AtomicUsize>,
         stop: CancellationToken,
+        requests: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     ) -> TestResult<()> {
         let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(move |request: axum::extract::Request| {
         let posts = posts.clone();
+            let requests = requests.clone();
         async move {
             posts.fetch_add(1, Ordering::SeqCst);
-            if axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024).await.is_err() {
+                let Ok(request) = axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024).await else {
                 return (axum::http::StatusCode::BAD_REQUEST, [("content-type","text/event-stream")], String::new());
+                };
+                if let Some(requests) = requests {
+                    requests.send(request.to_vec()).expect("fixture request reader");
             }
             let body = format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
                 json!({"id":"native-cleanup","object":"chat.completion.chunk","created":1,"model":"llama3.2","choices":[{"index":0,"delta":{"role":"assistant","content":"Native cleanup retained."},"finish_reason":null}]}),
@@ -2854,7 +2905,7 @@ mod model_recovery {
         }
     }
 
-    async fn completed_message(
+    pub(super) async fn completed_message(
         client: &HostClient,
         session: &str,
         message: &Value,
@@ -3279,7 +3330,7 @@ mod model_recovery {
         let base = rig.directory.path().to_path_buf();
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), false).await?;
-        wire = Some(tokio::spawn(serve(listener, posts.clone(), stop.clone())));
+        wire = Some(tokio::spawn(serve(listener, posts.clone(), stop.clone(), None)));
         let path = base.join("boot.json");
         tokio::fs::write(&path, serde_json::to_vec(&boot)?).await?;
         let child_test = format!("{}::model_reader_child", module_path!().split_once("::").ok_or("test module missing")?.1);
@@ -3973,9 +4024,24 @@ async fn compacted_history_checks_the_producing_requests_original_cut() {
         };
         let summary_text = "Continue the original task.";
         rig.record_model_reply(Preparation::Initial, None).await?;
-        let (summary, _) = rig
-            .record_model_reply(Preparation::Summary, Some(summary_text))
+        let (summary, summary_attempt, started) =
+            rig.record_model_request(Preparation::Summary).await?;
+        let observe = || {
+            model_recovery::call(
+                rig.client.as_ref().unwrap(),
+                "agent",
+                "observe",
+                json!({"sessionId": session}),
+            )
+        };
+        let observed = observe().await?;
+        assert_eq!(
+            observed["compacting"],
+            json!({"id": summary.step, "startedAt": started.0}),
+        );
+        rig.finish_model_request(summary_attempt, Some(summary_text))
             .await?;
+        assert_eq!(observe().await?["compacting"], Value::Null);
         let capture: RequestSource = serde_json::from_slice(
             &driver
                 .state
@@ -4092,6 +4158,94 @@ async fn queued_admission_wakes_when_goal_or_session_lock_releases() -> TestResu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compaction_checkpoint_survives_stop_and_is_used_by_the_next_message() {
+    use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+    use std::sync::atomic::AtomicUsize;
+
+    let mut rig = Rig::new().unwrap();
+    let stop = CancellationToken::new();
+    let posts = Arc::new(AtomicUsize::new(0));
+    let listener =
+        tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
+    let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let server = tokio::spawn(model_recovery::serve(
+        listener,
+        posts.clone(),
+        stop.clone(),
+        Some(requests),
+    ));
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        rig.record_model_reply(Preparation::Initial, None).await?;
+        let view = driver.state.frontier(run).await?;
+        let mut main = driver.model()?.prepare_step(&view, Preparation::Initial, driver).await?;
+        let encoded = ContentBlob::json(&main.request)?;
+        main.contents.push(encoded.clone());
+        rig.append(vec![Fact::StepPrepared {
+            step: main.request.step,
+            request: encoded.reference().clone(),
+            adjudications: vec![],
+        }], main.contents).await?;
+
+        let summary_text = "Remember the reusable cobalt summary.";
+        let (_, summary) = rig.record_model_reply(Preparation::Summary, Some(summary_text)).await?;
+        rig.record_model_reply(
+            Preparation::CompactionDeferred { main: main.request.step, summary },
+            None,
+        ).await?;
+        assert!(driver.state.frontier(run).await?.baseline.is_none());
+        rig.append(vec![Fact::StopRequested { diagnostic: "user_requested_stop".into() }], vec![]).await?;
+        let exit = Engine::new(driver.state.clone())
+            .drive(driver.access.claim().clone(), driver.clone(), CancellationToken::new())
+            .await?;
+        assert!(matches!(exit, DriverExit::Terminal { terminal: Terminal::Cancelled, .. }), "{exit:?}");
+
+        let owner = driver.owner.clone();
+        owner.durable.rebuild(run).await?;
+        let history = owner.durable.history(run, 0, 64).await?;
+        assert!(matches!(history.last_chunk::<2>(), Some([checkpoint, ended])
+            if matches!(checkpoint.fact, Fact::ContextCompacted { .. })
+                && matches!(ended.fact, Fact::RunTerminated { terminal: Terminal::Cancelled, .. })));
+
+        let cells = rig.cells.as_ref().unwrap();
+        cells.coordinator.shutdown().await?;
+        driver.workers.close();
+        driver.workers.wait().await;
+        assert!(cells.original_cleanup_confirmed().await?);
+        rig.work_effects.as_ref().unwrap().settle().await?;
+        rig.lease.take().unwrap().finish();
+        rig.cells.take();
+        rig.work_effects.take();
+
+        let binding = &main.request.accounting.binding;
+        let client = rig.client.as_ref().unwrap();
+        let sent = model_recovery::call(client, "agent", "send", json!({
+            "sessionId": session,
+            "message": "The new message after Stop.",
+            "delivery": "queue",
+            "backend": {"kind":"model","connectionId":binding.connection_id,"modelId":binding.model},
+        })).await?;
+        assert!(matches!(sent["kind"].as_str(), Some("started" | "queued")), "{sent}");
+        model_recovery::completed_message(client, &session, &sent["messageId"]).await?;
+        let body = String::from_utf8(received.try_recv()?)?;
+        assert!(body.contains(summary_text) && body.contains("The new message after Stop."), "{body}");
+        assert_eq!(posts.load(Ordering::SeqCst), 1);
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    })).catch_unwind().await;
+    stop.cancel();
+    server.await.unwrap().unwrap();
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match result {
+        Ok(result) => result.expect("compaction handoff timed out").unwrap(),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
     use crate::contract::ForkResult;
     use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
@@ -4110,7 +4264,12 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
     let posts = Arc::new(AtomicUsize::new(0));
     let listener =
         tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
-    let server = tokio::spawn(model_recovery::serve(listener, posts.clone(), stop.clone()));
+    let server = tokio::spawn(model_recovery::serve(
+        listener,
+        posts.clone(),
+        stop.clone(),
+        None,
+    ));
     let test = async {
         let session = rig.start().await?;
         rig.assemble_model(

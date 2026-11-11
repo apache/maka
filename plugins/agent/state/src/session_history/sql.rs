@@ -354,13 +354,13 @@ pub(super) fn page(
     Ok(HistoryPage { items, next })
 }
 
-pub(super) fn request(
+pub(super) fn request_preparation(
     c: &Connection,
     history: &HistoryNamespace,
     cut: &HistoryCut,
     run: RunId,
     step: StepId,
-) -> Result<RequestSpec, StoreError> {
+) -> Result<(RequestSpec, UnixMillis), StoreError> {
     let owner = check_cut(c, history, cut)?;
     spec(c, history, run)?;
     let sequence:Option<u64>=c.query_row("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND run=? AND step=? AND kind='step_prepared' AND sequence<=? ORDER BY sequence LIMIT 1",params![owner,history.session,run.to_string(),step.to_string(),bind_u64(cut.through_sequence)?],|r|read_u64(r,0)).optional()?;
@@ -383,7 +383,7 @@ pub(super) fn request(
     if request.schema_version != SCHEMA_VERSION || request.step != step {
         return Err(invalid("request original schema/Step differs"));
     }
-    Ok(request)
+    Ok((request, original.recorded.at))
 }
 pub(super) fn validate_source_record(
     c: &Connection,
@@ -875,7 +875,7 @@ pub(super) fn sources(
                 }
             }
             DeliveryTarget::Step { step } => {
-                let request_spec = request(c, history, cut, run, *step)?;
+                let (request_spec, _) = request_preparation(c, history, cut, run, *step)?;
                 if request_spec.steering.get(position as usize) != Some(&frozen.source) {
                     return Err(invalid(
                         "Step steering differs from original consumed source order",

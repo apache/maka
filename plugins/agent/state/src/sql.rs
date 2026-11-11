@@ -1360,7 +1360,7 @@ pub(crate) fn append(
     insert_blobs(c, contents)?;
     let mut facts = Vec::new();
     let mut steering_used = false;
-    for change in changes {
+    for (index, change) in changes.iter().enumerate() {
         if change.fact.is_admission() {
             view.check_effect_admission()?;
         }
@@ -1369,7 +1369,13 @@ pub(crate) fn append(
             view.validate_blocker_resolution(*blocker)?;
         }
         if let Fact::ContextCompacted { baseline } = &change.fact {
-            compaction::validate(c, &view, baseline, change.at)?;
+            // A deferred checkpoint can become visible to the next Run once
+            // this same commit closes the current Run.
+            let saving_for_next_run = matches!(
+                &changes[index + 1..],
+                [next] if next.at == change.at && compaction::ends_run(&next.fact)
+            );
+            compaction::validate(c, &view, baseline, change.at, saving_for_next_run)?;
         }
         if let Fact::ApprovalRecorded {
             approval,
@@ -1672,7 +1678,10 @@ pub(crate) fn rebuild(c: &Connection, run: RunId) -> Result<Head, StoreError> {
             model_evidence::validate_partial(c, &view, &recorded)?;
             model_evidence::validate_source_failure(c, &view, &recorded)?;
             if let Fact::ContextCompacted { baseline } = &recorded.fact {
-                compaction::validate(c, &view, baseline, recorded.at)?;
+                let saving_for_next_run = history(c, run, recorded.revision, 1)?
+                    .first()
+                    .is_some_and(|next| next.at == recorded.at && compaction::ends_run(&next.fact));
+                compaction::validate(c, &view, baseline, recorded.at, saving_for_next_run)?;
             }
             validate_external_final_message(c, &view, &recorded.fact)?;
             validate_private_provider_effect(c, &view, &recorded.fact)?;
