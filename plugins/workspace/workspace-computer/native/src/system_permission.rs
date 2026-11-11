@@ -87,6 +87,10 @@ pub(super) async fn ensure(
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the permission-reader test seam adds one argument to the production consent boundary"
+)]
 async fn ensure_with_reader(
     owner: &Computer,
     call: &Call,

@@ -428,35 +428,30 @@ impl Owner {
         message: &str,
         recipient: &str,
     ) -> Result<(), String> {
-        if self.bot.is(recipient) {
-            if self
+        if self.bot.is(recipient)
+            && self
                 .store
                 .get_session::<StoredSessionConfiguration>(worker)
                 .await
                 .map_err(|e| e.to_string())?
                 .is_some()
-            {
-                if let maka_agent_state::queue::MessageResolution::Delivered { run, .. } = self
-                    .durable
-                    .queue()
-                    .resolve_message(worker.into(), message.into())
-                    .await
-                    .map_err(|e| e.to_string())?
-                {
-                    if self
-                        .durable
-                        .latest_run(worker.into())
-                        .await
-                        .map_err(|e| e.to_string())?
-                        == Some(run)
-                    {
-                        self.bot
-                            .mark_completion(worker, run)
-                            .await
-                            .map_err(|e| e.to_string())?;
-                    }
-                }
-            }
+            && let maka_agent_state::queue::MessageResolution::Delivered { run, .. } = self
+                .durable
+                .queue()
+                .resolve_message(worker.into(), message.into())
+                .await
+                .map_err(|e| e.to_string())?
+            && self
+                .durable
+                .latest_run(worker.into())
+                .await
+                .map_err(|e| e.to_string())?
+                == Some(run)
+        {
+            self.bot
+                .mark_completion(worker, run)
+                .await
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }

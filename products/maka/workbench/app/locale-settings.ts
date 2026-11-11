@@ -57,6 +57,46 @@ import {
 
 export const settingsMessages = {
   'ChatGPT Subscription': ['ChatGPT Subscription', 'ChatGPT 订阅', 'ChatGPT 訂閱'],
+  'Last usage refresh failed': [
+    'Last usage refresh failed',
+    '最近一次额度刷新失败',
+    '最近一次用量重新整理失敗',
+  ],
+  'Loading usage limits…': ['Loading usage limits…', '正在读取额度…', '正在讀取用量限制…'],
+  'Usage limits unavailable': [
+    'Usage limits unavailable',
+    '暂时无法读取额度',
+    '暫時無法讀取用量限制',
+  ],
+  'No usage limits reported': [
+    'No usage limits reported',
+    '提供商未返回额度',
+    '提供者未傳回用量限制',
+  ],
+  'Update the connection credential to see usage limits': [
+    'Update the connection credential to see usage limits',
+    '更新连接凭据后查看额度',
+    '更新連線憑證後即可查看用量限制',
+  ],
+  'Usage limit': ['Usage limit', '使用额度', '用量限制'],
+  Balance: ['Balance', '余额', '餘額'],
+  Unlimited: ['Unlimited', '不限量', '無限量'],
+  'Monthly limit': ['Monthly limit', '月额度', '每月用量限制'],
+  'Add or update the usage access key': [
+    'Add or update the usage access key',
+    '添加或更新额度查询密钥',
+    '新增或更新用量查詢金鑰',
+  ],
+  'Weekly limit': ['Weekly limit', '每周额度', '每週用量限制'],
+  '{duration} limit': ['{duration} limit', '{duration}额度', '{duration}用量限制'],
+  '{percent}% used': ['{percent}% used', '已用 {percent}%', '已用 {percent}%'],
+  'Resets {time}': ['Resets {time}', '{time} 重置', '{time} 重設'],
+  'Usage access key': ['Usage access key', '额度查询密钥', '用量查詢金鑰'],
+  'Access key ID': ['Access key ID', '访问密钥 ID', '存取金鑰 ID'],
+  'Secret access key': ['Secret access key', '访问密钥 Secret', '存取金鑰 Secret'],
+  'Token Plan ID': ['Token Plan ID', 'Token Plan 套餐 ID', 'Token Plan 方案 ID'],
+  'Save usage access key': ['Save usage access key', '保存额度查询密钥', '儲存用量查詢金鑰'],
+  'Remove usage access key': ['Remove usage access key', '移除额度查询密钥', '移除用量查詢金鑰'],
   'Chat Completions': [
     'Chat Completions',
     'Chat Completions 兼容接口',

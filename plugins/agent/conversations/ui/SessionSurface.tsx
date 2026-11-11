@@ -45,6 +45,8 @@ import type {
   AgentCompletionTarget,
   AgentInteractionResult,
   AgentWorkspaceAccess,
+  SettingsAssistantPreferences,
+  SettingsPreferencesUpdated,
   ModelSelection,
   RunId,
   UiTarget,
@@ -75,6 +77,7 @@ import {
 } from '../../../../products/maka/workbench/app/text';
 import { currentLocale, displayText, tr } from '../../../../products/maka/workbench/app/locale';
 import { loadDraft, type Host } from '../../../../products/maka/workbench/app/host';
+import { settingsValue } from '../../../../products/maka/workbench/app/settingsOperations';
 import {
   bodyTextStyle,
   C,
@@ -182,6 +185,22 @@ type PendingFile = {
   imageUri: string | null;
   file: StagedFile;
 };
+const sandboxModeOfAccess = {
+  read_only: 'read-only',
+  workspace_write: 'workspace-write',
+  danger_full_access: 'danger-full-access',
+} as const satisfies Record<
+  AgentWorkspaceAccess,
+  SettingsAssistantPreferences['defaultSandboxMode']
+>;
+const accessOfSandboxMode = {
+  'read-only': 'read_only',
+  'workspace-write': 'workspace_write',
+  'danger-full-access': 'danger_full_access',
+} as const satisfies Record<
+  SettingsAssistantPreferences['defaultSandboxMode'],
+  AgentWorkspaceAccess
+>;
 type PendingDraft = {
   workspace: BrowserWorkspace;
   workspaceLabel: string;
@@ -254,6 +273,8 @@ export function createConversationUi(
   const status = createTransientText();
   const switching = signal(false);
   const busy = signal(false);
+  // The method being confirmed, so the feedback can say what is happening.
+  const busyMethod = signal<string | null>(null);
   // Shown only when saving a draft or confirming an action takes a while, so a
   // quick one does not flash the feedback row and move the page.
   const working = delayed(() => switching() || busy());
@@ -318,6 +339,49 @@ export function createConversationUi(
   const pendingFileBusy = () => pendingIntake() !== null;
   const pendingPicker = signal(false);
   const pendingAccess = computed(() => pending()?.access ?? null);
+  const defaultAccess = signal<AgentWorkspaceAccess | null>(null);
+  // Reads and writes of the Host default run in order, so an earlier read
+  // never replaces a later choice.
+  let defaultAccessTask = Promise.resolve();
+  const preferences = async () =>
+    (await host.query('settings', 'assistantPreferences', {})) as SettingsAssistantPreferences;
+  const refreshDefaultAccess = () => {
+    defaultAccessTask = defaultAccessTask.then(async () => {
+      try {
+        const value = await preferences();
+        if (alive) defaultAccess.set(accessOfSandboxMode[value.defaultSandboxMode]);
+      } catch (reason) {
+        report(reason);
+      }
+    });
+  };
+  // What the draft shows is what its conversation gets: submission applies it
+  // even when the Host default changed after it was read.
+  const draftAccess = () => pendingAccess() ?? defaultAccess();
+  // The composer's choice also becomes the Host default for later conversations.
+  const rememberDefaultAccess = (access: AgentWorkspaceAccess) => {
+    defaultAccess.set(access);
+    defaultAccessTask = defaultAccessTask.then(async () => {
+      try {
+        const current = await preferences();
+        const mode = sandboxModeOfAccess[access];
+        if (current.defaultSandboxMode === mode) return;
+        const result = settingsValue(
+          (
+            await host.settingsMutation('settings', 'updateAssistantPreferences', {
+              expectedRevision: current.revision,
+              mutation: { kind: 'default_sandbox', mode },
+            })
+          ).reply,
+        ) as SettingsPreferencesUpdated;
+        if (result.kind !== 'committed')
+          throw new UiError('The default sandbox setting could not be saved.');
+      } catch (reason) {
+        report(reason);
+        refreshDefaultAccess();
+      }
+    });
+  };
   const pendingRequests = computed(() => pending()?.requests ?? null);
   const pendingBackend = computed(() => pending()?.backend ?? null);
   const pendingModelChosen = computed(() => pending()?.modelChosen ?? false);
@@ -600,7 +664,10 @@ export function createConversationUi(
     if (!urgent && busy())
       throw new UiError('An action is being confirmed. Try again in a moment.');
     const pendingCreation = method === 'create' && pendingSending() && pendingWorkspace() !== null;
-    if (!urgent) busy.set(true);
+    if (!urgent) {
+      busy.set(true);
+      busyMethod.set(method);
+    }
     try {
       let result: any;
       if (pendingCreation) {
@@ -642,7 +709,10 @@ export function createConversationUi(
         controlsKnown.set(false);
         report(reason);
       });
-      if (!urgent && alive) busy.set(false);
+      if (!urgent && alive) {
+        busy.set(false);
+        busyMethod.set(null);
+      }
     }
   };
   const closeOverlay = (instance: number) => {
@@ -830,6 +900,7 @@ export function createConversationUi(
         message: uiMessage('Choose a model.'),
       });
       pendingModelInstance.set(null);
+      refreshDefaultAccess();
       pendingDefaultRead = host
         .query('settings', 'connections', { kind: 'start' })
         .then((page) => {
@@ -972,12 +1043,13 @@ export function createConversationUi(
       modelDetails: pendingModelDetails,
       permissions: {
         id: `pending/${generation}`,
-        access: pendingAccess,
+        access: draftAccess,
         requestPermissions: pendingRequests,
         pending: pendingSending,
         selectAccess: (access: AgentWorkspaceAccess) => {
           if (owns() && !pendingSending() && pendingAccess() !== access) {
             updatePending({ access });
+            rememberDefaultAccess(access);
           }
         },
         selectRequests: (requests: boolean) => {
@@ -1039,7 +1111,7 @@ export function createConversationUi(
         const workspace = pendingWorkspace();
         const staged = pendingFiles();
         const files = staged.map((item) => item.file);
-        const access = pendingAccess();
+        const access = draftAccess();
         const requests = pendingRequests();
         if (
           !owns() ||
@@ -1418,7 +1490,7 @@ export function createConversationUi(
       const generation = pendingDraftGeneration();
       const draft = pendingText();
       const files = pendingFiles().map((item) => item.file);
-      const access = pendingAccess();
+      const access = draftAccess();
       const requests = pendingRequests();
       const owns = () =>
         alive &&
@@ -1460,19 +1532,20 @@ export function createConversationUi(
         }
         requireOwner();
         const session = (await host.query('agent', 'observe', { sessionId: id })).session;
-        if (access !== null || requests !== null) {
+        const settings = {
+          access: access ?? session.permissions.access,
+          requestPermissions: requests ?? session.permissions.requestPermissions,
+        };
+        if (
+          settings.access !== session.permissions.access ||
+          settings.requestPermissions !== session.permissions.requestPermissions
+        ) {
           const changed = await control('metadata', {
             sessionId: id,
             expectedRevision: session.revision,
             title: session.title,
             labels: session.labels,
-            permissions: {
-              settings: {
-                access: access ?? session.permissions.access,
-                requestPermissions: requests ?? session.permissions.requestPermissions,
-              },
-              revokeGrants: false,
-            },
+            permissions: { settings, revokeGrants: false },
           });
           if (changed.kind !== 'committed')
             throw new UiError('This action could not be completed.');
@@ -2259,7 +2332,11 @@ export function createConversationUi(
               </If>
               <If when={working()}>
                 <Text style={{ ...bodyTextStyle, color: C.muted }}>
-                  {switching() ? tr('Saving draft before switching…') : tr('Confirming action…')}
+                  {switching()
+                    ? tr('Saving draft before switching…')
+                    : busyMethod() === 'fork'
+                      ? tr('Creating fork…')
+                      : tr('Confirming action…')}
                 </Text>
               </If>
               <If when={forkNotice()?.id === selected()}>

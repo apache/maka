@@ -108,6 +108,15 @@ pub(in crate::owner) async fn prepare_completed(
     {
         return Err(unsupported("auxiliary-original-source-evidence"));
     }
+    if preparation::route_identity(&model.provider)? != frozen.route_identity {
+        return Err(unsupported("auxiliary-original-model-route"));
+    }
+    let options = request
+        .composition
+        .provider_options
+        .as_ref()
+        .ok_or_else(|| unsupported("frozen-provider-options"))?;
+    let definitions = request.composition.tools;
     let original = preparation::restore_prompt_from(
         io.clone(),
         resources.clone(),
@@ -118,22 +127,15 @@ pub(in crate::owner) async fn prepare_completed(
         &frozen.layout,
         cancellation,
     )
-    .await?
-    .with_frozen_transport(frozen.instructions.as_deref(), frozen.normalization.clone());
+    .await?;
     let mut builder = match preparation::PromptBuilder::new(io, resources, cancellation).await {
         Ok(builder) => builder,
         Err(error) => return close_result(Err(error), &original).await,
     };
     let copied = async {
-        let model = original.model();
-        let recipes = model
+        let recipes = original
             .recipes()
             .ok_or_else(|| unsupported("auxiliary-original-recipes"))?;
-        let count = model.len();
-        let prefix = recipes.prefix_identity(count).await?;
-        let instructions = model
-            .instructions_source()
-            .map(|source| *source.commitment());
         let mut cursor = recipes.open(0);
         while let Some(recipe) = cursor.next().await? {
             if cancellation.is_cancelled() {
@@ -142,19 +144,15 @@ pub(in crate::owner) async fn prepare_completed(
             builder.append_recipe(&recipe).await?;
         }
         append_completion(history, cut, context, &mut builder, cancellation).await?;
-        Ok((count, prefix, instructions))
+        builder.append(Message::user(instruction)).await
     }
     .await;
-    let copied = close_result(copied, &original).await;
-    let (count, prefix, instructions) = match copied {
-        Ok(copied) => copied,
-        Err(error) => {
-            return match builder.close().await {
-                Ok(()) => Err(error),
-                Err(close) => Err(preparation::preparation_cleanup_error(error, close)),
-            };
-        }
-    };
+    if let Err(error) = close_result(copied, &original).await {
+        return match builder.close().await {
+            Ok(()) => Err(error),
+            Err(close) => Err(preparation::preparation_cleanup_error(error, close)),
+        };
+    }
     let settings = PromptSettings {
         operation: ModelOperation::Inference,
         codex: model
@@ -163,53 +161,43 @@ pub(in crate::owner) async fn prepare_completed(
             .and_then(|context| context.codex.as_ref()),
         language: frozen.language,
         provider: &model.provider,
-        options: &model.options,
+        options,
         context_window: model
             .context
             .as_ref()
             .and_then(|context| context.model_context_window),
-        tool_choice: ToolChoiceMode::None,
+        tool_choice: frozen.tool_choice,
     };
-    let mut prompt = preparation::prepare_prompt(
-        builder,
-        &settings,
-        cancellation,
-        None,
-        purpose,
-        Some(Arc::new(instruction)),
-    )
-    .await?
-    .with_frozen_transport(frozen.instructions.as_deref(), None);
+    // The snapshot already contains the original provider's fitted media.
+    let mut prompt = builder
+        .finish()
+        .await?
+        .with_frozen_transport(frozen.instructions.as_deref(), frozen.normalization);
     let result = async {
-        // Old definitions are data, never a restored executable catalog. This
-        // auxiliary request cannot ask the Host to activate a historical tool.
         preparation::prepare_wire(
             &settings,
             &mut prompt,
-            &[],
+            &definitions,
             model.main_output_limit,
             cancellation,
         )
         .await?;
         let actual = prompt.model();
+        let count = frozen.layout.message_count;
+        let wire = actual
+            .wire(frozen.wire.format)
+            .ok_or_else(|| unsupported("frozen-wire-format"))?;
         if actual.len() <= count
-            || actual
-                .instructions_source()
-                .map(|source| *source.commitment())
-                != instructions
-            || actual
-                .recipes()
-                .ok_or_else(|| unsupported("auxiliary-prefix-recipes"))?
-                .prefix_identity(count)
-                .await?
-                != prefix
+            || wire.codec.as_ref() != frozen.wire.codec
+            || wire.source.prefix_identity(count).await?.as_deref()
+                != Some(frozen.wire.identity.as_str())
         {
             return Err(unsupported("auxiliary-original-prefix-changed"));
         }
         Ok(preparation::prepare_request(
             &settings,
             prompt.clone(),
-            vec![],
+            definitions,
             model.main_output_limit,
             purpose,
             None,

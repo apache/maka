@@ -535,6 +535,38 @@ export function createModelSettings(
     if (result.kind !== 'status') throw new UiError('This connection is no longer available.');
     return result.status as CredentialStatus;
   };
+  const setUsageAccessKey = async (
+    request: ConnectionAction,
+    status: CredentialStatus,
+    key: { accessKeyId: string; secretAccessKey: string; teamId?: string } | null,
+  ): Promise<CredentialStatus | null> => {
+    if (!current(request)) return null;
+    let updated: CredentialStatus | null = null;
+    await run(async () => {
+      const form = editor();
+      if (!form?.baseline) return;
+      const expected = form.baseline.target;
+      const credential = credentialBasis(status);
+      if (!key && !credential) return;
+      const result = key
+        ? await mutate(
+            'settings',
+            'saveUsageCredential',
+            {
+              expected,
+              expectedCredential: credential,
+            },
+            JSON.stringify(key),
+          )
+        : await mutate('settings', 'deleteCredential', {
+            expected: credential,
+            expectedConnection: expected,
+          });
+      if (result.kind !== 'committed') throw rejection(result);
+      updated = result.status;
+    });
+    return updated;
+  };
   const openConnection = async (target: { connectionId: string; revision?: number }) => {
     if (!alive || !active() || busy() || page() !== 'connections') return;
     const generation = ++read;
@@ -1406,6 +1438,7 @@ export function createModelSettings(
     openConnection,
     edit,
     saveConnection,
+    setUsageAccessKey,
     toggleEnabled,
     supportsServerSideCompaction: () => supportsServerSideCompaction(editor()!.provider),
     toggleServerSideCompaction,

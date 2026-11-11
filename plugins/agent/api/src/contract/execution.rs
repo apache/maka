@@ -71,6 +71,10 @@ pub struct AnswerPage {
     deny_unknown_fields
 )]
 #[schemars(rename = "AgentWork")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one work-query response, not a batch; keep delivered data inline instead of adding a per-response allocation"
+)]
 pub enum Work {
     Missing,
     Pending,
@@ -147,6 +151,10 @@ pub enum PatchPage {
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "AgentExecutionResult")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "single execution lookup result; boxing adds an allocation without demonstrated stack-pressure benefit"
+)]
 pub enum ExecutionResult {
     Missing,
     Found { execution: Execution },
@@ -171,6 +179,10 @@ pub struct Execution {
     deny_unknown_fields
 )]
 #[schemars(rename = "AgentExecutionState")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "per-call execution DTO; keep failure detail inline rather than allocate solely to shrink the other states"
+)]
 pub enum ExecutionState {
     Admitted,
     Running,
@@ -202,6 +214,10 @@ pub struct ContinueRun {
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "AgentContinuationResult")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "single continuation command response; keep its execution inline without an extra allocation"
+)]
 pub enum ContinuationResult {
     Started { execution: Execution },
     Rejected { reason: ContinuationRejection },
@@ -209,6 +225,10 @@ pub enum ContinuationResult {
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "AgentContinuationAvailability")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "single continuation admission check; keep the source execution inline rather than allocate an intermediate box"
+)]
 pub enum ContinuationAvailability {
     Ready { source: Execution },
     Rejected { reason: ContinuationRejection },

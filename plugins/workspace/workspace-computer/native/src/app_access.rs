@@ -34,6 +34,10 @@ pub(super) fn target(subject: &maka_computer_use::ComputerAppTarget) -> GrantTar
         ..api::target()
     }
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "consent needs explicit caller authority, app observation and cancellation/timeout lifetimes"
+)]
 pub(super) async fn approve(
     owner: &Computer,
     call: &Call,

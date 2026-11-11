@@ -144,7 +144,12 @@ import {
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
-import { MessageEdit, TurnRetry } from '../../../../products/maka/workbench/app/MessageEdit';
+import {
+  MessageEdit,
+  MessageEditor,
+  TurnRetry,
+  type InlineEdit,
+} from '../../../../products/maka/workbench/app/MessageEdit';
 import { createMessageSenders } from '../../../../products/maka/workbench/app/messageSenders';
 import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
@@ -532,7 +537,11 @@ export function Conversation(props: ConversationProps) {
   const rowState = (id: string) => {
     let state = rowStates.get(id);
     if (!state) {
-      state = { expanded: signal(false), sourceMode: signal(false) };
+      state = {
+        expanded: signal(false),
+        sourceMode: signal(false),
+        edit: signal<InlineEdit | null>(null),
+      };
       rowStates.set(id, state);
     }
     return state;
@@ -3349,6 +3358,22 @@ export function Conversation(props: ConversationProps) {
                         menu={menu}
                         opensTurn={() => opensTurn(row())}
                         edit={props.edit!}
+                        inline={rowState(initial.rowId).edit}
+                      />
+                    )
+                  : undefined
+              }
+              messageEditor={
+                platform.idiom !== 'terminal' && props.edit
+                  ? (row, ownerKey) => (
+                      <MessageEditor
+                        row={row}
+                        ownerKey={ownerKey}
+                        sessionId={sessionId}
+                        through={() => latestKnown}
+                        opensTurn={() => opensTurn(row())}
+                        edit={props.edit!}
+                        state={rowState(initial.rowId).edit!}
                       />
                     )
                   : undefined

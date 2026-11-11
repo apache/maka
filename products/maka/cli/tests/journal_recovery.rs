@@ -542,14 +542,13 @@ async fn withheld_metadata_reply_survives_sigkill_and_recovers_the_original_jour
             cleanup.push(error);
         }
     }
-    if let Some(task) = &mut confirming {
-        if let Err(error) = phase("settle owned original confirmation observer", async {
+    if let Some(task) = &mut confirming
+        && let Err(error) = phase("settle owned original confirmation observer", async {
             task.await.map(|_| ()).map_err(|error| error.to_string())
         })
         .await
-        {
-            cleanup.push(error);
-        }
+    {
+        cleanup.push(error);
     }
     if !cleanup.is_empty() {
         eprintln!("journal recovery cleanup failures: {}", cleanup.join("; "));

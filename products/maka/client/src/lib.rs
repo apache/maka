@@ -101,11 +101,12 @@ impl ServiceOwner {
         serde_json::json!({"kind":kind,"owner":self})
     }
 }
-const SETTINGS_METHODS: [&str; 10] = [
+const SETTINGS_METHODS: [&str; 11] = [
     "create",
     "update",
     "remove",
     "saveCredential",
+    "saveUsageCredential",
     "deleteCredential",
     "updateModelSettings",
     "setDefault",
@@ -668,7 +669,7 @@ impl Client {
         if !settings_route(endpoint, method) {
             return Err("unsupported settings mutation method".into());
         }
-        if endpoint == "settings" && method == "saveCredential" {
+        if endpoint == "settings" && matches!(method, "saveCredential" | "saveUsageCredential") {
             if resources.len() != 1
                 || !resources.get("secret").is_some_and(|secret| {
                     secret.resource_type() == text_resource_type()

@@ -36,7 +36,6 @@ struct Overlay {
     instructions: Option<PromptInstructions>,
 }
 struct Binding {
-    overlay: Arc<Overlay>,
     recipe: MessageRecipe,
     metadata: MessageMetadata,
     instructions: Option<PromptInstructions>,
@@ -165,7 +164,6 @@ impl OwnedOverlay {
         Self(
             self.0.clone(),
             Some(Arc::new(Binding {
-                overlay: self.0.clone(),
                 recipe,
                 metadata,
                 instructions,
@@ -245,22 +243,6 @@ impl MessageSource for Overlay {
             value: (start == 0).then(|| self.metadata.clone()),
         })
     }
-    fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_> {
-        Box::pin(async move {
-            if messages > 1 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "overlay prefix exceeds its message",
-                ));
-            }
-            let mut hash = Sha256::new();
-            hash.update(b"maka.logical-prefix\0");
-            if messages == 1 {
-                hash.update(self.metadata.logical_identity.as_bytes());
-            }
-            Ok(hex::encode(hash.finalize()))
-        })
-    }
 }
 impl RecipeSource<MessageRecipe> for Binding {
     fn len(&self) -> usize {
@@ -277,9 +259,6 @@ impl MessageSource for Binding {
         Box::new(One {
             value: (start == 0).then(|| self.metadata.clone()),
         })
-    }
-    fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_> {
-        self.overlay.prefix_identity(messages)
     }
 }
 

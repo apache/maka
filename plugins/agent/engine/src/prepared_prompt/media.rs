@@ -704,12 +704,7 @@ fn install(prompt: &mut PreparedPrompt, view: Arc<MediaView>) {
             )
         })
         .collect();
-    let mapped = source::mapped(
-        view.base.clone(),
-        Arc::new(replacements),
-        view.identity.clone(),
-        view.clone(),
-    );
+    let mapped = source::mapped(view.base.clone(), Arc::new(replacements), view.clone());
     let normalization = prompt.body.normalization().cloned();
     let original_body = prompt.body.clone();
     prompt.body = maka_model::prompt::Prompt::from_recipes(
