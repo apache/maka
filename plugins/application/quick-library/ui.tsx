@@ -125,9 +125,9 @@ function LibraryTool(props: { input: QuickToolInput; library: Library }) {
   input.attach({
     items,
     entries: () => [
-      { title: tr('Snippets'), icon: 'snippet', keywords: SNIPPET_KEYWORDS },
-      { title: tr('Notes'), icon: 'note', keywords: NOTE_KEYWORDS },
-      { title: tr('Links'), icon: 'link', keywords: LINK_KEYWORDS },
+      { id: 'snippets', title: tr('Snippets'), icon: 'snippet', keywords: SNIPPET_KEYWORDS },
+      { id: 'notes', title: tr('Notes'), icon: 'note', keywords: NOTE_KEYWORDS },
+      { id: 'links', title: tr('Links'), icon: 'link', keywords: LINK_KEYWORDS },
     ],
   });
   return null;

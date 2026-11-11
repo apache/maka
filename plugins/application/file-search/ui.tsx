@@ -66,7 +66,7 @@ function FileSearch(props: { input: QuickToolInput; host: ApplicationHost }) {
           run: () => void host.openLocalPath(path).then(input.close, input.report),
         };
       }),
-    entries: () => [{ title: tr('Search files'), icon: 'file', keywords: KEYWORDS }],
+    entries: () => [{ id: 'search', title: tr('Search files'), icon: 'file', keywords: KEYWORDS }],
   });
   return null;
 }

@@ -85,6 +85,9 @@ export interface QuickItem {
 
 /** A tool's own line on the launcher's home page. */
 export interface QuickEntry {
+  /** Unique within the tool and stable across runs and languages: the user's shortcut and alias
+   * for the entry are kept under it. */
+  readonly id: string;
   readonly title: string;
   readonly icon: QuickIcon;
   /** Searched; the first is shown beside the entry. */
@@ -153,6 +156,8 @@ export const conversationPreviewView = defineUiViewContract<ConversationPreviewI
 );
 
 export const quickToolView = defineUiViewContract<QuickToolInput>('maka.quick-launcher.tool');
+/** The workbench's settings page of every quick tool, which holds the tools' own pages. */
+export const quickToolsSettings = 'quickTools';
 
 export interface SettingsRoute {
   readonly instance: InstanceId;

@@ -49,7 +49,7 @@ function Symbols(props: { input: QuickToolInput }) {
   );
   input.attach({
     items,
-    entries: () => [{ title: tr('Symbols'), icon: 'symbol', keywords: KEYWORDS }],
+    entries: () => [{ id: 'symbols', title: tr('Symbols'), icon: 'symbol', keywords: KEYWORDS }],
   });
   return null;
 }

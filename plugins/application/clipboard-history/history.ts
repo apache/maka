@@ -17,9 +17,16 @@
  * under the License.
  */
 
-export const MAX_ENTRIES = 50;
+/** How many entries the history may keep, the second the default. */
+export const LIMITS = [20, 50, 100, 200] as const;
+export type Limit = (typeof LIMITS)[number];
+export const DEFAULT_LIMIT: Limit = 50;
 
-/** Newest first; copying an old entry again moves it back to the top. */
-export function remember(history: readonly string[], text: string): readonly string[] {
-  return [text, ...history.filter((entry) => entry !== text)].slice(0, MAX_ENTRIES);
+/** Newest first, at most `limit`; copying an old entry again moves it back to the top. */
+export function remember(
+  history: readonly string[],
+  text: string,
+  limit: Limit,
+): readonly string[] {
+  return [text, ...history.filter((entry) => entry !== text)].slice(0, limit);
 }

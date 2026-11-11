@@ -36,7 +36,10 @@ use nsh_platform_macos::{
 };
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::CGImage;
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    path::PathBuf,
+};
 
 const FLOATING_LEVEL: isize = 3;
 const SMALLEST_ZOOM: f64 = 0.1;
@@ -62,6 +65,8 @@ define_class!(
 
 struct PinState {
     picture: CFRetained<CGImage>,
+    /// Where S saves it, as the stage's Save does.
+    folder: Option<PathBuf>,
     image: Retained<NSImage>,
     /// The picture's size in points at a zoom of one.
     size: NSSize,
@@ -153,7 +158,7 @@ impl Pin {
         // A pin has nowhere to report a failure; the picture is still on screen to retry.
         match typed.as_deref() {
             Some("c") => drop(output::copy(picture)),
-            Some("s") => drop(output::save(picture)),
+            Some("s") => drop(output::save(picture, self.ivars().folder.as_deref())),
             Some("w") => close(&window),
             _ => {}
         }
@@ -161,10 +166,16 @@ impl Pin {
 }
 
 /// Pins `picture` at `frame`, in screen points.
-pub(super) fn pin(mtm: MainThreadMarker, picture: CFRetained<CGImage>, frame: NSRect) {
+pub(super) fn pin(
+    mtm: MainThreadMarker,
+    picture: CFRetained<CGImage>,
+    frame: NSRect,
+    folder: Option<PathBuf>,
+) {
     let image = NSImage::initWithCGImage_size(NSImage::alloc(), &picture, frame.size);
     let view = Pin::alloc(mtm).set_ivars(PinState {
         picture,
+        folder,
         image,
         size: frame.size,
         zoom: Cell::new(1.0),
