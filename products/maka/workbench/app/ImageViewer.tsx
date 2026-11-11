@@ -26,12 +26,29 @@ import { Button, Dialog } from 'nsh/base';
 import { keymap } from 'nsh';
 import { Icon } from './Icon';
 import { tr } from './locale';
-import { C, captionTextStyle, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
+import {
+  C,
+  captionTextStyle,
+  controlStyle,
+  controlHoverStyle,
+  controlFocusStyle,
+  defaultColors,
+} from './ui';
 import { dialogTop } from './chrome';
 
 export type ViewerImage = { uri: string; width: number; height: number; title: string };
 export type OpenImageViewer = (image: ViewerImage, restoreFocus: () => boolean) => void;
 type ImageControl = 'fit' | 'actual' | 'in' | 'out';
+// The viewer is dark in every appearance, so its controls take the dark colors.
+const DARK = defaultColors(true);
+const darkControlStyle = {
+  ...controlStyle,
+  height: 36,
+  borderRadius: 18,
+  alignItems: 'center',
+} as const;
+const darkHoverStyle = { backgroundColor: DARK.line };
+const darkFocusStyle = { backgroundColor: DARK.line, borderColor: DARK.accent };
 
 // The mounted resource owns this URI and its original selector. This viewer
 // changes presentation only; it never reads a path or retains another byte store.
@@ -126,7 +143,7 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
       <View
         ref={bind}
         accessibilityLabel={tr('Full screen image viewer')}
-        style={{ flex: 1, minWidth: 0, minHeight: 0, backgroundColor: '#000000b3' }}
+        style={{ flex: 1, minWidth: 0, minHeight: 0, backgroundColor: DARK.background }}
       >
         <View
           accessibilityLabel={tr('Image viewport')}
@@ -182,14 +199,14 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
           }}
         >
           <View style={[{ flex: 1, gap: 4 }, { pointerEvents: 'none' }]}>
-            <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}>
+            <Text style={[{ ...captionTextStyle, color: DARK.text }, { numberOfLines: 1 }]}>
               {image.title}
             </Text>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
+            <Text style={{ ...captionTextStyle, color: DARK.muted }}>
               {image.width} × {image.height}
             </Text>
             <If when={error()}>
-              <Text style={{ ...captionTextStyle, color: C.danger }}>{error()}</Text>
+              <Text style={{ ...captionTextStyle, color: DARK.danger }}>{error()}</Text>
             </If>
           </View>
           <Button
@@ -197,17 +214,15 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
             tooltip={textTooltip(() => tr('Close · Esc'))}
             onPress={props.close}
             style={{
-              ...controlStyle,
+              ...darkControlStyle,
               width: 36,
-              height: 36,
               paddingHorizontal: 10,
-              borderRadius: 18,
-              backgroundColor: '#24262b',
+              backgroundColor: DARK.raised,
             }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
+            hoverStyle={darkHoverStyle}
+            focusStyle={darkFocusStyle}
           >
-            <Icon name="close" color={C.text} />
+            <Icon name="close" color={DARK.text} />
           </Button>
         </View>
         <View
@@ -225,7 +240,7 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
               gap: 4,
               padding: 4,
               borderRadius: 24,
-              backgroundColor: '#24262b',
+              backgroundColor: DARK.raised,
             }}
           >
             <Each
@@ -258,18 +273,11 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
                   accessibilityLabel={item().label()}
                   tooltip={textTooltip(() => item().label())}
                   onPress={inputAction(control, { uri: image.uri, kind: item().kind })}
-                  style={{
-                    ...controlStyle,
-                    minWidth: 36,
-                    height: 36,
-                    paddingHorizontal: 12,
-                    borderRadius: 18,
-                    alignItems: 'center',
-                  }}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
+                  style={{ ...darkControlStyle, minWidth: 36, paddingHorizontal: 12 }}
+                  hoverStyle={darkHoverStyle}
+                  focusStyle={darkFocusStyle}
                 >
-                  <Text style={{ ...captionTextStyle, color: C.text }}>{item().caption()}</Text>
+                  <Text style={{ ...captionTextStyle, color: DARK.text }}>{item().caption()}</Text>
                 </Button>
               )}
             </Each>
