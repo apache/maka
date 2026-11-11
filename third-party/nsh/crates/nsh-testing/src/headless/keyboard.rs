@@ -58,11 +58,14 @@ impl Headless {
     pub fn press_key(&mut self, keys: &str) -> Result<(), String> {
         self.step(format!("keyboard.press({keys})"));
         let stroke = Keystroke::parse(keys, self.environment.os).map_err(|e| e.to_string())?;
-        let editing = self.screen.focused().is_some();
+        let input = self.screen.focused();
+        let focus = input.or(self.screen.key_focus());
         // A hardware keyboard fires the app's shortcuts (`on_key`,
         // `keymap.bind`), on every platform.
         let found = match self.screen.keymap() {
-            Some(keymap) => keymap.find(stroke, editing, false),
+            Some(keymap) => keymap.find_with(stroke, input.is_some(), false, |scope| {
+                focus.is_some_and(|id| id == scope || self.screen.is_inside(id, scope))
+            }),
             None => KeyMatch::None,
         };
         if let Some(id) = found.fired() {

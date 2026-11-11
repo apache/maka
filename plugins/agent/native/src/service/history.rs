@@ -147,7 +147,7 @@ async fn window(
     )
     .await
 }
-pub(crate) async fn snapshot_page(
+pub async fn snapshot_page(
     snapshot: &maka_agent_state::session_history::snapshot::Snapshot,
     position: wire::Position,
     include_thinking: bool,
@@ -371,7 +371,6 @@ fn fragment_metadata(chunk: &mut wire::Chunk) {
         chunk.attachments.clear();
         chunk.quotes.clear();
         chunk.has_references = false;
-        chunk.timing = None;
     }
 }
 fn page_bytes(

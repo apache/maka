@@ -686,18 +686,25 @@ export function createComposerCompletion(options: Options) {
       viewPosition: delta > 0 ? 1 : 0,
     });
   };
+  const acceptSelected = (action: { read: number }) => {
+    if (!current || current.serial !== action.read || !owns(current)) return;
+    const item = rows()[index()];
+    if (item) accept(item.action);
+  };
   effect(() => {
     const read = opened();
     if (!read || composing() || queryComposing()) return;
     const target = read.explicit && read.source !== 'add' ? queryInput() : read.editor;
     if (!target) return;
     const valid = () => current === read && owns(read);
+    const select = () => acceptSelected({ read: read.serial });
     const unbind = [
       target.bindKey('escape', () => {
         if (valid()) dismiss();
       }),
     ];
-    if (loading() || rows().some((item) => !item.disabled)) {
+    const hasChoices = rows().some((item) => !item.disabled);
+    if (loading() || hasChoices) {
       unbind.push(
         target.bindKey(
           'down',
@@ -717,13 +724,11 @@ export function createComposerCompletion(options: Options) {
             repeat: true,
           },
         ),
-        target.bindKey('enter', () => {
-          if (!valid()) return;
-          const item = rows()[index()];
-          if (item) accept(item.action);
-        }),
+        target.bindKey('enter', select),
       );
     }
+    if (hasChoices && (read.source === 'slash' || read.source === 'skills'))
+      unbind.push(target.bindKey('tab', select));
     return () => unbind.forEach((remove) => remove());
   });
   cleanup(() => {
@@ -791,7 +796,7 @@ export function createComposerCompletion(options: Options) {
       if (owner() === target) caret.set(event.pageBounds);
     },
     selection(target: Owner, event: Selection) {
-      if (owner() === target) selection.set({ ...event });
+      if (owner() === target && !sameSelection(selection(), event)) selection.set({ ...event });
     },
     toggleAdd(target: { owner: string | null }) {
       const currentOwner = owner();
@@ -863,11 +868,7 @@ export function createComposerCompletion(options: Options) {
     queryComposition(event: { composing: boolean }) {
       queryComposing.set(event.composing);
     },
-    acceptSelected(action: { read: number }) {
-      if (!current || current.serial !== action.read || !owns(current)) return;
-      const item = rows()[index()];
-      if (item) accept(item.action);
-    },
+    acceptSelected,
     queryPlaceholder: () =>
       opened()?.source === 'files'
         ? tr('Search files…')

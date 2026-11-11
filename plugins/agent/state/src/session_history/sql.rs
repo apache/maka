@@ -211,7 +211,7 @@ fn validate_tail(
     }
     Ok(())
 }
-fn check_bytes(bytes: &[u8], digest: &str) -> Result<(), StoreError> {
+pub(super) fn check_bytes(bytes: &[u8], digest: &str) -> Result<(), StoreError> {
     if content_digest(bytes) != digest {
         return Err(invalid("canonical history bytes corrupt"));
     }

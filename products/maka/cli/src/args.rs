@@ -53,6 +53,9 @@ enum Command {
     Code(code::Args),
     /// Serve Agent Client Protocol v1 and v2 over stdin/stdout.
     Acp(crate::acp::Args),
+    /// Export or open an immutable Session checkpoint.
+    #[command(subcommand)]
+    Checkpoint(crate::checkpoint::Command),
     /// Inspect the committed execution log.
     Inspect(Log),
     /// Diagnose commands and manage native sandbox setup.
@@ -270,6 +273,7 @@ impl Cli {
                 println!("{}", serde_json::to_string(&result)?);
                 Ok(())
             }),
+            Command::Checkpoint(args) => command_exit(args.run()),
             Command::Code(args) => command_exit(code::run(args)),
             Command::Acp(args) => command_exit(crate::acp::run(args)),
             Command::Inspect(args) => command_exit(async move {
