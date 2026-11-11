@@ -35997,6 +35997,16 @@ export const contracts: {
                       name: {
                         type: 'string',
                       },
+                      title: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/DisplayText',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'name'],

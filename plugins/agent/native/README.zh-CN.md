@@ -42,7 +42,7 @@
 
 Codex 复用原生 managed app-server daemon：先调用幂等的 `codex app-server daemon start`，再通过 `codex app-server proxy` 建立 WebSocket 连接。已有 daemon 不重启，多个会话与轮次共用服务；Maka 只拥有本轮连接、thread/turn 和 Host 工具桥接，不停止共享 daemon。取消仅中断对应 turn 并等待关联终态；proxy 退出不能解除已提交轮次的栅栏。CLI 必须支持原生 daemon/proxy，不回退到私有 app-server。每轮 MCP 凭证通过 thread 配置的 `http_headers` 刷新，不依赖 daemon 的环境变量。
 
-内置 `external` executor 通过 `maka_process` 直接接入 agy 原生 `--print= --input-format stream-json --output-format stream-json`、Codex 共享 app-server daemon 或真正的 Claude Code 交互式 PTY。在 `external.runtimes` 中逐项启用，并选择必填的原生 ID：`antigravity`、`codex`、`claude`。`external.commands` 可覆盖普通可执行文件、参数和环境设置；Codex 已有 daemon 保留它启动时的环境，覆盖不会改写运行中的共享服务。请通过原生 CLI 安装及登录；发现接口不安装软件，也不编造认证或模型能力。Claude 仅提供原生默认模型选项，不启动 print 模式辅助进程。
+内置 `external` executor 使用 agy 和 Claude Code 的原生 stream-JSON 接口，以及 Codex app-server。在 `external.runtimes` 中逐项启用，并选择 `antigravity`、`codex` 或 `claude`。`external.commands` 可覆盖可执行文件、参数和环境。请通过原生 CLI 安装和登录。在 macOS 上，agy 复用当前账户的 Keychain 和 Antigravity CLI profile，项目则在私有工作副本中运行。
 
 原生 assistant 输出保留 agy 的 `step_index`、Codex item ID 和 Claude API 的 `message.id`（不是每行 JSONL UUID）。显式消息开始／结束边界让阶段说明、工具和后续回答在实时显示、刷新及取消后保持原生顺序。完成回执只指向最后完成的非空正文消息，不再用整轮聚合文本覆盖此前输出。Codex 推理正文／摘要和 Claude thinking 单独保留为思考内容，不抢占最终答复。当前已公开的 agy headless stream 未暴露思考文本，token 计数和 effort 设置不能替代它。
 

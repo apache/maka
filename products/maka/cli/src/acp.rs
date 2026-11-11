@@ -18,7 +18,6 @@
  */
 
 use clap::Args as ClapArgs;
-use maka_event_log::root::RootNamespaces;
 use maka_host_runtime::HostError;
 use std::{path::PathBuf, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -33,14 +32,7 @@ pub(crate) async fn run(args: Args) -> Result<(), HostError> {
     let stop = CancellationToken::new();
     let _signals = crate::signals::watch(stop.clone())?;
     let stdio = maka_transport::stdio::Stdio::open()?;
-    let root = match args.root {
-        Some(root) => root,
-        None => RootNamespaces::for_current_account()?
-            .ownership
-            .parent()
-            .ok_or("Missing account data directory")?
-            .join("runtime-host-rust"),
-    };
+    let root = crate::application::root_path(args.root)?;
     let client = tokio::select! {
         result = crate::deployment::connect_local(root) => Some(result?),
         _ = stop.cancelled() => None,

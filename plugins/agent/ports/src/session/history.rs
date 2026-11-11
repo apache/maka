@@ -420,7 +420,7 @@ pub struct HistorySource {
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<Tool>")]
     pub tool: Option<Tool>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelPartIdentity {
     pub step_id: maka_agent_facts::durable::StepId,

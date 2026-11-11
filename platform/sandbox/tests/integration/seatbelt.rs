@@ -280,6 +280,50 @@ fn seatbelt_allowed_network_reaches_system_dns_without_opening_other_host_socket
 }
 
 #[test]
+fn seatbelt_task_socket_grant_keeps_other_unix_sockets_denied() {
+    use std::os::unix::net::{UnixListener, UnixStream};
+    const CONNECT: &str = "MAKA_SANDBOX_TEST_TASK_SOCKET";
+    if let Some(path) = std::env::var_os(CONNECT) {
+        std::process::exit(i32::from(UnixStream::connect(path).is_err()));
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let socket = root.join("task.sock");
+    let _task = UnixListener::bind(&socket).unwrap();
+    let _other = UnixListener::bind(root.join("other.sock")).unwrap();
+    let sandbox = Sandbox::Managed {
+        filesystem: Policy::uniform(Access::Read),
+        network: Network::Denied,
+    };
+    for (path, allowed) in [("task.sock", true), ("other.sock", false)] {
+        let Launch::Wrapped { program, args } = sandbox
+            .prepare_with_private_socket(&root, None, &socket)
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let output = std::process::Command::new(program)
+            .args(args)
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "seatbelt::seatbelt_task_socket_grant_keeps_other_unix_sockets_denied",
+            ])
+            .env_clear()
+            .env(CONNECT, path)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.success(),
+            allowed,
+            "{path}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn seatbelt_globs_match_host_decisions_and_protect_future_matches_from_rename() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();

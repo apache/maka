@@ -1244,7 +1244,13 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
             .frontier(driver.access.execution().run_id)
             .await?;
         let mut spec = original.spec.clone();
-        let descriptor = ContentBlob::json(&json!({"fixture":"executor"}))?;
+        let selection = Selection {
+            executor: "fixture".into(),
+            settings: Settings::default(),
+        };
+        let descriptor = ContentBlob::json(&json!({
+            "selection":selection,"import":"fixture","member":0,"basis":"fixture"
+        }))?;
         let mut contents = vec![descriptor.clone()];
         for reference in [&spec.input, &spec.system_prompt, &spec.tool_selection] {
             contents.push(ContentBlob::new(
@@ -1259,10 +1265,7 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
             message_id: Uuid::new_v4().to_string(),
         };
         spec.backend = BackendSpec::Executor {
-            selection: Selection {
-                executor: "fixture".into(),
-                settings: Settings::default(),
-            },
+            selection,
             descriptor: descriptor.reference().clone(),
         };
         let admitted = driver
@@ -1276,8 +1279,8 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
         let outputs = [
             Output::ToolStart {
                 tool_call_id: "read/config".into(),
-                name: "Read configuration".into(),
-                input: json!({"path":"config.toml"}),
+                name: "run_command".into(),
+                input: json!({"CommandLine":"cat config.toml", "toolSummary":"Read configuration"}),
             },
             Output::ToolProgress {
                 tool_call_id: "read/config".into(),
@@ -1289,7 +1292,7 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
                 is_error: true,
             },
         ];
-        let facts =
+        let mut facts =
             [
                 Fact::ExternalTaskPrepared {
                     task,
@@ -1310,10 +1313,40 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
             .append(
                 &claim,
                 (&view).into(),
+                facts
+                    .by_ref()
+                    .take(3)
+                    .map(|fact| Change::new(fact, at()))
+                    .collect(),
+                vec![],
+            )
+            .await?;
+        let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
+        let active = tools(&live(&rig, &session, wire::Position::Tail).await?);
+        assert_eq!(observed["toolSeeds"][0]["toolUseId"], active[0].tool_use_id);
+        assert_eq!(
+            active[0]
+                .call
+                .as_ref()
+                .unwrap()
+                .title
+                .as_ref()
+                .unwrap()
+                .fallback,
+            "Read configuration"
+        );
+        let view = driver.state.frontier(run).await?;
+        driver
+            .state
+            .append(
+                &claim,
+                (&view).into(),
                 facts.map(|fact| Change::new(fact, at())).collect(),
                 vec![],
             )
             .await?;
+        let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
+        assert_eq!(observed["toolSeeds"], json!([]));
         let page = live(&rig, &session, wire::Position::Tail).await?;
         let displayed = tools(&page);
         assert!(
@@ -1331,16 +1364,15 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
                 .any(|tool| tool.result.as_ref().is_some_and(|result| result.is_error))
         );
         for tool in &displayed {
+            let call = tool.call.as_ref().unwrap();
+            assert_eq!(call.name, "run_command");
             assert_eq!(
-                tool.call.as_ref().map(|call| call.name.as_str()),
+                call.title.as_ref().map(|title| title.fallback.as_str()),
                 Some("Read configuration")
             );
             assert!(tool.result.as_ref().is_some_and(|result| result.is_error));
             assert_eq!(tool.tool_use_id, displayed[0].tool_use_id);
-            assert_eq!(
-                tool.call.as_ref().unwrap().position,
-                displayed[0].call.as_ref().unwrap().position
-            );
+            assert_eq!(call.position, displayed[0].call.as_ref().unwrap().position);
         }
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))

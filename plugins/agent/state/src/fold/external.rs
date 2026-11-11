@@ -32,6 +32,8 @@ pub struct ExternalTask {
     pub admitted: bool,
     pub binding: Option<ContentRef>,
     pub observed: u64,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub active_tools: std::collections::BTreeSet<String>,
     pub closed: Option<ExternalClosure>,
     pub cleanup: OperationCleanup,
     pub cleanup_not_before: Option<UnixMillis>,
@@ -74,6 +76,7 @@ impl RunView {
                         admitted: false,
                         binding: None,
                         observed: 0,
+                        active_tools: Default::default(),
                         closed: None,
                         cleanup: OperationCleanup::Unconfirmed,
                         cleanup_not_before: None,
@@ -147,10 +150,18 @@ impl RunView {
                     StoreError::InvalidTransition("external output index overflow".into())
                 })?;
                 // Tool activity in executor output is evidence, never Host dispatch intent.
-                self.external
-                    .as_mut()
-                    .expect("validated external task")
-                    .observed = observed;
+                let external = self.external.as_mut().expect("validated external task");
+                external.observed = observed;
+                use maka_agent_facts::executor::Output;
+                match output {
+                    Output::ToolStart { tool_call_id, .. } => {
+                        external.active_tools.insert(tool_call_id.clone());
+                    }
+                    Output::ToolResult { tool_call_id, .. } => {
+                        external.active_tools.remove(tool_call_id);
+                    }
+                    _ => {}
+                }
             }
             Fact::ExternalTaskCleanupDeferred {
                 task, not_before, ..
@@ -229,10 +240,9 @@ impl RunView {
                         return Err(StoreError::EventConflict);
                     }
                 } else {
-                    self.external
-                        .as_mut()
-                        .expect("validated external task")
-                        .closed = Some(closure);
+                    let external = self.external.as_mut().expect("validated external task");
+                    external.closed = Some(closure);
+                    external.active_tools.clear();
                 }
                 self.resolve_external_observation(recorded.id);
             }

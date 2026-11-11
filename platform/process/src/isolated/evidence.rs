@@ -519,7 +519,7 @@ fn read_closed(resource: PathBuf) -> io::Result<Option<ClosedEvidence>> {
 #[cfg(unix)]
 pub(super) fn open_resource(resource: &std::path::Path) -> io::Result<File> {
     use rustix::fs::{Mode, OFlags, open, openat};
-    let namespace = super::protected_namespace()?;
+    let namespace = maka_sandbox::native_task_namespace()?;
     let name = resource
         .file_name()
         .and_then(|s| s.to_str())

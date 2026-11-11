@@ -730,11 +730,17 @@ pub(super) async fn project(
                     input,
                 } => {
                     row.chunk.role = Role::ToolCall;
-                    let id = maka_agent_facts::tool_call::tool_use_id(
+                    let id = super::super::delivery::executor_tool_id(
                         item.recorded.run,
-                        &format!("{task}:{tool_call_id}"),
+                        *task,
+                        tool_call_id,
                     );
                     tool(&mut row, id, Some(name.clone()), None);
+                    if let Some(call) = row.chunk.tool.as_mut().and_then(|tool| tool.call.as_mut())
+                    {
+                        call.title =
+                            super::super::delivery::executor_tool_title(name, input).map(Box::new);
+                    }
                     row.fields
                         .push((SourceField::ToolName, Field::Text(name.clone().into())));
                     row.fields
@@ -750,9 +756,10 @@ pub(super) async fn project(
                     ..
                 } => {
                     row.chunk.role = Role::ToolResult;
-                    let id = maka_agent_facts::tool_call::tool_use_id(
+                    let id = super::super::delivery::executor_tool_id(
                         item.recorded.run,
-                        &format!("{task}:{tool_call_id}"),
+                        *task,
+                        tool_call_id,
                     );
                     let is_error = match output {
                         Output::ToolResult { is_error, .. } => Some(*is_error),

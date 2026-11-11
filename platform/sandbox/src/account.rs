@@ -19,6 +19,16 @@
 
 use std::{io, path::PathBuf};
 
+#[cfg(unix)]
+pub fn is_private_account_directory(path: &std::path::Path) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(path)?;
+    // SAFETY: geteuid has no preconditions.
+    let owner = unsafe { libc::geteuid() };
+    Ok(metadata.is_dir() && metadata.uid() == owner && metadata.mode() & 0o077 == 0)
+}
+
 /// The effective OS account's HOME, independent of HOME/USERPROFILE/XDG
 /// environment overrides. Native lookup can block; call off the async executor.
 pub fn account_home() -> io::Result<PathBuf> {

@@ -20,10 +20,7 @@
 //! Explicit standard directories scoped to a checked workspace observation.
 use super::*;
 use maka_agent_api::contract::Workspace;
-use maka_fs_tools::{
-    directory,
-    workspace::{self, directory::PublishedDirectory},
-};
+use maka_fs_tools::{directory, workspace};
 use maka_skills::{LocationId, SkillScope, SkillSource};
 use std::path::Path;
 
@@ -129,23 +126,6 @@ pub(super) fn home(
     .restrict(policy)
     .map_err(|_| "skills_source_unavailable")?;
     Ok(standard(root, handle, &path, None))
-}
-pub(super) fn projects(
-    specs: Vec<maka_host_runtime::DirectoryRootSpec>,
-    private: &Path,
-) -> Result<Vec<Arc<PublishedDirectory>>, String> {
-    maka_host_runtime::DirectoryRootSpec::normalize(specs)
-        .map_err(|_| "skills_configuration_invalid")?
-        .into_iter()
-        .map(|spec| {
-            if spec.path.starts_with(private) {
-                return Err("skills_configuration_invalid".into());
-            }
-            PublishedDirectory::open(&spec.path)
-                .map(Arc::new)
-                .map_err(|_| "skills_configuration_invalid".into())
-        })
-        .collect()
 }
 impl Library {
     pub(super) async fn for_workspace(

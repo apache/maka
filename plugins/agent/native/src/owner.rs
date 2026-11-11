@@ -357,14 +357,19 @@ impl Owner {
             context.activation().instance(),
         );
         let managed_worktrees = root.canonical_path().join("subagent-worktrees");
-        let workspace_roots =
-            workspace::open(settings.workspace_roots.clone(), &managed_worktrees)?;
+        let workspace_specs = settings.workspace_roots.clone();
+        let import_specs = settings.import_roots.clone();
+        let managed = managed_worktrees.clone();
+        let root_path = root.canonical_path().to_owned();
+        let (workspace_roots, import_roots) = tokio::task::spawn_blocking(move || {
+            Ok::<_, String>((
+                workspace::open_projects(workspace_specs, &managed)?,
+                workspace::open(import_specs, &root_path)?,
+            ))
+        })
+        .await
+        .map_err(|_| "agent_workspace_configuration_worker_failed")??;
         let home = std::env::home_dir();
-        let import_roots = if settings.import_roots.is_empty() {
-            Vec::new()
-        } else {
-            workspace::open(settings.import_roots.clone(), root.canonical_path())?
-        };
         let workers = TaskTracker::new();
         let stop = CancellationToken::new();
         let revision = SourceRevision {

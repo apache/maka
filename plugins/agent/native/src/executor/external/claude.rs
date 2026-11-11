@@ -330,7 +330,7 @@ impl StreamTurn {
         }
         if matches!(
             kind.as_str(),
-            "system" | "assistant" | "user" | "result" | "stream_event"
+            "system" | "assistant" | "user" | "result" | "stream_event" | "command_lifecycle"
         ) && row["session_id"] != self.session
         {
             return Err(Error::Unknown);
@@ -344,6 +344,7 @@ impl StreamTurn {
                     self.initialized = true;
                 }
             }
+            "command_lifecycle" => {}
             "stream_event" => {} // Whole assistant blocks are the canonical output; never emit both forms.
             "user" if row["isReplay"] == true => {
                 if !self.initialized {
@@ -526,6 +527,50 @@ impl StreamTurn {
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[derive(Default)]
+    struct Sink(std::sync::Mutex<String>);
+
+    impl OutputSink for Sink {
+        fn emit(&self, output: Output) -> BoxFuture<'_, Result<(), Error>> {
+            Box::pin(async move {
+                if let Output::OutputDelta { text, .. } = output {
+                    self.0.lock().unwrap().push_str(&text);
+                }
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn command_lifecycle_can_precede_claude_initialization() {
+        let output = Sink::default();
+        let mut turn = StreamTurn::new("session".into());
+        turn.sent("input".into());
+        for row in [
+            json!({"type":"command_lifecycle","stage":"started","session_id":"session","uuid":"input"}),
+            json!({"type":"system","subtype":"init","session_id":"session"}),
+            json!({"type":"user","isReplay":true,"session_id":"session","uuid":"input","parent_tool_use_id":null}),
+            json!({"type":"assistant","session_id":"session","uuid":"output","message":{"id":"message","content":[{"type":"text","text":"Hello"}]}}),
+        ] {
+            assert!(turn.row(row, &output).await.unwrap().is_none());
+        }
+        let outcome = turn
+            .row(json!({"type":"result","session_id":"session","subtype":"success","is_error":false}), &output)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, Some(Outcome::Completed { message_id: Some(id) }) if id == "message")
+        );
+        assert_eq!(*output.0.lock().unwrap(), "Hello");
+    }
+}
+
 fn content_text(content: &Value) -> String {
     if let Some(text) = content.as_str() {
         return text.to_owned();

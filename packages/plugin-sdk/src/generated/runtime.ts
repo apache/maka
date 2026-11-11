@@ -4101,6 +4101,7 @@ export type AgentDeliveryFact =
       kind: 'executor_tool_start';
       toolUseId: string;
       name: string;
+      title?: DisplayText | null;
     }
   | {
       kind: 'executor_tool_progress';

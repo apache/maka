@@ -971,6 +971,8 @@ pub enum DeliveryFact {
     ExecutorToolStart {
         tool_use_id: String,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<maka_agent_facts::display::Text>,
     },
     ExecutorToolProgress {
         tool_use_id: String,

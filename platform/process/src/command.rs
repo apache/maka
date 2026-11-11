@@ -36,6 +36,8 @@ use std::{
 pub struct Command {
     #[cfg(target_os = "macos")]
     pub(crate) private_stdio: bool,
+    #[cfg(target_os = "macos")]
+    pub(crate) private_socket: Option<PathBuf>,
     #[cfg(unix)]
     pub(crate) external_owner: Option<PathBuf>,
     pub(crate) executable: PathBuf,
@@ -143,6 +145,8 @@ impl Command {
             external_owner: None,
             #[cfg(target_os = "macos")]
             private_stdio: false,
+            #[cfg(target_os = "macos")]
+            private_socket: None,
             executable,
             args: Vec::new(),
             cwd,
@@ -423,11 +427,15 @@ impl Command {
         #[cfg(windows)]
         let launch = self.sandbox.prepare(self.cwd.captured())?;
         #[cfg(target_os = "macos")]
-        let launch = match self.proxy_address {
-            Some(address) => self
+        let launch = match (self.proxy_address, self.private_socket.as_deref()) {
+            (proxy, Some(socket)) => {
+                self.sandbox
+                    .prepare_with_private_socket(self.cwd.captured(), proxy, socket)?
+            }
+            (Some(address), None) => self
                 .sandbox
                 .prepare_with_proxy(self.cwd.captured(), address)?,
-            None => self.sandbox.prepare(self.cwd.captured())?,
+            (None, None) => self.sandbox.prepare(self.cwd.captured())?,
         };
         match launch {
             maka_sandbox::launch::Launch::Direct => {}

@@ -33,6 +33,8 @@ mod home;
 pub use home::{FrozenHome, HomeCapture, HomeEntries, HomeEntry, HomeEntryKind};
 mod helper;
 #[cfg(unix)]
+pub mod step_annotations;
+#[cfg(unix)]
 pub(crate) use helper::ExternalOwner;
 mod snapshot;
 
@@ -62,14 +64,6 @@ const INITIAL_HOME_DIRECTORIES: &[&str] = &[
     ".local/share",
     ".local/state",
 ];
-
-/// Mandatory private task boundary address, not an access grant. This does no
-/// allocation or task preparation. Call on a blocking worker when async.
-pub fn protected_namespace() -> io::Result<PathBuf> {
-    Ok(std::env::temp_dir()
-        .canonicalize()?
-        .join("maka-native-tasks"))
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -229,6 +223,9 @@ pub struct TaskOwner {
     bound_command: Option<BoundCommand>,
     home_capture: HomeCapture,
     home_seed: home::SeedState,
+    #[cfg(target_os = "macos")]
+    account_home: Option<PathBuf>,
+    step_annotation_hook: Option<PathBuf>,
     snapshot: SnapshotProof,
     sandbox: Sandbox,
     cancellation: CancellationToken,
@@ -253,6 +250,8 @@ enum Manifest {
         environment: Vec<(OsString, OsString)>,
         sandbox: Sandbox,
         size: Option<maka_plugin_core::terminal::TerminalSize>,
+        #[serde(default)]
+        step_annotation_hook: Option<PathBuf>,
     },
 }
 
@@ -424,7 +423,7 @@ impl TaskOwner {
                 "OS sandbox probe failed: {status}"
             )));
         }
-        let namespace = tokio::task::spawn_blocking(protected_namespace)
+        let namespace = tokio::task::spawn_blocking(maka_sandbox::native_task_namespace)
             .await
             .map_err(io::Error::other)??;
         if namespace.starts_with(&source)
@@ -616,6 +615,9 @@ impl TaskOwner {
             bound_command: None,
             home_capture,
             home_seed: home::SeedState::Fresh,
+            #[cfg(target_os = "macos")]
+            account_home: None,
+            step_annotation_hook: None,
             snapshot,
             sandbox,
             cancellation,
@@ -684,6 +686,51 @@ impl TaskOwner {
     pub fn workspace(&self) -> PathBuf {
         self.resource.join("workspace")
     }
+
+    /// Some native CLIs look up OS credentials in the current account's HOME.
+    /// Only the CLI's profile directory may be written outside the task.
+    #[cfg(target_os = "macos")]
+    pub async fn use_account_profile(&mut self, directory: &str) -> Result<(), Error> {
+        let source = self.snapshot.source().to_owned();
+        let directory = PathBuf::from(directory);
+        let (home, profile) = tokio::task::spawn_blocking(move || {
+            let home = maka_sandbox::account_home()?.canonicalize()?;
+            let profile = home.join(directory);
+            if profile.canonicalize()? != profile
+                || profile == home
+                || !profile.starts_with(&home)
+                || !profile.is_dir()
+                || profile.starts_with(&source)
+                || source.starts_with(&profile)
+            {
+                return Err(Error::IsolationUnavailable(
+                    "native CLI profile overlaps the workspace or leaves the account home".into(),
+                ));
+            }
+            Ok::<_, Error>((home, profile))
+        })
+        .await
+        .map_err(io::Error::other)??;
+        let Sandbox::Managed { filesystem, .. } = &mut self.sandbox else {
+            return Err(Error::IsolationUnavailable(
+                "private execution profile is unavailable".into(),
+            ));
+        };
+        if !filesystem
+            .compile()
+            .map_err(sandbox_error)?
+            .access(&profile)
+            .can_read()
+        {
+            return Err(Error::IsolationUnavailable(
+                "native CLI profile is outside the task's read ceiling".into(),
+            ));
+        }
+        filesystem.rules.push(Rule::subtree(profile, Access::Write));
+        filesystem.compile().map_err(sandbox_error)?;
+        self.account_home = Some(home);
+        Ok(())
+    }
     /// Retain original HOME custody before consuming this owner in spawn.
     pub fn home_capture(&self) -> HomeCapture {
         self.home_capture.clone()
@@ -715,6 +762,21 @@ impl TaskOwner {
     }
     pub fn tmp(&self) -> PathBuf {
         self.resource.join("tmp")
+    }
+    #[cfg(target_os = "macos")]
+    pub fn record_step_annotations(&mut self, hook: &Path) -> io::Result<&Path> {
+        let relative = hook.strip_prefix(self.inputs()).map_err(io::Error::other)?;
+        if relative.as_os_str().is_empty()
+            || !relative
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err(io::Error::other(
+                "invalid private step annotation hook path",
+            ));
+        }
+        self.step_annotation_hook = Some(relative.to_owned());
+        Ok(&self.helper_executable)
     }
     pub fn descriptor(&self) -> Descriptor {
         Descriptor {
@@ -786,9 +848,12 @@ impl TaskOwner {
             .sandbox
             .intersect(&command.sandbox)
             .map_err(|error| SpawnError::Closed(sandbox_error(error)))?;
+        let home = self.home();
+        #[cfg(target_os = "macos")]
+        let home = self.account_home.clone().unwrap_or(home);
         for (key, path) in [
-            ("HOME", self.home()),
-            ("USERPROFILE", self.home()),
+            ("HOME", home.clone()),
+            ("USERPROFILE", home),
             ("CODEX_HOME", self.codex_home()),
             ("CLAUDE_CONFIG_DIR", self.claude_config_dir()),
             ("TMPDIR", self.tmp()),
@@ -836,6 +901,7 @@ impl TaskOwner {
             environment: command.environment.into_iter().collect(),
             sandbox,
             size,
+            step_annotation_hook: self.step_annotation_hook.clone(),
         };
         // Protocol evidence must not become a credential/configuration store.
         // Argv can contain secrets too, so retain neither argv nor environment.
