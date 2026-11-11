@@ -189,7 +189,10 @@ async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
             );
             let ended = timing(&page);
             assert_eq!(ended.started_at, running.started_at);
-            let finished = ended.finished.expect("a terminated Turn has an end");
+            let finished = ended
+                .finished
+                .clone()
+                .expect("a terminated Turn has an end");
             assert!(finished.at >= ended.started_at);
             assert_eq!(
                 finished.outcome,
@@ -199,6 +202,28 @@ async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
                     wire::TurnOutcome::Failed
                 }
             );
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let history = driver
+                .state
+                .session_history(owner.run_owner(), session.clone());
+            let frozen = history
+                .capture_snapshot(
+                    CaptureRequest {
+                        id: SnapshotId::new(),
+                        cut: history.capture().await?,
+                    },
+                    CancellationToken::new(),
+                )
+                .await?;
+            let frozen = crate::service::history::snapshot_page(
+                &frozen,
+                wire::Position::Tail,
+                true,
+                wire::HistoryView::Conversation,
+                &CancellationToken::new(),
+            )
+            .await?;
+            assert_eq!(timing(&serde_json::to_value(frozen)?), ended);
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         }))
         .catch_unwind()

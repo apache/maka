@@ -370,7 +370,6 @@ fn fragment_metadata(chunk: &mut wire::Chunk) {
     if chunk.offset != 0 {
         chunk.attachments.clear();
         chunk.has_references = false;
-        chunk.timing = None;
     }
 }
 fn page_bytes(
