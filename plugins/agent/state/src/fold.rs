@@ -62,6 +62,7 @@ pub struct RunView {
     pub retry_pending: Option<ModelAttemptId>,
     pub current_step: Option<StepId>,
     pub current_attempt: Option<ModelAttemptId>,
+    pub proactive_summary: Option<ModelAttemptId>,
     pub steps: BTreeMap<StepId, ContentRef>,
     pub attempts: BTreeMap<ModelAttemptId, Attempt>,
     pub tools: BTreeMap<String, Tool>,
@@ -85,6 +86,25 @@ pub struct Attempt {
     pub retry: Option<Retry>,
     pub private_partial: Option<ContentRef>,
     pub source_failure: Option<ContentRef>,
+}
+
+impl Attempt {
+    fn prepared(step: StepId) -> Self {
+        Self {
+            cleanup: OperationCleanup::Unconfirmed,
+            step,
+            admission: None,
+            observed: 0,
+            semantic: false,
+            has_tools: false,
+            recovery: None,
+            closed: None,
+            interrupted: None,
+            retry: None,
+            private_partial: None,
+            source_failure: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -270,6 +290,7 @@ impl RunView {
             retry_pending: None,
             current_step: None,
             current_attempt: None,
+            proactive_summary: None,
             steps: BTreeMap::new(),
             attempts: BTreeMap::new(),
             tools: BTreeMap::new(),
@@ -292,6 +313,10 @@ impl RunView {
     }
     pub fn finish_requested(&self) -> bool {
         self.finish_requested
+    }
+
+    pub fn proactive_summary_attempt(&self) -> Option<(ModelAttemptId, &Attempt)> {
+        self.proactive_summary.map(|id| (id, &self.attempts[&id]))
     }
 
     fn attempt(&self, id: &ModelAttemptId) -> Result<&Attempt, StoreError> {
@@ -554,6 +579,7 @@ impl RunView {
         require(
             self.attempts.iter().all(|(id, attempt)| {
                 Some(*id) == except
+                    || Some(*id) == self.proactive_summary
                     || attempt.admission.is_none()
                     || attempt.cleanup == OperationCleanup::Confirmed
             }),
@@ -589,7 +615,10 @@ impl RunView {
         )?;
         require(
             self.attempts.iter().all(|(id, attempt)| {
-                Some(*id) == except || attempt.closed.is_some() || attempt.interrupted.is_some()
+                Some(*id) == except
+                    || Some(*id) == self.proactive_summary
+                    || attempt.closed.is_some()
+                    || attempt.interrupted.is_some()
             }),
             "another model attempt is open",
         )?;
@@ -879,24 +908,42 @@ impl RunView {
                     )?;
                 }
                 self.fresh_model(recorded.at, None)?;
-                self.attempts.insert(
-                    *attempt,
-                    Attempt {
-                        cleanup: OperationCleanup::Unconfirmed,
-                        step: *step,
-                        admission: None,
-                        observed: 0,
-                        semantic: false,
-                        has_tools: false,
-                        recovery: None,
-                        closed: None,
-                        interrupted: None,
-                        retry: None,
-                        private_partial: None,
-                        source_failure: None,
-                    },
-                );
+                self.attempts.insert(*attempt, Attempt::prepared(*step));
                 self.current_attempt = Some(*attempt);
+            }
+            Fact::ProactiveSummaryPrepared {
+                step,
+                request,
+                attempt,
+            } => {
+                require(
+                    matches!(self.spec.backend, BackendSpec::Model { .. })
+                        && self.current_step.is_some(),
+                    "proactive Summary requires a current model Step",
+                )?;
+                require(
+                    self.proactive_summary_attempt()
+                        .is_none_or(|(_, previous)| {
+                            (previous.closed.is_some() || previous.interrupted.is_some())
+                                && (previous.admission.is_none()
+                                    || previous.cleanup == OperationCleanup::Confirmed)
+                        }),
+                    "another proactive Summary is open or awaiting cleanup",
+                )?;
+                require(
+                    !self.steps.contains_key(step) && !self.attempts.contains_key(attempt),
+                    "proactive Summary identity already exists",
+                )?;
+                require(
+                    self.spec
+                        .budget
+                        .tokens
+                        .is_none_or(|limit| self.tokens < limit),
+                    "run token budget exhausted",
+                )?;
+                self.steps.insert(*step, request.clone());
+                self.attempts.insert(*attempt, Attempt::prepared(*step));
+                self.proactive_summary = Some(*attempt);
             }
             Fact::ModelTransportSelected { attempt, phase } => {
                 let current = self.attempt(attempt)?;
@@ -989,22 +1036,34 @@ impl RunView {
             Fact::ModelAttemptAdmitted { attempt, upstream } => {
                 let current = self.attempt(attempt)?;
                 require(
-                    self.current_step == Some(current.step),
-                    "model admission does not reference the current step",
-                )?;
-                require(
                     current.admission.is_none() && current.closed.is_none(),
                     "model attempt is not awaiting admission",
                 )?;
-                self.fresh_model(recorded.at, Some(*attempt))?;
+                if self.proactive_summary == Some(*attempt) {
+                    require(
+                        current.interrupted.is_none()
+                            && self
+                                .spec
+                                .budget
+                                .tokens
+                                .is_none_or(|limit| self.tokens < limit),
+                        "proactive Summary cannot admit after interruption or token exhaustion",
+                    )?;
+                } else {
+                    require(
+                        self.current_step == Some(current.step),
+                        "model admission does not reference the current step",
+                    )?;
+                    self.fresh_model(recorded.at, Some(*attempt))?;
+                    self.retry_due_at = None;
+                    self.retry_pending = None;
+                }
                 self.attempts
                     .get_mut(attempt)
                     .expect("validated attempt")
                     .admission = Some(ModelAdmission {
                     upstream: upstream.clone(),
                 });
-                self.retry_due_at = None;
-                self.retry_pending = None;
             }
             Fact::ModelFirstTokenObserved { attempt } => {
                 let current = self.attempt(attempt)?;
@@ -1019,6 +1078,10 @@ impl RunView {
                 part,
                 ..
             } => {
+                require(
+                    self.proactive_summary != Some(*attempt),
+                    "proactive Summary output is private until its original closure",
+                )?;
                 let current = self.attempt(attempt)?;
                 require(
                     current.admission.is_some() && current.closed.is_none(),
@@ -1141,7 +1204,8 @@ impl RunView {
                 diagnostic,
             } => {
                 require(
-                    self.current_attempt == Some(*attempt),
+                    self.current_attempt == Some(*attempt)
+                        || self.proactive_summary == Some(*attempt),
                     "interruption belongs to a retired model attempt",
                 )?;
                 let current = self.attempts.get_mut(attempt).ok_or_else(|| {
@@ -1154,7 +1218,9 @@ impl RunView {
                 } else {
                     current.interrupted = Some(diagnostic.clone());
                 }
-                self.retry_pending = Some(*attempt);
+                if self.current_attempt == Some(*attempt) {
+                    self.retry_pending = Some(*attempt);
+                }
             }
             Fact::AttemptRecoveryRecorded { attempt, recovery } => {
                 require(
@@ -2241,12 +2307,14 @@ impl RunView {
                             Some(AttemptRecovery::ObserveOriginal { .. })
                         )
                 } else {
-                    (current.closed.is_some() || current.interrupted.is_some())
+                    (self.proactive_summary == Some(*attempt)
+                        || current.closed.is_some()
+                        || current.interrupted.is_some())
                         && current.cleanup != OperationCleanup::Confirmed
                 };
                 require(
                     current.admission.is_some() && waiting,
-                    "model wait requires an open observable original with deadline or unconfirmed admitted cleanup",
+                    "model wait requires an open observable original, an admitted proactive Summary or unconfirmed admitted cleanup",
                 )
             }
             WaitReason::Approval { approval } => require(

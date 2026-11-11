@@ -21,18 +21,21 @@ use maka_agent_facts::{
     accounting::Outcome,
     context::{
         CheckpointContent, CompactedContext, ModelClosureProtocol, ModelOperation, ModelPurpose,
-        RequestContextEvidence, SummaryResult,
+        RequestContextEvidence, SummaryOrigin, SummaryResult,
     },
     durable::*,
     history_snapshot::RequestSource,
     model::ModelFinishReason,
 };
-use maka_event_log::StoreError;
-use rusqlite::Connection;
+use maka_event_log::{StoreError, connection::Query};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 
-use super::{decode, owned_content, pin, request};
-use crate::{fold::RunView, store::invalid};
+use super::{decode, identity, model_attempt, owned_content, pin, request};
+use crate::{
+    fold::{Attempt, RunView},
+    store::{fallback::valid_summary, invalid},
+};
 
 pub(super) fn ends_run(fact: &Fact) -> bool {
     matches!(
@@ -52,6 +55,200 @@ fn original<T: DeserializeOwned>(
     Ok(serde_json::from_slice(&owned_content(c, run, reference)?)?)
 }
 
+pub(super) fn validate_proactive_request(
+    c: &Connection,
+    view: &RunView,
+    summary: &RequestSpec,
+) -> Result<(), StoreError> {
+    let main = view
+        .current_step
+        .ok_or_else(|| invalid("proactive Summary has no original Main Step"))?;
+    let main = request(c, view.run, main)?;
+    if main.accounting.purpose != ModelPurpose::Main
+        || summary.accounting.purpose != ModelPurpose::Summary
+        || summary.compaction_recovery.is_some()
+        || summary.summary_repair_of.is_some()
+        || !summary.steering.is_empty()
+        || !summary.composition.tools.is_empty()
+        || !matches!(view.spec.origin, RunOrigin::Local)
+    {
+        return Err(invalid("invalid proactive Summary request"));
+    }
+    Ok(())
+}
+
+pub(crate) struct PreviousProactiveSummary(pub RunId, pub StepId);
+
+impl Query for PreviousProactiveSummary {
+    type Output = Option<SummaryOrigin>;
+
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        previous_proactive_summary(c, self.0, self.1)
+    }
+}
+
+fn previous_proactive_summary(
+    c: &Connection,
+    run: RunId,
+    step: StepId,
+) -> Result<Option<SummaryOrigin>, StoreError> {
+    let candidate: Option<(String, String)> = c
+        .query_row(
+            "SELECT r.run,r.proactive_summary FROM agent_runs current
+         JOIN agent_runs r ON r.owner=current.owner AND r.session=current.session
+         JOIN agent_attempts a ON a.run=r.run AND a.key=r.proactive_summary
+         WHERE current.run=? AND r.admission_sequence<current.admission_sequence
+           AND r.local=1 AND r.cancelled_by_risk=0 AND r.proactive_summary IS NOT NULL
+           AND json_extract(r.terminal,'$') IN ('completed','cancelled')
+           AND json_extract(a.body,'$.closed.outcome')='success'
+           AND json_extract(a.body,'$.cleanup.kind')='confirmed'
+         ORDER BY r.admission_sequence DESC LIMIT 1",
+            [run.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((origin_run, attempt)) = candidate else {
+        return Ok(None);
+    };
+    let origin = SummaryOrigin {
+        run: identity(origin_run)?,
+        attempt: identity(attempt)?,
+    };
+    let attempt = model_attempt(c, origin.run, origin.attempt)?;
+    let summary = request(c, origin.run, attempt.step)?;
+    let main = request(c, run, step)?;
+    if !valid_summary(c, origin.run, &summary, &attempt)?
+        || !extends_summary(c, origin.run, &summary, run, &main)?
+    {
+        return Ok(None);
+    }
+    Ok(Some(origin))
+}
+
+fn extends_summary(
+    c: &Connection,
+    producer: RunId,
+    summary: &RequestSpec,
+    run: RunId,
+    main: &RequestSpec,
+) -> Result<bool, StoreError> {
+    if main.accounting.purpose != ModelPurpose::Main
+        || summary.accounting.purpose != ModelPurpose::Summary
+    {
+        return Ok(false);
+    }
+    let summary_context: RequestContextEvidence = original(c, producer, &summary.provenance)?;
+    let main_context: RequestContextEvidence = original(c, run, &main.provenance)?;
+    if summary_context.previous_checkpoint_id != main_context.previous_checkpoint_id {
+        return Ok(false);
+    }
+    if producer != run {
+        let prefix: RequestSource = original(c, producer, &summary.source_capture)?;
+        let pending: RequestSource = original(c, run, &main.source_capture)?;
+        return Ok(prefix.current.through_sequence <= pending.current.through_sequence);
+    }
+    // The same-Run Summary may include the pending Main's StepPrepared fact,
+    // after the Main froze its input. Replay checks their logical message prefix.
+    Ok(true)
+}
+
+fn proactive_summary(
+    c: &Connection,
+    view: &RunView,
+    material: &CompactedContext,
+    at: UnixMillis,
+) -> Result<Option<(RunId, RequestSpec, Attempt)>, StoreError> {
+    let step = material.checkpoint.summary_step_id;
+    let (producer, attempt) = if let Some(origin) = material.summary_origin {
+        let earlier: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_run_specs current
+             JOIN agent_facts admitted ON admitted.run=current.run AND admitted.revision=1
+             JOIN agent_runs r ON r.owner=current.owner AND r.session=current.session
+             WHERE current.run=? AND r.run=? AND r.admission_sequence<admitted.sequence
+               AND r.local=1 AND r.cancelled_by_risk=0 AND r.proactive_summary=?
+               AND json_extract(r.terminal,'$') IN ('completed','cancelled'))",
+            params![
+                view.run.to_string(),
+                origin.run.to_string(),
+                origin.attempt.to_string()
+            ],
+            |row| row.get(0),
+        )?;
+        if !earlier {
+            return Err(invalid(
+                "compaction does not name an earlier proactive Summary in this Session",
+            ));
+        }
+        (origin.run, model_attempt(c, origin.run, origin.attempt)?)
+    } else if let Some((_, attempt)) = view.proactive_summary_attempt()
+        && attempt.step == step
+    {
+        (view.run, attempt.clone())
+    } else {
+        return Ok(None);
+    };
+    let summary = request(c, producer, step)?;
+    if attempt.step != step
+        || attempt.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed
+        || !valid_summary(c, producer, &summary, &attempt)?
+    {
+        return Err(invalid(
+            "compaction requires its successful proactive Summary and cleanup",
+        ));
+    }
+    let main = view
+        .current_step
+        .ok_or_else(|| invalid("proactive adoption has no pending Main"))?;
+    let main = request(c, view.run, main)?;
+    if !extends_summary(c, producer, &summary, view.run, &main)? {
+        return Err(invalid(
+            "proactive Summary has another checkpoint predecessor or source",
+        ));
+    }
+    let adopt = if let Some(id) = view.current_attempt
+        && let Some(attempt) = view.attempts.get(&id)
+        && attempt.step == main.step
+    {
+        attempt.admission.is_some()
+            && attempt.interrupted.is_some()
+            && !attempt.semantic
+            && !attempt.has_tools
+            && matches!(
+                attempt.recovery,
+                Some(AttemptRecovery::ContextOverflow {
+                    observed_output: false
+                })
+            )
+            && !attempt
+                .closed
+                .as_ref()
+                .is_some_and(|closed| closed.outcome == Outcome::Unknown)
+    } else {
+        let evidence: RequestContextEvidence = original(c, view.run, &main.provenance)?;
+        evidence
+            .model_context
+            .and_then(|context| context.declared_window)
+            .is_some_and(|window| evidence.estimated_input_tokens >= window)
+    };
+    if !adopt
+        || view
+            .spec
+            .budget
+            .deadline
+            .is_some_and(|deadline| at >= deadline)
+        || view
+            .spec
+            .budget
+            .tokens
+            .is_some_and(|limit| view.tokens >= limit)
+    {
+        return Err(invalid(
+            "proactive adoption has not reached the frozen threshold or no-output overflow",
+        ));
+    }
+    Ok(Some((producer, summary, attempt)))
+}
+
 pub(super) fn validate(
     c: &Connection,
     view: &RunView,
@@ -68,30 +265,35 @@ pub(super) fn validate(
     material.validate().map_err(invalid)?;
     let checkpoint = &material.checkpoint;
     let deferred;
-    let (request, attempt) = if view.current_step == Some(checkpoint.summary_step_id) {
-        let attempt_id = view
-            .current_attempt
-            .ok_or_else(|| invalid("compaction has no original summary attempt"))?;
-        let attempt = view
-            .attempts
-            .get(&attempt_id)
-            .ok_or_else(|| invalid("compaction summary attempt projection is absent"))?;
-        if attempt.step != checkpoint.summary_step_id || attempt.admission.is_none() {
-            return Err(invalid(
-                "compaction does not name the current admitted summary attempt",
-            ));
-        }
-        (request(c, view.run, attempt.step)?, attempt)
-    } else {
-        deferred = crate::store::fallback::deferred_summary(
-            c,
-            view,
-            checkpoint.summary_step_id,
-            at,
-            saving_for_next_run,
-        )?;
-        (deferred.0, &deferred.1)
-    };
+    let proactive;
+    let (producer, request, attempt) =
+        if let Some(candidate) = proactive_summary(c, view, &material, at)? {
+            proactive = candidate;
+            (proactive.0, proactive.1, &proactive.2)
+        } else if view.current_step == Some(checkpoint.summary_step_id) {
+            let attempt_id = view
+                .current_attempt
+                .ok_or_else(|| invalid("compaction has no original summary attempt"))?;
+            let attempt = view
+                .attempts
+                .get(&attempt_id)
+                .ok_or_else(|| invalid("compaction summary attempt projection is absent"))?;
+            if attempt.step != checkpoint.summary_step_id || attempt.admission.is_none() {
+                return Err(invalid(
+                    "compaction does not name the current admitted summary attempt",
+                ));
+            }
+            (view.run, request(c, view.run, attempt.step)?, attempt)
+        } else {
+            deferred = crate::store::fallback::deferred_summary(
+                c,
+                view,
+                checkpoint.summary_step_id,
+                at,
+                saving_for_next_run,
+            )?;
+            (view.run, deferred.0, &deferred.1)
+        };
     let closed = attempt
         .closed
         .as_ref()
@@ -114,7 +316,7 @@ pub(super) fn validate(
             "compaction differs from the original frozen summary source",
         ));
     }
-    let source: RequestSource = original(c, view.run, &request.source_capture)?;
+    let source: RequestSource = original(c, producer, &request.source_capture)?;
     crate::session_history::validate_cut(c, &view.spec.owner, &view.spec.session_id, &source.cut)?;
     crate::session_history::validate_cut(
         c,
@@ -129,7 +331,7 @@ pub(super) fn validate(
             "compaction coverage differs from the original canonical source cut",
         ));
     }
-    let provenance: RequestContextEvidence = original(c, view.run, &request.provenance)?;
+    let provenance: RequestContextEvidence = original(c, producer, &request.provenance)?;
     provenance.breakdown.validate().map_err(invalid)?;
     if let Some(context) = &provenance.model_context {
         context.validate().map_err(invalid)?;

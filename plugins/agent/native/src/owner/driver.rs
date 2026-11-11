@@ -822,6 +822,13 @@ impl DriverPorts for NativeDriver {
             self.model()?.prepare_step(view, mode, self).await
         })
     }
+    fn proactive_summary_matches<'a>(
+        &'a self,
+        view: &'a RunView,
+        origin: maka_agent_facts::context::SummaryOrigin,
+    ) -> BoxFuture<'a, Result<bool, RunError>> {
+        Box::pin(async move { self.model()?.proactive_summary_matches(view, origin).await })
+    }
     fn assess_recovery<'a>(
         &'a self,
         view: &'a RunView,

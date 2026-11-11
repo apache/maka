@@ -558,6 +558,21 @@ pub(super) async fn observation(
             let progress = if matches!(view.spec.trigger, Trigger::ContextCompact) {
                 Some((latest.admission.id.to_string(), latest.admission.at))
             } else if !view.stopped
+                && let Some((attempt, summary)) = view.proactive_summary_attempt()
+                && summary.closed.is_none()
+                && summary.interrupted.is_none()
+                && view.waits.values().any(|wait| {
+                    wait.satisfied.is_none()
+                        && wait.cancelled.is_none()
+                        && matches!(wait.reason, WaitReason::Model { attempt: id } if id == attempt)
+                })
+            {
+                let (_, prepared_at) = history
+                    .request_preparation(&cut, view.run, summary.step)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Some((summary.step.to_string(), prepared_at))
+            } else if !view.stopped
                 && let Some(step) = view.current_step
                 && !view
                     .current_attempt

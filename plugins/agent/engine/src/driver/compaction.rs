@@ -26,7 +26,7 @@ use maka_agent_facts::{
     context::{
         CheckpointContent, CheckpointMode, CompactedContext, ContextCheckpoint,
         ModelClosureProtocol, ModelOperation, ModelPurpose, NativeCheckpoint,
-        RequestContextEvidence, SummaryResult,
+        RequestContextEvidence, SummaryOrigin, SummaryResult,
     },
     durable::*,
     history_snapshot::RequestSource,
@@ -58,7 +58,12 @@ fn compaction_timing(evidence: &RequestContextEvidence) -> (bool, bool) {
 }
 
 impl Engine {
-    pub(super) async fn model_level(&self, view: &RunView) -> Result<ModelLevel, RunError> {
+    pub(super) async fn model_level(
+        &self,
+        view: &RunView,
+        rejected: &[SummaryOrigin],
+        overflow: bool,
+    ) -> Result<ModelLevel, RunError> {
         let input = decode(self, view.run, &view.spec.input, "run-input-schema").await?;
         let baseline: Option<CompactedContext> = match &view.baseline {
             Some(reference) => {
@@ -122,18 +127,102 @@ impl Engine {
                 )
                 .await?;
                 let (prepare, adopt) = compaction_timing(&provenance);
-                if let Some(summary) = request.compaction_recovery {
+                let mut has_proactive_summary = false;
+                let mut can_prepare = true;
+                let mut proactive_baseline = baseline
+                    .as_ref()
+                    .is_some_and(|baseline| baseline.summary_origin.is_some());
+                if let Some((summary, original)) = view.proactive_summary_attempt() {
+                    let origin = SummaryOrigin {
+                        run: view.run,
+                        attempt: summary,
+                    };
+                    let summary_request = self.store.request(view.run, original.step).await?;
+                    let summary_provenance: RequestContextEvidence = decode(
+                        self,
+                        view.run,
+                        &summary_request.provenance,
+                        "request-provenance-schema",
+                    )
+                    .await?;
+                    has_proactive_summary = provenance.previous_checkpoint_id
+                        == summary_provenance.previous_checkpoint_id;
+                    can_prepare = (original.closed.is_some() || original.interrupted.is_some())
+                        && (original.admission.is_none()
+                            || original.cleanup
+                                == maka_plugin_core::operation::OperationCleanup::Confirmed);
+                    let already_adopted = baseline.as_ref().is_some_and(|baseline| {
+                        baseline.checkpoint.summary_step_id == original.step
+                    });
+                    proactive_baseline |= already_adopted;
+                    if has_proactive_summary {
+                        if original.closed.is_none() && original.interrupted.is_none() {
+                            compaction = CompactionLevel::Pending {
+                                attempt: summary,
+                                adopt,
+                            };
+                        } else if !rejected.contains(&origin)
+                            && usable_summary(original, &summary_provenance)?
+                        {
+                            compaction = if already_adopted {
+                                CompactionLevel::Adopted { summary }
+                            } else if original.cleanup
+                                != maka_plugin_core::operation::OperationCleanup::Confirmed
+                            {
+                                CompactionLevel::Pending {
+                                    attempt: summary,
+                                    adopt,
+                                }
+                            } else {
+                                CompactionLevel::Candidate { origin, adopt }
+                            };
+                        }
+                    }
+                }
+                if compaction == CompactionLevel::None && !has_proactive_summary {
+                    let adopted_origin = baseline
+                        .as_ref()
+                        .and_then(|baseline| baseline.summary_origin);
+                    let candidate = match adopted_origin {
+                        Some(origin) => Some(origin),
+                        None if prepare || overflow => {
+                            self.store.previous_proactive_summary(view).await?
+                        }
+                        None => None,
+                    };
+                    if let Some(origin) = candidate.filter(|origin| !rejected.contains(origin)) {
+                        let original = self.store.model_attempt(origin.run, origin.attempt).await?;
+                        let summary_request = self.store.request(origin.run, original.step).await?;
+                        let previous: RequestContextEvidence = decode(
+                            self,
+                            origin.run,
+                            &summary_request.provenance,
+                            "request-provenance-schema",
+                        )
+                        .await?;
+                        if previous.previous_checkpoint_id == provenance.previous_checkpoint_id
+                            && usable_summary(&original, &previous)?
+                        {
+                            compaction = if adopted_origin.is_some() {
+                                CompactionLevel::Adopted {
+                                    summary: origin.attempt,
+                                }
+                            } else {
+                                CompactionLevel::Candidate { origin, adopt }
+                            };
+                        }
+                    }
+                }
+                if compaction == CompactionLevel::None
+                    && let Some(summary) = request.compaction_recovery
+                    && !rejected.contains(&SummaryOrigin {
+                        run: view.run,
+                        attempt: summary,
+                    })
+                {
                     let original = self.store.model_attempt(view.run, summary).await?;
                     let summary_request = self.store.request(view.run, original.step).await?;
-                    if summary_request.accounting.purpose == ModelPurpose::Summary
-                        && let Some(closed) = original.closed.as_ref().filter(|closed| {
-                            closed.outcome == Outcome::Success && closed.diagnostic.is_none()
-                        })
-                    {
-                        let protocol = ModelClosureProtocol::deserialize(&closed.protocol)
-                            .map_err(|error| {
-                                unsupported(format!("summary-terminal-protocol: {error}"))
-                            })?;
+                    if summary_request.accounting.purpose == ModelPurpose::Summary {
                         let summary_provenance: RequestContextEvidence = decode(
                             self,
                             view.run,
@@ -141,47 +230,31 @@ impl Engine {
                             "request-provenance-schema",
                         )
                         .await?;
-                        let native =
-                            summary_provenance
-                                .model_context
-                                .as_ref()
-                                .is_some_and(|context| {
-                                    context.operation == ModelOperation::CodexCompaction
-                                });
-                        let usable = closed.outcome == Outcome::Success
-                            && closed.diagnostic.is_none()
-                            && protocol.finish_reason == ModelFinishReason::Stop
-                            && (!native || protocol.compaction.is_some())
-                            && match &protocol.summary {
-                                Some(SummaryResult::Text { summary }) => {
-                                    !summary.text.trim().is_empty()
-                                }
-                                None => protocol.compaction.is_some(),
-                                _ => false,
-                            };
-                        if usable {
+                        if usable_summary(&original, &summary_provenance)? {
                             if baseline.as_ref().is_some_and(|baseline| {
                                 baseline.checkpoint.summary_step_id == original.step
                             }) {
-                                let previous: RequestContextEvidence = decode(
-                                    self,
-                                    view.run,
-                                    &summary_request.provenance,
-                                    "request-provenance-schema",
-                                )
-                                .await?;
                                 if provenance.previous_checkpoint_id
-                                    == previous.previous_checkpoint_id
+                                    == summary_provenance.previous_checkpoint_id
                                 {
                                     compaction = CompactionLevel::Adopted { summary };
                                 }
                             } else {
-                                compaction = CompactionLevel::Candidate { summary, adopt };
+                                compaction = CompactionLevel::Candidate {
+                                    origin: SummaryOrigin {
+                                        run: view.run,
+                                        attempt: summary,
+                                    },
+                                    adopt,
+                                };
                             }
                         }
                     }
                 }
                 if compaction == CompactionLevel::None
+                    && (!proactive_baseline
+                        || (!prepare && !overflow)
+                        || self.progress_since_checkpoint(view, &provenance).await?)
                     && (request.compaction_recovery.is_none()
                         || self
                             .store
@@ -189,7 +262,10 @@ impl Engine {
                             .await?
                             .is_some())
                 {
-                    compaction = CompactionLevel::Fresh { prepare };
+                    compaction = CompactionLevel::Fresh {
+                        prepare: prepare && can_prepare && !has_proactive_summary,
+                        adopt,
+                    };
                 }
             }
         }
@@ -201,6 +277,34 @@ impl Engine {
             failure: None,
             fallback_available: false,
         })
+    }
+
+    async fn progress_since_checkpoint(
+        &self,
+        view: &RunView,
+        provenance: &RequestContextEvidence,
+    ) -> Result<bool, RunError> {
+        let Some(attempt) = view
+            .current_attempt
+            .and_then(|id| view.attempts.get(&id))
+            .filter(|attempt| {
+                attempt.closed.as_ref().is_some_and(|closed| {
+                    closed.outcome == Outcome::Success && closed.diagnostic.is_none()
+                })
+            })
+        else {
+            return Ok(false);
+        };
+        let request = self.store.request(view.run, attempt.step).await?;
+        let previous: RequestContextEvidence = decode(
+            self,
+            view.run,
+            &request.provenance,
+            "request-provenance-schema",
+        )
+        .await?;
+        Ok(request.accounting.purpose == ModelPurpose::Main
+            && previous.previous_checkpoint_id == provenance.previous_checkpoint_id)
     }
 
     pub(super) async fn refresh_model_failure(
@@ -284,10 +388,10 @@ impl Engine {
         &self,
         claim: &DriverClaim,
         view: &RunView,
-        attempt: ModelAttemptId,
+        origin: SummaryOrigin,
         at: UnixMillis,
     ) -> Result<bool, RunError> {
-        let Some(content) = self.compaction_checkpoint(view, attempt).await? else {
+        let Some(content) = self.compaction_checkpoint(view, origin).await? else {
             return Ok(false);
         };
         self.publish(
@@ -322,15 +426,22 @@ impl Engine {
         else {
             return Ok(None);
         };
-        self.compaction_checkpoint(view, attempt).await
+        self.compaction_checkpoint(
+            view,
+            SummaryOrigin {
+                run: view.run,
+                attempt,
+            },
+        )
+        .await
     }
 
     async fn compaction_checkpoint(
         &self,
         view: &RunView,
-        attempt: ModelAttemptId,
+        origin: SummaryOrigin,
     ) -> Result<Option<ContentBlob>, RunError> {
-        let original = self.store.model_attempt(view.run, attempt).await?;
+        let original = self.store.model_attempt(origin.run, origin.attempt).await?;
         if let Some(reference) = &view.baseline {
             let baseline: CompactedContext =
                 decode(self, view.run, reference, "compacted-context-schema").await?;
@@ -338,7 +449,7 @@ impl Engine {
                 return Ok(None);
             }
         }
-        let request = self.store.request(view.run, original.step).await?;
+        let request = self.store.request(origin.run, original.step).await?;
         if request.accounting.purpose != ModelPurpose::Summary {
             return Err(unsupported("compaction-requires-summary-purpose"));
         }
@@ -357,7 +468,7 @@ impl Engine {
         }
         let provenance: RequestContextEvidence = decode(
             self,
-            view.run,
+            origin.run,
             &request.provenance,
             "request-provenance-schema",
         )
@@ -428,7 +539,7 @@ impl Engine {
         };
         let source: RequestSource = decode(
             self,
-            view.run,
+            origin.run,
             &request.source_capture,
             "request-source-schema",
         )
@@ -455,6 +566,7 @@ impl Engine {
             }
         };
         let compacted = CompactedContext {
+            summary_origin: (origin.run != view.run).then_some(origin),
             source_capture: request.source_capture,
             checkpoint: ContextCheckpoint {
                 mode,
@@ -469,6 +581,31 @@ impl Engine {
         compacted.validate().map_err(unsupported)?;
         Ok(Some(ContentBlob::json(&compacted)?))
     }
+}
+
+fn usable_summary(
+    attempt: &maka_agent_state::fold::Attempt,
+    provenance: &RequestContextEvidence,
+) -> Result<bool, RunError> {
+    let Some(closed) = attempt
+        .closed
+        .as_ref()
+        .filter(|closed| closed.outcome == Outcome::Success && closed.diagnostic.is_none())
+    else {
+        return Ok(false);
+    };
+    let protocol = ModelClosureProtocol::deserialize(&closed.protocol)
+        .map_err(|error| unsupported(format!("summary-terminal-protocol: {error}")))?;
+    let native = provenance
+        .model_context
+        .as_ref()
+        .is_some_and(|context| context.operation == ModelOperation::CodexCompaction);
+    Ok(protocol.finish_reason == ModelFinishReason::Stop
+        && if native {
+            protocol.compaction.is_some()
+        } else {
+            matches!(protocol.summary, Some(SummaryResult::Text { summary }) if !summary.text.trim().is_empty())
+        })
 }
 
 async fn decode<T: DeserializeOwned>(

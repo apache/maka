@@ -4102,6 +4102,7 @@ async fn compacted_history_checks_the_producing_requests_original_cut() {
             (capture.current.digest.clone(), false),
         ] {
             let baseline = ContentBlob::json(&CompactedContext {
+                summary_origin: None,
                 source_capture: summary.source_capture.clone(),
                 checkpoint: ContextCheckpoint {
                     mode: CheckpointMode::Standalone,
@@ -4402,6 +4403,7 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
                 .await?,
         )?;
         let baseline = ContentBlob::json(&CompactedContext {
+            summary_origin: None,
             source_capture: summary.source_capture,
             checkpoint: ContextCheckpoint {
                 mode: CheckpointMode::MidTurn {

@@ -421,6 +421,17 @@ impl Store {
             .query(fallback::ReadySummary(run, step, current_attempt))
             .await
     }
+    pub async fn previous_proactive_summary(
+        &self,
+        view: &RunView,
+    ) -> Result<Option<maka_agent_facts::context::SummaryOrigin>, StoreError> {
+        let Some(step) = view.current_step else {
+            return Ok(None);
+        };
+        self.data
+            .query(sql::compaction::PreviousProactiveSummary(view.run, step))
+            .await
+    }
     pub async fn finished_or_stopped(
         &self,
         owner: RunOwner,

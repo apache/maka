@@ -787,24 +787,18 @@ pub(super) async fn project(
                 data::content(reader, item.recorded.run, baseline).await?;
             compact.validate().map_err(str::to_owned)?;
             let mut row = base(item, turn, 0, Role::Compaction, address)?;
-            let started = reader
-                .compaction_started_at(
+            let duration_ms = reader
+                .compaction_duration_ms(
                     item.recorded.run,
+                    compact
+                        .summary_origin
+                        .map_or(item.recorded.run, |origin| origin.run),
                     compact.checkpoint.summary_step_id,
                     item.sequence,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            let duration = item
-                .recorded
-                .at
-                .0
-                .checked_sub(started.0)
-                .and_then(|value| u64::try_from(value).ok())
-                .ok_or("agent_history_compaction_timing_invalid")?;
-            row.chunk.compaction = Some(wire::Compaction {
-                duration_ms: duration,
-            });
+            row.chunk.compaction = Some(wire::Compaction { duration_ms });
             if let maka_agent_facts::context::CheckpointContent::Text(summary) =
                 compact.checkpoint.summary
             {

@@ -355,7 +355,9 @@ impl Query for Request {
             return Err(invalid("snapshot Step index has another entry kind"));
         };
         let recorded: RecordedFact = decode(c, &self.0, &body, Some(run))?;
-        let Fact::StepPrepared { step, request, .. } = recorded.fact else {
+        let (Fact::StepPrepared { step, request, .. }
+        | Fact::ProactiveSummaryPrepared { step, request, .. }) = recorded.fact
+        else {
             return Err(invalid("snapshot Step has no original preparation"));
         };
         if step != self.2 || run != self.1 {

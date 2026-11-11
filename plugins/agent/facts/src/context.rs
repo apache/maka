@@ -236,6 +236,14 @@ pub struct CompactedContext {
     pub source_capture: crate::durable::ContentRef,
     pub checkpoint: ContextCheckpoint,
     pub native: Option<NativeCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_origin: Option<SummaryOrigin>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SummaryOrigin {
+    pub run: crate::durable::RunId,
+    pub attempt: crate::durable::ModelAttemptId,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
