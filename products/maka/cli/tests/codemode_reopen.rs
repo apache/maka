@@ -519,6 +519,12 @@ impl Model {
             return sse(json!({"content":"auxiliary complete"}), "stop");
         }
         let tools = body["tools"].as_array().unwrap();
+        for name in ["cua_repl", "cua_reset"] {
+            assert!(
+                tools.iter().any(|tool| tool["function"]["name"] == name),
+                "Code Mode with tool discovery must advertise {name} as a direct tool"
+            );
+        }
         for (name, field) in [("exec", "code"), ("wait", "cell_id")] {
             let tool = tools
                 .iter()
@@ -972,7 +978,7 @@ async fn case(
     .await?;
     assert_eq!(saved["kind"], "saved");
     let created = mutate(&clients[0], "agent", "create", json!({
-        "title":"CodeMode canonical store and cold Root","automaticTitle":false,"labels":[],"tools":["Shell"],
+        "title":"CodeMode canonical store and cold Root","automaticTitle":false,"labels":[],"tools":["Shell","cua_repl","cua_reset"],
         "workspace":{"kind":"directory","path":sandbox.workspace},
         "backend":{"kind":"model","connectionId":connection,"modelId":"gpt-4.1","thinkingLevel":null}
     }), Attachments::new()).await?;
