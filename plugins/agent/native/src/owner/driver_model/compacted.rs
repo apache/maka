@@ -23,6 +23,7 @@ use maka_agent_facts::context::{
     CheckpointContent, CompactedContext, RequestContextEvidence, SummaryOrigin,
     codex_replay_allowed,
 };
+use maka_agent_facts::language::Language;
 use maka_model::prompt::AssistantPart;
 use sha2::{Digest, Sha256};
 
@@ -327,7 +328,7 @@ impl DriverModel {
                     let mut system=directory.open(0);
                     while let Some(recipe)=system.next().await?{if matches!(recipe,MessageRecipe::System{..}){builder.append_recipe(&recipe).await?;}}
                 }
-                self.append_compacted(&reader,view.run,baseline,ReplayTarget::new(&model, frozen.operation),&mut builder).await?;
+                self.append_compacted(&reader,view.run,baseline,ReplayTarget::new(&model, frozen.operation),frozen.language,&mut builder).await?;
                 let mut tail=directory.open(start);
                 while let Some(recipe)=tail.next().await?{if !matches!(recipe,MessageRecipe::System{..})&& let Some(recipe)=ReplayTarget::new(&model,frozen.operation).recipe(recipe).await?{builder.append_recipe(&recipe).await?;}}
                 Ok::<(),RunError>(())
@@ -408,6 +409,7 @@ impl DriverModel {
         run: RunId,
         baseline: &ContentRef,
         target: ReplayTarget<'_>,
+        language: Language,
         messages: &mut preparation::PromptBuilder,
     ) -> Result<RequestSource, RunError> {
         let body: CompactedContext = reader.decode(run, baseline).await?;
@@ -433,10 +435,19 @@ impl DriverModel {
         }
         match &body.checkpoint.summary {
             CheckpointContent::Text(text) => {
+                let guidance = match language {
+                    Language::En => {
+                        "Session checkpoint snapshot (not a new user request). If messages follow this snapshot, first reconcile it with their tool results, state changes, and latest user instructions so launched or completed work is not replayed; if compressed earlier details need exact verification, check the source via Recall (when available) or Read (including preserved resource_ref handles and workspace files), then continue the remaining work:\n\n"
+                    }
+                    Language::ZhCn => {
+                        "以下是会话历史检查点快照（非新的用户请求）。若此快照之后附有后续消息，请先结合后续消息中的工具结果、状态变化和用户最新指示更新认知，避免重复执行已启动或已完成的操作；若快照中早期细节被压缩，可通过 Recall（若可用）或 Read（含已保留的 resource_ref 与工作区文件）核实原文，然后继续推进剩余工作：\n\n"
+                    }
+                    Language::ZhTw => {
+                        "以下是工作階段歷史檢查點快照（非新的使用者請求）。若此快照之後附有後續訊息，請先結合後續訊息中的工具結果、狀態變化和使用者最新指示更新認知，避免重複執行已啟動或已完成的操作；若快照中早期細節被壓縮，可透過 Recall（若可用）或 Read（含已保留的 resource_ref 與工作區檔案）核實原文，然後繼續推進剩餘工作：\n\n"
+                    }
+                };
                 messages
-                    .append(Message::user(format!(
-                        "Context summary (historical data):\n{text}"
-                    )))
+                    .append(Message::user(format!("{guidance}{text}")))
                     .await?;
             }
             CheckpointContent::CodexNative { .. } => {
