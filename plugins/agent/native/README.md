@@ -176,4 +176,4 @@ compaction produces a text summary. Host freezes a single protocol operation; th
 JSON for this result. Checkpoint headers retain the producing-step reference, digest and token
 estimate; baseline reads derive producer/model facts from that original request.
 
-Disabling new requests preserves existing valid grants. Changing base access or explicitly revoking grants advances the permission boundary.
+Disabling new requests preserves existing valid grants and can take effect during a Run. Enabling requests requires an idle Session because live Runs retain their original approval ceiling. Changing base access or explicitly revoking grants advances the permission boundary.

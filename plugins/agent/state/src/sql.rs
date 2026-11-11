@@ -1365,14 +1365,8 @@ pub(crate) fn append(
             view.check_effect_admission()?;
         }
         model_evidence::validate_control(c, &view, &change.fact)?;
-        if let Fact::BlockerResolved { blocker, evidence } = &change.fact
-            && view
-                .blockers
-                .get(blocker)
-                .is_some_and(|blocker| blocker.reason.is_legacy_compaction_lookup())
-        {
-            pin(c, run, evidence)?;
-            crate::store::fallback::validate_legacy_lookup_resolution(c, &view, evidence)?;
+        if let Fact::BlockerResolved { blocker, .. } = &change.fact {
+            view.validate_blocker_resolution(*blocker)?;
         }
         if let Fact::ContextCompacted { baseline } = &change.fact {
             compaction::validate(c, &view, baseline, change.at)?;

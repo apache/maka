@@ -29,7 +29,7 @@ import {
   type Signal,
   type JSX,
 } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
+import { Button } from 'nsh/base';
 import type {
   UiContext,
   UiContributionRef,
@@ -46,7 +46,7 @@ import type { SettingsOperations } from './settingsOperations';
 import { contributionTitle } from './plugins/context';
 import { Icon } from './Icon';
 import { tr } from './locale';
-import { dialogTop } from './chrome';
+import { ModalDialog } from './ModalDialog';
 import { SettingsButton, settingsGutter, settingsInset } from './SettingsPage';
 import {
   C,
@@ -159,197 +159,179 @@ export function ModelSettings(props: {
     alignItems: 'center',
   } as const;
   return (
-    <Dialog
-      animation="none"
-      closeOnEscape={false}
-      closeOnBackdropPress={false}
-      closeOnSwipe={false}
+    <ModalDialog
+      size="page"
+      height={800}
       onCancel={cancel(backAction())}
       style={{
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        padding: 16,
-        paddingTop: dialogTop(16),
-        backgroundColor: C.scrim,
+        flexDirection: rail() ? 'row' : 'column',
+        padding: 0,
+        gap: 0,
+        // Shaped as a window: its pane sits 8 in, concentric with this corner.
+        borderRadius: compact() ? 12 : 24,
+        // The border takes a whole terminal row but only one point of layout:
+        // the rest of that row keeps the title off it and rows on whole cells.
+        paddingTop: terminal ? 15 : 0,
       }}
     >
       <View
         style={{
-          width: '100%',
-          maxWidth: 880,
-          flex: 1,
-          maxHeight: 800,
-          minHeight: 0,
-          flexDirection: rail() ? 'row' : 'column',
-          backgroundColor: C.surface,
-          borderRadius: compact() ? 12 : 24,
-          borderWidth: 1,
-          borderColor: C.line,
-          // The border takes a whole terminal row but only one point of layout:
-          // the rest of that row keeps the title off it and rows on whole cells.
-          paddingTop: terminal ? 15 : 0,
+          flexDirection: rail() ? 'column' : 'row',
+          flexWrap: rail() ? 'nowrap' : 'wrap',
+          width: rail() ? 200 : '100%',
+          flexShrink: 0,
+          paddingHorizontal: rail() ? 12 : 8,
+          paddingTop: rail() ? (terminal ? 0 : 20) : 8,
+          paddingBottom: rail() ? 16 : 0,
+          gap: 2,
         }}
       >
-        <View
-          style={{
-            flexDirection: rail() ? 'column' : 'row',
-            flexWrap: rail() ? 'nowrap' : 'wrap',
-            width: rail() ? 200 : '100%',
-            flexShrink: 0,
-            paddingHorizontal: rail() ? 12 : 8,
-            paddingTop: rail() ? (terminal ? 0 : 20) : 8,
-            paddingBottom: rail() ? 16 : 0,
-            gap: 2,
-          }}
-        >
-          <If when={rail()}>
-            <Text
-              style={{
-                ...captionTextStyle,
-                fontWeight: '600',
-                color: C.muted,
-                paddingHorizontal: 12,
-                paddingTop: 2,
-                paddingBottom: 12,
-              }}
-            >
-              {tr('Settings')}
-            </Text>
-          </If>
-          <Each of={runtime.settings()} key={(item) => item.key}>
-            {(item) => (
-              <Button
-                accessibilityLabel={tr('Settings section {section}', {
-                  section: contributionTitle(item()),
-                })}
-                disabled={busy()}
-                selected={contributed()?.key === item().key}
-                onPress={inputAction(choose, {
-                  from: contributed()?.key ?? null,
-                  to: item().key,
-                })}
-                style={{ ...controlStyle, paddingVertical: 6 }}
-                selectedStyle={{ backgroundColor: C.raised }}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Text
-                  style={{
-                    ...captionTextStyle,
-                    lineHeight: terminal ? 16 : 20,
-                    fontWeight: contributed()?.key === item().key ? '500' : undefined,
-                    color: contributed()?.key === item().key ? C.text : C.secondary,
-                  }}
-                >
-                  {contributionTitle(item())}
-                </Text>
-              </Button>
-            )}
-          </Each>
-        </View>
-        <View
-          style={{
-            flex: 1,
-            minWidth: 0,
-            minHeight: 0,
-            margin: terminal ? 0 : 8,
-            marginLeft: terminal || rail() ? 0 : 8,
-            backgroundColor: terminal ? undefined : C.background,
-            borderRadius: terminal ? 0 : 16,
-            overflow: 'hidden',
-          }}
-        >
-          <View
+        <If when={rail()}>
+          <Text
             style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 8,
-              minHeight: terminal ? 16 : compact() ? 48 : 64,
-              paddingLeft: settingsGutter + settingsInset,
-              paddingRight: terminal ? 0 : 12,
+              ...captionTextStyle,
+              fontWeight: '600',
+              color: C.muted,
+              paddingHorizontal: 12,
+              paddingTop: 2,
+              paddingBottom: 12,
             }}
           >
-            <If when={page()?.nested() ?? false}>
-              <Button
-                disabled={busy()}
-                accessibilityLabel={page()?.backLabel?.() ?? tr('Back')}
-                tooltip={textTooltip(() => tr('Back'))}
-                onPress={inputAction(back, backAction())}
-                style={{ ...iconButton, marginLeft: terminal ? 0 : -8 }}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Icon name="back" color={C.secondary} />
-              </Button>
-            </If>
-            <Text
-              style={[
-                {
-                  flex: 1,
-                  minWidth: 0,
-                  color: C.text,
-                  fontWeight: '600',
-                  fontSize: 18,
-                  lineHeight: 24,
-                },
-                { numberOfLines: 1, textOverflow: 'ellipsis' },
-              ]}
-            >
-              {title()}
-            </Text>
-            <If when={action()}>
-              <SettingsButton
-                label={action()!.label}
-                disabled={busy() || action()!.disabled}
-                onPress={() => action()?.run()}
-              />
-            </If>
+            {tr('Settings')}
+          </Text>
+        </If>
+        <Each of={runtime.settings()} key={(item) => item.key}>
+          {(item) => (
             <Button
+              accessibilityLabel={tr('Settings section {section}', {
+                section: contributionTitle(item()),
+              })}
               disabled={busy()}
-              accessibilityLabel={tr('Close settings')}
-              tooltip={textTooltip(() => tr('Close settings'))}
-              onPress={inputAction(close, null)}
-              style={iconButton}
+              selected={contributed()?.key === item().key}
+              onPress={inputAction(choose, {
+                from: contributed()?.key ?? null,
+                to: item().key,
+              })}
+              style={{ ...controlStyle, paddingVertical: 6 }}
+              selectedStyle={{ backgroundColor: C.raised }}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
-              <Icon name="close" color={C.secondary} />
+              <Text
+                style={{
+                  ...captionTextStyle,
+                  lineHeight: terminal ? 16 : 20,
+                  fontWeight: contributed()?.key === item().key ? '500' : undefined,
+                  color: contributed()?.key === item().key ? C.text : C.secondary,
+                }}
+              >
+                {contributionTitle(item())}
+              </Text>
             </Button>
-          </View>
-          <If when={operations.error() || operations.notice() || operations.pending().length > 0}>
-            <View
-              style={{
-                paddingLeft: settingsGutter + settingsInset,
-                paddingRight: settingsGutter,
-                paddingBottom: terminal ? 0 : 12,
-              }}
+          )}
+        </Each>
+      </View>
+      <View
+        style={{
+          flex: 1,
+          minWidth: 0,
+          minHeight: 0,
+          margin: terminal ? 0 : 8,
+          marginLeft: terminal || rail() ? 0 : 8,
+          backgroundColor: terminal ? undefined : C.background,
+          borderRadius: terminal ? 0 : 16,
+          overflow: 'hidden',
+        }}
+      >
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            minHeight: terminal ? 16 : compact() ? 48 : 64,
+            paddingLeft: settingsGutter + settingsInset,
+            paddingRight: terminal ? 0 : 12,
+          }}
+        >
+          <If when={page()?.nested() ?? false}>
+            <Button
+              disabled={busy()}
+              accessibilityLabel={page()?.backLabel?.() ?? tr('Back')}
+              tooltip={textTooltip(() => tr('Back'))}
+              onPress={inputAction(back, backAction())}
+              style={{ ...iconButton, marginLeft: terminal ? 0 : -8 }}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+              disabledStyle={controlDisabledStyle}
             >
-              <If when={operations.error()}>
-                <Text style={[{ ...captionTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-                  {operations.error()}
-                </Text>
-              </If>
-              <If when={!operations.error() && operations.notice()}>
-                <Text style={{ ...captionTextStyle, color: C.muted }}>{operations.notice()}</Text>
-              </If>
-              <If when={operations.pending().length > 0}>
-                <Text style={{ ...captionTextStyle, color: C.muted }}>
-                  {tr('Checking action status…')}
-                </Text>
-              </If>
-            </View>
+              <Icon name="back" color={C.secondary} />
+            </Button>
           </If>
-          <View style={{ flex: 1, minHeight: 0 }}>
-            <Each of={contributed() ? [contributed()!] : []} key={(item) => item.key}>
-              {(item) => runtime.render(item(), { sessionId: null, input: input(item()) })}
-            </Each>
+          <Text
+            style={[
+              {
+                flex: 1,
+                minWidth: 0,
+                color: C.text,
+                fontWeight: '600',
+                fontSize: 18,
+                lineHeight: 24,
+              },
+              { numberOfLines: 1, textOverflow: 'ellipsis' },
+            ]}
+          >
+            {title()}
+          </Text>
+          <If when={action()}>
+            <SettingsButton
+              label={action()!.label}
+              disabled={busy() || action()!.disabled}
+              onPress={() => action()?.run()}
+            />
+          </If>
+          <Button
+            disabled={busy()}
+            accessibilityLabel={tr('Close settings')}
+            tooltip={textTooltip(() => tr('Close settings'))}
+            onPress={inputAction(close, null)}
+            style={iconButton}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Icon name="close" color={C.secondary} />
+          </Button>
+        </View>
+        <If when={operations.error() || operations.notice() || operations.pending().length > 0}>
+          <View
+            style={{
+              paddingLeft: settingsGutter + settingsInset,
+              paddingRight: settingsGutter,
+              paddingBottom: terminal ? 0 : 12,
+            }}
+          >
+            <If when={operations.error()}>
+              <Text style={[{ ...captionTextStyle, color: C.danger }, { userSelect: 'text' }]}>
+                {operations.error()}
+              </Text>
+            </If>
+            <If when={!operations.error() && operations.notice()}>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>{operations.notice()}</Text>
+            </If>
+            <If when={operations.pending().length > 0}>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>
+                {tr('Checking action status…')}
+              </Text>
+            </If>
           </View>
+        </If>
+        <View style={{ flex: 1, minHeight: 0 }}>
+          <Each of={contributed() ? [contributed()!] : []} key={(item) => item.key}>
+            {(item) => runtime.render(item(), { sessionId: null, input: input(item()) })}
+          </Each>
         </View>
       </View>
-    </Dialog>
+    </ModalDialog>
   );
 }

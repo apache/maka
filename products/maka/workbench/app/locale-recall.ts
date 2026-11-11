@@ -31,7 +31,6 @@ export const recallMessages = {
   ],
   'Search messages…': ['Search messages…', '搜索消息…', '搜尋訊息…'],
   'No matching messages.': ['No matching messages.', '没有匹配的消息。', '沒有符合的訊息。'],
-  'Close conversation search': ['Close conversation search', '关闭会话搜索', '關閉對話搜尋'],
   'Search conversation history': ['Search conversation history', '搜索会话历史', '搜尋對話歷史'],
   'Search every conversation you can read, including archived conversations.': [
     'Search every conversation you can read, including archived conversations.',

@@ -29,6 +29,7 @@ mod attachments;
 mod auxiliary;
 mod checkpoints;
 mod compaction;
+mod completions;
 mod computer_apps;
 mod context;
 mod continuation;
@@ -215,6 +216,8 @@ pub(crate) struct Owner {
     todo: Arc<todo::Todo>,
     bot: Arc<bot::Bot>,
     goals: Arc<goal::Goals>,
+    completion_epoch: std::sync::atomic::AtomicU64,
+    completion_drained: std::sync::atomic::AtomicU64,
     recap_storage: Arc<maka_host_runtime::storage::Storage>,
     auxiliary: auxiliary::Auxiliary,
     titles: title::Registry,
@@ -591,6 +594,8 @@ impl Owner {
             auxiliary,
             todo,
             bot,
+            completion_epoch: std::sync::atomic::AtomicU64::new(1),
+            completion_drained: std::sync::atomic::AtomicU64::new(0),
             recap_storage,
             scheduler,
             recall,
@@ -1100,10 +1105,14 @@ impl Owner {
         let configuration: StoredSessionConfiguration =
             serde_json::from_value(record.metadata.configuration.clone())
                 .map_err(|error| format!("agent_session_configuration_invalid: {error}"))?;
-        let policy_changed = input.permissions.as_ref().is_some_and(|change| {
+        let invalidate_grants = input.permissions.as_ref().is_some_and(|change| {
             change.settings.access != configuration.permissions.access || change.revoke_grants
         });
-        let guard = if policy_changed {
+        // Live Runs retain their original approval ceiling.
+        let enabling_requests = input.permissions.as_ref().is_some_and(|change| {
+            change.settings.request_permissions && !configuration.permissions.request_permissions
+        });
+        let guard = if invalidate_grants || enabling_requests {
             let busy = self.runs.state().await.busy(&input.session_id)
                 || self.mcp_projects.has_any_client(&input.session_id);
             let guard = self
@@ -1136,7 +1145,7 @@ impl Owner {
             if let Some(pinned) = input.pinned {
                 configuration.pinned = pinned;
             }
-            if policy_changed {
+            if invalidate_grants {
                 configuration.boundary_revision = configuration
                     .boundary_revision
                     .checked_add(1)
@@ -1255,7 +1264,13 @@ impl Owner {
     ) -> Option<Box<dyn maka_host_runtime::application::NativeRetirement>> {
         let producer = self.producer_gate.clone().try_lock_owned().ok()?;
         let runs = self.runs.clone().try_lock_owned().ok()?;
-        if !runs.controls.is_empty()
+        if self
+            .completion_epoch
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != self
+                .completion_drained
+                .load(std::sync::atomic::Ordering::SeqCst)
+            || !runs.controls.is_empty()
             || !runs.preparing.is_empty()
             || !runs.retained_cleanup.is_empty()
             || !self.workers.is_empty()

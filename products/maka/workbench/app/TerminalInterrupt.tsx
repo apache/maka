@@ -18,13 +18,14 @@
  */
 
 import { cleanup, effect, signal, Text, View } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
 import { host } from 'nsh';
 import { keymap } from 'nsh';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { RunId } from '../../../../packages/plugin-sdk/src/index.js';
 import { tr } from './locale';
-import { bodyTextStyle, C, controlFocusStyle, controlHoverStyle, controlStyle } from './ui';
+import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
+import { SettingsButton } from './SettingsPage';
+import { bodyTextStyle, C } from './ui';
 
 type InterruptSession = Pick<ComposerSession, 'draft' | 'run' | 'stopping' | 'stop'>;
 type StopRequest = { owner: InterruptSession; runId: RunId };
@@ -154,62 +155,25 @@ export function TerminalInterrupt(props: { state: ReturnType<typeof createTermin
           // A late click must retain this dialog's identity, not read its replacement.
           const expected = request();
           return (
-            <Dialog
-              animation="none"
-              onOpenChange={props.state.dismiss}
-              style={{
-                flex: 1,
-                justifyContent: 'center',
-                alignItems: 'center',
-                backgroundColor: C.scrim,
-              }}
-            >
-              <View
-                style={{
-                  width: '90%',
-                  maxWidth: 480,
-                  padding: 24,
-                  gap: 24,
-                  borderRadius: 16,
-                  backgroundColor: C.surface,
-                }}
-              >
-                <Text style={{ ...bodyTextStyle, color: C.text }}>
-                  {tr('Stop the current task?')}
-                </Text>
-                <Text style={{ ...bodyTextStyle, color: C.secondary }}>
-                  {tr('The task will keep running unless you choose to stop it.')}
-                </Text>
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    flexWrap: 'wrap',
-                    justifyContent: 'flex-end',
-                    gap: 8,
-                  }}
-                >
-                  <Button
-                    ref={(node) => node.focus()}
-                    accessibilityLabel={tr('Keep running')}
-                    onPress={props.state.dismiss}
-                    style={{ ...controlStyle, backgroundColor: C.raised }}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
-                  >
-                    <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Keep running')}</Text>
-                  </Button>
-                  <Button
-                    accessibilityLabel={tr('Stop task')}
-                    onPress={() => props.state.confirm(expected)}
-                    style={controlStyle}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
-                  >
-                    <Text style={{ ...bodyTextStyle, color: C.danger }}>{tr('Stop task')}</Text>
-                  </Button>
-                </View>
-              </View>
-            </Dialog>
+            <ModalDialog size="alert" onCancel={props.state.dismiss}>
+              <DialogHeader
+                title={tr('Stop the current task?')}
+                detail={tr('The task will keep running unless you choose to stop it.')}
+              />
+              <DialogFooter>
+                <SettingsButton
+                  label={tr('Cancel')}
+                  tone="quiet"
+                  autoFocus
+                  onPress={props.state.dismiss}
+                />
+                <SettingsButton
+                  label={tr('Stop task')}
+                  tone="danger"
+                  onPress={() => props.state.confirm(expected)}
+                />
+              </DialogFooter>
+            </ModalDialog>
           );
         }}
       </Each>

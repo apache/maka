@@ -27,7 +27,7 @@ async fn update_permissions(
     access: WorkspaceAccess,
     request_permissions: bool,
     revoke_grants: bool,
-) -> TestResult<()> {
+) -> TestResult<Value> {
     let mut call = rig
         .client
         .as_ref()
@@ -66,13 +66,13 @@ async fn update_permissions(
     else {
         return Err(format!("metadata did not commit: {:?}", reply.receipt).into());
     };
-    assert_eq!(value["kind"], "committed", "metadata mutation: {value}");
+    let value = value.clone();
     call.close().await?;
-    Ok(())
+    Ok(value)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn permission_request_toggle_preserves_boundary_but_access_and_revoke_advance_it() {
+async fn permission_metadata_preserves_boundary_and_checks_idle_before_enabling_requests() {
     let mut rig = Rig::new().unwrap();
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
         let session = rig.start().await?;
@@ -91,7 +91,10 @@ async fn permission_request_toggle_preserves_boundary_but_access_and_revoke_adva
             (changed_access, false, false, false),
             (changed_access, false, true, false),
         ] {
-            update_permissions(&rig, &session, previous.revision, access, requests, revoke).await?;
+            let result =
+                update_permissions(&rig, &session, previous.revision, access, requests, revoke)
+                    .await?;
+            assert_eq!(result["kind"], "committed", "metadata mutation: {result}");
             let current = owner.mutable_session(&session).await?;
             assert_eq!(
                 serde_json::to_value(&current.configuration.permissions)?,
@@ -105,6 +108,59 @@ async fn permission_request_toggle_preserves_boundary_but_access_and_revoke_adva
             );
             previous = current;
         }
+        let enabled = update_permissions(
+            &rig,
+            &session,
+            previous.revision,
+            changed_access,
+            true,
+            false,
+        )
+        .await?;
+        assert_eq!(
+            enabled["kind"], "committed",
+            "enabling while idle: {enabled}"
+        );
+        let enabled = owner.mutable_session(&session).await?;
+        assert_eq!(
+            enabled.configuration.permission_basis(),
+            previous.configuration.permission_basis()
+        );
+
+        rig.assemble(&session).await?;
+        let disabled = update_permissions(
+            &rig,
+            &session,
+            enabled.revision,
+            changed_access,
+            false,
+            false,
+        )
+        .await?;
+        assert_eq!(
+            disabled["kind"], "committed",
+            "disabling while active: {disabled}"
+        );
+        let disabled = owner.mutable_session(&session).await?;
+        assert!(!disabled.configuration.permissions.request_permissions);
+        assert_eq!(
+            disabled.configuration.permission_basis(),
+            enabled.configuration.permission_basis()
+        );
+
+        let rejected = update_permissions(
+            &rig,
+            &session,
+            disabled.revision,
+            changed_access,
+            true,
+            false,
+        )
+        .await?;
+        assert_eq!(rejected, json!({"kind":"rejected","reason":"busy"}));
+        let unchanged = owner.mutable_session(&session).await?;
+        assert_eq!(unchanged.revision, disabled.revision);
+        assert!(!unchanged.configuration.permissions.request_permissions);
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
     .catch_unwind()

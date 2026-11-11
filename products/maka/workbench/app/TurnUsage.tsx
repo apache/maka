@@ -17,11 +17,10 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
 import { UiError, errorText, renderText, type UiText } from './text';
 import { tr } from './locale';
 import { cleanup, inputAction, Scroll, signal, Text, View } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
+import { Button } from 'nsh/base';
 import type {
   ModelUsage,
   ServiceMethods,
@@ -32,8 +31,8 @@ import type {
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { useHost } from './host';
 import { C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
-import { Icon } from './Icon';
-import { dialogTop } from './chrome';
+import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
+import { SettingsButton } from './SettingsPage';
 
 type Reading =
   | { kind: 'loading'; checked: number }
@@ -170,122 +169,86 @@ export function TurnUsage(props: {
     return `$${value.toFixed(6)}`;
   };
   return (
-    <Dialog
-      animation="none"
-      closeOnEscape={false}
-      closeOnBackdropPress={false}
-      closeOnSwipe={false}
-      onCancel={props.close}
-      style={{
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        padding: 16,
-        paddingTop: dialogTop(16),
-        backgroundColor: C.scrim,
-      }}
-    >
-      <View
-        style={{
-          width: '100%',
-          maxWidth: 560,
-          maxHeight: '100%',
-          padding: 16,
-          gap: 16,
-          backgroundColor: C.surface,
-          borderWidth: 1,
-          borderColor: C.line,
-          borderRadius: 16,
-        }}
-      >
-        <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
-          <Text style={{ flex: 1, color: C.text, fontWeight: '700' }}>
-            {tr('Main model usage')}
-          </Text>
-          <Button
-            ref={(node) => node.focus()}
-            accessibilityLabel={tr('Close turn usage')}
-            tooltip={textTooltip(() => tr('Close'))}
-            onPress={props.close}
-            style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-          >
-            <Icon name="close" color={C.secondary} />
-            <Text style={{ color: C.accent }}>{tr('Close')}</Text>
-          </Button>
+    <ModalDialog size="form" onCancel={props.close}>
+      <DialogHeader title={tr('Main model usage')} />
+      <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
+        <View style={{ gap: 8 }}>
+          <If when={reading().kind === 'loading'}>
+            <Text style={{ color: C.muted }}>
+              {tr('Reading original usage… {count} records checked', {
+                count:
+                  reading().kind === 'loading'
+                    ? (reading() as Extract<Reading, { kind: 'loading' }>).checked
+                    : 0,
+              })}
+            </Text>
+          </If>
+          <If when={reading().kind === 'failed'}>
+            <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
+              {reading().kind === 'failed'
+                ? renderText((reading() as Extract<Reading, { kind: 'failed' }>).message)
+                : ''}
+            </Text>
+            <Button
+              accessibilityLabel={tr('Retry original turn usage')}
+              style={controlStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+              onPress={inputAction(read, {
+                sessionId: props.sessionId,
+                turnId: props.turnId,
+                through,
+              })}
+            >
+              <Text style={{ color: C.accent }}>{tr('Retry')}</Text>
+            </Button>
+          </If>
+          <If when={reading().kind === 'ready' && attempts().length === 0}>
+            <Text style={{ color: C.muted }}>
+              {tr(
+                'No model usage is recorded for this turn in this conversation. Copied and imported history does not add model charges.',
+              )}
+            </Text>
+          </If>
+          <If when={reading().kind === 'ready' && attempts().length > 0}>
+            <Text style={{ color: C.muted }}>
+              {tr(
+                attempts().length === 1
+                  ? '{count} main model request in this turn'
+                  : '{count} main model requests in this turn',
+                { count: attempts().length },
+              )}
+            </Text>
+            <Each of={counters()} key={(counter) => counter.key}>
+              {(counter) => (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
+                  <Text style={{ flex: 1, color: C.secondary }}>{counter().label}</Text>
+                  <Text style={[{ color: C.text }, { userSelect: 'text' }]}>
+                    {total(attempts(), counter().key)}
+                  </Text>
+                </View>
+              )}
+            </Each>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
+              <Text style={{ flex: 1, color: C.secondary }}>{tr('Recorded cost')}</Text>
+              <Text style={[{ color: C.text }, { userSelect: 'text' }]}>{cost()}</Text>
+            </View>
+            <Text style={{ color: C.muted }}>
+              {tr(
+                'Missing provider counters or prices are unavailable. Auxiliary requests and tools are counted separately.',
+              )}
+            </Text>
+          </If>
         </View>
-        <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
-          <View style={{ gap: 8 }}>
-            <If when={reading().kind === 'loading'}>
-              <Text style={{ color: C.muted }}>
-                {tr('Reading original usage… {count} records checked', {
-                  count:
-                    reading().kind === 'loading'
-                      ? (reading() as Extract<Reading, { kind: 'loading' }>).checked
-                      : 0,
-                })}
-              </Text>
-            </If>
-            <If when={reading().kind === 'failed'}>
-              <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
-                {reading().kind === 'failed'
-                  ? renderText((reading() as Extract<Reading, { kind: 'failed' }>).message)
-                  : ''}
-              </Text>
-              <Button
-                accessibilityLabel={tr('Retry original turn usage')}
-                style={controlStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                onPress={inputAction(read, {
-                  sessionId: props.sessionId,
-                  turnId: props.turnId,
-                  through,
-                })}
-              >
-                <Text style={{ color: C.accent }}>{tr('Retry')}</Text>
-              </Button>
-            </If>
-            <If when={reading().kind === 'ready' && attempts().length === 0}>
-              <Text style={{ color: C.muted }}>
-                {tr(
-                  'No model usage is recorded for this turn in this conversation. Copied and imported history does not add model charges.',
-                )}
-              </Text>
-            </If>
-            <If when={reading().kind === 'ready' && attempts().length > 0}>
-              <Text style={{ color: C.muted }}>
-                {tr(
-                  attempts().length === 1
-                    ? '{count} main model request in this turn'
-                    : '{count} main model requests in this turn',
-                  { count: attempts().length },
-                )}
-              </Text>
-              <Each of={counters()} key={(counter) => counter.key}>
-                {(counter) => (
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
-                    <Text style={{ flex: 1, color: C.secondary }}>{counter().label}</Text>
-                    <Text style={[{ color: C.text }, { userSelect: 'text' }]}>
-                      {total(attempts(), counter().key)}
-                    </Text>
-                  </View>
-                )}
-              </Each>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
-                <Text style={{ flex: 1, color: C.secondary }}>{tr('Recorded cost')}</Text>
-                <Text style={[{ color: C.text }, { userSelect: 'text' }]}>{cost()}</Text>
-              </View>
-              <Text style={{ color: C.muted }}>
-                {tr(
-                  'Missing provider counters or prices are unavailable. Auxiliary requests and tools are counted separately.',
-                )}
-              </Text>
-            </If>
-          </View>
-        </Scroll>
-      </View>
-    </Dialog>
+      </Scroll>
+      <DialogFooter>
+        <SettingsButton
+          label={tr('Close')}
+          accessibilityLabel={tr('Close turn usage')}
+          autoFocus
+          onPress={props.close}
+        />
+      </DialogFooter>
+    </ModalDialog>
   );
 }

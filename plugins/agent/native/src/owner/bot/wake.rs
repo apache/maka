@@ -104,6 +104,26 @@ impl Bot {
         }
     }
 
+    pub(in crate::owner) async fn mark_completion(
+        &self,
+        worker: &str,
+        invocation: RunId,
+    ) -> Result<(), StoreError> {
+        let key = watch_key(worker);
+        let Some(record) = self.storage.read(key.clone()).await? else {
+            return Ok(());
+        };
+        let Some(value) = record.data.value() else {
+            return Ok(());
+        };
+        let mut watch: Watch = serde_json::from_value(value.clone())
+            .map_err(|e| StoreError::Unavailable(e.to_string()))?;
+        watch.notified = Some(invocation);
+        self.storage
+            .batch(vec![Self::mutation(key, Some(record.revision), &watch)?])
+            .await
+            .map(drop)
+    }
     async fn forget(&self, worker: &str, revision: Option<u64>) -> Result<(), StoreError> {
         self.storage
             .batch(vec![Mutation {
@@ -255,6 +275,14 @@ impl Owner {
                     continue;
                 }
             };
+            if self
+                .store
+                .has_message_completions(&self.prefix, &worker, &bot)
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                continue;
+            }
             if self.runs.lock().await.busy(&worker) {
                 continue;
             }
