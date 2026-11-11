@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   remember,
-  MAX_ENTRIES,
+  DEFAULT_LIMIT,
 } from '../../../../plugins/application/clipboard-history/history.ts';
 import {
   draftProblem,
@@ -144,9 +144,11 @@ test('damaged library data is an error rather than an empty library', () => {
 });
 
 test('clipboard history keeps the newest copy of each text and stays bounded', () => {
-  assert.deepEqual(remember(['b', 'a'], 'a'), ['a', 'b']);
+  assert.deepEqual(remember(['b', 'a'], 'a', DEFAULT_LIMIT), ['a', 'b']);
   let history = [];
-  for (let index = 0; index < MAX_ENTRIES + 5; index += 1) history = remember(history, `${index}`);
-  assert.equal(history.length, MAX_ENTRIES);
-  assert.equal(history[0], `${MAX_ENTRIES + 4}`);
+  for (let index = 0; index < DEFAULT_LIMIT + 5; index += 1)
+    history = remember(history, `${index}`, DEFAULT_LIMIT);
+  assert.equal(history.length, DEFAULT_LIMIT);
+  assert.equal(history[0], `${DEFAULT_LIMIT + 4}`);
+  assert.equal(remember(history, 'new', 20).length, 20);
 });

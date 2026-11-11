@@ -44,6 +44,13 @@ export default {
       imports: {},
       contributions: {
         tool: { kind: 'view', contract: 'maka.quick-launcher.tool' },
+        history: {
+          kind: 'settings',
+          title: {
+            fallback: 'Clipboard History',
+            translations: { 'zh-CN': '剪贴板历史', 'zh-TW': '剪貼簿歷史' },
+          },
+        },
       },
     },
   },
