@@ -20,7 +20,7 @@
 // The quick tools as one model, which the launcher and Settings › Quick tools both show: the same
 // commands and the same pages, so a change in one is the change in the other.
 
-import { cleanup, keymap, signal, View, type JSX, type Signal } from 'nsh';
+import { cleanup, keymap, signal, Storage, View, type JSX, type Signal } from 'nsh';
 import type {
   UiContributionRef,
   UiRuntime,
@@ -46,14 +46,22 @@ import {
   SettingsProblem,
   SettingsRow,
   SettingsSection,
+  SettingsSwitch,
   settingsGutter,
 } from './SettingsPage';
 import { errorText, renderText } from './text';
 
 export type Attached = { tool: UiContributionRef; handle: QuickToolHandle };
 
+const ENABLED_KEY = 'maka.quick-launcher.tools-enabled';
+
 export type QuickTools = {
   runtime: UiRuntime<JSX.Element>;
+  /** Whether the launcher offers the tools at all; off until the user turns them on. */
+  enabled(): boolean;
+  setEnabled(enabled: boolean): void;
+  /** Why the switch could not be read or saved. */
+  failure(): unknown;
   tools(): UiContributionRef[];
   /** What each tool attached, while the launcher's tools are mounted. */
   handles: Signal<ReadonlyMap<string, QuickToolHandle>>;
@@ -68,6 +76,17 @@ export type QuickTools = {
 };
 
 export function createQuickTools(runtime: UiRuntime<JSX.Element>): QuickTools {
+  const enabled = signal(false);
+  const failure = signal<unknown>(null);
+  // A choice made before the stored one arrives wins over it.
+  let chosen = false;
+  Storage.getItem(ENABLED_KEY).then(
+    (stored) => {
+      if (!chosen) enabled.set(stored === 'true');
+    },
+    (reason) => failure.set(reason),
+  );
+  let saving: Promise<void> = Promise.resolve();
   const handles = signal<ReadonlyMap<string, QuickToolHandle>>(new Map());
   const tools = () =>
     runtime
@@ -91,6 +110,16 @@ export function createQuickTools(runtime: UiRuntime<JSX.Element>): QuickTools {
     entries().filter((item) => item.tool.key === tool.key);
   return {
     runtime,
+    enabled,
+    setEnabled(next) {
+      chosen = true;
+      enabled.set(next);
+      const value = String(next);
+      saving = saving
+        .then(() => Storage.setItem(ENABLED_KEY, value))
+        .catch((reason) => failure.set(reason));
+    },
+    failure,
     tools,
     handles,
     attached,
@@ -230,29 +259,44 @@ export function QuickToolsSettings(props: {
       }
     >
       <SettingsBody>
-        <SettingsSection
-          note={tr(
-            'In the quick launcher, {shortcut} on a selected tool opens these same settings.',
-            { shortcut: keymap.label('mod+,') },
-          )}
-        >
-          <Each
-            of={quick.tools().filter(quick.configurable)}
-            key={(item: UiContributionRef) => item.key}
-          >
-            {(item) => (
-              <SettingsRow
-                label={quick.title(item())}
-                description={summary(item()) || undefined}
-                opens
-                onPress={() => selected.set(item())}
-              />
+        <If when={quick.failure() !== null}>
+          <SettingsProblem message={renderText(errorText(quick.failure()))} />
+        </If>
+        <SettingsSection>
+          <SettingsSwitch
+            label={tr('Quick tools in the launcher')}
+            description={tr(
+              'Symbols, clipboard history, screenshots and the other tools, with their commands and shortcuts. Still being refined.',
             )}
-          </Each>
-          <If when={!quick.tools().some(quick.configurable)}>
-            <SettingsRow label={tr('No quick tools to set up.')} tone="muted" />
-          </If>
+            checked={quick.enabled()}
+            onPress={() => quick.setEnabled(!quick.enabled())}
+          />
         </SettingsSection>
+        <If when={quick.enabled()}>
+          <SettingsSection
+            note={tr(
+              'In the quick launcher, {shortcut} on a selected tool opens these same settings.',
+              { shortcut: keymap.label('mod+,') },
+            )}
+          >
+            <Each
+              of={quick.tools().filter(quick.configurable)}
+              key={(item: UiContributionRef) => item.key}
+            >
+              {(item) => (
+                <SettingsRow
+                  label={quick.title(item())}
+                  description={summary(item()) || undefined}
+                  opens
+                  onPress={() => selected.set(item())}
+                />
+              )}
+            </Each>
+            <If when={!quick.tools().some(quick.configurable)}>
+              <SettingsRow label={tr('No quick tools to set up.')} tone="muted" />
+            </If>
+          </SettingsSection>
+        </If>
       </SettingsBody>
     </If>
   );

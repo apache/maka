@@ -30,6 +30,7 @@ import {
   Text,
   untracked,
   View,
+  type InputRef,
   type JSX,
   type ScrollRef,
   type Signal,
@@ -56,7 +57,7 @@ import {
   quickInputStyle,
 } from './QuickBar';
 import { tr } from './locale';
-import { LAUNCHER_SHORTCUT } from './QuickCommands';
+import { LAUNCHER_SHORTCUT, type ToolEntry } from './QuickCommands';
 import { expandAlias } from './quick-commands';
 import { createToolNavigation, QuickToolSettings, type QuickTools } from './QuickTools';
 import {
@@ -167,11 +168,7 @@ type Row = {
 
 type Section = { key: string; title: string | null; rows: readonly Row[]; start: number };
 
-function LauncherRow(props: {
-  row: Row;
-  selected: boolean;
-  settings(tool: UiContributionRef): void;
-}) {
+function LauncherRow(props: { row: Row; selected: boolean; pressed(): void }) {
   return (
     <QuickRow
       label={`${props.row.action} ${props.row.title}`}
@@ -183,8 +180,11 @@ function LauncherRow(props: {
       image={props.row.image?.()}
       unread={props.row.unread === true}
       selected={props.selected}
-      onPress={props.row.run}
-      onSettings={props.row.tool === undefined ? undefined : () => props.settings(props.row.tool!)}
+      onPress={() => {
+        props.row.run();
+        // A press takes the keyboard to the row; typing goes on in the query.
+        props.pressed();
+      }}
     />
   );
 }
@@ -271,6 +271,12 @@ function Launcher(
     failure: Signal<ReturnType<typeof errorText> | null>;
     /** The tool whose settings show in place of the results. */
     page: Signal<UiContributionRef | null>;
+    /** The tool entered by choosing its entry, searched with what is typed. */
+    scope: Signal<ToolEntry | null>;
+    /** Whether the query is inside a tool, entered or typed with its keyword. */
+    inside(): boolean;
+    /** Back from inside a tool to every tool. */
+    leave(): void;
   },
 ) {
   // A window that does not activate leaves the keyboard with the app in use until focused.
@@ -301,8 +307,16 @@ function Launcher(
       }),
     ),
   );
+  let input: InputRef | undefined;
+  const refocus = () => input?.focus();
+  // Entering or leaving a tool redraws the bar around the query, which takes the keyboard away.
+  effect(() => {
+    props.scope();
+    untracked(refocus);
+  });
   const entries = computed(() =>
-    quick.entries().map(({ key, tool, entry }) => {
+    quick.entries().map((item) => {
+      const { key, tool, entry } = item;
       const choice = quick.commands.choice(key);
       const word = choice?.alias ?? entry.keywords[0]!;
       return {
@@ -322,12 +336,13 @@ function Launcher(
           entry.run ??
           (() => {
             selection.set(0);
-            query.set(`${word} `);
+            query.set('');
+            props.scope.set(item);
           }),
       };
     }),
   );
-  const home = computed(() => query().trim() === '');
+  const home = computed(() => query().trim() === '' && props.scope() === null);
   const botRow = (): Row => ({
     key: 'bot',
     icon: 'maka',
@@ -347,7 +362,8 @@ function Launcher(
   });
   const results = (): Row[] => {
     const text = query();
-    const found = entries().flatMap((row) => {
+    // Inside an entered tool only its results are offered.
+    const found = (props.scope() === null ? entries() : []).flatMap((row) => {
       // Inside a tool its own entry would only push the results down.
       if (
         row.entry.run === undefined &&
@@ -387,8 +403,9 @@ function Launcher(
     });
   });
   const listed = computed(() => sections().flatMap((section) => section.rows));
-  // A typed query always keeps a way to ask the Bot, below the rows that scroll.
-  const pinned = computed(() => (home() ? null : askRow()));
+  // A typed query keeps a way to ask the Bot below the rows that scroll, except inside a tool,
+  // whose query is the tool's to search.
+  const pinned = computed(() => (home() || props.inside() ? null : askRow()));
   const rows = computed(() => [...listed(), ...(pinned() ? [pinned()!] : [])]);
   const selection = signal(0);
   const selected = computed(() => Math.min(selection(), rows().length - 1));
@@ -421,6 +438,20 @@ function Launcher(
   });
   let removeKeys = () => {};
   cleanup(() => removeKeys());
+  // Escape inside a tool goes back to every tool; outside one the popup closes.
+  effect(() => {
+    if (!props.inside()) return;
+    cleanup(
+      keymap.bind(
+        'escape',
+        () => {
+          selection.set(0);
+          props.leave();
+        },
+        { when: 'always' },
+      ),
+    );
+  });
   let running = false;
   const run = async () => {
     if (running) return;
@@ -455,7 +486,24 @@ function Launcher(
       running = false;
     }
   };
-  const activate = () => rows()[selected()]!.run();
+  const activate = () => {
+    rows()[selected()]!.run();
+    refocus();
+  };
+  /** Cmd+1 to Cmd+9 run the row with that number, counting from the top. */
+  const runNumbered = (index: number) => {
+    const row = rows()[index];
+    if (!row) return;
+    selection.set(index);
+    row.run();
+    refocus();
+  };
+  const placeholder = () =>
+    props.scope() !== null
+      ? tr('Search {tool}', { tool: props.scope()!.entry.title })
+      : quick.enabled()
+        ? tr('Search tools or ask Maka')
+        : tr('Ask Maka');
   const openSettings = (tool: UiContributionRef) => {
     failure.set(null);
     props.page.set(tool);
@@ -472,46 +520,74 @@ function Launcher(
           <View style={{ height: QUICK_BAR_SLOT, justifyContent: 'center' }}>
             <MakaMark />
           </View>
-          <Input
-            ref={(node) => {
-              removeKeys();
-              const unbind = [
-                keymap.bind('up', () => selection.set(Math.max(0, selected() - 1)), {
-                  when: 'always',
-                  repeat: true,
-                  within: node,
-                }),
-                keymap.bind(
-                  'down',
-                  () => selection.set(Math.min(rows().length - 1, selected() + 1)),
-                  {
-                    when: 'always',
-                    repeat: true,
-                    within: node,
-                  },
-                ),
-                keymap.bind(
-                  'mod+,',
-                  () => {
-                    const tool = rows()[selected()]!.tool;
-                    if (tool) openSettings(tool);
-                  },
-                  { when: 'always', within: node },
-                ),
-              ];
-              removeKeys = () => unbind.forEach((remove) => remove());
-            }}
-            autoFocus
-            accessibilityLabel={tr('Search tools or ask Maka')}
-            placeholder={tr('Search tools or ask Maka')}
-            value={query()}
-            onChange={({ value }) => {
-              selection.set(0);
-              query.set(value);
-            }}
-            onSubmit={activate}
-            style={{ ...quickInputStyle(), flex: 1, minWidth: 0, marginTop: 8 }}
-          />
+          <If when={props.scope() !== null}>
+            <View style={{ height: 24, marginTop: 8, justifyContent: 'center' }}>
+              <Text
+                style={{
+                  fontSize: 13,
+                  lineHeight: 20,
+                  paddingHorizontal: 8,
+                  borderRadius: 6,
+                  backgroundColor: C.raised,
+                  color: C.text,
+                }}
+              >
+                {props.scope()!.entry.title}
+              </Text>
+            </View>
+          </If>
+          {/* A new field per tool: a field keeps the placeholder it was made with. */}
+          <Each of={[props.scope()?.key ?? '']} key={(key: string) => key}>
+            {() => (
+              <Input
+                ref={(node) => {
+                  input = node;
+                  removeKeys();
+                  const unbind = [
+                    ...Array.from({ length: 9 }, (_, index) =>
+                      keymap.bind(`mod+${index + 1}`, () => runNumbered(index), {
+                        when: 'always',
+                        within: node,
+                      }),
+                    ),
+                    keymap.bind('up', () => selection.set(Math.max(0, selected() - 1)), {
+                      when: 'always',
+                      repeat: true,
+                      within: node,
+                    }),
+                    keymap.bind(
+                      'down',
+                      () => selection.set(Math.min(rows().length - 1, selected() + 1)),
+                      {
+                        when: 'always',
+                        repeat: true,
+                        within: node,
+                      },
+                    ),
+                    keymap.bind(
+                      'mod+,',
+                      () => {
+                        const tool = rows()[selected()]!.tool;
+                        if (tool) openSettings(tool);
+                      },
+                      { when: 'always', within: node },
+                    ),
+                  ];
+                  removeKeys = () => unbind.forEach((remove) => remove());
+                }}
+                autoFocus
+                accessibilityLabel={placeholder()}
+                placeholder={placeholder()}
+                value={query()}
+                onChange={({ value }) => {
+                  selection.set(0);
+                  query.set(value);
+                }}
+                onSubmit={activate}
+                style={{ ...quickInputStyle(), flex: 1, minWidth: 0, marginTop: 8 }}
+              />
+            )}
+          </Each>
         </View>
         <View style={{ borderTopWidth: 1, borderTopColor: C.line }}>
           <Scroll
@@ -534,7 +610,7 @@ function Launcher(
                       <LauncherRow
                         row={row()}
                         selected={selected() === section().start + index()}
-                        settings={openSettings}
+                        pressed={refocus}
                       />
                     )}
                   </Each>
@@ -546,7 +622,7 @@ function Launcher(
             <LauncherRow
               row={pinned()!}
               selected={selected() === listed().length}
-              settings={openSettings}
+              pressed={refocus}
             />
           </If>
         </View>
@@ -599,7 +675,25 @@ export function QuickLauncher(
       return alias ? [{ alias, keyword: entry.keywords[0]! }] : [];
     }),
   );
-  const toolQuery = computed(() => expandAlias(query(), aliases()));
+  const scope = signal<ToolEntry | null>(null);
+  const toolQuery = computed(() => {
+    const entered = scope();
+    return entered ? `${entered.entry.keywords[0]} ${query()}` : expandAlias(query(), aliases());
+  });
+  const inside = computed(
+    () =>
+      scope() !== null ||
+      quick
+        .entries()
+        .some(
+          ({ entry }) =>
+            entry.run === undefined && afterKeyword(toolQuery(), entry.keywords) !== null,
+        ),
+  );
+  const leave = () => {
+    scope.set(null);
+    query.set('');
+  };
   const toolView = (tool: UiContributionRef) => {
     cleanup(() => {
       const remaining = new Map(handles());
@@ -613,26 +707,27 @@ export function QuickLauncher(
       attach: (handle) => handles.set(new Map(handles()).set(tool.key, handle)),
     });
   };
-  const show = (text: string) => {
-    query.set(text);
+  const show = (entered: ToolEntry | null) => {
+    query.set('');
+    scope.set(entered);
     failure.set(null);
     page.set(null);
     props.opened.set(true);
   };
   const toggle = () => {
     if (props.opened()) void props.close();
-    else show('');
+    else show(null);
   };
   /** A command's shortcut: runs it, or opens the launcher inside its tool. */
   const launch = (key: string) => {
     const found = untracked(quick.entries).find((item) => item.key === key);
     if (!found) return;
     if (found.entry.run) found.entry.run();
-    else show(`${found.entry.keywords[0]} `);
+    else show(found);
   };
   // Only a change of the shortcuts themselves registers them again.
   const bound = computed(() =>
-    Object.entries(commands.choices())
+    Object.entries(quick.enabled() ? commands.choices() : {})
       .flatMap(([key, choice]) => (choice.shortcut ? [`${choice.shortcut}\t${key}`] : []))
       .join('\n'),
   );
@@ -663,7 +758,7 @@ export function QuickLauncher(
   cleanup(() => GlobalShortcut.unregister(LAUNCHER_SHORTCUT));
   return (
     <>
-      <Each of={tools()} key={(tool: UiContributionRef) => tool.key}>
+      <Each of={quick.enabled() ? tools() : []} key={(tool: UiContributionRef) => tool.key}>
         {(tool) => toolView(tool())}
       </Each>
       <Window
@@ -678,7 +773,7 @@ export function QuickLauncher(
         sizeToContent="height"
         // Escape stops a running reply, and every way out has to save the draft first. In a tool's
         // settings Escape goes back, and a picker the page opens must not close it.
-        closeOnEscape={!props.conversing() && page() === null}
+        closeOnEscape={!props.conversing() && page() === null && !inside()}
         closeOnBlur={!props.conversing() && page() === null}
         closeOnPress={!props.conversing()}
         onClosePress={() => void props.close()}
@@ -686,6 +781,7 @@ export function QuickLauncher(
         onOpenChange={({ open }) => {
           if (open) return;
           page.set(null);
+          scope.set(null);
           props.closed();
         }}
       >
@@ -702,6 +798,9 @@ export function QuickLauncher(
               toolQuery={toolQuery}
               failure={failure}
               page={page}
+              scope={scope}
+              inside={inside}
+              leave={leave}
             />
           }
         >

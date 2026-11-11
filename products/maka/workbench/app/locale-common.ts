@@ -238,6 +238,18 @@ export const commonMessages = {
     '没有可设置的快捷工具。',
     '沒有可設定的快速工具。',
   ],
+  'Search {tool}': ['Search {tool}', '搜索{tool}', '搜尋{tool}'],
+  'Quick tools in the launcher': [
+    'Quick tools in the launcher',
+    '在快捷面板中启用快捷工具',
+    '在快速面板中啟用快速工具',
+  ],
+  'Symbols, clipboard history, screenshots and the other tools, with their commands and shortcuts. Still being refined.':
+    [
+      'Symbols, clipboard history, screenshots and the other tools, with their commands and shortcuts. Still being refined.',
+      '符号、剪贴板历史、截图等工具，以及它们的命令和快捷键。仍在完善中。',
+      '符號、剪貼簿歷史、截圖等工具，以及它們的命令和快速鍵。仍在完善中。',
+    ],
   'Record shortcut': ['Record shortcut', '录制快捷键', '錄製快速鍵'],
   'Press keys…': ['Press keys…', '请按下快捷键…', '請按下快速鍵…'],
   'Remove shortcut': ['Remove shortcut', '移除快捷键', '移除快速鍵'],
