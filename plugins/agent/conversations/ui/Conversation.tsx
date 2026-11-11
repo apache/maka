@@ -19,6 +19,7 @@
 
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
+import { delayed } from '../../../../products/maka/workbench/app/delayed';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
   createText,
@@ -86,12 +87,14 @@ import {
   sameHistoryRow,
   compareHistoryOrder,
   historyTurnKey,
+  readHistoryTail,
   rootEventSequence,
   historyFollowPosition,
   mergeChunks,
   openingUserMessage,
   replayStartCursor,
   senderSession,
+  stableRowId,
   updateHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
 import type { Row, Subscription } from '../../../../products/maka/workbench/app/history';
@@ -141,7 +144,12 @@ import {
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
-import { MessageEdit, TurnRetry } from '../../../../products/maka/workbench/app/MessageEdit';
+import {
+  MessageEdit,
+  MessageEditor,
+  TurnRetry,
+  type InlineEdit,
+} from '../../../../products/maka/workbench/app/MessageEdit';
 import { createMessageSenders } from '../../../../products/maka/workbench/app/messageSenders';
 import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
@@ -163,7 +171,6 @@ import {
   sameProcessActivity,
   sameProcessRows,
   orderProcessRows,
-  stableRowId,
   turnOutcome,
   turnWorkFold,
 } from '../../../../products/maka/workbench/app/processGroups';
@@ -414,6 +421,7 @@ export function Conversation(props: ConversationProps) {
   let interactionsFromStream = false;
   const error = createText();
   const ready = signal(false);
+  const showHistoryLoading = delayed(() => !ready());
   const transcriptStatus = signal<'loading' | 'live' | 'closing' | 'failed'>('loading');
   const historyWindow = signal<HistoryWindow | null>(null);
   const atHistoryTail = () => historyWindow()?.after === null;
@@ -529,7 +537,11 @@ export function Conversation(props: ConversationProps) {
   const rowState = (id: string) => {
     let state = rowStates.get(id);
     if (!state) {
-      state = { expanded: signal(false), sourceMode: signal(false) };
+      state = {
+        expanded: signal(false),
+        sourceMode: signal(false),
+        edit: signal<InlineEdit | null>(null),
+      };
       rowStates.set(id, state);
     }
     return state;
@@ -904,6 +916,7 @@ export function Conversation(props: ConversationProps) {
   let followTask: Promise<void> | null = null;
   let followAgain = false;
   let historyIdentity: object = {};
+  let historyScrolled = false;
   let windowTask: Promise<boolean> | null = null;
   let historyDestination: {
     position: HistoryPosition;
@@ -952,12 +965,12 @@ export function Conversation(props: ConversationProps) {
   ) => {
     batch(() => {
       rows.set(mergeChunks(rows(), chunks, older, through));
-      const canonical = canonicalRows().byMessage;
-      overlay.history(canonical, atHistoryTail() ? through : null, coveredFrom, windowStart);
+      const canonical = canonicalRows();
+      overlay.history(canonical.byId, atHistoryTail() ? through : null, coveredFrom, windowStart);
       publishOverlay();
       const currentPending = pendingMessages();
       const nextPending = currentPending.filter(
-        (row) => !canonical.has(`${row.messageId}/${row.field}`),
+        (row) => !canonical.byMessage.has(`${row.messageId}/${row.field}`),
       );
       if (nextPending.length !== currentPending.length) pendingMessages.set(nextPending);
     });
@@ -1012,6 +1025,7 @@ export function Conversation(props: ConversationProps) {
       return false;
     };
     historyIdentity = identity;
+    historyScrolled = false;
     for (const state of groupStates.values()) {
       if (state.revealRow !== undefined) {
         state.revealRow = undefined;
@@ -1037,6 +1051,14 @@ export function Conversation(props: ConversationProps) {
         location = reverse ? { kind: 'before', cursor } : { kind: 'after', cursor };
       }
       if (!canPublish()) return false;
+      if (position.kind === 'tail') {
+        const tail = await readHistoryTail(page, async (cursor) => {
+          const older = await history(through, { kind: 'before', cursor });
+          return canPublish() ? older : null;
+        });
+        if (tail === null || !canPublish()) return false;
+        page = { ...tail, through };
+      }
       batch(() => {
         rows.set([]);
         historyWindow.set({
@@ -1425,7 +1447,6 @@ export function Conversation(props: ConversationProps) {
         !historyDestination.explicit &&
         (await resetHistory(historyDestination.position, observed.through))
       ) {
-        await loadTurnStart();
         list?.scrollToEnd({ animated: false });
       }
       if (!alive) return;
@@ -1550,7 +1571,11 @@ export function Conversation(props: ConversationProps) {
   const loadNewer = () => extendHistory('after');
   const olderHistoryOwner = () => {
     const owner = historyWindow();
-    return owner?.before && ownsWindow(owner.identity) && props.visible() && navigation() === null
+    return historyScrolled &&
+      owner?.before &&
+      ownsWindow(owner.identity) &&
+      props.visible() &&
+      navigation() === null
       ? owner.identity
       : null;
   };
@@ -1562,23 +1587,6 @@ export function Conversation(props: ConversationProps) {
     loadOlder,
   });
   const prefetchOlder = () => void olderHistory().catch(report);
-  // A tail page can hold only the end of a long turn, whose process rows fold
-  // into a few lines that leave the reader too short to scroll for older pages.
-  // Read back to the message that opened the latest turn, within a few pages.
-  const loadTurnStart = async () => {
-    for (let page = 0; page < 8; page++) {
-      const turnKey = historyTurnKey(rows().at(-1));
-      if (
-        turnKey === undefined ||
-        historyWindow()?.before == null ||
-        rows().some(
-          (row) => row.role === 'user' && row.field === 'body' && historyTurnKey(row) === turnKey,
-        )
-      )
-        return;
-      if (!(await loadOlder())) return;
-    }
-  };
   const cancelNavigation = (turnId = navigatingTurn()) => {
     if (!alive || turnId !== navigatingTurn()) return;
     navigation.set(null);
@@ -2779,11 +2787,10 @@ export function Conversation(props: ConversationProps) {
               undefined,
               () => navigation() === target,
             )) ||
+            !alive ||
             navigation() !== target
           )
             return;
-          await loadTurnStart();
-          if (!alive || navigation() !== target) return;
           showLatest();
         } finally {
           if (navigation() === target) navigation.set(null);
@@ -3351,6 +3358,22 @@ export function Conversation(props: ConversationProps) {
                         menu={menu}
                         opensTurn={() => opensTurn(row())}
                         edit={props.edit!}
+                        inline={rowState(initial.rowId).edit}
+                      />
+                    )
+                  : undefined
+              }
+              messageEditor={
+                platform.idiom !== 'terminal' && props.edit
+                  ? (row, ownerKey) => (
+                      <MessageEditor
+                        row={row}
+                        ownerKey={ownerKey}
+                        sessionId={sessionId}
+                        through={() => latestKnown}
+                        opensTurn={() => opensTurn(row())}
+                        edit={props.edit!}
+                        state={rowState(initial.rowId).edit!}
                       />
                     )
                   : undefined
@@ -3632,13 +3655,17 @@ export function Conversation(props: ConversationProps) {
               loadMoreAtStartThreshold={HISTORY_LOOKAHEAD_VIEWPORTS}
               onLoadMoreAtStart={prefetchOlder}
               onScrollDragStart={({ offset }) => {
+                historyScrolled = true;
                 if (offset.y <= 1) prefetchOlder();
               }}
               onScrollIntent={(event) => {
                 if (event.intent === 'start') void navigateStart().catch(report);
                 else {
                   cancelNavigation();
-                  if (event.intent === 'scroll' && historyOffset <= 1) prefetchOlder();
+                  if (event.intent === 'scroll') {
+                    historyScrolled = true;
+                    if (nearHistoryStart()) prefetchOlder();
+                  }
                 }
               }}
               onBlur={() => {
@@ -3695,7 +3722,7 @@ export function Conversation(props: ConversationProps) {
                   void loadNewer();
               }}
               empty={
-                <If when={!ready()}>
+                <If when={showHistoryLoading()}>
                   <LoadingState label={tr('Loading session history…')} />
                 </If>
               }

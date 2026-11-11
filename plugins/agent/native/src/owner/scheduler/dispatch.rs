@@ -462,8 +462,15 @@ impl Owner {
             disposition: MessageDisposition::TurnStarted,
             submitted_intent: None,
         };
-        self.enqueue_background(&session_id, source, &basis, &identity, Default::default())
-            .await?;
+        self.enqueue_background(
+            &session_id,
+            source,
+            &basis,
+            &identity,
+            Default::default(),
+            maka_agent_state::queue::Placement::Followup,
+        )
+        .await?;
         // A queued fire is not yet a Run. The next pass reads the atomic queue consume.
         Ok(None)
     }

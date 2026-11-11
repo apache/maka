@@ -57,6 +57,10 @@ pub struct Compact {
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "AgentCompactResult")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "single compaction command response; keep its execution inline without an extra allocation"
+)]
 pub enum CompactResult {
     Started { execution: Execution },
     Rejected { reason: CompactRejection },

@@ -176,10 +176,7 @@ impl Producer {
                     role: AuthorRole::Canonical(Role::Assistant),
                     origin: None,
                 };
-                if matches!(
-                    rule,
-                    Rule::Admission | Rule::Steering { .. } | Rule::ExternalSources
-                ) {
+                if matches!(rule, Rule::Admission | Rule::QueueSources) {
                     let page = self
                         .snapshot
                         .sources(*sequence, item_index.checked_sub(1), 1)
@@ -231,36 +228,9 @@ impl Producer {
                                 None
                             }
                         }
-                        Rule::Steering { step, request } => {
-                            let prepared = reader.source(request).await.map_err(io_error)?;
-                            let actual: StepId = small(
-                                required(&prepared, &["step"], &self.budget).await?,
-                                &self.budget,
-                            )
-                            .await?;
-                            if &actual != *step {
-                                return Err(StoreError::EventConflict);
-                            }
-                            let item = array_item(
-                                required(&prepared, &["steering"], &self.budget)
-                                    .await?
-                                    .source,
-                                *item_index,
-                                &self.budget,
-                            )
-                            .await?
-                            .ok_or_else(|| invalid("frozen steering source missing"))?;
-                            let reference: ContentRef = small(item, &self.budget).await?;
-                            let original = reader.source(&reference).await.map_err(io_error)?;
-                            Some(
-                                json::inspect(&original, self.budget.clone())
-                                    .await
-                                    .map_err(io_error)?,
-                            )
-                        }
-                        Rule::ExternalSources => {
+                        Rule::QueueSources => {
                             return Err(invalid(
-                                "consumed external source position has no frozen input",
+                                "snapshot queue source position has no consumed input",
                             ));
                         }
                         _ => unreachable!("input classifier already matched"),
@@ -651,7 +621,7 @@ impl Producer {
                             text_field(&mut doc, Field::Body, false, text, &self.budget).await?;
                         }
                     }
-                    Rule::Steering { .. } | Rule::ExternalSources => {
+                    Rule::QueueSources => {
                         unreachable!("input source was handled before document construction")
                     }
                 }

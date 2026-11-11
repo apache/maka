@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { DialogHeader, dialogCardStyle } from './ModalDialog';
 import { LoadingIndicator } from './Loading';
 import { cleanup, inputAction, List, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
@@ -143,21 +144,16 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
     <View
       style={{
         width: '100%',
-        maxWidth: 680,
+        maxWidth: 720,
         flex: 1,
         minHeight: 0,
         maxHeight: Math.min(560, windowSize().height - 32),
-        backgroundColor: C.surface,
-        borderWidth: 1,
-        borderColor: C.line,
-        borderRadius: 16,
+        ...dialogCardStyle(),
         padding: 16,
         gap: 12,
       }}
     >
-      <Text style={{ color: C.text, fontSize: 18, fontWeight: '600' }}>
-        {tr('Manage workspace locations')}
-      </Text>
+      <DialogHeader title={tr('Manage workspace locations')} />
       <Text style={{ color: C.muted, fontSize: 13 }}>
         {tr(
           'Add absolute folder paths on this Host. Removing a location does not delete its files.',

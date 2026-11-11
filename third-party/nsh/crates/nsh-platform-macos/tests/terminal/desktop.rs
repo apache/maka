@@ -32,6 +32,12 @@ use nsh_platform_macos::{
 };
 use nsh_terminal::{DevicePixels, NativeSurface, size};
 
+const EDITOR_APP: &str = r#"
+import { mount } from "nsh";
+import { Input } from "nsh/base";
+mount(() => <Input autoFocus defaultValue="warmup" />);
+"#;
+
 const APP: &str = r#"
 import { View, mount } from "nsh";
 import { Input } from "nsh/base";
@@ -76,7 +82,7 @@ pub(super) fn isolation() {
     let app = NSApplication::sharedApplication(mtm);
     let initial_windows = app.windows().count();
     let surface = TerminalSurface::new(
-        config(APP),
+        config(EDITOR_APP),
         size(DevicePixels(320), DevicePixels(240)),
         1.0,
         Box::new(|frame| {
@@ -85,24 +91,44 @@ pub(super) fn isolation() {
         Arc::new(|| {}),
     )
     .unwrap();
+    assert_eq!(app.windows().count(), initial_windows + 1);
+    until(|| {
+        surface.pump_with_draw(true);
+        assert_eq!(surface.take_error(), None);
+        surface.editor_text().as_deref() == Some("warmup")
+    });
+    // AppKit lazily creates text-input helper windows. Establish the window
+    // baseline with a focused editor before exercising desktop commands.
+    let editor_windows = app.windows();
+    surface.load_with_config(config(APP));
     until(|| {
         surface.pump_with_draw(true);
         assert_eq!(surface.take_error(), None);
         surface.editor_text().as_deref() == Some("terminal")
     });
-    assert_eq!(
-        app.windows().count(),
-        initial_windows + 1,
-        "terminal opened a secondary native window"
-    );
-    for window in app.windows() {
-        assert!(!window.isVisible(), "terminal exposed an offscreen window");
-    }
+    let assert_isolated = || {
+        let windows = app.windows();
+        assert_eq!(
+            windows.count(),
+            editor_windows.count(),
+            "terminal opened a secondary native window"
+        );
+        for window in windows {
+            assert!(
+                editor_windows.containsObject(&window),
+                "terminal replaced a native window"
+            );
+            assert!(!window.isVisible(), "terminal exposed an offscreen window");
+        }
+    };
+    assert_isolated();
     surface.set_selected_text_range(8..8).unwrap();
     assert!(surface.paste(nsh_core::PasteEvent::new("!")));
     until(|| {
         surface.pump_with_draw(true);
+        assert_eq!(surface.take_error(), None);
         surface.editor_text().as_deref() == Some("terminal!")
     });
+    assert_isolated();
     surface.shutdown();
 }

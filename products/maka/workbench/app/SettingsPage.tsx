@@ -205,6 +205,7 @@ function RowLine() {
 export type SettingsRowProps = {
   label: string;
   description?: string;
+  detail?: JSX.Element;
   /** Something that needs action, in `warning`. */
   status?: string;
   leading?: JSX.Element;
@@ -237,6 +238,7 @@ export function SettingsRow(props: SettingsRowProps) {
         <If when={props.description}>
           <Text style={{ ...captionTextStyle, color: C.muted }}>{props.description}</Text>
         </If>
+        {props.detail}
       </View>
       <If when={props.status}>
         <Text style={[{ ...captionTextStyle, color: C.warning }, { pointerEvents: 'none' }]}>
@@ -693,11 +695,15 @@ export function SettingsButton(props: {
   icon?: 'plus' | 'refresh' | 'trash';
   /** Shows only the icon; the label still names the button. */
   iconOnly?: boolean;
+  autoFocus?: boolean;
 }) {
   const primary = () => props.tone === 'primary';
   const quiet = () => props.tone === 'quiet';
   return (
     <Button
+      ref={(node) => {
+        if (props.autoFocus) node.focus();
+      }}
       accessibilityLabel={props.accessibilityLabel ?? props.label}
       disabled={props.disabled}
       selected={props.selected}

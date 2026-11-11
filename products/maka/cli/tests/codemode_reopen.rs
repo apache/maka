@@ -31,7 +31,10 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::TokioIo;
-use maka_agent_facts::execution::CodeLanguage;
+use maka_agent_facts::{
+    execution::CodeLanguage,
+    operation::{RecordedOperationReply, RecordedOperationResult, inline_reply, same_outcome},
+};
 use maka_app_client::{Client, Journal};
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
 use maka_host_runtime::application::host::Client as HostClient;
@@ -361,7 +364,12 @@ fn cell_wire_rejects_unknown_parts_and_does_not_search_child_input_for_markers()
         vec![&marker]
     );
     let interrupted = json!({"cell":cell,"state":"interrupted","diagnostic":"process is confirmed gone","children":{}});
-    assert_eq!(cell_observation(&[interrupted.clone()]).unwrap().1, cell);
+    assert_eq!(
+        cell_observation(std::slice::from_ref(&interrupted))
+            .unwrap()
+            .1,
+        cell
+    );
     assert_eq!(
         notification_objects(&json!(format!("{CELL_OBSERVATION}\n{interrupted}"))).unwrap(),
         vec![interrupted]
@@ -471,12 +479,32 @@ impl Model {
         let child = &children[operation];
         assert_eq!(child["name"], "Shell");
         assert_eq!(child["reference"], original["reference"]);
-        assert_eq!(&child["reply"], original);
+        let recorded: RecordedOperationReply = serde_json::from_value(original.clone()).unwrap();
         let reply: OperationReply = serde_json::from_value(child["reply"].clone()).unwrap();
         assert_eq!(
             serde_json::to_value(&reply.reference).unwrap(),
             original["reference"]
         );
+        let resolved = inline_reply(reply.clone());
+        match (&recorded.receipt, &resolved.receipt) {
+            (
+                Receipt::Recorded {
+                    outcome: expected,
+                    cleanup: expected_cleanup,
+                },
+                Receipt::Recorded {
+                    outcome: actual,
+                    cleanup: actual_cleanup,
+                },
+            ) => {
+                assert_eq!(expected_cleanup, actual_cleanup);
+                assert!(
+                    same_outcome(expected, actual).unwrap(),
+                    "must retain the original recorded result"
+                );
+            }
+            other => panic!("original receipt must stay recorded: {other:?}"),
+        }
         shell_output(&success(&reply), &self.nonce);
     }
 
@@ -887,6 +915,10 @@ async fn source(
     serde_json::from_str(&text).map_err(|error| format!("canonical source JSON: {error}"))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Test resources stay separately owned for exact process cleanup after a fault"
+)]
 async fn case(
     sandbox: &Sandbox,
     hosts: &mut Vec<Host>,
@@ -1001,7 +1033,7 @@ async fn case(
     assert_eq!(current["execution"]["runId"], run);
     assert_eq!(
         current["execution"]["state"],
-        json!({"kind":"waiting","waits":[{"kind":"cell","cell":draft}]})
+        json!({"kind":"waiting","waits":[{"kind":"cell","cell":draft}],"authorityUnavailable":false})
     );
     let expected_effect = format!("{nonce}\n");
     assert_eq!(
@@ -1072,13 +1104,28 @@ async fn case(
     let known = one_event(&before, &run, &draft, "child_observed");
     let bound_event = &bound["item"]["recorded"]["fact"]["event"];
     let known_event = &known["item"]["recorded"]["fact"]["event"];
-    let child_reply: OperationReply = serde_json::from_value(known_event["reply"].clone()).unwrap();
+    let child_reply: RecordedOperationReply =
+        serde_json::from_value(known_event["reply"].clone()).unwrap();
     assert_eq!(
         serde_json::to_value(&child_reply.reference).unwrap(),
         bound_event["reference"]
     );
     assert_eq!(known_event["operation"], bound_event["operation"]);
-    shell_output(&success(&child_reply), &nonce);
+    assert!(
+        matches!(
+            &child_reply.receipt,
+            Receipt::Recorded {
+                outcome: OperationOutcome::Returned {
+                    result: RecordedOperationResult::Referenced {
+                        is_error: false,
+                        ..
+                    }
+                },
+                cleanup: OperationCleanup::Confirmed
+            }
+        ),
+        "known successful original result: {child_reply:?}"
+    );
     let child_result = one_event(&before, &run, &draft, "child_result_recorded");
     one_event(&before, &run, &draft, "child_admitted");
     let prepared = one_event(&before, &run, &draft, "child_prepared");
@@ -1136,6 +1183,12 @@ async fn case(
         .await?,
         "receipts".into(),
     )?);
+    let known_receipt = source(&clients[1], session, &before, known, "receipt").await?;
+    let resolved: OperationReply = serde_json::from_value(known_receipt["reply"].clone()).unwrap();
+    let mut expanded_event = known_event.clone();
+    expanded_event["reply"] = serde_json::to_value(&resolved).unwrap();
+    assert_eq!(known_receipt, expanded_event);
+    shell_output(&success(&resolved), &nonce);
     let mut observations = WorkObservations::default();
     let completion = phase(
         "same Run interrupted notification, old wait, and new exec",
@@ -1162,7 +1215,7 @@ async fn case(
     );
     assert_eq!(
         source(&clients[1], session, &before, known, "receipt").await?,
-        *known_event
+        known_receipt
     );
     let returned_child = source(&clients[1], session, &before, child_result, "result").await?;
     shell_output(&returned_child, &nonce);

@@ -374,11 +374,10 @@ async fn serve(
                 result = builder.serve_connection(TokioIo::new(socket), service) => result,
             };
             if observed.load(Ordering::SeqCst) {
-                if let Err(error) = result {
-                    if !(error.is_incomplete_message() || error.is_canceled() || error.is_closed())
-                    {
-                        return Err(format!("held model connection: {error}"));
-                    }
+                if let Err(error) = result
+                    && !(error.is_incomplete_message() || error.is_canceled() || error.is_closed())
+                {
+                    return Err(format!("held model connection: {error}"));
                 }
                 model.eof.fetch_add(1, Ordering::SeqCst);
                 closed.send("eof").map_err(|error| error.to_string())?;
@@ -406,19 +405,11 @@ fn work_metadata(value: &Value) -> Value {
             })})
         })
         .collect();
-    let blockers: Vec<_> = state["blockers"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .take(4)
-        .map(|blocker| json!({"id":blocker["id"],"reason":{"kind":blocker["reason"]["kind"]}}))
-        .collect();
     json!({"kind":value["kind"],"shared":value["shared"],
         "execution":{"sessionId":execution["sessionId"],"turnId":execution["turnId"],
             "runId":execution["runId"],"highWater":execution["highWater"],
-            "state":{"kind":state["kind"],"waits":waits,"blockers":blockers,
-                "waitCount":state["waits"].as_array().map(Vec::len),
-                "blockerCount":state["blockers"].as_array().map(Vec::len)}},
+            "state":{"kind":state["kind"],"reason":state["reason"],"waits":waits,
+                "waitCount":state["waits"].as_array().map(Vec::len)}},
         "pendingInteractions":value["pendingInteractions"]})
 }
 
@@ -717,6 +708,10 @@ fn goal_identity(current: &Value) -> Value {
         "createdAt":current["createdAt"],"report":current["report"],"note":current["note"]})
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Test resources stay separately owned for exact process cleanup after a fault"
+)]
 async fn body(
     producer: Producer,
     sandbox: &Sandbox,
@@ -1124,12 +1119,10 @@ async fn body(
     assert_ne!(second_epoch, epoch);
     assert_eq!(second_source, source);
     let client = &clients[1];
-    let recovered = work(client, &session, &message, Some("blocked"), None).await?;
+    let recovered = work(client, &session, &message, Some("failed"), None).await?;
     assert_eq!(recovered["runId"], run);
     assert_eq!(recovered["turnId"], original["turnId"]);
-    let blockers = recovered["state"]["blockers"].as_array().unwrap();
-    assert_eq!(blockers.len(), 1);
-    assert_eq!(blockers[0]["reason"]["kind"], "unsupported_protocol");
+    assert_eq!(recovered["state"]["reason"]["kind"], "unsupported_protocol");
     let by_run = query(
         client,
         "execution",
@@ -1179,7 +1172,7 @@ async fn body(
             Producer::GoalBudget => 2,
         }
     );
-    // Leave blocked history for the existing read-only inspector, without a
+    // Leave failed history for the existing read-only inspector, without a
     // test Root/SQL writer or a live Root fence.
     phase("second client close before Host fault", clients[1].close()).await?;
     phase("second Host kill/wait/EOF", hosts[1].sigkill()).await?;
@@ -1212,15 +1205,10 @@ async fn body(
         recovery["fact"]["attempt"],
         one(&before, "model_attempt_prepared")["fact"]["attempt"]
     );
+    assert_eq!(one(&after, "run_terminated")["fact"]["terminal"], "failed");
     assert!(!after.iter().any(|record| matches!(
         record["fact"]["kind"].as_str(),
-        Some(
-            "model_observed"
-                | "model_closed"
-                | "retry_charged"
-                | "stop_requested"
-                | "run_terminated"
-        )
+        Some("model_observed" | "model_closed" | "retry_charged" | "stop_requested")
     )));
     assert_eq!(model.producer_requests.load(Ordering::SeqCst), 1);
     Ok(())
@@ -1349,12 +1337,12 @@ async fn acceptance(producer: Producer) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn goal_iteration_one_reopens_original_blocked_run_without_redispatch() {
+async fn goal_iteration_one_fails_original_run_without_redispatch_after_reopen() {
     acceptance(Producer::Goal).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn scheduler_user_approved_due_fire_reopens_original_blocked_run_without_redispatch() {
+async fn scheduler_user_approved_due_fire_fails_original_run_without_redispatch_after_reopen() {
     acceptance(Producer::Scheduler).await;
 }
 

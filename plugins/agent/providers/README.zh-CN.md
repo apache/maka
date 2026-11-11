@@ -25,6 +25,8 @@
 
 Codex 管理订阅配置、认证和模型发现。执行适配器位于 [model::adapters](../model/src/adapters.rs)，组合通用 Responses 适配器。提供商定义不拥有模型执行会话。
 
+提供商通过 `Provider::usage_limits` 提供额度查询。连接页在前台时会刷新用量窗口、预算和余额。火山方舟 Coding Plan 和 Agent Plan 使用单独的额度查询密钥。腾讯云 Token Plan 企业版还需要填写套餐 ID，绑定这条连接对应的额度。[提供商接口](../ports/src/provider.rs)
+
 API 请求选项遵循解析后的实际协议，覆盖提供商别名、模型覆盖和备选协议。模型可选元数据、主请求、自动标题和回顾使用相同的思考档位准备策略；显式禁用 Anthropic 并行工具调用会编码进请求。原生准备诊断保留固定的本地拒绝原因，同时隐藏提供商的任意错误文本。
 
 [源码](src/lib.rs) · [Cargo 配置](Cargo.toml)

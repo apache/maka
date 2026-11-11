@@ -39,7 +39,6 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Notify, watch};
-use uuid::Uuid;
 
 macro_rules! native {
     ($ty:path { $($field:ident: $value:expr),* $(,)? }) => {{
@@ -1114,6 +1113,86 @@ async fn desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu() 
     fixture.finish().await;
 }
 
+async fn desktop_edits_a_message_in_place_and_forks_only_when_sent() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("ORIGINAL_EDIT_MESSAGE").await;
+    desktop.submit().await;
+    let mut reply = desktop.request(&mut fixture).await;
+    reply.delta("ORIGINAL_EDIT_REPLY").await;
+    desktop
+        .wait("the reply did not finish", reply.finish())
+        .await;
+    let sessions = desktop.sessions().await;
+    assert_eq!(sessions.len(), 2);
+    let session = sessions
+        .iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fixture.idle(&desktop.client, &session).await;
+
+    // Opening the editor and leaving it creates nothing.
+    let pencil = desktop.control("Edit and resend in a fork").await;
+    desktop.hover_at(pencil.center());
+    desktop
+        .retry(
+            "the pencil did not open the message editor",
+            || !desktop.controls("Send edited message in a fork").is_empty(),
+            || desktop.press_at(pencil.center()),
+        )
+        .await;
+    desktop.expect_text("ORIGINAL_EDIT_MESSAGE").await;
+    desktop.artifact("message-editor");
+    assert!(desktop.controls("Edit and resend in a fork").is_empty());
+    assert_eq!(desktop.sessions().await.len(), 2);
+    desktop.key("escape", false);
+    desktop
+        .until("escape did not close the message editor", || {
+            desktop
+                .controls("Send edited message in a fork")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    assert_eq!(desktop.sessions().await.len(), 2);
+
+    // Sending the edit forks once, before the edited turn, and sends the new text there.
+    let pencil = desktop.control("Edit and resend in a fork").await;
+    desktop.hover_at(pencil.center());
+    desktop
+        .retry(
+            "the pencil did not open the message editor",
+            || !desktop.controls("Send edited message in a fork").is_empty(),
+            || desktop.press_at(pencil.center()),
+        )
+        .await;
+    desktop.type_text("EDITED_IN_PLACE_MESSAGE").await;
+    assert_eq!(desktop.sessions().await.len(), 2);
+    desktop.press("Send edited message in a fork").await;
+    let edited = desktop.request(&mut fixture).await;
+    let body = edited.body.to_string();
+    assert!(body.contains("EDITED_IN_PLACE_MESSAGE"), "{body}");
+    assert!(!body.contains("ORIGINAL_EDIT_MESSAGE"), "{body}");
+    edited.finish().await;
+    let sessions = desktop.sessions().await;
+    assert_eq!(sessions.len(), 3);
+    let fork = sessions
+        .iter()
+        .find(|item| item["id"] != fixture.session && item["id"] != session.as_str())
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fixture.idle(&desktop.client, &fork).await;
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     let mut fixture = Fixture::configured(Options {
         code_mode: true,
@@ -2093,7 +2172,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop
         .retry(
             "the Goal dialog did not open",
-            || !desktop.controls("Close Goal").is_empty(),
+            || !desktop.controls("Cancel editing").is_empty(),
             || {
                 let goal = desktop.controls("Goal");
                 let add = desktop.controls("Add to message");
@@ -2167,13 +2246,34 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     let running = desktop.request(&mut fixture).await;
     desktop.press("Change budget").await;
     desktop.control("Cancel editing").await;
+    assert!(
+        running.body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["function"]["name"] == "GoalStatus"),
+        "{}",
+        running.body
+    );
     running
         .tool_call(
             "GoalStatus",
             json!({"status":"achieved", "note":"Verified the requested result"}),
         )
         .await;
-    desktop.request(&mut fixture).await.finish().await;
+    let finished = desktop.request(&mut fixture).await;
+    let result: Value = serde_json::from_str(
+        finished.body["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(result["current"]["status"], "achieved", "{result}");
+    finished.finish().await;
     desktop
         .until("a finished Goal still offers budget updates", || {
             desktop.controls("Apply budget").is_empty().then_some(())
@@ -2215,7 +2315,19 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         json!({"status":"achieved", "note":"Follow-up verified"}),
     )
     .await;
-    desktop.request(&mut fixture).await.finish().await;
+    let finished = desktop.request(&mut fixture).await;
+    let result: Value = serde_json::from_str(
+        finished.body["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(result["current"]["status"], "achieved", "{result}");
+    finished.finish().await;
     desktop.press("Focus message composer").await;
     desktop.type_text("/goal").await;
     // "/goal" opens a completion menu, and an Enter on the binding of a menu
@@ -2223,15 +2335,19 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop
         .retry(
             "/goal did not open the Goal dialog",
-            || !desktop.controls("Close Goal").is_empty(),
+            || !desktop.controls("New Goal").is_empty(),
             || desktop.key("enter", false),
         )
         .await;
-    desktop.control("New Goal").await;
+    let previous = desktop.platform.text_input_target();
+    desktop.press("New Goal").await;
+    desktop.target_after(previous).await;
+    desktop.type_text("Cancel this unsubmitted Goal").await;
+    desktop.control("Start Goal").await;
     desktop.key("escape", false);
     desktop
         .until("the Goal dialog did not close", || {
-            desktop.controls("Close Goal").is_empty().then_some(())
+            desktop.controls("Start Goal").is_empty().then_some(())
         })
         .await;
     drop(first);
@@ -2532,6 +2648,34 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
     fixture.finish().await;
 }
 
+async fn desktop_composer_sandbox_choice_becomes_the_default() {
+    let fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.press("Sandbox and approvals").await;
+    desktop.press("Full access · Sandbox off").await;
+    desktop
+        .wait(
+            "the composer's sandbox choice did not become the Host default",
+            async {
+                loop {
+                    let preferences = desktop
+                        .client
+                        .query("settings", "assistantPreferences", json!({}))
+                        .await
+                        .unwrap();
+                    if preferences["defaultSandboxMode"] == "danger-full-access" {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            },
+        )
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
     "desktop_remembers_folders_without_restoring_unsent_drafts",
@@ -2541,6 +2685,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
     "desktop_continues_a_failed_run_without_duplicating_the_user_message",
     "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu",
+    "desktop_edits_a_message_in_place_and_forks_only_when_sent",
     "desktop_lists_a_scripts_tool_calls_in_place_of_the_script",
     "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
@@ -2554,6 +2699,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_changes",
     "desktop_composer_large_paste_keeps_controls_on_screen",
     "desktop_system_permission_guidance_uses_native_actions_without_paths",
+    "desktop_composer_sandbox_choice_becomes_the_default",
 ];
 
 pub(crate) fn run(name: &str) {
@@ -2586,6 +2732,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu" => {
             runtime.block_on(desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu())
+        }
+        "desktop_edits_a_message_in_place_and_forks_only_when_sent" => {
+            runtime.block_on(desktop_edits_a_message_in_place_and_forks_only_when_sent())
         }
         "desktop_lists_a_scripts_tool_calls_in_place_of_the_script" => {
             runtime.block_on(desktop_lists_a_scripts_tool_calls_in_place_of_the_script())
@@ -2626,6 +2775,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_system_permission_guidance_uses_native_actions_without_paths" => {
             runtime.block_on(desktop_system_permission_guidance_uses_native_actions_without_paths())
+        }
+        "desktop_composer_sandbox_choice_becomes_the_default" => {
+            runtime.block_on(desktop_composer_sandbox_choice_becomes_the_default())
         }
         _ => panic!("unknown native test: {name}"),
     }

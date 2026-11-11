@@ -18,6 +18,8 @@
  */
 use super::*;
 
+type EntryPage = (Vec<(u64, Entry)>, Option<u64>);
+
 impl Snapshot {
     pub async fn artifact_record(
         &self,
@@ -36,7 +38,7 @@ impl Snapshot {
         &self,
         after: Option<u64>,
         limit: u32,
-    ) -> Result<(Vec<(u64, Entry)>, Option<u64>), StoreError> {
+    ) -> Result<EntryPage, StoreError> {
         self.data
             .query(Entries {
                 snapshot: self.clone(),
@@ -67,7 +69,7 @@ impl Snapshot {
         session: String,
         after: Option<u64>,
         limit: u32,
-    ) -> Result<(Vec<(u64, Entry)>, Option<u64>), StoreError> {
+    ) -> Result<EntryPage, StoreError> {
         self.data
             .query(Entries {
                 snapshot: self.clone(),
@@ -84,7 +86,7 @@ impl Snapshot {
         session: String,
         after: Option<u64>,
         limit: u32,
-    ) -> Result<(Vec<(u64, Entry)>, Option<u64>), StoreError> {
+    ) -> Result<EntryPage, StoreError> {
         self.data
             .query(Entries {
                 snapshot: self.clone(),
@@ -132,7 +134,7 @@ struct Entries {
     limit: u32,
 }
 impl Query for Entries {
-    type Output = (Vec<(u64, Entry)>, Option<u64>);
+    type Output = EntryPage;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         read::authorize(c, &self.snapshot)?;
         let limit = super::super::super::sql::limit(self.limit)?;
@@ -194,7 +196,7 @@ fn inventory_page(
     snapshot: &Snapshot,
     after: i64,
     limit: u32,
-) -> Result<(Vec<(u64, Entry)>, Option<u64>), StoreError> {
+) -> Result<EntryPage, StoreError> {
     let mut statement = c.prepare_cached(
         "SELECT p.first_ordinal,b.payload FROM agent_history_snapshot_inventory_pages p
          JOIN contents b ON b.id=p.content_id

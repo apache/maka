@@ -307,6 +307,10 @@ impl Host {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "lease identity, caller scope, provider generation and owned input are independent admission inputs"
+    )]
     pub(super) fn reserve_owned_input(
         &mut self,
         identity: TabIdentity,

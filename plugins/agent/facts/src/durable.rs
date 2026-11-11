@@ -342,13 +342,6 @@ pub enum BlockerKind {
         descriptor: ContentRef,
     },
 }
-impl BlockerKind {
-    pub fn is_legacy_compaction_lookup(&self) -> bool {
-        matches!(self, Self::UnsupportedProtocol { protocol, version: 1 }
-            if protocol == "compaction-budget-attempt-missing")
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RiskDecision {

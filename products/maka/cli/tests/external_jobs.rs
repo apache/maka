@@ -601,14 +601,13 @@ impl Rig {
             }
         }
         self.controller.stop.cancel();
-        if let Some(mut task) = self.controller.task.take() {
-            if let Err(error) = phase("join owned controller and original connections", async {
+        if let Some(mut task) = self.controller.task.take()
+            && let Err(error) = phase("join owned controller and original connections", async {
                 (&mut task).await.map_err(|e| e.to_string())?
             })
             .await
-            {
-                errors.push(error);
-            }
+        {
+            errors.push(error);
         }
         errors
     }
@@ -999,13 +998,11 @@ async fn run_case(crash: bool) {
                 let (mut reopened, recovery) = phase("same Root new Host epoch", rig.start()).await?;
                 assert_ne!(reopened.epoch(),epoch);
                 assert_eq!(reopened.source(),&post_config_source);
-                let blocked = phase("read original immutable transcript, not BackendScope rejection",
-                    terminal_state(&recovery,&session,&run,"blocked")).await?;
-                let blockers = blocked["state"]["blockers"].as_array().ok_or("typed blockers missing")?;
-                assert_eq!(blockers.len(),1,"{blocked}");
-                assert_eq!(blockers[0]["reason"]["kind"],"external_task_unobservable",
-                    "BackendScope/NotFound is not native task reconciliation: {blocked}");
-                assert_eq!(blockers[0]["reason"]["descriptor"],bound["descriptor"], "must observe the original bound native resource");
+                let failed = phase("read original immutable transcript, not BackendScope rejection",
+                    terminal_state(&recovery,&session,&run,"failed")).await?;
+                assert_eq!(failed["state"]["reason"], json!({
+                    "kind":"external_task_unobservable", "descriptor":bound["descriptor"]
+                }), "must retain the original bound native resource: {failed}");
                 let after = phase("same canonical output prefix after crash",
                     checkpoint(&recovery,&session,&run,&ready["checkpoint"])).await?;
                 assert_eq!(after["execution"]["runId"],run);

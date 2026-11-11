@@ -30,7 +30,6 @@ import {
   msg_formSubmit,
   msg_helpCommands,
   msg_helpSend,
-  msg_paletteClose,
   msg_paletteTitle,
   msg_permissionDenied,
   msg_permissionDeny,
@@ -196,11 +195,6 @@ export const conversationMessages = {
     '使用全域壓縮提示詞',
   ],
   'Use global settings': ['Use global settings', '使用全局设置', '使用全域設定'],
-  'Close conversation compaction prompt': [
-    'Close conversation compaction prompt',
-    '关闭会话压缩提示词',
-    '關閉對話壓縮提示詞',
-  ],
   'Cancel conversation compaction prompt': [
     'Cancel conversation compaction prompt',
     '取消编辑会话压缩提示词',
@@ -403,7 +397,6 @@ export const conversationMessages = {
       '会开始一个新的 Bot。当前 Bot 会连同它的对话一起归档，它的待办和定时任务不会带到新 Bot。',
       '會開始一個新的 Bot。目前的 Bot 會連同它的對話一起封存，它的待辦和定時任務不會帶到新 Bot。',
     ],
-  'Keep the current Bot': ['Keep the current Bot', '保留当前 Bot', '保留目前的 Bot'],
   'Start over': ['Start over', '重新开始', '重新開始'],
   'Starting over…': ['Starting over…', '正在重新开始…', '正在重新開始…'],
   'The current Bot could not be renamed: {reason}': [
@@ -470,7 +463,6 @@ export const conversationMessages = {
     '請選擇 {minimum}–{maximum} 個選項。',
   ],
   'Close attachment picker': ['Close attachment picker', '关闭附件选择器', '關閉附件選擇器'],
-  'Close commands': msg_paletteClose,
   'Collapse session browser': ['Collapse session browser', '收起对话侧栏', '收合對話側欄'],
   'Close picker': ['Close picker', '关闭选择器', '關閉選擇器'],
   'Close turn usage': ['Close turn usage', '关闭本轮用量', '關閉本輪用量'],
@@ -647,6 +639,18 @@ export const conversationMessages = {
     '在分支中编辑后重发',
     '在分支中編輯後重新傳送',
   ],
+  'Message editor': ['Message editor', '消息编辑框', '訊息編輯框'],
+  'Sending continues in a new conversation. This one stays as it is.': [
+    'Sending continues in a new conversation. This one stays as it is.',
+    '发送后在新对话中继续，原对话保持不变。',
+    '傳送後在新對話中繼續，原對話保持不變。',
+  ],
+  'Send edited message in a fork': [
+    'Send edited message in a fork',
+    '在分支中发送编辑后的消息',
+    '在分支中傳送編輯後的訊息',
+  ],
+  Send: ['Send', '发送', '傳送'],
   'Send or clear the draft first.': [
     'Send or clear the draft first.',
     '请先发送或清空草稿。',
@@ -1775,7 +1779,6 @@ export const conversationMessages = {
     '正在保存沙箱设置…',
     '正在儲存沙箱設定…',
   ],
-  'Sandbox off': ['Sandbox off', '沙箱已关闭', '沙箱已關閉'],
   'Full access · Sandbox off': [
     'Full access · Sandbox off',
     '完全访问 · 沙箱已关闭',
@@ -1802,10 +1805,20 @@ export const conversationMessages = {
     '不使用沙箱，可读写任意文件。',
     '不使用沙箱，可讀寫任意檔案。',
   ],
-  'Applies to this conversation; changing it clears earlier approvals.': [
-    'Applies to this conversation; changing it clears earlier approvals.',
-    '仅作用于此对话；更改会清除已有授权。',
-    '僅作用於此對話；變更會清除已有授權。',
+  'Applies to this conversation; changing the sandbox clears earlier approvals.': [
+    'Applies to this conversation; changing the sandbox clears earlier approvals.',
+    '仅作用于此对话；更改沙箱会清除已有授权。',
+    '僅作用於此對話；變更沙箱會清除已有授權。',
+  ],
+  'New conversations also start with this sandbox.': [
+    'New conversations also start with this sandbox.',
+    '之后的新对话也会默认使用此沙箱。',
+    '之後的新對話也會預設使用此沙箱。',
+  ],
+  'The default sandbox setting could not be saved.': [
+    'The default sandbox setting could not be saved.',
+    '无法保存默认沙箱设置。',
+    '無法儲存預設沙箱設定。',
   ],
   'Sandbox settings rejected: {reason}': [
     'Sandbox settings rejected: {reason}',

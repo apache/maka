@@ -31,11 +31,7 @@ pub(super) use external::{prepared as external_prepared, returned as external_re
 
 pub(crate) enum Rule<'a> {
     Admission,
-    Steering {
-        step: &'a StepId,
-        request: &'a ContentRef,
-    },
-    ExternalSources,
+    QueueSources,
     Model(&'a ModelPart),
     Returned {
         result: &'a ContentRef,
@@ -56,8 +52,7 @@ pub(crate) enum Rule<'a> {
 pub(crate) fn rule(fact: &Fact) -> Option<Rule<'_>> {
     Some(match fact {
         Fact::RunAdmitted { .. } => Rule::Admission,
-        Fact::StepPrepared { step, request, .. } => Rule::Steering { step, request },
-        Fact::ExternalTaskPrepared { .. } => Rule::ExternalSources,
+        Fact::StepPrepared { .. } | Fact::ExternalTaskPrepared { .. } => Rule::QueueSources,
         Fact::ModelObserved { part, .. } => Rule::Model(part),
         Fact::LocalToolReturned { result, .. } => Rule::Returned {
             result,

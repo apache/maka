@@ -23,13 +23,16 @@ pub mod authentication;
 mod refresh;
 pub use refresh::RefreshCall;
 mod inspection;
-pub use inspection::{Discovery, Verification};
+pub use inspection::{
+    Discovery, UsageCredential, UsageLimit, UsageLimitsRequest, UsagePeriod, UsageQuantity,
+    Verification,
+};
 pub mod configuration;
 
 use crate::model::Credentials;
 use crate::model::Transport;
 use authentication::{Authenticate, Credential, Interaction};
-pub use configuration::{Connection, Descriptor, Model, Resolve};
+pub use configuration::{Connection, Descriptor, Model, Resolve, UsageAuthentication};
 use futures_util::future::BoxFuture;
 use maka_agent_facts::configuration::ModelInfo;
 pub use maka_agent_facts::provider::Identity;
@@ -129,6 +132,15 @@ pub trait Provider: Send + Sync {
         _request: Discovery,
         _context: Context,
     ) -> BoxFuture<'_, Result<Vec<ModelInfo>, Error>> {
+        Box::pin(async { Err(Error::Unavailable) })
+    }
+
+    /// Read the provider's current account allowances using this connection.
+    fn usage_limits(
+        &self,
+        _request: UsageLimitsRequest,
+        _context: Context,
+    ) -> BoxFuture<'_, Result<Vec<UsageLimit>, Error>> {
         Box::pin(async { Err(Error::Unavailable) })
     }
 

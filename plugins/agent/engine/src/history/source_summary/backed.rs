@@ -124,7 +124,6 @@ impl ByteCursor for OwnedCursor {
 
 const MEDIA_BYTES: u64 = 64;
 const SYSTEM_BYTES: u64 = 40;
-const HASH_BYTES: u64 = 32;
 const COMPOSITE_PIECES: usize = 3;
 const EXCERPT_PIECES: usize = 2 * COMPOSITE_PIECES + 1;
 const TEXT_PIECES: usize = 1 + 1 + 3 + 7 + 3 * EXCERPT_PIECES;
@@ -179,7 +178,6 @@ impl MediaRecord {
 struct Tables {
     media: Range<u64>,
     systems: Range<u64>,
-    prefixes: Range<u64>,
 }
 fn offset(start: u64, index: usize, width: u64) -> io::Result<u64> {
     start
@@ -284,12 +282,6 @@ impl Index<'_> {
         Ok(())
     }
     async fn build(&mut self) -> io::Result<()> {
-        write::<32>(
-            self.arena,
-            self.tables.prefixes.start,
-            self.hash.clone().finalize().into(),
-        )
-        .await?;
         let mut cursor = self.source.open(0);
         let mut message = 0usize;
         while let Some(recipe) = cursor.next().await? {
@@ -317,12 +309,6 @@ impl Index<'_> {
                     self.system_breakdown.accumulate(&descriptor.breakdown);
                     self.hash.update(descriptor.commitment);
                     self.systems = self.systems.checked_add(1).ok_or_else(overflow)?;
-                    write::<32>(
-                        self.arena,
-                        offset(self.tables.prefixes.start, self.systems, HASH_BYTES)?,
-                        self.hash.clone().finalize().into(),
-                    )
-                    .await?;
                 }
                 MessageRecipe::User { content, .. } => self.content(content, message, 0, 0).await?,
                 MessageRecipe::Assistant { content, .. } => {
@@ -637,7 +623,6 @@ struct Directory {
     systems: usize,
     user: MessageRecipe,
     user_metadata: MessageMetadata,
-    final_prefix: [u8; 32],
 }
 struct Messages(Arc<Directory>);
 struct MessageCursor {
@@ -696,25 +681,6 @@ impl MessageSource for Messages {
         Box::new(MetadataCursor {
             directory: self.0.clone(),
             position: start,
-        })
-    }
-    fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_> {
-        Box::pin(async move {
-            if messages > self.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "summary prefix exceeds directory",
-                ));
-            }
-            if messages == self.len() {
-                return Ok(hex::encode(self.0.final_prefix));
-            }
-            let hash: [u8; 32] = read(
-                &self.0.view.arena,
-                offset(self.0.view.tables.prefixes.start, messages, HASH_BYTES)?,
-            )
-            .await?;
-            Ok(hex::encode(hash))
         })
     }
 }
@@ -972,21 +938,9 @@ pub(super) async fn fit(
     )
     .await
     .map_err(failure)?;
-    let prefix_region = reserve(
-        &arena,
-        u64::try_from(systems)
-            .map_err(|error| failure(io::Error::other(error)))?
-            .checked_add(1)
-            .and_then(|count| count.checked_mul(HASH_BYTES))
-            .ok_or_else(|| failure(overflow()))?,
-        &fit,
-    )
-    .await
-    .map_err(failure)?;
     let tables = Tables {
         media: media_region,
         systems: system_region,
-        prefixes: prefix_region,
     };
     let mut hash = Sha256::new();
     hash.update(b"maka.logical-prefix\0");
@@ -1157,7 +1111,6 @@ pub(super) async fn fit(
                 systems,
                 user,
                 user_metadata,
-                final_prefix,
             });
             let mut body = Prompt::from_recipes(
                 Arc::new(Messages(directory)),

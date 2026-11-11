@@ -350,22 +350,6 @@ impl MessageSource for GeneratedMessages {
     fn open_metadata(&self, start: usize) -> Box<dyn RecipeCursor<MessageMetadata>> {
         self.metadata.open(start)
     }
-    fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_> {
-        Box::pin(async move {
-            if messages > self.messages.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "generated prefix exceeds input",
-                ));
-            }
-            let mut hash = Sha256::new();
-            hash.update(b"maka-generated-prefix\0");
-            for item in self.metadata.0.iter().take(messages) {
-                hash.update(item.logical_identity.as_bytes());
-            }
-            Ok(hex::encode(hash.finalize()))
-        })
-    }
 }
 
 struct InvalidMedia;

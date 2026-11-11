@@ -2322,6 +2322,7 @@ fn scroll_target(surface: &Surface, x: f32, y: f32, dx: f32, dy: f32) -> Option<
         Points(dy),
         |v| v.state().scroll.as_ref().map(|s| s.horizontal),
         |v| v.kind() == ViewKind::Scroll && crate::scroll::can_scroll(v, dx, dy),
+        crate::scroll::listens_to_scroll_intent,
     )
 }
 
@@ -2364,6 +2365,13 @@ fn wheel_input(
                 return false;
             };
             *input.latch.borrow_mut() = Some((view.clone(), horizontal, time));
+            if crate::scroll::listens_to_scroll_intent(&view) {
+                surface.event(
+                    view.id(),
+                    EventKind::ScrollIntent,
+                    EventPayload::Map(vec![("intent", PayloadValue::Str("scroll".into()))]),
+                );
+            }
             let (dx, dy) = if notches {
                 let s = view.state();
                 (

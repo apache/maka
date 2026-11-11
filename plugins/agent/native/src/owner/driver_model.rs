@@ -732,7 +732,10 @@ impl DriverModel {
                 source_digest: source_evidence.cut.digest.clone(),
                 effective_source_digest: projection.reference().digest.clone(),
                 provenance: provenance.reference().clone(),
-                projection: Some(projection.reference().clone()),
+                projection: Some(match &mode {
+                    Preparation::Prefix { proof, .. } => proof.clone(),
+                    _ => projection.reference().clone(),
+                }),
                 adjudications: Vec::new(),
                 steering: steering_refs,
                 request: body.reference().clone(),
@@ -1275,7 +1278,7 @@ impl DriverModel {
         &self,
         source_run: RunId,
         mut system: Option<SystemPrompt>,
-        visible_defs: Vec<maka_agent_facts::tools::ToolDefinition>,
+        catalog: maka_tools::ToolCatalog,
     ) -> Result<PreparedContinuation, RunError> {
         let reader = &self.history_reader(source_run).await?;
         use maka_agent_facts::continuation::{
@@ -1314,6 +1317,37 @@ impl DriverModel {
             digest: capture.cut.digest.clone(),
         };
         let model = self.source.capture().await?;
+        let availability = maka_tools::availability::Availability::new(
+            catalog,
+            maka_tools::availability::LoadedTools::new(self.state.cells().reader(
+                self.execution.session_id.clone(),
+                tokio::runtime::Handle::current(),
+            )),
+        )
+        .capture(
+            Some(model.provider.tool_context()),
+            self.execution.clone(),
+            Some(
+                self.log
+                    .work_custody()
+                    .map_err(|error| RunError::Internal(error.to_string()))?,
+            ),
+            original.spec.workspace.clone(),
+            self.cancellation.clone(),
+        )
+        .await
+        .map_err(RunError::Tool)?;
+        let visible = availability.snapshot().await.map_err(RunError::Tool)?;
+        let visible_defs =
+            if self.source.accepted.tool_mode == maka_agent_facts::execution::ToolMode::CodeMode {
+                maka_tools::CodeCells::definitions_for(&visible, self.source.accepted.code_language)
+            } else {
+                let mut definitions: Vec<_> = visible.definitions().cloned().collect();
+                if let Some(search) = availability.definition() {
+                    definitions.push(search);
+                }
+                definitions
+            };
         let target = ReplayTarget::new(&model, ModelOperation::Inference);
         let mut messages = preparation::PromptBuilder::new(
             self.preparation_io()?,
@@ -2187,6 +2221,7 @@ impl DriverModel {
         let io = self.preparation_io()?;
         let resources = self.resources.clone();
         let contract_ref = request.recovery_contract.clone();
+        let can_replay_without_output = recovery.contract.is_some();
         let prefix_request = request.request.clone();
         let prefix_adapter = frozen.adapter.clone();
         let source = self.source.clone();
@@ -2564,15 +2599,41 @@ impl DriverModel {
                 }
                 let published = async {
                     let view = state.frontier(run).await?;
-                    let parts = canonical_parts_for(&state, &view, attempt).await?;
-                    let evidence = recovery_for_failure(
-                        &error,
-                        run,
-                        attempt,
-                        prefix_request,
-                        prefix_adapter,
-                        &parts,
-                    )?;
+                    // Stop, finish and steering replace ordinary retry; the token alone does not.
+                    if matches!(error, RunError::Model(maka_model::ModelError::Cancelled))
+                        && (view.stopped
+                            || view.finish_requested()
+                            || !state
+                                .queue()
+                                .steering(view.spec.session_id.clone(), run)
+                                .await?
+                                .entries
+                                .is_empty())
+                    {
+                        return Ok(());
+                    }
+                    let evidence =
+                        if matches!(error, RunError::Model(maka_model::ModelError::Cancelled))
+                            && can_replay_without_output
+                            && !writer.has_output()
+                            && !view.stopped
+                            && !view.finish_requested()
+                        {
+                            RecoveryEvidence {
+                                recovery: AttemptRecovery::FrozenRetrySafe { not_before: None },
+                                contents: vec![],
+                            }
+                        } else {
+                            let parts = canonical_parts_for(&state, &view, attempt).await?;
+                            recovery_for_failure(
+                                &error,
+                                run,
+                                attempt,
+                                prefix_request,
+                                prefix_adapter,
+                                &parts,
+                            )?
+                        };
                     if let Some(fact) = witness.recovery(evidence, witnessed_at()?).await? {
                         emit(
                             &send,
@@ -2790,7 +2851,16 @@ impl DriverModel {
             let parts = self
                 .validate_cold_contract(view, attempt, &request, &frozen)
                 .await?;
-            if parts.is_empty() {
+            let steered = original.cleanup
+                == maka_plugin_core::operation::OperationCleanup::Confirmed
+                && !self
+                    .state
+                    .queue()
+                    .steering(view.spec.session_id.clone(), view.run)
+                    .await?
+                    .entries
+                    .is_empty();
+            if parts.is_empty() && !steered {
                 return Ok(RecoveryEvidence {
                     recovery: AttemptRecovery::Blocked {
                         diagnostic:
