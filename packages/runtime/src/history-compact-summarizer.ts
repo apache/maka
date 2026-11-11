@@ -88,6 +88,7 @@ const SUMMARIZATION_PROMPT = [
   ...SUMMARY_FORMAT_TEMPLATE,
   '',
   'Keep each section concise. Preserve exact file paths, function names, commands, and error messages.',
+  'Preserve outcome_unknown tool effects as unknown, including the need to inspect current state before repeating them. Never turn a missing result into success or proof of no effect.',
 ].join('\n');
 
 const SUMMARY_REQUEST_INSTRUCTION =

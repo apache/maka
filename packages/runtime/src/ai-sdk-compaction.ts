@@ -432,6 +432,22 @@ export class AiSdkCompaction {
       const diagnosticShell = (events: readonly RuntimeEvent[]) =>
         buildContextBudgetDiagnosticShell(runtimeContext, events, policy);
       if (plan.decision !== 'compacted') {
+        if (plan.reason === 'already_compacted') {
+          return {
+            outcome: { kind: 'unchanged', reason: 'already_compacted' },
+            contextBudget: mergeContextBudgetDiagnostic(diagnosticShell(runtimeContext), {
+              ...compactionDecisionDiagnosticPatch({
+                stage: 'priorReplay',
+                sourceKind: 'runtimeEvents',
+                decision: 'unchanged',
+                phase: 'pre_turn',
+                boundaryKind: 'historyCompact',
+                boundaryIds: previousCheckpoint ? [previousCheckpoint.checkpointId] : [],
+                reason: 'already_compacted',
+              }),
+            }),
+          };
+        }
         const failureReason = plan.diagnosticReason ?? plan.reason;
         return {
           outcome: { kind: 'failed', reason: failureReason },

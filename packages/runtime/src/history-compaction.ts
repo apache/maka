@@ -22,6 +22,7 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { finitePositive } from './context-budget-helpers.js';
 import { estimateRuntimeEventsTokens } from './model-history.js';
+import { runtimeInvocationFailureClass } from './runtime-event-read-model.js';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import {
   HistoryCompactSummarizerError,
@@ -60,6 +61,8 @@ import {
 export interface SafePrefixOptions {
   /** Keep at least this many trailing events uncovered as the verbatim tail. */
   reserveTailEvents?: number;
+  /** Durable Host invocation facts; absent facts keep unmatched calls open. */
+  invocations?: readonly RuntimeInvocationRecord[];
   /** Retry a smaller prefix after the summarizer provider rejects its input. */
   maxCoveredCount?: number;
   /**
@@ -107,7 +110,7 @@ export function selectSafeCompactionPrefix(
     firstPartialIndex === -1 ? events.length : firstPartialIndex,
     firstPinnedIndex === -1 ? events.length : firstPinnedIndex,
   );
-  const pairSpans = toolPairSpans(events);
+  const pairSpans = toolPairSpans(events, options.invocations);
   for (let cut = maxCut; cut >= 1; cut -= 1) {
     if (straddlesToolPair(pairSpans, cut)) continue;
     return { ok: true, coveredCount: cut };
@@ -118,20 +121,25 @@ export function selectSafeCompactionPrefix(
 interface ToolPairSpan {
   callIndex?: number;
   responseIndex?: number;
+  sealedUnknown?: boolean;
 }
 
-function toolPairSpans(events: readonly RuntimeEvent[]): ToolPairSpan[] {
+function toolPairSpans(
+  events: readonly RuntimeEvent[],
+  invocations?: readonly RuntimeInvocationRecord[],
+): ToolPairSpan[] {
   const byCallId = new Map<string, ToolPairSpan>();
   events.forEach((event, index) => {
     const content = event.content;
     if (content?.kind === 'function_call') {
-      const span = byCallId.get(content.id) ?? {};
+      const span = byCallId.get(toolCallKey(event, content.id)) ?? {};
       span.callIndex = index;
-      byCallId.set(content.id, span);
+      span.sealedUnknown = isHostSealedUnknownToolCall(event, invocations);
+      byCallId.set(toolCallKey(event, content.id), span);
     } else if (content?.kind === 'function_response') {
-      const span = byCallId.get(content.id) ?? {};
+      const span = byCallId.get(toolCallKey(event, content.id)) ?? {};
       span.responseIndex = index;
-      byCallId.set(content.id, span);
+      byCallId.set(toolCallKey(event, content.id), span);
     }
   });
   return [...byCallId.values()];
@@ -141,14 +149,15 @@ function toolPairSpans(events: readonly RuntimeEvent[]): ToolPairSpan[] {
  * A cut at exclusive index `cut` straddles a pair if exactly one side is
  * covered. A call whose response is not in the pool yet is an OPEN span:
  * covering it would orphan the response that arrives later (a result with no
- * call in the projection), so any cut past the call is unsafe. A response
+ * call in the projection), so any cut past the call is unsafe unless Host
+ * recovery has durably sealed this exact call as an unknown outcome. A response
  * without a call is inert — its call lives before the pool, so no cut inside
  * the pool can split that pair.
  */
 function straddlesToolPair(spans: readonly ToolPairSpan[], cut: number): boolean {
   for (const span of spans) {
     if (span.callIndex !== undefined && span.responseIndex === undefined) {
-      if (span.callIndex < cut) return true;
+      if (span.callIndex < cut && !span.sealedUnknown) return true;
       continue;
     }
     if (span.callIndex === undefined || span.responseIndex === undefined) continue;
@@ -157,6 +166,83 @@ function straddlesToolPair(spans: readonly ToolPairSpan[], cut: number): boolean
     if (callCovered !== responseCovered) return true;
   }
   return false;
+}
+
+function toolCallKey(event: RuntimeEvent, toolCallId: string): string {
+  return JSON.stringify([event.sessionId, event.invocationId, toolCallId]);
+}
+
+/** A Host seal closes the invocation, without claiming that the tool settled. */
+function isHostSealedUnknownToolCall(
+  event: RuntimeEvent,
+  invocations: readonly RuntimeInvocationRecord[] | undefined,
+): boolean {
+  const call = event.content;
+  if (call?.kind !== 'function_call' || event.partial === true) return false;
+  const invocation = invocations?.find((record) => record.invocationId === event.invocationId);
+  const terminal = invocation?.terminalEvent;
+  const state = terminal?.actions?.stateDelta;
+  return (
+    invocation !== undefined &&
+    terminal !== undefined &&
+    invocation.sessionId === event.sessionId &&
+    invocation.runId === event.runId &&
+    invocation.turnId === event.turnId &&
+    terminal.sessionId === event.sessionId &&
+    terminal.invocationId === event.invocationId &&
+    terminal.runId === event.runId &&
+    terminal.turnId === event.turnId &&
+    terminal.role === 'system' &&
+    terminal.author === 'system' &&
+    terminal.partial !== true &&
+    terminal.actions?.endInvocation === true &&
+    terminal.status === 'failed' &&
+    runtimeInvocationFailureClass(invocation) === 'outcome_unknown' &&
+    state?.recovered === true &&
+    state.recoveryReason === 'outcome_unknown' &&
+    Array.isArray(state.unresolvedToolCalls) &&
+    state.unresolvedToolCalls.some(
+      (unknown: unknown) =>
+        typeof unknown === 'object' &&
+        unknown !== null &&
+        'toolCallId' in unknown &&
+        unknown.toolCallId === call.id &&
+        'toolName' in unknown &&
+        unknown.toolName === call.name,
+    )
+  );
+}
+
+/**
+ * Summarizers must see the uncertainty even after a later user turn retired
+ * its request-time warning. This is a summary-only text projection, never a
+ * tool response or a durable edit to the raw coverage ledger.
+ */
+function projectSealedUnknownToolCalls(
+  events: readonly RuntimeEvent[],
+  invocations: readonly RuntimeInvocationRecord[] | undefined,
+): readonly RuntimeEvent[] {
+  const responseIds = new Set(
+    events.flatMap((event) =>
+      event.content?.kind === 'function_response' ? [toolCallKey(event, event.content.id)] : [],
+    ),
+  );
+  return events.map((event) => {
+    const call = event.content;
+    if (
+      call?.kind !== 'function_call' ||
+      responseIds.has(toolCallKey(event, call.id)) ||
+      !isHostSealedUnknownToolCall(event, invocations)
+    )
+      return event;
+    return {
+      ...event,
+      content: {
+        kind: 'text',
+        text: `Tool call ${call.name} (id: ${call.id}), arguments: ${JSON.stringify(call.args)}. Host recovery sealed this invocation as failed / outcome_unknown: no durable tool result was recorded. Its effect may have happened. This is not a successful result or proof of no effect. Inspect current state before deciding whether to repeat it; do not automatically retry.`,
+      },
+    };
+  });
 }
 
 // ============================================================================
@@ -233,7 +319,10 @@ export type PlanHistoryCompactionResult =
       estimatedTokensAfter: number;
     };
 
-export type HistoryCompactionFailReason = 'no_safe_completed_span' | 'summarizer_failed';
+export type HistoryCompactionFailReason =
+  | 'no_safe_completed_span'
+  | 'already_compacted'
+  | 'summarizer_failed';
 
 /**
  * Execute a triggered compaction command by deterministically folding the
@@ -313,6 +402,7 @@ export async function planHistoryCompaction(
     const boundary = selectSafeCompactionPrefix(input.orderedEvents, {
       reserveTailEvents: input.reserveTailEvents ?? (phase === 'standalone' ? 0 : 1),
       maxCoveredCount,
+      invocations: input.invocations,
       isPinned: (event) =>
         (phase === 'pre_turn' && event.id === input.headAnchor?.runtimeEventId) ||
         (event.turnId === input.headAnchor?.turnId &&
@@ -383,6 +473,12 @@ export async function planHistoryCompaction(
       }
     }
     const newlyFoldedRuntimeEvents = successorRuntimeEvents ?? coveredRuntimeEvents;
+    // Successors in the candidate pool may all remain beyond an unsettled tool
+    // call. Check progress against the selected safe prefix, after verifying
+    // effective-content currency, rather than minting the same checkpoint again.
+    if (previousCheckpoint && newlyFoldedRuntimeEvents.length === 0) {
+      return { decision: 'fail_open', reason: 'already_compacted' };
+    }
 
     // The model-visible summary reads the effective (transition-folded) view
     // of the covered span; the raw events keep the coverage identity.
@@ -405,8 +501,14 @@ export async function planHistoryCompaction(
     try {
       compacted = await Promise.resolve(
         input.summarize({
-          coveredRuntimeEvents: effectiveCoveredRuntimeEvents ?? coveredRuntimeEvents,
-          newlyFoldedRuntimeEvents: effectiveNewlyFoldedRuntimeEvents ?? newlyFoldedRuntimeEvents,
+          coveredRuntimeEvents: projectSealedUnknownToolCalls(
+            effectiveCoveredRuntimeEvents ?? coveredRuntimeEvents,
+            input.invocations,
+          ),
+          newlyFoldedRuntimeEvents: projectSealedUnknownToolCalls(
+            effectiveNewlyFoldedRuntimeEvents ?? newlyFoldedRuntimeEvents,
+            input.invocations,
+          ),
           ...(previousCheckpoint ? { previousCheckpoint } : {}),
         }),
       );

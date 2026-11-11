@@ -98,6 +98,63 @@ describe('safe compaction prefix selection', () => {
     assert.deepEqual(boundary, { ok: true, coveredCount: 2 });
   });
 
+  test('only a matching Host unknown-outcome seal closes an unmatched call', () => {
+    const events = [call('unknown-call', 'unknown', 'turn-1'), model('later', 'turn-2')];
+    const sealed = sealedUnknownInvocation();
+    assert.deepEqual(selectSafeCompactionPrefix(events, { invocations: [sealed] }), {
+      ok: true,
+      coveredCount: 2,
+    });
+    const terminal = sealed.terminalEvent!;
+    const insufficient = [
+      { ...sealed, terminalEvent: undefined },
+      { ...sealed, sessionId: 'another-session' },
+      { ...sealed, terminalEvent: { ...terminal, invocationId: 'another-invocation' } },
+      { ...sealed, terminalEvent: { ...terminal, partial: true } },
+      { ...sealed, terminalEvent: { ...terminal, status: 'completed' as const } },
+      { ...sealed, terminalEvent: { ...terminal, actions: { endInvocation: true } } },
+      {
+        ...sealed,
+        terminalEvent: {
+          ...terminal,
+          actions: {
+            endInvocation: true,
+            stateDelta: {
+              ...terminal.actions!.stateDelta,
+              unresolvedToolCalls: [{ toolCallId: 'another-call', toolName: 'tool' }],
+            },
+          },
+        },
+      },
+    ];
+    for (const invocation of insufficient) {
+      assert.deepEqual(selectSafeCompactionPrefix(events, { invocations: [invocation] }), {
+        ok: false,
+        reason: 'no_safe_completed_span',
+      });
+    }
+    // Provider call IDs can repeat across invocations. A later seal must not
+    // let an earlier live invocation borrow its evidence.
+    assert.deepEqual(
+      selectSafeCompactionPrefix(
+        [{ ...events[0]!, id: 'live-same-id', invocationId: 'live', runId: 'live' }, ...events],
+        { invocations: [sealed] },
+      ),
+      { ok: false, reason: 'no_safe_completed_span' },
+    );
+    // A second live call is still an open boundary even in the sealed call's pool.
+    assert.deepEqual(
+      selectSafeCompactionPrefix(
+        [
+          ...events,
+          { ...call('live', 'live', 'turn-live'), invocationId: 'run-live', runId: 'run-live' },
+        ],
+        { invocations: [sealed] },
+      ),
+      { ok: true, coveredCount: 2 },
+    );
+  });
+
   test('reports no safe completed span when the whole pool is one atomic pair', () => {
     const events = [call('c1', 'call-1', 'turn-1'), result('r1', 'call-1', 'turn-1')];
     // Reserving 1 tail forces maxCut=1, which straddles the only pair → no safe span.
@@ -137,6 +194,41 @@ describe('plan context compaction', () => {
       ...over,
     };
   }
+
+  test('summarizes sealed unknown effects as uncertainty while keeping coverage raw', async () => {
+    const events = [call('unknown-call', 'unknown', 'turn-1'), model('later', 'turn-2')];
+    let observed: readonly RuntimeEvent[] = [];
+    const compacted = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: events,
+        reserveTailEvents: 0,
+        invocations: [sealedUnknownInvocation()],
+        summarize: ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents }) => {
+          observed = coveredRuntimeEvents;
+          assert.deepEqual(newlyFoldedRuntimeEvents, coveredRuntimeEvents);
+          return structuredSummary('tool effect outcome_unknown; inspect before repeating');
+        },
+      }),
+    );
+    assert.equal(compacted.decision, 'compacted');
+    if (compacted.decision !== 'compacted') return;
+    assert.deepEqual(compacted.coveredRuntimeEvents, events);
+    assert.equal(
+      matchHistoryCompactCheckpointPrefix(compacted.checkpoint, events).reason,
+      undefined,
+    );
+    assert.equal(observed[0]?.content?.kind, 'text');
+    const projected = JSON.stringify(observed);
+    assert.match(projected, /outcome_unknown/);
+    assert.match(projected, /effect may have happened/);
+    assert.match(projected, /do not automatically retry/);
+    assert.equal(
+      observed.some((event) => event.content?.kind === 'function_response'),
+      false,
+    );
+    assert.equal(events[0]?.content?.kind, 'function_call');
+  });
 
   test('compacts whenever the caller has emitted a compaction command', async () => {
     const result = await planHistoryCompaction(planInput());
@@ -776,4 +868,22 @@ function result(id: string, callId: string, turnId: string, payload: string = 'o
     author: 'tool',
     content: { kind: 'function_response', id: callId, name: 'tool', result: payload },
   };
+}
+
+function sealedUnknownInvocation() {
+  const invocation = testInvocationRecord({
+    sessionId: 'session-1',
+    runId: 'run-1',
+    turnId: 'turn-1',
+    outcome: 'failed',
+    failureClass: 'outcome_unknown',
+    closedAt: 1_800_000_000_100,
+  });
+  invocation.terminalEvent!.actions!.stateDelta = {
+    failureClass: 'outcome_unknown',
+    recovered: true,
+    recoveryReason: 'outcome_unknown',
+    unresolvedToolCalls: [{ toolCallId: 'unknown', toolName: 'tool' }],
+  };
+  return invocation;
 }
