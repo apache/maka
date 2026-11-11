@@ -1174,7 +1174,7 @@ impl Screen {
         ))
     }
 
-    fn is_inside(&self, mut id: NodeId, ancestor: NodeId) -> bool {
+    pub(crate) fn is_inside(&self, mut id: NodeId, ancestor: NodeId) -> bool {
         while let Some(parent) = self.nodes.get(&id).and_then(|v| v.parent) {
             if parent == ancestor {
                 return true;

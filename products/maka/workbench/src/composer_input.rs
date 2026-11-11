@@ -281,6 +281,8 @@ impl ComposerInputApi {
     }
 }
 
+const SKILL_LINE_HEIGHT: Points = px(16.0);
+
 struct SkillView(ComposerInputProps);
 
 impl NodeView for SkillView {
@@ -290,35 +292,42 @@ impl NodeView for SkillView {
             .as_str()
             .expect("a skill node's name is text")
             .to_owned();
+        let icon_size = 13.0;
         let icon = if nsh_base::terminal::is_terminal() {
             text("📖").into_element()
         } else {
             canvas(move || {
                 Painter::new()
-                    .scale(14.0 / 24.0, 14.0 / 24.0)
+                    .scale(icon_size / 24.0, icon_size / 24.0)
                     .stroke_color(Hsla::from(props.token_color.get()))
                     .line_width(2.0)
                     .line_cap(LineCap::Round)
                     .line_join(LineJoin::Round)
                     .stroke_svg(&props.token_icon.get())
             })
-            .w(px(14.0))
-            .h(px(14.0))
+            .w(px(icon_size))
+            .h(px(icon_size))
             .into_element()
         };
         let chip = view()
             .flex_row()
             .items_center()
+            .align_text_bottom()
             .gap(px(4.0))
-            .px(px(6.0))
+            .px(move || px(if props.read_only.get() { 0.0 } else { 4.0 }))
             .rounded(px(4.0))
-            .bg(move || AdaptiveColor::from(Hsla::from(props.token_background_color.get())))
+            .bg(move || {
+                if props.read_only.get() {
+                    AdaptiveColor::TRANSPARENT
+                } else {
+                    AdaptiveColor::from(Hsla::from(props.token_background_color.get()))
+                }
+            })
             .text_color(move || AdaptiveColor::from(Hsla::from(props.token_color.get())))
             .pointer_events(PointerEvents::None)
             .child(icon)
-            .child(text(name))
-            .into_element();
-        message::attachment(node, chip)
+            .child(text(name).line_height(SKILL_LINE_HEIGHT));
+        message::attachment(node, chip.into_element())
     }
 }
 
