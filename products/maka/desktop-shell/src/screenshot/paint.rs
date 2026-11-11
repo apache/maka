@@ -220,7 +220,11 @@ pub(super) fn render(
 }
 
 /// A blank bitmap in the picture's colors, or sRGB when those cannot back one.
-fn bitmap(width: usize, height: usize, picture: &CGImage) -> Option<CFRetained<CGContext>> {
+pub(super) fn bitmap(
+    width: usize,
+    height: usize,
+    picture: &CGImage,
+) -> Option<CFRetained<CGContext>> {
     let premultiplied = CGImageAlphaInfo::PremultipliedLast.0;
     let create = |space: &CGColorSpace| {
         // SAFETY: no data pointer, so Core Graphics allocates the bitmap.

@@ -29,6 +29,7 @@ mod elements;
 mod output;
 mod paint;
 mod pin;
+mod shapes;
 
 use annotate::{Ink, Mark, Marks, Shape, Size, Tool};
 use area::{Area, Edges, Pixel, Window, edges_near, snap, targets};
@@ -86,6 +87,8 @@ const LOUPE_PIXELS: i64 = 15;
 const LOUPE_CELL: f64 = 8.0;
 /// Windows smaller than this many points on a side are not targets (shadows, slivers).
 const SMALLEST_WINDOW: f64 = 8.0;
+/// Points a box seen in the picture spans on each side; boxed letters (口, 回) are smaller.
+const SMALLEST_SHAPE: f64 = 16.0;
 /// Points within which a dragged corner sticks to a window or control edge.
 const SNAP: f64 = 5.0;
 /// Scrolled points that walk one target out or in; a wheel notch always does.
@@ -430,6 +433,8 @@ impl Stage {
             })
             .unzip();
         shot.windows = windows;
+        let picture = shot.image.clone();
+        let smallest_shape = (SMALLEST_SHAPE * shot.scale) as i64;
         let size = NSSize::new(
             whole.width as f64 / shot.scale,
             whole.height as f64 / shot.scale,
@@ -443,16 +448,31 @@ impl Stage {
             .context
             .emit("ready", serde_json::json!({ "elements": trusted }));
         if trusted {
-            let stage = MainThreadBound::new(self.retain(), self.mtm());
-            std::thread::spawn(move || {
-                let found = elements::scan(&sources);
-                DispatchQueue::main().exec_async(move || {
-                    let mtm =
-                        MainThreadMarker::new().expect("the main queue runs on the main thread");
-                    stage.get(mtm).found(found);
-                });
-            });
+            self.in_background(
+                move || elements::scan(&sources),
+                |stage, found| stage.found(found),
+            );
         }
+        self.in_background(
+            move || shapes::find(&picture, smallest_shape),
+            |stage, found| stage.shapes(found),
+        );
+    }
+
+    /// Runs `work` off the main thread and hands its result to `then` on it.
+    fn in_background<T: Send + 'static>(
+        &self,
+        work: impl FnOnce() -> T + Send + 'static,
+        then: impl FnOnce(&Self, T) + Send + 'static,
+    ) {
+        let stage = MainThreadBound::new(self.retain(), self.mtm());
+        std::thread::spawn(move || {
+            let result = work();
+            DispatchQueue::main().exec_async(move || {
+                let mtm = MainThreadMarker::new().expect("the main queue runs on the main thread");
+                then(stage.get(mtm), result);
+            });
+        });
     }
 
     /// The controls in each frozen window, in global points.
@@ -463,12 +483,32 @@ impl Stage {
         };
         let (origin, scale, whole) = (shot.origin, shot.scale, shot.whole);
         for (window, rects) in shot.windows.iter_mut().zip(found) {
-            window.elements = rects
+            let bounds = window.area;
+            let areas = rects
                 .into_iter()
                 .filter_map(|rect| pixels(rect, origin, scale)?.intersection(whole))
-                .filter_map(|area| area.intersection(window.area))
-                .filter(|area| *area != window.area)
-                .collect();
+                .filter_map(|area| area.intersection(bounds));
+            window.add(areas);
+        }
+        drop(phase);
+        self.setNeedsDisplay(true);
+    }
+
+    /// Boxes seen in the picture, each given to the front-most window it lies in.
+    fn shapes(&self, found: Vec<Area>) {
+        let mut phase = self.ivars().phase.borrow_mut();
+        let Phase::Frozen(shot) = &mut *phase else {
+            return;
+        };
+        let mut given = vec![Vec::new(); shot.windows.len()];
+        for area in found {
+            let inside = |window: &Window| window.area.intersection(area) == Some(area);
+            if let Some(index) = shot.windows.iter().position(inside) {
+                given[index].push(area);
+            }
+        }
+        for (window, areas) in shot.windows.iter_mut().zip(given) {
+            window.add(areas);
         }
         drop(phase);
         self.setNeedsDisplay(true);

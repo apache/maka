@@ -58,6 +58,14 @@ impl Area {
         (self.x..=self.right()).contains(&x) && (self.y..=self.bottom()).contains(&y)
     }
 
+    /// Whether each edge of `other` is within `slop` of the same edge of this.
+    pub fn near(self, other: Self, slop: i64) -> bool {
+        (self.x - other.x).abs() <= slop
+            && (self.y - other.y).abs() <= slop
+            && (self.right() - other.right()).abs() <= slop
+            && (self.bottom() - other.bottom()).abs() <= slop
+    }
+
     pub fn intersection(self, other: Self) -> Option<Self> {
         let x = self.x.max(other.x);
         let y = self.y.max(other.y);
@@ -112,11 +120,26 @@ impl Edges {
     }
 }
 
-/// A window on the picture and the controls Accessibility found in it.
+/// Pixels within which two boxes' edges make them one box.
+pub(crate) const NEAR: i64 = 2;
+
+/// A window on the picture and the controls in it, from Accessibility and from the picture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Window {
     pub area: Area,
     pub elements: Vec<Area>,
+}
+
+impl Window {
+    /// Adds controls or boxes found in the window, leaving out those that are the window again.
+    pub fn add(&mut self, areas: impl IntoIterator<Item = Area>) {
+        let window = self.area;
+        let new = areas.into_iter().filter(|area| !area.near(window, NEAR));
+        self.elements.extend(new);
+        self.elements
+            .sort_by_key(|area| (area.size(), area.x, area.y));
+        self.elements.dedup();
+    }
 }
 
 /// What a click at `pixel` takes, smallest first: the controls under it in the front-most window
