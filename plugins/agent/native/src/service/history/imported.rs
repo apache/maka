@@ -226,6 +226,7 @@ fn tool(chunk: &mut wire::Chunk, id: String, name: String, is_error: Option<bool
             title: None,
             pending: false,
             dispatched: false,
+            external_target: None,
         }),
         result: is_error.map(|is_error| wire::ToolResult {
             position: chunk.position.clone(),
@@ -233,6 +234,7 @@ fn tool(chunk: &mut wire::Chunk, id: String, name: String, is_error: Option<bool
             image: false,
             images: 0,
             settlement: None,
+            details: None,
         }),
     });
 }

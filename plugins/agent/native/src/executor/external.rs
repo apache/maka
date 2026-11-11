@@ -39,6 +39,7 @@ mod replay;
 mod runtime;
 mod steering;
 mod tools;
+const PRESENTATION_VERSION: u32 = 3;
 pub(crate) use history::Inputs;
 pub(crate) use tools::{HostEffects, HostTools};
 
@@ -306,7 +307,7 @@ impl External {
             NativeTask::Antigravity { .. } => NativeRuntime::Antigravity,
             NativeTask::Claude { .. } | NativeTask::ClaudeStream { .. } => NativeRuntime::Claude,
         };
-        if binding.adapter_version != 2
+        if !matches!(binding.adapter_version, 2 | PRESENTATION_VERSION)
             || request
                 .settings
                 .runtime

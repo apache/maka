@@ -11896,6 +11896,16 @@ export const contracts: {
                       },
                     ],
                   },
+                  executorUsage: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorTurnUsage',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['startedAt', 'finished'],
@@ -11919,6 +11929,56 @@ export const contracts: {
               HistoryTurnOutcome: {
                 type: 'string',
                 enum: ['completed', 'failed', 'aborted'],
+              },
+              ExecutorTurnUsage: {
+                type: 'object',
+                properties: {
+                  tokens: {
+                    $ref: '#/$defs/ModelUsage',
+                  },
+                  totalTokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  durationMs: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['tokens'],
+              },
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
               },
               HistoryField: {
                 description: 'A readable field in a conversation window, in presentation order.',
@@ -12140,6 +12200,16 @@ export const contracts: {
                       'A unique original Host dispatch is recorded at this fence; not liveness.',
                     type: 'boolean',
                   },
+                  externalTarget: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExternalToolTarget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: [
@@ -12156,7 +12226,7 @@ export const contracts: {
                 description:
                   "Who made a call: a model step, a script the model wrote, a tool's own work\nthrough the Host SDK, or a foreign record.",
                 type: 'string',
-                enum: ['provider', 'code_mode', 'host_sdk', 'imported'],
+                enum: ['provider', 'executor', 'code_mode', 'host_sdk', 'imported'],
               },
               DisplayText: {
                 description:
@@ -12176,6 +12246,55 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['fallback'],
+              },
+              ExternalToolTarget: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'command',
+                      },
+                      command: {
+                        type: 'string',
+                      },
+                      cwd: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'command'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'file',
+                      },
+                      path: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'search',
+                      },
+                      query: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'query'],
+                  },
+                ],
               },
               HistoryToolResult: {
                 type: 'object',
@@ -12210,6 +12329,16 @@ export const contracts: {
                     format: 'uint32',
                     minimum: 0,
                   },
+                  details: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ToolResultDetails',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['settlement', 'position', 'isError', 'image', 'images'],
@@ -12219,6 +12348,21 @@ export const contracts: {
                   'Recorded Host settlement for presentation; returned is not business success.\nForeign/provider results do not establish this Host evidence.',
                 type: 'string',
                 enum: ['returned', 'failed', 'unknown', 'rejected'],
+              },
+              ToolResultDetails: {
+                type: 'object',
+                properties: {
+                  exitCode: {
+                    type: ['integer', 'null'],
+                    format: 'int32',
+                  },
+                  durationMs: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               Cursor: {
                 description:
@@ -19503,6 +19647,16 @@ export const contracts: {
                       },
                     ],
                   },
+                  executorUsage: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorTurnUsage',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['startedAt', 'finished'],
@@ -19526,6 +19680,56 @@ export const contracts: {
               HistoryTurnOutcome: {
                 type: 'string',
                 enum: ['completed', 'failed', 'aborted'],
+              },
+              ExecutorTurnUsage: {
+                type: 'object',
+                properties: {
+                  tokens: {
+                    $ref: '#/$defs/ModelUsage',
+                  },
+                  totalTokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  durationMs: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['tokens'],
+              },
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
               },
               HistoryField: {
                 description: 'A readable field in a conversation window, in presentation order.',
@@ -19747,6 +19951,16 @@ export const contracts: {
                       'A unique original Host dispatch is recorded at this fence; not liveness.',
                     type: 'boolean',
                   },
+                  externalTarget: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExternalToolTarget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: [
@@ -19763,7 +19977,7 @@ export const contracts: {
                 description:
                   "Who made a call: a model step, a script the model wrote, a tool's own work\nthrough the Host SDK, or a foreign record.",
                 type: 'string',
-                enum: ['provider', 'code_mode', 'host_sdk', 'imported'],
+                enum: ['provider', 'executor', 'code_mode', 'host_sdk', 'imported'],
               },
               DisplayText: {
                 description:
@@ -19783,6 +19997,55 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['fallback'],
+              },
+              ExternalToolTarget: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'command',
+                      },
+                      command: {
+                        type: 'string',
+                      },
+                      cwd: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'command'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'file',
+                      },
+                      path: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'search',
+                      },
+                      query: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'query'],
+                  },
+                ],
               },
               HistoryToolResult: {
                 type: 'object',
@@ -19817,6 +20080,16 @@ export const contracts: {
                     format: 'uint32',
                     minimum: 0,
                   },
+                  details: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ToolResultDetails',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['settlement', 'position', 'isError', 'image', 'images'],
@@ -19826,6 +20099,21 @@ export const contracts: {
                   'Recorded Host settlement for presentation; returned is not business success.\nForeign/provider results do not establish this Host evidence.',
                 type: 'string',
                 enum: ['returned', 'failed', 'unknown', 'rejected'],
+              },
+              ToolResultDetails: {
+                type: 'object',
+                properties: {
+                  exitCode: {
+                    type: ['integer', 'null'],
+                    format: 'int32',
+                  },
+                  durationMs: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               Cursor: {
                 description:
@@ -20587,6 +20875,16 @@ export const contracts: {
                       'A unique original Host dispatch is recorded at this fence; not liveness.',
                     type: 'boolean',
                   },
+                  externalTarget: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExternalToolTarget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: [
@@ -20603,7 +20901,7 @@ export const contracts: {
                 description:
                   "Who made a call: a model step, a script the model wrote, a tool's own work\nthrough the Host SDK, or a foreign record.",
                 type: 'string',
-                enum: ['provider', 'code_mode', 'host_sdk', 'imported'],
+                enum: ['provider', 'executor', 'code_mode', 'host_sdk', 'imported'],
               },
               DisplayText: {
                 description:
@@ -20623,6 +20921,55 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['fallback'],
+              },
+              ExternalToolTarget: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'command',
+                      },
+                      command: {
+                        type: 'string',
+                      },
+                      cwd: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'command'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'file',
+                      },
+                      path: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'search',
+                      },
+                      query: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'query'],
+                  },
+                ],
               },
               HistoryToolResult: {
                 type: 'object',
@@ -20657,6 +21004,16 @@ export const contracts: {
                     format: 'uint32',
                     minimum: 0,
                   },
+                  details: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ToolResultDetails',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['settlement', 'position', 'isError', 'image', 'images'],
@@ -20666,6 +21023,21 @@ export const contracts: {
                   'Recorded Host settlement for presentation; returned is not business success.\nForeign/provider results do not establish this Host evidence.',
                 type: 'string',
                 enum: ['returned', 'failed', 'unknown', 'rejected'],
+              },
+              ToolResultDetails: {
+                type: 'object',
+                properties: {
+                  exitCode: {
+                    type: ['integer', 'null'],
+                    format: 'int32',
+                  },
+                  durationMs: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
             },
           },
@@ -34765,6 +35137,16 @@ export const contracts: {
                       'A unique original Host dispatch is recorded at this fence; not liveness.',
                     type: 'boolean',
                   },
+                  externalTarget: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExternalToolTarget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: [
@@ -34781,7 +35163,7 @@ export const contracts: {
                 description:
                   "Who made a call: a model step, a script the model wrote, a tool's own work\nthrough the Host SDK, or a foreign record.",
                 type: 'string',
-                enum: ['provider', 'code_mode', 'host_sdk', 'imported'],
+                enum: ['provider', 'executor', 'code_mode', 'host_sdk', 'imported'],
               },
               DisplayText: {
                 description:
@@ -34801,6 +35183,55 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['fallback'],
+              },
+              ExternalToolTarget: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'command',
+                      },
+                      command: {
+                        type: 'string',
+                      },
+                      cwd: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'command'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'file',
+                      },
+                      path: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'search',
+                      },
+                      query: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'query'],
+                  },
+                ],
               },
               HistoryToolResult: {
                 type: 'object',
@@ -34835,6 +35266,16 @@ export const contracts: {
                     format: 'uint32',
                     minimum: 0,
                   },
+                  details: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ToolResultDetails',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['settlement', 'position', 'isError', 'image', 'images'],
@@ -34844,6 +35285,21 @@ export const contracts: {
                   'Recorded Host settlement for presentation; returned is not business success.\nForeign/provider results do not establish this Host evidence.',
                 type: 'string',
                 enum: ['returned', 'failed', 'unknown', 'rejected'],
+              },
+              ToolResultDetails: {
+                type: 'object',
+                properties: {
+                  exitCode: {
+                    type: ['integer', 'null'],
+                    format: 'int32',
+                  },
+                  durationMs: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
             },
           },
@@ -39148,12 +39604,101 @@ export const contracts: {
                         type: 'boolean',
                         default: false,
                       },
+                      details: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ToolResultDetails',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
                     required: ['type', 'toolCallId', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'turn_usage',
+                      },
+                      usage: {
+                        $ref: '#/$defs/ExecutorTurnUsage',
+                      },
+                    },
+                    required: ['type', 'usage'],
                   },
                 ],
                 description:
                   'External tool activity is observation, never a request to dispatch a Host tool.',
+              },
+              ToolResultDetails: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  exitCode: {
+                    type: ['integer', 'null'],
+                    format: 'int32',
+                  },
+                  durationMs: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+              },
+              ExecutorTurnUsage: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  tokens: {
+                    $ref: '#/$defs/ModelUsage',
+                  },
+                  totalTokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  durationMs: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                required: ['tokens'],
+              },
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
               },
             },
           },
@@ -39387,12 +39932,101 @@ export const contracts: {
                         type: 'boolean',
                         default: false,
                       },
+                      details: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ToolResultDetails',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
                     required: ['type', 'toolCallId', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'turn_usage',
+                      },
+                      usage: {
+                        $ref: '#/$defs/ExecutorTurnUsage',
+                      },
+                    },
+                    required: ['type', 'usage'],
                   },
                 ],
                 description:
                   'External tool activity is observation, never a request to dispatch a Host tool.',
+              },
+              ToolResultDetails: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  exitCode: {
+                    type: ['integer', 'null'],
+                    format: 'int32',
+                  },
+                  durationMs: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+              },
+              ExecutorTurnUsage: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  tokens: {
+                    $ref: '#/$defs/ModelUsage',
+                  },
+                  totalTokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  durationMs: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                required: ['tokens'],
+              },
+              ModelUsage: {
+                type: 'object',
+                properties: {
+                  input_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  output_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_read_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  cache_write_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  reasoning_tokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
               },
               ExecutorTaskState: {
                 oneOf: [

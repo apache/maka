@@ -30,7 +30,7 @@ import { MessageCopy } from './MessageCopy';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { Button } from 'nsh/base';
 import type { MessageMenu } from './messageMenu';
-import { TurnUsage } from './TurnUsage';
+import { executorUsageLabel, TurnUsage } from './TurnUsage';
 import {
   C,
   controlDisabledStyle,
@@ -125,11 +125,12 @@ export function FinalActions(props: {
     busy: pending,
     action: () => (target() === null ? null : inputAction(fork, target())),
   });
+  const reportedUsage = () => props.row().timing?.executorUsage ?? undefined;
   const showUsage = (original: Target | null) => {
     if (
       original &&
       owns(original) &&
-      original.position.kind === 'live' &&
+      (original.position.kind === 'live' || reportedUsage() !== undefined) &&
       original.turnId !== undefined
     )
       usage.set({ ...original, turnId: original.turnId });
@@ -149,7 +150,10 @@ export function FinalActions(props: {
         ? timing.finished.at - timing.startedAt
         : null;
     const duration = elapsed === null ? '' : formatDuration(elapsed, true);
-    return [name, duration].filter(Boolean).join(' · ');
+    const reported = reportedUsage();
+    return [name, duration, reported ? executorUsageLabel(reported) : '']
+      .filter(Boolean)
+      .join(' · ');
   };
   return (
     <View style={{ gap: 8, maxWidth: '100%' }}>
@@ -179,7 +183,10 @@ export function FinalActions(props: {
         <Button
           accessibilityLabel={tr("View this turn's model usage")}
           tooltip={textTooltip(() => tr("View this turn's model usage"))}
-          disabled={target()?.position.kind !== 'live' || target()?.turnId === undefined}
+          disabled={
+            (target()?.position.kind !== 'live' && !reportedUsage()) ||
+            target()?.turnId === undefined
+          }
           onPress={inputAction(showUsage, target())}
           style={{ ...controlStyle, paddingHorizontal: 8 }}
           hoverStyle={quietHoverStyle()}
@@ -188,7 +195,7 @@ export function FinalActions(props: {
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
-            {details() || tr('Main model usage')}
+            {details() || tr(reportedUsage() ? 'Turn usage' : 'Main model usage')}
           </Text>
         </Button>
       </View>
@@ -198,6 +205,7 @@ export function FinalActions(props: {
       <If when={usage()}>
         <TurnUsage
           sessionId={usage()!.sessionId}
+          reported={reportedUsage()}
           turnId={usage()!.turnId}
           current={() => usage() !== null && owns(usage()!)}
           close={inputAction(closeUsage, usage())}

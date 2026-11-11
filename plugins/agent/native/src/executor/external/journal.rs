@@ -63,7 +63,7 @@ impl ProtocolSession {
         self.observation
             .binding
             .bound(NativeBinding {
-                adapter_version: 2,
+                adapter_version: PRESENTATION_VERSION,
                 command_basis: self.command_basis.clone(),
                 resource: self.resource.clone(),
                 snapshot: self.snapshot.clone(),
