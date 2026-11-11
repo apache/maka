@@ -1150,16 +1150,27 @@ mod tests {
             );
             assert_eq!(store.frontier(run).await?.revision, parked.revision);
 
-            let mut replay = parked.clone();
+            append(
+                &store,
+                &claim,
+                vec![Fact::RunTerminated {
+                    terminal: Terminal::Failed,
+                    diagnostic: Some("original lookup failure".into()),
+                }],
+                vec![],
+            )
+            .await?;
+            let mut replay = store.frontier(run).await?;
             replay.apply(&RecordedFact {
                 schema_version: SCHEMA_VERSION,
                 id: FactId::new(),
                 run,
-                revision: parked.revision + 1,
+                revision: replay.revision + 1,
                 at: at(),
                 fact: resolution,
             })?;
             assert!(replay.recovery_failure().is_none());
+            assert_eq!(replay.terminal, Some(Terminal::Failed));
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         })
         .catch_unwind()

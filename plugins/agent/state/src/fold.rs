@@ -608,7 +608,10 @@ impl RunView {
         require(
             self.terminal.is_none()
                 || fact.is_late()
-                || matches!(fact, Fact::ExternalTaskCleanupDeferred { .. }),
+                || matches!(
+                    fact,
+                    Fact::BlockerResolved { .. } | Fact::ExternalTaskCleanupDeferred { .. }
+                ),
             "terminal run accepts only original late evidence",
         )?;
         require(
