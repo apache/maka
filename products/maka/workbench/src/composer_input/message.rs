@@ -148,6 +148,7 @@ pub(super) fn attachment(node: &Node, chip: AnyElement) -> AnyElement {
         .expect("a skill name is text")
         .len() as u64;
     text("")
+        .line_height(super::SKILL_LINE_HEIGHT)
         .text_source(Some(Arc::new(TextSource::Mapped {
             id: Arc::from(id),
             segments: vec![TextSourceSegment {

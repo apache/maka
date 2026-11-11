@@ -105,8 +105,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn recycled_completion_cells_refresh_labels_and_press_actions() {
+    fn completion_fixture() -> nsh_testing::Headless {
         let mut registry = crate::bindings::ui_registry();
         registry.value("host", || Instance::new(CompletionHost));
         let sets = vec![nsh_base::registry(), registry];
@@ -119,17 +118,22 @@ mod tests {
             ui_sets: sets.iter().map(Into::into).collect(),
         })
         .unwrap();
-        let mut app = nsh_testing::Headless::start(nsh_engine::EngineConfig {
+        nsh_testing::Headless::start(nsh_engine::EngineConfig {
             viewport: Size::new(px(480.0), px(200.0)),
             environment: Environment {
                 os: Os::MacOs,
+                native_focus_scopes: true,
                 ..Environment::default()
             },
             ui_sets: sets,
             ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
         })
-        .unwrap();
+        .unwrap()
+    }
 
+    #[test]
+    fn recycled_completion_cells_refresh_labels_and_press_actions() {
+        let mut app = completion_fixture();
         app.wait_for("role:button[skill-00]").unwrap();
         app.scroll("label:Skills", px(900.0)).unwrap();
         app.wait_for("text:/Description of skill-15/").unwrap();
@@ -139,6 +143,28 @@ mod tests {
         app.press("id:refresh").unwrap();
         app.press("role:button[skill-15]").unwrap();
         app.wait_for("text:/2:skill:skill-15/").unwrap();
+    }
+
+    #[test]
+    fn pending_composer_selects_slash_skills_with_enter_and_tab() {
+        let mut app = completion_fixture();
+        app.wait_for("text:Open new chat").unwrap();
+        app.press("id:pending").unwrap();
+        app.type_text("label:New chat", "/skill-1").unwrap();
+        app.wait_for("role:button[skill-11]").unwrap();
+        app.press_key("down").unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for(r#"text:Draft "/skill:skill-11 ""#).unwrap();
+        app.wait_for(r#"text:Submitted """#).unwrap();
+
+        app.press_key("mod+a").unwrap();
+        app.type_text("label:New chat", "/skill-15").unwrap();
+        app.wait_for("role:button[skill-15]").unwrap();
+        app.press_key("tab").unwrap();
+        app.wait_for(r#"text:Draft "/skill:skill-15 ""#).unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for(r#"text:Submitted "/skill:skill-15 ""#)
+            .unwrap();
     }
 
     #[test]
