@@ -107,7 +107,9 @@ function ClipboardHistory(props: { input: QuickToolInput; history: History }) {
   );
   input.attach({
     items,
-    entries: () => [{ title: tr('Clipboard history'), icon: 'clipboard', keywords: KEYWORDS }],
+    entries: () => [
+      { id: 'history', title: tr('Clipboard history'), icon: 'clipboard', keywords: KEYWORDS },
+    ],
   });
   return null;
 }

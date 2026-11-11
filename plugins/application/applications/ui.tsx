@@ -63,7 +63,9 @@ function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
   );
   input.attach({
     items,
-    entries: () => [{ title: tr('Search applications'), icon: 'app', keywords: KEYWORDS }],
+    entries: () => [
+      { id: 'search', title: tr('Search applications'), icon: 'app', keywords: KEYWORDS },
+    ],
   });
   return null;
 }

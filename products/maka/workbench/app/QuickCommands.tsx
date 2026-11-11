@@ -52,7 +52,7 @@ export const LAUNCHER_SHORTCUT = 'alt+space';
 export type ToolEntry = { key: string; tool: UiContributionRef; entry: QuickEntry };
 
 export const entryKey = (tool: UiContributionRef, entry: QuickEntry) =>
-  `${tool.instance.path.join('/')}/${tool.id}/${entry.keywords[0]}`;
+  `${tool.instance.path.join('/')}/${tool.id}/${entry.id}`;
 
 export type Commands = {
   choices(): CommandChoices;

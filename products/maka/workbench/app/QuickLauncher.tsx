@@ -336,6 +336,9 @@ function Launcher(
     props.runtime
       .settings()
       .find((page) => sameValue(page.instance.instance, tool.instance.instance));
+  /** Tools with something to set: commands, or a page of their own. */
+  const configurable = (tool: UiContributionRef) =>
+    settingsOf(tool) !== undefined || props.entries().some((item) => item.tool.key === tool.key);
   const candidates = computed(() =>
     props.attached().flatMap(({ tool, handle }) =>
       handle.items().map((item) => {
@@ -348,7 +351,7 @@ function Launcher(
           detail: item.detail,
           trailing: item.source,
           action: item.action,
-          tool,
+          tool: configurable(tool) ? tool : undefined,
           match: item.match,
           remembered: item.remembered === true,
           run() {

@@ -445,6 +445,7 @@ function Screenshot(props: { input: QuickToolInput; settings: ScreenshotSettings
     items: () => [],
     entries: () => [
       {
+        id: 'capture',
         title: tr('Capture a screen region'),
         icon: 'camera',
         keywords: [tr('screenshot keyword'), ...TERMS],

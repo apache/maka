@@ -85,6 +85,9 @@ export interface QuickItem {
 
 /** A tool's own line on the launcher's home page. */
 export interface QuickEntry {
+  /** Unique within the tool and stable across runs and languages: the user's shortcut and alias
+   * for the entry are kept under it. */
+  readonly id: string;
   readonly title: string;
   readonly icon: QuickIcon;
   /** Searched; the first is shown beside the entry. */
