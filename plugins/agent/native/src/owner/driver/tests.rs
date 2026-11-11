@@ -422,7 +422,10 @@ impl Rig {
             &[
                 "create",
                 "models",
+                "observe",
+                "predictNextMessage",
                 "send",
+                "uploadAttachment",
                 "work",
                 "workReadiness",
                 "queue",
@@ -459,7 +462,13 @@ impl Rig {
                     consumer: InstanceId(vec![gateway_key]),
                     import: "settings".into(),
                     grant: Grant {
-                        methods: ["connections".into(), "create".into()].into(),
+                        methods: [
+                            "assistantPreferences".into(),
+                            "connections".into(),
+                            "create".into(),
+                            "updateAssistantPreferences".into(),
+                        ]
+                        .into(),
                         recovery: false,
                     },
                 },
@@ -1906,6 +1915,7 @@ mod source_recovery {
 
 mod model_recovery {
     mod bot_tools;
+    mod predictions;
 
     use super::*;
     use maka_process::lifetime::{ProcessIdentity, ProcessObservation};
@@ -2103,8 +2113,17 @@ mod model_recovery {
         method: &str,
         input: Value,
     ) -> TestResult<Value> {
+        call_with_attachments(client, endpoint, method, input, Attachments::new()).await
+    }
+    async fn call_with_attachments(
+        client: &HostClient,
+        endpoint: &str,
+        method: &str,
+        input: Value,
+        attachments: Attachments,
+    ) -> TestResult<Value> {
         let mut call = client
-            .call(endpoint, method.into(), input, Attachments::new())
+            .call(endpoint, method.into(), input, attachments)
             .await?;
         call.start().await?;
         let value = match call.receive().await? {
@@ -2124,7 +2143,7 @@ mod model_recovery {
                     cleanup: OperationCleanup::Confirmed,
                 } = &reply.receipt
                 else {
-                    return Err("test mutation was not returned and physically settled".into());
+                    return Err(format!("{endpoint}.{method}: {:?}", reply.receipt).into());
                 };
                 value.clone()
             }

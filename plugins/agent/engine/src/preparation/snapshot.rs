@@ -32,7 +32,7 @@ use maka_agent_facts::{
     durable::{ContentRef, RunId},
     model::prompt_source::source::{
         ChargedBuffer, MessageMetadata, MessageRecipe, MessageSource, NextRecipe, RecipeCursor,
-        RecipeIdentity, RecipeSource, SourceBytes,
+        RecipeSource, SourceBytes,
     },
 };
 use maka_agent_state::{
@@ -542,9 +542,6 @@ impl MessageSource for ChargedSource {
             cursor: self.source.open_metadata(start),
             _owner: self.owner.clone(),
         })
-    }
-    fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_> {
-        self.source.prefix_identity(messages)
     }
 }
 struct ChargedCursor<T> {

@@ -961,7 +961,7 @@ mod tests {
         prompt::Message,
         prompt_source::source::{
             self, ByteCursor, ByteSource, ChargedBuffer, MessageMetadata, MessageRecipe,
-            ReadSource, RecipeCursor, RecipeIdentity, RecipeSource,
+            ReadSource, RecipeCursor, RecipeSource,
             generated::{GeneratedMessages, GeneratedRecipes},
         },
     };
@@ -1024,9 +1024,6 @@ mod tests {
     impl MessageSource for Messages {
         fn open_metadata(&self, start: usize) -> Box<dyn RecipeCursor<MessageMetadata>> {
             self.metadata.open_metadata(start)
-        }
-        fn prefix_identity(&self, count: usize) -> RecipeIdentity<'_> {
-            self.metadata.prefix_identity(count)
         }
     }
     #[tokio::test]
