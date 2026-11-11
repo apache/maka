@@ -22,6 +22,10 @@ use maka_agent_facts::durable::{ExecutionIdentity, UnixMillis};
 use maka_agent_state::{Head, queue as durable_queue};
 
 impl Owner {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "steering keeps message input, target execution, captured policy and original call authority explicit"
+    )]
     pub(super) async fn steer_message(
         self: &Arc<Self>,
         text: String,

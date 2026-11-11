@@ -424,16 +424,13 @@ fn source_link(proof: &SnapshotProof, relative: &Path, raw: &Path) -> Result<Pat
     if let Ok(index) = proof
         .files()
         .binary_search_by(|e| e.relative_path.as_path().cmp(relative))
-    {
-        if let SnapshotKind::Symlink {
+        && let SnapshotKind::Symlink {
             source_target,
             working_target,
         } = &proof.files()[index].kind
-        {
-            if working_target == raw {
-                return Ok(source_target.clone());
-            }
-        }
+        && working_target == raw
+    {
+        return Ok(source_target.clone());
     }
     let working = proof.resource_ref().join("workspace");
     let (root, target) = if raw.is_absolute() {

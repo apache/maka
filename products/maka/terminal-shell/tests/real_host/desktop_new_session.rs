@@ -39,7 +39,6 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Notify, watch};
-use uuid::Uuid;
 
 macro_rules! native {
     ($ty:path { $($field:ident: $value:expr),* $(,)? }) => {{
@@ -2167,13 +2166,34 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     let running = desktop.request(&mut fixture).await;
     desktop.press("Change budget").await;
     desktop.control("Cancel editing").await;
+    assert!(
+        running.body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["function"]["name"] == "GoalStatus"),
+        "{}",
+        running.body
+    );
     running
         .tool_call(
             "GoalStatus",
             json!({"status":"achieved", "note":"Verified the requested result"}),
         )
         .await;
-    desktop.request(&mut fixture).await.finish().await;
+    let finished = desktop.request(&mut fixture).await;
+    let result: Value = serde_json::from_str(
+        finished.body["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(result["current"]["status"], "achieved", "{result}");
+    finished.finish().await;
     desktop
         .until("a finished Goal still offers budget updates", || {
             desktop.controls("Apply budget").is_empty().then_some(())
@@ -2215,7 +2235,19 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         json!({"status":"achieved", "note":"Follow-up verified"}),
     )
     .await;
-    desktop.request(&mut fixture).await.finish().await;
+    let finished = desktop.request(&mut fixture).await;
+    let result: Value = serde_json::from_str(
+        finished.body["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(result["current"]["status"], "achieved", "{result}");
+    finished.finish().await;
     desktop.press("Focus message composer").await;
     desktop.type_text("/goal").await;
     // "/goal" opens a completion menu, and an Enter on the binding of a menu
@@ -2223,11 +2255,15 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop
         .retry(
             "/goal did not open the Goal dialog",
-            || !desktop.controls("Start Goal").is_empty(),
+            || !desktop.controls("New Goal").is_empty(),
             || desktop.key("enter", false),
         )
         .await;
-    desktop.control("New Goal").await;
+    let previous = desktop.platform.text_input_target();
+    desktop.press("New Goal").await;
+    desktop.target_after(previous).await;
+    desktop.type_text("Cancel this unsubmitted Goal").await;
+    desktop.control("Start Goal").await;
     desktop.key("escape", false);
     desktop
         .until("the Goal dialog did not close", || {

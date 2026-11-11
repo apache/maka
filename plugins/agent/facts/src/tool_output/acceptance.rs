@@ -151,10 +151,9 @@ impl OperationProjection {
                     },
                 ..
             } = &reply.receipt
+                && value == returned
             {
-                if value == returned {
-                    return Ok(Self::Result);
-                }
+                return Ok(Self::Result);
             }
             if value.get("reference").is_some()
                 && value.get("receipt").is_some()

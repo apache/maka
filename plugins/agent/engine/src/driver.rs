@@ -592,8 +592,19 @@ impl Engine {
                     complete_at_budget,
                 )
             };
-            if matches!(action, Action::Terminate(Terminal::Completed))
-                && !reconcile::budget_exhausted(&view)
+            if !retiring
+                && !fenced
+                && !view.finish_requested()
+                && !live.work.contains(&WorkKey::Prepare)
+                && matches!(view.spec.backend, BackendSpec::Model { .. })
+                && view.replans.is_empty()
+                && !view
+                    .blockers
+                    .values()
+                    .any(|blocker| blocker.decision.is_none() && blocker.resolved_by.is_none())
+                && view
+                    .current_attempt
+                    .is_some_and(|id| view.current_step == Some(view.attempts[&id].step))
                 && !model_level.as_ref().is_some_and(|(_, _, level)| {
                     matches!(
                         level.input,
@@ -609,7 +620,23 @@ impl Engine {
                 if !queue.entries.is_empty()
                     && let Some(attempt) = view.current_attempt
                 {
-                    action = Action::Prepare(Preparation::Steering { attempt });
+                    let original = &view.attempts[&attempt];
+                    if original.admission.is_some()
+                        && original.closed.is_none()
+                        && original.interrupted.is_none()
+                        && !live.models_cancelled.contains(&attempt)
+                    {
+                        action = Action::CancelModel(attempt);
+                    } else if live.work.contains(&WorkKey::CancelModel(attempt))
+                        || (live.models_cancelled.contains(&attempt)
+                            && live.work.contains(&WorkKey::Model(attempt)))
+                    {
+                        action = Action::Idle;
+                    } else if matches!(action, Action::Terminate(Terminal::Completed))
+                        && !reconcile::budget_exhausted(&view)
+                    {
+                        action = Action::Prepare(Preparation::Steering { attempt });
+                    }
                 }
             }
             let idle = matches!(action, Action::Idle);

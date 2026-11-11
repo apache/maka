@@ -152,7 +152,7 @@ impl Access {
             // future is polled; this receipt is not a claim/effect-success proof.
             self.preparation.epoch.record_browser_preparation(
                 self.basis,
-                &invocation,
+                invocation,
                 self.attachment.gate.clone(),
             )?;
         }

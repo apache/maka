@@ -634,9 +634,12 @@ impl Rig {
         };
         let admission = Admission::new(spec, at(), vec![backend, empty, system, tools]);
         let run = admission.run();
+        // The activated scheduler must not reserve this fixture's Run before its claim.
+        let runs = owner.runs.state().await;
         state.admit(admission).await?;
         let view = state.frontier(run).await?;
         let claim = state.claim(run).await?;
+        drop(runs);
         let access = owner.run_access(Arc::new(view.spec.clone()), claim, lease)?;
         let workers = TaskTracker::new();
         let cleanup = Evidence::default();
@@ -2356,13 +2359,17 @@ mod model_recovery {
             let view = driver.state.frontier(run).await?;
             let first = first?;
             let last = view.current_attempt.ok_or("retry attempt missing")?;
-            assert!(matches!(
-                exit?,
-                maka_agent_engine::DriverExit::Terminal {
-                    terminal: Terminal::Completed,
-                    ..
-                }
-            ));
+            let exit = exit?;
+            assert!(
+                matches!(
+                    exit,
+                    maka_agent_engine::DriverExit::Terminal {
+                        terminal: Terminal::Completed,
+                        ..
+                    }
+                ),
+                "interrupted empty model stream returned {exit:?}"
+            );
             assert_ne!(first, last);
             assert_eq!(view.attempts[&first].step, view.attempts[&last].step);
             assert_eq!(view.attempts.len(), 2);
@@ -4004,10 +4011,7 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
         message::MessageOrigin,
         session::ForkPosition,
     };
-    use maka_agent_state::{
-        queue::{QueueCommand, QueueEdit, SteeringTarget},
-        recall::SearchQuery,
-    };
+    use maka_agent_state::recall::SearchQuery;
     use std::sync::atomic::AtomicUsize;
 
     let mut rig = Rig::new().unwrap();
@@ -4048,25 +4052,6 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
             .await?
             .ok_or("steering notification was not queued")?;
         let view = driver.state.frontier(run).await?;
-        let queue = driver.state.queue();
-        queue
-            .execute(
-                session.clone(),
-                QueueCommand {
-                    id: FactId::try_from(Uuid::new_v4()).unwrap(),
-                    at: at(),
-                    expected_revision: queue.read(session.clone()).await?.revision,
-                    edit: QueueEdit::Promote {
-                        request: notification.id,
-                        target: SteeringTarget {
-                            run,
-                            expected_head: (&view).into(),
-                        },
-                    },
-                },
-                vec![],
-            )
-            .await?;
         let mut pending = driver
             .model()?
             .prepare_step(

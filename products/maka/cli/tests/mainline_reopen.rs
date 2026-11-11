@@ -479,11 +479,25 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
         let target = json!({"kind":"run","runId":run});
         let readiness = call(&client, "agent", "workReadiness", json!({"sessionId":session,"target":target}), Attachments::new()).await;
         assert_eq!(readiness["kind"], "pending");
+        let queued = call(&client, "agent", "send", json!({
+            "sessionId":session,"message":"This followup must be cancelled by Stop.","delivery":"queue",
+        }), Attachments::new()).await;
+        assert_eq!(queued["kind"], "queued");
+        let queued_message = queued["messageId"].clone();
+        let pending = call(&client, "agent", "work", json!({"sessionId":session,"target":{"kind":"message","messageId":queued_message}}), Attachments::new()).await;
+        assert_eq!(pending["kind"], "pending");
         let stopped_reply = call(&client, "agent", "stop", json!({"sessionId":session,"runId":run}), Attachments::new()).await;
         assert_eq!(stopped_reply["requested"], true);
         let cancelled = work(&client, session, target.clone(), Some("cancelled")).await;
         eprintln!("mainline stage: original Run cancelled; await physical model EOF");
         assert_eq!(cancelled["execution"]["runId"], run);
+        let queue = call(&client, "agent", "queue", json!({"sessionId":session}), Attachments::new()).await;
+        let delivery = call(&client, "agent", "queueMessage", json!({
+            "sessionId":session,"messageId":queued_message,"expectedRevision":queue["revision"],
+        }), Attachments::new()).await;
+        assert_eq!(delivery, json!({"kind":"missing","reason":"cancelled"}));
+        let queued_work = call(&client, "agent", "work", json!({"sessionId":session,"target":{"kind":"message","messageId":queued_message}}), Attachments::new()).await;
+        assert_eq!(queued_work["kind"], "cancelled");
         tokio::select! {
             event = observations.recv() => assert_eq!(event, Some("model-eof")),
             result = &mut server => panic!("loopback provider failed during original Stop: {result:?}"),
@@ -524,6 +538,11 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
         let reopened = work(&client, session, target, Some("cancelled")).await;
         assert_eq!(reopened["execution"]["runId"], run);
         assert_eq!(reopened["execution"]["turnId"], cancelled["execution"]["turnId"]);
+        let queue = call(&client, "agent", "queue", json!({"sessionId":session}), Attachments::new()).await;
+        let delivery = call(&client, "agent", "queueMessage", json!({
+            "sessionId":session,"messageId":queued_message,"expectedRevision":queue["revision"],
+        }), Attachments::new()).await;
+        assert_eq!(delivery, json!({"kind":"missing","reason":"cancelled"}));
         assert_eq!(tokio::fs::read_to_string(workspace.join("effects.log")).await.unwrap(), format!("{nonce}\n"));
         // Restoring changes only the selected workspace, never the immutable original Run.
         tokio::fs::write(workspace.join("effects.log"), "later local edit").await.unwrap();
@@ -545,6 +564,8 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
             "sessionId":session,"message":format!("checkpoint-followup-{nonce}"),"delivery":"queue",
         }), Attachments::new()).await;
         assert_eq!(followup["kind"], "queued");
+        let repeated_stop = call(&client, "agent", "stop", json!({"sessionId":session,"runId":run}), Attachments::new()).await;
+        assert_eq!(repeated_stop["requested"], true, "re-observing the stopped original Run cannot stop its successor");
         let finished = work(&client, session,
             json!({"kind":"message","messageId":followup["messageId"]}), Some("completed")).await;
         assert_ne!(finished["execution"]["runId"], run);
@@ -576,3 +597,6 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
         Err(panic) => std::panic::resume_unwind(panic),
     }
 }
+
+#[path = "mainline_reopen/steering.rs"]
+mod steering;

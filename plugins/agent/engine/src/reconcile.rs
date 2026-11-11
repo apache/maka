@@ -1042,33 +1042,33 @@ fn next_action(
         {
             return Action::Accept(tool.key.clone(), result);
         }
-        if let Some(reference) = &tool.original {
-            if !known(&tool.receipt) {
-                pending_effect = true;
-                let reason = BlockerKind::OperationUnknown {
-                    tool: tool.key.clone(),
-                    reference: reference.clone(),
-                };
-                if view
-                    .blockers
-                    .values()
-                    .any(|blocker| blocker.reason == reason && active(blocker))
-                {
-                    continue;
-                }
-                if !live.observed.contains(&tool.key)
-                    && !matches!(
-                        tool.receipt,
-                        Some(Receipt::Recorded {
-                            outcome: OperationOutcome::Unknown { .. },
-                            ..
-                        })
-                    )
-                {
-                    return Action::Observe(tool.key.clone());
-                }
-                return Action::Block(reason);
+        if let Some(reference) = &tool.original
+            && !known(&tool.receipt)
+        {
+            pending_effect = true;
+            let reason = BlockerKind::OperationUnknown {
+                tool: tool.key.clone(),
+                reference: reference.clone(),
+            };
+            if view
+                .blockers
+                .values()
+                .any(|blocker| blocker.reason == reason && active(blocker))
+            {
+                continue;
             }
+            if !live.observed.contains(&tool.key)
+                && !matches!(
+                    tool.receipt,
+                    Some(Receipt::Recorded {
+                        outcome: OperationOutcome::Unknown { .. },
+                        ..
+                    })
+                )
+            {
+                return Action::Observe(tool.key.clone());
+            }
+            return Action::Block(reason);
         }
         if tool.accepted.is_some() {
             continue;
