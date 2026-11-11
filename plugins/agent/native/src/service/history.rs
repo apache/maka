@@ -633,8 +633,20 @@ pub(super) async fn observation(
                     ui::RunState::Running
                 },
             });
-            for tool in view.tools.values().filter(|tool| tool.accepted.is_none()) {
-                let tool_use_id = super::delivery::tool_id(view.run, &tool.key);
+            let mut active_tools: Vec<_> = view
+                .tools
+                .values()
+                .filter(|tool| tool.accepted.is_none())
+                .map(|tool| super::delivery::tool_id(view.run, &tool.key))
+                .collect();
+            if let Some(task) = view.external.as_ref().filter(|task| task.closed.is_none()) {
+                active_tools.extend(
+                    task.active_tools
+                        .iter()
+                        .map(|id| super::delivery::executor_tool_id(view.run, task.task, id)),
+                );
+            }
+            for tool_use_id in active_tools {
                 if let Some(position) = history
                     .tool_position(&cut, &tool_use_id)
                     .await

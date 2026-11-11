@@ -30,6 +30,7 @@ pub(crate) fn prepare(
     filesystem: &Compiled,
     network: &Network,
     proxy: Option<std::net::SocketAddr>,
+    private_socket: Option<&Path>,
 ) -> Result<Launch, Error> {
     let policy = filesystem.policy();
     // These paths are already materialized on the execution host. Do not resolve
@@ -105,6 +106,11 @@ pub(crate) fn prepare(
             "\n(allow network-outbound (remote {protocol} \"localhost:{}\"))",
             proxy.port()
         ));
+    }
+    if let Some(socket) = private_socket {
+        validate_anchor(socket)?;
+        args.push(format!("-DPRIVATE_SOCKET={}", socket.display()).into());
+        profile.push_str("\n(allow network-outbound (remote unix-socket (path-literal (param \"PRIVATE_SOCKET\"))))");
     }
     for (index, pattern) in policy.deny_globs.iter().enumerate() {
         let (denied, parents) = glob::compile(pattern)?;

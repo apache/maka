@@ -91,6 +91,34 @@ pub fn private_rules(
 pub struct Root {
     name: String,
     directory: Arc<PublishedDirectory>,
+    temporary: Option<PathBuf>,
+}
+
+impl Root {
+    pub fn execution_basis(&self) -> std::io::Result<(&Path, DirectoryIdentity, Option<&Path>)> {
+        Ok((
+            self.directory.path(),
+            self.directory.identity()?,
+            self.temporary.as_deref(),
+        ))
+    }
+
+    pub fn validate(&self, path: &Path) -> std::io::Result<()> {
+        self.directory.validate(path)?;
+        #[cfg(unix)]
+        if let Some(protected) = &self.temporary {
+            let child = path
+                .strip_prefix(self.directory.path())
+                .ok()
+                .and_then(|relative| relative.components().next())
+                .map(|child| self.directory.path().join(child))
+                .ok_or(std::io::ErrorKind::PermissionDenied)?;
+            if path.starts_with(protected) || !maka_sandbox::is_private_account_directory(&child)? {
+                return Err(std::io::ErrorKind::PermissionDenied.into());
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn open(specs: Vec<DirectoryRootSpec>, managed: &Path) -> Result<Vec<Root>, String> {
@@ -107,10 +135,54 @@ pub fn open(specs: Vec<DirectoryRootSpec>, managed: &Path) -> Result<Vec<Root>, 
                     PublishedDirectory::open(&spec.path)
                         .map_err(|_| "agent_workspace_configuration_invalid")?,
                 ),
+                temporary: None,
             })
         })
         .collect::<Result<_, String>>()?;
     Ok(roots)
+}
+
+pub fn open_projects(specs: Vec<DirectoryRootSpec>, managed: &Path) -> Result<Vec<Root>, String> {
+    let roots = open(specs, managed)?;
+    #[cfg(unix)]
+    let roots = {
+        let mut roots = roots;
+        if let Some(home) = std::env::home_dir() {
+            let namespace =
+                maka_sandbox::native_task_namespace().map_err(|error| error.to_string())?;
+            add_temporary_workspaces(&mut roots, &home, &std::env::temp_dir(), namespace)?;
+        }
+        roots
+    };
+    Ok(roots)
+}
+
+/// The default local locations include the account's private scratch directories.
+/// The system temporary directory itself is never a selectable workspace.
+#[cfg(unix)]
+fn add_temporary_workspaces(
+    roots: &mut Vec<Root>,
+    home: &Path,
+    temporary: &Path,
+    protected: PathBuf,
+) -> Result<(), String> {
+    let home = home.canonicalize().map_err(|error| error.to_string())?;
+    if !roots.iter().any(|root| root.directory.path() == home) {
+        return Ok(());
+    }
+    let directory = PublishedDirectory::open(temporary).map_err(|error| error.to_string())?;
+    if roots
+        .iter()
+        .any(|root| directory.path().starts_with(root.directory.path()))
+    {
+        return Ok(());
+    }
+    roots.push(Root {
+        name: "Temporary".into(),
+        directory: Arc::new(directory),
+        temporary: Some(protected),
+    });
+    Ok(())
 }
 /// A directory found within a configured location, with the identity captured
 /// as it was opened. Only a `Workspace` the Host persisted carries an identity
@@ -178,7 +250,7 @@ fn capture(root: &Root, path: &Path) -> Option<Located> {
     directory::open(&path, &identity)
         .and_then(|directory| directory.entries())
         .ok()?;
-    root.directory.validate(&path).ok()?;
+    root.validate(&path).ok()?;
     let name = if path == root.directory.path() {
         root.name.clone()
     } else {
@@ -338,7 +410,7 @@ pub async fn initialize(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return None,
         }
-        Some((root.directory.clone(), path, directory, located.identity))
+        Some((root.clone(), path, directory, located.identity))
     })
     .await
     .map_err(|_| "agent_workspace_unavailable")?;
@@ -404,7 +476,7 @@ pub async fn open_workspace(
         };
         let root = roots
             .iter()
-            .find(|root| root.directory.validate(authorized).is_ok())
+            .find(|root| root.validate(authorized).is_ok())
             .ok_or("agent_workspace_unavailable")?;
         let directory = directory::open(&path, &selected.directory_identity)
             .map_err(|_| "agent_workspace_unavailable")?;
@@ -419,8 +491,7 @@ pub async fn open_workspace(
         {
             return Err("agent_workspace_unavailable".into());
         }
-        root.directory
-            .validate(authorized)
+        root.validate(authorized)
             .map_err(|_| "agent_workspace_unavailable")?;
         Ok(directory)
     })
@@ -493,9 +564,64 @@ async fn resolve(
                 Err(_) => return None,
             }
         }
-        root.directory.validate(&path).ok()?;
+        root.validate(&path).ok()?;
         Some((located, directory))
     })
     .await
     .map_err(|_| "agent_directory_unavailable".into())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn default_home_accepts_private_scratch_workspaces_only() {
+        let parent = tempfile::tempdir().unwrap();
+        let home = parent.path().join("home");
+        let temp = parent.path().join("tmp");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::create_dir(&temp).unwrap();
+        let protected = tempfile::tempdir_in(&temp).unwrap();
+        let scratch = tempfile::tempdir_in(&temp).unwrap();
+        let shared = tempfile::tempdir_in(&temp).unwrap();
+        for private in [&protected, &scratch] {
+            std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        std::fs::set_permissions(shared.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut roots = open(
+            vec![DirectoryRootSpec {
+                label: "~".into(),
+                path: home.clone(),
+            }],
+            protected.path(),
+        )
+        .unwrap();
+        add_temporary_workspaces(
+            &mut roots,
+            &home,
+            &temp,
+            protected.path().canonicalize().unwrap(),
+        )
+        .unwrap();
+
+        for (path, available) in [
+            (scratch.path(), true),
+            (shared.path(), false),
+            (protected.path(), false),
+            (&temp, false),
+        ] {
+            let result = selected(
+                roots.clone(),
+                path.to_str().unwrap(),
+                None,
+                parent.path().join("managed"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.is_some(), available, "{}", path.display());
+        }
+    }
 }

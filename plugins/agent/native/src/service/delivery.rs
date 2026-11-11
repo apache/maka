@@ -29,6 +29,22 @@ pub(super) fn tool_id(run: RunId, tool: &ToolKey) -> String {
     maka_agent_facts::tool_call::tool_use_id(run, &format!("{}:{}", tool.attempt, tool.call))
 }
 
+pub(super) fn executor_tool_id(run: RunId, task: ExternalTaskId, id: &str) -> String {
+    maka_agent_facts::tool_call::tool_use_id(run, &format!("{task}:{id}"))
+}
+
+pub(super) fn executor_tool_title(
+    name: &str,
+    input: &serde_json::Value,
+) -> Option<maka_agent_facts::display::Text> {
+    if name != "run_command" {
+        return None;
+    }
+    input["toolSummary"]
+        .as_str()
+        .and_then(maka_agent_facts::display::Text::single_line)
+}
+
 pub(super) fn recorded_settlement(
     reply: &maka_agent_facts::operation::RecordedOperationReply,
 ) -> Option<ToolSettlement> {
@@ -141,11 +157,33 @@ pub(super) fn project(item: &HistoryItem, turn_id: String) -> Result<Delivery, S
             tool_use_id: tool_id(run, tool),
             settlement: ToolSettlement::Failed,
         },
+        Fact::ExternalTaskObserved { task, output, .. } => {
+            use maka_agent_facts::executor::Output;
+            match output {
+                Output::ToolStart {
+                    tool_call_id,
+                    name,
+                    input,
+                } => DeliveryFact::ExecutorToolStart {
+                    tool_use_id: executor_tool_id(run, *task, tool_call_id),
+                    name: name.clone(),
+                    title: executor_tool_title(name, input),
+                },
+                Output::ToolResult {
+                    tool_call_id,
+                    is_error,
+                    ..
+                } => DeliveryFact::ExecutorToolResult {
+                    tool_use_id: executor_tool_id(run, *task, tool_call_id),
+                    is_error: *is_error,
+                },
+                _ => DeliveryFact::TranscriptChanged,
+            }
+        }
         Fact::RunTerminated { terminal, .. } => DeliveryFact::Ended {
             failed: *terminal != Terminal::Completed,
         },
-        // External tasks and Cells have their own typed identity, not a model attempt.
-        // History supplies their complete output; this is only invalidation metadata.
+        // History supplies complete output; this is only invalidation metadata.
         _ => DeliveryFact::TranscriptChanged,
     };
     Ok(Delivery {

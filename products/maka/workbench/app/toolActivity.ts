@@ -100,6 +100,7 @@ export function updateToolActivity(active: ToolActivity[], event: AgentDelivery)
         source: 'executor',
         phase: 'running',
         name: fact.name,
+        title: fact.title ?? undefined,
         inputReady: true,
       };
       break;

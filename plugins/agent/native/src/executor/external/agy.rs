@@ -113,6 +113,23 @@ async fn prepare(
     }
     let directory = bridge.directory();
     let plugin = directory.join(".agents/plugins/maka");
+    #[cfg(target_os = "macos")]
+    let hook_path = plugin.join("hooks.json");
+    #[cfg(target_os = "macos")]
+    let (owner, hook) = {
+        let mut owner = owner;
+        owner
+            .use_account_profile(".gemini/antigravity-cli")
+            .await
+            .map_err(runtime::isolation_error)?;
+        let tmp = owner.tmp();
+        let executable = owner
+            .record_step_annotations(&hook_path)
+            .map_err(|error| Error::Provider(error.to_string()))?;
+        let hook = super::super::agy_hook::configuration(executable, &tmp)
+            .map_err(|error| Error::Provider(error.to_string()))?;
+        (owner, hook)
+    };
     tokio::fs::create_dir_all(&plugin)
         .await
         .map_err(|e| Error::Provider(e.to_string()))?;
@@ -176,8 +193,12 @@ async fn prepare(
     if let Some(effort) = request.get("effort").and_then(Value::as_str) {
         plan.arg("--effort").arg(effort);
     }
+    #[cfg(target_os = "macos")]
+    tokio::fs::write(&hook_path, hook)
+        .await
+        .map_err(|error| Error::Provider(format!("Antigravity tool hook installation: {error}")))?;
     let host = bridge.clone();
-    native_pipe(
+    let result = native_pipe(
         owner,
         journal.observation(),
         plan,
@@ -192,7 +213,17 @@ async fn prepare(
             submitted,
         },
     )
-    .await
+    .await;
+    #[cfg(target_os = "macos")]
+    if !matches!(
+        &result,
+        Err(Error::ObservationRetired | Error::CleanupUnconfirmed)
+    ) && let Err(error) = tokio::fs::remove_file(hook_path).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::error!(%error, "Antigravity private tool hook cleanup failed");
+    }
+    result
 }
 
 struct Protocol<'a> {
@@ -342,7 +373,7 @@ async fn observe(
     show_text: bool,
     journal: Option<&journal::ProtocolSession>,
 ) -> Result<Outcome, Error> {
-    let mut turn = NativeTurn::new(cursor.highest_step, show_text);
+    let mut turn = NativeTurn::new(cursor.highest_step, show_text, cfg!(target_os = "macos"));
     let deadline = tokio::time::Instant::now() + runtime::SETUP_TIMEOUT;
     loop {
         let event = if turn.user.is_none() {
@@ -365,18 +396,26 @@ struct NativeTurn {
     user: Option<u64>,
     user_done: bool,
     tools: std::collections::BTreeSet<u64>,
+    commands: std::collections::BTreeMap<u64, PendingCommand>,
     messages: AgentMessages,
     show_text: bool,
+    step_annotations: bool,
+}
+enum PendingCommand {
+    Step(Value),
+    Title(Option<String>),
 }
 impl NativeTurn {
-    fn new(previous_step: Option<u64>, show_text: bool) -> Self {
+    fn new(previous_step: Option<u64>, show_text: bool, step_annotations: bool) -> Self {
         Self {
             previous_step,
             user: None,
             user_done: false,
             tools: Default::default(),
+            commands: Default::default(),
             messages: Default::default(),
             show_text,
+            step_annotations,
         }
     }
     async fn event(
@@ -414,6 +453,7 @@ impl NativeTurn {
                             .bind_task(NativeTask::Antigravity {
                                 conversation: session.into(),
                                 user_step: index,
+                                step_annotations: self.step_annotations,
                             })
                             .await?;
                     }
@@ -435,7 +475,43 @@ impl NativeTurn {
                         .await?;
                 }
                 if kind == "tool" {
-                    emit_tool(step, session, index, state, &mut self.tools, output).await?;
+                    let mut title = None;
+                    if self.step_annotations && step["tool_name"] == "run_command" {
+                        match self.commands.remove(&index) {
+                            Some(PendingCommand::Title(observed)) => title = observed,
+                            _ if !self.tools.contains(&index)
+                                && !matches!(state, "DONE" | "ERROR") =>
+                            {
+                                self.commands
+                                    .insert(index, PendingCommand::Step(step.clone()));
+                                return Ok(None);
+                            }
+                            _ => {}
+                        }
+                    }
+                    emit_tool(step, session, index, state, &mut self.tools, title, output).await?;
+                }
+                Ok(None)
+            }
+            Some("maka_step_annotation") if self.step_annotations => {
+                let annotation = &event["annotation"];
+                let index = annotation["step"].as_u64().ok_or(Error::Unknown)?;
+                if annotation["session"] != session || !self.user.is_some_and(|user| index > user) {
+                    tracing::warn!(
+                        index,
+                        "Antigravity tool annotation does not match the current turn"
+                    );
+                    return Ok(None);
+                }
+                let title = annotation["title"]
+                    .as_str()
+                    .and_then(maka_agent_facts::display::Text::single_line)
+                    .map(|title| title.fallback);
+                if let Some(PendingCommand::Step(step)) = self.commands.remove(&index) {
+                    let state = string(&step, "/state")?;
+                    emit_tool(&step, session, index, state, &mut self.tools, title, output).await?;
+                } else if !self.tools.contains(&index) {
+                    self.commands.insert(index, PendingCommand::Title(title));
                 }
                 Ok(None)
             }
@@ -445,6 +521,13 @@ impl NativeTurn {
                     return Err(Error::Invalid(
                         "agy terminal did not correlate to this user input".into(),
                     ));
+                }
+                for (index, command) in std::mem::take(&mut self.commands) {
+                    if let PendingCommand::Step(step) = command {
+                        let state = string(&step, "/state")?;
+                        emit_tool(&step, session, index, state, &mut self.tools, None, output)
+                            .await?;
+                    }
                 }
                 let outcome = terminal(result, self.messages.final_message_id.clone())?;
                 if matches!(outcome, Outcome::Completed { .. })
@@ -574,6 +657,7 @@ async fn emit_tool(
     index: u64,
     state: &str,
     tools: &mut std::collections::BTreeSet<u64>,
+    title: Option<String>,
     output: &dyn OutputSink,
 ) -> Result<(), Error> {
     let name = string(step, "/tool_name")?;
@@ -588,14 +672,20 @@ async fn emit_tool(
     }
     let tool_call_id = format!("{session}:{index}");
     if tools.insert(index) {
+        let mut input = step
+            .pointer("/tool_info/parameters")
+            .cloned()
+            .unwrap_or(Value::Null);
+        if let Some(title) = title
+            && (input.is_object() || input.is_null())
+        {
+            input["toolSummary"] = title.into();
+        }
         output
             .emit(Output::ToolStart {
                 tool_call_id: tool_call_id.clone(),
                 name: name.into(),
-                input: step
-                    .pointer("/tool_info/parameters")
-                    .cloned()
-                    .unwrap_or(Value::Null),
+                input,
             })
             .await?;
     }
@@ -625,6 +715,7 @@ pub(super) async fn replay(
     let NativeTask::Antigravity {
         conversation,
         user_step,
+        step_annotations,
     } = &binding.task
     else {
         return Err(Error::Unknown);
@@ -664,7 +755,7 @@ pub(super) async fn replay(
         return Err(Error::Unknown);
     }
     let mut cursor = TurnCursor::default();
-    let mut bootstrap = NativeTurn::new(None, false);
+    let mut bootstrap = NativeTurn::new(None, false, *step_annotations);
     loop {
         let event = stream.required().await?;
         if let Some(outcome) = bootstrap
@@ -683,7 +774,7 @@ pub(super) async fn replay(
     {
         return Err(Error::Unknown);
     }
-    let mut turn = NativeTurn::new(cursor.highest_step, true);
+    let mut turn = NativeTurn::new(cursor.highest_step, true, *step_annotations);
     let outcome = loop {
         let event = stream.required().await?;
         if event["event"] == "step_update"
@@ -830,4 +921,81 @@ fn parse_models(bytes: &[u8]) -> Result<Vec<Value>, Error> {
         models.push(serde_json::json!({"id":id,"displayName":name}));
     }
     Ok(models)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[derive(Default)]
+    struct Sink(std::sync::Mutex<Vec<Output>>);
+    impl OutputSink for Sink {
+        fn emit(&self, output: Output) -> BoxFuture<'_, Result<(), Error>> {
+            Box::pin(async move {
+                self.0.lock().unwrap().push(output);
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn command_titles_follow_their_original_steps_in_either_arrival_order() {
+        let output = Sink::default();
+        let mut cursor = TurnCursor::default();
+        let mut turn = NativeTurn::new(None, true, true);
+        let update = |step: Value| json!({"event":"step_update","step_update":step});
+        let command = |index, state, command| {
+            update(json!({
+                "conversation_id":"session","step_index":index,"step_type":"tool","state":state,
+                "tool_name":"run_command","tool_info":{"parameters":{"CommandLine":command}},
+            }))
+        };
+        let annotation = |step, title| {
+            json!({
+                "event":"maka_step_annotation","annotation":{"session":"session","step":step,"title":title},
+            })
+        };
+        for event in [
+            update(
+                json!({"conversation_id":"session","step_index":0,"step_type":"user_input","state":"DONE"}),
+            ),
+            command(1, "ACTIVE", "printf first"),
+            annotation(2, "Second command"),
+            command(2, "ACTIVE", "printf second"),
+            annotation(1, "First command"),
+            command(3, "ERROR", "printf denied"),
+        ] {
+            assert!(
+                turn.event(event, "session", &mut cursor, &output, None)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        let events = output.0.lock().unwrap();
+        let starts: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Output::ToolStart {
+                    tool_call_id,
+                    input,
+                    ..
+                } => Some((
+                    tool_call_id.as_str(),
+                    input["CommandLine"].as_str().unwrap(),
+                    input["toolSummary"].as_str(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            starts,
+            [
+                ("session:2", "printf second", Some("Second command")),
+                ("session:1", "printf first", Some("First command")),
+                ("session:3", "printf denied", None),
+            ]
+        );
+    }
 }

@@ -65,6 +65,8 @@ pub(crate) enum NativeTask {
     Antigravity {
         conversation: String,
         user_step: u64,
+        #[serde(default)]
+        step_annotations: bool,
     },
 }
 
