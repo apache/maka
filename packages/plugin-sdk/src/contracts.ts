@@ -6886,6 +6886,460 @@ export const contracts: {
           },
           resources: {},
         },
+        createPreset: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'PresetCreate',
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+              },
+              description: {
+                type: 'string',
+              },
+              instruction: {
+                type: 'string',
+                default: '',
+              },
+              model: {
+                $ref: '#/$defs/ModelSelection',
+              },
+              thinkingLevel: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/ThinkingLevel',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              enabled: {
+                type: 'boolean',
+                default: true,
+              },
+            },
+            additionalProperties: false,
+            required: ['name', 'description', 'model'],
+            $defs: {
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'PresetResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'saved',
+                  },
+                  preset: {
+                    $ref: '#/$defs/Preset',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'preset'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'deleted',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'id'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'notFound',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
+                  actual: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'actual'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'nameConflict',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalidInput',
+                  },
+                  field: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'field'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'modelUnavailable',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'thinkingLevelUnavailable',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+            $defs: {
+              Preset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  description: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  enabled: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'revision',
+                  'name',
+                  'description',
+                  'instruction',
+                  'model',
+                  'enabled',
+                ],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+            },
+          },
+          resources: {},
+        },
+        deletePreset: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'PresetDelete',
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+                format: 'uuid',
+              },
+              expectedRevision: {
+                $ref: '#/$defs/PresetRevision',
+              },
+            },
+            additionalProperties: false,
+            required: ['id', 'expectedRevision'],
+            $defs: {
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'PresetResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'saved',
+                  },
+                  preset: {
+                    $ref: '#/$defs/Preset',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'preset'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'deleted',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'id'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'notFound',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
+                  actual: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'actual'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'nameConflict',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalidInput',
+                  },
+                  field: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'field'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'modelUnavailable',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'thinkingLevelUnavailable',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+            $defs: {
+              Preset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  description: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  enabled: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'revision',
+                  'name',
+                  'description',
+                  'instruction',
+                  'model',
+                  'enabled',
+                ],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+            },
+          },
+          resources: {},
+        },
         diagnostics: {
           mode: 'query',
           input: {
@@ -25049,6 +25503,312 @@ export const contracts: {
           },
           resources: {},
         },
+        preset: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'PresetRead',
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+            additionalProperties: false,
+            required: ['id'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_PresetDetail',
+            anyOf: [
+              {
+                $ref: '#/$defs/PresetDetail',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              PresetDetail: {
+                type: 'object',
+                properties: {
+                  preset: {
+                    $ref: '#/$defs/Preset',
+                  },
+                  availability: {
+                    $ref: '#/$defs/PresetAvailability',
+                  },
+                },
+                additionalProperties: false,
+                required: ['preset', 'availability'],
+              },
+              Preset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  description: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  enabled: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'revision',
+                  'name',
+                  'description',
+                  'instruction',
+                  'model',
+                  'enabled',
+                ],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              PresetAvailability: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'available',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'disabled',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'modelUnavailable',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'thinkingLevelUnavailable',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        presets: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'PresetsRead',
+            type: 'object',
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Array_of_PresetSummary',
+            type: 'array',
+            items: {
+              $ref: '#/$defs/PresetSummary',
+            },
+            $defs: {
+              PresetSummary: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  description: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  enabled: {
+                    type: 'boolean',
+                  },
+                  availability: {
+                    $ref: '#/$defs/PresetAvailability',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'revision',
+                  'name',
+                  'description',
+                  'model',
+                  'enabled',
+                  'availability',
+                ],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              PresetAvailability: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'available',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'disabled',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'modelUnavailable',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'thinkingLevelUnavailable',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         previewHistoryCheckpoint: {
           mode: 'query',
           input: {
@@ -36237,6 +36997,298 @@ export const contracts: {
                 additionalProperties: false,
               },
             ],
+          },
+          resources: {},
+        },
+        updatePreset: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'PresetUpdate',
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+                format: 'uuid',
+              },
+              expectedRevision: {
+                $ref: '#/$defs/PresetRevision',
+              },
+              name: {
+                type: ['string', 'null'],
+              },
+              description: {
+                type: ['string', 'null'],
+              },
+              instruction: {
+                type: ['string', 'null'],
+              },
+              model: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              thinkingLevel: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/PresetThinkingChange',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              enabled: {
+                type: ['boolean', 'null'],
+              },
+            },
+            additionalProperties: false,
+            required: ['id', 'expectedRevision'],
+            $defs: {
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              PresetThinkingChange: {
+                description: 'Omission preserves the setting; Default explicitly clears it.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'default',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'set',
+                      },
+                      value: {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'value'],
+                  },
+                ],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'PresetResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'saved',
+                  },
+                  preset: {
+                    $ref: '#/$defs/Preset',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'preset'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'deleted',
+                  },
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'id'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'notFound',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
+                  actual: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'actual'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'nameConflict',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'invalidInput',
+                  },
+                  field: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'field'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'modelUnavailable',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'thinkingLevelUnavailable',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+            $defs: {
+              Preset: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  description: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  enabled: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'revision',
+                  'name',
+                  'description',
+                  'instruction',
+                  'model',
+                  'enabled',
+                ],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+            },
           },
           resources: {},
         },
