@@ -30,7 +30,7 @@ import {
 } from 'nsh';
 import { Button } from 'nsh/base';
 import { Icon } from '../../../products/maka/workbench/app/Icon';
-import { textTooltip } from '../../../products/maka/workbench/app/ui';
+import { C, textTooltip } from '../../../products/maka/workbench/app/ui';
 import { currentWindow, displays, Window, type WindowRef } from 'nsh/desktop';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
@@ -87,16 +87,18 @@ const BAR = 38;
 const INK_BAR = 34;
 const GAP = 6;
 const EDGE = 4;
-const ACCENT = '#2A8FFF';
-const plate = {
-  flexDirection: 'row',
-  alignItems: 'center',
-  gap: 2,
-  padding: 4,
-  borderRadius: 8,
-  backgroundColor: 'rgba(28, 28, 30, 0.94)',
-} as const;
-const hint = { fontSize: 12, lineHeight: 18, color: 'rgba(255, 255, 255, 0.6)' } as const;
+const plate = () =>
+  ({
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    padding: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: C.line,
+    backgroundColor: C.floating,
+  }) as const;
+const hint = () => ({ fontSize: 12, lineHeight: 18, color: C.muted });
 
 function CardButton(props: { label: string; primary?: boolean; onPress(): void }) {
   return (
@@ -107,11 +109,18 @@ function CardButton(props: { label: string; primary?: boolean; onPress(): void }
         paddingVertical: 5,
         paddingHorizontal: 12,
         borderRadius: 6,
-        backgroundColor: props.primary ? ACCENT : 'rgba(255, 255, 255, 0.14)',
+        backgroundColor: props.primary ? C.accent : C.floatingRaised,
       }}
-      hoverStyle={{ backgroundColor: props.primary ? '#4AA0FF' : 'rgba(255, 255, 255, 0.22)' }}
+      hoverStyle={{ backgroundColor: props.primary ? C.accentHover : C.line }}
     >
-      <Text style={{ fontSize: 13, lineHeight: 18, fontWeight: '500', color: '#FFFFFF' }}>
+      <Text
+        style={{
+          fontSize: 13,
+          lineHeight: 18,
+          fontWeight: '500',
+          color: props.primary ? C.background : C.text,
+        }}
+      >
         {props.label}
       </Text>
     </Button>
@@ -137,14 +146,14 @@ function ToolButton(props: {
         borderRadius: 6,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: props.selected ? 'rgba(42, 143, 255, 0.28)' : 'transparent',
+        backgroundColor: props.selected ? C.floatingRaised : 'transparent',
       }}
-      hoverStyle={{ backgroundColor: 'rgba(255, 255, 255, 0.12)' }}
+      hoverStyle={{ backgroundColor: C.floatingRaised }}
     >
       <Icon
         name={props.icon}
         size={17}
-        color={props.selected || props.accent ? ACCENT : 'rgba(255, 255, 255, 0.88)'}
+        color={props.selected || props.accent ? C.accent : C.secondary}
       />
     </Button>
   );
@@ -157,7 +166,7 @@ function Divider() {
         width: 1,
         height: 18,
         marginHorizontal: 3,
-        backgroundColor: 'rgba(255, 255, 255, 0.16)',
+        backgroundColor: C.line,
       }}
     />
   );
@@ -204,7 +213,7 @@ function Toolbar(props: {
         gap: GAP,
       }}
     >
-      <View style={plate}>
+      <View style={plate()}>
         <Each of={TOOLS} key={(entry: (typeof TOOLS)[number]) => entry[0]}>
           {(entry) => {
             const [name, label] = entry();
@@ -232,7 +241,7 @@ function Toolbar(props: {
         <ToolButton label={tr('Copy')} icon="check" accent onPress={() => command('copy')} />
       </View>
       <If when={inked()}>
-        <View style={[plate, { height: INK_BAR, gap: 6, paddingHorizontal: 8 }]}>
+        <View style={[plate(), { height: INK_BAR, gap: 6, paddingHorizontal: 8 }]}>
           <Each of={SIZES} key={(entry: (typeof SIZES)[number]) => entry[0]}>
             {(entry) => {
               const [name, label, dot] = entry();
@@ -251,7 +260,7 @@ function Toolbar(props: {
                     borderRadius: 4,
                     alignItems: 'center',
                     justifyContent: 'center',
-                    backgroundColor: size() === name ? 'rgba(255, 255, 255, 0.16)' : 'transparent',
+                    backgroundColor: size() === name ? C.floatingRaised : 'transparent',
                   }}
                 >
                   <View
@@ -283,7 +292,7 @@ function Toolbar(props: {
                     height: 18,
                     borderRadius: 9,
                     borderWidth: 2,
-                    borderColor: color() === hex ? '#FFFFFF' : 'rgba(255, 255, 255, 0.2)',
+                    borderColor: color() === hex ? C.text : C.line,
                     backgroundColor: hex,
                   }}
                 />
@@ -330,8 +339,8 @@ function Overlay(props: { screen: Size; finish(): void }) {
             { pointerEvents: 'box-none' },
           ]}
         >
-          <View style={[plate, { gap: 10, paddingVertical: 6, paddingHorizontal: 12 }]}>
-            <Text style={hint}>
+          <View style={[plate(), { gap: 10, paddingVertical: 6, paddingHorizontal: 12 }]}>
+            <Text style={hint()}>
               {tr('Allow Accessibility to snap to the controls inside windows.')}
             </Text>
             <CardButton
@@ -355,10 +364,12 @@ function Overlay(props: { screen: Size; finish(): void }) {
               paddingVertical: 14,
               paddingHorizontal: 18,
               borderRadius: 10,
-              backgroundColor: 'rgba(20, 20, 20, 0.9)',
+              borderWidth: 1,
+              borderColor: C.line,
+              backgroundColor: C.floating,
             }}
           >
-            <Text style={{ fontSize: 14, lineHeight: 20, color: '#FFFFFF' }}>
+            <Text style={{ fontSize: 14, lineHeight: 20, color: C.text }}>
               {failure()!.permission
                 ? tr(
                     'Allow Maka under Screen & System Audio Recording in System Settings, then take the screenshot again.',
@@ -366,11 +377,7 @@ function Overlay(props: { screen: Size; finish(): void }) {
                 : tr('The screenshot failed: {reason}', { reason: failure()!.message })}
             </Text>
             <If when={failure()!.permission}>
-              <Text style={hint}>
-                {tr(
-                  'If the app is missing from the privacy list, choose Show in Finder and drag the selected app into System Settings.',
-                )}
-              </Text>
+              <Text style={hint()}>{tr('permissionSetup.helpBody')}</Text>
               <View style={{ flexDirection: 'row', gap: 8, marginVertical: 4 }}>
                 <CardButton
                   label={tr('Open System Settings')}
@@ -391,7 +398,7 @@ function Overlay(props: { screen: Size; finish(): void }) {
                 />
               </View>
             </If>
-            <Text style={hint}>{tr('Press any key to close')}</Text>
+            <Text style={hint()}>{tr('Press any key to close')}</Text>
           </View>
         </View>
       </If>
