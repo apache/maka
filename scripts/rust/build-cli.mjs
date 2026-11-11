@@ -227,10 +227,13 @@ async function stageHostBundle(hostShell, contents) {
   signBundle(dirname(host), hostApp.id);
 }
 
+// Ad-hoc signatures change with every build, so macOS forgets privacy grants;
+// a stable local identity keeps them.
 function signBundle(bundle, id) {
+  const identity = process.env.MAKA_CODESIGN_IDENTITY || '-';
   execFileSync(
     '/usr/bin/codesign',
-    ['--force', '--sign', '-', '--identifier', id, '--timestamp=none', bundle],
+    ['--force', '--sign', identity, '--identifier', id, '--timestamp=none', bundle],
     { stdio: 'pipe' },
   );
   execFileSync(
