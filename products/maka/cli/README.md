@@ -39,6 +39,39 @@ Dedicated Host processes capture stderr in their Root's private control-cache fi
 
 Inspect a committed session log with `maka inspect --root DIRECTORY --session SESSION_ID`.
 
+## Portable Session checkpoints
+
+Export a checkpoint that has already been published. Supply the Session ID and
+the exact retained revision from its publication receipt. If the Head advances,
+export fails and leaves the destination available for a retry with the new revision.
+
+```sh
+maka checkpoint export --root /path/to/host --session "$SESSION_ID" --revision "$REVISION" --output session.tar.gz
+```
+
+Copy the archive to another machine with Maka and choose a new inspection directory.
+Opening works offline, including when the original Host, project and database are unavailable.
+
+```sh
+maka checkpoint open session.tar.gz --output inspection
+```
+
+- `checkpoint.json` records the source identity, revision, manifest and original Workspace consistency declaration.
+- `history.jsonl` is the readable conversation and tool history. `history.snapshot` preserves the canonical history.
+- `artifacts.jsonl` maps historical attachment records to files in `artifacts/`, named by their SHA-256 hex digest.
+- `workspace/` contains the captured files when the checkpoint includes a Workspace.
+
+Opening verifies the manifest, digests, archive completeness and canonical history
+before publishing the inspection directory. Existing destinations are preserved.
+A forced process exit can leave a hidden `.maka-inspection-*` staging directory
+beside the destination, which can be removed once that process has exited. The
+default limit for the total size of files in the inspection directory is
+8 GiB; use `--max-bytes` to change it. Allow additional disk space for the
+temporary validation database and staged objects. Digests check content integrity;
+sender authentication requires a trusted channel. Export preserves the original
+capture's consistency level. Opening only produces inspection files and grants
+no authority to resume the source Session.
+
 ## Product updates, recovery and URL installation
 
 Composition commands read complete JSON source and remote-export files. The Plugins composition editor loads an exact source revision in UTF-8 pages of at most 64 KiB and saves the confirmed native editor snapshot against that revision. Whole documents have no separate byte ceiling; typed validation, package checks, Host permissions, revision conflicts and actual resource admission still apply. Committed revisions retain the complete source for subsequent reads and reopening the Root.

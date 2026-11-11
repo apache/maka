@@ -147,7 +147,7 @@ async fn window(
     )
     .await
 }
-pub(crate) async fn snapshot_page(
+pub async fn snapshot_page(
     snapshot: &maka_agent_state::session_history::snapshot::Snapshot,
     position: wire::Position,
     include_thinking: bool,
