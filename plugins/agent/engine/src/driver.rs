@@ -423,9 +423,7 @@ impl Engine {
             let view = self.store.frontier(run).await?;
             let now = ports.now();
             if !authority_checked && view.terminal.is_none() && !cancellation.is_cancelled() {
-                if self.resolve_authority(&claim, &view, now).await?
-                    || self.recover_legacy_compaction(&claim, &view, now).await?
-                {
+                if self.resolve_authority(&claim, &view, now).await? {
                     continue;
                 }
                 authority_checked = true;

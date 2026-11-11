@@ -1817,20 +1817,6 @@ impl RunView {
                 let current = self.blockers.get(blocker).ok_or_else(|| {
                     StoreError::InvalidTransition("unknown resolved blocker".into())
                 })?;
-                let cell_settled = match &current.reason {
-                    BlockerKind::CodeCellRecoveryUnavailable { cell } => self
-                        .recovery_cell(cell)
-                        .is_some_and(|cell| !cell.has_unsettled_effects()),
-                    _ => false,
-                };
-                require(
-                    matches!(
-                        current.reason,
-                        BlockerKind::CurrentAuthorityUnavailable { .. }
-                    ) || current.reason.is_legacy_compaction_lookup()
-                        || cell_settled,
-                    "this blocker requires an observation from its original source",
-                )?;
                 require(current.resolved_by.is_none(), "blocker is already resolved")?;
                 self.blockers
                     .get_mut(blocker)
@@ -2030,6 +2016,24 @@ impl RunView {
         self.revision = recorded.revision;
         self.control_version = next_control;
         Ok(())
+    }
+
+    pub(crate) fn validate_blocker_resolution(&self, blocker: BlockerId) -> Result<(), StoreError> {
+        let current = self
+            .blockers
+            .get(&blocker)
+            .ok_or_else(|| StoreError::InvalidTransition("unknown resolved blocker".into()))?;
+        let resolvable = match &current.reason {
+            BlockerKind::CurrentAuthorityUnavailable { .. } => true,
+            BlockerKind::CodeCellRecoveryUnavailable { cell } => self
+                .recovery_cell(cell)
+                .is_some_and(|cell| !cell.has_unsettled_effects()),
+            _ => false,
+        };
+        require(
+            resolvable,
+            "this blocker requires an observation from its original source",
+        )
     }
 
     fn validate_blocker(&self, reason: &BlockerKind) -> Result<(), StoreError> {
