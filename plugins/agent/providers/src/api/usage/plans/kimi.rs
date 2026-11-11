@@ -142,7 +142,7 @@ struct Wallet {
 struct Booster {
     #[serde(rename = "type")]
     kind: String,
-    amount: Number,
+    amount: Option<Number>,
     amount_left: Option<Number>,
 }
 
@@ -199,7 +199,10 @@ pub(super) fn limits(reply: Reply) -> Result<Vec<UsageLimit>, Error> {
     windows.sort_by_key(window_order);
     if let Some(wallet) = reply.booster_wallet
         && let Some(balance) = wallet.balance.filter(|balance| balance.kind == "BOOSTER")
-        && balance.amount.value().is_some_and(|amount| amount > 0.0)
+        && balance
+            .amount
+            .and_then(Number::value)
+            .is_some_and(|amount| amount > 0.0)
     {
         let unit = wallet
             .monthly_charge_limit
@@ -218,4 +221,42 @@ pub(super) fn limits(reply: Reply) -> Result<Vec<UsageLimit>, Error> {
         return Err(invalid("Kimi usage"));
     }
     Ok(windows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn subscription_usage_survives_wallet_without_legacy_amount() {
+        let reply = json!({
+            "usage": {"limit": "100", "used": "25", "remaining": "75", "resetTime": "2026-05-01T00:00:00Z"},
+            "limits": [{
+                "window": {"duration": 5, "timeUnit": "TIME_UNIT_HOUR"},
+                "detail": {"limit": "20", "used": "4", "remaining": "16", "resetTime": "2026-04-27T00:00:00Z"}
+            }],
+            "usages": {
+                "limit_5h": {"used_ratio": 0.2, "reset_time": "2026-04-27T00:00:00Z"},
+                "limit_7d": {"used_ratio": 0.25, "reset_time": "2026-05-01T00:00:00Z"}
+            },
+            "booster_wallet": {
+                "balance": {"type": "BOOSTER", "unit": "USD", "periodStart": "2026-04-01T00:00:00Z"},
+                "monthlyChargeLimit": {"currency": "USD", "priceInCents": "1000"}
+            }
+        });
+        let limits = limits(serde_json::from_value(reply).expect("Kimi response")).expect("usage");
+        assert_eq!(limits.len(), 2);
+        assert!(matches!(&limits[0], UsageLimit::Window {
+            period: Some(UsagePeriod::Duration { seconds: 18000 }),
+            used_percent,
+            quantity: Some(UsageQuantity { used, limit, .. }),
+            ..
+        } if *used_percent == 20.0 && *used == 4.0 && *limit == 20.0));
+        assert!(matches!(&limits[1], UsageLimit::Window {
+            period: Some(UsagePeriod::Duration { seconds: 604800 }),
+            used_percent,
+            ..
+        } if *used_percent == 25.0));
+    }
 }
