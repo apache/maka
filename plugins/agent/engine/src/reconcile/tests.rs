@@ -302,8 +302,16 @@ pub(crate) fn model_closure(
 fn closed_attempt_waits_for_its_in_flight_recovery_assessment() {
     use maka_agent_facts::{accounting::Outcome, context::ModelPurpose, model::ModelFinishReason};
 
+    let mut view = policy_view(None);
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
     let (view, _, attempt) = model_closure(
-        policy_view(None),
+        view,
         ModelPurpose::Main,
         ModelFinishReason::Stop,
         Outcome::Aborted,
