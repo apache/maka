@@ -413,6 +413,7 @@ fn cell_wire_rejects_unknown_parts_and_does_not_search_child_input_for_markers()
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
     ResetComputer,
+    DeniedComputerEvaluation,
     Baseline,
     Draft,
     Interrupted,
@@ -584,6 +585,19 @@ impl Model {
                     .to_string()
                     .contains("Computer Use REPL reset. Bind targets again."),
                 "model must receive the saved CUA output: {output}"
+            );
+            self.step = Step::DeniedComputerEvaluation;
+            return self.tool(
+                "cua_repl",
+                json!({"code":"await cua.listWindows({emit: false})"}),
+            );
+        }
+        if self.step == Step::DeniedComputerEvaluation {
+            assert!(
+                output["content"]
+                    .to_string()
+                    .contains("desktop and browser resources cannot prove compatibility with the caller's sandbox floor"),
+                "model must receive the original CUA error: {output}"
             );
             self.step = Step::Baseline;
             return self.exec(self.baseline_code.clone());

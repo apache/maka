@@ -999,7 +999,6 @@ impl RunCells {
                     if matches!(
                         error.underlying(),
                         maka_event_log::StoreError::RevisionConflict { .. }
-                            | maka_event_log::StoreError::EventConflict
                     ) =>
                 {
                     continue;

@@ -30,6 +30,8 @@ ChatGPT 和原版 OpenCLI 依實際能力盡力相容。原版 OpenCLI 目前無
 入口（選擇目標時自動輸出初始狀態）：
 - `await cua.getState({emit?})`：應用程式和可用瀏覽器清單，包括清單錯誤。
 - `await cua.listApps({emit?})`、`await cua.listWindows({emit?})`。
+  視窗項目包含 `pid` 和 `bindable`，請選擇 `bindable: true` 的視窗。無法繫結的項目包含
+  `bindingError`。macOS 可繫結視窗另提供 `applicationId` 和 `appPath`，繫結時會檢查目前視窗身分和應用程式授權。
 - `const app = await cua.getApp("Name / bundle ID / app path")` 或 `getApp({windowId})`。
   macOS 會啟動缺少的應用程式。Windows getApp 選擇已開啟的視窗；先使用來自 cua.listApps() 的 ID 呼叫 `await cua.computer.launch_app({app: appId})`，再重新整理清單並選擇確切視窗。名稱有歧義時選擇確切視窗。Linux 要求應用程式已開啟。
 - `await cua.listBrowsers({emit?})`、`await cua.listTabs({browser?, emit?})`。
