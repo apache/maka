@@ -43,8 +43,12 @@ import {
   quickToolView,
   type QuickIcon,
   type QuickToolHandle,
+  type SettingsPageNavigation,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { afterKeyword, matchOf } from '../../../../plugins/shared/quick-search';
+import { sameValue } from '../../../../plugins/shared/value';
+import { Icon } from './Icon';
+import { contributionTitle } from './plugins/context';
 import { loadDraft, saveDraft, type Output } from './host';
 import {
   MakaMark,
@@ -67,11 +71,13 @@ import {
   type Usage,
 } from './quick-results';
 import { errorText, renderText } from './text';
-import { C, bodyTextStyle } from './ui';
+import { C, bodyTextStyle, controlHoverStyle, textTooltip } from './ui';
 
 const SHORTCUT = 'alt+space';
 const MAX_HEIGHT = 560;
 const MAX_LIST_HEIGHT = 360;
+/** Settings pages scroll inside a fixed height, so the popup does not jump with their content. */
+const SETTINGS_HEIGHT = 440;
 const USAGE_KEY = 'maka.quick-launcher.usage';
 
 type BotOutbox = Output<'agent', 'botOutbox'>;
@@ -157,12 +163,18 @@ type Row = {
   trailing?: string | undefined;
   unread?: boolean;
   action: string;
+  /** The settings page of the tool behind the row. */
+  settings?: UiContributionRef | undefined;
   run(): void;
 };
 
 type Section = { key: string; title: string | null; rows: readonly Row[]; start: number };
 
-function LauncherRow(props: { row: Row; selected: boolean }) {
+function LauncherRow(props: {
+  row: Row;
+  selected: boolean;
+  settings(page: UiContributionRef): void;
+}) {
   return (
     <QuickRow
       label={`${props.row.action} ${props.row.title}`}
@@ -174,7 +186,95 @@ function LauncherRow(props: { row: Row; selected: boolean }) {
       unread={props.row.unread === true}
       selected={props.selected}
       onPress={props.row.run}
+      onSettings={
+        props.row.settings === undefined ? undefined : () => props.settings(props.row.settings!)
+      }
     />
+  );
+}
+
+/** A tool's settings page in place of the results; Escape or the back button returns to them. */
+function QuickSettings(props: {
+  runtime: UiRuntime<JSX.Element>;
+  page: UiContributionRef;
+  back(): void;
+}) {
+  const navigation = signal<SettingsPageNavigation | null>(null);
+  const busy = () => navigation()?.busy?.() ?? false;
+  const back = () => {
+    if (busy() || !(navigation()?.back() ?? true)) return;
+    const current = navigation();
+    if (current?.leave) current.leave(props.back);
+    else props.back();
+  };
+  cleanup(keymap.bind('escape', back, { when: 'always' }));
+  const action = () => navigation()?.action?.() ?? null;
+  return (
+    <View>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          height: 52,
+          paddingLeft: 10,
+          paddingRight: 16,
+          borderBottomWidth: 1,
+          borderBottomColor: C.line,
+        }}
+      >
+        <Button
+          accessibilityLabel={navigation()?.backLabel?.() ?? tr('Back')}
+          tooltip={textTooltip(() => tr('Back'))}
+          disabled={busy()}
+          onPress={back}
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: 6,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          hoverStyle={controlHoverStyle()}
+        >
+          <Icon name="back" color={C.secondary} size={16} />
+        </Button>
+        <Text
+          style={[
+            { ...bodyTextStyle, flex: 1, minWidth: 0, fontWeight: '600', color: C.text },
+            { numberOfLines: 1, textOverflow: 'ellipsis' },
+          ]}
+        >
+          {navigation()?.title() ?? contributionTitle(props.page)}
+        </Text>
+        <If when={action() !== null}>
+          <Button
+            accessibilityLabel={action()!.label}
+            disabled={busy() || action()!.disabled === true}
+            onPress={() => action()!.run()}
+            style={{ paddingVertical: 4, paddingHorizontal: 10, borderRadius: 6 }}
+            hoverStyle={controlHoverStyle()}
+          >
+            <Text style={{ fontSize: 13, lineHeight: 18, color: C.accent }}>{action()!.label}</Text>
+          </Button>
+        </If>
+      </View>
+      <View style={{ height: SETTINGS_HEIGHT, paddingTop: 12 }}>
+        {props.runtime.render(props.page, {
+          sessionId: null,
+          input: {
+            settings: {
+              attach(value: SettingsPageNavigation) {
+                navigation.set(value);
+                return () => {
+                  if (navigation() === value) navigation.set(null);
+                };
+              },
+            },
+          },
+        })}
+      </View>
+    </View>
   );
 }
 
@@ -183,6 +283,8 @@ function Launcher(
     runtime: UiRuntime<JSX.Element>;
     close(): Promise<boolean>;
     usage: UsageStore;
+    /** The tool settings page shown in place of the results. */
+    page: Signal<UiContributionRef | null>;
   },
 ) {
   // A window that does not activate leaves the keyboard with the app in use until focused.
@@ -198,6 +300,10 @@ function Launcher(
           item.declaration.kind === 'view' && item.declaration.contract === quickToolView.id,
       ),
   );
+  const settingsOf = (tool: UiContributionRef) =>
+    props.runtime
+      .settings()
+      .find((page) => sameValue(page.instance.instance, tool.instance.instance));
   const handles = signal<ReadonlyMap<string, QuickToolHandle>>(new Map());
   const attached = () =>
     tools().flatMap((tool) => {
@@ -216,6 +322,7 @@ function Launcher(
           detail: item.detail,
           trailing: item.source,
           action: item.action,
+          settings: settingsOf(tool),
           match: item.match,
           remembered: item.remembered === true,
           run() {
@@ -235,6 +342,7 @@ function Launcher(
         title: entry.title,
         trailing: entry.keywords[0],
         action: tr('Open'),
+        settings: settingsOf(tool),
         run:
           entry.run ??
           (() => {
@@ -378,88 +486,122 @@ function Launcher(
     }
   };
   const activate = () => rows()[selected()]!.run();
+  const openSettings = (page: UiContributionRef) => {
+    failure.set(null);
+    props.page.set(page);
+  };
   return (
     <View style={frameStyle}>
-      <View style={quickBarStyle}>
-        <View style={{ height: QUICK_BAR_SLOT, justifyContent: 'center' }}>
-          <MakaMark />
-        </View>
-        <Input
-          ref={(node) => {
-            removeKeys();
-            const unbind = [
-              keymap.bind('up', () => selection.set(Math.max(0, selected() - 1)), {
-                when: 'always',
-                repeat: true,
-                within: node,
-              }),
-              keymap.bind(
-                'down',
-                () => selection.set(Math.min(rows().length - 1, selected() + 1)),
-                {
-                  when: 'always',
-                  repeat: true,
-                  within: node,
-                },
-              ),
-            ];
-            removeKeys = () => unbind.forEach((remove) => remove());
-          }}
-          autoFocus
-          accessibilityLabel={tr('Search tools or ask Maka')}
-          placeholder={tr('Search tools or ask Maka')}
-          value={query()}
-          onChange={({ value }) => {
-            selection.set(0);
-            query.set(value);
-          }}
-          onSubmit={activate}
-          style={{ ...quickInputStyle(), flex: 1, minWidth: 0, marginTop: 8 }}
-        />
-      </View>
       <Each of={tools()} key={(tool: UiContributionRef) => tool.key}>
         {(tool) => toolView(tool())}
       </Each>
-      <View style={{ borderTopWidth: 1, borderTopColor: C.line }}>
-        <Scroll
-          ref={(node) => {
-            list = node;
-          }}
-          onScroll={({ offset }) => {
-            scrolled = offset.y;
-          }}
-          style={{ height: listHeight() }}
-        >
-          <Each of={sections()} key={(section: Section) => section.key}>
-            {(section) => (
-              <>
-                <If when={section().title !== null}>
-                  <QuickSectionTitle title={section().title!} />
-                </If>
-                <Each of={section().rows} key={(row: Row) => row.key}>
-                  {(row, index) => (
-                    <LauncherRow row={row()} selected={selected() === section().start + index()} />
-                  )}
-                </Each>
-              </>
-            )}
-          </Each>
-        </Scroll>
-        <If when={pinned() !== null}>
-          <LauncherRow row={pinned()!} selected={selected() === listed().length} />
+      <If
+        when={props.page() === null}
+        else={
+          <QuickSettings
+            runtime={props.runtime}
+            page={props.page()!}
+            back={() => props.page.set(null)}
+          />
+        }
+      >
+        <View style={quickBarStyle}>
+          <View style={{ height: QUICK_BAR_SLOT, justifyContent: 'center' }}>
+            <MakaMark />
+          </View>
+          <Input
+            ref={(node) => {
+              removeKeys();
+              const unbind = [
+                keymap.bind('up', () => selection.set(Math.max(0, selected() - 1)), {
+                  when: 'always',
+                  repeat: true,
+                  within: node,
+                }),
+                keymap.bind(
+                  'down',
+                  () => selection.set(Math.min(rows().length - 1, selected() + 1)),
+                  {
+                    when: 'always',
+                    repeat: true,
+                    within: node,
+                  },
+                ),
+                keymap.bind(
+                  'mod+,',
+                  () => {
+                    const page = rows()[selected()]!.settings;
+                    if (page) openSettings(page);
+                  },
+                  { when: 'always', within: node },
+                ),
+              ];
+              removeKeys = () => unbind.forEach((remove) => remove());
+            }}
+            autoFocus
+            accessibilityLabel={tr('Search tools or ask Maka')}
+            placeholder={tr('Search tools or ask Maka')}
+            value={query()}
+            onChange={({ value }) => {
+              selection.set(0);
+              query.set(value);
+            }}
+            onSubmit={activate}
+            style={{ ...quickInputStyle(), flex: 1, minWidth: 0, marginTop: 8 }}
+          />
+        </View>
+        <View style={{ borderTopWidth: 1, borderTopColor: C.line }}>
+          <Scroll
+            ref={(node) => {
+              list = node;
+            }}
+            onScroll={({ offset }) => {
+              scrolled = offset.y;
+            }}
+            style={{ height: listHeight() }}
+          >
+            <Each of={sections()} key={(section: Section) => section.key}>
+              {(section) => (
+                <>
+                  <If when={section().title !== null}>
+                    <QuickSectionTitle title={section().title!} />
+                  </If>
+                  <Each of={section().rows} key={(row: Row) => row.key}>
+                    {(row, index) => (
+                      <LauncherRow
+                        row={row()}
+                        selected={selected() === section().start + index()}
+                        settings={openSettings}
+                      />
+                    )}
+                  </Each>
+                </>
+              )}
+            </Each>
+          </Scroll>
+          <If when={pinned() !== null}>
+            <LauncherRow
+              row={pinned()!}
+              selected={selected() === listed().length}
+              settings={openSettings}
+            />
+          </If>
+        </View>
+        <If when={failure() !== null}>
+          <Text
+            style={[
+              { ...bodyTextStyle, paddingVertical: 8, paddingLeft: 42, paddingRight: 12 },
+              { color: C.warning, userSelect: 'text' },
+            ]}
+          >
+            {renderText(failure()!)}
+          </Text>
         </If>
-      </View>
-      <If when={failure() !== null}>
-        <Text
-          style={[
-            { ...bodyTextStyle, paddingVertical: 8, paddingLeft: 42, paddingRight: 12 },
-            { color: C.warning, userSelect: 'text' },
-          ]}
-        >
-          {renderText(failure()!)}
-        </Text>
+        <QuickFooter
+          action={rows()[selected()]!.action}
+          settings={rows()[selected()]!.settings !== undefined}
+        />
       </If>
-      <QuickFooter action={rows()[selected()]!.action} />
     </View>
   );
 }
@@ -478,6 +620,7 @@ export function QuickLauncher(
   },
 ) {
   const usage = createUsageStore(props.report);
+  const page = signal<UiContributionRef | null>(null);
   const toggle = () => {
     if (props.opened()) void props.close();
     else props.opened.set(true);
@@ -504,14 +647,17 @@ export function QuickLauncher(
       defaultPosition="center"
       defaultSize={{ width: 680, height: 400 }}
       sizeToContent="height"
-      // Escape stops a running reply, and every way out has to save the draft first.
-      closeOnEscape={!props.conversing()}
-      closeOnBlur={!props.conversing()}
+      // Escape stops a running reply, and every way out has to save the draft first. In a tool's
+      // settings Escape goes back, and a picker the page opens must not close it.
+      closeOnEscape={!props.conversing() && page() === null}
+      closeOnBlur={!props.conversing() && page() === null}
       closeOnPress={!props.conversing()}
       onClosePress={() => void props.close()}
       open={props.opened()}
       onOpenChange={({ open }) => {
-        if (!open) props.closed();
+        if (open) return;
+        page.set(null);
+        props.closed();
       }}
     >
       <If
@@ -524,6 +670,7 @@ export function QuickLauncher(
             close={props.close}
             runtime={props.runtime}
             usage={usage}
+            page={page}
           />
         }
       >
