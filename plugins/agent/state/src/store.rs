@@ -506,6 +506,8 @@ impl Store {
             artifacts: Default::default(),
         })
     }
+    /// Stop this exact Run at its current head. Only its first Stop while latest
+    /// in the Session also retracts pending interactive requests.
     pub fn prepare_stop_latest(
         &self,
         run: RunId,
@@ -1312,7 +1314,7 @@ impl Statement for StopLatest {
             return Err(invalid("latest-head control accepts StopRequested only"));
         }
         let view = sql::load(c, self.run, &[], false)?;
-        if view.terminal.is_some() {
+        if view.terminal.is_some() || view.stopped {
             return Ok(Prepared {
                 value: Commit {
                     head: Head::from(&view),
@@ -1321,6 +1323,9 @@ impl Statement for StopLatest {
                 changed: false,
                 notification: Notification::NONE,
             });
+        }
+        if sql::latest(c, view.spec.session_id.clone())? == Some(self.run) {
+            crate::queue::retract_interactive(c, &view.spec.session_id, &self.change)?;
         }
         let (value, changed) = sql::append(
             c,
@@ -1347,3 +1352,6 @@ impl Statement for StopLatest {
         Admit::isolated_rejection(error)
     }
 }
+
+#[cfg(test)]
+mod stop_tests;
