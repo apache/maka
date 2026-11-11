@@ -94,6 +94,7 @@ import {
   openingUserMessage,
   replayStartCursor,
   senderSession,
+  stableRowId,
   updateHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
 import type { Row, Subscription } from '../../../../products/maka/workbench/app/history';
@@ -165,7 +166,6 @@ import {
   sameProcessActivity,
   sameProcessRows,
   orderProcessRows,
-  stableRowId,
   turnOutcome,
   turnWorkFold,
 } from '../../../../products/maka/workbench/app/processGroups';
@@ -956,12 +956,12 @@ export function Conversation(props: ConversationProps) {
   ) => {
     batch(() => {
       rows.set(mergeChunks(rows(), chunks, older, through));
-      const canonical = canonicalRows().byMessage;
-      overlay.history(canonical, atHistoryTail() ? through : null, coveredFrom, windowStart);
+      const canonical = canonicalRows();
+      overlay.history(canonical.byId, atHistoryTail() ? through : null, coveredFrom, windowStart);
       publishOverlay();
       const currentPending = pendingMessages();
       const nextPending = currentPending.filter(
-        (row) => !canonical.has(`${row.messageId}/${row.field}`),
+        (row) => !canonical.byMessage.has(`${row.messageId}/${row.field}`),
       );
       if (nextPending.length !== currentPending.length) pendingMessages.set(nextPending);
     });
