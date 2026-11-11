@@ -337,6 +337,7 @@ fn descriptor(
             provider_part_id,
             text_kind,
             text,
+            final_answer,
             provider_options,
             recorded,
         } => (
@@ -349,6 +350,7 @@ fn descriptor(
                     maka_agent_facts::model::TextKind::Text => ContentKind::Text,
                     maka_agent_facts::model::TextKind::Thinking => ContentKind::Thinking,
                 },
+                final_answer: *final_answer,
             },
             if *text_kind == maka_agent_facts::model::TextKind::Thinking {
                 maka_presentation::reasoning_text(text, provider_options.as_deref())

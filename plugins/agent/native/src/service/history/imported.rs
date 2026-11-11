@@ -281,6 +281,7 @@ pub(super) async fn row(
             model_part: None,
             has_references: false,
             final_output: false,
+            final_answer: false,
             model: None,
             origin: None,
             compaction: None,

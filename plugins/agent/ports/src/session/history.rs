@@ -441,10 +441,13 @@ pub struct Chunk {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_references: bool,
     /// This body belongs to the final output of a successfully completed native
-    /// Turn at the page's fence. Includes every text part and source citation;
+    /// Turn at the page's fence. Includes body text and source citations;
     /// absence does not establish liveness or identify an imported final answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub final_output: bool,
+    /// The provider identified this text as final before the Turn completed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub final_answer: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<HistoryModel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

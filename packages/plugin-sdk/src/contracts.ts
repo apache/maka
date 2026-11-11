@@ -11566,7 +11566,12 @@ export const contracts: {
                   },
                   finalOutput: {
                     description:
-                      "Part of the successfully completed native Turn's final output at `through`.\nIncludes all body parts and source citations; never a Thinking field.",
+                      "Part of the successfully completed native Turn's final output at `through`.\nIncludes body text and source citations; never a Thinking field.",
+                    type: 'boolean',
+                  },
+                  finalAnswer: {
+                    description:
+                      'The provider identified this text as final before the Turn completed.',
                     type: 'boolean',
                   },
                   model: {
@@ -18848,7 +18853,12 @@ export const contracts: {
                   },
                   finalOutput: {
                     description:
-                      "Part of the successfully completed native Turn's final output at `through`.\nIncludes all body parts and source citations; never a Thinking field.",
+                      "Part of the successfully completed native Turn's final output at `through`.\nIncludes body text and source citations; never a Thinking field.",
+                    type: 'boolean',
+                  },
+                  finalAnswer: {
+                    description:
+                      'The provider identified this text as final before the Turn completed.',
                     type: 'boolean',
                   },
                   model: {
@@ -35886,6 +35896,9 @@ export const contracts: {
                       },
                       textKind: {
                         $ref: '#/$defs/AgentContentKind',
+                      },
+                      finalAnswer: {
+                        type: 'boolean',
                       },
                     },
                     additionalProperties: false,

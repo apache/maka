@@ -146,6 +146,7 @@ export type Row = {
   timing?: HistoryTurnTiming;
   model?: HistoryModel;
   finalOutput?: boolean;
+  finalAnswer?: boolean;
   compaction?: HistoryCompaction;
   metadataThrough?: number | null;
   runId?: RunId;
@@ -305,6 +306,7 @@ export function historyMetadata(
     stepId: chunk.modelPart?.stepId,
     attemptId: chunk.modelPart?.attemptId,
     finalOutput: chunk.finalOutput,
+    finalAnswer: chunk.finalAnswer,
     compaction: chunk.compaction ?? undefined,
     tool: chunk.tool,
     metadataThrough: through,

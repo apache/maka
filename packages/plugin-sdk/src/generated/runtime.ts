@@ -4339,6 +4339,7 @@ export type AgentPreviewField =
   | {
       kind: 'text';
       textKind: AgentContentKind;
+      finalAnswer?: boolean;
     }
   | {
       kind: 'tool_input';
@@ -8050,9 +8051,13 @@ export interface AgentHistoryChunk {
   hasReferences?: boolean;
   /**
    * Part of the successfully completed native Turn's final output at `through`.
-   * Includes all body parts and source citations; never a Thinking field.
+   * Includes body text and source citations; never a Thinking field.
    */
   finalOutput?: boolean;
+  /**
+   * The provider identified this text as final before the Turn completed.
+   */
+  finalAnswer?: boolean;
   model?: HistoryModel | null;
   origin?: MessageOrigin | null;
   compaction?: HistoryCompaction | null;
