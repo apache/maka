@@ -924,6 +924,13 @@ impl Store {
             })
             .await
     }
+    pub async fn tool_admission_revision(
+        &self,
+        run: RunId,
+        tool: ToolKey,
+    ) -> Result<Option<u64>, StoreError> {
+        self.data.query(ReadToolAdmissionRevision(run, tool)).await
+    }
     pub async fn model_attempt(
         &self,
         run: RunId,
@@ -1116,6 +1123,13 @@ impl Query for ReadHistory {
     type Output = Vec<RecordedFact>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::history(c, self.run, self.after_revision, self.limit)
+    }
+}
+struct ReadToolAdmissionRevision(RunId, ToolKey);
+impl Query for ReadToolAdmissionRevision {
+    type Output = Option<u64>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::tool_admission_revision(c, self.0, self.1)
     }
 }
 struct ReadModelAttempt(RunId, ModelAttemptId);
