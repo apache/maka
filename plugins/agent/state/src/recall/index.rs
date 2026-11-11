@@ -551,7 +551,7 @@ fn project(
             }
         }
         // index_sources projects messages at the fact that consumed them.
-        Rule::Steering { .. } | Rule::ExternalSources => return Ok(()),
+        Rule::QueueSources => return Ok(()),
     }
     insert(c, spec, message)
 }

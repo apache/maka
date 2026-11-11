@@ -419,6 +419,7 @@ impl Rig {
                 "history",
                 "source",
                 "search",
+                "fork",
                 "list",
                 "execution",
                 "metadata",
@@ -3882,12 +3883,14 @@ async fn compacted_history_checks_the_producing_requests_original_cut() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
+    use crate::contract::ForkResult;
     use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
     use maka_agent_facts::{
         context::{CheckpointContent, CheckpointMode, CompactedContext, ContextCheckpoint},
-        history::RowPosition,
+        history::{HistoryRowAddress, RowPosition},
         history_snapshot::RequestSource,
         message::MessageOrigin,
+        session::ForkPosition,
     };
     use maka_agent_state::{
         queue::{QueueCommand, QueueEdit, SteeringTarget},
@@ -4096,6 +4099,64 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
         check_recall().await?;
         recall.rebuild(session.clone()).await?;
         check_recall().await?;
+
+        let client = rig.client.as_ref().unwrap();
+        let fork = model_recovery::call(
+            client,
+            "agent",
+            "fork",
+            json!({
+                "sessionId": session,
+                "expectedRevision": owner.session(&session).await?.revision,
+                "position": ForkPosition::ThroughSourceTurn {
+                    position: HistoryRowAddress::Live {
+                        sequence: original_position.source_sequence,
+                        fact: anchor,
+                        item_index: original_position.item_index,
+                    },
+                },
+                "title": "Fork through delivered steering",
+                "labels": [],
+            }),
+        )
+        .await?;
+        let ForkResult::Forked { session: fork } = serde_json::from_value(fork.clone())? else {
+            return Err(format!("steering fork was rejected: {fork}").into());
+        };
+        let through = recall
+            .capture(fork.id.clone(), None)
+            .await?
+            .through_sequence;
+        let found = model_recovery::call(
+            client,
+            "agent",
+            "search",
+            json!({
+                "sessionId": fork.id,
+                "through": through,
+                "query": steering_text,
+                "caseSensitive": true,
+                "wholeWord": false,
+                "includeInternal": false,
+            }),
+        )
+        .await?;
+        let matches = found["matches"]
+            .as_array()
+            .ok_or("fork search returned no match list")?;
+        assert_eq!(matches.len(), 1, "{found}");
+        assert_eq!(matches[0]["preview"], steering_text);
+        let position: HistoryRowAddress = serde_json::from_value(matches[0]["position"].clone())?;
+        assert!(
+            matches!(
+                position,
+                HistoryRowAddress::Snapshot { sequence, fact, item_index, .. }
+                    if sequence == original_position.source_sequence
+                        && fact == anchor
+                        && item_index == original_position.item_index
+            ),
+            "fork search did not return the original steering position: {position:?}"
+        );
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     };
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), test))
