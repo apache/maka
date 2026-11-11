@@ -141,6 +141,7 @@ const coveredNames = new Map([
   ['Dockerfile', ['hash']],
   ['pre-commit', ['hash']],
   ['justfile', ['hash']],
+  ['network-policy', ['hash']],
 ]);
 
 const startsWith = (prefix) => (path) => path === prefix || path.startsWith(`${prefix}/`);
