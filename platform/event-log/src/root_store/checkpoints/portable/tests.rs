@@ -135,3 +135,32 @@ fn workspace_objects_must_be_complete_and_match_even_inside_a_valid_gzip() {
         );
     }
 }
+
+#[test]
+fn workspace_metadata_size_is_independent_of_the_inspection_output_budget() {
+    let data = b"body";
+    let object = reference(data);
+    let mut inventory = serde_json::to_vec(&serde_json::json!({"entries":[
+        WorkspaceEntry::File {
+            path: "file".into(),
+            object: object.clone(),
+            executable: false,
+        }
+    ]}))
+    .unwrap();
+    // Valid JSON whitespace exercises a large inventory without creating thousands of files.
+    inventory.resize(33 << 20, b' ');
+    let mut files = members(Some(&inventory));
+    let name = format!("objects/{}", object.digest);
+    files.push((&name, data.to_vec()));
+    let (stage, inspection) = inspect(archive(files), 18).unwrap();
+    assert_eq!(inspection.remaining_bytes, 0);
+    assert_eq!(
+        std::fs::read(stage.path().join("workspace/file")).unwrap(),
+        data
+    );
+    assert_eq!(
+        std::fs::read(stage.path().join(HISTORY)).unwrap(),
+        b"opaque history"
+    );
+}

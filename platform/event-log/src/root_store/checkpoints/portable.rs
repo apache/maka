@@ -46,7 +46,6 @@ const HEAD: &str = "maka-checkpoint-v1/head.json";
 const MANIFEST: &str = "manifest.json";
 const HISTORY: &str = "history.snapshot";
 const INVENTORY: &str = "workspace.json";
-const MAX_METADATA: u64 = 32 << 20;
 
 pub struct Inspection {
     pub head: Head,
@@ -123,17 +122,6 @@ fn verified<T>(
     }
     Ok(result)
 }
-fn metadata(source: impl Read, bytes: u64) -> Result<Vec<u8>, StoreError> {
-    if bytes > MAX_METADATA {
-        return Err(invalid("portable checkpoint metadata exceeds 32 MiB"));
-    }
-    let mut out = Vec::new();
-    source.take(bytes + 1).read_to_end(&mut out)?;
-    if out.len() as u64 != bytes {
-        return Err(invalid("checkpoint metadata length differs"));
-    }
-    Ok(out)
-}
 fn append<W: Write>(
     tar: &mut Builder<W>,
     name: &str,
@@ -187,10 +175,9 @@ pub fn export(
         }
         Ok(file)
     };
-    let bytes = verified(open(&head.manifest)?, &head.manifest, |r| {
-        metadata(r, head.manifest.bytes)
+    let manifest: Manifest = verified(open(&head.manifest)?, &head.manifest, |r| {
+        Ok(serde_json::from_reader(BufReader::new(r))?)
     })?;
-    let manifest: Manifest = serde_json::from_slice(&bytes)?;
     if manifest.root_id != location.root_id()
         || manifest.scope != scope
         || manifest.session_id != session
@@ -200,16 +187,22 @@ pub fn export(
     let mut tar = Builder::new(GzEncoder::new(output, Compression::fast()));
     let h = serde_json::to_vec(&head)?;
     append(&mut tar, HEAD, h.len() as u64, &h[..])?;
-    append(&mut tar, MANIFEST, head.manifest.bytes, &bytes[..])?;
+    verified(open(&head.manifest)?, &head.manifest, |r| {
+        append(&mut tar, MANIFEST, head.manifest.bytes, r)
+    })?;
     let history = &manifest.history.object;
     verified(open(history)?, history, |r| {
         append(&mut tar, HISTORY, history.bytes, r)
     })?;
     if let Some(ws) = manifest.workspace {
         let inv = &ws.inventory;
-        let bytes = verified(open(inv)?, inv, |r| metadata(r, inv.bytes))?;
-        let entries = workspace::read_inventory(&bytes[..])?;
-        append(&mut tar, INVENTORY, inv.bytes, &bytes[..])?;
+        let entries = verified(open(inv)?, inv, |r| {
+            workspace::read_inventory(BufReader::new(r))
+        })?;
+        // Re-read and verify the same object instead of retaining its encoded JSON.
+        verified(open(inv)?, inv, |r| {
+            append(&mut tar, INVENTORY, inv.bytes, r)
+        })?;
         for (digest, object) in file_objects(&entries)? {
             verified(open(object)?, object, |r| {
                 append(&mut tar, &format!("objects/{digest}"), object.bytes, r)
@@ -262,14 +255,12 @@ pub fn open(
     let gzip = GzDecoder::new(BufReader::new(input));
     let mut tar = Archive::new(gzip);
     let mut entries = tar.entries()?.raw(true);
-    let h = next(&mut entries, HEAD)?;
-    let size = h.size();
-    let head: Head = serde_json::from_slice(&metadata(h, size)?)?;
+    let head: Head = serde_json::from_reader(BufReader::new(next(&mut entries, HEAD)?))?;
     if head.revision.0.is_nil() {
         return Err(invalid("nil checkpoint revision"));
     }
     let manifest: Manifest = consume(&mut entries, MANIFEST, &head.manifest, |r| {
-        Ok(serde_json::from_slice(&metadata(r, head.manifest.bytes)?)?)
+        Ok(serde_json::from_reader(BufReader::new(r))?)
     })?;
     crate::sessions::validate_id(&manifest.session_id)?;
     if !valid_digest(&manifest.root_id)
@@ -301,7 +292,7 @@ pub fn open(
     let workspace = if let Some(ws) = &manifest.workspace {
         let inv = &ws.inventory;
         let paths = consume(&mut entries, INVENTORY, inv, |r| {
-            workspace::read_inventory(&metadata(r, inv.bytes)?[..])
+            workspace::read_inventory(BufReader::new(r))
         })?;
         for entry in &paths {
             if let WorkspaceEntry::File { object, .. } = entry {
