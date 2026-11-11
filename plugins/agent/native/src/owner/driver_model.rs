@@ -2593,16 +2593,25 @@ impl DriverModel {
             if let Err(error) = result {
                 cleanup.observe(&error);
                 // Preparation failure and lost local observation are not upstream closure.
-                if !stream_opened
-                    || !matches!(&error, RunError::Model(_))
-                    || (cancellation.is_cancelled()
-                        && matches!(&error, RunError::Model(maka_model::ModelError::Cancelled)))
-                {
+                if !stream_opened || !matches!(&error, RunError::Model(_)) {
                     emit(&send, &cancellation, Err(error)).await;
                     return;
                 }
                 let published = async {
                     let view = state.frontier(run).await?;
+                    // Stop, finish and steering replace ordinary retry; the token alone does not.
+                    if matches!(error, RunError::Model(maka_model::ModelError::Cancelled))
+                        && (view.stopped
+                            || view.finish_requested()
+                            || !state
+                                .queue()
+                                .steering(view.spec.session_id.clone(), run)
+                                .await?
+                                .entries
+                                .is_empty())
+                    {
+                        return Ok(());
+                    }
                     let evidence =
                         if matches!(error, RunError::Model(maka_model::ModelError::Cancelled))
                             && can_replay_without_output
