@@ -1686,9 +1686,10 @@ mod source_recovery {
             drop(exclusive);
             scheduler.changed().await?;
             let revision = owner.durable.frontier(run).await?.revision;
-            owner
+            let waits = owner
                 .schedule_ready_at(at(), ReadyCause::CapabilitySourceChanged)
                 .await?;
+            assert!(waits.is_empty(), "busy recovery should not wait for admission");
             assert!(
                 owner.runs.state().await.busy(&session),
                 "fixture lost the busy overlap"
@@ -3998,6 +3999,56 @@ async fn compacted_history_checks_the_producing_requests_original_cut() {
         cleanup.is_empty(),
         "compaction fixture cleanup: {cleanup:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queued_admission_wakes_when_goal_or_session_lock_releases() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let result = async {
+        let session = rig.start().await?;
+        let owner = rig
+            .captured
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("owner missing")?;
+        for is_goal in [true, false] {
+            let goal = if is_goal {
+                Some(owner.goals.gate.clone().lock_owned().await)
+            } else {
+                None
+            };
+            let ordered = if is_goal {
+                None
+            } else {
+                Some(owner.runs.ordered(&session).await)
+            };
+            let mut wake = match owner.queue_admission(&session, true) {
+                Ok(_) => return Err("contended admission unexpectedly acquired its locks".into()),
+                Err(wake) => wake,
+            };
+            assert!(futures_util::poll!(&mut wake).is_pending());
+            // An unrelated Session must still be admitted while this one waits.
+            let other = owner
+                .queue_admission("unrelated-session", false)
+                .map_err(|_| "a contended admission blocked an unrelated Session")?;
+            drop(other);
+            drop(ordered);
+            drop(goal);
+            tokio::time::timeout(Duration::from_secs(5), wake).await?;
+            // No durable write or extra wake notification occurs after releasing the lock.
+            let admitted = owner
+                .queue_admission(&session, true)
+                .map_err(|_| "released admission remained blocked")?;
+            drop(admitted);
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }
+    .await;
+    let cleanup = rig.finish().await;
+    result?;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

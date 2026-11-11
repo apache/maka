@@ -1175,7 +1175,8 @@ AppView; the pointer fixture imports the unchanged Physics, Gestures and Resizab
 and pan animation rendering must be checked together with the animation ticket.
 The text-input fixture checks typing, readline navigation, one large paste, selection, copy/cut through the
 engine's isolated clipboard, masked Cells, multiline paste and report-only paste. Its Form entry, a sign-up form of
-its own, checks invalid fields and successful account creation.
+its own, checks invalid fields and successful account creation. The AppView wrapping/selection test uses an
+explicit 160×16-point input (20 columns, one row at the default Cell scale) to exercise vertical caret scrolling.
 The `controls` fixture imports `examples/gallery/demos/Controls.tsx` unchanged, traverses and operates its
 controls with terminal keys, exercises ordinary mouse presses, and reads Cell screenshots. AppView controls
 tests cover focus marks, backward focus-within transitions, projected value/disabled styles and focused
