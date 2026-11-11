@@ -38,8 +38,8 @@ pub(super) fn attachments(
             "settings.updateNetwork accepts a required secret only when replacing its credential",
         ),
         _ => (
-            endpoint == "settings" && method == "saveCredential",
-            "only settings.saveCredential accepts a required secret",
+            endpoint == "settings" && matches!(method, "saveCredential" | "saveUsageCredential"),
+            "only Settings credential mutations accept a required secret",
         ),
     };
     match (required, secret) {

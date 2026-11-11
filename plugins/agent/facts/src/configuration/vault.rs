@@ -22,6 +22,42 @@ use super::*;
 pub enum ConnectionCredentialKind {
     Provider,
     RequestHeaders,
+    Usage,
+}
+
+/// The cloud access key used only to read this connection's usage.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UsageAccessKey {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub team_id: Option<String>,
+}
+
+impl UsageAccessKey {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        const INVALID: &str = "invalid usage access key";
+        let key: Self = serde_json::from_str(value).map_err(|_| INVALID)?;
+        let valid_id = |value: &str| {
+            !value.is_empty()
+                && value.len() <= 512
+                && value
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+        };
+        if !valid_id(&key.access_key_id)
+            || !key.team_id.as_deref().is_none_or(valid_id)
+            || key.secret_access_key.is_empty()
+            || key.secret_access_key.len() > 512
+            || key
+                .secret_access_key
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Err(INVALID.into());
+        }
+        Ok(key)
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]

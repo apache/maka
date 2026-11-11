@@ -119,6 +119,26 @@ impl PromptBuilder {
     pub async fn close(&self) -> std::io::Result<()> {
         self.arena.close().await
     }
+
+    pub async fn finish(self) -> Result<PreparedPrompt, RunError> {
+        let captured = match self.builder.finish_captured().await {
+            Ok(captured) => captured,
+            Err(error) => {
+                let original = RunError::from(error);
+                return Err(match self.arena.close().await {
+                    Ok(()) => original,
+                    Err(close) => preparation_cleanup_error(original, close),
+                });
+            }
+        };
+        Ok(PreparedPrompt::from_canonical(
+            captured.prompt,
+            self.arena,
+            self.resources,
+            self.preparation,
+            captured.resident_bytes,
+        ))
+    }
 }
 
 pub async fn prepare_prompt(
@@ -129,29 +149,7 @@ pub async fn prepare_prompt(
     purpose: ModelPurpose,
     instruction: Option<Arc<String>>,
 ) -> Result<PreparedPrompt, RunError> {
-    let PromptBuilder {
-        builder,
-        arena,
-        resources,
-        preparation,
-    } = builder;
-    let captured = match builder.finish_captured().await {
-        Ok(captured) => captured,
-        Err(error) => {
-            let original = RunError::from(error);
-            return Err(match arena.close().await {
-                Ok(()) => original,
-                Err(close) => preparation_cleanup_error(original, close),
-            });
-        }
-    };
-    let mut prompt = PreparedPrompt::from_canonical(
-        captured.prompt,
-        arena,
-        resources,
-        preparation,
-        captured.resident_bytes,
-    );
+    let mut prompt = builder.finish().await?;
     let result = async {
         prompt
             .initialize_overlays(system, purpose == ModelPurpose::Summary, instruction)

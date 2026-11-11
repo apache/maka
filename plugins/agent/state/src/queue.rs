@@ -33,7 +33,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 mod sql;
 pub(crate) use sql::{
-    DeliveryTarget, Event, consume, consume_external_steering, consume_steering, stop_completions,
+    DeliveryTarget, Event, consume, consume_external_steering, consume_steering,
+    retract_interactive, stop_completions,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

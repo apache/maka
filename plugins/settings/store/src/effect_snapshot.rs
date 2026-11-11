@@ -36,7 +36,100 @@ pub struct ConnectionObservation {
     pub network: crate::network::NetworkConfiguration,
 }
 
+pub struct UsageObservation {
+    pub connection: ConnectionCatalogEntry,
+    pub network: crate::network::NetworkConfiguration,
+    provider: SecretSnapshot,
+    headers: SecretSnapshot,
+    access_key: SecretSnapshot,
+}
+
+impl UsageObservation {
+    pub fn provider_credential(&self) -> Result<Option<maka_agent_facts::provider::Credential>> {
+        self.provider
+            .secret
+            .as_deref()
+            .map(oauth::decode)
+            .transpose()
+    }
+
+    pub fn request_headers(&self) -> Result<std::collections::BTreeMap<String, String>> {
+        Ok(self
+            .headers
+            .secret
+            .as_deref()
+            .map(validation::parse_headers)
+            .transpose()
+            .map_err(ConfigError::Invalid)?
+            .unwrap_or_default())
+    }
+
+    pub fn access_key(&self) -> Result<Option<UsageAccessKey>> {
+        self.access_key
+            .secret
+            .as_deref()
+            .map(UsageAccessKey::parse)
+            .transpose()
+            .map_err(ConfigError::Invalid)
+    }
+}
+
 impl ConfigurationStore {
+    /// Observe account inspection material without selecting an enabled model.
+    pub async fn observe_usage(
+        &self,
+        target: ConnectionVersionBasis,
+    ) -> Result<Option<UsageObservation>> {
+        validation::basis(&target).map_err(ConfigError::Invalid)?;
+        self.transaction(crate::TransactionMode::Deferred, move |tx| {
+            let Some(connection) = crate::catalog::find(tx, &target.connection_id)? else {
+                return Ok(None);
+            };
+            if !connection.enabled || connection.revision != target.revision {
+                return Ok(None);
+            }
+            let id = &connection.connection_id;
+            Ok(Some(UsageObservation {
+                provider: secret(tx, id, ConnectionCredentialKind::Provider)?,
+                headers: secret(tx, id, ConnectionCredentialKind::RequestHeaders)?,
+                access_key: secret(tx, id, ConnectionCredentialKind::Usage)?,
+                network: NetworkSnapshot::read(tx)?.configuration,
+                connection,
+            }))
+        })
+        .await
+    }
+
+    /// Publish usage only for the same connection and credentials used on the wire.
+    pub async fn usage_observation_current(
+        &self,
+        observation: &UsageObservation,
+        uses_access_key: bool,
+    ) -> Result<bool> {
+        let target = crate::catalog::basis(&observation.connection);
+        let snapshots = if uses_access_key {
+            [Some(&observation.access_key), None]
+        } else {
+            [Some(&observation.provider), Some(&observation.headers)]
+        };
+        let checks = snapshots
+            .map(|snapshot| snapshot.map(|secret| (secret.locator.clone(), secret.basis.clone())));
+        self.transaction(crate::TransactionMode::Deferred, move |tx| {
+            if crate::catalog::find(tx, &target.connection_id)?
+                .is_none_or(|row| !row.enabled || row.revision != target.revision)
+            {
+                return Ok(false);
+            }
+            for (locator, basis) in checks.into_iter().flatten() {
+                if vault::status(tx, &locator)?.basis() != basis {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        })
+        .await
+    }
+
     pub async fn observe_model(
         self: &Arc<Self>,
         target: maka_agent_facts::execution::ModelBinding,

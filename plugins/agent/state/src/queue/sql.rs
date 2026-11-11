@@ -17,7 +17,7 @@
  * under the License.
  */
 use super::*;
-use crate::store::invalid;
+use crate::{Change, store::invalid};
 use maka_agent_facts::{artifact::content_digest, message::RootSourceMessage};
 use maka_event_log::content;
 use rusqlite::{OptionalExtension, params};
@@ -371,6 +371,44 @@ pub(super) fn write(
     record(c, session, next, command.id, command.at, &event)?;
     Ok((QueueCommit { revision: next }, true))
 }
+pub(crate) fn retract_interactive(
+    c: &Connection,
+    session: &str,
+    stop: &Change,
+) -> Result<(), StoreError> {
+    use sha2::{Digest, Sha256};
+
+    let queue = read(c, session, None)?;
+    let mut expected_revision = queue.revision;
+    for entry in queue.entries {
+        let source = source(c, &entry.request)?;
+        if !is_interactive(&entry.request, &source)
+            || matches!(
+                source.message.origin,
+                Some(maka_agent_facts::message::MessageOrigin::BotWorker { .. })
+            )
+        {
+            continue;
+        }
+        let mut hash = Sha256::new();
+        hash.update(b"stop-retract");
+        hash.update(stop.id.as_uuid().as_bytes());
+        hash.update(entry.request.id.0.as_bytes());
+        let bytes = hash.finalize()[..16].try_into().expect("SHA256 prefix");
+        let command = QueueCommand {
+            id: FactId::try_from(uuid::Uuid::from_bytes(bytes)).expect("non-nil control identity"),
+            at: stop.at,
+            expected_revision,
+            edit: QueueEdit::Retract {
+                request: entry.request.id,
+            },
+        };
+        let (commit, _) = write(c, session, command, Vec::new(), None)?;
+        expected_revision = commit.revision;
+    }
+    Ok(())
+}
+
 fn row_entry(
     c: &Connection,
     session: &str,

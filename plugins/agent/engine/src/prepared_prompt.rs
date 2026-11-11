@@ -20,8 +20,7 @@
 //! Small request overlays over a fixed, already projected history view.
 use maka_agent_facts::context::PreparedContextBreakdown;
 use maka_agent_facts::model::prompt_source::source::{
-    MessageMetadata, MessageRecipe, MessageSource, NextRecipe, RecipeCursor, RecipeIdentity,
-    RecipeSource,
+    MessageMetadata, MessageRecipe, MessageSource, NextRecipe, RecipeCursor, RecipeSource,
 };
 use maka_model::prompt::{Prompt, PromptCursor, PromptSource};
 use std::{collections::VecDeque, sync::Arc};
@@ -465,14 +464,6 @@ impl MessageSource for OwnedList {
             position: start,
         })
     }
-    fn prefix_identity(&self, count: usize) -> RecipeIdentity<'_> {
-        Box::pin(async move {
-            if count > self.0.len() {
-                return Err(std::io::Error::other("overlay prefix exceeds directory"));
-            }
-            crate::digest(&Identities(&self.0[..count])).map_err(std::io::Error::other)
-        })
-    }
 }
 struct OwnedCursor {
     entries: Arc<Vec<OwnedOverlay>>,
@@ -542,31 +533,6 @@ impl MessageSource for RecipeOverlay {
             offset += segment.len();
         }
         Box::new(RecipeMetadataCursor { cursors })
-    }
-    fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_> {
-        Box::pin(async move {
-            use sha2::Digest;
-            if messages > self.len() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "logical prefix exceeds request directory",
-                ));
-            }
-            let mut hash = sha2::Sha256::new();
-            hash.update(b"maka.logical-prefix\0");
-            let mut cursor = self.open_metadata(0);
-            for _ in 0..messages {
-                let message = cursor.next().await?.ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "request metadata ended before its declared length",
-                    )
-                })?;
-                hash.update((message.logical_identity.len() as u64).to_le_bytes());
-                hash.update(message.logical_identity.as_bytes());
-            }
-            Ok(hex::encode(hash.finalize()))
-        })
     }
 }
 struct RecipeMetadataCursor {

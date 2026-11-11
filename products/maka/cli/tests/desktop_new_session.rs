@@ -1148,8 +1148,7 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
         assert_eq!(
             after
                 .keys()
-                .filter(|id| !before.contains_key(*id))
-                .next()
+                .find(|id| !before.contains_key(*id))
                 .map(String::as_str),
             completed_session.as_deref()
         );
@@ -1182,15 +1181,16 @@ pub(crate) fn new_conversation_creates_and_selects_a_session_in_the_same_workspa
             runtime.block_on(phase("close independent API client", api.close()))
         });
     }
-    if matches!(&outcome, Ok(Ok(()))) && cleanup.is_empty() {
-        if let (Some(child), Some(client)) = (&mut process, &mut control) {
-            settle("Host quit", &mut cleanup, || {
-                runtime.block_on(phase(
-                    "Host quit ACK, stdout EOF and wait",
-                    child.quit(client),
-                ))
-            });
-        }
+    if matches!(&outcome, Ok(Ok(())))
+        && cleanup.is_empty()
+        && let (Some(child), Some(client)) = (&mut process, &mut control)
+    {
+        settle("Host quit", &mut cleanup, || {
+            runtime.block_on(phase(
+                "Host quit ACK, stdout EOF and wait",
+                child.quit(client),
+            ))
+        });
     }
     if let Some(child) = &mut process {
         settle("original Child", &mut cleanup, || {

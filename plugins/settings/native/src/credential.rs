@@ -19,6 +19,10 @@
 
 use crate::{connections, contract::*};
 use futures_util::future::BoxFuture;
+use maka_agent_facts::configuration::{
+    ConfigurationRejection, ConnectionCredentialKind, CredentialIdentityBasis, CredentialLocator,
+    CredentialMutationResult, SetCredentialInput, UsageAccessKey,
+};
 use maka_agent_facts::oauth::Failure;
 use maka_agent_facts::oauth::LoginStart;
 use maka_agent_facts::oauth::Phase;
@@ -81,6 +85,83 @@ impl Transport for NoNetwork {
 }
 fn rejected(reason: CredentialRejection) -> Result<Value, String> {
     connections::encode(CredentialSaveResult::Rejected { reason })
+}
+
+pub(crate) async fn save_usage(
+    store: &ConfigurationStore,
+    snapshot: Arc<maka_providers::catalog::Snapshot>,
+    input: Value,
+    context: Context,
+) -> Result<Value, String> {
+    context.operation().ok_or("settings_mutation_required")?;
+    let invalid = || {
+        connections::encode(CredentialMutationResult::Rejected {
+            reason: ConfigurationRejection::InvalidInput,
+        })
+    };
+    let Ok(request) = serde_json::from_value::<SaveCredential>(input) else {
+        return invalid();
+    };
+    let definition = connections::definition(&request.expected.provider, snapshot)?;
+    let requires_team = match definition.descriptor().usage_authentication {
+        Some(provider::UsageAuthentication::AccessKey) => false,
+        Some(provider::UsageAuthentication::TeamAccessKey) => true,
+        _ => return invalid(),
+    };
+    let locator = CredentialLocator::Connection {
+        connection_id: request.expected.connection_id.clone(),
+        kind: ConnectionCredentialKind::Usage,
+    };
+    if request
+        .expected_credential
+        .as_ref()
+        .is_some_and(|expected| expected.locator != locator)
+    {
+        return invalid();
+    }
+    let Some(resource) = context.attachments().get("secret") else {
+        return invalid();
+    };
+    let bytes = resource.bytes();
+    if !(1..=4096).contains(&bytes) {
+        return invalid();
+    }
+    let secret = resource
+        .read(0..bytes)
+        .map_err(|_| "settings_secret_unavailable")?;
+    let Ok(secret) = String::from_utf8(secret) else {
+        return invalid();
+    };
+    if secret.len() != bytes
+        || !UsageAccessKey::parse(&secret).is_ok_and(|key| key.team_id.is_some() == requires_team)
+    {
+        return invalid();
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "settings_clock_unavailable")?
+        .as_secs();
+    match store
+        .set_credential(
+            SetCredentialInput {
+                locator,
+                expected: request
+                    .expected_credential
+                    .map(|basis| CredentialIdentityBasis {
+                        credential_id: basis.credential_id,
+                        revision: basis.revision,
+                    }),
+                expected_connection: Some(request.expected),
+                secret,
+            },
+            now,
+        )
+        .await
+    {
+        Ok(result) => connections::encode(result),
+        Err(maka_config::ConfigError::Invalid(_)) => invalid(),
+        Err(_) => Err("settings_effect_unknown".into()),
+    }
 }
 pub(crate) async fn save(
     store: &Arc<ConfigurationStore>,

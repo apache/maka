@@ -423,7 +423,10 @@ impl Rig {
                 "create",
                 "history",
                 "models",
+                "observe",
+                "predictNextMessage",
                 "send",
+                "uploadAttachment",
                 "work",
                 "workReadiness",
                 "queue",
@@ -467,7 +470,13 @@ impl Rig {
                     consumer: InstanceId(vec![gateway_key]),
                     import: "settings".into(),
                     grant: Grant {
-                        methods: ["connections".into(), "create".into()].into(),
+                        methods: [
+                            "assistantPreferences".into(),
+                            "connections".into(),
+                            "create".into(),
+                            "updateAssistantPreferences".into(),
+                        ]
+                        .into(),
                         recovery: false,
                     },
                 },
@@ -642,9 +651,12 @@ impl Rig {
         };
         let admission = Admission::new(spec, at(), vec![backend, empty, system, tools]);
         let run = admission.run();
+        // The activated scheduler must not reserve this fixture's Run before its claim.
+        let runs = owner.runs.state().await;
         state.admit(admission).await?;
         let view = state.frontier(run).await?;
         let claim = state.claim(run).await?;
+        drop(runs);
         let access = owner.run_access(Arc::new(view.spec.clone()), claim, lease)?;
         let workers = TaskTracker::new();
         let cleanup = Evidence::default();
@@ -1912,6 +1924,7 @@ mod source_recovery {
 mod model_recovery {
     mod bot_tools;
     mod discovery;
+    mod predictions;
 
     use super::*;
     use maka_process::lifetime::{ProcessIdentity, ProcessObservation};
@@ -2109,8 +2122,17 @@ mod model_recovery {
         method: &str,
         input: Value,
     ) -> TestResult<Value> {
+        call_with_attachments(client, endpoint, method, input, Attachments::new()).await
+    }
+    async fn call_with_attachments(
+        client: &HostClient,
+        endpoint: &str,
+        method: &str,
+        input: Value,
+        attachments: Attachments,
+    ) -> TestResult<Value> {
         let mut call = client
-            .call(endpoint, method.into(), input, Attachments::new())
+            .call(endpoint, method.into(), input, attachments)
             .await?;
         call.start().await?;
         let value = match call.receive().await? {
@@ -2130,7 +2152,7 @@ mod model_recovery {
                     cleanup: OperationCleanup::Confirmed,
                 } = &reply.receipt
                 else {
-                    return Err("test mutation was not returned and physically settled".into());
+                    return Err(format!("{endpoint}.{method}: {:?}", reply.receipt).into());
                 };
                 value.clone()
             }
@@ -2365,13 +2387,17 @@ mod model_recovery {
             let view = driver.state.frontier(run).await?;
             let first = first?;
             let last = view.current_attempt.ok_or("retry attempt missing")?;
-            assert!(matches!(
-                exit?,
-                maka_agent_engine::DriverExit::Terminal {
-                    terminal: Terminal::Completed,
-                    ..
-                }
-            ));
+            let exit = exit?;
+            assert!(
+                matches!(
+                    exit,
+                    maka_agent_engine::DriverExit::Terminal {
+                        terminal: Terminal::Completed,
+                        ..
+                    }
+                ),
+                "interrupted empty model stream returned {exit:?}"
+            );
             assert_ne!(first, last);
             assert_eq!(view.attempts[&first].step, view.attempts[&last].step);
             assert_eq!(view.attempts.len(), 2);
@@ -4013,10 +4039,7 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
         message::MessageOrigin,
         session::ForkPosition,
     };
-    use maka_agent_state::{
-        queue::{QueueCommand, QueueEdit, SteeringTarget},
-        recall::SearchQuery,
-    };
+    use maka_agent_state::recall::SearchQuery;
     use std::sync::atomic::AtomicUsize;
 
     let mut rig = Rig::new().unwrap();
@@ -4057,25 +4080,6 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
             .await?
             .ok_or("steering notification was not queued")?;
         let view = driver.state.frontier(run).await?;
-        let queue = driver.state.queue();
-        queue
-            .execute(
-                session.clone(),
-                QueueCommand {
-                    id: FactId::try_from(Uuid::new_v4()).unwrap(),
-                    at: at(),
-                    expected_revision: queue.read(session.clone()).await?.revision,
-                    edit: QueueEdit::Promote {
-                        request: notification.id,
-                        target: SteeringTarget {
-                            run,
-                            expected_head: (&view).into(),
-                        },
-                    },
-                },
-                vec![],
-            )
-            .await?;
         let mut pending = driver
             .model()?
             .prepare_step(

@@ -583,7 +583,7 @@ fn initial_sheet(element: &RetainedElement) -> Result<bool, AttributeReadError> 
         return Err(AttributeReadError::InvalidType("AXRole"));
     }
     // SAFETY: the checked copied value owns this string throughout comparison.
-    Ok(unsafe { CFString::wrap_under_get_rule(value.0 as _) }.to_string() == "AXSheet")
+    Ok(unsafe { CFString::wrap_under_get_rule(value.0 as _) } == "AXSheet")
 }
 
 fn copied_attribute(

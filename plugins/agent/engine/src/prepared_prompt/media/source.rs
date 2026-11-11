@@ -20,7 +20,7 @@
 //! Request-local media replacements over the original indexed recipe directories.
 use maka_agent_facts::model::prompt_source::source::{
     AssistantRecipe, ContentRecipe, MessageMetadata, MessageRecipe, MessageSource, NextRecipe,
-    RecipeCursor, RecipeIdentity, RecipeSource, ToolOutputRecipe, ToolResultRecipe,
+    RecipeCursor, RecipeSource, ToolOutputRecipe, ToolResultRecipe,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -36,12 +36,10 @@ struct Mapping {
 struct Messages {
     base: Arc<dyn MessageSource>,
     mapping: Arc<Mapping>,
-    identity: String,
 }
 pub(super) fn mapped(
     base: Arc<dyn MessageSource>,
     replacements: Arc<BTreeMap<Key, Replacement>>,
-    identity: String,
     owner: Arc<dyn Send + Sync>,
 ) -> Arc<dyn MessageSource> {
     Arc::new(Messages {
@@ -50,7 +48,6 @@ pub(super) fn mapped(
             replacements,
             _owner: owner,
         }),
-        identity,
     })
 }
 impl RecipeSource<MessageRecipe> for Messages {
@@ -68,12 +65,6 @@ impl RecipeSource<MessageRecipe> for Messages {
 impl MessageSource for Messages {
     fn open_metadata(&self, start: usize) -> Box<dyn RecipeCursor<MessageMetadata>> {
         self.base.open_metadata(start)
-    }
-    fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_> {
-        Box::pin(async move {
-            let base = self.base.prefix_identity(messages).await?;
-            crate::digest(&(base, &self.identity)).map_err(std::io::Error::other)
-        })
     }
 }
 struct MessageCursor {

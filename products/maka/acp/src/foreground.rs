@@ -63,6 +63,10 @@ pub(crate) struct Foreground {
     user: Vec<HistoryChunk>,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one observation slot per foreground run, replaced on refresh; inline execution avoids allocating on each delivery"
+)]
 enum WorkObservation {
     Pending,
     Delivered { execution: Execution, shared: bool },

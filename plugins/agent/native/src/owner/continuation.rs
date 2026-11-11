@@ -218,11 +218,6 @@ impl Owner {
             basis.tool_discovery,
             accepted.editing_tools,
         )?;
-        let definitions = if accepted.tool_mode == ToolMode::CodeMode {
-            maka_tools::CodeCells::definitions_for(&catalog, accepted.code_language)
-        } else {
-            catalog.definitions().cloned().collect()
-        };
         let cancellation = parent.cancellation.child_token();
         let lease = self
             .auxiliary_lease(parent, &session_id)
@@ -265,7 +260,7 @@ impl Owner {
             original_model
                 .as_ref()
                 .expect("original preparation model")
-                .prepare_continuation(actual.run, basis.behavior.clone(), definitions)
+                .prepare_continuation(actual.run, basis.behavior.clone(), catalog)
                 .await
         }
         .await;

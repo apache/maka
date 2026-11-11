@@ -248,7 +248,7 @@ impl maka_computer_use::NativeInterruptionObserver for NativeInterruptionObserve
                 future
             })
             .clone();
-        Box::pin(async move { original.await })
+        Box::pin(original)
     }
 
     fn drained(

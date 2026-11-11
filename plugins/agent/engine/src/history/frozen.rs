@@ -23,7 +23,7 @@ use maka_agent_facts::{
     context::PreparedContextBreakdown,
     model::prompt_source::source::{
         IdentifiedText, MessageMetadata, MessageRecipe, MessageRole, MessageSource, NextRecipe,
-        RecipeCursor, RecipeIdentity, RecipeSource,
+        RecipeCursor, RecipeSource,
     },
 };
 use sha2::{Digest, Sha256};
@@ -48,7 +48,7 @@ pub(crate) struct MessageDescriptor {
 pub(crate) struct FrozenDirectory(Arc<Directory>);
 struct Directory {
     messages: Box<[MessageDescriptor]>,
-    prefixes: Box<[[u8; 32]]>,
+    identity: [u8; 32],
     totals: PreparedContextBreakdown,
     _owner: Box<dyn Send + Sync>,
 }
@@ -62,18 +62,15 @@ impl FrozenDirectory {
 
     pub fn new(messages: Vec<MessageDescriptor>, owner: impl Send + Sync + 'static) -> Self {
         let mut totals = PreparedContextBreakdown::default();
-        let mut prefixes = Vec::with_capacity(messages.len() + 1);
         let mut hash = Sha256::new();
         hash.update(b"maka.logical-prefix\0");
-        prefixes.push(hash.clone().finalize().into());
         for message in &messages {
             totals.accumulate(&message.breakdown);
             hash.update(message.commitment);
-            prefixes.push(hash.clone().finalize().into());
         }
         Self(Arc::new(Directory {
             messages: messages.into_boxed_slice(),
-            prefixes: prefixes.into_boxed_slice(),
+            identity: hash.finalize().into(),
             totals,
             _owner: Box::new(owner),
         }))
@@ -82,16 +79,8 @@ impl FrozenDirectory {
     pub fn breakdown(&self) -> &PreparedContextBreakdown {
         &self.0.totals
     }
-    pub fn prefix_identity(&self, messages: usize) -> Option<String> {
-        self.0.prefixes.get(messages).map(hex::encode)
-    }
     pub fn identity(&self) -> String {
-        hex::encode(
-            self.0
-                .prefixes
-                .last()
-                .expect("directory includes the empty prefix"),
-        )
+        hex::encode(self.0.identity)
     }
 }
 impl RecipeSource<MessageRecipe> for FrozenDirectory {
@@ -110,16 +99,6 @@ impl MessageSource for FrozenDirectory {
         Box::new(MetadataCursor {
             directory: self.clone(),
             position: start,
-        })
-    }
-    fn prefix_identity(&self, messages: usize) -> RecipeIdentity<'_> {
-        Box::pin(async move {
-            FrozenDirectory::prefix_identity(self, messages).ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "logical prefix exceeds frozen directory",
-                )
-            })
         })
     }
 }
@@ -225,7 +204,7 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn append_preserves_prefix_and_cursor_retains_original_owner() {
+    async fn cursor_retains_original_owner() {
         struct Owner(Arc<AtomicUsize>);
         impl Drop for Owner {
             fn drop(&mut self) {
@@ -234,9 +213,6 @@ mod tests {
         }
         let dropped = Arc::new(AtomicUsize::new(0));
         let first = FrozenDirectory::new(vec![message("a")], Owner(dropped.clone()));
-        let second = FrozenDirectory::new(vec![message("a"), message("b")], ());
-        assert_eq!(first.prefix_identity(1), second.prefix_identity(1));
-        assert_ne!(first.identity(), second.identity());
         let mut cursor = first.open(0);
         drop(first);
         assert_eq!(dropped.load(Ordering::SeqCst), 0);
@@ -246,7 +222,7 @@ mod tests {
         assert_eq!(dropped.load(Ordering::SeqCst), 1);
     }
     #[tokio::test]
-    async fn metadata_and_prefix_remain_available_when_bodies_cannot_open() {
+    async fn metadata_remains_available_when_bodies_cannot_open() {
         use maka_agent_facts::model::prompt_source::source::{
             ByteCursor, ByteSource, SourceBudget,
         };
@@ -285,11 +261,6 @@ mod tests {
             logical_identity: hex::encode([7; 32]).into(),
         };
         let directory = FrozenDirectory::new(vec![descriptor], ());
-        let expected = directory.identity();
-        assert_eq!(
-            directory.prefix_identity(1).as_deref(),
-            Some(expected.as_str())
-        );
         let mut metadata = directory.open_metadata(0);
         let item = metadata.next().await.unwrap().unwrap();
         assert_eq!(item.role, MessageRole::User);

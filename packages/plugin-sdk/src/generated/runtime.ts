@@ -1540,7 +1540,7 @@ export type CredentialLocator =
       scope: 'network_proxy';
       kind: PasswordKind;
     };
-export type ConnectionCredentialKind = 'provider' | 'request_headers';
+export type ConnectionCredentialKind = 'provider' | 'request_headers' | 'usage';
 export type PasswordKind = 'password';
 export type SettingsNetworkCredentialAction = 'keep' | 'delete' | 'replace';
 export type SettingsNetworkUpdated =
@@ -2001,6 +2001,7 @@ export type SettingsConnectionDetail =
 export type ApiProtocol = 'openai-chat-completions' | 'openai-responses' | 'anthropic-messages';
 export type ModelModality = 'text' | 'image' | 'audio' | 'pdf' | 'video';
 export type RelayServiceTier = 'fast';
+export type UsageAuthentication = 'provider' | 'access_key' | 'team_access_key';
 export type SettingsCredentialLoginResult =
   | {
       kind: 'saved';
@@ -6462,6 +6463,7 @@ export interface SettingsConnectionSummary {
   provider: Identity;
   enabled: boolean;
   enabledModelCount: number;
+  usageLimits: boolean;
 }
 /**
  * Durable recipient, not a registration lease. Re-loading the same package can
@@ -6616,6 +6618,7 @@ export interface Descriptor {
    */
   anonymous: boolean;
   discovery: boolean;
+  usageAuthentication?: UsageAuthentication | null;
 }
 export interface Method2 {
   id: string;

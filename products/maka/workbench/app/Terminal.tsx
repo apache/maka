@@ -57,6 +57,7 @@ import {
   controlHoverStyle,
   controlFocusStyle,
   controlDisabledStyle,
+  defaultColors,
 } from './ui';
 
 type Color = { named: number } | { indexed: number } | { rgb: number[] };
@@ -79,6 +80,8 @@ type Frame = {
   scrollbackRows: number;
   firstLine: number;
 };
+// Output keeps the dark colors in every appearance, like the ANSI palette.
+const SURFACE = defaultColors(true);
 const CELL = 8;
 const LINE = 16;
 const ANSI = [
@@ -112,7 +115,7 @@ function color(value: Color, palette: [number, number[]][], foreground: boolean)
         const levels = [0, 95, 135, 175, 215, 255];
         rgb = [levels[Math.floor(n / 36)]!, levels[Math.floor(n / 6) % 6]!, levels[n % 6]!];
       } else if (index < 256) rgb = Array(3).fill(8 + (index - 232) * 10);
-      else return foreground ? C.text : '#151517';
+      else return foreground ? SURFACE.text : SURFACE.background;
     }
   }
   return '#' + rgb.map((channel) => channel.toString(16).padStart(2, '0')).join('');
@@ -476,7 +479,12 @@ export function Terminal(props: { model: TerminalModel }) {
         onResponderRelease={(event) => void mouse(event, 'release')}
         onResponderTerminate={() => model.release()}
         accessibilityLabel={tr('Terminal output')}
-        style={{ flex: 1, minHeight: LINE, backgroundColor: '#151517', overflow: 'hidden' }}
+        style={{
+          flex: 1,
+          minHeight: LINE,
+          backgroundColor: SURFACE.background,
+          overflow: 'hidden',
+        }}
       >
         <If when={model.entry().result.mode === 'pty'}>
           <Scroll
@@ -573,7 +581,7 @@ export function Terminal(props: { model: TerminalModel }) {
                               width: CELL,
                               height: LINE,
                               borderBottomWidth: 2,
-                              borderBottomColor: C.text,
+                              borderBottomColor: SURFACE.text,
                             }}
                           />
                         </If>
@@ -587,7 +595,7 @@ export function Terminal(props: { model: TerminalModel }) {
         </If>
         <If when={model.entry().result.mode === 'pipes'}>
           <Scroll style={{ flex: 1 }}>
-            <Text style={[{ ...codeTextStyle, color: C.text }, { userSelect: 'text' }]}>
+            <Text style={[{ ...codeTextStyle, color: SURFACE.text }, { userSelect: 'text' }]}>
               {pipes()}
             </Text>
           </Scroll>

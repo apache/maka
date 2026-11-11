@@ -179,7 +179,7 @@ impl Owner {
         mcp: &crate::mcp::Catalog,
         frozen: &crate::tools::SelectionSnapshot,
     ) -> Result<maka_tools::ToolCatalog, RunError> {
-        let live = crate::tools::catalog_for_run(
+        let mut live = crate::tools::catalog_for_run(
             self.services.clone(),
             self.configuration.clone(),
             &self.settings.tools,
@@ -188,6 +188,21 @@ impl Owner {
             access.clone(),
         )
         .map_err(RunError::InvalidInput)?;
+        if self.settings.goals {
+            live.tools = live
+                .tools
+                .with_always_visible(super::goal::tools::NAMES)
+                .and_then(|tools| {
+                    tools.with_request_binding(
+                        super::goal::tools::NAMES
+                            .iter()
+                            .map(|name| (*name).into())
+                            .collect(),
+                        self.goals.clone(),
+                    )
+                })
+                .map_err(|error| RunError::InvalidInput(error.to_string()))?;
+        }
         let live_tools = mcp
             .for_run(access, live.tools)
             .map_err(RunError::InvalidInput)?;

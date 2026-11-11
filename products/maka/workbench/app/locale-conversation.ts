@@ -639,6 +639,18 @@ export const conversationMessages = {
     '在分支中编辑后重发',
     '在分支中編輯後重新傳送',
   ],
+  'Message editor': ['Message editor', '消息编辑框', '訊息編輯框'],
+  'Sending continues in a new conversation. This one stays as it is.': [
+    'Sending continues in a new conversation. This one stays as it is.',
+    '发送后在新对话中继续，原对话保持不变。',
+    '傳送後在新對話中繼續，原對話保持不變。',
+  ],
+  'Send edited message in a fork': [
+    'Send edited message in a fork',
+    '在分支中发送编辑后的消息',
+    '在分支中傳送編輯後的訊息',
+  ],
+  Send: ['Send', '发送', '傳送'],
   'Send or clear the draft first.': [
     'Send or clear the draft first.',
     '请先发送或清空草稿。',
@@ -1767,7 +1779,6 @@ export const conversationMessages = {
     '正在保存沙箱设置…',
     '正在儲存沙箱設定…',
   ],
-  'Sandbox off': ['Sandbox off', '沙箱已关闭', '沙箱已關閉'],
   'Full access · Sandbox off': [
     'Full access · Sandbox off',
     '完全访问 · 沙箱已关闭',
@@ -1794,10 +1805,20 @@ export const conversationMessages = {
     '不使用沙箱，可读写任意文件。',
     '不使用沙箱，可讀寫任意檔案。',
   ],
-  'Applies to this conversation; changing it clears earlier approvals.': [
-    'Applies to this conversation; changing it clears earlier approvals.',
-    '仅作用于此对话；更改会清除已有授权。',
-    '僅作用於此對話；變更會清除已有授權。',
+  'Applies to this conversation; changing the sandbox clears earlier approvals.': [
+    'Applies to this conversation; changing the sandbox clears earlier approvals.',
+    '仅作用于此对话；更改沙箱会清除已有授权。',
+    '僅作用於此對話；變更沙箱會清除已有授權。',
+  ],
+  'New conversations also start with this sandbox.': [
+    'New conversations also start with this sandbox.',
+    '之后的新对话也会默认使用此沙箱。',
+    '之後的新對話也會預設使用此沙箱。',
+  ],
+  'The default sandbox setting could not be saved.': [
+    'The default sandbox setting could not be saved.',
+    '无法保存默认沙箱设置。',
+    '無法儲存預設沙箱設定。',
   ],
   'Sandbox settings rejected: {reason}': [
     'Sandbox settings rejected: {reason}',

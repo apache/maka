@@ -32,7 +32,6 @@ use sha2::{Digest, Sha256};
 use std::{io, ops::Range, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone)]
 enum Access {
     Live {
         history: SessionHistory,
@@ -51,7 +50,8 @@ enum Access {
 /// A native-authorized Root reader, not a capability reconstructed from a ref.
 #[derive(Clone)]
 pub struct ToolResultReader {
-    access: Access,
+    // Source slices and cursors share scope strings instead of reallocating them on clone.
+    access: Arc<Access>,
     stop: CancellationToken,
 }
 pub enum ToolResultSource {
@@ -374,29 +374,29 @@ impl ToolResultReader {
         stop: &CancellationToken,
     ) -> Self {
         Self {
-            access: Access::Live {
+            access: Arc::new(Access::Live {
                 history: history.clone(),
                 cut: cut.clone(),
                 run,
-            },
+            }),
             stop: stop.clone(),
         }
     }
     pub fn snapshot(snapshot: &Snapshot, run: RunId, stop: &CancellationToken) -> Self {
         Self {
-            access: Access::Snapshot {
+            access: Arc::new(Access::Snapshot {
                 snapshot: snapshot.clone(),
                 run,
-            },
+            }),
             stop: stop.clone(),
         }
     }
     pub fn imported(snapshot: &Snapshot, message_ordinal: u64, stop: &CancellationToken) -> Self {
         Self {
-            access: Access::Imported {
+            access: Arc::new(Access::Imported {
                 snapshot: snapshot.clone(),
                 message_ordinal,
-            },
+            }),
             stop: stop.clone(),
         }
     }
@@ -404,7 +404,7 @@ impl ToolResultReader {
         self.cancelled()?;
         // Prove exact Run or imported-message membership before exposing any
         // slice, including an empty source. Snapshot::chunk is closure-scoped.
-        match &self.access {
+        match self.access.as_ref() {
             Access::Live { history, cut, run } => {
                 history.with_content(cut, *run, reference, |_| Ok(())).await
             }
@@ -1025,7 +1025,7 @@ impl ByteCursor for Cursor {
             let bytes = if count == 0 {
                 Vec::new()
             } else {
-                match &self.source.reader.access {
+                match self.source.reader.access.as_ref() {
                     Access::Live { history, cut, run } => {
                         history
                             .chunk(cut, *run, &self.source.reference, self.offset, count)
