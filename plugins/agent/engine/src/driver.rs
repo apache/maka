@@ -1200,6 +1200,7 @@ impl Engine {
                     || view.terminal.is_some()
                     || view.recovery_failure().is_some()
                     || view.finish_requested()
+                    || view.model_steered(key.attempt)
                 {
                     return Ok(());
                 }
@@ -1225,6 +1226,9 @@ impl Engine {
                 result,
             } => {
                 live.work.remove(&WorkKey::Tool(key.clone()));
+                if view.model_steered(key.attempt) && !view.tools[&tool_key(&key)].admitted {
+                    return Ok(());
+                }
                 let original = match result {
                     Ok(value) => value,
                     Err(error) => {
@@ -1304,6 +1308,7 @@ impl Engine {
                     || view.terminal.is_some()
                     || view.recovery_failure().is_some()
                     || view.finish_requested()
+                    || view.model_steered(key.attempt)
                 {
                     return Ok(());
                 }

@@ -102,6 +102,15 @@ pub struct ModelClosure {
     pub protocol: Value,
 }
 
+impl ModelClosure {
+    pub const STEERED_DIAGNOSTIC: &str = "Model request superseded by steering";
+
+    pub fn steered(&self) -> bool {
+        self.outcome == maka_agent_facts::accounting::Outcome::Aborted
+            && self.diagnostic.as_deref() == Some(Self::STEERED_DIAGNOSTIC)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Retry {
@@ -204,6 +213,13 @@ fn require(condition: bool, message: &str) -> Result<(), StoreError> {
 }
 
 impl RunView {
+    pub fn model_steered(&self, attempt: ModelAttemptId) -> bool {
+        self.attempts
+            .get(&attempt)
+            .and_then(|attempt| attempt.closed.as_ref())
+            .is_some_and(ModelClosure::steered)
+    }
+
     /// Starts before revision one: the first canonical fact must be RunAdmitted.
     pub fn admitted(run: RunId, spec: RunSpec) -> Result<Self, StoreError> {
         require(
@@ -1285,6 +1301,10 @@ impl RunView {
                     "retired model attempt cannot dispatch a new tool",
                 )?;
                 self.effects_accounted()?;
+                require(
+                    !self.model_steered(tool.attempt),
+                    "steered model attempt cannot dispatch a new tool",
+                )?;
                 let current = self.tool(tool)?;
                 require(
                     !current.admitted && current.accepted.is_none(),

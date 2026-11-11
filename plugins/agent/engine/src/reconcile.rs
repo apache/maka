@@ -1120,6 +1120,9 @@ fn next_action(
             }
             continue;
         }
+        if view.model_steered(tool.key.attempt) {
+            return Action::Reject(tool.key.clone(), ToolRejection::Superseded);
+        }
         if model.is_some_and(|model| {
             model.request.as_ref().is_some_and(|request| {
                 request.accounting.purpose == maka_agent_facts::context::ModelPurpose::Summary

@@ -281,7 +281,7 @@ impl Owner {
                         Head::from(&view),
                         vec![Change::new(
                             Fact::StopRequested {
-                                diagnostic: "goal_control".into(),
+                                diagnostic: maka_agent_state::queue::GOAL_CONTROL_STOP.into(),
                             },
                             UnixMillis(now() as i64),
                         )],

@@ -56,6 +56,14 @@ impl Owner {
             Ok(root) => root,
             Err(_) => return,
         };
+        if let Err(error) = self
+            .durable
+            .queue()
+            .recover_stopped_goal_steering(self.run_owner(), UnixMillis(now() as i64))
+            .await
+        {
+            tracing::error!(%error, "Failed to recover steering from stopped Goals");
+        }
         let mut sources = root.capability_changes();
         let mut cause = ReadyCause::CapabilitySourceChanged;
         let mut cold_probe = true;
@@ -345,9 +353,7 @@ impl Owner {
         let (lease, effects) = scope.accept(self.stop.child_token());
         let committed: Result<bool, String> = async {
             let selected = lease.store();
-            let custody = selected
-                .work_custody()
-                .map_err(|error| error.to_string())?;
+            let custody = selected.work_custody().map_err(|error| error.to_string())?;
             let writer = self
                 .store
                 .data_writer_for_work(custody.as_ref(), session)
@@ -356,39 +362,40 @@ impl Owner {
                 .durable
                 .with_data_writer(writer)
                 .map_err(|error| error.to_string())?;
-            let mut changed = state.subscribe().map_err(|error| error.to_string())?;
-            changed.borrow_and_update();
-            match state.admit(admission.clone()).await {
-                Ok(_) => return Ok(true),
-                Err(error) if matches!(error.underlying(), maka_event_log::StoreError::CommitUnknown(_) | maka_event_log::StoreError::OperationUnknown) => {}
-                Err(error) if matches!(error.underlying(), maka_event_log::StoreError::RevisionConflict { .. }) => return Ok(false),
-                Err(error) => return Err(error.to_string()),
-            }
-            loop {
-                changed.borrow_and_update();
-                match state.admission_recorded(&admission).await {
-                    Ok(true) => return Ok(true),
-                    Ok(false) => {
-                        match state.admit(admission.clone()).await {
-                            Ok(_) => return Ok(true),
-                            Err(error) if matches!(error.underlying(), maka_event_log::StoreError::CommitUnknown(_) | maka_event_log::StoreError::OperationUnknown) => {},
-                            Err(error) if matches!(error.underlying(), maka_event_log::StoreError::RevisionConflict { .. }) => return Ok(false),
-                            Err(error) => return Err(error.to_string()),
-                        }
-                        match state.admission_recorded(&admission).await {
-                            Ok(true) => return Ok(true),
-                            Ok(false) => {},
-                            Err(error) if matches!(error.underlying(), maka_event_log::StoreError::EventConflict) => return Err(error.to_string()),
-                            Err(error) => tracing::warn!(%run, %error, "Original admission cannot be confirmed"),
-                        }
+            for retry in [false, true] {
+                let error = match state.admit(admission.clone()).await {
+                    Ok(_) => return Ok(true),
+                    Err(error)
+                        if matches!(
+                            error.underlying(),
+                            maka_event_log::StoreError::RevisionConflict { .. }
+                        ) =>
+                    {
+                        return Ok(false);
                     }
-                    Err(error) if matches!(error.underlying(), maka_event_log::StoreError::EventConflict) => return Err(error.to_string()),
-                    Err(error) => tracing::warn!(%run, %error, "Original admission cannot be confirmed"),
+                    Err(error) => error,
+                };
+                if !matches!(
+                    error.underlying(),
+                    maka_event_log::StoreError::CommitUnknown(_)
+                        | maka_event_log::StoreError::OperationUnknown
+                ) {
+                    return Err(error.to_string());
                 }
-                if changed.changed().await.is_err() {
-                    std::future::pending::<()>().await;
+                // The FIFO read settles the original SQL write. The queue cut
+                // is consumed atomically with admission, before any tools run.
+                if state
+                    .admission_recorded(&admission)
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    return Ok(true);
+                }
+                if retry {
+                    return Err(error.to_string());
                 }
             }
+            unreachable!("admission retries once after the original write is proven absent")
         }
         .await;
         if effects.settle().await.is_err() {

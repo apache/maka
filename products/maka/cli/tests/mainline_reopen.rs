@@ -413,7 +413,7 @@ async fn identities(sandbox: &Sandbox, session: &str, run: &Value) -> Vec<Value>
                 ))
             .then(|| {
                 json!({"id":record["id"],"run":record["run"],"kind":fact["kind"],
-                "step":fact.get("step"),"attempt":fact.get("attempt"),"tool":fact.get("tool"),"cleanup":fact.get("cleanup")})
+                "step":fact.get("step"),"attempt":fact.get("attempt"),"tool":fact.get("tool"),"cleanup":fact.get("cleanup"),"outcome":fact.get("outcome")})
             })
         })
         .collect()
