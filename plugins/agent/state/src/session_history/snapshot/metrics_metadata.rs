@@ -34,6 +34,9 @@ pub(in crate::session_history) enum ModelMetadata {
     Admitted {
         at: UnixMillis,
     },
+    FirstToken {
+        at: UnixMillis,
+    },
     Closed {
         outcome: Outcome,
         at: UnixMillis,
@@ -145,6 +148,12 @@ pub(super) fn classify(
                 ));
             }
             Some(ModelMetadata::Admitted { at: record.at })
+        }
+        Fact::ModelFirstTokenObserved { attempt: actual } => {
+            if *attempt != Some(*actual) {
+                return Err(invalid("snapshot metrics first token attempt differs"));
+            }
+            Some(ModelMetadata::FirstToken { at: record.at })
         }
         Fact::ModelClosed {
             attempt: actual,

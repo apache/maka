@@ -3202,19 +3202,35 @@ async fn receive(
     send: &mpsc::Sender<Result<ModelObservation, RunError>>,
     cancellation: &CancellationToken,
 ) -> Result<(), RunError> {
-    use maka_agent_facts::model::recorded::ModelObservation as RawObservation;
+    use maka_agent_facts::model::{ModelEvent, recorded::ModelObservation as RawObservation};
     let private_summary = observation.scope.purpose == ModelPurpose::Summary;
     let mut pending = BTreeMap::new();
     let mut emitted = 0u64;
+    let mut saw_token = false;
     while let Some(next) = stream.next().await {
         let emission = next?;
-        let finished = matches!(
-            &emission.event,
-            maka_agent_facts::model::ModelEvent::Finished { .. }
-        );
-        let observations = writer.push(emission.event, std::time::SystemTime::now())?;
+        let finished = matches!(&emission.event, ModelEvent::Finished { .. });
+        let first_token = !saw_token
+            && match &emission.event {
+                ModelEvent::PartDelta { text, .. } | ModelEvent::ToolInputDelta { text, .. } => {
+                    !text.is_empty()
+                }
+                ModelEvent::ToolInputStarted { name, .. } => !name.is_empty(),
+                ModelEvent::ToolCall(_) => true,
+                _ => false,
+            };
+        let at = std::time::SystemTime::now();
+        let observations = writer.push(emission.event, at)?;
         if !private_summary {
             publish_preview(&observation.preview, writer.snapshot());
+        }
+        if first_token {
+            let fact = observation
+                .witness
+                .first_token(observation_time(at)?)
+                .await?;
+            saw_token = true;
+            emit(send, cancellation, Ok(ModelObservation::Recorded { fact })).await;
         }
         if item_acceptance && !private_summary && !finished {
             for event in observations {
@@ -3312,7 +3328,11 @@ fn private_partial_blob(
     )?)
 }
 fn witnessed_at() -> Result<UnixMillis, RunError> {
-    let at = std::time::SystemTime::now()
+    observation_time(std::time::SystemTime::now())
+}
+
+fn observation_time(time: std::time::SystemTime) -> Result<UnixMillis, RunError> {
+    let at = time
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| RunError::Internal(error.to_string()))?
         .as_millis()

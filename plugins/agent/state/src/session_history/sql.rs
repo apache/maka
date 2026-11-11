@@ -476,6 +476,7 @@ fn fact_scope(c: &Connection, record: &RecordedFact) -> Result<HistoryScope, Sto
             });
         }
         Fact::ModelAttemptAdmitted { attempt, .. }
+        | Fact::ModelFirstTokenObserved { attempt }
         | Fact::ModelTransportSelected { attempt, .. }
         | Fact::ModelPrivatePartialCaptured { attempt, .. }
         | Fact::ModelSourceFailureCaptured { attempt, .. }

@@ -487,6 +487,9 @@ pub enum Fact {
         attempt: ModelAttemptId,
         upstream: Value,
     },
+    ModelFirstTokenObserved {
+        attempt: ModelAttemptId,
+    },
     ModelTransportSelected {
         attempt: ModelAttemptId,
         phase: crate::model::retry_transport::RetryTransportPhase,
@@ -665,6 +668,7 @@ impl Fact {
                 | Self::ToolPreventedBeforeHostAdmission { .. }
                 | Self::LocalToolReturned { .. }
                 | Self::HostToolResultRecorded { .. }
+                | Self::ModelFirstTokenObserved { .. }
                 | Self::ModelObserved { .. }
                 | Self::ModelClosed { .. }
                 | Self::ModelPrivatePartialCaptured { .. }

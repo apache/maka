@@ -133,6 +133,19 @@ impl ModelWitness {
         })
     }
 
+    pub async fn first_token(&self, at: UnixMillis) -> Result<FactId, RunError> {
+        self.observe(
+            vec![Change::new(
+                Fact::ModelFirstTokenObserved {
+                    attempt: self.attempt,
+                },
+                at,
+            )],
+            vec![],
+        )
+        .await
+    }
+
     pub async fn part(
         &self,
         index: u64,

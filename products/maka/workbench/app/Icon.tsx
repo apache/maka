@@ -14,6 +14,7 @@ const icons = {
   sidebarCollapse: { lucide: 'panel-left-close', glyph: '◁' },
   sidebarExpand: { lucide: 'panel-left-open', glyph: '▷' },
   plus: { lucide: 'plus', glyph: '+' },
+  minus: { lucide: 'minus', glyph: '−' },
   send: { lucide: 'arrow-up', glyph: '↑' },
   stop: { lucide: 'square', glyph: '■' },
   pause: { lucide: 'pause', glyph: 'Ⅱ' },

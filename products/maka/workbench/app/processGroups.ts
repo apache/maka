@@ -110,7 +110,7 @@ export function turnWorkFold(
   return terminal ? 'unavailable' : 'open';
 }
 
-function displayOrder(row: ProcessRow): HistoryOrder | undefined {
+export function displayOrder(row: ProcessRow): HistoryOrder | undefined {
   if (row.order) return row.order;
   const sequence = row.startSequence ?? row.sequence;
   return sequence === undefined ? undefined : { path: [sequence], itemIndex: 0 };

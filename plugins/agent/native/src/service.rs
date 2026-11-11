@@ -590,6 +590,9 @@ impl Handler for Agent {
                 "historyPrompt" => {
                     encode(history::prompt(&owner, context.scope(), decode(input)?).await?)
                 }
+                "historyRequests" => {
+                    encode(history::requests(&owner, context.scope(), decode(input)?).await?)
+                }
                 "search" => encode(history::search(&owner, context.scope(), decode(input)?).await?),
                 "source" => encode(history::source(&owner, context.scope(), decode(input)?).await?),
                 "toolImage" => {

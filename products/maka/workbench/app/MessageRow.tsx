@@ -109,6 +109,7 @@ export function MessageRow({
   toolMaxHeight,
   toolProgress,
   onToolReading,
+  inspectTool,
   finalActions,
   editMessage,
   messageEditor,
@@ -129,6 +130,7 @@ export function MessageRow({
   toolMaxHeight: () => number;
   toolProgress?(id: string): ToolActivity['phase'] | null;
   onToolReading?(key: string): void;
+  inspectTool?(key: string): void;
   finalActions?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
   /** An action on a user message, beside its copy button. */
   editMessage?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
@@ -470,6 +472,7 @@ export function MessageRow({
                       userScroll={userScroll}
                       expand={setExpanded}
                       showOriginal={setSourceMode}
+                      inspect={inspectTool}
                     />
                   </If>
                 </If>

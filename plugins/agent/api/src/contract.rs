@@ -1484,6 +1484,57 @@ pub struct HistoryPromptRead {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentHistoryRequestsRead")]
+pub struct HistoryRequestsRead {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
+    pub through: u64,
+    /// Any original row in the Run being inspected.
+    pub position: RowPosition,
+    #[serde(default)]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub after: Option<u64>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentHistoryRequests")]
+pub struct HistoryRequests {
+    pub requests: Vec<HistoryRequest>,
+    pub next: Option<u64>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentHistoryRequest")]
+pub struct HistoryRequest {
+    pub order: HistoryOrder,
+    pub step_id: maka_agent_facts::durable::StepId,
+    pub attempt_id: maka_agent_facts::durable::ModelAttemptId,
+    pub model_id: String,
+    pub purpose: maka_agent_facts::context::ModelPurpose,
+    pub started_at: Option<u64>,
+    pub first_token_at: Option<u64>,
+    pub finished: Option<HistoryRequestFinished>,
+    pub estimated_input_tokens: u64,
+    pub context_window: Option<u64>,
+    pub input_limit: Option<u64>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentHistoryRequestFinished")]
+pub struct HistoryRequestFinished {
+    pub at: u64,
+    pub outcome: maka_agent_facts::accounting::Outcome,
+    pub usage: maka_agent_facts::model::ModelUsage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistorySearch")]
 pub struct HistorySearch {
     #[schemars(length(min = 1))]
@@ -1969,6 +2020,10 @@ pub fn contract() -> Contract {
                 (
                     "historyPrompt".into(),
                     method::<HistoryPromptRead, Option<HistoryPrompt>>(MethodMode::Query),
+                ),
+                (
+                    "historyRequests".into(),
+                    method::<HistoryRequestsRead, HistoryRequests>(MethodMode::Query),
                 ),
                 (
                     "search".into(),

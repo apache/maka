@@ -330,6 +330,7 @@ export function ToolCard(props: {
   reading?(): void;
   expand(action: { sessionId: string; key: string; value: boolean }): void;
   showOriginal(action: { sessionId: string; key: string; value: boolean }): void;
+  inspect?(key: string): void;
   previewImage(image: ImagePreview): void;
   userScroll(): void;
 }) {
@@ -429,6 +430,13 @@ export function ToolCard(props: {
                 through={imageThrough}
                 images={images}
                 preview={props.previewImage}
+              />
+            </If>
+            <If when={props.expanded() && props.inspect !== undefined}>
+              <IconButton
+                label={tr('Inspect in execution process')}
+                icon="children"
+                onPress={inputAction((key: string) => props.inspect?.(key), props.ownerKey())}
               />
             </If>
             <If when={props.expanded()}>

@@ -84,6 +84,246 @@ impl SessionHistory {
     }
 }
 
+#[derive(Debug)]
+pub struct ModelRequestTrace {
+    pub sequence: u64,
+    pub step: StepId,
+    pub attempt: ModelAttemptId,
+    pub model_id: String,
+    pub purpose: ModelPurpose,
+    pub started_at: Option<UnixMillis>,
+    pub first_token_at: Option<UnixMillis>,
+    pub finished: Option<ModelRequestTraceFinished>,
+    pub context: ModelRequestContextTrace,
+}
+
+#[derive(Debug)]
+pub struct ModelRequestTraceFinished {
+    pub at: UnixMillis,
+    pub outcome: Outcome,
+    pub usage: ModelUsage,
+    pub diagnostic: Option<String>,
+}
+
+fn trace_diagnostic(
+    fact: RecordedFact,
+    attempt: ModelAttemptId,
+) -> Result<Option<String>, StoreError> {
+    let Fact::ModelClosed {
+        attempt: original,
+        diagnostic,
+        ..
+    } = fact.fact
+    else {
+        return Err(invalid("request trace closure is not its original fact"));
+    };
+    if original != attempt {
+        return Err(invalid("request trace closure has another attempt"));
+    }
+    Ok(diagnostic.map(|text| {
+        const LIMIT: usize = 512;
+        let mut chars = text.trim().chars();
+        let mut preview: String = chars.by_ref().take(LIMIT).collect();
+        if chars.next().is_some() {
+            preview.push('…');
+        }
+        preview
+    }))
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRequestContextTrace {
+    pub estimated_input_tokens: u64,
+    pub model_context: Option<maka_agent_facts::context::ModelRequestContext>,
+}
+
+impl HistoryDataSource {
+    /// A bounded page of original model attempts for one already scoped Run.
+    pub async fn model_request_traces(
+        &self,
+        run: RunId,
+        after: u64,
+        limit: u32,
+    ) -> Result<Vec<ModelRequestTrace>, StoreError> {
+        let query = ReadRequestTraces(self.clone(), run, after, limit);
+        match self {
+            Self::Live { history, .. } => history.data.query(query).await,
+            Self::Snapshot(snapshot) => snapshot.query_request_traces(query).await,
+        }
+    }
+}
+
+pub(super) struct ReadRequestTraces(HistoryDataSource, RunId, u64, u32);
+impl Query for ReadRequestTraces {
+    type Output = Vec<ModelRequestTrace>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let Self(source, run, after, limit) = self;
+        let mut traces = Vec::new();
+        let mut contexts = std::collections::BTreeMap::<StepId, ModelRequestContextTrace>::new();
+        match &source {
+            HistoryDataSource::Live { history, cut } => {
+                sql::validate_cut(
+                    c,
+                    &history.namespace.owner,
+                    &history.namespace.session,
+                    &cut,
+                )?;
+                let mut statement = c.prepare_cached(
+                    "SELECT h.sequence,h.step,h.attempt,u.request,u.model_id,u.purpose
+                     FROM agent_session_history h INDEXED BY agent_session_history_run
+                     JOIN agent_usage_calls u ON u.request='model:'||h.run||':'||h.attempt
+                          AND u.source='fact' AND u.owner=h.owner AND u.session=h.session
+                          AND u.run=h.run AND u.admission_sequence=h.sequence
+                     WHERE h.owner=? AND h.session=? AND h.run=? AND h.kind='model_attempt_prepared'
+                       AND h.sequence>? AND h.sequence<=? ORDER BY h.sequence LIMIT ?",
+                )?;
+                let mut rows = statement.query(params![
+                    serde_json::to_string(&history.namespace.owner)?,
+                    history.namespace.session,
+                    run.to_string(),
+                    sql::bind_u64(after)?,
+                    sql::bind_u64(cut.through_sequence)?,
+                    limit,
+                ])?;
+                while let Some(row) = rows.next()? {
+                    let step = sql::identity(row.get(1)?)?;
+                    let attempt = sql::identity(row.get(2)?)?;
+                    let request: String = row.get(3)?;
+                    if let std::collections::btree_map::Entry::Vacant(entry) = contexts.entry(step)
+                    {
+                        let (spec, _) =
+                            sql::request_preparation(c, &history.namespace, cut, run, step)?;
+                        entry.insert(metadata(c, &source, run, &spec.provenance)?);
+                    }
+                    let finished = live_closed(c, history, cut, run, step, attempt, &request)?
+                        .map(|closed| {
+                            let diagnostic = if closed.outcome == Outcome::Success {
+                                None
+                            } else {
+                                let item = sql::item(c, &history.namespace, cut, closed.sequence)?
+                                    .ok_or_else(|| invalid("request trace closure is absent"))?;
+                                trace_diagnostic(item.recorded, attempt)?
+                            };
+                            Ok::<_, StoreError>(ModelRequestTraceFinished {
+                                at: closed.at,
+                                outcome: closed.outcome,
+                                usage: closed.usage,
+                                diagnostic,
+                            })
+                        })
+                        .transpose()?;
+                    traces.push(ModelRequestTrace {
+                        sequence: sql::read_u64(row, 0)?,
+                        step,
+                        attempt,
+                        model_id: row.get(4)?,
+                        purpose: serde_json::from_str(&row.get::<_, String>(5)?)?,
+                        started_at: live_time(c, history, cut, run, step, attempt)?,
+                        first_token_at: live_model_time(
+                            c,
+                            history,
+                            cut,
+                            run,
+                            step,
+                            attempt,
+                            "model_first_token_observed",
+                        )?,
+                        finished,
+                        context: contexts[&step].clone(),
+                    });
+                }
+            }
+            HistoryDataSource::Snapshot(snapshot) => {
+                let bound = snapshot_bound(c, snapshot)?;
+                let mut statement = c.prepare_cached(
+                    "SELECT entry_json FROM agent_history_snapshot_entries
+                     WHERE snapshot=? AND kind='fact' AND run=? AND fact_kind='model_attempt_prepared'
+                       AND sequence>? AND sequence<=? ORDER BY sequence LIMIT ?",
+                )?;
+                let mut rows = statement.query(params![
+                    snapshot.id().to_string(),
+                    run.to_string(),
+                    sql::bind_u64(after)?,
+                    sql::bind_u64(bound)?,
+                    limit,
+                ])?;
+                while let Some(row) = rows.next()? {
+                    let original = copied_fact(c, snapshot, &row.get::<_, String>(0)?, bound)?;
+                    let step = original
+                        .step
+                        .ok_or_else(|| invalid("request trace missing Step"))?;
+                    let attempt = original
+                        .attempt
+                        .ok_or_else(|| invalid("request trace missing attempt"))?;
+                    let raw: String = c.query_row(
+                        "SELECT model_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_step
+                         WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.step')=?
+                           AND fact_kind='step_prepared' AND sequence<? ORDER BY sequence LIMIT 1",
+                        params![snapshot.id().to_string(), run.to_string(), step.to_string(), sql::bind_u64(original.sequence)?],
+                        |row| row.get(0),
+                    )?;
+                    let ModelMetadata::Prepared {
+                        accounting,
+                        provenance,
+                    } = serde_json::from_str(&raw)?
+                    else {
+                        return Err(invalid("request trace missing copied preparation"));
+                    };
+                    if let std::collections::btree_map::Entry::Vacant(entry) = contexts.entry(step)
+                    {
+                        entry.insert(metadata(c, &source, run, &provenance)?);
+                    }
+                    let started_at =
+                        copied_closed(c, snapshot, bound, &original, "model_attempt_admitted")?
+                            .map(|(_, metadata)| match metadata {
+                                ModelMetadata::Admitted { at } => Ok(at),
+                                _ => Err(invalid("request trace invalid copied admission")),
+                            })
+                            .transpose()?;
+                    let first_token_at =
+                        copied_closed(c, snapshot, bound, &original, "model_first_token_observed")?
+                            .map(|(_, metadata)| match metadata {
+                                ModelMetadata::FirstToken { at } => Ok(at),
+                                _ => Err(invalid("request trace invalid copied first token")),
+                            })
+                            .transpose()?;
+                    let finished = copied_closed(c, snapshot, bound, &original, "model_closed")?
+                        .map(|(closed, evidence)| {
+                            let ModelMetadata::Closed { at, outcome, usage } = evidence else {
+                                return Err(invalid("request trace invalid copied closure"));
+                            };
+                            let diagnostic = if outcome == Outcome::Success {
+                                None
+                            } else {
+                                trace_diagnostic(metadata(c, &source, run, &closed.body)?, attempt)?
+                            };
+                            Ok(ModelRequestTraceFinished {
+                                at,
+                                outcome,
+                                usage,
+                                diagnostic,
+                            })
+                        })
+                        .transpose()?;
+                    traces.push(ModelRequestTrace {
+                        sequence: original.sequence,
+                        step,
+                        attempt,
+                        model_id: accounting.model_id,
+                        purpose: accounting.purpose,
+                        started_at,
+                        first_token_at,
+                        finished,
+                        context: contexts[&step].clone(),
+                    });
+                }
+            }
+        }
+        Ok(traces)
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Selection {
     LatestSuccess,
@@ -482,11 +722,31 @@ fn live_time(
     step: StepId,
     attempt: ModelAttemptId,
 ) -> Result<Option<UnixMillis>, StoreError> {
-    let row:Option<(String,u32,i64)>=c.query_row("SELECT f.id,f.schema_version,f.at FROM agent_session_history h INDEXED BY agent_session_history_run LEFT JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id AND f.run=h.run WHERE h.owner=? AND h.session=? AND h.run=? AND h.step=? AND h.kind='model_attempt_admitted' AND h.attempt=? AND h.sequence<=? ORDER BY h.sequence LIMIT 1",params![serde_json::to_string(&history.namespace.owner)?,history.namespace.session,run.to_string(),step.to_string(),attempt.to_string(),sql::bind_u64(cut.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+    live_model_time(
+        c,
+        history,
+        cut,
+        run,
+        step,
+        attempt,
+        "model_attempt_admitted",
+    )
+}
+
+fn live_model_time(
+    c: &Connection,
+    history: &SessionHistory,
+    cut: &HistoryCut,
+    run: RunId,
+    step: StepId,
+    attempt: ModelAttemptId,
+    kind: &str,
+) -> Result<Option<UnixMillis>, StoreError> {
+    let row:Option<(String,u32,i64)>=c.query_row("SELECT f.id,f.schema_version,f.at FROM agent_session_history h INDEXED BY agent_session_history_run LEFT JOIN agent_facts f ON f.sequence=h.sequence AND f.id=h.fact_id AND f.run=h.run WHERE h.owner=? AND h.session=? AND h.run=? AND h.step=? AND h.kind=? AND h.attempt=? AND h.sequence<=? ORDER BY h.sequence LIMIT 1",params![serde_json::to_string(&history.namespace.owner)?,history.namespace.session,run.to_string(),step.to_string(),kind,attempt.to_string(),sql::bind_u64(cut.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
     row.map(|(id, schema, at)| {
         let _: FactId = sql::identity(id)?;
         if schema != SCHEMA_VERSION || at < 0 {
-            return Err(invalid("metrics original model admission metadata differs"));
+            return Err(invalid("metrics original model timing metadata differs"));
         }
         Ok(UnixMillis(at))
     })
@@ -510,6 +770,7 @@ struct CopiedFact {
     admission: u64,
     step: Option<StepId>,
     attempt: Option<ModelAttemptId>,
+    body: ContentRef,
 }
 fn copied_fact(
     c: &Connection,
@@ -553,6 +814,7 @@ fn copied_fact(
         admission: admission_sequence,
         step,
         attempt,
+        body,
     })
 }
 fn copied(

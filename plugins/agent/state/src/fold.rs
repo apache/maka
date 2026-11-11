@@ -990,6 +990,13 @@ impl RunView {
                 self.retry_due_at = None;
                 self.retry_pending = None;
             }
+            Fact::ModelFirstTokenObserved { attempt } => {
+                let current = self.attempt(attempt)?;
+                require(
+                    current.admission.is_some() && current.closed.is_none(),
+                    "first token has no open original attempt",
+                )?;
+            }
             Fact::ModelObserved {
                 attempt,
                 index,
