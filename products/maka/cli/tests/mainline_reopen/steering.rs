@@ -179,7 +179,6 @@ async fn steering(prefix: bool) {
                                 let main = prompt.contains("steering-original") || prompt.contains("effect-result");
                                 let events = if main {
                                     let phase = count.fetch_add(1, Ordering::SeqCst);
-                                    observed.send(body.clone()).unwrap();
                                     match phase {
                                         0 => {
                                             let mut events = responses_events("held-response", responses_text("accepted-prefix"));
@@ -191,6 +190,11 @@ async fn steering(prefix: bool) {
                                         }
                                         1 => {
                                             assert!(prompt.contains("steering-correction"), "{body}");
+                                            held = true;
+                                            vec![json!({"type":"response.created","response":{"id":"held-continuation","model":model}})]
+                                        }
+                                        2 => {
+                                            assert!(prompt.contains("steering-final"), "{body}");
                                             responses_events("corrected-response", responses_text("Corrected answer."))
                                         }
                                         _ => panic!("original request was repeated: {body}"),
@@ -199,6 +203,7 @@ async fn steering(prefix: bool) {
                                     responses_events("warmup", responses_text("Ready."))
                                 };
                                 for event in events { ws.send(Message::Text(event.to_string().into())).await.unwrap(); }
+                                if main { observed.send(body).unwrap(); }
                             }
                             if held { retirement.notify_one(); }
                         }
@@ -212,7 +217,8 @@ async fn steering(prefix: bool) {
         let secret: Arc<dyn ReadResource> = Arc::new(FixtureKey);
         let saved = call(&client, "settings", "saveCredential", json!({"expected":detail["target"],"expectedCredential":null}), Attachments::from([("secret".into(), secret)])).await;
         assert_eq!(saved["kind"], "saved");
-        let created = call(&client, "agent", "create", json!({"title":"Steering stream","automaticTitle":false,"labels":[],"tools":["Shell"],"workspace":{"kind":"directory","path":sandbox.workspace},"backend":{"kind":"model","connectionId":connection,"modelId":model,"thinkingLevel":null}}), Attachments::new()).await;
+        let mut session_input = json!({"title":"Steering stream","automaticTitle":false,"labels":[],"tools":["Shell"],"workspace":{"kind":"directory","path":sandbox.workspace},"backend":{"kind":"model","connectionId":connection,"modelId":model,"thinkingLevel":null}});
+        let created = call(&client, "agent", "create", session_input.clone(), Attachments::new()).await;
         let session = created["session"]["id"].as_str().unwrap();
         let sent = call(&client, "agent", "send", json!({"sessionId":session,"message":"steering-original","delivery":"queue"}), Attachments::new()).await;
         assert!(matches!(sent["kind"].as_str(), Some("started" | "queued")), "original send rejected: {sent}");
@@ -241,6 +247,16 @@ async fn steering(prefix: bool) {
         if prefix {
             retired.notified().await;
             assert!(received.try_recv().is_err(), "continuation must wait for the admitted tool");
+
+            session_input["title"] = json!("Independent stream");
+            let peer = call(&client, "agent", "create", session_input, Attachments::new()).await;
+            let peer_session = peer["session"]["id"].as_str().unwrap();
+            let peer_sent = call(&client, "agent", "send", json!({"sessionId":peer_session,"message":"independent-request","delivery":"queue"}), Attachments::new()).await;
+            assert!(matches!(peer_sent["kind"].as_str(), Some("started" | "queued")), "independent send rejected: {peer_sent}");
+            let peer_result = work(&client, peer_session, json!({"kind":"message","messageId":peer_sent["messageId"]}), Some("completed")).await;
+            assert_ne!(peer_result["execution"]["runId"], run);
+            assert!(received.try_recv().is_err(), "the independent Run must complete before releasing the admitted tool");
+
             tokio::fs::write(sandbox.workspace.join("release-steering-tool"), b"").await.unwrap();
         }
         let corrected = received.recv().await.unwrap();
@@ -250,19 +266,31 @@ async fn steering(prefix: bool) {
         if prefix {
             assert!(messages.contains("effect-result"), "{messages}");
             assert!(messages.contains("accepted-prefix"), "{messages}");
+
+            let correction = call(&client, "agent", "send", json!({"sessionId":session,"message":"steering-final","delivery":"steer","expectedRunId":run}), Attachments::new()).await;
+            assert_eq!(correction["kind"], "queued", "{correction}");
+            retired.notified().await;
+            let final_request = received.recv().await.unwrap().to_string();
+            assert_eq!(final_request.matches("steering-original").count(), 1);
+            assert_eq!(final_request.matches("steering-correction").count(), 1);
+            assert_eq!(final_request.matches("steering-final").count(), 1);
+            assert!(final_request.find("steering-correction").unwrap() < final_request.find("steering-final").unwrap(), "{final_request}");
+            assert!(final_request.contains("effect-result"), "{final_request}");
+            assert!(final_request.contains("accepted-prefix"), "{final_request}");
         }
         let completed = work(&client, session, json!({"kind":"run","runId":run}), Some("completed")).await;
         assert_eq!(completed["execution"]["runId"], run);
-        assert_eq!(count.load(Ordering::SeqCst), 2, "original request must not be replayed");
+        let expected_outcomes = if prefix { vec![json!("aborted"), json!("aborted"), json!("success")] } else { vec![json!("aborted"), json!("success")] };
+        assert_eq!(count.load(Ordering::SeqCst), expected_outcomes.len(), "original requests must not be replayed");
         let queue = call(&client, "agent", "queue", json!({"sessionId":session}), Attachments::new()).await;
         assert_eq!(queue["entries"], json!([]));
         if prefix { assert_eq!(tokio::fs::read_to_string(sandbox.workspace.join("steering-effects.log")).await.unwrap(), "once\n"); }
         host.quit(&mut client).await.unwrap();
         let facts = identities(&sandbox, session, &run).await;
-        let outcomes: Vec<_> = facts.iter().filter(|fact| fact["kind"] == "model_closed").map(|fact| &fact["outcome"]).collect();
-        assert_eq!(outcomes, vec![&json!("aborted"), &json!("success")]);
+        let outcomes: Vec<_> = facts.iter().filter(|fact| fact["kind"] == "model_closed").map(|fact| fact["outcome"].clone()).collect();
+        assert_eq!(outcomes, expected_outcomes);
         let attempts: Vec<_> = facts.iter().filter(|fact| fact["kind"] == "model_attempt_prepared").collect();
-        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts.len(), expected_outcomes.len());
         for attempt in attempts {
             assert!(facts.iter().any(|fact| fact["kind"] == "model_cleanup_observed" && fact["attempt"] == attempt["attempt"] && fact["cleanup"]["kind"] == "confirmed"), "{facts:?}");
         }
@@ -284,6 +312,6 @@ async fn steering_preempts_an_open_http_request() {
 }
 
 #[tokio::test]
-async fn steering_keeps_accepted_prefix_and_drains_the_running_tool() {
+async fn consecutive_steering_keeps_the_tool_and_independent_run_live() {
     steering(true).await;
 }
