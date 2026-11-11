@@ -357,6 +357,12 @@ impl Snapshot {
     pub async fn view_at(&self, run: RunId) -> Result<crate::fold::RunView, StoreError> {
         self.data.query(read::View(self.clone(), run)).await
     }
+    pub async fn terminated(
+        &self,
+        run: RunId,
+    ) -> Result<Option<(UnixMillis, Terminal)>, StoreError> {
+        self.data.query(read::Terminated(self.clone(), run)).await
+    }
     pub async fn history(
         &self,
         run: RunId,
