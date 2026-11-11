@@ -19,9 +19,9 @@
 
 import {
   senderSession,
-  historyRowKey,
   historyTurnKey,
   compareHistoryOrder,
+  stableRowId,
   type Row,
 } from './history.ts';
 import type { HistoryOrder } from '../../../../packages/plugin-sdk/src/index.js';
@@ -111,14 +111,6 @@ export function turnWorkFold(
   return terminal ? 'unavailable' : 'open';
 }
 
-/** One identity across streaming fragments, canonical handoff and tool result pairing. */
-export function stableRowId(row: ProcessRow): string {
-  if (row.tool?.call) return `tool/${row.tool.toolUseId}/${historyRowKey(row.tool.call.position)}`;
-  if (row.position && row.position.kind !== 'live') return historyRowKey(row.position, row.field);
-  if (row.messageId !== undefined) return `${row.messageId}/${row.field}`;
-  if (row.position) return historyRowKey(row.position, row.field);
-  throw new Error('Transcript row has neither a source address nor a live message identity.');
-}
 function displayOrder(row: ProcessRow): HistoryOrder | undefined {
   if (row.order) return row.order;
   const sequence = row.startSequence ?? row.sequence;

@@ -20,12 +20,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  orderProcessRows,
   projectProcessGroups,
   sameProcessRows,
-  stableRowId,
   turnWorkFold,
 } from '../app/processGroups.ts';
-import { historyTurnKey } from '../app/history.ts';
+import { historyTurnKey, stableRowId } from '../app/history.ts';
 import { TranscriptOverlay } from '../app/transcriptOverlay.ts';
 
 const row = (messageId, text, sequence, changes = {}) => ({
@@ -79,6 +79,69 @@ test('streaming thoughts and tool inputs wait for the history they follow', () =
   assert.deepEqual(preview(), []);
   overlay.history(new Map(), 8);
   assert.deepEqual(preview(), ['Checking', 'read']);
+});
+
+test('committed model text replaces its streaming row before the next tool or model step', () => {
+  const overlay = new TranscriptOverlay();
+  const step = { stepId: 'step', attemptId: 'attempt' };
+  const turn = { runId: 'run', turnId: 'run' };
+  const texts = [
+    { field: 'thinking', textKind: 'thinking', text: 'Checking the log' },
+    { field: 'body', textKind: 'text', text: 'I found the cause.' },
+  ];
+  const entries = (history = []) => {
+    const { rows, tools } = overlay.snapshot();
+    const { entries, rowsById } = projectProcessGroups({
+      rows: orderProcessRows([...history, ...rows]),
+      toolActivity: tools,
+      activeTurnId: turn.turnId,
+    });
+    return entries
+      .flatMap((entry) => (entry.kind === 'process' ? entry.rowIds : [entry.rowId]))
+      .map((id) => [id, rowsById.get(id).text]);
+  };
+
+  overlay.history(new Map(), 1);
+  overlay.page({
+    kind: 'cut',
+    hostEpoch: 'host',
+    ...turn,
+    ...step,
+    revision: 1,
+    dependsOn: 1,
+    first: true,
+    last: true,
+    parts: texts.map(({ text, textKind }, ordinal) => ({
+      ordinal,
+      messageId: `preview-${ordinal}`,
+      field: { kind: 'text', textKind },
+      offset: 0,
+      totalBytes: text.length,
+      text,
+    })),
+  });
+  const streaming = entries();
+  assert.deepEqual(
+    streaming.map(([, text]) => text),
+    ['Checking the log', 'I found the cause.'],
+  );
+
+  const committed = texts.map(({ field, text }, ordinal) =>
+    row(`fact-${ordinal}`, text, ordinal + 2, {
+      field,
+      modelPart: { ...step, ordinal },
+    }),
+  );
+  overlay.event({
+    ...turn,
+    sequence: 2,
+    fact: { kind: 'part_committed', ...step, messageId: 'fact-0', ordinal: 0 },
+  });
+  assert.deepEqual(entries(), streaming, 'the watch event alone keeps both text rows visible');
+
+  overlay.history(new Map(committed.map((row) => [stableRowId(row), row])), 3);
+  assert.deepEqual(entries(committed), streaming);
+  assert.deepEqual(overlay.snapshot().rows, [], 'history takes over even ahead of the watch event');
 });
 
 test('a turn has work to fold only beside its final answer', () => {

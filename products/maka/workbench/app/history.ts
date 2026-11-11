@@ -158,6 +158,22 @@ export type Row = {
   closedAt?: number | null;
 };
 
+export function modelPartRowId({ stepId, attemptId, ordinal }: NonNullable<Row['modelPart']>) {
+  return `model/${stepId}/${attemptId}/${ordinal}`;
+}
+
+/** One identity across streaming fragments, canonical handoff and tool result pairing. */
+export function stableRowId(
+  row: Pick<Row, 'tool' | 'position' | 'modelPart' | 'messageId' | 'field'>,
+): string {
+  if (row.tool?.call) return `tool/${row.tool.toolUseId}/${historyRowKey(row.tool.call.position)}`;
+  if (row.position && row.position.kind !== 'live') return historyRowKey(row.position, row.field);
+  if (row.modelPart && !row.tool) return modelPartRowId(row.modelPart);
+  if (row.messageId !== undefined) return `${row.messageId}/${row.field}`;
+  if (row.position) return historyRowKey(row.position, row.field);
+  throw new Error('Transcript row has neither a source address nor a live message identity.');
+}
+
 export function senderSession(origin: MessageOrigin | null | undefined): string | null {
   if (origin?.kind === 'session') return origin.execution.sessionId;
   // A Bot Turn started because a worker finished names that worker.
