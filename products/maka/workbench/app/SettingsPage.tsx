@@ -205,6 +205,7 @@ function RowLine() {
 export type SettingsRowProps = {
   label: string;
   description?: string;
+  detail?: JSX.Element;
   /** Something that needs action, in `warning`. */
   status?: string;
   leading?: JSX.Element;
@@ -237,6 +238,7 @@ export function SettingsRow(props: SettingsRowProps) {
         <If when={props.description}>
           <Text style={{ ...captionTextStyle, color: C.muted }}>{props.description}</Text>
         </If>
+        {props.detail}
       </View>
       <If when={props.status}>
         <Text style={[{ ...captionTextStyle, color: C.warning }, { pointerEvents: 'none' }]}>

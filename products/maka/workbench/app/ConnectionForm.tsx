@@ -17,9 +17,11 @@
  * under the License.
  */
 
-import { inputAction, Text } from 'nsh';
+import { cleanup, computed, effect, inputAction, signal, Text } from 'nsh';
+import type { CredentialStatus } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { ModelSettingsOwner } from './settings';
 import { ConnectionLogin } from './ConnectionLogin';
+import { useHost } from './host';
 import { tr } from './locale';
 import {
   SettingsBody,
@@ -43,6 +45,7 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
   const models = () => form().baseline?.editing?.enabledModelIds ?? [];
   const interactive = () =>
     form().provider.descriptor.authentication.some((method) => method.interactive);
+  const usageAuthentication = () => form().provider.descriptor.usageAuthentication;
   const keyed = () =>
     form().provider.descriptor.authentication.some(
       (method) => method.id === 'api-key' && !method.interactive,
@@ -92,6 +95,14 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
           })}
         />
       </SettingsSection>
+      <If
+        when={
+          form().baseline &&
+          (usageAuthentication() === 'access_key' || usageAuthentication() === 'team_access_key')
+        }
+      >
+        <UsageAccessKey owner={owner} requiresTeam={usageAuthentication() === 'team_access_key'} />
+      </If>
       <If when={form().baseline && (models().length > 8 || owner.modelQuery().trim())}>
         <SettingsSearch
           label={tr('Search models')}
@@ -185,6 +196,115 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
         </If>
       </SettingsSection>
     </SettingsBody>
+  );
+}
+
+function UsageAccessKey(props: { owner: ModelSettingsOwner; requiresTeam: boolean }) {
+  const owner = props.owner;
+  const host = useHost();
+  const connectionId = computed(() => owner.editor()?.baseline?.target.connectionId);
+  const state = signal<CredentialStatus | 'failed' | null>(null);
+  const status = () => {
+    const value = state();
+    return value === 'failed' ? null : value;
+  };
+  const accessKeyId = signal('');
+  const secretAccessKey = signal('');
+  const teamId = signal('');
+  let read = 0;
+  cleanup(() => {
+    read += 1;
+  });
+  effect(() => {
+    const id = connectionId();
+    if (!id) return;
+    const request = ++read;
+    state.set(null);
+    void host
+      .query('settings', 'credentialStatus', {
+        locator: { scope: 'connection', connectionId: id, kind: 'usage' },
+      })
+      .then(
+        (result) => {
+          if (request !== read) return;
+          state.set(result.kind === 'status' ? result.status : 'failed');
+        },
+        () => {
+          if (request === read) state.set('failed');
+        },
+      );
+  });
+  const disabled = () => blocked(owner) || !status();
+  const update = async (remove: boolean) => {
+    const before = status();
+    if (!before || disabled()) return;
+    const request = read;
+    const updated = await owner.setUsageAccessKey(
+      owner.action(),
+      before,
+      remove
+        ? null
+        : {
+            accessKeyId: accessKeyId().trim(),
+            secretAccessKey: secretAccessKey().trim(),
+            ...(props.requiresTeam ? { teamId: teamId().trim() } : {}),
+          },
+    );
+    if (!updated || request !== read) return;
+    state.set(updated);
+    accessKeyId.set('');
+    secretAccessKey.set('');
+    teamId.set('');
+  };
+  return (
+    <SettingsSection
+      title={tr('Usage access key')}
+      note={state() === 'failed' ? tr('Usage limits unavailable') : undefined}
+    >
+      <SettingsInput
+        label={tr('Access key ID')}
+        value={accessKeyId()}
+        placeholder={status()?.configured ? tr('Stored') : undefined}
+        change={(value) => accessKeyId.set(value)}
+        masked
+        disabled={disabled()}
+      />
+      <SettingsInput
+        label={tr('Secret access key')}
+        value={secretAccessKey()}
+        placeholder={status()?.configured ? tr('Stored') : undefined}
+        change={(value) => secretAccessKey.set(value)}
+        masked
+        disabled={disabled()}
+      />
+      <If when={props.requiresTeam}>
+        <SettingsInput
+          label={tr('Token Plan ID')}
+          value={teamId()}
+          placeholder={status()?.configured ? tr('Stored') : undefined}
+          change={(value) => teamId.set(value)}
+          disabled={disabled()}
+        />
+      </If>
+      <SettingsRow
+        label={tr('Save usage access key')}
+        disabled={
+          disabled() ||
+          !accessKeyId().trim() ||
+          !secretAccessKey().trim() ||
+          (props.requiresTeam && !teamId().trim())
+        }
+        onPress={() => void update(false)}
+      />
+      <If when={status()?.configured}>
+        <SettingsRow
+          label={tr('Remove usage access key')}
+          tone="danger"
+          disabled={disabled()}
+          onPress={() => void update(true)}
+        />
+      </If>
+    </SettingsSection>
   );
 }
 

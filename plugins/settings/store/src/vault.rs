@@ -208,7 +208,11 @@ fn invalidate_test(tx: &Connection, locator: &CredentialLocator) -> Result<()> {
     if matches!(locator, CredentialLocator::NetworkProxy { .. }) {
         return crate::network::invalidate_tests(tx);
     }
-    if let CredentialLocator::Connection { connection_id, .. } = locator
+    if let CredentialLocator::Connection {
+        connection_id,
+        kind,
+    } = locator
+        && *kind != ConnectionCredentialKind::Usage
         && let Some(mut row) = catalog::find(tx, connection_id)?
         && row.last_test.is_some()
     {

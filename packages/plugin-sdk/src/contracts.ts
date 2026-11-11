@@ -48801,6 +48801,239 @@ export const contracts: {
           },
           resources: {},
         },
+        connectionUsageLimits: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'ConnectionVersionBasis',
+            type: 'object',
+            properties: {
+              connectionId: {
+                type: 'string',
+              },
+              revision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['connectionId', 'revision'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'SettingsConnectionUsageLimits',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  limits: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/UsageLimit',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'limits'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unsupported',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'superseded',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'authentication_required',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'usage_credential_required',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unavailable',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+            $defs: {
+              UsageLimit: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'window',
+                      },
+                      label: {
+                        type: ['string', 'null'],
+                      },
+                      period: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/UsagePeriod',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                      resetsAt: {
+                        description: 'Reset time in Unix seconds.',
+                        type: ['integer', 'null'],
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      usedPercent: {
+                        type: 'number',
+                        format: 'double',
+                      },
+                      quantity: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/UsageQuantity',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'usedPercent'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'balance',
+                      },
+                      label: {
+                        type: ['string', 'null'],
+                      },
+                      amount: {
+                        type: 'number',
+                        format: 'double',
+                      },
+                      unit: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'amount'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unlimited',
+                      },
+                      label: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                ],
+              },
+              UsagePeriod: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'duration',
+                      },
+                      seconds: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'seconds'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'monthly',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              UsageQuantity: {
+                type: 'object',
+                properties: {
+                  used: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  limit: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  unit: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['used', 'limit'],
+              },
+            },
+          },
+          resources: {},
+        },
         connections: {
           mode: 'query',
           input: {
@@ -48942,6 +49175,9 @@ export const contracts: {
                     format: 'uint',
                     minimum: 0,
                   },
+                  usageLimits: {
+                    type: 'boolean',
+                  },
                 },
                 additionalProperties: false,
                 required: [
@@ -48952,6 +49188,7 @@ export const contracts: {
                   'provider',
                   'enabled',
                   'enabledModelCount',
+                  'usageLimits',
                 ],
               },
               ConnectionVersionBasis: {
@@ -49526,7 +49763,7 @@ export const contracts: {
               },
               ConnectionCredentialKind: {
                 type: 'string',
-                enum: ['provider', 'request_headers'],
+                enum: ['provider', 'request_headers', 'usage'],
               },
               PasswordKind: {
                 type: 'string',
@@ -49628,7 +49865,7 @@ export const contracts: {
               },
               ConnectionCredentialKind: {
                 type: 'string',
-                enum: ['provider', 'request_headers'],
+                enum: ['provider', 'request_headers', 'usage'],
               },
               PasswordKind: {
                 type: 'string',
@@ -49718,7 +49955,7 @@ export const contracts: {
               },
               ConnectionCredentialKind: {
                 type: 'string',
-                enum: ['provider', 'request_headers'],
+                enum: ['provider', 'request_headers', 'usage'],
               },
               PasswordKind: {
                 type: 'string',
@@ -49945,7 +50182,7 @@ export const contracts: {
               },
               ConnectionCredentialKind: {
                 type: 'string',
-                enum: ['provider', 'request_headers'],
+                enum: ['provider', 'request_headers', 'usage'],
               },
               PasswordKind: {
                 type: 'string',
@@ -50591,7 +50828,7 @@ export const contracts: {
               },
               ConnectionCredentialKind: {
                 type: 'string',
-                enum: ['provider', 'request_headers'],
+                enum: ['provider', 'request_headers', 'usage'],
               },
               PasswordKind: {
                 type: 'string',
@@ -51740,7 +51977,7 @@ export const contracts: {
               },
               ConnectionCredentialKind: {
                 type: 'string',
-                enum: ['provider', 'request_headers'],
+                enum: ['provider', 'request_headers', 'usage'],
               },
               PasswordKind: {
                 type: 'string',
@@ -51833,6 +52070,363 @@ export const contracts: {
                   'slug_taken',
                   'authentication',
                 ],
+              },
+            },
+          },
+          resources: {
+            secret: {
+              type: {
+                name: 'maka.text.utf8',
+                version: 1,
+              },
+              optional: false,
+            },
+          },
+        },
+        saveUsageCredential: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'SettingsSaveCredential',
+            type: 'object',
+            properties: {
+              expected: {
+                $ref: '#/$defs/ConnectionCredentialTarget',
+              },
+              expectedCredential: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/CredentialVersionBasis',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            required: ['expected', 'expectedCredential'],
+            $defs: {
+              ConnectionCredentialTarget: {
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  slug: {
+                    type: 'string',
+                  },
+                  provider: {
+                    $ref: '#/$defs/Identity',
+                  },
+                  configuration: {
+                    type: 'object',
+                  },
+                },
+                additionalProperties: false,
+                required: ['connectionId', 'revision', 'slug', 'provider', 'configuration'],
+              },
+              Identity: {
+                description:
+                  'Durable recipient, not a registration lease. Re-loading the same package can\nrestore it; another package, Entry or scope cannot inherit its credentials.',
+                type: 'object',
+                properties: {
+                  packageId: {
+                    type: 'string',
+                  },
+                  entryId: {
+                    type: 'string',
+                  },
+                  scope: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['packageId', 'entryId', 'scope', 'name'],
+              },
+              CredentialVersionBasis: {
+                type: 'object',
+                properties: {
+                  locator: {
+                    $ref: '#/$defs/CredentialLocator',
+                  },
+                  credentialId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['locator', 'credentialId', 'revision'],
+              },
+              CredentialLocator: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      scope: {
+                        type: 'string',
+                        const: 'connection',
+                      },
+                      connectionId: {
+                        type: 'string',
+                      },
+                      kind: {
+                        $ref: '#/$defs/ConnectionCredentialKind',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['scope', 'connectionId', 'kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      scope: {
+                        type: 'string',
+                        const: 'network_proxy',
+                      },
+                      kind: {
+                        $ref: '#/$defs/PasswordKind',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['scope', 'kind'],
+                  },
+                ],
+              },
+              ConnectionCredentialKind: {
+                type: 'string',
+                enum: ['provider', 'request_headers', 'usage'],
+              },
+              PasswordKind: {
+                type: 'string',
+                enum: ['password'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'CredentialMutationResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/ConfigurationRejection',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
+                  vaultRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  status: {
+                    $ref: '#/$defs/CredentialStatus',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'vaultRevision', 'status'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'connection_not_found',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'connection_stale',
+                  },
+                  expected: {
+                    $ref: '#/$defs/ConnectionVersionBasis',
+                  },
+                  actual: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ConnectionVersionBasis',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'expected', 'actual'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'credential_stale',
+                  },
+                  expected: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/CredentialVersionBasis',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  actual: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/CredentialVersionBasis',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'expected', 'actual'],
+              },
+            ],
+            $defs: {
+              ConfigurationRejection: {
+                description:
+                  'A confirmed rejection contains no provider diagnostics or user input.',
+                type: 'string',
+                enum: ['invalid_input', 'invalid_configuration', 'provider_unavailable'],
+              },
+              CredentialStatus: {
+                type: 'object',
+                properties: {
+                  locator: {
+                    $ref: '#/$defs/CredentialLocator',
+                  },
+                  configured: {
+                    type: 'boolean',
+                  },
+                  credentialId: {
+                    type: ['string', 'null'],
+                  },
+                  revision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  updatedAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['locator', 'configured', 'credentialId', 'revision', 'updatedAt'],
+              },
+              CredentialLocator: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      scope: {
+                        type: 'string',
+                        const: 'connection',
+                      },
+                      connectionId: {
+                        type: 'string',
+                      },
+                      kind: {
+                        $ref: '#/$defs/ConnectionCredentialKind',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['scope', 'connectionId', 'kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      scope: {
+                        type: 'string',
+                        const: 'network_proxy',
+                      },
+                      kind: {
+                        $ref: '#/$defs/PasswordKind',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['scope', 'kind'],
+                  },
+                ],
+              },
+              ConnectionCredentialKind: {
+                type: 'string',
+                enum: ['provider', 'request_headers', 'usage'],
+              },
+              PasswordKind: {
+                type: 'string',
+                enum: ['password'],
+              },
+              ConnectionVersionBasis: {
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['connectionId', 'revision'],
+              },
+              CredentialVersionBasis: {
+                type: 'object',
+                properties: {
+                  locator: {
+                    $ref: '#/$defs/CredentialLocator',
+                  },
+                  credentialId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['locator', 'credentialId', 'revision'],
               },
             },
           },
@@ -53094,7 +53688,7 @@ export const contracts: {
               },
               ConnectionCredentialKind: {
                 type: 'string',
-                enum: ['provider', 'request_headers'],
+                enum: ['provider', 'request_headers', 'usage'],
               },
               PasswordKind: {
                 type: 'string',
@@ -53345,7 +53939,7 @@ export const contracts: {
               },
               ConnectionCredentialKind: {
                 type: 'string',
-                enum: ['provider', 'request_headers'],
+                enum: ['provider', 'request_headers', 'usage'],
               },
               PasswordKind: {
                 type: 'string',
@@ -55533,7 +56127,7 @@ export const contracts: {
               },
               ConnectionCredentialKind: {
                 type: 'string',
-                enum: ['provider', 'request_headers'],
+                enum: ['provider', 'request_headers', 'usage'],
               },
               PasswordKind: {
                 type: 'string',
@@ -55755,6 +56349,16 @@ export const contracts: {
                   discovery: {
                     type: 'boolean',
                   },
+                  usageAuthentication: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/UsageAuthentication',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: [
@@ -55786,6 +56390,10 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['id', 'label', 'inputSchema', 'interactive'],
+              },
+              UsageAuthentication: {
+                type: 'string',
+                enum: ['provider', 'access_key', 'team_access_key'],
               },
             },
           },
