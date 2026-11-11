@@ -214,30 +214,6 @@ fn project(
             }
             return Ok(());
         }
-        Rule::Steering { step, request } => {
-            let request: RequestSpec = serde_json::from_slice(&exact(c, fact.run, request)?)?;
-            if request.step != *step {
-                return Err(StoreError::EventConflict);
-            }
-            for (ordinal, reference) in request.steering.into_iter().enumerate() {
-                let source: maka_agent_facts::message::RootSourceMessage =
-                    serde_json::from_slice(&exact(c, fact.run, &reference)?)?;
-                source.validate().map_err(invalid)?;
-                let mut row = input_message(
-                    spec,
-                    fact,
-                    sequence,
-                    u64::try_from(ordinal)
-                        .map_err(|_| invalid("Recall steering ordinal overflow"))?,
-                    source.message.message_id,
-                    source.message.content,
-                    reference,
-                );
-                row.origin = source.message.origin;
-                insert(c, spec, row)?;
-            }
-            return Ok(());
-        }
         Rule::Model(part) => match part {
             ModelPart::Text {
                 text_kind, text, ..
@@ -574,7 +550,8 @@ fn project(
                 message.body = text;
             }
         }
-        Rule::ExternalSources => return Ok(()),
+        // index_sources projects messages at the fact that consumed them.
+        Rule::QueueSources => return Ok(()),
     }
     insert(c, spec, message)
 }

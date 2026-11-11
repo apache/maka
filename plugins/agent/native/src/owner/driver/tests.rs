@@ -419,6 +419,7 @@ impl Rig {
                 "history",
                 "source",
                 "search",
+                "fork",
                 "list",
                 "execution",
                 "metadata",
@@ -689,6 +690,47 @@ impl Rig {
                 contents,
             )
             .await?)
+    }
+
+    async fn record_model_reply(
+        &self,
+        mode: maka_agent_engine::ports::Preparation,
+        summary: Option<&str>,
+    ) -> TestResult<(RequestSpec, ModelAttemptId)> {
+        let driver = self.driver.as_ref().unwrap();
+        let view = driver
+            .state
+            .frontier(driver.access.execution().run_id)
+            .await?;
+        let mut prepared = driver.model()?.prepare_step(&view, mode, driver).await?;
+        let request = &prepared.request;
+        let body = ContentBlob::json(request)?;
+        prepared.contents.push(body.clone());
+        let attempt = ModelAttemptId::new();
+        self.append(
+            vec![
+                Fact::StepPrepared {
+                    step: request.step,
+                    request: body.reference().clone(),
+                    adjudications: vec![],
+                },
+                Fact::ModelAttemptPrepared { attempt, step: request.step },
+                Fact::ModelAttemptAdmitted { attempt, upstream: json!({"test":"compaction"}) },
+                Fact::ModelClosed {
+                    attempt,
+                    outcome: maka_agent_facts::accounting::Outcome::Success,
+                    diagnostic: None,
+                    usage: Default::default(),
+                    protocol: json!({
+                        "finishReason":"stop",
+                        "summary": summary.map(|text| json!({"kind":"text","summary":{"text":text}})),
+                    }),
+                },
+                Fact::ModelCleanupObserved { attempt, cleanup: OperationCleanup::Confirmed },
+            ],
+            prepared.contents,
+        ).await?;
+        Ok((prepared.request, attempt))
     }
 
     async fn attempt(&self) -> TestResult<ModelAttemptId> {
@@ -2078,7 +2120,7 @@ mod model_recovery {
             }
         }
     }
-    async fn serve(
+    pub(super) async fn serve(
         listener: tokio::net::TcpListener,
         posts: Arc<std::sync::atomic::AtomicUsize>,
         stop: CancellationToken,
@@ -3756,7 +3798,7 @@ async fn completion_notification_survives_pending_message_edit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compacted_history_checks_the_producing_requests_original_cut() {
-    use maka_agent_engine::ports::{Preparation, PreparedStep};
+    use maka_agent_engine::ports::Preparation;
     use maka_agent_facts::{
         context::{CheckpointContent, CheckpointMode, CompactedContext, ContextCheckpoint},
         history_snapshot::RequestSource,
@@ -3770,55 +3812,11 @@ async fn compacted_history_checks_the_producing_requests_original_cut() {
         let NativeBackend::Model { model, .. } = &driver.backend else {
             unreachable!()
         };
-        let mut summary_request = None;
-        for purpose in [Preparation::Initial, Preparation::Summary] {
-            let view = driver.state.frontier(run).await?;
-            let PreparedStep {
-                request,
-                mut contents,
-                ..
-            } = model.prepare_step(&view, purpose, driver).await?;
-            let body = ContentBlob::json(&request)?;
-            contents.push(body.clone());
-            let attempt = ModelAttemptId::new();
-            rig.append(
-                vec![
-                    Fact::StepPrepared {
-                        step: request.step,
-                        request: body.reference().clone(),
-                        adjudications: vec![],
-                    },
-                    Fact::ModelAttemptPrepared {
-                        attempt,
-                        step: request.step,
-                    },
-                    Fact::ModelAttemptAdmitted {
-                        attempt,
-                        upstream: json!({"test":"compaction-cut"}),
-                    },
-                    Fact::ModelClosed {
-                        attempt,
-                        outcome: maka_agent_facts::accounting::Outcome::Success,
-                        diagnostic: None,
-                        usage: Default::default(),
-                        protocol: json!({
-                            "finishReason":"stop", "providerOptions":null, "responseId":null,
-                            "model":null, "timestamp":null, "compaction":null,
-                            "summary": (request.accounting.purpose == ModelPurpose::Summary)
-                                .then(|| json!({"kind":"text","summary":{"text":"Continue the original task."}})),
-                        }),
-                    },
-                    Fact::ModelCleanupObserved {
-                        attempt,
-                        cleanup: OperationCleanup::Confirmed,
-                    },
-                ],
-                contents,
-            )
+        let summary_text = "Continue the original task.";
+        rig.record_model_reply(Preparation::Initial, None).await?;
+        let (summary, _) = rig
+            .record_model_reply(Preparation::Summary, Some(summary_text))
             .await?;
-            summary_request = Some(request);
-        }
-        let summary = summary_request.unwrap();
         let capture: RequestSource = serde_json::from_slice(
             &driver
                 .state
@@ -3840,24 +3838,33 @@ async fn compacted_history_checks_the_producing_requests_original_cut() {
                     covered_through: capture.current.through_sequence,
                     source_digest: digest,
                     previous_checkpoint_id: None,
-                    summary: CheckpointContent::Text("Continue the original task.".into()),
+                    summary: CheckpointContent::Text(summary_text.into()),
                     summary_step_id: summary.step,
                 },
                 native: None,
             })?;
-            let published = rig.append(
-                vec![Fact::ContextCompacted {
-                    baseline: baseline.reference().clone(),
-                }],
-                vec![baseline],
-            ).await;
+            let published = rig
+                .append(
+                    vec![Fact::ContextCompacted {
+                        baseline: baseline.reference().clone(),
+                    }],
+                    vec![baseline],
+                )
+                .await;
             if accepted {
                 published?;
                 let view = driver.state.frontier(run).await?;
-                model.prepare_step(&view, Preparation::Initial, driver).await?;
+                model
+                    .prepare_step(&view, Preparation::Initial, driver)
+                    .await?;
             } else {
-                let error = published.err().ok_or("checkpoint with the later frontier digest was accepted")?;
-                assert!(error.to_string().contains("original frozen summary source"), "{error}");
+                let error = published
+                    .err()
+                    .ok_or("checkpoint with the later frontier digest was accepted")?;
+                assert!(
+                    error.to_string().contains("original frozen summary source"),
+                    "{error}"
+                );
             }
         }
         Ok::<_, Box<dyn Error + Send + Sync>>(())
@@ -3873,4 +3880,293 @@ async fn compacted_history_checks_the_producing_requests_original_cut() {
         cleanup.is_empty(),
         "compaction fixture cleanup: {cleanup:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
+    use crate::contract::ForkResult;
+    use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+    use maka_agent_facts::{
+        context::{CheckpointContent, CheckpointMode, CompactedContext, ContextCheckpoint},
+        history::{HistoryRowAddress, RowPosition},
+        history_snapshot::RequestSource,
+        message::MessageOrigin,
+        session::ForkPosition,
+    };
+    use maka_agent_state::{
+        queue::{QueueCommand, QueueEdit, SteeringTarget},
+        recall::SearchQuery,
+    };
+    use std::sync::atomic::AtomicUsize;
+
+    let mut rig = Rig::new().unwrap();
+    let stop = CancellationToken::new();
+    let posts = Arc::new(AtomicUsize::new(0));
+    let listener =
+        tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
+    let server = tokio::spawn(model_recovery::serve(listener, posts.clone(), stop.clone()));
+    let test = async {
+        let session = rig.start().await?;
+        rig.assemble_model(
+            &session,
+            Budget {
+                tokens: None,
+                retries: 0,
+                deadline: None,
+            },
+            false,
+        )
+        .await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let execution = driver.access.execution();
+        let run = execution.run_id;
+        let (_, first_attempt) = rig.record_model_reply(Preparation::Initial, None).await?;
+        let steering_text = "Keep the cobalt marker in view.";
+        let owner = &driver.owner;
+        let notification = owner
+            .prepare_notification(
+                execution,
+                &owner.return_route(execution).await?,
+                "compaction-steering-message",
+                |_| steering_text.into(),
+                MessageOrigin::SessionCompletion {
+                    session_id: session.clone(),
+                    message_id: "finished-task".into(),
+                },
+            )
+            .await?
+            .ok_or("steering notification was not queued")?;
+        let view = driver.state.frontier(run).await?;
+        let queue = driver.state.queue();
+        queue
+            .execute(
+                session.clone(),
+                QueueCommand {
+                    id: FactId::try_from(Uuid::new_v4()).unwrap(),
+                    at: at(),
+                    expected_revision: queue.read(session.clone()).await?.revision,
+                    edit: QueueEdit::Promote {
+                        request: notification.id,
+                        target: SteeringTarget {
+                            run,
+                            expected_head: (&view).into(),
+                        },
+                    },
+                },
+                vec![],
+            )
+            .await?;
+        let mut pending = driver
+            .model()?
+            .prepare_step(
+                &view,
+                Preparation::Steering {
+                    attempt: first_attempt,
+                },
+                driver,
+            )
+            .await?;
+        let body = ContentBlob::json(&pending.request)?;
+        pending.contents.push(body.clone());
+        let delivery = Change::new(
+            Fact::StepPrepared {
+                step: pending.request.step,
+                request: body.reference().clone(),
+                adjudications: vec![],
+            },
+            at(),
+        );
+        let anchor = delivery.id;
+        driver
+            .state
+            .append_steering(
+                driver.access.claim(),
+                (&view).into(),
+                vec![delivery],
+                pending.contents,
+                pending
+                    .steering
+                    .ok_or("steering was not prepared for delivery")?,
+            )
+            .await?;
+
+        let recall = owner
+            .durable
+            .recall(view.spec.owner.clone(), owner.prefix.clone())?;
+        let original_position = RowPosition {
+            source_sequence: recall
+                .capture(session.clone(), None)
+                .await?
+                .through_sequence,
+            item_index: 0,
+        };
+        let summary_text = "The earlier turn is ready to continue.";
+        let (summary, _) = rig
+            .record_model_reply(Preparation::Summary, Some(summary_text))
+            .await?;
+        let capture: RequestSource = serde_json::from_slice(
+            &driver
+                .state
+                .content(run, summary.source_capture.clone())
+                .await?,
+        )?;
+        let baseline = ContentBlob::json(&CompactedContext {
+            source_capture: summary.source_capture,
+            checkpoint: ContextCheckpoint {
+                mode: CheckpointMode::MidTurn {
+                    anchor_event_id: anchor.to_string(),
+                },
+                covered_through: capture.current.through_sequence,
+                source_digest: summary.source_digest,
+                previous_checkpoint_id: None,
+                summary: CheckpointContent::Text(summary_text.into()),
+                summary_step_id: summary.step,
+            },
+            native: None,
+        })?;
+        rig.append(
+            vec![Fact::ContextCompacted {
+                baseline: baseline.reference().clone(),
+            }],
+            vec![baseline],
+        )
+        .await?;
+
+        let engine = Engine::new(driver.state.clone());
+        let mut changes = driver.state.subscribe()?;
+        let exit = loop {
+            changes.borrow_and_update();
+            let exit = engine
+                .drive(
+                    driver.access.claim().clone(),
+                    driver.clone(),
+                    CancellationToken::new(),
+                )
+                .await?;
+            if !matches!(exit, DriverExit::Waiting { .. }) {
+                break exit;
+            }
+            changes.changed().await?;
+        };
+        if !matches!(
+            exit,
+            DriverExit::Terminal {
+                terminal: Terminal::Completed,
+                ..
+            }
+        ) {
+            let view = driver.state.frontier(run).await?;
+            return Err(format!(
+                "compacted run returned {exit:?}; model interruption: {:?}",
+                view.current_attempt
+                    .and_then(|id| view.attempts.get(&id))
+                    .and_then(|attempt| attempt.interrupted.as_deref()),
+            )
+            .into());
+        }
+        assert_eq!(
+            posts.load(Ordering::SeqCst),
+            1,
+            "the compacted request must reach the provider"
+        );
+
+        let check_recall = async || -> TestResult<()> {
+            let batch = recall
+                .search(
+                    SearchQuery {
+                        terms: vec![steering_text.into()],
+                        session_id: Some(session.clone()),
+                        since: None,
+                        until: None,
+                        exclude: None,
+                        limit: None,
+                    },
+                    0,
+                    0,
+                    CancellationToken::new(),
+                )
+                .await?;
+            let indexed: Vec<_> = batch
+                .hits
+                .into_iter()
+                .map(|hit| (hit.anchor.message_id, hit.anchor.position))
+                .collect();
+            assert_eq!(
+                indexed,
+                vec![(notification.message_id.clone(), original_position)]
+            );
+            Ok(())
+        };
+        check_recall().await?;
+        recall.rebuild(session.clone()).await?;
+        check_recall().await?;
+
+        let client = rig.client.as_ref().unwrap();
+        let fork = model_recovery::call(
+            client,
+            "agent",
+            "fork",
+            json!({
+                "sessionId": session,
+                "expectedRevision": owner.session(&session).await?.revision,
+                "position": ForkPosition::ThroughSourceTurn {
+                    position: HistoryRowAddress::Live {
+                        sequence: original_position.source_sequence,
+                        fact: anchor,
+                        item_index: original_position.item_index,
+                    },
+                },
+                "title": "Fork through delivered steering",
+                "labels": [],
+            }),
+        )
+        .await?;
+        let ForkResult::Forked { session: fork } = serde_json::from_value(fork.clone())? else {
+            return Err(format!("steering fork was rejected: {fork}").into());
+        };
+        let through = recall
+            .capture(fork.id.clone(), None)
+            .await?
+            .through_sequence;
+        let found = model_recovery::call(
+            client,
+            "agent",
+            "search",
+            json!({
+                "sessionId": fork.id,
+                "through": through,
+                "query": steering_text,
+                "caseSensitive": true,
+                "wholeWord": false,
+                "includeInternal": false,
+            }),
+        )
+        .await?;
+        let matches = found["matches"]
+            .as_array()
+            .ok_or("fork search returned no match list")?;
+        assert_eq!(matches.len(), 1, "{found}");
+        assert_eq!(matches[0]["preview"], steering_text);
+        let position: HistoryRowAddress = serde_json::from_value(matches[0]["position"].clone())?;
+        assert!(
+            matches!(
+                position,
+                HistoryRowAddress::Snapshot { sequence, fact, item_index, .. }
+                    if sequence == original_position.source_sequence
+                        && fact == anchor
+                        && item_index == original_position.item_index
+            ),
+            "fork search did not return the original steering position: {position:?}"
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    };
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), test))
+        .catch_unwind()
+        .await;
+    stop.cancel();
+    let served = server.await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
+    assert!(matches!(served, Ok(Ok(()))), "{served:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
 }
