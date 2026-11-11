@@ -128,6 +128,18 @@ export const commonMessages = {
   Window: ['Window', '窗口', '視窗'],
   'Add to {section}': ['Add to {section}', '添加到{section}', '新增到{section}'],
   'Capture a screen region': ['Capture a screen region', '截取屏幕区域', '擷取螢幕區域'],
+  'Allow Maka under Screen & System Audio Recording in System Settings, then take the screenshot again.':
+    [
+      'Allow Maka under Screen & System Audio Recording in System Settings, then take the screenshot again.',
+      '请在系统设置的“录屏与系统录音”中允许 Maka，然后重新截图。',
+      '請在系統設定的「螢幕與系統錄音」中允許 Maka，然後重新截圖。',
+    ],
+  'The screenshot failed: {reason}': [
+    'The screenshot failed: {reason}',
+    '截图失败：{reason}',
+    '截圖失敗：{reason}',
+  ],
+  'Press any key to close': ['Press any key to close', '按任意键关闭', '按任意鍵關閉'],
   'Confirm delete': ['Confirm delete', '确认删除', '確認刪除'],
   Content: ['Content', '内容', '內容'],
   'Enter a URL starting with http:// or https://': [

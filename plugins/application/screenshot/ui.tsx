@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { platform, type JSX } from 'nsh';
-import type { ApplicationHost } from 'maka/host';
+import { nativeComponent, platform, signal, Text, View, type JSX } from 'nsh';
+import { displays, Window, type WindowRef } from 'nsh/desktop';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
@@ -26,15 +26,85 @@ import {
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
 import { tr } from '../../../products/maka/workbench/app/locale';
 
-const TERMS = ['screenshot', 'capture', '截图', '截圖'];
+const TERMS = ['screenshot', 'capture', 'snip', 'jietu', 'jt', '截图', '截圖', '截屏'];
 
-function Screenshot(props: { input: QuickToolInput; host: ApplicationHost }) {
-  const { input, host } = props;
-  const capture = () => {
-    // The popup floats above everything, so it has to be gone before the selection starts.
-    input.close();
-    host.captureScreenRegion().catch(input.report);
-  };
+type Failure = { message: string; permission: boolean };
+
+/** The desktop shell's frozen display, which selects a region and copies it. */
+const Stage = nativeComponent<{}, { ready: null; copied: null; cancel: null; failed: Failure }>(
+  'maka.screenshot',
+  { props: [], events: ['ready', 'copied', 'cancel', 'failed'] },
+);
+
+function Overlay(props: { finish(): void }) {
+  const failure = signal<Failure | null>(null);
+  return (
+    <View style={{ flex: 1 }}>
+      <Stage
+        style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
+        onCopied={props.finish}
+        onCancel={props.finish}
+        onFailed={(failed) => failure.set(failed)}
+      />
+      <If when={failure() !== null}>
+        <View
+          style={[
+            { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
+            { alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' },
+          ]}
+        >
+          <View
+            style={{
+              maxWidth: 420,
+              gap: 6,
+              paddingVertical: 14,
+              paddingHorizontal: 18,
+              borderRadius: 10,
+              backgroundColor: 'rgba(20, 20, 20, 0.9)',
+            }}
+          >
+            <Text style={{ fontSize: 14, lineHeight: 20, color: '#FFFFFF' }}>
+              {failure()!.permission
+                ? tr(
+                    'Allow Maka under Screen & System Audio Recording in System Settings, then take the screenshot again.',
+                  )
+                : tr('The screenshot failed: {reason}', { reason: failure()!.message })}
+            </Text>
+            <Text style={{ fontSize: 12, lineHeight: 18, color: 'rgba(255, 255, 255, 0.6)' }}>
+              {tr('Press any key to close')}
+            </Text>
+          </View>
+        </View>
+      </If>
+    </View>
+  );
+}
+
+/** One frozen stage per display; finishing on any of them closes them all. */
+function capture() {
+  const windows: WindowRef[] = [];
+  const finish = () => windows.splice(0).forEach((window) => window.close());
+  for (const display of displays()) {
+    windows.push(
+      Window.open(() => <Overlay finish={finish} />, {
+        id: `maka.screenshot.${display.id}`,
+        kind: 'popup',
+        title: tr('Capture a screen region'),
+        display: display.id,
+        defaultPosition: { x: display.bounds.origin.x, y: display.bounds.origin.y },
+        defaultSize: { width: display.bounds.size.width, height: display.bounds.size.height },
+        level: 'aboveDock',
+        transparent: true,
+        shadow: false,
+        closeOnBlur: false,
+        closeOnEscape: false,
+      }),
+    );
+  }
+}
+
+function Screenshot(props: { input: QuickToolInput }) {
+  const { input } = props;
   input.attach({
     items: () => [],
     entries: () => [
@@ -42,22 +112,24 @@ function Screenshot(props: { input: QuickToolInput; host: ApplicationHost }) {
         title: tr('Capture a screen region'),
         icon: 'camera',
         keywords: [tr('screenshot keyword'), ...TERMS],
-        run: capture,
+        run: () => {
+          // The launcher floats above everything, so it has to be gone before the screen freezes.
+          input.close();
+          capture();
+        },
       },
     ],
   });
   return null;
 }
 
-export const activate: UiModule<JSX.Element>['activate'] = (context) => ({
+export const activate: UiModule<JSX.Element>['activate'] = () => ({
   exports: {
     tool: {
       kind: 'view',
       contract: quickToolView.id,
       render: ({ input }: UiEmbeddedViewProps<QuickToolInput, JSX.Element>) =>
-        platform.os === 'macos' ? (
-          <Screenshot input={input} host={context.application as ApplicationHost} />
-        ) : null,
+        platform.os === 'macos' ? <Screenshot input={input} /> : null,
     },
   },
 });

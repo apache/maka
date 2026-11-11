@@ -6885,6 +6885,8 @@ dependencies = [
 name = "maka-desktop-shell"
 version = "0.2.0"
 dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
  "embed-resource",
  "maka-event-log",
  "maka-host-runtime",
@@ -6894,6 +6896,10 @@ dependencies = [
  "nsh-platform-macos",
  "nsh-platform-windows",
  "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "objc2-screen-capture-kit",
  "serde",
  "serde_json",
  "tokio",
@@ -9151,6 +9157,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f"
 dependencies = [
  "bitflags 2.13.2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
+name = "objc2-screen-capture-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74b7c5390f477482f001bc354d6571a70db7e4f8d5288e860c45521fbce11394"
+dependencies = [
+ "block2 0.6.2",
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
