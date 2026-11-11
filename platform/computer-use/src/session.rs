@@ -2596,7 +2596,7 @@ async fn window_rows(
                             language,
                         );
                         #[cfg(not(target_os = "macos"))]
-                        Ok(())
+                        Ok::<(), ToolError>(())
                     });
                     match owner {
                         Ok(_owner) => {
