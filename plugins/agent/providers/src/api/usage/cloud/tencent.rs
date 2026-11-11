@@ -217,16 +217,20 @@ mod tests {
         let chunks: Vec<_> = outgoing.body.into_stream().try_collect().await.unwrap();
         assert_eq!(chunks.concat(), body);
 
-        let plan: Plan = serde_json::from_value(json!({
-            "TeamId": "tp-ent-selected",
-            "Name": "Development",
-            "ProductType": "enterprise",
-            "PackageInfo": {
-                "TotalUsed": "150", "TotalQuota": "600", "CycleQuota": "100",
-                "TotalCycles": 6, "CycleUnit": "month"
-            },
-            "TokenSummary": {"CycleEndTime": "2026-12-01T00:00:00+08:00"}
-        }))
+        // Parse text, as the HTTP reader does: decimals take a different path than in a Value.
+        let plan: Plan = serde_json::from_str(
+            &json!({
+                "TeamId": "tp-ent-selected",
+                "Name": "Development",
+                "ProductType": "enterprise",
+                "PackageInfo": {
+                    "TotalUsed": "150", "TotalQuota": 600.0, "CycleQuota": "100",
+                    "TotalCycles": 6, "CycleUnit": "month"
+                },
+                "TokenSummary": {"CycleEndTime": "2026-12-01T00:00:00+08:00"}
+            })
+            .to_string(),
+        )
         .unwrap();
         assert_eq!(
             serde_json::to_value(plan.limit().unwrap()).unwrap(),
