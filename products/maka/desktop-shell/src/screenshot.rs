@@ -19,13 +19,19 @@
 
 //! The screenshot stage: the display its window covers, frozen, to select a region of.
 //!
-//! The picture stays on the native side: the stage draws it, reads its pixels and puts the
-//! selection on the pasteboard. The UI opens one stage per display and closes them all when one
-//! reports `copied` or `cancel`.
+//! The picture stays on the native side: the stage draws it and the marks made on it, and copies,
+//! saves or pins the selection. The UI opens one stage per display, shows the tools for the
+//! selection it reports, and closes them all when one reports `done` or `cancel`.
 
+mod annotate;
 mod area;
+mod elements;
+mod output;
+mod paint;
+mod pin;
 
-use area::{Area, Edges, Pixel, target};
+use annotate::{Ink, Mark, Marks, Shape, Size, Tool};
+use area::{Area, Edges, Pixel, Window, edges_near, snap, targets};
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, MainThreadBound};
 use nsh_engine::JsonValue;
@@ -36,14 +42,15 @@ use nsh_platform_macos::{
         msg_send,
         rc::Retained,
         runtime::{AnyClass, AnyObject},
+        sel,
     },
     objc2_app_kit::{
-        NSAutoresizingMaskOptions, NSBezierPath, NSBitmapImageFileType, NSBitmapImageRep, NSColor,
-        NSColorSpace, NSCursor, NSEvent, NSEventModifierFlags, NSFont, NSFontAttributeName,
+        NSAutoresizingMaskOptions, NSBezierPath, NSBitmapImageRep, NSColor, NSColorSpace, NSCursor,
+        NSEvent, NSEventModifierFlags, NSFocusRingType, NSFont, NSFontAttributeName,
         NSForegroundColorAttributeName, NSGraphicsContext, NSImage, NSImageInterpolation,
-        NSImageScaling, NSImageView, NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString,
-        NSPasteboardTypeTIFF, NSResponder, NSScreen, NSStringDrawing, NSTrackingArea,
-        NSTrackingAreaOptions, NSView, NSWindingRule, NSWorkspace,
+        NSImageScaling, NSImageView, NSPasteboard, NSPasteboardTypeString, NSResponder, NSScreen,
+        NSStringDrawing, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindingRule,
+        NSWorkspace,
     },
     objc2_foundation::{
         NSArray, NSBundle, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSPoint,
@@ -60,6 +67,7 @@ use objc2_screen_capture_kit::{
     SCCaptureResolutionType, SCContentFilter, SCScreenshotManager, SCShareableContent,
     SCStreamConfiguration, SCWindow,
 };
+use paint::{Canvas, inset};
 use std::{
     cell::{Cell, RefCell},
     ptr::NonNull,
@@ -78,6 +86,10 @@ const LOUPE_PIXELS: i64 = 15;
 const LOUPE_CELL: f64 = 8.0;
 /// Windows smaller than this many points on a side are not targets (shadows, slivers).
 const SMALLEST_WINDOW: f64 = 8.0;
+/// Points within which a dragged corner sticks to a window or control edge.
+const SNAP: f64 = 5.0;
+/// Scrolled points that walk one target out or in; a wheel notch always does.
+const SCROLL_STEP: f64 = 24.0;
 
 pub(crate) fn register(components: &Components, mtm: MainThreadMarker) {
     components.register(
@@ -93,20 +105,29 @@ struct Shot {
     scale: f64,
     whole: Area,
     /// The on-screen windows, front to back.
-    windows: Vec<Area>,
+    windows: Vec<Window>,
     /// The display's top left in global points, from the primary display's top left.
     origin: CGPoint,
 }
 
 impl Shot {
+    /// Draws in the stage's points.
+    fn canvas(&self) -> Canvas<'_> {
+        Canvas {
+            picture: &self.image,
+            whole: self.whole,
+            origin: (0, 0),
+            zoom: 1.0 / self.scale,
+        }
+    }
+
     fn rect(&self, area: Area) -> NSRect {
-        NSRect::new(
-            NSPoint::new(area.x as f64 / self.scale, area.y as f64 / self.scale),
-            NSSize::new(
-                area.width as f64 / self.scale,
-                area.height as f64 / self.scale,
-            ),
-        )
+        self.canvas().rect(area)
+    }
+
+    /// The part of the picture under `rect`, in global points.
+    fn area(&self, rect: CGRect) -> Option<Area> {
+        pixels(rect, self.origin, self.scale)?.intersection(self.whole)
     }
 
     fn pixel(&self, point: NSPoint) -> Pixel {
@@ -146,6 +167,14 @@ enum Gesture {
     Drawing { anchor: Pixel, moved: bool },
     Moving { grab: Pixel, start: Area },
     Resizing { edges: Edges, start: Area },
+    Marking { anchor: Pixel },
+}
+
+/// Text being typed onto the picture.
+struct Editing {
+    field: Retained<NSTextField>,
+    at: Pixel,
+    ink: Ink,
 }
 
 enum Phase {
@@ -162,8 +191,20 @@ struct StageState {
     phase: RefCell<Phase>,
     started: Cell<bool>,
     pointer: Cell<Pixel>,
+    /// How many targets out from the smallest under the pointer, walked by scrolling.
+    depth: Cell<usize>,
+    smallest: Cell<Option<Area>>,
+    scrolled: Cell<f64>,
     selection: Cell<Option<Area>>,
+    /// The selection the UI last heard of.
+    announced: Cell<Option<Area>>,
     gesture: Cell<Gesture>,
+    tool: Cell<Option<Tool>>,
+    color: Cell<[u8; 3]>,
+    size: Cell<Size>,
+    marks: RefCell<Marks>,
+    draft: RefCell<Option<Mark>>,
+    editing: RefCell<Option<Editing>>,
 }
 
 define_class!(
@@ -198,11 +239,15 @@ define_class!(
         fn mouse_moved(&self, event: &NSEvent) {
             if let Some(window) = self.window() && !window.isKeyWindow() {
                 window.makeKeyWindow();
-                window.makeFirstResponder(Some(self));
+                self.focus();
             }
-            NSCursor::crosshairCursor().set();
             self.hover(event);
+            let typing = self.ivars().tool.get() == Some(Tool::Text)
+                && self.ivars().selection.get().is_some_and(|area| area.contains(self.ivars().pointer.get()));
+            if typing { NSCursor::IBeamCursor() } else { NSCursor::crosshairCursor() }.set();
         }
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) { self.scroll(event); }
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) { self.press(event); }
         #[unsafe(method(mouseDragged:))]
@@ -211,9 +256,14 @@ define_class!(
         fn mouse_up(&self, _event: &NSEvent) { self.release(); }
         #[unsafe(method(rightMouseDown:))]
         fn right_mouse_down(&self, _event: &NSEvent) {
-            // One step back at a time: first the selection, then the stage.
-            if self.ivars().selection.take().is_some() {
-                self.ivars().gesture.set(Gesture::Idle);
+            // One step back at a time: first the selection and its marks, then the stage.
+            self.commit_text();
+            let state = self.ivars();
+            if state.selection.take().is_some() {
+                state.gesture.set(Gesture::Idle);
+                state.marks.borrow_mut().clear();
+                state.draft.take();
+                self.announce();
                 self.setNeedsDisplay(true);
             } else {
                 self.emit("cancel");
@@ -221,6 +271,8 @@ define_class!(
         }
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) { self.key(event); }
+        #[unsafe(method(commitText:))]
+        fn commit_text_action(&self, _sender: Option<&AnyObject>) { self.commit_text(); }
     }
 );
 
@@ -234,8 +286,18 @@ impl Stage {
             phase: RefCell::new(Phase::Capturing),
             started: Cell::new(false),
             pointer: Cell::new((0, 0)),
+            depth: Cell::new(0),
+            smallest: Cell::new(None),
+            scrolled: Cell::new(0.0),
             selection: Cell::new(None),
+            announced: Cell::new(None),
             gesture: Cell::new(Gesture::Idle),
+            tool: Cell::new(None),
+            color: Cell::new([0xFF, 0x3B, 0x30]),
+            size: Cell::new(Size::Medium),
+            marks: RefCell::new(Marks::default()),
+            draft: RefCell::new(None),
+            editing: RefCell::new(None),
         });
         // SAFETY: NSView's designated initializer, with all subclass ivars initialized.
         let stage: Retained<Self> =
@@ -268,6 +330,15 @@ impl Stage {
         );
     }
 
+    /// Takes the keys back from the toolbar, unless text is being typed.
+    fn focus(&self) {
+        if self.ivars().editing.borrow().is_none()
+            && let Some(window) = self.window()
+        {
+            window.makeFirstResponder(Some(self));
+        }
+    }
+
     fn capture(&self) {
         let Some(window) = self.window() else { return };
         window.makeFirstResponder(Some(self));
@@ -286,7 +357,7 @@ impl Stage {
         };
         let scale = screen.backingScaleFactor();
         let origin = CGDisplayBounds(display).origin;
-        let windows = windows_on(origin, scale);
+        let sources = windows_on();
         let stage = Arc::new(MainThreadBound::new(self.retain(), self.mtm()));
         let found = RcBlock::new(
             move |content: *mut SCShareableContent, error: *mut NSError| {
@@ -300,7 +371,7 @@ impl Stage {
                     Err(message) => return deliver(stage.clone(), Err(message)),
                 };
                 let stage = stage.clone();
-                let windows = windows.clone();
+                let sources = sources.clone();
                 let taken = RcBlock::new(move |image: *mut CGImage, error: *mut NSError| {
                     let shot = match NonNull::new(image) {
                         // SAFETY: a CGImage ScreenCaptureKit owns; retained to keep it past the call.
@@ -316,10 +387,10 @@ impl Stage {
                         },
                         image,
                         scale,
-                        windows: windows.clone(),
+                        windows: Vec::new(),
                         origin,
                     });
-                    deliver(stage.clone(), shot);
+                    deliver(stage.clone(), shot.map(|shot| (shot, sources.clone())));
                 });
                 // SAFETY: the filter and configuration are built above; the block lives until it runs.
                 unsafe {
@@ -339,18 +410,26 @@ impl Stage {
         }
     }
 
-    fn freeze(&self, mut shot: Shot) {
+    fn freeze(&self, mut shot: Shot, sources: Vec<elements::Source>) {
         if !matches!(*self.ivars().phase.borrow(), Phase::Capturing) {
             return;
         }
         let whole = shot.whole;
         let smallest = (SMALLEST_WINDOW * shot.scale) as i64;
-        shot.windows = shot
-            .windows
-            .iter()
-            .filter_map(|window| window.intersection(whole))
-            .filter(|window| window.width >= smallest && window.height >= smallest)
-            .collect();
+        let (windows, sources): (Vec<Window>, Vec<elements::Source>) = sources
+            .into_iter()
+            .filter_map(|source| {
+                let area = shot.area(source.bounds)?;
+                (area.width >= smallest && area.height >= smallest).then(|| {
+                    let window = Window {
+                        area,
+                        elements: Vec::new(),
+                    };
+                    (window, source)
+                })
+            })
+            .unzip();
+        shot.windows = windows;
         let size = NSSize::new(
             whole.width as f64 / shot.scale,
             whole.height as f64 / shot.scale,
@@ -359,7 +438,40 @@ impl Stage {
         self.ivars().picture.setImage(Some(&image));
         *self.ivars().phase.borrow_mut() = Phase::Frozen(shot);
         self.setNeedsDisplay(true);
-        self.emit("ready");
+        let trusted = elements::trusted();
+        self.ivars()
+            .context
+            .emit("ready", serde_json::json!({ "elements": trusted }));
+        if trusted {
+            let stage = MainThreadBound::new(self.retain(), self.mtm());
+            std::thread::spawn(move || {
+                let found = elements::scan(&sources);
+                DispatchQueue::main().exec_async(move || {
+                    let mtm =
+                        MainThreadMarker::new().expect("the main queue runs on the main thread");
+                    stage.get(mtm).found(found);
+                });
+            });
+        }
+    }
+
+    /// The controls in each frozen window, in global points.
+    fn found(&self, found: Vec<Vec<CGRect>>) {
+        let mut phase = self.ivars().phase.borrow_mut();
+        let Phase::Frozen(shot) = &mut *phase else {
+            return;
+        };
+        let (origin, scale, whole) = (shot.origin, shot.scale, shot.whole);
+        for (window, rects) in shot.windows.iter_mut().zip(found) {
+            window.elements = rects
+                .into_iter()
+                .filter_map(|rect| pixels(rect, origin, scale)?.intersection(whole))
+                .filter_map(|area| area.intersection(window.area))
+                .filter(|area| *area != window.area)
+                .collect();
+        }
+        drop(phase);
+        self.setNeedsDisplay(true);
     }
 
     fn pixel(&self, event: &NSEvent) -> Option<Pixel> {
@@ -371,9 +483,52 @@ impl Stage {
     }
 
     fn hover(&self, event: &NSEvent) {
-        if let Some(pixel) = self.pixel(event) {
-            self.ivars().pointer.set(pixel);
-            self.setNeedsDisplay(true);
+        let Some(pixel) = self.pixel(event) else {
+            return;
+        };
+        let state = self.ivars();
+        state.pointer.set(pixel);
+        // Moving onto another control starts the walk out from it again.
+        let smallest = self.targets().first().copied();
+        if state.smallest.replace(smallest) != smallest {
+            state.depth.set(0);
+        }
+        self.setNeedsDisplay(true);
+    }
+
+    fn scroll(&self, event: &NSEvent) {
+        let state = self.ivars();
+        if state.selection.get().is_some() {
+            return;
+        }
+        let step = if event.hasPreciseScrollingDeltas() {
+            SCROLL_STEP
+        } else {
+            f64::MIN_POSITIVE
+        };
+        let scrolled = state.scrolled.get() + event.scrollingDeltaY();
+        if scrolled.abs() < step {
+            return state.scrolled.set(scrolled);
+        }
+        state.scrolled.set(0.0);
+        let deepest = self.targets().len().saturating_sub(1);
+        let depth = state.depth.get();
+        state.depth.set(if scrolled > 0.0 {
+            (depth + 1).min(deepest)
+        } else {
+            depth.saturating_sub(1)
+        });
+        self.setNeedsDisplay(true);
+    }
+
+    fn snapped(&self, pixel: Pixel, event: &NSEvent) -> Pixel {
+        if event.modifierFlags().contains(NSEventModifierFlags::Option) {
+            return pixel;
+        }
+        let slop = self.points_to_pixels(SNAP);
+        match &*self.ivars().phase.borrow() {
+            Phase::Frozen(shot) => snap(pixel, &edges_near(&shot.windows, pixel, shot.whole), slop),
+            _ => pixel,
         }
     }
 
@@ -390,6 +545,7 @@ impl Stage {
         if self.closes() {
             return self.emit("cancel");
         }
+        self.commit_text();
         let Some(pixel) = self.pixel(event) else {
             return;
         };
@@ -397,29 +553,135 @@ impl Stage {
         state.pointer.set(pixel);
         let slop = self.points_to_pixels(BORDER_SLOP);
         if let Some(selection) = state.selection.get() {
-            if event.clickCount() >= 2 && selection.contains(pixel) {
+            let tool = state.tool.get();
+            if tool.is_none() && event.clickCount() >= 2 && selection.contains(pixel) {
                 return self.copy();
             }
             let edges = selection.edges_at(pixel, slop);
             if edges.any() {
-                return state.gesture.set(Gesture::Resizing {
+                state.gesture.set(Gesture::Resizing {
                     edges,
                     start: selection,
                 });
+                return self.announce();
+            }
+            if let Some(tool) = tool {
+                if selection.contains(pixel) {
+                    self.mark(tool, pixel);
+                }
+                return;
             }
             if selection.contains(pixel) {
-                return state.gesture.set(Gesture::Moving {
+                state.gesture.set(Gesture::Moving {
                     grab: pixel,
                     start: selection,
                 });
+                return self.announce();
             }
         } else if event.clickCount() >= 2 {
             return self.copy();
         }
         state.gesture.set(Gesture::Drawing {
-            anchor: pixel,
+            anchor: self.snapped(pixel, event),
             moved: false,
         });
+    }
+
+    fn ink(&self) -> Option<Ink> {
+        let state = self.ivars();
+        match &*state.phase.borrow() {
+            Phase::Frozen(shot) => Some(Ink {
+                color: state.color.get(),
+                size: state.size.get(),
+                scale: shot.scale,
+            }),
+            _ => None,
+        }
+    }
+
+    fn mark(&self, tool: Tool, at: Pixel) {
+        let Some(ink) = self.ink() else { return };
+        let state = self.ivars();
+        match tool {
+            Tool::Text => self.edit_text(at, ink),
+            Tool::Number => {
+                let mut marks = state.marks.borrow_mut();
+                let number = marks.next_number();
+                marks.add(Mark {
+                    shape: Shape::Number { at, number },
+                    ink,
+                });
+            }
+            _ => {
+                *state.draft.borrow_mut() = Mark::dragged(tool, at, ink);
+                state.gesture.set(Gesture::Marking { anchor: at });
+            }
+        }
+        self.setNeedsDisplay(true);
+    }
+
+    fn edit_text(&self, at: Pixel, ink: Ink) {
+        let state = self.ivars();
+        let (Some(selection), Some(window)) = (state.selection.get(), self.window()) else {
+            return;
+        };
+        let (corner, right) = match &*state.phase.borrow() {
+            Phase::Frozen(shot) => {
+                let selection = shot.rect(selection);
+                let corner = shot.rect(Area::spanning(at, at)).origin;
+                (corner, selection.origin.x + selection.size.width)
+            }
+            _ => return,
+        };
+        let field = NSTextField::new(self.mtm());
+        field.setBezeled(false);
+        field.setBordered(false);
+        field.setDrawsBackground(false);
+        field.setFocusRingType(NSFocusRingType::None);
+        style_field(&field, ink);
+        if let Some(cell) = field.cell() {
+            // Clicking away or choosing another tool keeps the text, as Return does.
+            cell.setSendsActionOnEndEditing(true);
+            cell.setScrollable(true);
+        }
+        // SAFETY: the stage answers `commitText:` and outlives the field it holds.
+        unsafe {
+            field.setTarget(Some(self));
+            field.setAction(Some(sel!(commitText:)));
+        }
+        let height = (ink.size.font() * 1.5).ceil();
+        // The field draws its text two points in from its left edge.
+        field.setFrame(NSRect::new(
+            NSPoint::new(corner.x - 2.0, corner.y),
+            NSSize::new((right - corner.x).max(120.0), height),
+        ));
+        self.addSubview(&field);
+        window.makeFirstResponder(Some(&field));
+        *state.editing.borrow_mut() = Some(Editing { field, at, ink });
+    }
+
+    fn commit_text(&self) {
+        let Some(editing) = self.ivars().editing.take() else {
+            return;
+        };
+        let mark = Mark {
+            shape: Shape::Text {
+                at: editing.at,
+                text: editing.field.stringValue().to_string(),
+            },
+            ink: editing.ink,
+        };
+        if mark.drawn() {
+            self.ivars().marks.borrow_mut().add(mark);
+        }
+        // The field may be ending its editing in this very call.
+        let field = MainThreadBound::new(editing.field, self.mtm());
+        DispatchQueue::main().exec_async(move || {
+            let mtm = MainThreadMarker::new().expect("the main queue runs on the main thread");
+            field.get(mtm).removeFromSuperview();
+        });
+        self.focus();
+        self.setNeedsDisplay(true);
     }
 
     fn drag(&self, event: &NSEvent) {
@@ -435,18 +697,26 @@ impl Stage {
                 let slop = self.points_to_pixels(CLICK_SLOP);
                 if moved || (pixel.0 - anchor.0).abs() >= slop || (pixel.1 - anchor.1).abs() >= slop
                 {
-                    state.selection.set(Some(Area::spanning(anchor, pixel)));
+                    let corner = self.snapped(pixel, event);
+                    state.selection.set(Some(Area::spanning(anchor, corner)));
                     state.gesture.set(Gesture::Drawing {
                         anchor,
                         moved: true,
                     });
+                    self.announce();
                 }
             }
             Gesture::Moving { grab, start } => state.selection.set(Some(
                 start.moved((pixel.0 - grab.0, pixel.1 - grab.1), whole),
             )),
             Gesture::Resizing { edges, start } => {
-                state.selection.set(Some(start.resized(edges, pixel)))
+                let corner = self.snapped(pixel, event);
+                state.selection.set(Some(start.resized(edges, corner)))
+            }
+            Gesture::Marking { anchor } => {
+                if let Some(draft) = &mut *state.draft.borrow_mut() {
+                    draft.extend(anchor, pixel);
+                }
             }
         }
         self.setNeedsDisplay(true);
@@ -454,10 +724,74 @@ impl Stage {
 
     fn release(&self) {
         let state = self.ivars();
-        if let Gesture::Drawing { moved: false, .. } = state.gesture.get() {
-            state.selection.set(self.hovered());
+        match state.gesture.get() {
+            Gesture::Drawing { moved: false, .. } => state.selection.set(self.hovered()),
+            Gesture::Marking { .. } => {
+                if let Some(mark) = state.draft.take().filter(Mark::drawn) {
+                    state.marks.borrow_mut().add(mark);
+                }
+            }
+            _ => {}
         }
         state.gesture.set(Gesture::Idle);
+        self.announce();
+        self.setNeedsDisplay(true);
+    }
+
+    /// Tells the UI where the selection is, to show the tools by it, or that there is none.
+    fn announce(&self) {
+        let state = self.ivars();
+        let shown = match state.gesture.get() {
+            Gesture::Idle | Gesture::Marking { .. } => state.selection.get(),
+            _ => None,
+        };
+        if state.announced.replace(shown) == shown {
+            return;
+        }
+        let rect = match (&*state.phase.borrow(), shown) {
+            (Phase::Frozen(shot), Some(area)) => {
+                let rect = shot.rect(area);
+                serde_json::json!({
+                    "x": rect.origin.x,
+                    "y": rect.origin.y,
+                    "width": rect.size.width,
+                    "height": rect.size.height,
+                })
+            }
+            _ => JsonValue::Null,
+        };
+        state.context.emit("selection", rect);
+    }
+
+    fn choose(&self, tool: Option<Tool>) {
+        self.commit_text();
+        self.ivars().tool.set(tool);
+    }
+
+    fn set_ink(&self, color: Option<[u8; 3]>, size: Option<Size>) {
+        let state = self.ivars();
+        if let Some(color) = color {
+            state.color.set(color);
+        }
+        if let Some(size) = size {
+            state.size.set(size);
+        }
+        if let Some(editing) = &mut *state.editing.borrow_mut() {
+            editing.ink.color = state.color.get();
+            editing.ink.size = state.size.get();
+            style_field(&editing.field, editing.ink);
+        }
+    }
+
+    fn undo(&self, redo: bool) {
+        self.commit_text();
+        let mut marks = self.ivars().marks.borrow_mut();
+        if redo {
+            marks.redo()
+        } else {
+            marks.undo()
+        }
+        drop(marks);
         self.setNeedsDisplay(true);
     }
 
@@ -472,6 +806,20 @@ impl Stage {
         let code = event.keyCode();
         if code == ESCAPE || self.closes() {
             return self.emit("cancel");
+        }
+        let flags = event.modifierFlags();
+        if flags.contains(NSEventModifierFlags::Command) {
+            let typed = event
+                .charactersIgnoringModifiers()
+                .map(|typed| typed.to_string().to_lowercase());
+            match typed.as_deref() {
+                Some("z") => self.undo(flags.contains(NSEventModifierFlags::Shift)),
+                Some("c") => self.copy(),
+                Some("s") => self.save(),
+                Some("t") => self.pin(),
+                _ => {}
+            }
+            return;
         }
         let Some(whole) = self.whole() else { return };
         let step = match code {
@@ -507,6 +855,7 @@ impl Stage {
                 self.warp(pixel);
             }
         }
+        self.announce();
         self.setNeedsDisplay(true);
     }
 
@@ -527,16 +876,22 @@ impl Stage {
         }
     }
 
-    /// The window under the pointer, or the whole display.
-    fn hovered(&self) -> Option<Area> {
+    /// What a click takes, from the smallest control under the pointer out to the whole display.
+    fn targets(&self) -> Vec<Area> {
         match &*self.ivars().phase.borrow() {
-            Phase::Frozen(shot) => Some(target(
-                &shot.windows,
-                self.ivars().pointer.get(),
-                shot.whole,
-            )),
-            _ => None,
+            Phase::Frozen(shot) => targets(&shot.windows, self.ivars().pointer.get(), shot.whole),
+            _ => Vec::new(),
         }
+    }
+
+    fn hovered(&self) -> Option<Area> {
+        let targets = self.targets();
+        let depth = self
+            .ivars()
+            .depth
+            .get()
+            .min(targets.len().saturating_sub(1));
+        targets.get(depth).copied()
     }
 
     fn points_to_pixels(&self, points: f64) -> i64 {
@@ -546,19 +901,51 @@ impl Stage {
         }
     }
 
-    fn copy(&self) {
-        let area = self.ivars().selection.get().or_else(|| self.hovered());
-        let copied = match (&*self.ivars().phase.borrow(), area) {
-            (Phase::Frozen(shot), Some(area)) => shot
-                .crop(area)
-                .ok_or_else(|| "cannot crop the screenshot".to_owned())
-                .and_then(|image| put_image(&image)),
-            _ => return,
+    /// The selection, or what a click would take, with the marks on it.
+    fn finished(&self) -> Option<(CFRetained<CGImage>, NSRect)> {
+        self.commit_text();
+        let area = self.ivars().selection.get().or_else(|| self.hovered())?;
+        let Phase::Frozen(shot) = &*self.ivars().phase.borrow() else {
+            return None;
         };
-        match copied {
-            Ok(()) => self.emit("copied"),
+        let marks = self.ivars().marks.borrow();
+        let picture = paint::render(&shot.image, shot.whole, area, marks.made());
+        let Some(picture) = picture else {
+            drop(marks);
+            self.fail("cannot draw the screenshot".into(), false);
+            return None;
+        };
+        Some((picture, shot.rect(area)))
+    }
+
+    fn copy(&self) {
+        let Some((picture, _)) = self.finished() else {
+            return;
+        };
+        match output::copy(&picture) {
+            Ok(()) => self.emit("done"),
             Err(message) => self.fail(message, false),
         }
+    }
+
+    fn save(&self) {
+        let Some((picture, _)) = self.finished() else {
+            return;
+        };
+        match output::save(&picture) {
+            Ok(_) => self.emit("done"),
+            Err(message) => self.fail(message, false),
+        }
+    }
+
+    fn pin(&self) {
+        let Some(window) = self.window() else { return };
+        let Some((picture, rect)) = self.finished() else {
+            return;
+        };
+        let on_screen = window.convertRectToScreen(self.convertRect_toView(rect, None));
+        pin::pin(self.mtm(), picture, on_screen);
+        self.emit("done");
     }
 
     fn copy_color(&self) {
@@ -573,7 +960,7 @@ impl Stage {
             pasteboard.setString_forType(&NSString::from_str(&color), unsafe {
                 NSPasteboardTypeString
             });
-            self.emit("copied");
+            self.emit("done");
         }
     }
 
@@ -583,8 +970,14 @@ impl Stage {
         let state = self.ivars();
         let bounds = self.bounds();
         let selection = state.selection.get();
-        let focus =
-            selection.unwrap_or_else(|| target(&shot.windows, state.pointer.get(), shot.whole));
+        let Some(focus) = selection.or_else(|| {
+            let targets = targets(&shot.windows, state.pointer.get(), shot.whole);
+            targets
+                .get(state.depth.get().min(targets.len() - 1))
+                .copied()
+        }) else {
+            return;
+        };
         let focus_rect = shot.rect(focus);
 
         let shade = NSBezierPath::bezierPathWithRect(bounds);
@@ -593,6 +986,19 @@ impl Stage {
         NSColor::colorWithWhite_alpha(0.0, 0.45).setFill();
         shade.fill();
 
+        if selection.is_some() {
+            NSGraphicsContext::saveGraphicsState_class();
+            NSBezierPath::clipRect(focus_rect);
+            let canvas = shot.canvas();
+            for mark in state.marks.borrow().made() {
+                canvas.paint(mark);
+            }
+            if let Some(draft) = &*state.draft.borrow() {
+                canvas.paint(draft);
+            }
+            NSGraphicsContext::restoreGraphicsState_class();
+        }
+
         let accent = NSColor::colorWithSRGBRed_green_blue_alpha(0.16, 0.56, 1.0, 1.0);
         accent.setStroke();
         let border = NSBezierPath::bezierPathWithRect(inset(focus_rect, 0.5));
@@ -600,7 +1006,7 @@ impl Stage {
         border.stroke();
 
         let gesture = state.gesture.get();
-        if selection.is_some() && !matches!(gesture, Gesture::Drawing { .. }) {
+        if selection.is_some() && matches!(gesture, Gesture::Idle | Gesture::Moving { .. }) {
             for (x, y) in handles(focus_rect) {
                 let handle = NSRect::new(
                     NSPoint::new(x - HANDLE / 2.0, y - HANDLE / 2.0),
@@ -659,24 +1065,48 @@ impl NativeComponent for StageComponent {
 
     fn set_prop(&mut self, _name: &str, _value: Option<&JsonValue>) {}
 
-    fn command(&mut self, name: &str, _args: &JsonValue) {
-        // A build macOS has not seen is missing from the privacy list until it is dragged in.
-        if name == "revealApplication" {
-            let application = NSBundle::mainBundle().bundleURL();
-            NSWorkspace::sharedWorkspace()
-                .activateFileViewerSelectingURLs(&NSArray::from_retained_slice(&[application]));
-            // The stage floats above Finder.
-            self.stage.emit("cancel");
+    fn command(&mut self, name: &str, args: &JsonValue) {
+        let stage = &self.stage;
+        let text = |key: &str| args.get(key).and_then(JsonValue::as_str);
+        match name {
+            // A build macOS has not seen is missing from the privacy list until it is dragged in.
+            "revealApplication" => {
+                let application = NSBundle::mainBundle().bundleURL();
+                NSWorkspace::sharedWorkspace()
+                    .activateFileViewerSelectingURLs(&NSArray::from_retained_slice(&[application]));
+                // The stage floats above Finder.
+                return stage.emit("cancel");
+            }
+            "requestAccessibility" => {
+                elements::request();
+                // The stage floats above the prompt.
+                return stage.emit("cancel");
+            }
+            "tool" => stage.choose(text("tool").and_then(Tool::named)),
+            "ink" => stage.set_ink(
+                text("color").and_then(annotate::color),
+                text("size").and_then(Size::named),
+            ),
+            "undo" => stage.undo(false),
+            "redo" => stage.undo(true),
+            "copy" => return stage.copy(),
+            "save" => return stage.save(),
+            "pin" => return stage.pin(),
+            _ => {}
         }
+        stage.focus();
     }
 }
 
-fn deliver(stage: Arc<MainThreadBound<Retained<Stage>>>, shot: Result<Shot, String>) {
+fn deliver(
+    stage: Arc<MainThreadBound<Retained<Stage>>>,
+    shot: Result<(Shot, Vec<elements::Source>), String>,
+) {
     DispatchQueue::main().exec_async(move || {
         let mtm = MainThreadMarker::new().expect("the main queue runs on the main thread");
         let stage = stage.get(mtm);
         match shot {
-            Ok(shot) => stage.freeze(shot),
+            Ok((shot, sources)) => stage.freeze(shot, sources),
             Err(message) => stage.fail(message, false),
         }
     });
@@ -738,8 +1168,8 @@ fn display_of(screen: &NSScreen) -> Option<CGDirectDisplayID> {
     Some(number.unsignedIntValue())
 }
 
-/// The on-screen windows of the normal level, front to back, in pixels of the display at `origin`.
-fn windows_on(origin: CGPoint, scale: f64) -> Vec<Area> {
+/// The on-screen windows of the normal level, front to back.
+fn windows_on() -> Vec<elements::Source> {
     let Some(list) = CGWindowListCopyWindowInfo(
         CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements,
         0,
@@ -768,48 +1198,36 @@ fn windows_on(origin: CGPoint, scale: f64) -> Vec<Area> {
             // SAFETY: the window server keys a window's bounds by string.
             let bounds: Retained<NSDictionary<NSString, AnyObject>> =
                 unsafe { Retained::cast_unchecked(bounds) };
-            let pixel = |value: f64, start: f64| ((value - start) * scale).round() as i64;
-            let left = number(&bounds, "X")?;
-            let top = number(&bounds, "Y")?;
-            let right = left + number(&bounds, "Width")?;
-            let bottom = top + number(&bounds, "Height")?;
-            (right > left && bottom > top).then(|| {
-                Area::spanning(
-                    (pixel(left, origin.x), pixel(top, origin.y)),
-                    (pixel(right, origin.x) - 1, pixel(bottom, origin.y) - 1),
-                )
+            Some(elements::Source {
+                pid: number(&info, "kCGWindowOwnerPID")? as i32,
+                bounds: CGRect::new(
+                    CGPoint::new(number(&bounds, "X")?, number(&bounds, "Y")?),
+                    CGSize::new(number(&bounds, "Width")?, number(&bounds, "Height")?),
+                ),
             })
         })
         .collect()
 }
 
-fn put_image(image: &CGImage) -> Result<(), String> {
-    let rep = NSBitmapImageRep::initWithCGImage(NSBitmapImageRep::alloc(), image);
-    // SAFETY: an empty property dictionary, which PNG encoding accepts.
-    let png = unsafe {
-        rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
-    }
-    .ok_or("cannot encode the screenshot as PNG")?;
-    let pasteboard = NSPasteboard::generalPasteboard();
-    pasteboard.clearContents();
-    // SAFETY: extern statics AppKit defines.
-    unsafe {
-        pasteboard.setData_forType(Some(&png), NSPasteboardTypePNG);
-        if let Some(tiff) = rep.TIFFRepresentation() {
-            pasteboard.setData_forType(Some(&tiff), NSPasteboardTypeTIFF);
-        }
-    }
-    Ok(())
+/// `rect`, in global points, in pixels of the display at `origin`.
+fn pixels(rect: CGRect, origin: CGPoint, scale: f64) -> Option<Area> {
+    let pixel = |value: f64, start: f64| ((value - start) * scale).round() as i64;
+    let left = pixel(rect.origin.x, origin.x);
+    let top = pixel(rect.origin.y, origin.y);
+    let right = pixel(rect.origin.x + rect.size.width, origin.x) - 1;
+    let bottom = pixel(rect.origin.y + rect.size.height, origin.y) - 1;
+    (right >= left && bottom >= top).then(|| Area::spanning((left, top), (right, bottom)))
 }
 
-fn inset(rect: NSRect, by: f64) -> NSRect {
-    NSRect::new(
-        NSPoint::new(rect.origin.x + by, rect.origin.y + by),
-        NSSize::new(
-            (rect.size.width - 2.0 * by).max(0.0),
-            (rect.size.height - 2.0 * by).max(0.0),
-        ),
-    )
+fn style_field(field: &NSTextField, ink: Ink) {
+    let [r, g, b] = ink.color;
+    field.setFont(Some(&NSFont::systemFontOfSize(ink.size.font())));
+    field.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
+        r as f64 / 255.0,
+        g as f64 / 255.0,
+        b as f64 / 255.0,
+        1.0,
+    )));
 }
 
 fn handles(rect: NSRect) -> [(f64, f64); 8] {

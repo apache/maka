@@ -42,6 +42,10 @@ impl Area {
         }
     }
 
+    pub fn size(self) -> i64 {
+        self.width * self.height
+    }
+
     pub fn right(self) -> i64 {
         self.x + self.width - 1
     }
@@ -108,13 +112,59 @@ impl Edges {
     }
 }
 
-/// The front-most of `windows` (front to back) under `pixel`, or the whole picture.
-pub(crate) fn target(windows: &[Area], pixel: Pixel, whole: Area) -> Area {
-    windows
+/// A window on the picture and the controls Accessibility found in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Window {
+    pub area: Area,
+    pub elements: Vec<Area>,
+}
+
+/// What a click at `pixel` takes, smallest first: the controls under it in the front-most window
+/// there, that window, then the whole picture.
+pub(crate) fn targets(windows: &[Window], pixel: Pixel, whole: Area) -> Vec<Area> {
+    let mut found: Vec<Area> = windows
         .iter()
-        .copied()
-        .find(|window| window.contains(pixel))
-        .unwrap_or(whole)
+        .find(|window| window.area.contains(pixel))
+        .map(|window| {
+            let inside = window.elements.iter().filter(|area| area.contains(pixel));
+            inside.copied().chain([window.area]).collect()
+        })
+        .unwrap_or_default();
+    found.push(whole);
+    found.sort_by_key(|area| area.size());
+    found.dedup();
+    found
+}
+
+/// The edges a dragged corner at `pixel` sticks to: those of the front-most window there and its
+/// controls, or the whole picture's.
+pub(crate) fn edges_near(windows: &[Window], pixel: Pixel, whole: Area) -> Vec<Area> {
+    let mut edges = vec![whole];
+    if let Some(window) = windows.iter().find(|window| window.area.contains(pixel)) {
+        edges.push(window.area);
+        edges.extend(&window.elements);
+    }
+    edges
+}
+
+/// `pixel` moved, on each axis, onto the nearest edge of `areas` within `slop`.
+pub(crate) fn snap(pixel: Pixel, areas: &[Area], slop: i64) -> Pixel {
+    let nearest = |value: i64, lines: &mut dyn Iterator<Item = i64>| {
+        lines
+            .filter(|line| (line - value).abs() <= slop)
+            .min_by_key(|line| (line - value).abs())
+            .unwrap_or(value)
+    };
+    (
+        nearest(
+            pixel.0,
+            &mut areas.iter().flat_map(|area| [area.x, area.right()]),
+        ),
+        nearest(
+            pixel.1,
+            &mut areas.iter().flat_map(|area| [area.y, area.bottom()]),
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -142,12 +192,32 @@ mod tests {
     }
 
     #[test]
-    fn hovering_targets_the_front_window_and_falls_back_to_the_whole_picture() {
-        let front = Area::spanning((10, 10), (40, 40));
-        let back = Area::spanning((0, 0), (60, 60));
-        assert_eq!(target(&[front, back], (20, 20), WHOLE), front);
-        assert_eq!(target(&[front, back], (50, 50), WHOLE), back);
-        assert_eq!(target(&[front, back], (90, 70), WHOLE), WHOLE);
+    fn hovering_targets_the_smallest_control_of_the_front_window_first() {
+        let button = Area::spanning((12, 12), (20, 18));
+        let panel = Area::spanning((10, 10), (38, 38));
+        let front = Window {
+            area: Area::spanning((10, 10), (40, 40)),
+            elements: vec![panel, button],
+        };
+        let back = Window {
+            area: Area::spanning((0, 0), (60, 60)),
+            elements: vec![Area::spanning((14, 14), (16, 16))],
+        };
+        let windows = [front.clone(), back.clone()];
+        assert_eq!(
+            targets(&windows, (15, 15), WHOLE),
+            [button, panel, front.area, WHOLE]
+        );
+        assert_eq!(targets(&windows, (50, 50), WHOLE), [back.area, WHOLE]);
+        assert_eq!(targets(&windows, (90, 70), WHOLE), [WHOLE]);
+    }
+
+    #[test]
+    fn a_dragged_corner_sticks_to_edges_within_reach_on_each_axis() {
+        let button = Area::spanning((20, 30), (40, 50));
+        assert_eq!(snap((22, 45), &[button], 3), (20, 45));
+        assert_eq!(snap((38, 52), &[button], 3), (40, 50));
+        assert_eq!(snap((30, 40), &[button], 3), (30, 40));
     }
 
     #[test]

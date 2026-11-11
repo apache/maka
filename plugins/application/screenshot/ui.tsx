@@ -26,8 +26,11 @@ import {
   Text,
   View,
   type JSX,
+  type Signal,
 } from 'nsh';
 import { Button } from 'nsh/base';
+import { Icon } from '../../../products/maka/workbench/app/Icon';
+import { textTooltip } from '../../../products/maka/workbench/app/ui';
 import { currentWindow, displays, Window, type WindowRef } from 'nsh/desktop';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
@@ -39,16 +42,60 @@ import { tr } from '../../../products/maka/workbench/app/locale';
 const TERMS = ['screenshot', 'capture', 'snip', 'jietu', 'jt', '截图', '截圖', '截屏'];
 
 type Failure = { message: string; permission: boolean };
+type Rect = { x: number; y: number; width: number; height: number };
+type Size = { width: number; height: number };
 
 const SCREEN_RECORDING_SETTINGS =
   'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture';
 
-/** The desktop shell's frozen display, which selects a region and copies it. */
-const Stage = nativeComponent<{}, { ready: null; copied: null; cancel: null; failed: Failure }>(
-  'maka.screenshot',
-  { props: [], events: ['ready', 'copied', 'cancel', 'failed'] },
-);
+/** The desktop shell's frozen display: it selects a region, takes marks on it, and copies, saves or pins it. */
+const Stage = nativeComponent<
+  {},
+  {
+    ready: { elements: boolean };
+    selection: Rect | null;
+    done: null;
+    cancel: null;
+    failed: Failure;
+  }
+>('maka.screenshot', {
+  props: [],
+  events: ['ready', 'selection', 'done', 'cancel', 'failed'],
+});
 
+const TOOLS = [
+  ['rectangle', 'Rectangle'],
+  ['ellipse', 'Ellipse'],
+  ['arrow', 'Arrow'],
+  ['pen', 'Pen'],
+  ['marker', 'Highlighter'],
+  ['text', 'Text'],
+  ['mosaic', 'Mosaic'],
+  ['number', 'Numbered marker'],
+] as const;
+type Tool = (typeof TOOLS)[number][0];
+
+const COLORS = ['#FF3B30', '#FFCC00', '#34C759', '#2A8FFF', '#FFFFFF', '#1C1C1E'] as const;
+const SIZES = [
+  ['small', 'Thin', 6],
+  ['medium', 'Medium', 9],
+  ['large', 'Thick', 12],
+] as const;
+type InkSize = (typeof SIZES)[number][0];
+
+const BAR = 38;
+const INK_BAR = 34;
+const GAP = 6;
+const EDGE = 4;
+const ACCENT = '#2A8FFF';
+const plate = {
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: 2,
+  padding: 4,
+  borderRadius: 8,
+  backgroundColor: 'rgba(28, 28, 30, 0.94)',
+} as const;
 const hint = { fontSize: 12, lineHeight: 18, color: 'rgba(255, 255, 255, 0.6)' } as const;
 
 function CardButton(props: { label: string; primary?: boolean; onPress(): void }) {
@@ -60,7 +107,7 @@ function CardButton(props: { label: string; primary?: boolean; onPress(): void }
         paddingVertical: 5,
         paddingHorizontal: 12,
         borderRadius: 6,
-        backgroundColor: props.primary ? '#2A8FFF' : 'rgba(255, 255, 255, 0.14)',
+        backgroundColor: props.primary ? ACCENT : 'rgba(255, 255, 255, 0.14)',
       }}
       hoverStyle={{ backgroundColor: props.primary ? '#4AA0FF' : 'rgba(255, 255, 255, 0.22)' }}
     >
@@ -71,20 +118,229 @@ function CardButton(props: { label: string; primary?: boolean; onPress(): void }
   );
 }
 
-function Overlay(props: { finish(): void }) {
+function ToolButton(props: {
+  label: string;
+  icon: Parameters<typeof Icon>[0]['name'];
+  selected?: boolean;
+  accent?: boolean;
+  onPress(): void;
+}) {
+  return (
+    <Button
+      accessibilityLabel={props.label}
+      tooltip={textTooltip(() => props.label)}
+      selected={props.selected}
+      onPress={props.onPress}
+      style={{
+        width: 30,
+        height: 30,
+        borderRadius: 6,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: props.selected ? 'rgba(42, 143, 255, 0.28)' : 'transparent',
+      }}
+      hoverStyle={{ backgroundColor: 'rgba(255, 255, 255, 0.12)' }}
+    >
+      <Icon
+        name={props.icon}
+        size={17}
+        color={props.selected || props.accent ? ACCENT : 'rgba(255, 255, 255, 0.88)'}
+      />
+    </Button>
+  );
+}
+
+function Divider() {
+  return (
+    <View
+      style={{
+        width: 1,
+        height: 18,
+        marginHorizontal: 3,
+        backgroundColor: 'rgba(255, 255, 255, 0.16)',
+      }}
+    />
+  );
+}
+
+/** Below the selection, or above it when the screen ends, or inside it when neither fits. */
+function place(selection: Rect, screen: Size, height: number) {
+  const below = selection.y + selection.height + GAP;
+  const above = selection.y - GAP - height;
+  const top =
+    below + height <= screen.height - EDGE
+      ? below
+      : above >= EDGE
+        ? above
+        : selection.y + selection.height - GAP - height;
+  const right = Math.max(EDGE, screen.width - selection.x - selection.width);
+  return { top, right };
+}
+
+type Ink = {
+  tool: Signal<Tool | null>;
+  color: Signal<string>;
+  size: Signal<InkSize>;
+};
+
+function Toolbar(props: {
+  stage: () => NativeComponentRef | undefined;
+  selection: Rect;
+  screen: Size;
+  ink: Ink;
+}) {
+  const { tool, color, size } = props.ink;
+  const command = (name: string, args: Record<string, unknown> = {}) =>
+    props.stage()?.command(name, args);
+  const inked = () => tool() !== null && tool() !== 'mosaic';
+  const at = () => place(props.selection, props.screen, BAR + (inked() ? GAP + INK_BAR : 0));
+  return (
+    <View
+      style={{
+        position: 'absolute',
+        top: at().top,
+        right: at().right,
+        alignItems: 'flex-end',
+        gap: GAP,
+      }}
+    >
+      <View style={plate}>
+        <Each of={TOOLS} key={(entry: (typeof TOOLS)[number]) => entry[0]}>
+          {(entry) => {
+            const [name, label] = entry();
+            return (
+              <ToolButton
+                label={tr(label)}
+                icon={name}
+                selected={tool() === name}
+                onPress={() => {
+                  const next = tool() === name ? null : name;
+                  tool.set(next);
+                  command('tool', { tool: next });
+                }}
+              />
+            );
+          }}
+        </Each>
+        <Divider />
+        <ToolButton label={tr('Undo')} icon="undo" onPress={() => command('undo')} />
+        <ToolButton label={tr('Redo')} icon="redo" onPress={() => command('redo')} />
+        <Divider />
+        <ToolButton label={tr('Pin to screen')} icon="pin" onPress={() => command('pin')} />
+        <ToolButton label={tr('Save')} icon="download" onPress={() => command('save')} />
+        <ToolButton label={tr('Cancel')} icon="close" onPress={() => command('cancel')} />
+        <ToolButton label={tr('Copy')} icon="check" accent onPress={() => command('copy')} />
+      </View>
+      <If when={inked()}>
+        <View style={[plate, { height: INK_BAR, gap: 6, paddingHorizontal: 8 }]}>
+          <Each of={SIZES} key={(entry: (typeof SIZES)[number]) => entry[0]}>
+            {(entry) => {
+              const [name, label, dot] = entry();
+              return (
+                <Button
+                  accessibilityLabel={tr(label)}
+                  tooltip={textTooltip(() => tr(label))}
+                  selected={size() === name}
+                  onPress={() => {
+                    size.set(name);
+                    command('ink', { size: name });
+                  }}
+                  style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: 4,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: size() === name ? 'rgba(255, 255, 255, 0.16)' : 'transparent',
+                  }}
+                >
+                  <View
+                    style={{
+                      width: dot,
+                      height: dot,
+                      borderRadius: dot / 2,
+                      backgroundColor: color(),
+                    }}
+                  />
+                </Button>
+              );
+            }}
+          </Each>
+          <Divider />
+          <Each of={COLORS} key={(hex: string) => hex}>
+            {(entry) => {
+              const hex = entry();
+              return (
+                <Button
+                  accessibilityLabel={hex}
+                  selected={color() === hex}
+                  onPress={() => {
+                    color.set(hex);
+                    command('ink', { color: hex });
+                  }}
+                  style={{
+                    width: 18,
+                    height: 18,
+                    borderRadius: 9,
+                    borderWidth: 2,
+                    borderColor: color() === hex ? '#FFFFFF' : 'rgba(255, 255, 255, 0.2)',
+                    backgroundColor: hex,
+                  }}
+                />
+              );
+            }}
+          </Each>
+        </View>
+      </If>
+    </View>
+  );
+}
+
+function Overlay(props: { screen: Size; finish(): void }) {
   let stage: NativeComponentRef | undefined;
   // The stage takes the keys without activating Maka, which would bring its main window forward.
   currentWindow().focus();
   const failure = signal<Failure | null>(null);
+  const selection = signal<Rect | null>(null);
+  const elements = signal(true);
+  // The stage keeps the tool while the toolbar hides during a drag, so the choice lives here too.
+  const ink: Ink = {
+    tool: signal<Tool | null>(null),
+    color: signal<string>(COLORS[0]),
+    size: signal<InkSize>('medium'),
+  };
   return (
     <View style={{ flex: 1 }}>
       <Stage
         ref={(node) => (stage = node)}
         style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
-        onCopied={props.finish}
+        onReady={(ready) => elements.set(ready.elements)}
+        onSelection={(rect) => selection.set(rect)}
+        onDone={props.finish}
         onCancel={props.finish}
         onFailed={(failed) => failure.set(failed)}
       />
+      <If when={selection() !== null && failure() === null}>
+        <Toolbar stage={() => stage} selection={selection()!} screen={props.screen} ink={ink} />
+      </If>
+      <If when={!elements() && selection() === null && failure() === null}>
+        <View
+          style={[
+            { position: 'absolute', top: 12, left: 0, right: 0, alignItems: 'center' },
+            { pointerEvents: 'box-none' },
+          ]}
+        >
+          <View style={[plate, { gap: 10, paddingVertical: 6, paddingHorizontal: 12 }]}>
+            <Text style={hint}>
+              {tr('Allow Accessibility to snap to the controls inside windows.')}
+            </Text>
+            <CardButton
+              label={tr('Allow')}
+              onPress={() => stage?.command('requestAccessibility')}
+            />
+          </View>
+        </View>
+      </If>
       <If when={failure() !== null}>
         <View
           style={[
@@ -149,7 +405,7 @@ function capture() {
   const finish = () => windows.splice(0).forEach((window) => window.close());
   for (const display of displays()) {
     windows.push(
-      Window.open(() => <Overlay finish={finish} />, {
+      Window.open(() => <Overlay screen={display.bounds.size} finish={finish} />, {
         id: `maka.screenshot.${display.id}`,
         kind: 'popup',
         title: tr('Capture a screen region'),
