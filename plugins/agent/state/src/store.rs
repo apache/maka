@@ -87,6 +87,7 @@ pub(crate) mod fallback;
 mod local;
 pub use local::LocalResult;
 mod metadata;
+pub use metadata::{NotificationAttention, NotificationState};
 mod publication;
 mod quiescence;
 pub use content::{ContentBlob, ImmutableContentBody};

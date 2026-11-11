@@ -31279,7 +31279,7 @@ export const contracts: {
             properties: {
               onComplete: {
                 description:
-                  'Best-effort notification to the native model caller when this message finishes,\nfails or is cancelled. When registration is confirmed, the caller can yield\nrather than poll. The watch and task admission commit together;\ncheck the completion field of the send receipt.',
+                  'Best-effort notification to the native model caller when this message finishes,\nfails or is cancelled, and once per pending interaction or authority blocker\nthat needs attention. An attention notification keeps the completion watch.\nWhen registration is confirmed, the caller can yield rather than poll.\nThe watch and task admission commit together;\ncheck the completion field of the send receipt.',
                 anyOf: [
                   {
                     $ref: '#/$defs/AgentOnComplete',
@@ -31733,12 +31733,6 @@ export const contracts: {
                       'The notification watch was persisted; delivery remains best effort.',
                     type: 'string',
                     const: 'registered',
-                  },
-                  {
-                    description:
-                      'The task was admitted but notification registration could not be confirmed.\nInspect the returned message ID if needed; do not resend the task.',
-                    type: 'string',
-                    const: 'unconfirmed',
                   },
                 ],
               },
