@@ -250,7 +250,7 @@ fn check_marks(source: &str) {
                 for frame in frames.borrow_mut().drain(..) {
                     let width = frame.size().width.0 as usize;
                     let preview = frame.pixels().as_chunks::<4>().0.iter().enumerate().any(
-                        |(index, pixel)| index % width < width - 48 && pixel[..3] == [32, 33, 35],
+                        |(index, pixel)| index % width < width - 48 && pixel[..3] == [42, 43, 46],
                     );
                     if preview == visible {
                         return;
