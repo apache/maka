@@ -30,7 +30,6 @@ import {
   msg_formSubmit,
   msg_helpCommands,
   msg_helpSend,
-  msg_paletteClose,
   msg_paletteTitle,
   msg_permissionDenied,
   msg_permissionDeny,
@@ -196,11 +195,6 @@ export const conversationMessages = {
     '使用全域壓縮提示詞',
   ],
   'Use global settings': ['Use global settings', '使用全局设置', '使用全域設定'],
-  'Close conversation compaction prompt': [
-    'Close conversation compaction prompt',
-    '关闭会话压缩提示词',
-    '關閉對話壓縮提示詞',
-  ],
   'Cancel conversation compaction prompt': [
     'Cancel conversation compaction prompt',
     '取消编辑会话压缩提示词',
@@ -403,7 +397,6 @@ export const conversationMessages = {
       '会开始一个新的 Bot。当前 Bot 会连同它的对话一起归档，它的待办和定时任务不会带到新 Bot。',
       '會開始一個新的 Bot。目前的 Bot 會連同它的對話一起封存，它的待辦和定時任務不會帶到新 Bot。',
     ],
-  'Keep the current Bot': ['Keep the current Bot', '保留当前 Bot', '保留目前的 Bot'],
   'Start over': ['Start over', '重新开始', '重新開始'],
   'Starting over…': ['Starting over…', '正在重新开始…', '正在重新開始…'],
   'The current Bot could not be renamed: {reason}': [
@@ -470,7 +463,6 @@ export const conversationMessages = {
     '請選擇 {minimum}–{maximum} 個選項。',
   ],
   'Close attachment picker': ['Close attachment picker', '关闭附件选择器', '關閉附件選擇器'],
-  'Close commands': msg_paletteClose,
   'Collapse session browser': ['Collapse session browser', '收起对话侧栏', '收合對話側欄'],
   'Close picker': ['Close picker', '关闭选择器', '關閉選擇器'],
   'Close turn usage': ['Close turn usage', '关闭本轮用量', '關閉本輪用量'],
