@@ -124,6 +124,32 @@ pub(super) fn permissions() -> WorkspacePermissions {
     }
 }
 
+fn investigation_prompt(language: Language, direction: &str) -> String {
+    let direction = direction.trim();
+    let (focused, broad, finish) = match language {
+        Language::ZhCn => (
+            "执行一次已授权的只读专题调查，围绕以下方向核查：",
+            "执行一次已授权的只读广域探索。结合调查记忆中的进度、修正和用户反馈，在可访问的文件和会话历史中自主寻找值得关注的方向。考虑不同主题，优先核查有用的新变化和尚未解决的线索。用原始来源核实发现，避免重复通知已经报告的内容。必要时保存简短的调查进度，供下次接续。",
+            "仅检查相关且已授权的材料。不要修改文件、扩大权限或安排后续任务。结束时必须调用 DiscoveryComplete：没有值得通知的发现用 no_report，附简短调查记录；有发现用 report，说明实际依据与来源。普通回复不代表已提交结果。",
+        ),
+        Language::ZhTw => (
+            "執行一次已授權的唯讀專題調查，圍繞以下方向查核：",
+            "執行一次已授權的唯讀廣域探索。結合調查記憶中的進度、修正和使用者回饋，在可存取的檔案和對話歷史中自主尋找值得關注的方向。考慮不同主題，優先查核有用的新變化和尚未解決的線索。用原始來源核實發現，避免重複通知已經報告的內容。必要時保存簡短的調查進度，供下次接續。",
+            "只檢查相關且已授權的資料。不要修改檔案、擴大權限或安排後續任務。結束時必須呼叫 DiscoveryComplete：沒有值得通知的發現用 no_report，附簡短調查記錄；有發現用 report，說明實際依據與來源。一般回覆不代表已提交結果。",
+        ),
+        _ => (
+            "Perform one authorized read-only investigation focused on this direction:",
+            "Perform one authorized read-only broad exploration. Use prior progress, corrections, and user feedback from discovery memory to find promising leads in accessible files and conversation history. Consider different topics and prioritize useful changes or unresolved leads. Verify findings against original sources, and avoid notifying the user again about findings already reported. Save brief progress when it would help a later investigation.",
+            "Inspect only relevant, authorized material. Do not modify files, expand permissions or schedule more work. Finish with DiscoveryComplete: no_report with a concise investigation note when there is nothing worth notifying; report with concrete findings and source references otherwise. Ordinary text is not a submitted result.",
+        ),
+    };
+    if direction.is_empty() {
+        format!("{broad}\n\n{finish}")
+    } else {
+        format!("{focused}\n{direction}\n\n{finish}")
+    }
+}
+
 impl scheduler::Scheduler {
     pub(in crate::owner) async fn discovery_status(
         &self,
@@ -435,11 +461,8 @@ impl Owner {
             let request = hex::encode(Sha256::digest(fire.id.as_bytes()));
             let worker = format!("{}{}", self.prefix, &request[..32]);
             let recall = *recall;
-            let mut input: MessageInput = match approval.language {
-                Language::ZhCn => format!("执行一次已授权的只读调查：\n{}\n\n仅检查本次任务相关且已授权的材料。不要修改文件、扩大权限或安排后续任务。结束时必须调用 DiscoveryComplete：没有值得通知的发现用 no_report，附简短调查记录；有发现用 report，说明实际依据与来源。普通回复不代表已提交结果。", fire.intent.body()),
-                Language::ZhTw => format!("執行一次已授權的唯讀調查：\n{}\n\n只檢查本次任務相關且已授權的資料。不要修改檔案、擴大權限或安排後續任務。結束時必須呼叫 DiscoveryComplete：沒有值得通知的發現用 no_report，附簡短調查記錄；有發現用 report，說明實際依據與來源。一般回覆不代表已提交結果。", fire.intent.body()),
-                _ => format!("Perform one authorized read-only investigation:\n{}\n\nInspect only relevant, authorized material. Do not modify files, expand permissions or schedule more work. Finish with DiscoveryComplete: no_report with a concise investigation note when there is nothing worth notifying; report with concrete findings and source references otherwise. Ordinary text is not a submitted result.", fire.intent.body()),
-            }.into();
+            let mut input: MessageInput =
+                investigation_prompt(approval.language, fire.intent.body()).into();
             input.text.push_str(
                 &self
                     .scheduler

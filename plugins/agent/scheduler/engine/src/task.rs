@@ -21,11 +21,14 @@ use crate::{Error, invalid, schedule::Schedule};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Timing policy only needs validation and notification delivery semantics.
+/// Execution owners supply effect validation and delivery semantics.
 /// Each execution owner supplies its own effect and authority types.
 pub trait TaskEffect: Clone + Serialize {
     fn validate(&self) -> Result<(), Error>;
     fn is_notification(&self) -> bool;
+    fn allows_empty_intent(&self) -> bool {
+        self.is_notification()
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -129,7 +132,7 @@ impl<E: TaskEffect> Create<E> {
 
     pub(crate) fn validate_fields(&self) -> Result<(), Error> {
         text(&self.title)?;
-        if !self.effect.is_notification() {
+        if !self.effect.allows_empty_intent() || !self.intent_body.trim().is_empty() {
             text(&self.intent_body)?;
         }
         self.schedule.validate()?;

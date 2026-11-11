@@ -38,6 +38,9 @@ test('approval pins the displayed scope and model and rejects invalid intervals'
   const input = discoveryInput(approval, 'Discovery', ' Check new changes ', 30, 1000, 'UTC');
   assert.deepEqual(input.task.effect, { kind: 'discovery', ...approval });
   assert.equal(input.task.intentBody, 'Check new changes');
+  const broad = discoveryInput(approval, 'Discovery', '  ', 30, 1000, 'UTC');
+  assert.equal(broad.task.intentBody, '');
+  assert.deepEqual(broad.task.effect, input.task.effect);
   assert.deepEqual(input.task.schedule, { kind: 'interval', everySeconds: 1800, startAt: 1801000 });
   for (const minutes of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER]) {
     assert.throws(() => discoveryInput(approval, 'Discovery', 'check', minutes, 1000, 'UTC'));
@@ -89,15 +92,8 @@ test('editing an approved plan preserves cadence, fire limit and expiry unless t
     timezone: 'Asia/Shanghai',
     misfire: 'skip',
   };
-  const kept = discoveryInput(
-    approval,
-    'Discovery',
-    'Revised instructions',
-    30,
-    10000,
-    'UTC',
-    existing,
-  );
+  const kept = discoveryInput(approval, 'Discovery', '', 30, 10000, 'UTC', existing);
+  assert.equal(kept.task.intentBody, '');
   assert.deepEqual(kept.task.schedule, existing.task.schedule);
   assert.equal(kept.task.maxFires, 4);
   assert.equal(kept.task.expiresAt, 9000000);

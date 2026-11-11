@@ -126,6 +126,8 @@ proposal until a human approves its exact workspace, permissions and model throu
 `schedule`. Human-created schedules use the `discovery` effect with that Bot as the
 target. Existing `once`, `interval` and `cron` timing, `trigger_now`, `pause` and
 `resume` controls apply; no discovery work is enabled by default.
+An empty `intentBody` starts broad exploration of accessible material. A
+non-empty direction focuses the investigation on that topic.
 
 Each fire creates a fresh ordinary worker Session. It inherits the approved workspace
 and model but uses read-only permissions without permission requests. Its tools are

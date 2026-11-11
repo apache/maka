@@ -19,10 +19,10 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 export const discoveryMessages = {
   'Proactive discovery': ['Proactive discovery', '主动发现', '主動發現'],
-  'Discovery default intent': [
-    'Look for useful, actionable changes in the approved workspace and available conversation history. Read prior investigation progress, corrections and user feedback first. Choose promising leads and verify them against original sources. Report new findings that warrant the user’s attention; otherwise finish quietly. Keep unfinished progress for the next investigation.',
-    '在已批准的工作区和可用会话历史中寻找有用、可行动的新变化。先读取此前调查进度、修正和用户反馈，再自主选择有价值的线索，并对照原始来源核实。仅报告值得用户关注的新发现；没有合适的发现时静默结束。为下一轮保留未完成的调查进度。',
-    '在已核准的工作區與可用對話歷史中尋找有用、可採取行動的新變化。先讀取先前調查進度、修正和使用者回饋，再自主選擇有價值的線索，並核對原始來源。僅報告值得使用者關注的新發現；沒有合適的發現時靜默結束。為下一輪保留未完成的調查進度。',
+  'Discovery broad placeholder': [
+    'Leave blank for broad exploration',
+    '留空则进行广域探索',
+    '留空則進行廣域探索',
   ],
   'Discovery existing schedule': [
     'This plan’s existing schedule will be preserved.',
@@ -30,11 +30,15 @@ export const discoveryMessages = {
     '保留此計畫原有的排程方式。',
   ],
   'Discovery interval (minutes)': ['Interval (minutes)', '检查间隔（分钟）', '檢查間隔（分鐘）'],
-  'Discovery instructions': ['What to investigate', '调查方向', '調查方向'],
+  'Discovery instructions': [
+    'Investigation direction (optional)',
+    '调查方向（可选）',
+    '調查方向（選填）',
+  ],
   'Discovery permission notice': [
-    'Recurring read-only model requests use this Bot’s workspace and the model shown below. They may incur charges. Findings go to Bot; existing permission rules still apply.',
-    '定期使用下方模型，只读调查当前 Bot 工作区，可能产生模型费用。发现交给 Bot 处理，继续遵守现有权限规则。',
-    '定期使用下方模型，唯讀調查目前 Bot 工作區，可能產生模型費用。發現交給 Bot 處理，繼續遵守現有權限規則。',
+    'Recurring read-only investigations start from this Bot’s workspace and use existing access rules. They use the model shown below and may incur charges. Findings go to Bot.',
+    '定期调查以当前 Bot 工作区为起点，按现有权限只读访问。调查使用下方模型，可能产生费用，发现交给 Bot 处理。',
+    '定期調查以目前 Bot 工作區為起點，依現有權限唯讀存取。調查使用下方模型，可能產生費用，發現交給 Bot 處理。',
   ],
   'Discovery workspace': ['Bot workspace', 'Bot 工作区', 'Bot 工作區'],
   'Change discovery model': ['Change model', '更换模型', '更換模型'],
@@ -77,9 +81,9 @@ export const discoveryMessages = {
     '計畫已變更，請重新整理並核對後重試。',
   ],
   'Discovery invalid settings': [
-    'Enter investigation instructions and a positive whole number of minutes.',
-    '请输入调查方向和大于零的整数分钟数。',
-    '請輸入調查方向及大於零的整數分鐘數。',
+    'Enter a positive whole number of minutes.',
+    '请输入大于零的整数分钟数。',
+    '請輸入大於零的整數分鐘數。',
   ],
   'Discovery updates disconnected': [
     'Status updates disconnected. Refresh to reconnect.',

@@ -70,6 +70,9 @@ impl maka_scheduler::task::TaskEffect for ScheduledEffect {
     fn is_notification(&self) -> bool {
         matches!(self, Self::Reminder)
     }
+    fn allows_empty_intent(&self) -> bool {
+        matches!(self, Self::Reminder | Self::Discovery { .. })
+    }
 }
 /// Exact observed source boundary. This data is checked against the original
 /// Session; passing it never grants execution by itself.

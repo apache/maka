@@ -137,11 +137,16 @@ impl Fixture {
             .unwrap_or_else(|e| panic!("{method}: {e}"))
     }
     async fn create(&self, title: &str) -> String {
-        self.create_scheduled(title, json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000})).await
+        self.create_scheduled(
+            title,
+            &format!("Check authorized sources for {title}"),
+            json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000}),
+        )
+        .await
     }
-    async fn create_scheduled(&self, title: &str, schedule: Value) -> String {
+    async fn create_scheduled(&self, title: &str, direction: &str, schedule: Value) -> String {
         let config = self.owner().session(&self.bot).await.unwrap().configuration;
-        let result=self.query("schedule",json!({"kind":"create","input":{"task":{"title":title,"intentBody":format!("Check authorized sources for {title}"),"schedule":schedule,"effect":{"kind":"discovery","target":{"sessionId":self.bot,"workspace":config.workspace,"permissions":config.permissions,"boundaryRevision":config.boundary_revision,"binding":config.binding},"model":{"connectionId":self.model["connectionId"],"modelId":"llama3.2"},"thinkingLevel":null},"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest"}})).await;
+        let result=self.query("schedule",json!({"kind":"create","input":{"task":{"title":title,"intentBody":direction,"schedule":schedule,"effect":{"kind":"discovery","target":{"sessionId":self.bot,"workspace":config.workspace,"permissions":config.permissions,"boundaryRevision":config.boundary_revision,"binding":config.binding},"model":{"connectionId":self.model["connectionId"],"modelId":"llama3.2"},"thinkingLevel":null},"maxFires":null,"expiresAt":null},"timezone":"UTC","misfire":"latest"}})).await;
         assert_eq!(result["kind"], "committed", "{result}");
         result["taskId"].as_str().unwrap().to_owned()
     }
@@ -357,9 +362,17 @@ async fn discovery_is_silent_read_only_and_retains_bounded_progress_after_reopen
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
     f.setting("toolDiscovery", json!(true)).await;
-    let task = f.create("Continuity").await;
+    let task = f
+        .create_scheduled(
+            "Continuity",
+            "  ",
+            json!({"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000}),
+        )
+        .await;
+    assert_eq!(f.detail(&task).await["task"]["intent"]["body"], "");
     f.change(&task, "trigger_now").await;
     let (mut socket, body) = next(&listener).await;
+    assert!(body.to_string().contains("read-only broad exploration"));
     let names: Vec<_> = body["tools"]
         .as_array()
         .unwrap()
@@ -403,6 +416,7 @@ async fn discovery_is_silent_read_only_and_retains_bounded_progress_after_reopen
     f.reopen().await;
     f.change(&task, "trigger_now").await;
     let (mut socket, body) = next(&listener).await;
+    assert!(body.to_string().contains("read-only broad exploration"));
     assert!(body.to_string().contains("Discovery continuation"));
     assert!(!body.to_string().contains(&note));
     let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
@@ -1365,10 +1379,14 @@ async fn discovery_one_shot_timer_runs_without_a_manual_trigger() {
     let task = f
         .create_scheduled(
             "One check",
+            "Look for a changed release date.",
             json!({"kind":"once","runAt":maka_agent_authority::now()+2_000}),
         )
         .await;
-    let (mut socket, _) = next(&listener).await;
+    let (mut socket, request) = next(&listener).await;
+    let request = request.to_string();
+    assert!(request.contains("Look for a changed release date."));
+    assert!(!request.contains("read-only broad exploration"));
     tool(
         &mut socket,
         "DiscoveryComplete",

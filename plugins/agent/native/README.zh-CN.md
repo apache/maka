@@ -123,6 +123,7 @@ Maka 默认组合启用 `automaticTitles`。通过 `automaticTitle: true` 创建
 `schedule` 批准其精确工作区、权限和模型。用户直接创建时使用 `discovery` 效果，
 以当前 Bot 为目标。沿用 `once`、`interval`、`cron` 定时及 `trigger_now`、`pause`、
 `resume` 控制；默认不会启用任何调查。
+留空 `intentBody` 时，worker 从可访问的材料中自主寻找值得关注的方向；填写后围绕该方向做专题调查。
 
 每次触发新建一个普通 worker Session，沿用已批准的工作区和模型，权限收窄为只读，
 禁止申请额外权限。工具仅包括当前组合中的 Files 读取、图片读取、glob、grep，已启用的

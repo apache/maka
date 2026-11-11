@@ -86,7 +86,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
   // Editing is based on the revision the user opened, not a later watch update.
   const editingPlan = signal<AgentScheduledDetail | null>(null);
   const minutes = signal('30'),
-    intent = signal(tr('Discovery default intent'));
+    intent = signal('');
   const error = createText();
   const modelLabel = signal('');
   let displayedModel = '';
@@ -165,7 +165,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     if (fresh) {
       selected.set(null);
       detail.set(null);
-      intent.set(tr('Discovery default intent'));
+      intent.set('');
       minutes.set('30');
     }
     editing.set(true);
@@ -440,6 +440,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
               </If>
               <SettingsField
                 label={tr('Discovery instructions')}
+                placeholder={tr('Discovery broad placeholder')}
                 value={intent()}
                 change={intent.set}
                 multiline

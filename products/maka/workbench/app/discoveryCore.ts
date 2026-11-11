@@ -46,10 +46,7 @@ export function discoveryInput(
     original && (original.kind !== 'interval' || minutes === original.everySeconds / 60);
   const interval = minutes * 60;
   const start = now + interval * 1000;
-  if (
-    !intent.trim() ||
-    (!preserve && (!Number.isSafeInteger(minutes) || minutes < 1 || !Number.isSafeInteger(start)))
-  )
+  if (!preserve && (!Number.isSafeInteger(minutes) || minutes < 1 || !Number.isSafeInteger(start)))
     throw new Error('invalid_discovery_settings');
   return {
     task: {

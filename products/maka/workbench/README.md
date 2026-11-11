@@ -123,4 +123,6 @@ Expand **Details** for installation, authentication and model diagnostics. Nativ
 
 Open **Proactive discovery** in the current Bot header to approve a periodic, read-only investigation. The panel shows the Bot workspace and selected model before approval; you can edit the direction and interval, pause or resume, or check once. It shows the active investigation and recent outcome, with links to the original worker conversation. Changing the source boundary requires fresh approval through the existing Scheduler.
 
+Leave the direction blank for broad exploration, or enter a topic to focus each check.
+
 Published findings carry their investigation identity in the Bot outbox. Select text in a Bot reply and choose **Quote selection** from its context menu to attach it to the composer. Quotes survive draft reload, queueing and send recovery; feedback can resolve a single quoted finding without asking the model to reconstruct its record ID. The selected model is stored with the plan; changing the chat model alone does not change an existing plan.
