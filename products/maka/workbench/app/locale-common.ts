@@ -154,6 +154,35 @@ export const commonMessages = {
   Thin: ['Thin', '细', '細'],
   Medium: ['Medium', '中', '中'],
   Thick: ['Thick', '粗', '粗'],
+  Saving: ['Saving', '保存', '儲存'],
+  'Save to': ['Save to', '保存到', '儲存到'],
+  'Where macOS saves its screenshots': [
+    'Where macOS saves its screenshots',
+    'macOS 系统截图的保存位置',
+    'macOS 系統截圖的儲存位置',
+  ],
+  'Use macOS’s folder': ['Use macOS’s folder', '使用系统位置', '使用系統位置'],
+  'Choose…': ['Choose…', '选择…', '選擇…'],
+  Marks: ['Marks', '标注', '標註'],
+  'Each screenshot starts with these.': [
+    'Each screenshot starts with these.',
+    '每次截图开始时使用这些设置。',
+    '每次截圖開始時使用這些設定。',
+  ],
+  Color: ['Color', '颜色', '顏色'],
+  'Line width': ['Line width', '粗细', '粗細'],
+  Snapping: ['Snapping', '吸附', '吸附'],
+  'Snap to boxes in the picture': [
+    'Snap to boxes in the picture',
+    '吸附画面中的矩形',
+    '吸附畫面中的矩形',
+  ],
+  'Besides windows and their controls, blocks of one color and outlined boxes, such as buttons and fields in web pages and terminals.':
+    [
+      'Besides windows and their controls, blocks of one color and outlined boxes, such as buttons and fields in web pages and terminals.',
+      '除了窗口和控件，还吸附纯色块和描边框，例如网页和终端里的按钮、输入框。',
+      '除了視窗和控制項，還吸附純色塊和描邊框，例如網頁和終端機裡的按鈕、輸入框。',
+    ],
   'Allow Accessibility to snap to the controls inside windows.': [
     'Allow Accessibility to snap to the controls inside windows.',
     '允许辅助功能后，可以吸附窗口里的控件。',

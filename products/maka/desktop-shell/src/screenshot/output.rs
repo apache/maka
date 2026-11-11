@@ -28,7 +28,7 @@ use nsh_platform_macos::{
     objc2_foundation::{NSData, NSDate, NSDateFormatter, NSDictionary, NSString, NSUserDefaults},
 };
 use objc2_core_graphics::CGImage;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub(super) fn copy(image: &CGImage) -> Result<(), String> {
     let rep = NSBitmapImageRep::initWithCGImage(NSBitmapImageRep::alloc(), image);
@@ -45,11 +45,16 @@ pub(super) fn copy(image: &CGImage) -> Result<(), String> {
     Ok(())
 }
 
-/// Saves a PNG where macOS puts its own screenshots, the desktop unless that was changed.
-pub(super) fn save(image: &CGImage) -> Result<PathBuf, String> {
+/// Saves a PNG in `folder`, or where macOS puts its own screenshots, the desktop unless that was
+/// changed.
+pub(super) fn save(image: &CGImage, folder: Option<&Path>) -> Result<PathBuf, String> {
+    let folder = match folder {
+        Some(folder) if folder.is_dir() => folder.to_path_buf(),
+        Some(folder) => return Err(format!("the folder {} is gone", folder.display())),
+        None => system_folder().ok_or("cannot find the screenshot folder")?,
+    };
     let rep = NSBitmapImageRep::initWithCGImage(NSBitmapImageRep::alloc(), image);
     let png = png(&rep)?;
-    let folder = folder().ok_or("cannot find the screenshot folder")?;
     let formatter = NSDateFormatter::new();
     formatter.setDateFormat(Some(&NSString::from_str("yyyy-MM-dd HH.mm.ss")));
     let stamp = formatter.stringFromDate(&NSDate::now());
@@ -72,7 +77,7 @@ fn png(rep: &NSBitmapImageRep) -> Result<Retained<NSData>, String> {
     .ok_or_else(|| "cannot encode the screenshot as PNG".into())
 }
 
-fn folder() -> Option<PathBuf> {
+fn system_folder() -> Option<PathBuf> {
     let chosen = NSUserDefaults::initWithSuiteName(
         NSUserDefaults::alloc(),
         Some(&NSString::from_str("com.apple.screencapture")),

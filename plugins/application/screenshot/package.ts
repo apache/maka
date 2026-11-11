@@ -41,6 +41,13 @@ export default {
       imports: {},
       contributions: {
         tool: { kind: 'view', contract: 'maka.quick-launcher.tool' },
+        preferences: {
+          kind: 'settings',
+          title: {
+            fallback: 'Screenshot',
+            translations: { 'zh-CN': '截图', 'zh-TW': '截圖' },
+          },
+        },
       },
     },
   },

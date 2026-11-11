@@ -38,6 +38,15 @@ import {
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
 import { tr } from '../../../products/maka/workbench/app/locale';
+import {
+  COLORS,
+  createSettings,
+  ScreenshotSettingsPage,
+  SIZES,
+  type InkSize,
+  type Preferences,
+  type ScreenshotSettings,
+} from './settings';
 
 const TERMS = ['screenshot', 'capture', 'snip', 'jietu', 'jt', '截图', '截圖', '截屏'];
 
@@ -50,7 +59,7 @@ const SCREEN_RECORDING_SETTINGS =
 
 /** The desktop shell's frozen display: it selects a region, takes marks on it, and copies, saves or pins it. */
 const Stage = nativeComponent<
-  {},
+  { folder: string | null; pictureBoxes: boolean },
   {
     ready: { elements: boolean };
     selection: Rect | null;
@@ -59,7 +68,7 @@ const Stage = nativeComponent<
     failed: Failure;
   }
 >('maka.screenshot', {
-  props: [],
+  props: ['folder', 'pictureBoxes'],
   events: ['ready', 'selection', 'done', 'cancel', 'failed'],
 });
 
@@ -74,14 +83,6 @@ const TOOLS = [
   ['number', 'Numbered marker'],
 ] as const;
 type Tool = (typeof TOOLS)[number][0];
-
-const COLORS = ['#FF3B30', '#FFCC00', '#34C759', '#2A8FFF', '#FFFFFF', '#1C1C1E'] as const;
-const SIZES = [
-  ['small', 'Thin', 6],
-  ['medium', 'Medium', 9],
-  ['large', 'Thick', 12],
-] as const;
-type InkSize = (typeof SIZES)[number][0];
 
 const BAR = 38;
 const INK_BAR = 34;
@@ -305,7 +306,7 @@ function Toolbar(props: {
   );
 }
 
-function Overlay(props: { screen: Size; finish(): void }) {
+function Overlay(props: { screen: Size; preferences: Preferences; finish(): void }) {
   let stage: NativeComponentRef | undefined;
   // The stage takes the keys without activating Maka, which would bring its main window forward.
   currentWindow().focus();
@@ -315,15 +316,20 @@ function Overlay(props: { screen: Size; finish(): void }) {
   // The stage keeps the tool while the toolbar hides during a drag, so the choice lives here too.
   const ink: Ink = {
     tool: signal<Tool | null>(null),
-    color: signal<string>(COLORS[0]),
-    size: signal<InkSize>('medium'),
+    color: signal(props.preferences.color),
+    size: signal(props.preferences.size),
   };
   return (
     <View style={{ flex: 1 }}>
       <Stage
         ref={(node) => (stage = node)}
         style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
-        onReady={(ready) => elements.set(ready.elements)}
+        folder={props.preferences.folder}
+        pictureBoxes={props.preferences.pictureBoxes}
+        onReady={(ready) => {
+          elements.set(ready.elements);
+          stage?.command('ink', { color: ink.color(), size: ink.size() });
+        }}
         onSelection={(rect) => selection.set(rect)}
         onDone={props.finish}
         onCancel={props.finish}
@@ -407,31 +413,34 @@ function Overlay(props: { screen: Size; finish(): void }) {
 }
 
 /** One frozen stage per display; finishing on any of them closes them all. */
-function capture() {
+function capture(preferences: Preferences) {
   const windows: WindowRef[] = [];
   const finish = () => windows.splice(0).forEach((window) => window.close());
   for (const display of displays()) {
     windows.push(
-      Window.open(() => <Overlay screen={display.bounds.size} finish={finish} />, {
-        id: `maka.screenshot.${display.id}`,
-        kind: 'popup',
-        title: tr('Capture a screen region'),
-        display: display.id,
-        defaultPosition: { x: display.bounds.origin.x, y: display.bounds.origin.y },
-        defaultSize: { width: display.bounds.size.width, height: display.bounds.size.height },
-        activate: false,
-        level: 'aboveDock',
-        transparent: true,
-        shadow: false,
-        closeOnBlur: false,
-        closeOnEscape: false,
-      }),
+      Window.open(
+        () => <Overlay screen={display.bounds.size} preferences={preferences} finish={finish} />,
+        {
+          id: `maka.screenshot.${display.id}`,
+          kind: 'popup',
+          title: tr('Capture a screen region'),
+          display: display.id,
+          defaultPosition: { x: display.bounds.origin.x, y: display.bounds.origin.y },
+          defaultSize: { width: display.bounds.size.width, height: display.bounds.size.height },
+          activate: false,
+          level: 'aboveDock',
+          transparent: true,
+          shadow: false,
+          closeOnBlur: false,
+          closeOnEscape: false,
+        },
+      ),
     );
   }
 }
 
-function Screenshot(props: { input: QuickToolInput }) {
-  const { input } = props;
+function Screenshot(props: { input: QuickToolInput; settings: ScreenshotSettings }) {
+  const { input, settings } = props;
   input.attach({
     items: () => [],
     entries: () => [
@@ -442,7 +451,7 @@ function Screenshot(props: { input: QuickToolInput }) {
         run: () => {
           // The launcher floats above everything, so it has to be gone before the screen freezes.
           input.close();
-          capture();
+          capture(settings.current());
         },
       },
     ],
@@ -450,13 +459,20 @@ function Screenshot(props: { input: QuickToolInput }) {
   return null;
 }
 
-export const activate: UiModule<JSX.Element>['activate'] = () => ({
-  exports: {
-    tool: {
-      kind: 'view',
-      contract: quickToolView.id,
-      render: ({ input }: UiEmbeddedViewProps<QuickToolInput, JSX.Element>) =>
-        platform.os === 'macos' ? <Screenshot input={input} /> : null,
+export const activate: UiModule<JSX.Element>['activate'] = () => {
+  const settings = createSettings();
+  return {
+    exports: {
+      tool: {
+        kind: 'view',
+        contract: quickToolView.id,
+        render: ({ input }: UiEmbeddedViewProps<QuickToolInput, JSX.Element>) =>
+          platform.os === 'macos' ? <Screenshot input={input} settings={settings} /> : null,
+      },
+      preferences: {
+        kind: 'settings',
+        render: () => <ScreenshotSettingsPage settings={settings} />,
+      },
     },
-  },
-});
+  };
+};

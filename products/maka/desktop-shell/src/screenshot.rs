@@ -35,7 +35,7 @@ use annotate::{Ink, Mark, Marks, Shape, Size, Tool};
 use area::{Area, Edges, Pixel, Window, edges_near, snap, targets};
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, MainThreadBound};
-use nsh_engine::JsonValue;
+use nsh_engine::{HostCall, JsonValue};
 use nsh_platform_macos::{
     ComponentContext, Components, NativeComponent,
     objc2::{
@@ -46,16 +46,17 @@ use nsh_platform_macos::{
         sel,
     },
     objc2_app_kit::{
-        NSAutoresizingMaskOptions, NSBezierPath, NSBitmapImageRep, NSColor, NSColorSpace, NSCursor,
-        NSEvent, NSEventModifierFlags, NSFocusRingType, NSFont, NSFontAttributeName,
-        NSForegroundColorAttributeName, NSGraphicsContext, NSImage, NSImageInterpolation,
-        NSImageScaling, NSImageView, NSPasteboard, NSPasteboardTypeString, NSResponder, NSScreen,
-        NSStringDrawing, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindingRule,
-        NSWorkspace,
+        NSApplication, NSAutoresizingMaskOptions, NSBezierPath, NSBitmapImageRep, NSColor,
+        NSColorSpace, NSCursor, NSEvent, NSEventModifierFlags, NSFocusRingType, NSFont,
+        NSFontAttributeName, NSForegroundColorAttributeName, NSGraphicsContext, NSImage,
+        NSImageInterpolation, NSImageScaling, NSImageView, NSModalResponse, NSModalResponseOK,
+        NSOpenPanel, NSPasteboard, NSPasteboardTypeString, NSPopUpMenuWindowLevel, NSResponder,
+        NSScreen, NSStringDrawing, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
+        NSWindingRule, NSWorkspace,
     },
     objc2_foundation::{
         NSArray, NSBundle, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSPoint,
-        NSRect, NSSize, NSString,
+        NSRect, NSSize, NSString, NSURL,
     },
 };
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
@@ -71,6 +72,7 @@ use objc2_screen_capture_kit::{
 use paint::{Canvas, inset};
 use std::{
     cell::{Cell, RefCell},
+    path::PathBuf,
     ptr::NonNull,
     rc::Rc,
     sync::Arc,
@@ -93,6 +95,37 @@ const SMALLEST_SHAPE: f64 = 16.0;
 const SNAP: f64 = 5.0;
 /// Scrolled points that walk one target out or in; a wheel notch always does.
 const SCROLL_STEP: f64 = 24.0;
+
+/// Answers `screenshot.chooseFolder` with a folder from an open panel, or null when cancelled.
+/// The panel floats above the launcher it is asked from, which floats above other windows.
+pub(crate) fn choose_folder(call: HostCall) {
+    DispatchQueue::main().exec_async(move || {
+        let mtm = MainThreadMarker::new().expect("the main queue runs on the main thread");
+        let panel = NSOpenPanel::openPanel(mtm);
+        panel.setCanChooseFiles(false);
+        panel.setCanChooseDirectories(true);
+        panel.setCanCreateDirectories(true);
+        panel.setAllowsMultipleSelection(false);
+        panel.setLevel(NSPopUpMenuWindowLevel);
+        if let Some(current) = call.data()["current"].as_str() {
+            panel.setDirectoryURL(Some(&NSURL::fileURLWithPath(&NSString::from_str(current))));
+        }
+        // The launcher never activates Maka, and the panel takes no keys until it does.
+        NSApplication::sharedApplication(mtm).activate();
+        let chosen = panel.clone();
+        let call = Cell::new(Some(call));
+        let handler = RcBlock::new(move |response: NSModalResponse| {
+            let Some(call) = call.take() else { return };
+            let path = (response == NSModalResponseOK)
+                .then(|| chosen.URL())
+                .flatten()
+                .and_then(|url| url.path())
+                .map(|path| path.to_string());
+            call.resolve(path.map_or(JsonValue::Null, JsonValue::from));
+        });
+        panel.beginWithCompletionHandler(&handler);
+    });
+}
 
 pub(crate) fn register(components: &Components, mtm: MainThreadMarker) {
     components.register(
@@ -208,6 +241,10 @@ struct StageState {
     marks: RefCell<Marks>,
     draft: RefCell<Option<Mark>>,
     editing: RefCell<Option<Editing>>,
+    /// Where Save puts the picture; macOS's screenshot folder when unset.
+    folder: RefCell<Option<PathBuf>>,
+    /// Whether boxes seen in the picture are targets, besides windows and their controls.
+    picture_boxes: Cell<bool>,
 }
 
 define_class!(
@@ -301,6 +338,8 @@ impl Stage {
             marks: RefCell::new(Marks::default()),
             draft: RefCell::new(None),
             editing: RefCell::new(None),
+            folder: RefCell::new(None),
+            picture_boxes: Cell::new(true),
         });
         // SAFETY: NSView's designated initializer, with all subclass ivars initialized.
         let stage: Retained<Self> =
@@ -453,10 +492,12 @@ impl Stage {
                 |stage, found| stage.found(found),
             );
         }
-        self.in_background(
-            move || shapes::find(&picture, smallest_shape),
-            |stage, found| stage.shapes(found),
-        );
+        if self.ivars().picture_boxes.get() {
+            self.in_background(
+                move || shapes::find(&picture, smallest_shape),
+                |stage, found| stage.shapes(found),
+            );
+        }
     }
 
     /// Runs `work` off the main thread and hands its result to `then` on it.
@@ -972,7 +1013,7 @@ impl Stage {
         let Some((picture, _)) = self.finished() else {
             return;
         };
-        match output::save(&picture) {
+        match output::save(&picture, self.ivars().folder.borrow().as_deref()) {
             Ok(_) => self.emit("done"),
             Err(message) => self.fail(message, false),
         }
@@ -984,7 +1025,12 @@ impl Stage {
             return;
         };
         let on_screen = window.convertRectToScreen(self.convertRect_toView(rect, None));
-        pin::pin(self.mtm(), picture, on_screen);
+        pin::pin(
+            self.mtm(),
+            picture,
+            on_screen,
+            self.ivars().folder.borrow().clone(),
+        );
         self.emit("done");
     }
 
@@ -1103,7 +1149,18 @@ impl NativeComponent for StageComponent {
         self.container.clone()
     }
 
-    fn set_prop(&mut self, _name: &str, _value: Option<&JsonValue>) {}
+    fn set_prop(&mut self, name: &str, value: Option<&JsonValue>) {
+        let state = self.stage.ivars();
+        match name {
+            "folder" => {
+                *state.folder.borrow_mut() = value.and_then(JsonValue::as_str).map(PathBuf::from)
+            }
+            "pictureBoxes" => state
+                .picture_boxes
+                .set(value.and_then(JsonValue::as_bool).unwrap_or(true)),
+            _ => {}
+        }
+    }
 
     fn command(&mut self, name: &str, args: &JsonValue) {
         let stage = &self.stage;
