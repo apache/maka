@@ -25,7 +25,7 @@ import type {
   AgentObservation,
   AgentPreviewPage,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import type { Row } from './history';
+import { modelPartRowId, stableRowId, type Row } from './history.ts';
 import { updateToolActivity, type ToolActivity } from './toolActivity.ts';
 
 type Cut = Extract<AgentPreviewPage, { kind: 'cut' }>;
@@ -72,16 +72,15 @@ class PreviewAssembly {
   private retiredTools = new Set<string>();
   private closedSteps = new Set<string>();
 
-  commit(runId: RunId, stepId: StepId, attemptId: ModelAttemptId, messageId?: string) {
+  commit(runId: RunId, stepId: StepId, attemptId: ModelAttemptId, ordinal?: number) {
     const step = `${runId}/${stepId}/${attemptId}`;
-    if (messageId === undefined) {
+    if (ordinal === undefined) {
       this.closedSteps.add(step);
       if (this.identity.endsWith(`/${step}`)) this.bodies.clear();
     } else {
-      this.committed.add(`${step}/${messageId}`);
-      if (this.identity.endsWith(`/${step}`))
-        for (const key of this.bodies.keys())
-          if (key.startsWith(`${messageId}/`)) this.bodies.delete(key);
+      const key = modelPartRowId({ stepId, attemptId, ordinal });
+      this.committed.add(key);
+      if (this.identity.endsWith(`/${step}`)) this.bodies.delete(key);
     }
   }
 
@@ -114,7 +113,8 @@ class PreviewAssembly {
       this.revision = -1;
       this.bodies.clear();
       const step = `${page.runId}/${page.stepId}/${page.attemptId}/`;
-      this.committed = new Set([...this.committed].filter((key) => key.startsWith(step)));
+      const model = `model/${page.stepId}/${page.attemptId}/`;
+      this.committed = new Set([...this.committed].filter((key) => key.startsWith(model)));
       this.retiredTools = new Set([...this.retiredTools].filter((key) => key.startsWith(step)));
       this.closedSteps = new Set([...this.closedSteps].filter((key) => `${key}/` === step));
     }
@@ -125,15 +125,12 @@ class PreviewAssembly {
       return { rows, tools };
     this.revision = page.revision;
     for (const part of page.parts) {
-      if (this.committed.has(`${page.runId}/${page.stepId}/${page.attemptId}/${part.messageId}`))
-        continue;
-      const field =
-        part.field.kind === 'text'
-          ? part.field.textKind === 'thinking'
-            ? 'thinking'
-            : 'body'
-          : 'tool_input';
-      if (canonical.has(`${part.messageId}/${field}`)) continue;
+      const modelPart =
+        part.field.kind === 'text' && part.ordinal != null
+          ? { stepId: page.stepId, attemptId: page.attemptId, ordinal: part.ordinal }
+          : undefined;
+      const key = modelPart ? modelPartRowId(modelPart) : `${part.messageId}/tool_input`;
+      if (modelPart && (this.committed.has(key) || canonical.has(key))) continue;
       if (
         part.field.kind === 'tool_input' &&
         this.retiredTools.has(
@@ -141,7 +138,6 @@ class PreviewAssembly {
         )
       )
         continue;
-      const key = `${part.messageId}/${field}`;
       const previous = this.bodies.get(key);
       if (part.offset !== 0 && previous?.bytes !== part.offset)
         throw new Error('Preview body fragments are discontinuous');
@@ -155,7 +151,8 @@ class PreviewAssembly {
         tools = this.tool(page, part.field, body.text, tools);
         continue;
       }
-      if (part.ordinal == null) throw new Error('Text preview has no ordinal');
+      if (!modelPart) throw new Error('Text preview has no ordinal');
+      const field = part.field.textKind === 'thinking' ? 'thinking' : 'body';
       const row: LiveRow = {
         key: `live/${key}`,
         messageId: part.messageId,
@@ -171,8 +168,8 @@ class PreviewAssembly {
         text: body.text,
         totalBytes: part.totalBytes,
         prefix: true,
-        modelPart: { stepId: page.stepId, attemptId: page.attemptId, ordinal: part.ordinal },
-        preview: { stepOrder: this.stepOrder, ordinal: part.ordinal, revision: page.revision },
+        modelPart,
+        preview: { stepOrder: this.stepOrder, ordinal: modelPart.ordinal, revision: page.revision },
         closedAt: null,
       };
       const index = rows.findIndex((previous) => previous.key === row.key);
@@ -251,8 +248,8 @@ export class TranscriptOverlay {
     // Off-tail windows do not display overlays, so terminal rows need no retention there.
     this.tailThrough = tailThrough === null ? null : Math.max(this.tailThrough ?? 0, tailThrough);
     for (const row of this.rows)
-      if (canonical.has(`${row.messageId}/${row.field}`))
-        this.assembly.commit(row.runId, row.stepId, row.attemptId, row.messageId);
+      if (row.modelPart && canonical.has(stableRowId(row)))
+        this.assembly.commit(row.runId, row.stepId, row.attemptId, row.modelPart.ordinal);
     this.retireCovered(coveredFrom, windowStart);
   }
 
@@ -364,7 +361,7 @@ export class TranscriptOverlay {
             part.attemptId === fact.attemptId &&
             part.partId === fact.partId,
         );
-        if (!part || this.canonical.has(`${part.messageId}/${part.field}`)) break;
+        if (!part || this.canonical.has(stableRowId(part))) break;
         const key = `live/${part.messageId}/${part.field}`;
         const previous = this.rows.find((row) => row.key === key);
         if (previous?.sequence !== undefined && sequence <= previous.sequence) break;
@@ -384,7 +381,7 @@ export class TranscriptOverlay {
         break;
       }
       case 'part_committed':
-        this.assembly.commit(runId, fact.stepId, fact.attemptId, fact.messageId);
+        this.assembly.commit(runId, fact.stepId, fact.attemptId, fact.ordinal);
         this.parts = this.parts.filter(
           (part) =>
             part.runId !== runId ||
@@ -398,7 +395,9 @@ export class TranscriptOverlay {
             row.runId === runId &&
             row.stepId === fact.stepId &&
             row.attemptId === fact.attemptId &&
-            row.messageId === fact.messageId,
+            (row.modelPart
+              ? row.modelPart.ordinal === fact.ordinal
+              : row.messageId === fact.messageId),
         );
         this.closeSeats(
           sequence,
@@ -475,7 +474,7 @@ export class TranscriptOverlay {
         this.seats.delete(messageId);
     const rows = this.rows.filter(
       (row) =>
-        !this.canonical.has(`${row.messageId}/${row.field}`) &&
+        !this.canonical.has(stableRowId(row)) &&
         (row.closedAt === null ||
           (this.tailThrough !== null &&
             (row.preview

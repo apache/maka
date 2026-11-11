@@ -241,3 +241,6 @@ mod tests {
         app.wait_for("text:Shortcut received").unwrap();
     }
 }
+
+#[cfg(test)]
+mod desktop_residency_tests;

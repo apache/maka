@@ -32,7 +32,9 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
 
 mod sql;
-pub(crate) use sql::{DeliveryTarget, Event, consume, consume_external_steering, consume_steering};
+pub(crate) use sql::{
+    DeliveryTarget, Event, consume, consume_external_steering, consume_steering, stop_completions,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -60,6 +62,12 @@ pub struct SteeringTarget {
 pub enum Placement {
     Followup,
     Steering { run: RunId, expected_head: Head },
+    Completion { caller: RunId },
+}
+impl Placement {
+    pub fn is_followup(&self) -> bool {
+        matches!(self, Self::Followup | Self::Completion { .. })
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

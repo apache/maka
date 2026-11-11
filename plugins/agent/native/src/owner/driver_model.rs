@@ -2187,6 +2187,7 @@ impl DriverModel {
         let io = self.preparation_io()?;
         let resources = self.resources.clone();
         let contract_ref = request.recovery_contract.clone();
+        let can_replay_without_output = recovery.contract.is_some();
         let prefix_request = request.request.clone();
         let prefix_adapter = frozen.adapter.clone();
         let source = self.source.clone();
@@ -2564,15 +2565,28 @@ impl DriverModel {
                 }
                 let published = async {
                     let view = state.frontier(run).await?;
-                    let parts = canonical_parts_for(&state, &view, attempt).await?;
-                    let evidence = recovery_for_failure(
-                        &error,
-                        run,
-                        attempt,
-                        prefix_request,
-                        prefix_adapter,
-                        &parts,
-                    )?;
+                    let evidence =
+                        if matches!(error, RunError::Model(maka_model::ModelError::Cancelled))
+                            && can_replay_without_output
+                            && !writer.has_output()
+                            && !view.stopped
+                            && !view.finish_requested()
+                        {
+                            RecoveryEvidence {
+                                recovery: AttemptRecovery::FrozenRetrySafe { not_before: None },
+                                contents: vec![],
+                            }
+                        } else {
+                            let parts = canonical_parts_for(&state, &view, attempt).await?;
+                            recovery_for_failure(
+                                &error,
+                                run,
+                                attempt,
+                                prefix_request,
+                                prefix_adapter,
+                                &parts,
+                            )?
+                        };
                     if let Some(fact) = witness.recovery(evidence, witnessed_at()?).await? {
                         emit(
                             &send,

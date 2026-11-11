@@ -74,7 +74,12 @@ export function createMessagesDock(
   const connected = session.connected;
   const sends = computed(() => session.sends());
   const items = computed(
-    () => queue.snapshot()?.entries.filter((row) => row.kind === 'followup') ?? [],
+    () =>
+      queue
+        .snapshot()
+        ?.entries.filter(
+          (row) => row.kind === 'followup' && row.origin?.kind !== 'session_completion',
+        ) ?? [],
   );
   type Message =
     | { kind: 'send'; id: string; status: ComposerSendStatus }

@@ -184,3 +184,5 @@ ChatGPT 冷缓存或到期刷新在逻辑请求准备时等待，后台压缩的
 订阅 Provider 仅在连接开启该选项时，在解析后的能力中选择原生压缩。关闭后仍可回放已有原生 checkpoint；下一次压缩生成文字摘要。Host 冻结一个协议操作，Responses 适配器负责追加触发命令，
 并只在流完成时返回有类型的 `NativeCompaction`。Engine 和 EventLog 无需再从 provider options JSON 提取结果。
 检查点头部只保留来源步骤引用、内容摘要和 token 估算，baseline 读取时从原始请求派生 producer/model。
+
+关闭新增权限申请会保留已有有效授权，可以在 Run 执行中生效。开启申请需要会话空闲，因为运行中的 Run 保留原始授权上限。修改基础访问权限或明确撤销授权才会推进权限边界。
