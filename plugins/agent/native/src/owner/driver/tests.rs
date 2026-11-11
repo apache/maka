@@ -249,6 +249,13 @@ impl Rig {
     }
 
     async fn start(&mut self) -> TestResult<String> {
+        self.start_with_model_observation(None).await
+    }
+
+    async fn start_with_model_observation(
+        &mut self,
+        observation: Option<crate::model::Observation>,
+    ) -> TestResult<String> {
         let root_path = self.directory.path().join("root");
         let workspace = self.directory.path().join("workspace");
         let namespaces = RootNamespaces {
@@ -321,7 +328,7 @@ impl Rig {
         store
             .commit_application(deployment, 0, input, vec![], vec![agent, gateway])
             .await?;
-        self.attach_host(store, deployment, gateway_key, false, None)
+        self.attach_host(store, deployment, gateway_key, false, observation)
             .await?;
         self.call = Some(self.client.as_ref().unwrap().call("agent", "create".into(), json!({
             "title":"native wait original read failure", "labels":[],
@@ -2197,6 +2204,7 @@ mod model_recovery {
         posts: Arc<std::sync::atomic::AtomicUsize>,
         requests: tokio::sync::mpsc::Sender<Vec<u8>>,
         stop: CancellationToken,
+        hold_first: bool,
     ) -> TestResult<()> {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::{
@@ -2234,7 +2242,10 @@ mod model_recovery {
                     };
                     let index = posts.fetch_add(1, Ordering::SeqCst);
                     requests.send(bytes).await?;
-                    let events = if index == 1 {
+                    if hold_first && index == 0 {
+                        continue;
+                    }
+                    let events = if !hold_first && index == 1 {
                         vec![json!({"type":"error","status":429,"error":{
                             "type":"rate_limit_error","code":"rate_limit_exceeded","message":"retry fixture"}})]
                     } else {
@@ -2266,6 +2277,86 @@ mod model_recovery {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interrupted_empty_model_stream_retries_the_same_run() -> TestResult<()> {
+        let mut rig = Rig::new()?;
+        let session = rig
+            .start_with_model_observation(Some(replay_observation))
+            .await?;
+        rig.assemble_model(
+            &session,
+            Budget {
+                tokens: None,
+                retries: 1,
+                deadline: None,
+            },
+            false,
+        )
+        .await?;
+        let (requests, mut received) = tokio::sync::mpsc::channel(4);
+        let stop = CancellationToken::new();
+        let wire = tokio::spawn(serve_replay(
+            tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?,
+            Arc::default(),
+            requests,
+            stop.clone(),
+            true,
+        ));
+        let driver = rig.driver.as_ref().ok_or("test driver missing")?.clone();
+        let run = driver.access.execution().run_id;
+        let cancel = CancellationToken::new();
+        let outcome = tokio::time::timeout(Duration::from_secs(30), async {
+            let drive = async {
+                let engine = maka_agent_engine::Engine::new(driver.state.clone());
+                loop {
+                    let exit = engine
+                        .drive(
+                            driver.access.claim().clone(),
+                            driver.clone(),
+                            cancel.clone(),
+                        )
+                        .await?;
+                    if !matches!(exit, maka_agent_engine::DriverExit::Waiting { .. }) {
+                        return Ok::<_, RunError>(exit);
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            };
+            let interrupt = async {
+                received.recv().await.ok_or("original request missing")?;
+                let first = driver
+                    .state
+                    .frontier(run)
+                    .await?
+                    .current_attempt
+                    .ok_or("original attempt missing")?;
+                driver.model()?.cancel_model(run, first).await?;
+                Ok::<_, Box<dyn Error + Send + Sync>>(first)
+            };
+            let (exit, first) = tokio::join!(drive, interrupt);
+            let view = driver.state.frontier(run).await?;
+            let first = first?;
+            let last = view.current_attempt.ok_or("retry attempt missing")?;
+            assert!(matches!(
+                exit?,
+                maka_agent_engine::DriverExit::Terminal {
+                    terminal: Terminal::Completed,
+                    ..
+                }
+            ));
+            assert_ne!(first, last);
+            assert_eq!(view.attempts[&first].step, view.attempts[&last].step);
+            assert_eq!(view.attempts.len(), 2);
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .await;
+        cancel.cancel();
+        stop.cancel();
+        wire.await??;
+        assert!(rig.finish().await.is_empty());
+        outcome?
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn recorded_encrypted_replay_survives_root_reopen_and_physical_retry() {
         for (slug, expected) in [("replay-same", true), ("replay-different", false)] {
             let mut rig = Rig::new().expect("owned replay directories");
@@ -2280,7 +2371,7 @@ mod model_recovery {
                 let mut boot = bootstrap(&base, format!("http://{}/v1", listener.local_addr()?), false).await?;
                 boot.replay = true;
                 wire = Some(tokio::spawn(serve_replay(
-                    listener, posts.clone(), requests_tx, stop.clone(),
+                    listener, posts.clone(), requests_tx, stop.clone(), false,
                 )));
                 let path = base.join("boot.json");
                 tokio::fs::write(&path, serde_json::to_vec(&boot)?).await?;

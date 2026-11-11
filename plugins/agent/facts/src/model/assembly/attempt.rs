@@ -590,6 +590,11 @@ impl AttemptWriter {
     pub fn partial(&self) -> Option<ModelPartial> {
         self.snapshot().partial()
     }
+    pub fn has_output(&self) -> bool {
+        !self.builder.parts.is_empty()
+            || !self.builder.tool_inputs.is_empty()
+            || matches!(self.builder.state, StepState::Finished { .. })
+    }
     pub fn completed(&self) -> Result<CompletedAttempt, super::ModelError> {
         let (finish_reason, usage, provider_options, compaction) = match &self.builder.state {
             StepState::Finished {
