@@ -106,7 +106,7 @@ pub enum AppSource {
 pub struct AppOptions {
     /// Log per-commit timings.
     pub trace: bool,
-    /// Logs the performance monitor's readings once a second (`nsh::perf`:
+    /// Logs the performance monitor's readings once a second (`nsh::fps`:
     /// frame rate, frame and commit costs, CPU, memory).
     pub fps: bool,
     /// Where bundled assets are (for [`AppSource::Bundle`]); dev servers
@@ -160,6 +160,18 @@ pub struct AppOptions {
     /// and hands each URL to the app (`UrlScheme.on("open", ...)`). An app
     /// embedding a view hands URLs in with [`AppView::open_url`].
     pub schemes: Vec<String>,
+    /// The app runs once (nsh.json `singleInstance`), for [`run_app`]: a
+    /// second launch hands its arguments and working directory to the
+    /// first (GApplication's `command-line`, over D-Bus, keyed on
+    /// [`app_id`](Self::app_id)) and exits before it opens a window; the
+    /// first brings its window forward and tells the app
+    /// (`Application.on("secondInstance", ...)`).
+    pub single_instance: bool,
+    /// The file types the app opens (nsh.json `fileTypes`), for
+    /// [`run_app`]: its desktop entry lists their MIME types, it runs once,
+    /// and hands each file to the app (`Application.on("openFiles", ...)`),
+    /// reported as a `file://` URL as for [`schemes`](Self::schemes).
+    pub file_types: Vec<nsh_core::file_type::FileType>,
 }
 
 impl Default for AppOptions {
@@ -180,6 +192,8 @@ impl Default for AppOptions {
             notifications: false,
             host: nsh_engine::HostChannel::default(),
             schemes: Vec::new(),
+            single_instance: false,
+            file_types: Vec::new(),
         }
     }
 }
@@ -264,7 +278,8 @@ impl AppView {
     }
 
     /// Hands the app a URL the system opened it with (`UrlScheme.on("open",
-    /// ...)` hears it; the app's listener may come later).
+    /// ...)` hears it; the app's listener may come later). Before an app
+    /// loads, the next one loaded starts at it (`UrlScheme.url()`).
     pub fn open_url(&self, url: &str) {
         self.surface.open_url(url);
     }
@@ -312,6 +327,7 @@ impl AppView {
             app,
             viewport: nsh_core::Size::new(px(0.0), px(0.0)),
             trace: options.trace,
+            content_culling: true,
             network: Some(nsh_engine::net::network()),
             websocket: None,
             refuse_connections: None,
@@ -486,6 +502,10 @@ fn initial_environment() -> Environment {
         fallback_key_bindings: true,
         notifications: true,
         audio: true,
+        // WebKitGTK, in builds with it.
+        web_views: cfg!(feature = "webview"),
+        // wgpu, in builds with it, until it finds no GPU.
+        shaders: nsh_engine::shader::LINKED,
         ..Environment::default()
     }
 }
@@ -547,27 +567,55 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
     glib::set_prgname(Some(&options.app_id));
     // An app that opens URLs runs once: a second launch hands its URL to
     // the first (GApplication's `open`) and ends.
-    let links = !options.schemes.is_empty();
+    let links = !options.schemes.is_empty() || !options.file_types.is_empty();
+    // A single-instance app runs once too: a second launch hands its whole
+    // command line to the first (`command-line`) and ends.
+    let single = options.single_instance;
     let app = gtk::Application::builder()
         .application_id(&options.app_id)
-        .flags(if links {
+        .flags(if single {
+            gtk::gio::ApplicationFlags::HANDLES_COMMAND_LINE
+        } else if links {
             gtk::gio::ApplicationFlags::HANDLES_OPEN
         } else {
             gtk::gio::ApplicationFlags::NON_UNIQUE
         })
         .build();
     STANDALONE.with(|s| *s.borrow_mut() = Some(app.downgrade()));
-    let args: Vec<String> = if links {
-        crate::links::register(&options.app_id, &options.title, &options.schemes);
-        crate::links::launch_args(&options.schemes)
+    if links {
+        let mut mime_types: Vec<String> = Vec::new();
+        for mime in options.file_types.iter().flat_map(|t| &t.mime_types) {
+            if !mime_types.contains(mime) {
+                mime_types.push(mime.clone());
+            }
+        }
+        crate::links::register(
+            &options.app_id,
+            &options.title,
+            &options.schemes,
+            &mime_types,
+        );
+    }
+    let args: Vec<String> = if single {
+        std::env::args().collect()
+    } else if links {
+        crate::links::launch_args(&options.schemes, &options.file_types)
     } else {
         Vec::new()
     };
     let shown: Rc<RefCell<Option<Shown>>> = Rc::default();
     let shown_open = shown.clone();
+    // The URLs the app was launched with: the view gets them before its app
+    // loads, so they are its address when its code first runs.
+    let launch_links: Rc<RefCell<Vec<String>>> = Rc::default();
+    let launch_open = launch_links.clone();
     app.connect_open(move |app, files, _| {
         if shown_open.borrow().is_none() {
+            launch_open
+                .borrow_mut()
+                .extend(files.iter().map(|file| file.uri().to_string()));
             app.activate();
+            return;
         }
         if let Some((window, view)) = &*shown_open.borrow() {
             for file in files {
@@ -575,6 +623,52 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
             }
             window.present();
         }
+    });
+    let shown_line = shown.clone();
+    let launch_line = launch_links.clone();
+    let schemes = options.schemes.clone();
+    let file_types = options.file_types.clone();
+    app.connect_command_line(move |app, line| {
+        let mut args: Vec<String> = line
+            .arguments()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        // The program's path.
+        if !args.is_empty() {
+            args.remove(0);
+        }
+        let cwd = line.cwd();
+        let urls: Vec<String> = args
+            .iter()
+            .filter_map(|arg| {
+                if crate::links::is_link(arg, &schemes) {
+                    return Some(arg.clone());
+                }
+                crate::links::file_url(arg, cwd.as_deref(), &file_types)
+            })
+            .collect();
+        // This process's own launch: it opens the window.
+        if shown_line.borrow().is_none() {
+            launch_line.borrow_mut().extend(urls);
+            app.activate();
+            return gtk::glib::ExitCode::SUCCESS;
+        }
+        if let Some((window, view)) = &*shown_line.borrow() {
+            let cwd = cwd
+                .map(|cwd| cwd.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            view.surface.event(
+                nsh_core::ROOT_ID,
+                nsh_core::EventKind::SecondInstance,
+                nsh_core::single_instance::SecondInstance::new(args, cwd).to_payload(),
+            );
+            for url in urls {
+                view.open_url(&url);
+            }
+            window.present();
+        }
+        gtk::glib::ExitCode::SUCCESS
     });
     let source = RefCell::new(Some(source));
     app.connect_activate(move |app| {
@@ -636,6 +730,20 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
             Some(view) => view.main_close_request(),
             None => glib::Propagation::Proceed,
         });
+        for url in launch_links.take() {
+            view.open_url(&url);
+        }
+        // A development host's window waits for its app, which brings the
+        // window's options ([`crate::dev`]).
+        let held = app_of.is_err();
+        // nsh.json `window.defaultVisible: false`: the window is made and
+        // the app runs in it, unseen, until it shows it (a tray app). GTK
+        // keeps the mode `launch_main` asked for until it first shows.
+        let present = !held && launch.visible_at_launch();
+        if !held && !present {
+            log::info!("the main window starts hidden (nsh.json window.defaultVisible: false)");
+            crate::window::launch_hidden(&view.surface);
+        }
         match app_of {
             Ok(app) => view.load(app),
             #[cfg(feature = "dev")]
@@ -648,7 +756,9 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
         *shown.borrow_mut() = Some((window.clone(), view.clone()));
         // The window keeps the view (and its engine) alive.
         unsafe_keep(&window, view);
-        window.present();
+        if present {
+            window.present();
+        }
     });
     // GTK must not parse the host's own arguments: only the URL the app
     // was opened with goes to it (`open`).

@@ -31,7 +31,7 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventModifierFlags, NSEventType,
     NSView, NSWindow,
 };
-use objc2_foundation::{NSRect, NSSize};
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use crate::{surface::Surface, synth};
 
@@ -329,6 +329,17 @@ fn mapped(view: &crate::view::NshView, rect: NSRect) -> Option<Bounds<Points>> {
     ))
 }
 
+/// Where `frame` goes to lie within `area` (both in screen coordinates,
+/// from the bottom), moved as little as it takes; one wider or taller than
+/// the area keeps its left edge and its top (the title bar) in it.
+fn within(frame: NSRect, area: NSRect) -> NSPoint {
+    let right = area.origin.x + area.size.width - frame.size.width;
+    let x = frame.origin.x.min(right).max(area.origin.x);
+    let top = area.origin.y + area.size.height - frame.size.height;
+    let y = frame.origin.y.max(area.origin.y).min(top);
+    NSPoint::new(x, y)
+}
+
 impl Native for MacNative {
     fn bounds(&self, id: NodeId) -> Option<Bounds<Points>> {
         self.on_main(|surface, _| {
@@ -450,8 +461,10 @@ impl Native for MacNative {
 
     fn paste(&self, content: &nsh_core::PasteEvent) -> Result<(), String> {
         let content = content.clone();
-        self.on_key(move |_, window| crate::text_input::test_paste(window, &content))
-            .unwrap_or_else(|| Err("the window is gone".into()))
+        self.on_key(move |surface, window| {
+            crate::text_input::paste_or_hold(surface, window, &content)
+        })
+        .unwrap_or_else(|| Err("the window is gone".into()))
     }
 
     fn key(&self, key: Key) {
@@ -599,7 +612,25 @@ impl Native for MacNative {
 
     fn resize(&self, width: Points, height: Points) -> Result<(), String> {
         self.on_main(|_, window| {
-            window.setContentSize(NSSize::new(f64::from(width.0), f64::from(height.0)));
+            let content = NSSize::new(f64::from(width.0), f64::from(height.0));
+            let old = window.frame();
+            let size = window
+                .frameRectForContentRect(NSRect::new(NSPoint::new(0.0, 0.0), content))
+                .size;
+            // Grown from its top left corner, it may reach past the
+            // display's edge, where a screenshot of it shows nothing: moved
+            // back just enough, so a window the app placed keeps its place
+            // when it still fits. Its display is the one it was on (grown,
+            // most of it may be on another).
+            let top_left = NSPoint::new(old.origin.x, old.origin.y + old.size.height - size.height);
+            let mut frame = NSRect::new(top_left, size);
+            if let Some(screen) = window.screen() {
+                frame.origin = within(frame, screen.visibleFrame());
+            }
+            // One change: a resize, then a move, left the screenshots that
+            // followed misplaced on the window (its title bar in, its right
+            // edge out).
+            window.setFrame_display(frame, true);
         })
         .ok_or_else(|| "the window is gone".to_owned())
     }

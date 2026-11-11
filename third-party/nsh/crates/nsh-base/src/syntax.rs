@@ -15,7 +15,7 @@ use nsh_core::{element::StyleRefinement, prelude::*};
 #[cfg(all(feature = "highlight", target_arch = "wasm32"))]
 pub(crate) use self::syntect_syntaxes::load_async;
 #[cfg(feature = "highlight")]
-pub(crate) use self::syntect_syntaxes::{find_syntax, loaded, plain, scope_token, syntaxes};
+pub(crate) use self::syntect_syntaxes::{Parse, find_syntax, loaded, plain, scope_token, syntaxes};
 
 /// What a span of code is, colored alike (as Allsum's `--hl-*` tokens
 /// color highlight.js's classes).
@@ -114,12 +114,38 @@ impl Token {
 mod syntect_syntaxes {
     use std::{cell::RefCell, collections::HashMap, sync::OnceLock};
 
-    use syntect::parsing::{Scope, ScopeStack, SyntaxReference, SyntaxSet};
+    use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet};
 
     use super::Token;
 
-    /// Deserializing the syntaxes takes tens of milliseconds: once per
-    /// process, on a blocking thread where the caller can.
+    /// Where parsing stands: syntect's parser and the scopes open there,
+    /// what the next line is parsed on from.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct Parse {
+        pub(crate) state: ParseState,
+        pub(crate) scopes: ScopeStack,
+    }
+
+    impl Parse {
+        /// At the start of a text in `syntax`.
+        pub(crate) fn new(syntax: &SyntaxReference) -> Parse {
+            Parse {
+                state: ParseState::new(syntax),
+                scopes: ScopeStack::new(),
+            }
+        }
+    }
+
+    // SAFETY: with Oniguruma's regexes a parser keeps the captures of the
+    // match that pushed a context as an `onig::Region`, which holds raw
+    // pointers to arrays it allocated and frees alone; nothing in it is
+    // shared or tied to a thread, so it can move to another one (the
+    // editor's jobs, `TextView`'s cache). fancy-regex's state is `Send`
+    // already.
+    unsafe impl Send for Parse {}
+
+    /// Deserializing the syntaxes takes about a millisecond (tens on the
+    /// web): once per process, on a blocking thread where the caller can.
     static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
 
     thread_local! {

@@ -128,7 +128,9 @@ URIs resolve (`AssetBase::Directory` or `AssetBase::Http`). Bytecode bundles (`b
 `unsafe { Bundle::bytecode(bytes) }` (or `Bundle::read_trusted(path)`, unsafe too): QuickJS bytecode is trusted input,
 so only load it from your own app's files.
 
-- `open_app_window(source, options, cx)` opens a window with one `AppView` in a running GPUI app.
+- `open_app_window(source, options, cx)` opens a window with one `AppView` in a running GPUI app, with the app's
+  nsh.json `window` settings. With `"defaultVisible": false` it opens hidden on macOS and Windows and shows when the
+  app shows it ([The main window](../modules/nsh-desktop.md#the-main-window)); on Linux GPUI shows it as it opens.
 - `run_app(source, options)` starts GPUI and runs one app in a window until it closes (what the development host does).
 - `AppView::register_component(name, factory)` registers a native component of yours before loading
   ([Native components](./native-components.md)).

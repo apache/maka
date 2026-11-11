@@ -778,7 +778,10 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         Command::Desktop(command) => crate::chrome::command(surface, command),
         // The status bar is a phone's; layout animations arrive as mount
         // items.
-        Command::StatusBar(_) | Command::SetStatusBar(_) | Command::LayoutAnimation(_) => {}
+        Command::StatusBar(_)
+        | Command::SetStatusBar(_)
+        | Command::LayoutAnimation(_)
+        | Command::CancelPress => {}
         other => log::debug!("windows: command {other:?} is not supported"),
     }
 }

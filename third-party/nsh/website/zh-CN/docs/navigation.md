@@ -220,10 +220,13 @@ export const nav = createNavStack<Route>([{ name: "home" }]);
 | `state` | `NavStackState<R>` | 要显示的路由。 |
 | `children` | `(route: R, index: Accessor<number>) => JSX.Element` | 渲染一个路由；返回 `<NavPage>` 以设置它的标题栏。 |
 | `style`、`class` | | 栈自身的样式（通常是 `flex: 1`）。 |
+| `onChange` | `({ routes }) => void` | 路由变化了：应用压入、弹出、替换或设置了路由，或用户从某个页面返回。它在变化渲染之后运行，栈最初的路由不触发它。 |
 
 渲染函数在每个路由被压入时运行一次；`route` 是原始值，`index()` 是它当前的位置。返回值成为页面内容。返回 `<NavPage>` 可以设置标题栏；返回其他内容时会自动包在一个使用默认选项的页面里。
 
 只要路由还在栈中，页面就保持挂载：返回时，上一个页面与离开时完全相同，包括滚动位置、输入框和 signal。路由离开栈时，页面的 [`cleanup`](./reactivity.md) 处理函数会运行。
+
+应用在 `onChange` 里跟随自己的导航：统计页面、保存路由以便恢复，或者给每个页面一个地址。[`UrlScheme`](../modules/nsh.md#urlscheme) 在每个平台上都保存着应用的地址：应用用 `UrlScheme.url()` 构建最初的路由，在 `onChange` 里用 `UrlScheme.setUrl` 设置顶层页面的地址，在 Web 上它就是浏览器显示的地址。栈说明不了的情况，即在页面相同的记录之间后退或前进，以 `UrlScheme.on("change")` 告诉应用；没有自己页面的地址（标签页、筛选）用 `UrlScheme.setUrl(url, { history: "push" })` 成为这样一条记录。
 
 <a id="navpage-and-the-header"></a>
 

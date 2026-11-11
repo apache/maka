@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use nsh_core::{
     ApproxTextEngine, EventKind, EventMask, EventPayload, MountBatch, MountItem, MouseButton,
-    MouseEvent, NodeId, Size, geometry::px, keymap::Modifiers,
+    MouseEvent, NodeId, ROOT_ID, Size, TouchEvent, TouchPhase, TouchPoint, geometry::px,
+    keymap::Modifiers,
 };
 use nsh_engine::{Bundle, Engine, EngineConfig};
 
@@ -26,6 +27,7 @@ function App() {
         testID="outer"
         onMouseEnter={(e) => note(`in outer ${e.position.x},${e.position.y}`)}
         onMouseLeave={(e) => note(`out outer ${e.position.x},${e.position.y}`)}
+        onWheel={(e) => note(`wheel ${e.position.x},${e.pagePosition.y} ${e.delta.x},${e.delta.y} ${e.deltaMode}${e.modifiers.control ? " ctrl" : ""}`)}
       >
         <View
           testID="inner"
@@ -53,6 +55,7 @@ fn start(name: &str) -> (Engine, Receiver<MountBatch>) {
         minify: false,
         ui_sets: vec![nsh_base::registry().into()],
         split: false,
+        ..Default::default()
     })
     .unwrap();
     let bytecode = nsh_js::compile_bytecode(&bundle.code, false).unwrap();
@@ -62,6 +65,7 @@ fn start(name: &str) -> (Engine, Receiver<MountBatch>) {
         app: nsh_engine::App::Js(unsafe { Bundle::bytecode(bytecode) }),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -173,7 +177,11 @@ fn mouse_handlers_are_in_the_event_masks_and_hear_their_events() {
     };
     assert_eq!(
         events(outer),
-        mask(&[EventKind::MouseEnter, EventKind::MouseLeave])
+        mask(&[
+            EventKind::MouseEnter,
+            EventKind::MouseLeave,
+            EventKind::Wheel
+        ])
     );
     assert_eq!(
         events(inner),
@@ -209,12 +217,32 @@ fn a_move_with_a_button_down_reaches_on_mouse_move_with_the_button() {
     control.dispatch_event(outer, EventKind::MouseEnter, at(0.0, false, None));
     control.dispatch_event(inner, EventKind::MouseEnter, at(0.0, false, None));
     until_log(&rx, "log in outer 0,2|in inner");
-    // A drag: merged as any moves, each with the button held.
+    // A drag: on the desktops each move with a button down also sends a
+    // touch move for any touch listener or responder; `onMouseMove` is
+    // still merged across them, each with the button held.
     for x in 1..=20 {
         control.dispatch_event(
             inner,
             EventKind::MouseMove,
             at(x as f32, false, Some(MouseButton::Left)),
+        );
+        control.dispatch_event(
+            ROOT_ID,
+            EventKind::Touch,
+            EventPayload::Touch(Box::new(TouchEvent {
+                phase: TouchPhase::Move,
+                timestamp: x as f64,
+                activated: None,
+                points: vec![TouchPoint {
+                    id: 1,
+                    target: inner,
+                    path: Vec::new(),
+                    page: nsh_core::geometry::point(px(x as f32 + 10.0), px(12.0)),
+                    location: nsh_core::geometry::point(px(x as f32), px(2.0)),
+                    changed: true,
+                    pointer_type: nsh_core::PointerType::Mouse,
+                }],
+            })),
         );
     }
     control.dispatch_event(outer, EventKind::MouseLeave, at(21.0, false, None));
@@ -225,4 +253,42 @@ fn a_move_with_a_button_down_reaches_on_mouse_move_with_the_button() {
     assert!(moves.len() < 20, "moves are merged: {log}");
     assert!(moves.iter().all(|m| m.ends_with(" left")), "{log}");
     assert_eq!(moves.last(), Some(&"move 20,2 30,12 left"), "{log}");
+}
+
+#[test]
+fn wheels_reach_on_wheel_with_their_delta_and_unit() {
+    let (engine, rx) = start("wheel");
+    let (_, outer, _) = first_frame(&rx);
+    let control = engine.control();
+    let wheel = |delta, ctrl| {
+        EventPayload::Wheel(nsh_core::WheelEvent::new(
+            nsh_core::geometry::point(px(3.0), px(4.0)),
+            nsh_core::geometry::point(px(13.0), px(14.0)),
+            delta,
+            Modifiers {
+                ctrl,
+                ..Default::default()
+            },
+        ))
+    };
+    control.dispatch_event(
+        outer,
+        EventKind::Wheel,
+        wheel(
+            nsh_core::WheelDelta::Lines(nsh_core::geometry::point(0.0, -1.0)),
+            true,
+        ),
+    );
+    control.dispatch_event(
+        outer,
+        EventKind::Wheel,
+        wheel(
+            nsh_core::WheelDelta::Points(nsh_core::geometry::point(px(2.5), px(7.0))),
+            false,
+        ),
+    );
+    until_log(
+        &rx,
+        "log wheel 3,14 0,-1 lines ctrl|wheel 3,14 2.5,7 points",
+    );
 }

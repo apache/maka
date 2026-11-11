@@ -2,7 +2,7 @@
   "name": "Host Echo",
   "id": "com.example.hostecho",
   "capabilities": {
-    "host": ["echo"]
+    "host": ["echo", "note"]
   },
   "web": {
     "host": "./host.js"

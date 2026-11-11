@@ -39,6 +39,7 @@ const UNDERLINE: i32 = 2;
 const STRIKE: i32 = 4;
 const DECORATION_COLOR: i32 = 8;
 const BACKGROUND: i32 = 16;
+const HIDDEN: i32 = 32;
 
 /// `0xRRGGBBAA` -> Android's `0xAARRGGBB`.
 #[inline]
@@ -123,6 +124,9 @@ impl TextEngine for AndroidTextEngine {
             }
             if s.background.is_some() {
                 flags |= BACKGROUND;
+            }
+            if s.hidden {
+                flags |= HIDDEN;
             }
             ints.extend_from_slice(&[
                 span.start as i32,

@@ -493,6 +493,19 @@ In a terminal ([the terminal backend](./tui.md)), `platform.idiom` is `"terminal
 `platform.os` is the machine's own system. `colorScheme()` follows the terminal's background, `reduceMotion()` is
 `true`, and the safe area and the keyboard height are 0.
 
+## The app's data directory
+
+`data_dir()` in Rust, `process.dataDir` in TSX, is the directory the app keeps its own files in, such as a SQLite database: `<data dir>/<app id>`, beside its `storage.json`, on every native platform, Android and iOS included. It is `None` (`null`) where the host keeps no files for the app, such as the web. The directory may not exist yet, so create it before writing.
+
+```rust
+use nsh_core::prelude::*;
+
+if let Some(dir) = data_dir() {
+    std::fs::create_dir_all(&dir)?;
+    let db = dir.join("app.sqlite");
+}
+```
+
 ## Pixel density
 
 `pixel_ratio()` and `round_to_nearest_pixel(points)` in Rust, and `pixelRatio()` from `nsh` in TSX, convert between points and device pixels.

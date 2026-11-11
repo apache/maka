@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -38,4 +38,15 @@ test('distribution notices retain a crate whose only license file is UNLICENSE',
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('nested data licenses with a dot suffix are included in distribution notices', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-data-license-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const nested = join(directory, 'src', 'emoji_picker');
+  await mkdir(nested, { recursive: true });
+  const license = join(nested, 'emoji.LICENSE.txt');
+  await writeFile(license, 'Embedded emoji data license');
+  await writeFile(join(nested, 'emoji.LICENSE.rs'), 'source code');
+  assert.deepEqual(await licenseFiles(directory), [license]);
 });

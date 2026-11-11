@@ -529,6 +529,9 @@ pub enum TestStep {
     },
     /// Goes back as the user does (`app.back`).
     Back,
+    /// Goes forward in the browser's history (`app.forward`): the web's
+    /// alone, the other platforms have no forward.
+    Forward,
     /// Lets the app run (`app.wait`).
     Wait {
         /// Milliseconds.

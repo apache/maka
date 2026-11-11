@@ -675,7 +675,112 @@ pub fn key_scroll_target<V>(
     across.or(edge)
 }
 
+/// The view of `views` (innermost first: the one under the pointer, then
+/// the views around it) that hears a wheel (`onWheel`): the nearest that
+/// `listens`, and whether it takes the wheel (`true`: nothing scrolls or
+/// zooms natively). It takes it when no view nearer, nor itself, is one
+/// that `scrolls` (a scroll view, a hosted widget scrolling itself):
+/// a canvas inside a page hears the wheel instead of the page scrolling,
+/// while a listening scroll view, or a view around one, only observes it.
+pub fn wheel_listener<V>(
+    views: impl IntoIterator<Item = V>,
+    listens: impl Fn(&V) -> bool,
+    scrolls: impl Fn(&V) -> bool,
+) -> Option<(V, bool)> {
+    let mut scroll_seen = false;
+    for v in views {
+        let scrolls = scrolls(&v);
+        if listens(&v) {
+            return Some((v, !scroll_seen && !scrolls));
+        }
+        scroll_seen |= scrolls;
+    }
+    None
+}
+
 // --- The keyboard -------------------------------------------------------------------
+
+/// The views under `root` (itself first) in Tab order: depth first, each
+/// before its children in the order `children` gives them, except that a
+/// shown overlay's view (`tab_after`: its [`crate::ViewProps::tab_after`])
+/// goes right after the view it names and before that view's children,
+/// not among the children of the root view it is in. So a popover's
+/// content follows its trigger, as WAI-ARIA's non-modal popups have it.
+/// An overlay whose view is not met stays where it is.
+///
+/// For the backends that order Tab themselves: they filter the views it
+/// returns for their stops, and leave out of `children` what Tab passes
+/// over (hidden subtrees, the screens under the top one).
+pub fn tab_order<V>(
+    root: V,
+    children: impl FnMut(&V) -> Vec<V>,
+    id: impl FnMut(&V) -> NodeId,
+    tab_after: impl FnMut(&V) -> Option<NodeId>,
+) -> Vec<V> {
+    let mut walk = TabWalk {
+        children,
+        id,
+        tab_after,
+        waiting: rustc_hash::FxHashMap::default(),
+        out: Vec::new(),
+    };
+    walk.visit(root);
+    walk.out
+}
+
+/// [`tab_order`]'s walk.
+struct TabWalk<V, C, I, A> {
+    children: C,
+    id: I,
+    tab_after: A,
+    /// The overlays met, by the view they go after, until it is.
+    waiting: rustc_hash::FxHashMap<NodeId, Vec<V>>,
+    out: Vec<V>,
+}
+
+impl<V, C, I, A> TabWalk<V, C, I, A>
+where
+    C: FnMut(&V) -> Vec<V>,
+    I: FnMut(&V) -> NodeId,
+    A: FnMut(&V) -> Option<NodeId>,
+{
+    fn visit(&mut self, view: V) {
+        let own = (self.id)(&view);
+        let children = (self.children)(&view);
+        self.out.push(view);
+        let mut placed = Vec::new();
+        let mut rest = Vec::with_capacity(children.len());
+        for child in children {
+            match (self.tab_after)(&child) {
+                Some(after) => {
+                    placed.push((after, (self.id)(&child)));
+                    self.waiting.entry(after).or_default().push(child);
+                }
+                None => rest.push(child),
+            }
+        }
+        for overlay in self.waiting.remove(&own).unwrap_or_default() {
+            self.visit(overlay);
+        }
+        for child in rest {
+            self.visit(child);
+        }
+        // Not met under this view: where they are.
+        for (after, placed) in placed {
+            let Some(waiting) = self.waiting.get_mut(&after) else {
+                continue;
+            };
+            let Some(at) = waiting.iter().position(|v| (self.id)(v) == placed) else {
+                continue;
+            };
+            let overlay = waiting.remove(at);
+            if waiting.is_empty() {
+                self.waiting.remove(&after);
+            }
+            self.visit(overlay);
+        }
+    }
+}
 
 /// The Tab stop Tab (Shift + Tab with `back`) moves to among `n` from
 /// `current`: past the ends it wraps around with `wrap`, else leaves them
@@ -717,6 +822,24 @@ pub fn opens_context_menu(
         return false;
     }
     menu_key || (modifiers.shift && key == Some(crate::keymap::Key::F(10)))
+}
+
+/// Whether a key down presses the control with the keyboard focus (a view
+/// that takes presses, not a text input): Return / Enter or Space with
+/// neither Control, Alt nor Command / Super held (Shift may be). Such a
+/// key goes to that control before the app's shortcuts and the menus'
+/// key equivalents see it, so a binding of the same key elsewhere (a
+/// dialog's Enter for its main action) cannot act instead of the control
+/// the user moved the focus to.
+pub fn presses_focused_control(
+    key: crate::keymap::Key,
+    modifiers: crate::keymap::Modifiers,
+) -> bool {
+    !(modifiers.ctrl || modifiers.alt || modifiers.cmd)
+        && matches!(
+            key,
+            crate::keymap::Key::Enter | crate::keymap::Key::Char(' ')
+        )
 }
 
 /// Where a context menu asked for without a pointer (the keyboard, an
@@ -1020,6 +1143,30 @@ mod tests {
     }
 
     #[test]
+    fn tab_order_puts_overlays_after_the_view_they_follow() {
+        // (id, tab_after, children): the root view holds a trigger with a
+        // label, a button after it, then its overlays: one after the
+        // label, one inside that one's content, one after a view that is
+        // not there, one after the root view itself.
+        let tree: &[(NodeId, Option<NodeId>, &[NodeId])] = &[
+            (1, None, &[2, 4, 5, 10, 7, 9]),
+            (2, None, &[3]),
+            (3, None, &[]),
+            (4, None, &[]),
+            (5, Some(3), &[6]),
+            (6, None, &[]),
+            (10, Some(6), &[11]),
+            (11, None, &[]),
+            (7, Some(99), &[8]),
+            (8, None, &[]),
+            (9, Some(1), &[]),
+        ];
+        let node = |id: NodeId| tree.iter().find(|n| n.0 == id).unwrap();
+        let order = tab_order(1, |&id| node(id).2.to_vec(), |&id| id, |&id| node(id).1);
+        assert_eq!(order, vec![1, 9, 2, 3, 5, 6, 10, 11, 4, 7, 8]);
+    }
+
+    #[test]
     fn tab_stops_wrap_or_leave() {
         assert_eq!(tab_stop(None, 0, false, true), None);
         assert_eq!(tab_stop(None, 3, false, true), Some(0));
@@ -1029,6 +1176,31 @@ mod tests {
         assert_eq!(tab_stop(Some(2), 3, false, false), None);
         assert_eq!(tab_stop(Some(0), 3, true, false), None);
         assert_eq!(tab_stop(Some(1), 3, true, false), Some(0));
+    }
+
+    #[test]
+    fn wheel_listener_takes_the_wheel_only_inside_scroll_views() {
+        // (id, listens, scrolls), innermost first.
+        let pick = |views: &[(u32, bool, bool)]| {
+            wheel_listener(views.iter().copied(), |v| v.1, |v| v.2).map(|(v, t)| (v.0, t))
+        };
+        // A canvas in a page: it takes the wheel.
+        assert_eq!(
+            pick(&[(3, false, false), (2, true, false), (1, false, true)]),
+            Some((2, true))
+        );
+        // A listening scroll view observes; it still scrolls.
+        assert_eq!(
+            pick(&[(3, false, false), (2, true, true)]),
+            Some((2, false))
+        );
+        // A listener around a scroll view observes.
+        assert_eq!(
+            pick(&[(3, false, false), (2, false, true), (1, true, false)]),
+            Some((1, false))
+        );
+        // No listener.
+        assert_eq!(pick(&[(2, false, true), (1, false, false)]), None);
     }
 
     #[test]

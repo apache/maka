@@ -188,7 +188,7 @@ mount(App);
 | Up、Left | 把焦点移到上一个单选框（从第一个回到最后一个），并勾选它。 |
 | Space | 勾选拥有焦点的单选框。 |
 
-方向键跳过禁用的单选框；焦点移到的单选框通过 `onChange` 请求被勾选，由应用勾选它。在从右到左的布局里，Left 和 Right 互换：Left 移到下一个单选框，Right 移到上一个；Up 和 Down 不变。`focus:` 样式显示焦点所在。不在 `RadioGroup` 里的 `Radio` 是独立的一站，Tab 可以到达它，Space 和 Return 勾选它。
+方向键跳过禁用的单选框；焦点移到的单选框通过 `onChange` 请求被勾选，由应用勾选它。在从右到左的布局里，Left 和 Right 互换：Left 移到下一个单选框，Right 移到上一个；Up 和 Down 不变。`focus-visible:` 样式显示焦点所在。不在 `RadioGroup` 里的 `Radio` 是独立的一站，Tab 可以到达它，Space 和 Return 勾选它。
 
 <a id="platform-notes"></a>
 

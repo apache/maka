@@ -62,7 +62,9 @@ use crossbeam_channel::{Receiver, Sender};
 use nsh_core::{
     ApproxTextEngine, Command, Dialog, DialogButtonStyle, EventKind, EventPayload, MountBatch,
     MountItem, NodeId, PayloadValue, Point, Points, PressEvent, ROOT_ID, Size, SubmitBehavior,
+    TextEngine,
     geometry::{point, px},
+    platform::{InputModality, Os},
 };
 use nsh_engine::{
     AppError, AppErrorKind, Clock, Engine, EngineConfig, EngineControl, Environment, MountSink,
@@ -137,7 +139,8 @@ impl MountSink for ChannelSink {
 /// animations and what waits for a frame run), laying text out with
 /// [`ApproxTextEngine`]: the engine, and the batches it sends.
 pub fn start(config: EngineConfig) -> std::io::Result<(Engine, Receiver<MountBatch>)> {
-    launch(config, Vec::new()).map(|launched| (launched.engine, launched.batches))
+    launch(config, Vec::new(), || ApproxTextEngine, None)
+        .map(|launched| (launched.engine, launched.batches))
 }
 
 /// A started engine and what it sends.
@@ -149,12 +152,38 @@ struct Launched {
     wanted: Option<Arc<AtomicBool>>,
 }
 
+/// Reports `url` as a link the system handed the app.
+fn send_url_scheme(control: &nsh_engine::EngineControl, url: &str) {
+    control.dispatch_event(
+        ROOT_ID,
+        EventKind::UrlScheme,
+        EventPayload::Map(vec![(
+            nsh_core::url_scheme::URL,
+            PayloadValue::Str(url.to_owned()),
+        )]),
+    );
+}
+
 /// [`start`], the platform reporting `displays` before the app first
-/// renders.
-fn launch(
-    config: EngineConfig,
+/// renders, laying text out with the engine `text_engine` makes; `link`:
+/// the link that launched it, there before the app's code runs (as a
+/// platform sends it).
+fn launch<M, F>(
+    mut config: EngineConfig,
     displays: Vec<nsh_core::desktop::Display>,
-) -> std::io::Result<Launched> {
+    text_engine: F,
+    link: Option<&str>,
+) -> std::io::Result<Launched>
+where
+    M: TextEngine + 'static,
+    F: FnOnce() -> M + Send + 'static,
+{
+    // Only iOS and Android draw a header of their own; elsewhere a page's
+    // `header` sits at its top as wide as the window, as those backends
+    // configure the engine.
+    if !matches!(config.environment.os, Os::Ios | Os::Android) {
+        config.header_heights = nsh_core::NO_NATIVE_HEADER;
+    }
     let (batches, batches_rx) = crossbeam_channel::unbounded();
     let (errors, errors_rx) = crossbeam_channel::unbounded();
     let control = Arc::new(OnceLock::new());
@@ -165,16 +194,16 @@ fn launch(
         control: control.clone(),
         wanted: wanted.clone(),
     };
-    let engine = Engine::start_with(
-        config,
-        || ApproxTextEngine,
-        sink,
-        |control| {
-            if !displays.is_empty() {
-                control.set_displays(displays);
-            }
-        },
-    )?;
+    let engine = Engine::start_with(config, text_engine, sink, |control| {
+        // Steps reach every view of a page, below its fold too.
+        control.set_content_culling(false);
+        if !displays.is_empty() {
+            control.set_displays(displays);
+        }
+        if let Some(url) = link {
+            send_url_scheme(control, url);
+        }
+    })?;
     let _ = control.set(engine.control());
     Ok(Launched {
         engine,
@@ -194,6 +223,8 @@ type DialogHandler = Box<dyn FnMut(&Dialog) -> DialogAnswer + Send>;
 /// id, the host's function and its argument.
 #[cfg(feature = "js")]
 type HostCalls = Box<dyn FnMut(u64, &str, &nsh_core::JsonValue) + Send>;
+#[cfg(feature = "js")]
+type HostPosts = Box<dyn FnMut(&str, &nsh_core::JsonValue) + Send>;
 
 /// The answer to a dialog (`AlertDialog.show`, an action sheet).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -326,6 +357,8 @@ pub struct Headless {
     /// Where the app's `nsh/host` calls go (the web page's host).
     #[cfg(feature = "js")]
     host_calls: Option<HostCalls>,
+    #[cfg(feature = "js")]
+    host_posts: Option<HostPosts>,
     /// The app's windows, on a desktop ([`windows`]); `None` elsewhere, and
     /// when the config gives its own windows (`EngineConfig::windows`).
     windows: Option<windows::Windows>,
@@ -333,7 +366,40 @@ pub struct Headless {
 
 impl Headless {
     /// Starts `config`'s app ([`start`]).
-    pub fn start(mut config: EngineConfig) -> std::io::Result<Headless> {
+    pub fn start(config: EngineConfig) -> std::io::Result<Headless> {
+        Self::launched_with(config, || ApproxTextEngine, None)
+    }
+
+    /// Starts `config`'s app as the link `url` launches it: the app's
+    /// first `UrlScheme.url()` reads it, and its first `open` listener
+    /// gets it.
+    pub fn start_with_link(config: EngineConfig, url: &str) -> std::io::Result<Headless> {
+        Self::launched_with(config, || ApproxTextEngine, Some(url))
+    }
+
+    /// Starts `config`'s app laying text out with the engine
+    /// `text_engine` makes (on the engine's thread) instead of
+    /// [`ApproxTextEngine`]: a platform's, for sizes as on screen.
+    pub fn start_with_text_engine<M, F>(
+        config: EngineConfig,
+        text_engine: F,
+    ) -> std::io::Result<Headless>
+    where
+        M: TextEngine + 'static,
+        F: FnOnce() -> M + Send + 'static,
+    {
+        Self::launched_with(config, text_engine, None)
+    }
+
+    fn launched_with<M, F>(
+        mut config: EngineConfig,
+        text_engine: F,
+        link: Option<&str>,
+    ) -> std::io::Result<Headless>
+    where
+        M: TextEngine + 'static,
+        F: FnOnce() -> M + Send + 'static,
+    {
         let speech = config.speech.is_none().then(speech::FakeSpeech::default);
         if let Some(speech) = &speech {
             config.speech = Some(Arc::new(speech.clone()));
@@ -343,15 +409,29 @@ impl Headless {
             config.audio = Some(Arc::new(audio.clone()));
         }
         // A desktop's windows: the main one, focused, on one display, and
-        // those the app opens.
-        let windows = (config.environment.os.is_desktop() && config.windows.is_none())
-            .then(|| windows::Windows::new(config.viewport));
+        // those the app opens. The main one starts hidden when the app's
+        // nsh.json `window` says so, as a runner opens it.
+        let main_hidden = config
+            .app
+            .main_window()
+            .is_some_and(|options| !options.visible_at_launch());
+        let windows = (config.environment.os.is_desktop() && config.windows.is_none()).then(|| {
+            let mut windows = windows::Windows::new(config.viewport);
+            if main_hidden {
+                windows.start_hidden();
+            }
+            windows
+        });
         if let Some(windows) = &windows
             && config.environment.window_state.is_none()
         {
             config.environment.window_state = Some(windows.main());
         }
         let displays = windows.as_ref().map(|w| w.displays()).unwrap_or_default();
+        // The window is the viewport the app opens in, as the engine starts
+        // it and as a platform reports it: a later `set_environment` sends
+        // this environment whole, so it must not carry an empty window.
+        config.environment.window = config.viewport;
         let environment = config.environment;
         let viewport = config.viewport;
         let clock = config.clock.clone();
@@ -361,9 +441,12 @@ impl Headless {
             batches,
             errors,
             wanted,
-        } = launch(config, displays)?;
+        } = launch(config, displays, text_engine, link)?;
         let mut screen = Screen::default();
         screen.set_viewport(viewport);
+        if main_hidden && windows.is_some() {
+            screen.set_window_hidden(ROOT_ID, true);
+        }
         Ok(Headless {
             engine,
             batches,
@@ -392,6 +475,8 @@ impl Headless {
             last_press: None,
             #[cfg(feature = "js")]
             host_calls: None,
+            #[cfg(feature = "js")]
+            host_posts: None,
             windows,
         })
     }
@@ -547,14 +632,7 @@ impl Headless {
     /// Reports `url` as a link the system handed the app, without a step:
     /// the one that launches it.
     pub fn send_url_scheme(&self, url: &str) {
-        self.engine.control().dispatch_event(
-            ROOT_ID,
-            EventKind::UrlScheme,
-            EventPayload::Map(vec![(
-                nsh_core::url_scheme::URL,
-                PayloadValue::Str(url.to_owned()),
-            )]),
-        );
+        send_url_scheme(&self.engine.control(), url);
     }
 
     /// The step `setViewport(<w>, <h>)`: the surface becomes `size` (a
@@ -780,6 +858,17 @@ impl Headless {
         self.host_calls = Some(Box::new(calls));
     }
 
+    /// Sends the app's `nsh/host` posts (the root's `Command::HostPost`) to
+    /// `posts` as their batches are applied, as [`Self::on_host_call`]
+    /// does calls.
+    #[cfg(feature = "js")]
+    pub(crate) fn on_host_post(
+        &mut self,
+        posts: impl FnMut(&str, &nsh_core::JsonValue) + Send + 'static,
+    ) {
+        self.host_posts = Some(Box::new(posts));
+    }
+
     /// Puts `text` on the clipboard (`None`: nothing), as the user copying.
     pub fn set_clipboard(&mut self, text: Option<String>) {
         self.screen.set_clipboard(text);
@@ -790,6 +879,12 @@ impl Headless {
     pub fn step(&mut self, name: impl Into<String>) {
         self.drain();
         self.step = name.into();
+    }
+
+    /// Tells the engine what the step gives input with, as a platform
+    /// does before acting on it: `focus-visible:` follows it.
+    fn input_with(&self, modality: InputModality) {
+        self.engine.control().set_input_modality(modality);
     }
 
     /// The batches applied so far.
@@ -813,6 +908,15 @@ impl Headless {
         for item in &batch.items {
             self.animator.apply(item);
         }
+        for item in &batch.items {
+            if let MountItem::Command {
+                id,
+                command: Command::InsertText(text),
+            } = item
+            {
+                self.insert_text(*id, text);
+            }
+        }
         if let Some(windows) = &mut self.windows {
             for item in &batch.items {
                 match item {
@@ -834,6 +938,18 @@ impl Headless {
                 } = item
                 {
                     calls(*id, name, args);
+                }
+            }
+        }
+        #[cfg(feature = "js")]
+        if let Some(posts) = &mut self.host_posts {
+            for item in &batch.items {
+                if let MountItem::Command {
+                    id: ROOT_ID,
+                    command: Command::HostPost { name, args },
+                } = item
+                {
+                    posts(name, args);
                 }
             }
         }
@@ -1333,9 +1449,15 @@ impl Headless {
         true
     }
 
-    /// The texts on screen, for errors.
+    /// The texts on screen, for errors: cut to
+    /// [`SCREEN_TEXT_LIMIT`](crate::failure::SCREEN_TEXT_LIMIT) so a long
+    /// document cannot flood the error.
     fn on_screen(&self) -> String {
-        format!("on screen: {:?}", self.screen.texts())
+        let texts = self.screen.texts();
+        format!(
+            "on screen: [{}]",
+            crate::failure::screen_texts(&texts, Some(crate::failure::SCREEN_TEXT_LIMIT))
+        )
     }
 
     /// The first render: waits for the app's first batch ([`WAIT`] at
@@ -1537,16 +1659,33 @@ impl Headless {
     pub fn press(&mut self, selector: &str) -> Result<(), String> {
         let parsed = Selector::parse(selector)?;
         self.step(format!("press({selector})"));
+        self.input_with(InputModality::Pointer);
         let pick = self.screen.pressable(&parsed);
-        let id = self.picked(pick, selector, "pressable view")?;
+        let mut id = self.picked(pick, selector, "pressable view")?;
+        let mut routed = None;
         // A real finger lands where the view is drawn: a view drawn over it
-        // there takes the press, so the step fails as the user would.
+        // there takes the press, so the step fails as the user would. The
+        // finger goes on the part of the view that is visible — a view
+        // across a scroll view's fold is pressed on the half left visible,
+        // its laid-out center lying below the fold, on the bar under it; a
+        // view nothing of which is on screen (a target scrolled out of
+        // view) keeps its laid-out center, which a press still reaches as
+        // before. A view that takes no pointer (in a `pointerEvents: none`
+        // subtree, as a data table's cells under its hit layer) is pressed
+        // where it is, by the view a pointer there reaches.
         if let Some(target) = self.screen.bounds_in_root(id) {
             let point = self
                 .screen
                 .press_point(&parsed, id)
                 .map_or(target.center(), |p| target.origin + p);
-            if let Some(cover) = self.screen.covering(id, point) {
+            let point = match self.screen.visible_bounds_in_root(id) {
+                Some(visible) if visible.contains(&point) => point,
+                Some(visible) => visible.center(),
+                None => point,
+            };
+            if let Some((to, inside)) = self.screen.routed_press(id, point) {
+                (id, routed) = (to, Some(inside));
+            } else if let Some(cover) = self.screen.covering(id, point) {
                 return Err(format!(
                     "{}; {}",
                     failure::covered(selector, &self.screen.selector_of(cover)),
@@ -1576,7 +1715,7 @@ impl Headless {
         {
             self.move_focus(Some(id));
         }
-        let inside = self.screen.press_point(&parsed, id);
+        let inside = routed.or_else(|| self.screen.press_point(&parsed, id));
         let payload = self.press_payload(id, inside);
         for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
             self.send(id, kind, payload.clone());
@@ -1594,6 +1733,7 @@ impl Headless {
     pub fn press_at(&mut self, selector: &str, at: Point<Points>) -> Result<(), String> {
         let parsed = Selector::parse(selector)?;
         self.step(format!("pressAt({selector}, {}, {})", at.x.0, at.y.0));
+        self.input_with(InputModality::Pointer);
         let pick = self.screen.pressable(&parsed);
         let id = self.picked(pick, selector, "pressable view")?;
         // `at` is in the view the selector names, which may be inside the
@@ -1680,6 +1820,7 @@ impl Headless {
     pub fn long_press(&mut self, selector: &str) -> Result<(), String> {
         let parsed = Selector::parse(selector)?;
         self.step(format!("longPress({selector})"));
+        self.input_with(InputModality::Pointer);
         let pick = self.screen.long_pressable(&parsed);
         let id = self.picked(pick, selector, "pressable view")?;
         let delay = self.screen.long_press_delay(id).unwrap_or(500.0).max(0.0);
@@ -1688,7 +1829,8 @@ impl Headless {
         if !path.is_empty() {
             self.send_touch(id, nsh_core::TouchPhase::Start, path.clone(), None);
         }
-        let payload = self.press_payload(id, None);
+        let inside = self.screen.press_point(&parsed, id);
+        let payload = self.press_payload(id, inside);
         self.send(id, EventKind::PressDown, payload.clone());
         self.elapse(Duration::from_secs_f64(f64::from(delay) / 1000.0));
         self.send(id, EventKind::LongPress, payload.clone());
@@ -1704,6 +1846,7 @@ impl Headless {
     /// an edit to nothing.
     pub fn clear(&mut self, selector: &str) -> Result<(), String> {
         let id = self.input_step(selector, format!("clear({selector})"))?;
+        self.input_with(InputModality::Keyboard);
         self.key_press(id, "Backspace");
         if let Some(input) = self.screen.input_mut(id)
             && !input.text.is_empty()
@@ -1731,6 +1874,7 @@ impl Headless {
     /// character past `maxLength` is dropped.
     pub fn type_text(&mut self, selector: &str, text: &str) -> Result<(), String> {
         let id = self.input_step(selector, format!("type({selector}, {text:?})"))?;
+        self.input_with(InputModality::Keyboard);
         for c in text.chars() {
             let multiline = self.screen.input(id).is_some_and(|i| i.config.multiline);
             if c == '\n' && !multiline {
@@ -1750,19 +1894,40 @@ impl Headless {
     /// (`onChange`), no keys.
     pub fn paste(&mut self, selector: &str, content: &nsh_core::PasteEvent) -> Result<(), String> {
         let id = self.input_step(selector, format!("paste({selector})"))?;
+        self.paste_into(id, content);
+        self.done()
+    }
+
+    /// The user's paste of `content` into input `id`: it hears `onPaste`,
+    /// then its text goes in as `pasteBehavior` says.
+    pub(crate) fn paste_into(&mut self, id: NodeId, content: &nsh_core::PasteEvent) {
         self.send(
             id,
             EventKind::Paste,
             EventPayload::Paste(Box::new(content.clone())),
         );
         let Some(input) = self.screen.input_mut(id) else {
-            return self.done();
+            return;
         };
         if input.config.paste_behavior != nsh_core::PasteBehavior::Insert || content.text.is_empty()
         {
-            return self.done();
+            return;
         }
-        let mut text = nsh_core::text_edit::pasted(&content.text, input.config.multiline);
+        self.insert_text(id, &content.text);
+    }
+
+    /// `text` goes into input `id` as the user's edit (a paste, the app's
+    /// `insertText`): at the end, where the caret is here (a single line
+    /// takes line breaks as spaces; within `maxLength`), one `onChange`,
+    /// no keys.
+    pub(crate) fn insert_text(&mut self, id: NodeId, text: &str) {
+        let Some(input) = self.screen.input_mut(id) else {
+            return;
+        };
+        if !input.config.editable {
+            return;
+        }
+        let mut text = nsh_core::text_edit::pasted(text, input.config.multiline);
         if let Some(max) = input.config.max_length {
             let room = (max as usize).saturating_sub(input.text.encode_utf16().count());
             let mut used = 0;
@@ -1775,7 +1940,7 @@ impl Headless {
                 .collect();
         }
         if text.is_empty() {
-            return self.done();
+            return;
         }
         input.text.push_str(&text);
         input.count += 1;
@@ -1787,7 +1952,6 @@ impl Headless {
             .control()
             .dispatch_event(id, EventKind::ChangeText, payload);
         self.report_selection(id);
-        self.done()
     }
 
     /// The step `submit(<selector>)`: the return key in the input
@@ -1796,6 +1960,7 @@ impl Headless {
     /// break in a multiline input.
     pub fn submit(&mut self, selector: &str) -> Result<(), String> {
         let id = self.input_step(selector, format!("submit({selector})"))?;
+        self.input_with(InputModality::Keyboard);
         self.return_key(id);
         self.done()
     }
@@ -1848,6 +2013,7 @@ impl Headless {
                 page: at.unwrap_or_default(),
                 location: location.unwrap_or_default(),
                 changed: true,
+                pointer_type: nsh_core::PointerType::Touch,
             }],
             activated: None,
         };
@@ -1967,6 +2133,7 @@ impl Headless {
     pub fn scroll(&mut self, selector: &str, distance: Points) -> Result<(), String> {
         let parsed = Selector::parse(selector)?;
         self.step(format!("scroll({selector}, {distance})"));
+        self.input_with(InputModality::Pointer);
         let pick = self.screen.scroll_view(&parsed);
         let id = self.picked(pick, selector, "scroll view")?;
         let at = |screen: &Screen| {
@@ -2113,6 +2280,28 @@ mod tests {
         );
     }
 
+    /// A paragraph whose last words hold their place hidden.
+    #[component]
+    fn Partly() -> impl IntoElement {
+        text("Shown ")
+            .child(text("not yet").invisible())
+            .child(" end")
+    }
+
+    #[test]
+    fn hidden_spans_are_not_on_screen() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Partly>())).unwrap();
+        app.first_render().unwrap();
+        let screen = app.screen();
+        assert_eq!(screen.texts(), ["Shown  end"]);
+        assert!(!screen.shows("not yet"));
+        let nodes = screen.layout_nodes();
+        let text = nodes.iter().find_map(|n| n.text.as_ref()).unwrap();
+        // The characters are still laid out, in the text the platform gets.
+        assert_eq!(text.text.text, "Shown not yet end");
+        assert!(text.text.spans[1].style.hidden);
+    }
+
     #[component]
     fn EmptySpans() -> impl IntoElement {
         text("before ")
@@ -2248,6 +2437,68 @@ mod tests {
         // run, no longer runs, and the new run's learns the width.
         app.press("Grow").unwrap();
         app.wait_for("wide true inner 200").unwrap();
+    }
+
+    /// A page whose `header` holds a back button, a one-line title far
+    /// wider than the window and a button after it.
+    #[component]
+    fn LongTitle() -> impl IntoElement {
+        let button = |id: &'static str| view().test_id(id).size(px(44.0)).flex_shrink_0();
+        nsh_core::element::stack().flex_1().child(
+            nsh_core::element::screen()
+                .header(
+                    view()
+                        .test_id("bar")
+                        .flex_row()
+                        .child(button("back"))
+                        .child(
+                            view().test_id("title").flex_1().min_w(px(0.0)).child(
+                                text("A title far too long for one line of the header ".repeat(4))
+                                    .number_of_lines(1),
+                            ),
+                        )
+                        .child(button("action")),
+                )
+                .child(view().flex_1()),
+        )
+    }
+
+    /// On a desktop, as its backends run it, a page's `header` is placed
+    /// by NSH as wide as the window: a long title shrinks and the button
+    /// after it stays in the window, whatever the window's width.
+    #[test]
+    fn a_desktop_page_header_is_as_wide_as_the_window() {
+        let mut config = EngineConfig::new(Root::of::<LongTitle>());
+        config.viewport = Size::new(px(360.0), px(600.0));
+        config.environment.os = Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        for width in [360.0, 600.0] {
+            app.set_viewport(Size::new(px(width), px(600.0))).unwrap();
+            let nodes = app.screen().layout_nodes();
+            let bounds = |id: &str| {
+                nodes
+                    .iter()
+                    .find(|n| n.test_id.as_deref() == Some(id))
+                    .unwrap_or_else(|| panic!("no {id}"))
+                    .bounds
+            };
+            let header = nodes
+                .iter()
+                .find(|n| n.kind == nsh_core::ViewKind::HeaderItem)
+                .expect("the header")
+                .bounds;
+            assert_eq!(header.size.width, px(width), "the header at {width}");
+            assert_eq!(bounds("bar").size.width, px(width), "its row at {width}");
+            let action = bounds("action");
+            assert_eq!(
+                action.origin.x + action.size.width,
+                px(width),
+                "the button after the title at {width}"
+            );
+            assert_eq!(bounds("title").size.width, px(width - 88.0));
+        }
     }
 
     /// A press whose task finishes a turn later, with no time passing.
@@ -2554,6 +2805,54 @@ mod tests {
         );
     }
 
+    /// A chat composer: a multiline input that submits on return, and a
+    /// single-line one beside it.
+    #[component]
+    fn Composer() -> impl IntoElement {
+        let draft = signal(String::new());
+        let sent = signal(String::new());
+        let title = signal(String::new());
+        view()
+            .child(
+                input()
+                    .test_id("draft")
+                    .multiline(true)
+                    .submit_behavior(SubmitBehavior::Submit)
+                    .value(move || draft.get())
+                    .on_change(move |text: &str| draft.set(text.to_owned()))
+                    .on_submit(move |text: &str| sent.set(text.to_owned())),
+            )
+            .child(
+                input()
+                    .test_id("title")
+                    .on_submit(move |text: &str| title.set(text.to_owned())),
+            )
+            .child(text(move || format!("Draft: {:?}", draft.get())))
+            .child(text(move || format!("Sent: {:?}", sent.get())))
+            .child(text(move || format!("Title: {:?}", title.get())))
+    }
+
+    #[test]
+    fn shift_or_alt_return_breaks_the_line_of_a_multiline_input_that_submits() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Composer>())).unwrap();
+        app.first_render().unwrap();
+        app.type_text("id:draft", "Hi").unwrap();
+        // Shift+Return and Alt (Option)+Return break the line, as on every
+        // platform; Return sends.
+        app.press_key("shift+enter").unwrap();
+        app.type_text("id:draft", "there").unwrap();
+        app.press_key("alt+enter").unwrap();
+        app.type_text("id:draft", "!").unwrap();
+        app.wait_for(r#"Draft: "Hi\nthere\n!""#).unwrap();
+        assert!(app.shows(r#"Sent: """#));
+        app.press_key("enter").unwrap();
+        app.wait_for(r#"Sent: "Hi\nthere\n!""#).unwrap();
+        // A single line holds no line break: Shift+Return submits it.
+        app.type_text("id:title", "Plan").unwrap();
+        app.press_key("shift+enter").unwrap();
+        app.wait_for(r#"Title: "Plan""#).unwrap();
+    }
+
     /// A list of rows taller than the screen, saying where it is.
     #[component]
     fn Rows() -> impl IntoElement {
@@ -2818,7 +3117,7 @@ mod tests {
     #[test]
     fn tab_stops_at_a_focusable_view_that_takes_no_presses() {
         let mut config = EngineConfig::new(Root::of::<FocusStops>());
-        config.environment.os = nsh_core::platform::Os::MacOs;
+        config.environment.os = Os::MacOs;
         config.environment.idiom = nsh_core::platform::Idiom::Desktop;
         let mut app = Headless::start(config).unwrap();
         app.first_render().unwrap();
@@ -2861,6 +3160,85 @@ mod tests {
         app.press("id:chart").unwrap();
         app.wait_for("Opens 1 presses 1 steps 1 focused false")
             .unwrap();
+    }
+
+    /// A dialog whose Return allows (a global binding, outside text
+    /// fields), Mod+Return too, with an input and two buttons.
+    #[component]
+    fn ReturnAllows() -> impl IntoElement {
+        let allows = signal(0_u32);
+        let denies = signal(0_u32);
+        let cancels = signal(0_u32);
+        let sends = signal(0_u32);
+        on_key_with(
+            "enter",
+            KeyOptions {
+                when: nsh_core::keymap::When::NotEditing,
+                ..Default::default()
+            },
+            move |_| allows.update(|a| *a += 1),
+        );
+        on_key("mod+enter", move |_| sends.update(|s| *s += 1));
+        view()
+            .flex_1()
+            .child(input().test_id("note"))
+            .child(
+                view()
+                    .test_id("deny")
+                    .on_press(move || denies.update(|d| *d += 1))
+                    .child(text("Deny")),
+            )
+            .child(
+                view()
+                    .test_id("cancel")
+                    .on_press(move || cancels.update(|c| *c += 1))
+                    .child(text("Cancel")),
+            )
+            .child(text(move || {
+                format!(
+                    "Allows {} denies {} cancels {} sends {}",
+                    allows.get(),
+                    denies.get(),
+                    cancels.get(),
+                    sends.get()
+                )
+            }))
+    }
+
+    #[test]
+    fn return_and_space_press_the_focused_control_before_the_shortcuts() {
+        for os in [Os::MacOs, Os::Web, Os::Linux] {
+            let mut config = EngineConfig::new(Root::of::<ReturnAllows>());
+            config.environment.os = os;
+            config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+            let mut app = Headless::start(config).unwrap();
+            app.first_render().unwrap();
+            // The focus on no control: Return is the dialog's.
+            app.press_key("enter").unwrap();
+            app.wait_for("Allows 1 denies 0 cancels 0 sends 0").unwrap();
+            // Tab to Deny, then Cancel: Return and Space press the control
+            // the focus is on, not the binding.
+            app.press_key("tab").unwrap();
+            app.press_key("tab").unwrap();
+            app.press_key("enter").unwrap();
+            app.wait_for("Allows 1 denies 1 cancels 0 sends 0")
+                .unwrap_or_else(|e| panic!("{os:?}: {e}"));
+            app.press_key("space").unwrap();
+            app.wait_for("Allows 1 denies 2 cancels 0 sends 0").unwrap();
+            app.press_key("tab").unwrap();
+            app.press_key("enter").unwrap();
+            app.wait_for("Allows 1 denies 2 cancels 1 sends 0").unwrap();
+            // With Mod held the binding of that keystroke fires.
+            app.press_key("mod+enter").unwrap();
+            app.wait_for("Allows 1 denies 2 cancels 1 sends 1").unwrap();
+            // In the text field Return is the field's: no binding (it fires
+            // outside text fields), no control.
+            app.type_text("id:note", "Hi").unwrap();
+            app.press_key("enter").unwrap();
+            app.wait_for("Allows 1 denies 2 cancels 1 sends 1").unwrap();
+            app.press_key("mod+enter").unwrap();
+            app.wait_for("Allows 1 denies 2 cancels 1 sends 2").unwrap();
+        }
     }
 
     /// A list of 200 rows of its own, each a button showing its row.
@@ -2942,6 +3320,84 @@ mod tests {
         assert_eq!(app.screen().tab_stops().len(), rows.len());
     }
 
+    /// A short list of 30 rows of its own, four on screen, each a button
+    /// that says when it has the focus, and a button after it.
+    #[component]
+    fn TabbedList() -> impl IntoElement {
+        let focused = signal(String::from("none"));
+        view()
+            .flex_1()
+            .child(
+                virtual_list(30, move |at| {
+                    view()
+                        .h(px(40.0))
+                        .on_press(|| {})
+                        .on_focus(move || focused.set(format!("row {}", at.index())))
+                        .child(text(move || format!("Row {}", at.index())))
+                })
+                .test_id("list")
+                .estimated_item_size(px(40.0))
+                .h(px(160.0)),
+            )
+            .child(
+                view()
+                    .test_id("after")
+                    .h(px(40.0))
+                    .on_press(|| {})
+                    .on_focus(move || focused.set("after".into()))
+                    .child(text("After")),
+            )
+            .child(text(move || format!("Focused {}.", focused.get())))
+    }
+
+    /// Tab walks a list's rows one by one, those not rendered yet too, the
+    /// list scrolling each into view, and leaves it after its last row;
+    /// Shift+Tab walks them back.
+    #[test]
+    fn tab_walks_every_row_of_a_list() {
+        let mut config = EngineConfig::new(Root::of::<TabbedList>());
+        config.environment.os = Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        let id = |app: &Headless, s: &str| match app.screen().view(&Selector::parse(s).unwrap()) {
+            crate::screen::Pick::One(id) => id,
+            _ => panic!("{s} is shown"),
+        };
+        let list = id(&app, "id:list");
+        let shows = |app: &Headless| {
+            let view = app.screen().key_focus().expect("a focus");
+            let (Some(row), Some(list)) = (
+                app.screen().bounds_in_root(view),
+                app.screen().bounds_in_root(list),
+            ) else {
+                return false;
+            };
+            row.origin.y >= list.origin.y
+                && row.origin.y + row.size.height <= list.origin.y + list.size.height
+        };
+        let rows = (0..30).map(|i| format!("row {i}"));
+        for row in rows.clone() {
+            app.press_key("tab").unwrap();
+            app.wait_for(&format!("Focused {row}.")).unwrap();
+            assert!(shows(&app), "{row} is scrolled into view");
+        }
+        app.press_key("tab").unwrap();
+        app.wait_for("Focused after.").unwrap();
+        for row in rows.rev() {
+            app.press_key("shift+tab").unwrap();
+            app.wait_for(&format!("Focused {row}.")).unwrap();
+            assert!(shows(&app), "{row} is scrolled into view");
+        }
+        // Scrolled far from the focus, Tab goes on from it, to the row
+        // after it, not to the rows on screen.
+        app.scroll("id:list", px(900.0)).unwrap();
+        assert!(!shows(&app));
+        app.press_key("tab").unwrap();
+        app.wait_for("Focused row 1.").unwrap();
+        assert!(shows(&app), "row 1 is scrolled into view");
+    }
+
     #[cfg(feature = "js")]
     #[test]
     fn a_step_fails_when_the_app_throws() {
@@ -3013,5 +3469,228 @@ mod tests {
             FileRequest::SaveDialog(save) if save.file_name.as_deref() == Some("Untitled.md")
         ));
         assert_eq!(requests[2], FileRequest::RevealPath("/docs/a.md".into()));
+    }
+
+    /// A clipping box with padding that holds a label, a box wider than it,
+    /// a hidden box and a horizontal scroll view.
+    #[component]
+    fn Laid() -> impl IntoElement {
+        view()
+            .test_id("outer")
+            .w(px(200.0))
+            .h(px(100.0))
+            .p(px(10.0))
+            .overflow_hidden()
+            .child(text("Label").test_id("label"))
+            .child(view().test_id("wide").w(px(300.0)).h(px(20.0)))
+            .child(view().test_id("ghost").w(px(10.0)).h(px(10.0)).invisible())
+            .child(
+                scroll()
+                    .test_id("strip")
+                    .horizontal()
+                    .w(px(100.0))
+                    .h(px(30.0))
+                    .child(view().test_id("long").w(px(400.0)).h(px(30.0))),
+            )
+    }
+
+    fn node<'a>(nodes: &'a [crate::LayoutNode], test_id: &str) -> &'a crate::LayoutNode {
+        nodes
+            .iter()
+            .find(|n| n.test_id.as_deref() == Some(test_id))
+            .unwrap_or_else(|| panic!("no {test_id} in {nodes:?}"))
+    }
+
+    #[test]
+    fn layout_nodes_give_each_views_box_parent_clip_and_text_box() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Laid>())).unwrap();
+        app.first_render().unwrap();
+        let nodes = app.screen().layout_nodes();
+
+        // Tree order, the root left out, and every parent is in the list.
+        let ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
+        let outer = node(&nodes, "outer");
+        assert_eq!(outer.parent, ROOT_ID);
+        assert_eq!(outer.kind, nsh_core::ViewKind::View);
+        assert_eq!(ids[0], outer.id);
+        for n in nodes.iter().filter(|n| n.id != outer.id) {
+            assert!(ids.contains(&n.parent), "{n:?}");
+        }
+
+        // Boxes are in the root's points; padding moves the children.
+        assert_eq!(outer.bounds.size, Size::new(px(200.0), px(100.0)));
+        assert!(outer.clips);
+        assert!(outer.scroll.is_none() && outer.text.is_none() && !outer.hidden);
+        let wide = node(&nodes, "wide");
+        assert_eq!(wide.parent, outer.id);
+        assert_eq!(wide.bounds.origin.x, outer.bounds.origin.x + px(10.0));
+        // It is wider than the box that clips it: the audit's evidence.
+        assert!(wide.bounds.right() > outer.bounds.right());
+
+        // A hidden view keeps its box; a scroll view says which way it
+        // scrolls and how large its content is.
+        assert!(node(&nodes, "ghost").hidden);
+        let strip = node(&nodes, "strip");
+        let scrolling = strip.scroll.as_ref().unwrap();
+        assert!(scrolling.horizontal);
+        assert_eq!(scrolling.content_size.map(|s| s.width), Some(px(400.0)));
+        assert_eq!(node(&nodes, "long").parent, strip.id);
+
+        // A text keeps its attributed text and the box it was laid out in,
+        // in the root's points as its own box.
+        let label = node(&nodes, "label");
+        let text = label.text.as_ref().unwrap();
+        assert_eq!(text.text.text, "Label");
+        assert!(text.content.size.width.0 > 0.0);
+        assert!(text.content.origin.x >= label.bounds.origin.x);
+        assert!(text.content.right() <= label.bounds.right());
+    }
+
+    #[test]
+    fn layout_nodes_follow_scroll_offsets() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Rows>())).unwrap();
+        app.first_render().unwrap();
+        let row = |app: &Headless| {
+            let nodes = app.screen().layout_nodes();
+            let text = nodes
+                .iter()
+                .find(|n| n.text.as_ref().is_some_and(|t| t.text.text == "Row 3"))
+                .unwrap()
+                .clone();
+            // The row's box is the text's parent.
+            let parent = nodes.iter().find(|n| n.id == text.parent).unwrap();
+            parent.bounds.origin.y
+        };
+        let before = row(&app);
+        app.scroll("Row 3", px(100.0)).unwrap();
+        app.wait_for("At 100").unwrap();
+        assert_eq!(row(&app), before - px(100.0));
+    }
+
+    /// Counts the texts it prepares, so a test sees which engine laid out.
+    #[derive(Clone, Default)]
+    struct Counting(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl TextEngine for Counting {
+        type Prepared = <ApproxTextEngine as TextEngine>::Prepared;
+
+        fn prepare(&self, text: &nsh_core::AttributedText) -> Self::Prepared {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            ApproxTextEngine.prepare(text)
+        }
+
+        fn measure(&self, prepared: &Self::Prepared, max_width: Option<Points>) -> Size<Points> {
+            ApproxTextEngine.measure(prepared, max_width)
+        }
+
+        fn layout(&self, prepared: &Self::Prepared, size: Size<Points>) -> nsh_core::TextLayout {
+            ApproxTextEngine.layout(prepared, size)
+        }
+    }
+
+    #[test]
+    fn start_with_text_engine_lays_text_out_with_the_given_engine() {
+        let counting = Counting::default();
+        let seen = counting.0.clone();
+        let mut app =
+            Headless::start_with_text_engine(EngineConfig::new(Root::of::<Laid>()), move || {
+                counting
+            })
+            .unwrap();
+        app.first_render().unwrap();
+        assert!(seen.load(Ordering::Relaxed) > 0);
+        assert!(app.shows("Label"));
+    }
+
+    // Escape bound in the main window and in a window of the app's own.
+    #[component]
+    fn WindowKeys() -> impl IntoElement {
+        let main = signal(0);
+        let settings = signal(0);
+        on_key("escape", move |_| main.update(|n| *n += 1));
+        view()
+            .child(
+                text(move || format!("keys {} {}", main.get(), settings.get()))
+                    .test_id("in-main")
+                    .on_press(|_: &()| {}),
+            )
+            .child(
+                nsh_core::element::desktop::window()
+                    .id("settings")
+                    .default_size(size(px(300.0), px(100.0)))
+                    .content(move || {
+                        on_key("escape", move |_| settings.update(|n| *n += 1));
+                        view()
+                            .test_id("in-settings")
+                            .on_press(|_: &()| {})
+                            .w(px(100.0))
+                            .h(px(40.0))
+                    }),
+            )
+    }
+
+    #[test]
+    fn a_key_fires_the_bindings_of_the_focused_window() {
+        let mut config = EngineConfig::new(Root::of::<WindowKeys>());
+        config.environment.os = Os::MacOs;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        app.wait_for("keys 0 0").unwrap();
+        // Settings opened focused: its binding takes the key, main's not.
+        app.press_key("escape").unwrap();
+        app.wait_for("keys 0 1").unwrap();
+        // A press in the main window focuses it, and then its binding.
+        app.press("id:in-main").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("keys 1 1").unwrap();
+        app.press("id:in-settings").unwrap();
+        app.press_key("escape").unwrap();
+        app.wait_for("keys 1 2").unwrap();
+    }
+
+    /// A layout chosen by the window's width, and the color scheme.
+    #[component]
+    fn ByWidth() -> impl IntoElement {
+        text(move || {
+            let width = nsh_core::element::window().width.0;
+            let layout = if width < 600.0 { "narrow" } else { "wide" };
+            let scheme = if nsh_core::element::dark() {
+                "dark"
+            } else {
+                "light"
+            };
+            format!("{layout} {width} {scheme}")
+        })
+    }
+
+    fn open_by_width(os: nsh_core::platform::Os) -> Headless {
+        let mut config = EngineConfig::new(Root::of::<ByWidth>());
+        config.environment.os = os;
+        config.viewport = Size::new(px(800.0), px(600.0));
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        app
+    }
+
+    #[test]
+    fn a_changed_environment_keeps_the_window_size() {
+        for os in [nsh_core::platform::Os::Ios, nsh_core::platform::Os::MacOs] {
+            let mut app = open_by_width(os);
+            app.wait_for("wide 800 light").unwrap();
+            // A step that changes only the color scheme keeps the window.
+            app.set_environment("setColorScheme(dark)", |env| {
+                env.color_scheme = nsh_core::platform::ColorScheme::Dark;
+            })
+            .unwrap();
+            app.wait_for("wide 800 dark").unwrap();
+            // A resized window, then another change of the environment.
+            app.set_viewport(Size::new(px(390.0), px(844.0))).unwrap();
+            app.wait_for("narrow 390 dark").unwrap();
+            app.set_environment("setColorScheme(light)", |env| {
+                env.color_scheme = nsh_core::platform::ColorScheme::Light;
+            })
+            .unwrap();
+            app.wait_for("narrow 390 light").unwrap();
+        }
     }
 }

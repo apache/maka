@@ -115,6 +115,11 @@
   "waysHead": "三种交付方式，同一个引擎",
   "foundTitle": "行为来自 NSH，外观来自你",
   "foundLead": "nsh/base 提供无样式的基础组件，负责状态、焦点、键盘和无障碍；每个部分的样式由应用决定。一个 nsh 命令行负责其余的事。",
+  "kitNote": [
+    "只做桌面应用？同一 Longbridge 团队打造的 ",
+    "GPUI Kit",
+    " 提供一套开箱即用的 UI 组件库，覆盖 macOS、Windows 和 Linux。NSH 的许多设计正源自 GPUI Kit，用 NSH 开发的应用也可以直接嵌入 GPUI Kit 应用。"
+  ],
   "closeTitle": [
     "原生视图与交互，",
     "视觉由应用设计"

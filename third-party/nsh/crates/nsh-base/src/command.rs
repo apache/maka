@@ -938,6 +938,7 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
                 KeyOptions {
                     when,
                     repeat,
+                    for_focus: true,
                     ..Default::default()
                 },
                 move |_| f(),

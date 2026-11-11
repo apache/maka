@@ -30,6 +30,7 @@ fn bundle(app: &str) -> Bundle {
         minify: false,
         split: false,
         ui_sets: ui_sets.iter().map(Into::into).collect(),
+        ..Default::default()
     })
     .unwrap();
     let bytecode = nsh_js::compile_bytecode_with(
@@ -282,15 +283,19 @@ fn a_link_opens_its_href_through_the_system_or_the_app() {
         Some(AccessibilityCurrent::Page)
     );
     assert!(home_props.accessibility.state.disabled);
-    // No look of its own: only the app's `disabled:` class styles a link.
+    // No look of its own beyond the pointer cursor: only the app's
+    // `disabled:` class styles a link.
     for id in [docs, order] {
-        assert!(
-            !first
-                .items
-                .iter()
-                .any(|i| matches!(i, MountItem::ViewStyle { id: v, .. } if *v == id)),
-            "no style of its own"
-        );
+        for i in &first.items {
+            if let MountItem::ViewStyle { id: v, style } = i
+                && *v == id
+            {
+                assert_eq!(style.cursor, nsh_core::Cursor::Pointer);
+                let mut rest = style.clone();
+                rest.cursor = Default::default();
+                assert_eq!(rest, Default::default(), "no style beyond the cursor");
+            }
+        }
     }
     // A disabled link takes no presses.
     assert!(!first.items.iter().any(|i| matches!(

@@ -580,6 +580,46 @@ pub(crate) fn announce(text: &str) {
     };
 }
 
+/// `Haptics` of `nsh/mobile`: UIKit's feedback generator for `haptic`
+/// plays it (nothing on devices without a Taptic Engine, or with system
+/// haptics off).
+// `initWithStyle:` is deprecated from iOS 17.5 for `feedbackGeneratorForView:`,
+// which iOS 15 lacks.
+#[allow(deprecated)]
+pub(crate) fn haptic(haptic: nsh_core::Haptic) {
+    use nsh_core::{Haptic, HapticImpact, HapticNotification};
+    use objc2_ui_kit::{
+        UIImpactFeedbackGenerator, UIImpactFeedbackStyle, UINotificationFeedbackGenerator,
+        UINotificationFeedbackType, UISelectionFeedbackGenerator,
+    };
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let impact = |style| {
+        UIImpactFeedbackGenerator::initWithStyle(mtm.alloc(), style).impactOccurred();
+    };
+    let notification = |kind| UINotificationFeedbackGenerator::new(mtm).notificationOccurred(kind);
+    match haptic {
+        Haptic::Selection => UISelectionFeedbackGenerator::new(mtm).selectionChanged(),
+        Haptic::Impact(HapticImpact::Light) => impact(UIImpactFeedbackStyle::Light),
+        Haptic::Impact(HapticImpact::Medium) => impact(UIImpactFeedbackStyle::Medium),
+        Haptic::Impact(HapticImpact::Heavy) => impact(UIImpactFeedbackStyle::Heavy),
+        Haptic::Impact(HapticImpact::Soft) => impact(UIImpactFeedbackStyle::Soft),
+        Haptic::Impact(HapticImpact::Rigid) => impact(UIImpactFeedbackStyle::Rigid),
+        Haptic::Notification(HapticNotification::Success) => {
+            notification(UINotificationFeedbackType::Success)
+        }
+        Haptic::Notification(HapticNotification::Warning) => {
+            notification(UINotificationFeedbackType::Warning)
+        }
+        Haptic::Notification(HapticNotification::Error) => {
+            notification(UINotificationFeedbackType::Error)
+        }
+        // `Haptic`, `HapticImpact` and `HapticNotification` are non-exhaustive.
+        _ => {}
+    }
+}
+
 /// `setAccessibilityFocus`: VoiceOver moves to `view`.
 pub(crate) fn accessibility_focus(view: &UIView) {
     // SAFETY: layout changes take the element to focus.

@@ -14,8 +14,8 @@ use objc2_app_kit::{
     NSFontWeightThin, NSFontWeightUltraLight,
 };
 use objc2_core_foundation::{
-    CFArray, CFAttributedString, CFDictionary, CFIndex, CFMutableAttributedString, CFNumber,
-    CFRange, CFRetained, CFString, CFType, CFURL, CGFloat, CGPoint, CGRect, CGSize,
+    CFArray, CFAttributedString, CFBoolean, CFDictionary, CFIndex, CFMutableAttributedString,
+    CFNumber, CFRange, CFRetained, CFString, CFType, CFURL, CGFloat, CGPoint, CGRect, CGSize,
 };
 use objc2_core_graphics::{CGColor, CGContext, CGPath};
 use objc2_core_text::{
@@ -25,22 +25,23 @@ use objc2_core_text::{
     CTRunDelegateCallbacks, CTRunStatus, CTTextAlignment, CTTypesetter, CTWritingDirection,
     kCTFontAttributeName, kCTFontCascadeListAttribute, kCTFontFamilyNameAttribute,
     kCTFontFeatureSettingsAttribute, kCTFontOpenTypeFeatureTag, kCTFontOpenTypeFeatureValue,
-    kCTFontTraitsAttribute, kCTFontWeightTrait, kCTForegroundColorAttributeName,
+    kCTFontTraitsAttribute, kCTFontWeightTrait, kCTForegroundColorFromContextAttributeName,
     kCTKernAttributeName, kCTParagraphStyleAttributeName, kCTRunDelegateAttributeName,
-    kCTRunDelegateCurrentVersion, kCTUnderlineColorAttributeName, kCTUnderlineStyleAttributeName,
+    kCTRunDelegateCurrentVersion, kCTUnderlineStyleAttributeName,
 };
 use rustc_hash::FxHashMap;
 
-/// Attribute carrying the strikethrough color: CoreText draws underlines
-/// but not strikethroughs, so [`draw`] draws those.
+/// Attribute marking struck through characters: [`draw`] draws the line, in
+/// the drawn text's decoration color.
 pub(crate) fn strikethrough_key() -> &'static CFString {
     static KEY: std::sync::OnceLock<CFStringKey> = std::sync::OnceLock::new();
     &KEY.get_or_init(|| CFStringKey(CFString::from_static_str("NshStrikethroughColor")))
         .0
 }
 
-/// Attribute carrying the color of an underline CoreText cannot draw
-/// (styled, thick or offset): [`draw`] draws it.
+/// Attribute marking underlined characters whose line CoreText cannot draw
+/// (styled, thick or offset): [`draw`] draws it, in the drawn text's
+/// decoration color.
 pub(crate) fn underline_key() -> &'static CFString {
     static KEY: std::sync::OnceLock<CFStringKey> = std::sync::OnceLock::new();
     &KEY.get_or_init(|| CFStringKey(CFString::from_static_str("NshUnderlineColor")))
@@ -402,7 +403,7 @@ pub(crate) struct LaidLines {
     pub(crate) lines: Vec<LaidLine>,
     /// The box's height (lines are placed y up from its bottom).
     pub(crate) height: CGFloat,
-    /// Some run carries a strikethrough.
+    /// Some run carries a decoration line ([`draw_decorations`]).
     pub(crate) strikethrough: bool,
     /// Top left of each attachment's placeholder (y down), if shown.
     attachments: Vec<Option<(f32, f32)>>,
@@ -524,6 +525,19 @@ impl CoreTextEngine {
             text,
             self.tallest_attachment_line(text, alignments),
         ));
+        // No colors: [`draw`] takes them from the text it draws, so a text
+        // that only changes its colors keeps this typesetting
+        // (`TextEngine::draws_colors_from_text`).
+        let yes: &CFType = CFBoolean::new(true).as_ref();
+        set(
+            CFRange {
+                location: 0,
+                length,
+            },
+            // SAFETY: an immutable CoreText constant.
+            unsafe { kCTForegroundColorFromContextAttributeName },
+            yes,
+        );
         // SAFETY: immutable CoreText constants (here and below).
         set(
             CFRange {
@@ -544,16 +558,10 @@ impl CoreTextEngine {
                 unsafe { kCTFontAttributeName },
                 self.fonts.get(style).as_ref(),
             );
-            set(
-                range,
-                unsafe { kCTForegroundColorAttributeName },
-                cg_color(style.color).as_ref(),
-            );
             if style.letter_spacing != Points::ZERO {
                 let kern = CFNumber::new_cgfloat(style.letter_spacing.0 as CGFloat);
                 set(range, unsafe { kCTKernAttributeName }, kern.as_ref());
             }
-            let decoration = cg_color(style.decoration_color.unwrap_or(style.color));
             let custom = style.decoration_style != nsh_core::DecorationStyle::Solid
                 || style.decoration_thickness.is_some()
                 || style.underline_offset.is_some();
@@ -580,23 +588,19 @@ impl CoreTextEngine {
                 set(range, decoration_key(), array.as_ref());
             }
             if style.decoration.underline && custom {
-                set(range, underline_key(), decoration.as_ref());
+                set(range, underline_key(), yes);
             } else if style.decoration.underline {
-                // kCTUnderlineStyleSingle.
+                // kCTUnderlineStyleSingle, in the decoration color
+                // ([`draw_underlines`]).
                 let single = CFNumber::new_i32(1);
                 set(
                     range,
                     unsafe { kCTUnderlineStyleAttributeName },
                     single.as_ref(),
                 );
-                set(
-                    range,
-                    unsafe { kCTUnderlineColorAttributeName },
-                    decoration.as_ref(),
-                );
             }
             if style.decoration.line_through {
-                set(range, strikethrough_key(), decoration.as_ref());
+                set(range, strikethrough_key(), yes);
             }
             if let Some(b) = style.background {
                 let node = CFNumber::new_i64(b.node as i64);
@@ -605,8 +609,7 @@ impl CoreTextEngine {
         }
         // Attachments: their placeholders take the attachment's width and
         // its extent around the baseline (`verticalAlign`), and draw
-        // nothing.
-        let clear = cg_color(Color::TRANSPARENT);
+        // nothing ([`draw`] skips their runs).
         for a in &text.attachments {
             let range = CFRange {
                 location: a.index as CFIndex,
@@ -620,11 +623,6 @@ impl CoreTextEngine {
                     delegate.as_ref(),
                 );
             }
-            set(
-                range,
-                unsafe { kCTForegroundColorAttributeName },
-                clear.as_ref(),
-            );
         }
         CFMutableAttributedString::end_editing(s);
         string
@@ -991,6 +989,11 @@ impl TextEngine for CoreTextEngine {
         true
     }
 
+    fn draws_colors_from_text(&self) -> bool {
+        // The typeset string holds no colors ([`draw`]).
+        true
+    }
+
     fn layout(&self, prepared: &Prepared, size: Size<Points>) -> TextLayout {
         let layout = CoreTextLayout {
             laid: std::sync::OnceLock::new(),
@@ -1161,10 +1164,35 @@ fn lay_out(prepared: &Prepared, size: Size<Points>) -> LaidLines {
     let (width, height) = (size.width.0 as CGFloat, size.height.0 as CGFloat);
     let rect = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(width, height));
     // SAFETY: a valid rectangle path and whole-string range.
-    let frame: CFRetained<CTFrame> = unsafe {
+    let mut frame: CFRetained<CTFrame> = unsafe {
         let path = CGPath::with_rect(rect, std::ptr::null());
         prepared.framesetter.frame(WHOLE, &path, None)
     };
+    let mut frame_height = height;
+    // CoreText drops the first line when its metrics exceed an explicit box
+    // height, even by a fraction of a point (a box rounded to device pixels
+    // around a line whose ascent reaches above its measured height). Keep
+    // that line at its normal top position; the view's bounds still control
+    // drawing and clipping.
+    // SAFETY: valid framesetter, frame and a range within the string.
+    unsafe {
+        if width > 0.0 && height > 0.0 && prepared.length > 0 && frame.lines().count() == 0 {
+            let range = CFRange {
+                location: 0,
+                length: prepared.lines_length(1, width),
+            };
+            let first = prepared.framesetter.suggest_frame_size_with_constraints(
+                range,
+                None,
+                CGSize::new(width, CGFloat::MAX),
+                std::ptr::null_mut(),
+            );
+            frame_height = height.max(first.height.ceil());
+            let rect = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(width, frame_height));
+            let path = CGPath::with_rect(rect, std::ptr::null());
+            frame = prepared.framesetter.frame(range, &path, None);
+        }
+    }
     let attributed: &CFAttributedString = &prepared.string;
     // SAFETY: the frame's own line array (of CTLines) and origins.
     let mut lines = unsafe {
@@ -1173,6 +1201,11 @@ fn lay_out(prepared: &Prepared, size: Size<Points>) -> LaidLines {
         let mut origins = vec![CGPoint::new(0.0, 0.0); count as usize];
         if let Some(ptr) = NonNull::new(origins.as_mut_ptr()) {
             frame.line_origins(WHOLE, ptr);
+        }
+        if frame_height != height {
+            for origin in &mut origins {
+                origin.y -= frame_height - height;
+            }
         }
         (0..count)
             .map(|i| {
@@ -1362,8 +1395,11 @@ pub(crate) fn draw(cx: &CGContext, state: &crate::view::ViewState) {
         let alpha = (tint.0 & 0xff) as f32 / 255.0 * 0.3;
         let tint = Color((tint.0 & !0xff) | (alpha * 255.0).round() as u32);
         CGContext::set_fill_color_with_color(c, Some(&cg_color(tint)));
-        for rect in selection_rects(text, content, range) {
-            CGContext::fill_rect(c, rect);
+        // Hidden characters show no highlight, as nothing of them shows.
+        for shown in drawn.text.visible_ranges(range.0..range.1) {
+            for rect in selection_rects(text, content, (shown.start, shown.end)) {
+                CGContext::fill_rect(c, rect);
+            }
         }
     }
     // CoreText draws in a y-up space with the origin at the bottom of the
@@ -1407,12 +1443,11 @@ pub(crate) fn draw(cx: &CGContext, state: &crate::view::ViewState) {
         // SAFETY: no auxiliary info.
         unsafe { CGContext::begin_transparency_layer(c, None) };
     }
+    let mut stretches = Stretches::new(&drawn.text);
     for line in &text.lines {
-        CGContext::set_text_position(c, line.origin.x, line.origin.y);
-        // SAFETY: a valid line and context.
-        unsafe { line.line.draw(cx) };
+        draw_glyphs(cx, line, &mut stretches);
         if text.strikethrough {
-            draw_decorations(cx, line);
+            draw_decorations(cx, line, &mut stretches);
         }
     }
     if let Some(color) = color {
@@ -1893,8 +1928,8 @@ pub(crate) fn caret_at(state: &crate::view::ViewState, x: f32, y: f32) -> u32 {
 }
 
 /// The rectangles (view coordinates) the characters `start..end` of the
-/// text view with `state` cover, one per line (the test agent's spans).
-#[cfg(feature = "dev")]
+/// text view with `state` cover, one per line (the box of a selectable
+/// view's selection, the test agent's spans).
 pub(crate) fn range_rects(state: &crate::view::ViewState, start: u32, end: u32) -> Vec<CGRect> {
     let Some(drawn) = state.text.as_ref() else {
         return Vec::new();
@@ -2177,59 +2212,164 @@ pub(crate) fn selection_key(
     }
 }
 
-/// Whether the surface has a selection Copy could put on the clipboard: the
-/// Edit menu's Copy is offered then, whichever of the surface's views has
-/// the keyboard focus.
-pub(crate) fn has_selection(surface: &crate::surface::Surface) -> bool {
-    surface.selection.area.has_selection() || surface.selection.with_range().is_some()
-}
-
 /// Copies the selection to the surface clipboard (the Edit menu's Copy).
 /// False if there is none.
 pub(crate) fn copy(surface: &crate::surface::Surface) -> bool {
-    let Some(text) = surface.selection.area.text().or_else(|| {
+    write_selection(surface, &objc2_app_kit::NSPasteboard::generalPasteboard())
+}
+
+/// Puts the selected text on `board` (Copy, the Services menu). False if
+/// there is none.
+pub(crate) fn write_selection(
+    surface: &crate::surface::Surface,
+    board: &objc2_app_kit::NSPasteboard,
+) -> bool {
+    let Some(text) = selection_text(surface) else {
+        return false;
+    };
+    #[cfg(feature = "terminal")]
+    if surface.terminal.get() {
+        crate::system::write_clipboard(surface, &text);
+        return true;
+    }
+    board.clearContents();
+    // SAFETY: an immutable AppKit constant.
+    let kind = unsafe { objc2_app_kit::NSPasteboardTypeString };
+    board.setString_forType(&objc2_foundation::NSString::from_str(&text), kind);
+    true
+}
+
+/// The selected text of the surface, if any.
+pub(crate) fn selection_text(surface: &crate::surface::Surface) -> Option<String> {
+    surface.selection.area.text().or_else(|| {
         surface
             .selection
             .with_range()
             .and_then(|v| selected_text(&v))
-    }) else {
-        return false;
-    };
-    crate::system::write_clipboard(surface, &text);
-    true
+    })
 }
 
-/// The default context menu of selected output, after application handlers.
-pub(crate) fn context_menu(
-    surface: &std::rc::Rc<crate::surface::Surface>,
-    view: &crate::view::NshView,
-    x: f32,
-    y: f32,
-) {
-    let selected = surface.selection.with_range().as_ref() == Some(view)
-        || (surface.selection.area.has_selection()
-            && crate::selectable_view::target(view)
-                .is_some_and(|area| surface.selection.area.is(&area)));
-    if !selected {
+/// A secondary click on selectable text or in a selectable view: Copy
+/// (with a selection), Select All and, for selected text, Look Up, titled
+/// in AppKit's own words ([`appkit_title`]). The root view is a Services
+/// requestor for the selection (`validRequestorForSendType:returnType:`),
+/// available to AppKit Services. Context-menu plugins are enabled by
+/// default; their presentation depends on AppKit. Translate is not
+/// offered: `NSTextView`'s comes from a private framework, and the public
+/// translation UI is SwiftUI's only (`translationPresentation`). Returns
+/// once the menu closed.
+pub(crate) fn context_menu(surface: &crate::surface::Surface) {
+    use nsh_core::desktop::MenuRole;
+    use objc2::{MainThreadMarker, MainThreadOnly, sel};
+    use objc2_app_kit::{NSApplication, NSMenu, NSMenuItem, NSPasteboardTypeString};
+    use objc2_foundation::{NSArray, NSString};
+
+    let Some(mtm) = MainThreadMarker::new() else {
         return;
-    }
-    use objc2::MainThreadOnly;
-    use objc2_app_kit::{NSMenu, NSMenuItem};
-    use objc2_foundation::NSString;
-    let menu = NSMenu::initWithTitle(NSMenu::alloc(surface.mtm), &NSString::new());
-    // SAFETY: the root implements copy: and lives throughout menu tracking.
-    let item = unsafe {
-        let item = NSMenuItem::initWithTitle_action_keyEquivalent(
-            NSMenuItem::alloc(surface.mtm),
-            &NSString::from_str("Copy"),
-            Some(objc2::sel!(copy:)),
-            &NSString::new(),
-        );
-        item.setTarget(Some(surface.root.ns()));
-        item
     };
-    menu.addItem(&item);
-    crate::chrome::track_menu(surface, &menu, Some((x, y)));
+    let app = NSApplication::sharedApplication(mtm);
+    let Some(event) = app.currentEvent() else {
+        return;
+    };
+    // SAFETY: an immutable AppKit constant.
+    let kind = unsafe { NSPasteboardTypeString };
+    // What the Services in the menu may ask the root view for.
+    app.registerServicesMenuSendTypes_returnTypes(&NSArray::from_slice(&[kind]), &NSArray::new());
+    let root = crate::input::event_root(surface);
+    let menu = NSMenu::new(mtm);
+    menu.setAutoenablesItems(false);
+    for (role, action, enabled) in [
+        (MenuRole::Copy, sel!(copy:), can_copy(surface)),
+        (MenuRole::SelectAll, sel!(selectAll:), true),
+    ] {
+        let title = appkit_title(role.label(), role.label());
+        // SAFETY: a new item with a valid selector.
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str(&title),
+                Some(action),
+                &NSString::new(),
+            )
+        };
+        // SAFETY: the root view answers both actions and outlives the menu.
+        unsafe { item.setTarget(Some(root.ns())) };
+        item.setEnabled(enabled);
+        menu.addItem(&item);
+    }
+    // Look Up (dictionary, Wikipedia, Siri Knowledge), the same panel as
+    // Force Click / Ctrl+Cmd+D.
+    if let Some(text) = selection_text(surface).filter(|t| !t.trim().is_empty()) {
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        // SAFETY: a new item with a selector the root view implements.
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str(&look_up_title(&text, appkit_title)),
+                Some(sel!(nshLookUp:)),
+                &NSString::new(),
+            )
+        };
+        // SAFETY: the root view answers the action and outlives the menu.
+        unsafe { item.setTarget(Some(root.ns())) };
+        menu.addItem(&item);
+    }
+    NSMenu::popUpContextMenu_withEvent_forView(&menu, &event, root.ns());
+}
+
+/// The characters of a selection a Look Up title quotes, as many as
+/// `NSTextView`'s Look Up quotes.
+const LOOK_UP_QUOTED: usize = 30;
+
+/// The Look Up item's title for `text` (trimmed, its first
+/// [`LOOK_UP_QUOTED`] characters, then an ellipsis): AppKit's
+/// `Look Up “%@”` / `Look Up “%@…”`, which `localize` (key, English) turns
+/// into the app's language with the quote where that language puts it
+/// (Japanese: `“%@”を調べる`).
+fn look_up_title(text: &str, localize: impl Fn(&str, &str) -> String) -> String {
+    let text = text.trim();
+    let quoted: String = text.chars().take(LOOK_UP_QUOTED).collect();
+    // AppKit's keys spell the quotes and the ellipsis as `\U` escapes.
+    let (key, english) = if text.chars().count() > LOOK_UP_QUOTED {
+        (
+            "Look Up \\U201C%@\\U2026\\U201D",
+            "Look Up \u{201c}%@\u{2026}\u{201d}",
+        )
+    } else {
+        ("Look Up \\U201C%@\\U201D", "Look Up \u{201c}%@\u{201d}")
+    };
+    let template = localize(key, english);
+    let template = if template.contains("%@") {
+        template
+    } else {
+        english.to_owned()
+    };
+    template.replacen("%@", &quoted, 1)
+}
+
+/// An item title in AppKit's own words: its `MenuCommands` string for
+/// `key`, in the language AppKit shows the app's menus in (the app's
+/// localizations against the user's languages, as for `NSTextView`'s menu),
+/// or `english` where AppKit has none. Only the public `NSBundle` lookup.
+fn appkit_title(key: &str, english: &str) -> String {
+    use objc2_foundation::{NSBundle, NSString};
+    let english = NSString::from_str(english);
+    let Some(appkit) = NSBundle::bundleWithIdentifier(&NSString::from_str("com.apple.AppKit"))
+    else {
+        return english.to_string();
+    };
+    appkit
+        .localizedStringForKey_value_table(
+            &NSString::from_str(key),
+            Some(&english),
+            Some(&NSString::from_str("MenuCommands")),
+        )
+        .to_string()
+}
+
+/// Whether [`copy`] has a selection to copy.
+pub(crate) fn can_copy(surface: &crate::surface::Surface) -> bool {
+    surface.selection.area.has_selection() || surface.selection.with_range().is_some()
 }
 
 /// Selects all of the last pressed selectable text or selectable view (the
@@ -2248,19 +2388,12 @@ pub(crate) fn select_all(surface: &crate::surface::Surface) -> bool {
     true
 }
 
-/// The selected text, without attachments' placeholders.
+/// The selected text, without attachments' placeholders and hidden runs.
 fn selected_text(view: &crate::view::NshView) -> Option<String> {
     let state = view.state();
     let drawn = state.text.as_ref()?;
     let (a, b) = drawn.selection.as_ref()?.range.get()?;
-    let units: Vec<u16> = drawn
-        .text
-        .text
-        .encode_utf16()
-        .skip(a as usize)
-        .take((b - a) as usize)
-        .collect();
-    Some(String::from_utf16_lossy(&units).replace(nsh_core::ATTACHMENT_CHAR, ""))
+    Some(drawn.text.copied_text(a..b)).filter(|t| !t.is_empty())
 }
 
 /// The selection from `anchor` (a range) to `caret`, by `unit`.
@@ -2351,24 +2484,220 @@ fn unit_at(text: &str, index: u32, unit: Unit) -> (u32, u32) {
     }
 }
 
-/// Draws the decoration lines CoreText does not: strikethroughs, and
-/// underlines with a style, thickness or offset (y-up text space).
-fn draw_decorations(cx: &CGContext, line: &LaidLine) {
+/// Where the colors of a run's glyphs come from: the drawn text's spans,
+/// looked up by character, in stretches of glyphs of one span
+/// (`TextEngine::draws_colors_from_text`). The run's own attributes hold no
+/// colors, and its boundaries need not be the drawn text's spans'.
+struct Stretches<'a> {
+    text: &'a AttributedText,
+    /// The style of an ellipsis: the last character's that is not an
+    /// attachment, whose attributes the token copies ([`Prepared::truncate`]).
+    ellipsis: Option<ResolvedTextStyle>,
+    /// Each glyph's character (UTF-16 offset), reused from run to run.
+    indices: Vec<CFIndex>,
+    /// A line's underlined stretches: color, left and right edge
+    /// ([`draw_underlines`]).
+    pieces: Vec<(Color, CGFloat, CGFloat)>,
+    /// Glyph positions, reused.
+    positions: Vec<CGPoint>,
+}
+
+impl<'a> Stretches<'a> {
+    fn new(text: &'a AttributedText) -> Self {
+        let mut last = text.len_utf16().saturating_sub(1);
+        while last > 0 && text.attachments.iter().any(|a| a.index == last) {
+            last -= 1;
+        }
+        Self {
+            text,
+            ellipsis: text.span_at(last).map(|s| s.style),
+            indices: Vec::new(),
+            pieces: Vec::new(),
+            positions: Vec::new(),
+        }
+    }
+
+    /// Calls `f` with each stretch of `run`'s glyphs (a range of them) whose
+    /// characters are in one span, and that span's style; nothing for an
+    /// attachment's placeholder.
+    ///
+    /// # Safety
+    ///
+    /// `run` is a run of a laid out line.
+    unsafe fn each(&mut self, run: &CTRun, mut f: impl FnMut(CFRange, &ResolvedTextStyle)) {
+        // SAFETY: the run's attribute dictionary, keyed by strings.
+        let (count, attributes) = unsafe { (run.glyph_count(), run.attributes()) };
+        // SAFETY: as above.
+        let attributes: &CFDictionary<CFString, CFType> = unsafe { attributes.cast_unchecked() };
+        // SAFETY: an immutable CoreText constant.
+        if count <= 0
+            || attributes
+                .get(unsafe { kCTRunDelegateAttributeName })
+                .is_some()
+        {
+            return;
+        }
+        let whole = CFRange {
+            location: 0,
+            length: count,
+        };
+        if attributes.get(ellipsis_key()).is_some() {
+            if let Some(style) = &self.ellipsis {
+                f(whole, style);
+            }
+            return;
+        }
+        self.indices.clear();
+        self.indices.resize(count as usize, 0);
+        let buffer = NonNull::new(self.indices.as_mut_ptr()).expect("a buffer");
+        // SAFETY: a buffer of one index per glyph.
+        unsafe { run.string_indices(whole, buffer) };
+        let spans = &self.text.spans;
+        let span_of = |index: CFIndex| spans.partition_point(|s| (s.end as CFIndex) <= index);
+        let mut emit = |start: usize, end: usize, span: usize| {
+            if let Some(span) = spans.get(span) {
+                let range = CFRange {
+                    location: start as CFIndex,
+                    length: (end - start) as CFIndex,
+                };
+                f(range, &span.style);
+            }
+        };
+        let (mut start, mut span) = (0, span_of(self.indices[0]));
+        for (g, &index) in self.indices.iter().enumerate().skip(1) {
+            let next = span_of(index);
+            if next != span {
+                emit(start, g, span);
+                (start, span) = (g, next);
+            }
+        }
+        emit(start, self.indices.len(), span);
+    }
+}
+
+/// Draws a line's glyphs (y-up text space), each in its character's color
+/// in the drawn text, and CoreText's underlines in their decoration color.
+fn draw_glyphs(cx: &CGContext, line: &LaidLine, stretches: &mut Stretches<'_>) {
+    let c = Some(cx);
+    let mut pieces = std::mem::take(&mut stretches.pieces);
+    let mut positions = std::mem::take(&mut stretches.positions);
+    let mut advances = Vec::new();
+    pieces.clear();
+    let mut fill = None;
+    // SAFETY: the line's own run array (of CTRuns), drawn by glyph ranges
+    // within each run; buffers as long as those ranges.
+    unsafe {
+        let runs = line.line.glyph_runs();
+        for i in 0..runs.count() {
+            let run = &*runs.value_at_index(i).cast::<CTRun>();
+            let underlined = (run.attributes().cast_unchecked() as &CFDictionary<CFString, CFType>)
+                .get(kCTUnderlineStyleAttributeName)
+                .is_some();
+            stretches.each(run, |range, style| {
+                // Nothing of a hidden run is drawn: not its color emoji,
+                // which keep their own colors, nor its underline.
+                if style.hidden {
+                    return;
+                }
+                if underlined {
+                    let n = range.length as usize;
+                    positions.clear();
+                    positions.resize(n, CGPoint::new(0.0, 0.0));
+                    advances.clear();
+                    advances.resize(n, CGSize::new(0.0, 0.0));
+                    run.positions(
+                        range,
+                        NonNull::new(positions.as_mut_ptr()).expect("a buffer"),
+                    );
+                    run.advances(
+                        range,
+                        NonNull::new(advances.as_mut_ptr()).expect("a buffer"),
+                    );
+                    let (left, right) = positions
+                        .iter()
+                        .zip(&advances)
+                        .fold((CGFloat::MAX, CGFloat::MIN), |(l, r), (p, a)| {
+                            (l.min(p.x), r.max(p.x + a.width))
+                        });
+                    let color = style.decoration_color.unwrap_or(style.color);
+                    pieces.push((color, line.origin.x + left, line.origin.x + right));
+                }
+                if style.color.0 & 0xff == 0 {
+                    return;
+                }
+                if fill != Some(style.color) {
+                    fill = Some(style.color);
+                    CGContext::set_fill_color_with_color(c, Some(&cg_color(style.color)));
+                }
+                // Glyph positions are relative to the line's origin.
+                CGContext::set_text_position(c, line.origin.x, line.origin.y);
+                run.draw(cx, range);
+            });
+        }
+    }
+    if !pieces.is_empty() {
+        draw_underlines(cx, line, &pieces);
+    }
+    stretches.pieces = pieces;
+    stretches.positions = positions;
+}
+
+/// CoreText's underlines of a line, which a run does not draw and a line
+/// draws in the typeset string's color whatever the context's: per color,
+/// the line's underlines alone (its glyphs invisible) in a layer clipped to
+/// the stretches of `pieces` (color, left and right edge) in that color,
+/// painted over in the color where they drew. They keep CoreText's
+/// thickness, position and gaps around descenders.
+fn draw_underlines(cx: &CGContext, line: &LaidLine, pieces: &[(Color, CGFloat, CGFloat)]) {
+    let c = Some(cx);
+    // Far past the line's own height: only the stretches' edges clip.
+    let (bottom, height) = (line.origin.y - 1.0e4, 2.0e4);
+    for (i, &(color, ..)) in pieces.iter().enumerate() {
+        if color.0 & 0xff == 0 || pieces[..i].iter().any(|p| p.0 == color) {
+            continue;
+        }
+        CGContext::save_g_state(c);
+        for &(_, left, right) in pieces[i..].iter().filter(|p| p.0 == color) {
+            CGContext::add_rect(
+                c,
+                CGRect::new(
+                    CGPoint::new(left, bottom),
+                    CGSize::new(right - left, height),
+                ),
+            );
+        }
+        CGContext::clip(c);
+        // SAFETY: no auxiliary info; a valid line and context.
+        unsafe {
+            CGContext::begin_transparency_layer(c, None);
+            CGContext::set_text_drawing_mode(c, objc2_core_graphics::CGTextDrawingMode::Invisible);
+            CGContext::set_text_position(c, line.origin.x, line.origin.y);
+            line.line.draw(cx);
+        }
+        CGContext::set_blend_mode(c, objc2_core_graphics::CGBlendMode::SourceIn);
+        CGContext::set_fill_color_with_color(c, Some(&cg_color(color)));
+        CGContext::fill_rect(c, CGContext::clip_bounding_box(c));
+        CGContext::end_transparency_layer(c);
+        CGContext::restore_g_state(c);
+    }
+}
+
+/// Draws the decoration lines CoreText does not (y-up text space):
+/// strikethroughs, and underlines with a style, thickness or offset, each
+/// stretch of one span in its decoration color.
+fn draw_decorations(cx: &CGContext, line: &LaidLine, stretches: &mut Stretches<'_>) {
     // SAFETY: the line's own run array (of CTRuns) and their attribute
-    // dictionaries, whose values have the types set by the text engine.
+    // dictionaries, whose values have the types set by the text engine;
+    // glyph ranges within each run and buffers as long.
     unsafe {
         let runs = line.line.glyph_runs();
         for i in 0..runs.count() {
             let run = &*runs.value_at_index(i).cast::<CTRun>();
             let attributes = run.attributes();
             let attributes: &CFDictionary<CFString, CFType> = attributes.cast_unchecked();
-            let strike = attributes
-                .get(strikethrough_key())
-                .and_then(|c| c.downcast::<CGColor>().ok());
-            let under = attributes
-                .get(underline_key())
-                .and_then(|c| c.downcast::<CGColor>().ok());
-            if strike.is_none() && under.is_none() {
+            let strike = attributes.get(strikethrough_key()).is_some();
+            let under = attributes.get(underline_key()).is_some();
+            if !strike && !under {
                 continue;
             }
             let Some(font) = attributes
@@ -2394,41 +2723,52 @@ fn draw_decorations(cx: &CGContext, line: &LaidLine) {
             if thickness <= 0.0 {
                 thickness = font.underline_thickness().max(1.0);
             }
-            let range = run.string_range();
-            let x = line.origin.x
-                + line
-                    .line
-                    .offset_for_string_index(range.location, std::ptr::null_mut());
-            let width = run.typographic_bounds(
-                CFRange {
-                    location: 0,
-                    length: 0,
-                },
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            );
-            if let Some(color) = strike {
-                let y = line.origin.y + font.x_height() / 2.0;
-                stroke_decoration(cx, &color, style, x, y, width, thickness);
-            }
-            if let Some(color) = under {
-                // Below the baseline: the font's position, or the offset.
-                let below = if offset.is_nan() {
-                    -font.underline_position()
-                } else {
-                    offset + thickness / 2.0
-                };
-                stroke_decoration(
-                    cx,
-                    &color,
-                    style,
-                    x,
-                    line.origin.y - below,
-                    width,
-                    thickness,
+            let mut positions = Vec::new();
+            stretches.each(run, |range, span| {
+                if span.hidden {
+                    return;
+                }
+                positions.clear();
+                positions.resize(range.length as usize, CGPoint::new(0.0, 0.0));
+                run.positions(
+                    range,
+                    NonNull::new(positions.as_mut_ptr()).expect("a buffer"),
                 );
-            }
+                // Its leftmost glyph, whichever way the run goes.
+                let left = positions
+                    .iter()
+                    .map(|p| p.x)
+                    .fold(CGFloat::MAX, CGFloat::min);
+                let x = line.origin.x + left;
+                let width = run.typographic_bounds(
+                    range,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                );
+                let color = cg_color(span.decoration_color.unwrap_or(span.color));
+                if strike {
+                    let y = line.origin.y + font.x_height() / 2.0;
+                    stroke_decoration(cx, &color, style, x, y, width, thickness);
+                }
+                if under {
+                    // Below the baseline: the font's position, or the offset.
+                    let below = if offset.is_nan() {
+                        -font.underline_position()
+                    } else {
+                        offset + thickness / 2.0
+                    };
+                    stroke_decoration(
+                        cx,
+                        &color,
+                        style,
+                        x,
+                        line.origin.y - below,
+                        width,
+                        thickness,
+                    );
+                }
+            });
         }
     }
 }
@@ -2526,6 +2866,105 @@ mod tests {
                     .is_none()
             );
         }
+    }
+
+    /// A layout typeset for one text draws another that differs only in
+    /// its colors, spans split elsewhere, in that text's colors: glyphs and
+    /// CoreText's underlines (`TextEngine::draws_colors_from_text`).
+    #[test]
+    fn a_layout_draws_the_colors_of_the_text_it_is_drawn_with() {
+        use objc2_core_foundation::{CGAffineTransform, CGFloat};
+        use objc2_core_graphics::{
+            CGBitmapContextCreate, CGBitmapContextGetBytesPerRow, CGBitmapContextGetData,
+            CGColorSpace, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo, kCGColorSpaceSRGB,
+        };
+        let style = |color: u32| ResolvedTextStyle {
+            font_size: Points(24.0),
+            color: nsh_core::Color(color),
+            decoration: nsh_core::TextDecoration {
+                underline: true,
+                line_through: false,
+            },
+            ..ResolvedTextStyle::default()
+        };
+        let mut typeset = AttributedText::default();
+        typeset.push("MM MM", style(0xff00_00ff));
+        let mut drawn = AttributedText::default();
+        drawn.push("MM ", style(0x00ff_00ff));
+        drawn.push("MM", style(0x0000_ffff));
+        let engine = CoreTextEngine::default();
+        let prepared = engine.prepare(&typeset);
+        let size = engine.measure(&prepared, None);
+        let layout = engine.layout(&prepared, size);
+        let layout = layout
+            .downcast::<super::CoreTextLayout>()
+            .expect("CoreText");
+        let (w, h) = (
+            size.width.0.ceil() as usize + 4,
+            size.height.0.ceil() as usize + 4,
+        );
+        // SAFETY: a constant of CoreGraphics; CoreGraphics allocates the
+        // pixels (null data) and frees them with the context.
+        let cx = unsafe {
+            let space = CGColorSpace::with_name(Some(kCGColorSpaceSRGB)).expect("sRGB");
+            CGBitmapContextCreate(
+                std::ptr::null_mut(),
+                w,
+                h,
+                8,
+                w * 4,
+                Some(&space),
+                CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0,
+            )
+        }
+        .expect("a bitmap context");
+        // The bitmap is y up, as CoreText draws.
+        CGContext::set_text_matrix(
+            Some(&cx),
+            CGAffineTransform {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                tx: 0.0,
+                ty: 0.0,
+            },
+        );
+        CGContext::translate_ctm(Some(&cx), 2.0, 2.0 as CGFloat);
+        let mut stretches = super::Stretches::new(&drawn);
+        for line in &layout.lines {
+            super::draw_glyphs(&cx, line, &mut stretches);
+            if layout.strikethrough {
+                super::draw_decorations(&cx, line, &mut stretches);
+            }
+        }
+        let stride = CGBitmapContextGetBytesPerRow(Some(&cx));
+        // SAFETY: the context's `stride * h` bytes, which it keeps.
+        let pixels = unsafe {
+            std::slice::from_raw_parts(CGBitmapContextGetData(Some(&cx)).cast::<u8>(), stride * h)
+        };
+        // The columns of strongly red, green and blue pixels.
+        let mut columns = [Vec::new(), Vec::new(), Vec::new()];
+        for y in 0..h {
+            for x in 0..w {
+                let p = &pixels[y * stride + x * 4..][..4];
+                if p[3] < 200 {
+                    continue;
+                }
+                if let Some(c) = (0..3).find(|&c| p[c] > 200 && (0..3).all(|o| o == c || p[o] < 60))
+                {
+                    columns[c].push(x);
+                }
+            }
+        }
+        let [red, green, blue] = columns;
+        assert!(red.is_empty(), "nothing in the typeset color");
+        assert!(!green.is_empty() && !blue.is_empty());
+        let (green_right, blue_left) = (
+            green.iter().max().copied().unwrap_or(0),
+            blue.iter().min().copied().unwrap_or(0),
+        );
+        assert!(green_right < blue_left, "{green_right} {blue_left}");
     }
 
     /// The baseline of the first line, the attachment's top and the line's
@@ -2680,6 +3119,66 @@ mod tests {
 }
 
 #[cfg(test)]
+mod selection_menu {
+    use super::{appkit_title, look_up_title};
+
+    /// The selection menu's keys are AppKit's: each one is in its
+    /// `MenuCommands` strings (a missing key would answer the fallback),
+    /// here in English, the test binary's only localization.
+    #[test]
+    fn the_selection_menu_titles_are_appkits_own() {
+        for (key, english) in [
+            ("Copy", "Copy"),
+            ("Select All", "Select All"),
+            ("Look Up \\U201C%@\\U201D", "Look Up \u{201c}%@\u{201d}"),
+            (
+                "Look Up \\U201C%@\\U2026\\U201D",
+                "Look Up \u{201c}%@\u{2026}\u{201d}",
+            ),
+        ] {
+            assert_eq!(appkit_title(key, "<none>"), english, "{key}");
+        }
+        assert_eq!(appkit_title("No Such Menu Command", "Fallback"), "Fallback");
+        assert_eq!(
+            look_up_title("  hello  ", appkit_title),
+            "Look Up \u{201c}hello\u{201d}"
+        );
+    }
+
+    /// Look Up quotes the first 30 characters, then an ellipsis, in the
+    /// order the language's template puts the quote.
+    #[test]
+    fn look_up_quotes_the_start_of_the_selection_where_the_language_puts_it() {
+        let japanese = |key: &str, _: &str| {
+            if key.contains("U2026") {
+                "\u{201c}%@\u{2026}\u{201d}を調べる".to_owned()
+            } else {
+                "\u{201c}%@\u{201d}を調べる".to_owned()
+            }
+        };
+        assert_eq!(
+            look_up_title("辞書", japanese),
+            "\u{201c}辞書\u{201d}を調べる"
+        );
+        let long = "abcdefghijklmnopqrstuvwxyz0123456789";
+        assert_eq!(
+            look_up_title(long, japanese),
+            "\u{201c}abcdefghijklmnopqrstuvwxyz0123\u{2026}\u{201d}を調べる"
+        );
+        let english = |_: &str, english: &str| english.to_owned();
+        assert_eq!(
+            look_up_title(&"x".repeat(30), english),
+            format!("Look Up \u{201c}{}\u{201d}", "x".repeat(30))
+        );
+        // A template without its placeholder keeps the English one.
+        assert_eq!(
+            look_up_title("word", |_: &str, _: &str| "Look Up".to_owned()),
+            "Look Up \u{201c}word\u{201d}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod hit_regressions {
     use super::*;
     fn layout(text: &str, ellipsize: Option<EllipsizeMode>) -> (CoreTextEngine, TextLayout) {
@@ -2705,6 +3204,105 @@ mod hit_regressions {
         let laid = engine.layout(&prepared, size);
         (engine, laid)
     }
+
+    #[test]
+    fn short_box_keeps_first_line_at_its_normal_position() {
+        let engine = CoreTextEngine::default();
+        for scale in [1.0, 23.0 / 17.0, 3.0] {
+            let mut text = AttributedText {
+                max_lines: 1,
+                ..Default::default()
+            };
+            text.push(
+                "Hello",
+                ResolvedTextStyle {
+                    font_size: Points(14.0 * scale),
+                    line_height: Points(20.0 * scale),
+                    ..Default::default()
+                },
+            );
+            let prepared = engine.prepare(&text);
+            let natural = engine.layout(&prepared, Size::new(Points(200.0), Points(100.0)));
+            let short = engine.layout(&prepared, Size::new(Points(200.0), Points(20.0)));
+            let expected = engine.lines(&natural);
+            let actual = engine.lines(&short);
+            assert_eq!(actual.len(), 1, "scale {scale}");
+            assert_eq!(actual[0].end, 5);
+            assert!((actual[0].y.0 - expected[0].y.0).abs() < 0.01);
+            let caret = engine.caret_rect(&short, TextPosition::new(0, Affinity::Downstream));
+            assert!(caret.is_some());
+        }
+    }
+
+    #[test]
+    fn box_slightly_shorter_than_measured_keeps_its_line() {
+        // A box rounded down by half a point (a parent shrinking it to
+        // device pixels) is still a box for one line.
+        let engine = CoreTextEngine::default();
+        for s in ["What can I help with?", "有什么我可以帮你的？"] {
+            let mut text = AttributedText {
+                align: TextAlign::Center,
+                ..Default::default()
+            };
+            text.push(
+                s,
+                ResolvedTextStyle {
+                    font_size: Points(27.0),
+                    ..Default::default()
+                },
+            );
+            let prepared = engine.prepare(&text);
+            let measured = engine.measure(&prepared, None);
+            let natural = engine.layout(&prepared, measured);
+            let short = engine.layout(
+                &prepared,
+                Size::new(measured.width, Points(measured.height.0 - 0.5)),
+            );
+            let expected = engine.lines(&natural);
+            let actual = engine.lines(&short);
+            assert_eq!(expected.len(), 1, "{s}");
+            assert_eq!(actual.len(), 1, "{s}");
+            assert_eq!(actual[0].end, expected[0].end, "{s}");
+            assert!((actual[0].y.0 - expected[0].y.0).abs() < 0.01, "{s}");
+        }
+    }
+
+    #[test]
+    fn short_box_still_truncates_and_zero_height_stays_empty() {
+        let engine = CoreTextEngine::default();
+        for mode in [
+            EllipsizeMode::Tail,
+            EllipsizeMode::Head,
+            EllipsizeMode::Middle,
+            EllipsizeMode::Clip,
+        ] {
+            let mut text = AttributedText {
+                ellipsize: mode,
+                ..Default::default()
+            };
+            text.push(
+                "Hello world, another line of text",
+                ResolvedTextStyle {
+                    font_size: Points(28.0),
+                    line_height: Points(40.0),
+                    ..Default::default()
+                },
+            );
+            let prepared = engine.prepare(&text);
+            let short = engine.layout(&prepared, Size::new(Points(100.0), Points(20.0)));
+            let layout = short.downcast::<CoreTextLayout>().unwrap();
+            assert_eq!(layout.lines.len(), 1, "{mode:?}");
+            let line = &layout.lines[0];
+            assert!(
+                line.range.location + line.range.length < prepared.length,
+                "{mode:?}"
+            );
+            assert_eq!(line.hit_end, prepared.length, "{mode:?}: ellipsized");
+            let zero = engine.layout(&prepared, Size::new(Points(100.0), Points(0.0)));
+            assert!(engine.lines(&zero).is_empty());
+        }
+    }
+
     #[test]
     fn bidi_ranges_follow_visual_runs() {
         let (engine, layout) = layout("abc אבג xyz", None);

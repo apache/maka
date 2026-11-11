@@ -9,7 +9,11 @@
 use std::sync::{Arc, Mutex};
 
 use nsh_base::collapsible;
-use nsh_core::{LayoutCurve, MountItem, NodeId, Size, element::Root, prelude::*};
+use nsh_core::{
+    LayoutCurve, MountItem, NodeId, Size,
+    element::{Root, Spring},
+    prelude::*,
+};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
@@ -151,7 +155,7 @@ fn reveals(items: &[MountItem]) -> bool {
         matches!(i, MountItem::LayoutAnimation(a)
             if a.create.is_none()
                 && a.delete.is_none()
-                && a.update.is_some_and(|u| u.curve == LayoutCurve::Spring { damping: 1.0 }))
+                && a.update.is_some_and(|u| u.curve == LayoutCurve::Spring(Spring::new(180.0))))
     })
 }
 

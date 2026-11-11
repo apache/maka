@@ -1700,6 +1700,15 @@ pub fn reveal_delta(start: Points, end: Points, viewport: Points) -> Points {
     Points(reveal_by(start.0, end.0, viewport.0))
 }
 
+/// [`reveal_delta`] for a view that gets the focus: a span taller than
+/// the viewport that shows already stays where it is. It could only show
+/// in part anyway, and moving it would move what the pointer is on (a web
+/// view the height of its page, focused by a click near its end or by its
+/// context menu).
+pub fn reveal_focus_delta(start: Points, end: Points, viewport: Points) -> Points {
+    Points(reveal_focus_by(start.0, end.0, viewport.0))
+}
+
 fn reveal_by(start: f32, end: f32, viewport: f32) -> f32 {
     let margin = REVEAL_MARGIN.min(viewport / 4.0);
     if start < margin {
@@ -1708,6 +1717,14 @@ fn reveal_by(start: f32, end: f32, viewport: f32) -> f32 {
         (end - (viewport - margin)).min(start - margin)
     } else {
         0.0
+    }
+}
+
+fn reveal_focus_by(start: f32, end: f32, viewport: f32) -> f32 {
+    if end - start > viewport && end > 0.0 && start < viewport {
+        0.0
+    } else {
+        reveal_by(start, end, viewport)
     }
 }
 
@@ -1726,7 +1743,7 @@ pub fn reveal(host: &impl ScrollHost, start: Points, len: Points) -> Points {
     };
     // Pending animations count from where they are headed.
     let start = start - (base - pos);
-    let delta = reveal_by(start, start + len, dim);
+    let delta = reveal_focus_by(start, start + len, dim);
     let to = (base + delta).clamp(min, max.max(min));
     if (to - base).abs() < 0.5 {
         return Points(0.0);
@@ -2313,6 +2330,20 @@ mod tests {
         assert_eq!(reveal_by(380.0, 420.0, 400.0), 36.0);
         // Taller than the viewport: its start shows.
         assert_eq!(reveal_by(200.0, 900.0, 400.0), 184.0);
+        // A focused one stays when some of it shows already; out of view,
+        // its start shows.
+        assert_eq!(reveal_focus_by(500.0, 1200.0, 400.0), 484.0);
+        assert_eq!(reveal_focus_by(-1200.0, -500.0, 400.0), -1216.0);
+        assert_eq!(reveal_focus_by(200.0, 900.0, 400.0), 0.0);
+        assert_eq!(reveal_focus_by(-2000.0, 300.0, 400.0), 0.0);
+        assert_eq!(reveal_focus_by(-2000.0, 900.0, 400.0), 0.0);
+        // One that fits the viewport, but not with both margins, still
+        // shows whole.
+        assert_eq!(reveal_focus_by(-100.0, 290.0, 400.0), -116.0);
+        assert_eq!(
+            reveal_focus_delta(Points(200.0), Points(900.0), Points(400.0)),
+            Points(0.0)
+        );
         assert_eq!(
             reveal_delta(Points(-30.0), Points(10.0), Points(400.0)),
             Points(-46.0)

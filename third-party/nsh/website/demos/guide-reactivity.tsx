@@ -6,7 +6,7 @@ type Swatch = "accent" | "info" | "up" | "violet";
 const Accent = context(signal<Swatch>("accent"));
 
 /** A button filled with a palette colour instead of a surface. */
-const filled = (color: () => string) => () => ({ backgroundImage: "none", backgroundColor: color(), borderColor: "rgba(0,0,0,0)", boxShadow: "none" });
+const filled = (color: () => string) => () => ({ backgroundImage: "none", backgroundColor: color(), borderColor: "transparent", boxShadow: "none" });
 
 /** A stopwatch: the effect starts a timer and its cleanup stops it. */
 function Stopwatch() {
@@ -112,7 +112,7 @@ function App() {
                   onPress={() => accent.set(c())}
                   style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: ui()[c()], borderWidth: 3, borderColor: accent() === c() ? ui().text : "transparent" }}
                   hoverStyle={{ opacity: 0.88 }}
-                  focusStyle={focusRing()}
+                  focusVisibleStyle={focusRing()}
                   activeStyle={{ opacity: 0.7 }}
                 />
               )}

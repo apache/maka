@@ -148,7 +148,8 @@ error iPhone 16 Pro: uncaught exception: TypeError: cannot read property 'id' of
 ```
 
 `console.log` 像浏览器控制台一样格式化值：字符串原样输出，错误附带调用栈，函数显示名称，对象和数组输出为 JSON。宿主
-未连接时，日志会写入平台日志（iOS 上是 Xcode 控制台 / 统一日志，Android 上是 `adb logcat`）。
+未连接时，日志在 iOS 上写入 Xcode 控制台（由 Xcode 运行应用时），在 Android 上写入 `adb logcat`；打包后的应用的日志写入
+平台日志（[打包应用的日志](#a-packaged-apps-logs)）。
 
 被 reject 的 Promise，如果在引起它的那段工作结束（它的微任务都已运行）时仍然没有处理函数，也会像浏览器那样记录为一条错误：
 没人 await 的 `async` 函数抛出了异常、没人 catch 的 `Promise.reject(…)`、没有人等待结果的 Rust 调用失败了。这一行和
@@ -172,6 +173,28 @@ perf commit: 10 ops, 151µs (list js 2µs), 8 mount items, 27 nodes
 ```
 
 这些数字的含义参见[测试](./testing-and-trace.md)。
+
+### 打包应用的日志
+
+在 macOS 和 iOS 上，打包后的应用把日志写入统一日志：它的警告和错误，以及它的 `js` 日志（`console.log`、
+`console.info`、`console.warn`、`console.error`、未处理的 rejection）。子系统（subsystem）是应用的 id（`nsh.json` 的
+`"id"`，即 bundle identifier），类别（category）是这一行的 target：`console.*` 是 `js`，Rust 的日志是所在模块的路径
+（`nsh_engine::updates`）。在“控制台”应用中选中这台 Mac 或连接的 iPhone，开始流式传输，再搜索
+`subsystem:com.example.notes`；在终端里用 `log` 读取：
+
+```sh
+log stream --predicate 'subsystem == "com.example.notes"'                              # 实时查看
+log show --last 1h --predicate 'subsystem == "com.example.notes" AND category == "js"'   # 最近一小时的 console.* 日志
+xcrun simctl spawn booted log stream --predicate 'subsystem == "com.example.notes"'     # iOS 模拟器里的应用
+```
+
+错误是统一日志里的错误（谓词中写 `messageType == error`），警告以 `WARN` 开头；超过约 1 KB 的一行会接着写入后面的几条。
+Mac 应用还会把日志写到它的标准错误所指向的地方：启动它的终端、文件（`2> app.log`、`open --stderr app.log`、launchd 的
+`StandardErrorPath`）或管道。嵌入了 `NativeShell.xcframework` 的 iOS 应用以它自己的 bundle identifier 记录同样的日志，由 Xcode
+运行时 Xcode 控制台也会显示，scheme 中设了 `OS_ACTIVITY_MODE=disable` 时也一样。
+
+Android 应用写入 logcat（`adb logcat -s nsh`），Windows 应用写入调试器输出（`OutputDebugString`，DebugView 和 Visual
+Studio 会显示），Linux 应用写入标准错误。
 
 ## 错误浮层
 

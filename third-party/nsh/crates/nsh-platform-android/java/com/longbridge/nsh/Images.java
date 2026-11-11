@@ -341,9 +341,11 @@ final class Images {
         return false;
     }
 
-    /** An animated drawable (API 28+), downsampled like bitmaps. */
+    /**
+     * An animated drawable, downsampled like bitmaps: GIFs below API 30 from
+     * a Movie, the rest from API 28 (null before it: the first frame shows).
+     */
     private static Image decodeAnimated(byte[] bytes, int maxPx) throws java.io.IOException {
-        if (android.os.Build.VERSION.SDK_INT < 28) return null;
         // Android 9 aborts on a GIF played as an AnimatedImageDrawable (docs/dev/pitfalls.md, "Android 9, GIFs"):
         // a Movie decodes on the thread that draws it, so a GIF below API 30 is played from a movie of its own.
         boolean gif = bytes.length > 3 && bytes[0] == 'G' && bytes[1] == 'I' && bytes[2] == 'F';
@@ -352,6 +354,7 @@ final class Images {
             if (drawable == null) return null;
             return new Image(drawable, drawable.width, drawable.height);
         }
+        if (android.os.Build.VERSION.SDK_INT < 28) return null;
         android.graphics.ImageDecoder.Source source =
                 android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes));
         int[] size = new int[2];

@@ -20,6 +20,7 @@ function App() {
   const opened = signal("not opened");
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
+      <Text>{`Platform: ${platform.name}`}</Text>
       <Text>{`OS: ${platform.os}`}</Text>
       <Text>{`Idiom: ${platform.idiom}`}</Text>
       <Text>{`Desktop: ${platform.desktop}`}</Text>

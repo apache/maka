@@ -62,7 +62,7 @@ trusted: every limit and check is enforced in Rust, never in JS.
 - Enforced in Rust: `fetch` in the engine (`access.rs`; refused requests never reach the network, and redirects are
   followed by the engine with `follow_redirects` off for the platform, so every hop is checked — hops are issued on the
   engine thread when a hop's head arrives; a streamed request body is not sent again, so a 307 / 308 then fails); remote images, placeholders, canvas images, `Image.getSize` / `prefetch`, video sources, web view
-  sources, trusted web view input (`Command::SendInput`), the status bar, the clipboard, the picker, speech sessions, sounds and players (`AudioAction::Open`) and host calls in the core (`Core::check_prop`, the commit's commands and actions;
+  sources and inline HTML's base URLs, trusted web view input (`Command::SendInput`), the status bar, the clipboard, the picker, speech sessions, sounds and players (`AudioAction::Open`) and host calls in the core (`Core::check_prop`, the commit's commands and actions;
   each refusal is logged once, target `js`, saying which key to add); top-level web view navigations on the platforms
   (`WKNavigationDelegate decidePolicyForNavigationAction` / `WebViewClient.shouldOverrideUrlLoading` → `Native.allowsWebview`).
 - What a refusal does: every call JS makes fails with `JsError::access_denied` (`ERR_ACCESS_DENIED`, `permission` the
@@ -73,12 +73,17 @@ trusted: every limit and check is enforced in Rust, never in JS.
   refused by the core (the commit's `Command::HostCall`) and by the SDK channel (`nsh-js` `host_channel.rs`) with
   `nsh_core::host_channel::not_granted`. A refused `fetch` rejects as every failed fetch, with a `TypeError`, which
   carries `code`, `permission` `"network"` and `resource` the request's or the redirect's URL (`access::Refused`,
-  `Host::fetch_refused`). A refused source (image, placeholder, video, web view `src` or `html`) shows nothing and
+  `Host::fetch_refused`). A refused source (image, placeholder, video, web view `src` or `html`) shows nothing (a refused `baseUrl` is dropped and
+  the HTML loads without it) and
   reports `onError` with `code` `ERR_ACCESS_DENIED`, as the platforms report a refused navigation. What has no caller
   to answer (the status bar, a canvas image) only logs. Rust components' calls keep their Rust types: the core's
   checks answer them as the system would with nothing there (an empty clipboard, no picked files, `open_url` `false`)
   and an `Err` with the message for `fetch`.
   `asset:` URIs are always allowed. Host checks take the host after the last `@` (`https://ok.com@evil.io` is evil.io).
+  A URL that parsers read differently (`access::read_url`: a backslash before the query, which WHATWG's parser, the
+  web views', ends the host at and Foundation's `NSURL` keeps in the user info; an ASCII control character; a host
+  with percent-encoding or a WHATWG forbidden host code point) names no one host, port or path: only a grant of every
+  host with no port or path covers it (`*`, or no `capabilities`), and `parse_url` gives `None` for it.
 - **Desktop system APIs**: `process` and `fs/promises` (the only process and file APIs) check the intersection of the
   declaration and the optional host grant in Rust. Process commands match exactly: a grant for `codex` grants that
   command, while `/usr/bin/codex` requires its own entry. The runtime launches the executable directly with an
@@ -117,12 +122,21 @@ one form) names a `host` pattern; every other key narrows it and is optional: `m
 (any of `http`, `https`, `ws`, `wss`), `port` (any; a URL without one has its scheme's default), `paths` (exact,
 without the query) and `pathPrefixes` / `pathPrefix` / `path_prefixes` (whole segments: `/v1` covers `/v1/x`, not
 `/v10`; a prefix ending in `/` covers what follows). Without paths or prefixes a rule covers every path, so
-`{host, methods}` means what it always did. The spellings of a key are merged and may appear together (gpui-shell's
+`{host, methods}` means what it always did. Paths match the path WHATWG's parser (the `url` crate) sends, and what
+loads is what was checked: `Access::http_url` (the engine's requests) and `Access::media_url` (every media source; the
+core writes the result back over it) return the checked URL's serialization. For media, `//` and relative paths take
+the bundle's base URL (the page's on the web) and are refused without one; `asset:` paths stay inside the app's files
+(`access::is_inside_assets`, shared with `fetch`); a local file (`file:`, or with no base an absolute path) is read
+under `capabilities.fs.read` (`MediaFiles`: held to the roots by its text, then resolved on every check, since the
+platforms' loaders open what they get); a source that platforms read differently is granted only by `*` (#979). The
+spellings of a key are merged and may appear together (gpui-shell's
 `scheme` and `path_prefixes` read as they are); rules serialize in one form (`schemes`, `pathPrefixes`). What cannot
 match is a parse error rather than a silent grant of nothing: a scheme outside the four, port 0, a path without a
-leading `/` or with `*`, `?` or `#`, a method that is not a token. WebSockets (the global and the `websocket` module)
-go through `Access::allows_websocket`: a handshake is an HTTP GET, so `ws` / `wss` are checked as GETs over `http` /
-`https` (or under their own scheme, for rules listing `ws` / `wss`), on the parsed URL the handshake then connects
+leading `/`, with `*`, `?` or `#`, or with a `.` or `..` segment, a method that is not a token. A rule's paths are kept
+as requests send them (`path_as_sent`: WHATWG's serialization, `/my photos` → `/my%20photos`). WebSockets (the
+global and the `websocket` module) go through `Access::allows_websocket`: a handshake is an HTTP GET, so `ws` / `wss`
+are checked as GETs over `http` / `https` (or under their own scheme, for rules listing `ws` / `wss`), on the parsed
+URL the handshake then connects
 to, before DNS; redirects are rejected; both APIs share one cap of 32 per VM (the `Quotas` kind `runtime::WEBSOCKETS`). A
 `websocket` connection's unread messages are bounded by back pressure: it stops reading from the network while 8
 messages or 8 MiB wait (`runtime/websocket.rs`), so the native memory one keeps stays under 16 MiB. Raw TCP

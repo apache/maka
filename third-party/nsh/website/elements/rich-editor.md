@@ -53,7 +53,8 @@ Without `schema` an editor uses the starter schema (`starterSchema()`); without 
 ## Styling
 
 The editor draws the document with the app's look: `classes` and `styles` style its parts (`root`, `content`, `caret`,
-`selection`, `placeholder`, `composition`, `selectedNode`, `listMarker`, and for tables `selectedCell`,
+`selection`, `placeholder`, `composition`, `selectedNode`, `listMarker`, the touch selection's handles
+`selectionHandle`, `selectionHandleStart`, `selectionHandleEnd`, and for tables `selectedCell`,
 `tableGrip`, `tableResizeHandle`, `tableDropIndicator`), its nodes by type (`nodes: { heading:
 "text-2xl font-bold", "heading[level=2]": "text-xl" }`) and its marks (`marks: { bold: "font-bold" }`). The items of
 lists whose node spec sets `extra.listMarker` to `"bullet"` or `"ordered"` (the starter schema's lists) show a marker
@@ -73,6 +74,18 @@ in the `listMarker` part: `•`, `◦`, `▪` by depth, or numbers from the list
 The `content` part is the box of the document inside the editor's scroll view: its padding (`content: "px-6 py-5"`)
 is the room around the text, and the scroll bar runs along the editor's own edge. A drag that selects past the top
 or bottom of the editor scrolls the document along, faster the further the pointer goes.
+
+### Touch selection
+
+On iOS and Android the editor selects as the platform's own text views do. A long press selects the word under the
+finger, and moving the finger after it extends the selection by whole words; a long press on blank space places the
+caret. A double tap selects a word, a triple tap the paragraph. The selection a touch made has a handle at each end
+(`selectionHandle`, a dot in the theme's `primary`), which the finger drags to move that end. When the finger lifts,
+the system's edit menu opens over the selection with Cut, Copy, Paste and Select All; a tap on the selection opens it
+again, and a tap on the caret opens Paste and Select All. The menu offers only what applies: Select All is left out
+once everything is selected, and a read-only editor offers Copy and Select All. Each action is a transaction of the editor, so the
+toolbar's `isActive` follows the selection, `toggleMark` formats it, and undo takes a cut or a paste back. Taps,
+keys, input methods and the mouse select as before.
 
 ### Bubble menu
 
@@ -119,8 +132,8 @@ const schema = defineSchema({
 const editor = createRichEditor({ schema, doc: schema.parse("Hello") });
 ```
 
-A `RichSchema` reads and writes documents: `parse(content, format?)` (plain text by default, `"markdown"`, or JSON),
-`parseMarkdown(markdown)`, `serialize(doc, format?)` (Markdown by default, `"text"`, `"json"`) and `check(doc)`, which
+A `RichSchema` reads and writes documents: `parse(content, format?)` (plain text by default, `"markdown"`, `"html"`, or JSON),
+`parseMarkdown(markdown)`, `serialize(doc, format?)` (Markdown by default, `"text"`, `"html"`, `"json"`) and `check(doc)`, which
 returns the document with its attribute defaults filled in. `nodes`, `marks` and `topNode` name its types. Markdown
 maps to the starter schema's names (`paragraph`, `heading`, `blockquote`, `codeBlock`, `bulletList`,
 `orderedList`, `listItem`, `bold`, `italic`, `code`, `link`, `strike`).
@@ -162,7 +175,7 @@ const canIndent = editor.can(sinkListItem("listItem"));
 | `isEmpty`, `undoDepth`, `redoDepth`, `composing` | What a UI shows about the editor |
 | `setContent(content, format?)` | Replaces the document, as one undoable change |
 | `insertContent(content, format?)` | Inserts content over the selection |
-| `getJSON()`, `getMarkdown()`, `getText()`, `textBetween(from?, to?, separator?)` | The document in a format |
+| `getJSON()`, `getHTML()`, `getMarkdown()`, `getText()`, `textBetween(from?, to?, separator?)` | The document in a format |
 | `dispatch(tr)` | Applies a transaction given as JSON (its steps against the current document) |
 | `on(event, listener)` | Calls `listener` with the payload of every `event`, in JS's next turn: `revision` (`{ revision }`, after every change, from any source), `update`, `selectionUpdate`, `transaction`, `focus`, `blur`, `delete`. Returns a function that stops it; a listener added while a component renders stops with the component |
 | `focus()`, `blur()` | Moves the keyboard focus to or from the views showing the editor |
@@ -213,7 +226,9 @@ Each extension adds Tiptap's commands, which `command(name, args)` runs: `toggle
 `unsetStrike`, `toggleHeading({ level })`, `setParagraph`, `toggleBlockquote`, `toggleBulletList`,
 `toggleOrderedList`, `toggleTaskList`, `toggleCodeBlock({ language })`, `setHardBreak`, `setHorizontalRule`,
 `setImage({ src })`, `toggleHighlight({ color })`, `setTextAlign("center")`, `unsetTextAlign`, and the link,
-character count and suggestion commands below.
+character count and suggestion commands below. An image's `src` is what `Image` takes (a URL, a file path or
+`file:` URL, a `data:` URI); without `width` and `height` it shows at its natural size, and with one of them at that
+side and its aspect ratio.
 
 The list toggles work on whole lists, as a word processor's list buttons do: `toggleOrderedList` in a bulleted list
 numbers it at every level, nested lists included, and a list's own toggle takes the selected blocks out of every
@@ -345,6 +360,9 @@ editor.run(insertMention(editor.suggestion("mention")!.range, "u1", "Joan"));
   `https`, `ftp`, `ftps`, `mailto`, `tel`, `callto`, `sms`, `cid`, `xmpp` and those in `protocols`, so
   `setLink({ href })`, `toggleLink(attrs?)` and autolinking keep scripts (`javascript:`) and data URLs out.
   `unsetLink()` removes the link around the selection.
+  On the desktops and the web in the desktop idiom, the pointer resting on linked text shows the link's `title` and
+  destination below the pointer, as [TextView's links](./text-view.md) do; pressing and typing in the link work as
+  before. Text an app's mark view renders shows what the app's element shows.
 - `characterCount(options?)`: `editor.characters(mode?)` counts the text's characters (`"textSize"`, UTF-16 units as
   JS's `length`) or the document's positions (`"nodeSize"`); `editor.words()` counts its words (Unicode word
   boundaries). With `limit`, changes that would go past it are refused and pasted content is trimmed to what fits;

@@ -93,6 +93,12 @@ extern "system" fn Java_com_longbridge_nsh_Native_keyDown(
 ) -> jboolean {
     // SAFETY: Java passes its live handle.
     let host = unsafe { crate::host::host(handle) };
+    // Every key down passes here before it acts: the focus it moves shows
+    // (`focus-visible:`). A modifier alone (Alt, Shift, Sym, Control,
+    // Caps Lock, Meta, Function: `KeyEvent.KEYCODE_*`) does not count.
+    if !matches!(code, 57..=60 | 63 | 113..=119) {
+        host.input_with(nsh_core::platform::InputModality::Keyboard);
+    }
     let Some(stroke) = keystroke(code, unicode, meta) else {
         return JNI_FALSE;
     };

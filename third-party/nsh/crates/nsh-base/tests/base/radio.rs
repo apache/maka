@@ -193,6 +193,37 @@ fn the_radios_are_in_the_order_of_the_tree_wherever_they_render() {
     }
 }
 
+/// The plans, each radio inside a view of the app's (a row with a note).
+#[component]
+fn WrappedPlans() -> impl IntoElement {
+    let plan = signal(None::<usize>);
+    let option = move |i: usize| {
+        view().flex_row().child(
+            radio()
+                .checked(move || plan.get() == Some(i))
+                .on_change(move |_: &bool| plan.set(Some(i)))
+                .child(text(PLANS[i])),
+        )
+    };
+    view()
+        .child(radio_group().children((0..4).map(option)))
+        .child(text(move || {
+            format!("plan:{}", plan.get().map_or("none", |i| PLANS[i]))
+        }))
+}
+
+#[test]
+fn radios_inside_views_of_the_group_are_its_radios() {
+    let mut app = start::<WrappedPlans>();
+    app.press_key("tab").unwrap();
+    app.press_key("space").unwrap();
+    app.wait_for("text:plan:Free").unwrap();
+    for name in ["Plus", "Team", "Enterprise", "Free"] {
+        app.press_key("down").unwrap();
+        app.wait_for(&format!("text:plan:{name}")).unwrap();
+    }
+}
+
 #[derive(Clone, PartialEq, Props)]
 struct ManyProps {
     count: usize,

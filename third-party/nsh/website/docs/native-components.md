@@ -340,8 +340,9 @@ final class Badge implements NshComponent {
     private final float density;
     private int taps;
 
-    Badge(Context app, NshComponentContext context) {
+    Badge(NshComponentContext context) {
         this.context = context;
+        Context app = context.getContext();
         density = app.getResources().getDisplayMetrics().density;
         label = new TextView(app);
         label.setTextColor(Color.WHITE);
@@ -376,13 +377,13 @@ final class Badge implements NshComponent {
 }
 
 // Before loading the bundle:
-nsh.registerComponent("embed.badge", context -> new Badge(this, context));
+nsh.registerComponent("embed.badge", Badge::new);
 ```
 
 The same in Kotlin:
 
 ```kotlin
-nsh.registerComponent("embed.badge") { context -> Badge(this, context) }
+nsh.registerComponent("embed.badge") { context -> Badge(context) }
 ```
 
 | API | Description |
@@ -390,6 +391,7 @@ nsh.registerComponent("embed.badge") { context -> Badge(this, context) }
 | `NshView.registerComponent(String name, NshComponent.Factory factory)` | Registers a factory under a name; it makes one component per element created from then on (UI thread). |
 | `interface NshComponent` | `View view()`, `void setProp(String, Object)`, `default void command(String, Object)`, `default void destroy()` (the element is gone: removed, or its app stopped by `NshView.destroy()` or replaced by another load; called once per component). Called on the UI thread. |
 | `setProp` values | `String`, `Number`, `Boolean`, `java.util.List`, `java.util.Map`, or `null` when removed (or JSON `null`). |
+| `NshComponentContext.getContext()` | The context of the `NshView` the component is in (its activity's), for the component's views, resources and system services; keep its `getApplicationContext()` in what outlives the component. Any thread. |
 | `NshComponentContext.emit(String event, Object data)` | Emits an event; `data` as the same Java types, or `null`. Any thread. |
 | `NshComponentContext.setSize(float width, float height)` | Reports the component's own size in dp. Any thread. |
 

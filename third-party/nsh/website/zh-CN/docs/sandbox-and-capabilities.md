@@ -125,7 +125,7 @@ release 构建（所有并非从开发服务器加载的代码）在加载时会
 ### `network`
 
 涵盖 `fetch`（包括每一次重定向）、WebSocket、远程图片（`<Image>`、`placeholder`、canvas 图片、`Image.getSize` /
-`Image.prefetch`）、视频源以及原始 TCP socket（`net.connect`）。
+`Image.prefetch`）、视频和声音源以及原始 TCP socket（`net.connect`）。
 
 | 键 | 类型 | 说明 |
 |---|---|---|
@@ -141,15 +141,37 @@ release 构建（所有并非从开发服务器加载的代码）在加载时会
 
 `http` 规则没有列出 `paths` 或 `pathPrefixes` 时覆盖所有路径；两者都列出时，匹配其一的路径即被覆盖。
 
+路径按请求实际发出的样子匹配：先由 WHATWG 的 URL 解析器解析点段（包括百分号编码的点段），所以 `/v1/../admin` 和
+`/v1/%2e%2e/admin` 都是 `/admin`，不在 `pathPrefix: "/v1"` 的覆盖范围内。请求发出的就是检查过的 URL，服务器收到的路径
+正是规则匹配的那一个。规则自己的路径也按同样方式读取：`/my photos` 覆盖 `/my%20photos`，带 `.` 或 `..` 路径段的路径会报错。
+编码后的 `/` 或 `\`（`%2F`、`%5C`）保持原样，所以 `/v1/x%2F..%2F..%2Fadmin` 落在 `/v1` 之下；如果服务器先解码它们再解析点段，
+就会访问另一个路径。
+
 主机模式可以是 `*`（任意主机）、`*.example.com`（`example.com` 的任意子域名，不包括 `example.com` 本身）或一个确切的
 主机名。匹配时忽略大小写和端口。主机取最后一个 `@` 之后的部分，因此 `https://api.example.com@evil.io/` 会按 `evil.io`
-检查。
+检查。各平台可能解析出不同主机或路径的 URL 只有 `hosts` 中的 `*`（或不限定端口和路径的 `*` 规则）能授权：查询之前含反斜杠
+（应写成 `%5C`）、含控制字符，或主机含百分号编码或主机不能包含的字符（空格、`<`、`>`、`^`、`|`，以及 IPv6 地址之外的
+`[`、`]`）。
 
 WebSocket 握手是一次 HTTP GET：`ws://` 按 `http://`、`wss://` 按 `https://` 检查，因此允许以 GET 访问该 URL 的主机和
 `http` 授权也允许这个 WebSocket。原始 socket 不经过任何 HTTP 规则，所以 `sockets` 精确列出每个主机和端口，也只有
 `sockets` 能授予它们。
 
-`asset:` URI（应用自己的文件）始终允许；图片和视频还可以使用 `data:` URI 和相对路径。
+`asset:` URI（应用自己的文件）只要路径留在应用的文件之内就始终允许，与 `fetch`
+一样：不能有空的、`.` 或 `..` 路径段（编码与否都不行），也不能有反斜杠、冒号或编码后的
+`/`。图片、视频和声音还可以使用 `data:`、`blob:` URI。相对路径在 Web
+上相对于页面；原生应用没有页面，所以声明了 capabilities
+的应用在原生平台上用相对路径加载不到任何内容（声音的相对路径表示打包的文件）。以 `//` 开头的源指向一个主机：在
+Web 上它沿用页面的协议，按补全后的 URL 检查；原生应用没有页面可以提供协议，所以它不会加载任何内容（请写成
+`https://…`）。其他带协议的源都按 URL 检查，加载的就是检查过的 URL。源首尾的空格和控制字符会像 URL 解析器那样被去掉，
+加载的是清理后的 URL。各平台读法不同的源（中间含反斜杠、控制字符、制表符或换行，或主机不寻常）只有 `*` 能授权，
+并按原样加载（在原生应用中，这样以 `//` 开头的源不会加载任何内容）。
+
+媒体源中的本地文件（`file:` URL，或原生应用中的绝对路径，例如 `/Users/a/x.png`、`C:\pictures\x.png`）和
+`fs/promises` 读文件一样，按 [`fs`](../modules/standard-modules.md) 能力的 `read` 根目录检查，因此只在桌面上可用。设置源时
+会先解析其中的符号链接，平台加载的也是解析后的路径，所以这时授权根目录里的链接不会把加载引到根目录之外；之后在那里新建的
+链接，在该源保持设置期间会被跟随。在 Web 上，
+`/x.png` 是页面自己的路径。没有声明 `capabilities` 的应用照旧加载本地文件。
 
 ### `webview`
 
@@ -157,14 +179,26 @@ WebSocket 握手是一次 HTTP GET：`ws://` 按 `http://`、`wss://` 按 `https
 |---|---|---|
 | `hosts` | `string[]` | [web view](./web-view-and-video.md) 可以显示和导航到的主机（`http` 和 `https`）。没有 `webview` 时，应用完全不能显示网页。 |
 | `input` | `boolean` | web view 的 ref 可以向页面发送可信输入（[`sendInput`](./web-view-and-video.md#像用户一样输入)）。只有声明了才会授予，没有 `"capabilities"` 的应用也不例外。 |
+| `media` | `string[]` | 网页可以通过 `getUserMedia` 采集的媒体：`"microphone"`、`"camera"`。只有声明了才会授予，没有 `"capabilities"` 的应用也不例外。 |
 
 web view 内的顶层导航也会在加载前由平台的导航代理检查。页面自身的子资源（脚本、图片、XHR）属于网页内容自己的事，
 不做检查。`about:blank` 和内联 HTML（`html`）只要求 web view 被授予即可：`"webview": { "hosts": [] }`
-允许它们，但不允许任何远程页面。
+允许它们，但不允许任何远程页面。在原生 web view 中，`baseUrl` 让内联 HTML 获得该 URL 的源，
+所以基准 URL 需要与该地址的页面相同的授权：它的主机在 `hosts` 中。
 
 `input` 与 `hosts` 分开，是因为可信输入带有用户激活，而 `injectJavaScript` 永远得不到它：页面因此可以打开窗口、写入剪贴板、
 打开系统的文件面板、发起 WebAuthn 或权限提示，以及按下任何检查 `isTrusted` 的按钮。没有它时，核心会丢弃 `sendInput`
 并在日志中说明要添加哪个键。
+
+`media` 负责回应 web view 自己的媒体采集请求：在 macOS、iOS、Android、Windows 和 Linux 上，已声明的种类会被允许，其余一律拒绝。
+系统第一次仍会询问用户，所以安装包要声明系统需要的内容：`nsh package` 会写入 `NSMicrophoneUsageDescription` /
+`NSCameraUsageDescription`（可以用 `ios.infoPlist` / `macos.infoPlist` 改成自己的措辞）、macOS 的
+`com.apple.security.device.audio-input` / `com.apple.security.device.camera` 权利（entitlements），以及 Android 的
+`RECORD_AUDIO` / `CAMERA` 权限，应用会在页面第一次需要时请求它们。页面需要处于安全上下文（`https:` 或 `localhost`）才能使用 `getUserMedia`。
+
+```json
+{ "capabilities": { "webview": { "hosts": ["phone.example.com"], "media": ["microphone"] } } }
+```
 
 ### `statusBar`
 

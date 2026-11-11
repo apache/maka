@@ -683,6 +683,11 @@ fn text_css(
     inherit_color: bool,
 ) -> String {
     let mut css = format!("font:{};", css_font(style));
+    // Hidden runs keep their place; the browser leaves them out of the
+    // selection's copy and of the accessibility tree.
+    if style.hidden {
+        css.push_str("visibility:hidden;");
+    }
     if !inherit_color {
         let _ = write!(css, "color:{};", css_color(style.color));
     }
@@ -763,8 +768,9 @@ fn props_json(p: &ViewProps) -> String {
     if let Some(l) = &a.label {
         let _ = write!(s, ",\"label\":{}", json_str(l));
     }
-    if let Some(h) = &a.hint {
-        let _ = write!(s, ",\"hint\":{}", json_str(h));
+    // `aria-description`: the description, then the hint.
+    if let Some(h) = a.help_text(None) {
+        let _ = write!(s, ",\"hint\":{}", json_str(&h));
     }
     // The role's JS name, which is ARIA's (`columnheader`, `treeitem`).
     let _ = write!(s, ",\"role\":{}", json_str(enum_name(&a.role)));
@@ -785,6 +791,9 @@ fn props_json(p: &ViewProps) -> String {
     }
     if a.state.has_popup {
         s.push_str(",\"hasPopup\":true");
+    }
+    if a.state.invalid {
+        s.push_str(",\"invalid\":true");
     }
     if let Some(p) = a.state.pressed {
         let _ = write!(s, ",\"pressed\":{}", json_str(&kebab(&format!("{p:?}"))));
@@ -818,6 +827,14 @@ fn props_json(p: &ViewProps) -> String {
     }
     if let Some(t) = &p.test_id {
         let _ = write!(s, ",\"testID\":{}", json_str(t));
+    }
+    // The HTML element the view is drawn as (`web={{ element }}`), and a
+    // link's target (`Link`'s `href`).
+    if let Some(tag) = p.web_element {
+        let _ = write!(s, ",\"element\":{}", json_str(enum_name(&tag)));
+    }
+    if let Some(h) = &p.href {
+        let _ = write!(s, ",\"href\":{}", json_str(h));
     }
     // Unset leaves it to the presses (`ViewProps::focus_stop`).
     if let Some(focusable) = p.focusable {
@@ -932,11 +949,20 @@ fn transition_json(t: &Option<LayoutTransition>) -> String {
                 LayoutCurve::EaseIn => "ease-in".to_owned(),
                 LayoutCurve::EaseOut => "ease-out".to_owned(),
                 LayoutCurve::EaseInEaseOut | LayoutCurve::Keyboard => "ease-in-out".to_owned(),
-                LayoutCurve::Spring { damping } => spring_easing(damping),
+                LayoutCurve::FittedSpring { damping_ratio } => spring_easing(damping_ratio),
+                // It times itself: its progress over the time it settles in,
+                // ending on its place.
+                LayoutCurve::Spring(spring) => sampled_easing(|x| {
+                    if x >= 1.0 {
+                        1.0
+                    } else {
+                        spring.progress(x * spring.settle_ms())
+                    }
+                }),
             };
             format!(
                 "{{\"duration\":{},\"delay\":{},\"easing\":{},\"property\":{}}}",
-                t.duration_ms,
+                t.run_ms(),
                 t.delay_ms,
                 json_str(&easing),
                 json_str(&kebab(&format!("{:?}", t.property)))
@@ -973,10 +999,16 @@ fn spring(damping: f32, x: f32) -> f32 {
 /// Samples of the spring as a CSS `linear()` easing (piecewise linear,
 /// enough points that the overshoot keeps its shape).
 fn spring_easing(damping: f32) -> String {
+    sampled_easing(|x| spring(damping, x))
+}
+
+/// Samples of `curve` (progress at a fraction of the duration, from 0 to
+/// 1) as a CSS `linear()` easing.
+fn sampled_easing(curve: impl Fn(f32) -> f32) -> String {
     const SAMPLES: usize = 48;
     let mut out = String::from("linear(0");
     for i in 1..=SAMPLES {
-        let v = spring(damping, i as f32 / SAMPLES as f32);
+        let v = curve(i as f32 / SAMPLES as f32);
         let _ = write!(out, ",{}", (v * 1000.0).round() / 1000.0);
     }
     out.push(')');
@@ -1190,6 +1222,8 @@ pub(crate) fn encode(out: &mut Out, item: &MountItem) {
                 .num(options.fade_ms.unwrap_or(0.0))
                 // CSS's `object-position`; empty for the center.
                 .str(&object_position(options.position))
+                // `svg()`'s text color, for its `currentColor`.
+                .opt_str(options.current_color.map(css_color).as_deref())
                 .end();
         }
         MountItem::ScrollConfig {
@@ -1416,6 +1450,9 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
                 .num(*end)
                 .end();
         }
+        Command::InsertText(text) => {
+            out.item("cmd").num(id).str("insertText").str(text).end();
+        }
         Command::Dialog(d) => {
             out.item("cmd").num(id).str("dialog").num(d.id);
             out.opt_str(d.title.as_deref())
@@ -1454,6 +1491,8 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
         }
         Command::Back => out.item("cmd").num(id).str("back").end(),
         Command::ExitApp => out.item("cmd").num(id).str("exitApp").end(),
+        Command::SetAppUrl(url) => out.item("cmd").num(id).str("setAppUrl").str(url).end(),
+        Command::PushAppUrl(url) => out.item("cmd").num(id).str("pushAppUrl").str(url).end(),
         Command::Announce(text) => out.item("cmd").num(id).str("announce").str(text).end(),
         Command::AccessibilityFocus => out.item("cmd").num(id).str("a11yFocus").end(),
         Command::Seek(t) => out.item("cmd").num(id).str("seek").num(*t).end(),
@@ -1603,6 +1642,15 @@ fn encode_command(out: &mut Out, id: u32, command: &Command) {
                 .num(id)
                 .str("hostCall")
                 .raw(&request.to_string())
+                .str(name)
+                .raw(&args.to_string())
+                .end();
+        }
+        // `nsh.js` `hostPost`: nothing comes back.
+        Command::HostPost { name, args } => {
+            out.item("cmd")
+                .num(id)
+                .str("hostPost")
                 .str(name)
                 .raw(&args.to_string())
                 .end();

@@ -736,21 +736,23 @@ mod tests {
     #[cfg(feature = "js")]
     #[test]
     fn pixel_terminal_ignores_desktop_windows_and_tray_but_keeps_editing() {
-        use super::TerminalSurface;
+        use std::{
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+
         use nsh_core::{
             Command, InputConfig, ModalAnimation, ModalConfig, MountItem, ROOT_ID,
             desktop::{DesktopCommand, OpenWindow, Tray, WindowRequest},
         };
         use nsh_engine::{App, Bundle, EngineConfig};
         use nsh_terminal::{DevicePixels, NativeSurface, size};
-        use std::{
-            sync::Arc,
-            time::{Duration, Instant},
-        };
         use windows::Win32::{
             Foundation::{LPARAM, WPARAM},
             UI::{Shell::NIN_SELECT, WindowsAndMessaging::IsWindowVisible},
         };
+
+        use super::TerminalSurface;
 
         let code = nsh_bundler::compile_module("TerminalIsolation.tsx", r#"
             import { View, mount } from "nsh";
@@ -995,6 +997,58 @@ mod tests {
         until("final paste", &mut || {
             terminal.editor_text().as_deref() == Some("terminal!")
         });
+
+        terminal.set_selected_text_range(0..9).unwrap();
+        assert!(terminal.paste(nsh_core::PasteEvent::new("a😀b")));
+        until("unicode paste", &mut || {
+            terminal.editor_text().as_deref() == Some("a😀b")
+        });
+        terminal.set_selected_text_range(1..3).unwrap();
+        let target = terminal.text_input_target().unwrap();
+        assert!(
+            terminal
+                .apply_composition(&target, "", "中文", Some(0..1), true)
+                .unwrap()
+        );
+        assert_eq!(terminal.editor_text().as_deref(), Some("a😀b"));
+        assert!(terminal.input_candidate_bounds().is_some());
+        assert!(
+            terminal
+                .apply_composition(&target, "", "", None, false)
+                .unwrap()
+        );
+        until(
+            "composition cancellation restores selected text",
+            &mut || terminal.editor_text().as_deref() == Some("a😀b") && !terminal.has_pending(),
+        );
+        terminal.set_selected_text_range(1..3).unwrap();
+        assert!(
+            terminal
+                .apply_composition(&target, "", "中文", None, true)
+                .unwrap()
+        );
+        assert!(
+            terminal
+                .apply_composition(&target, "中", "", None, false)
+                .unwrap()
+        );
+        until("composition commits once over selection", &mut || {
+            terminal.editor_text().as_deref() == Some("a中b") && !terminal.has_pending()
+        });
+        terminal.set_selected_text_range(1..2).unwrap();
+        {
+            let _scope = terminal.scope();
+            let mut stroke = nsh_terminal::Keystroke::default();
+            stroke.key = "c".into();
+            stroke.modifiers.control = true;
+            terminal.key(stroke, true, false);
+        }
+        let mut copied = None;
+        until("copy after composition fence", &mut || {
+            copied = terminal.take_clipboard_write();
+            copied.is_some()
+        });
+        assert_eq!(copied.as_deref(), Some("中"));
         terminal.shutdown();
     }
 

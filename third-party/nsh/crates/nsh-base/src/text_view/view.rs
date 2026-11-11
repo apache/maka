@@ -27,7 +27,11 @@ use super::{
     parts::{TextViewClasses, TextViewPart as Part, TextViewParts, TextViewStyles},
     selection::{Reported, Source, TextSelectionOptions, selected},
 };
-use crate::{terminal::is_terminal, theme::theme};
+use crate::{
+    link_hint::{HintAt, link_hint},
+    terminal::is_terminal,
+    theme::theme,
+};
 
 /// The props of [`TextView`].
 #[derive(Debug, Clone, Copy, PartialEq, Props)]
@@ -296,6 +300,12 @@ pub struct TextViewSelectionEvent {
     /// Where it starts in the view's whole text (UTF-16 units), when the
     /// platform knows it.
     pub start: Option<u32>,
+    /// The box around it in the view, while something is selected and the
+    /// platform knows it.
+    pub bounds: Option<Bounds<Points>>,
+    /// The same box in the root view the view is in, as of the event (an
+    /// `Overlay`'s `anchor`).
+    pub page_bounds: Option<Bounds<Points>>,
 }
 
 /// An action of the code blocks of a [`TextView`] (`codeBlockActions`).
@@ -592,6 +602,8 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
             cx.emit(TextViewEvent::SelectionChange(TextViewSelectionEvent {
                 text: e.text.clone().into(),
                 start: e.start,
+                bounds: e.bounds,
+                page_bounds: e.page_bounds,
             }));
         })
         .map(|mut el| {
@@ -839,9 +851,9 @@ struct Cx {
     /// The line height of the text being made, which images in it are
     /// sized by.
     line: std::cell::Cell<f32>,
-    /// The URL of the link the content being made is in: a press on an
-    /// image there is the link's.
-    link: std::cell::RefCell<Option<SharedString>>,
+    /// The URL and title of the link the content being made is in: a press
+    /// on an image there is the link's, and its hint the link's.
+    link: std::cell::RefCell<Option<LinkTo>>,
     highlighter: Option<CodeHighlighter>,
     links: TextViewLinks,
     scope: Scope<TextViewEvent>,
@@ -1963,10 +1975,9 @@ impl Cx {
         // The Cells the text is wide, once laid out: the columns fit them
         // (their cells wrapping), or the table scrolls.
         let room = signal(0usize);
-        let widths = move || fit_columns(&natural, room.get());
+        let widths = computed(move || fit_columns(&natural, room.get()));
         let ruled = |ends: [char; 3]| {
-            let widths = widths.clone();
-            text(move || SharedString::from(table_rule(&widths(), ends)))
+            text(move || widths.with(|widths| SharedString::from(table_rule(widths, ends))))
                 .number_of_lines(1u32)
                 .text_color(move || theme().border)
                 .into_element()
@@ -2006,8 +2017,9 @@ impl Cx {
                 let end = tail && r == last_row && c + span == columns;
                 let key = format!("{key}.{r}.{c}");
                 // The columns it spans and the ` │ ` between them.
-                let widths = widths.clone();
-                let cells = move || widths()[c..c + span].iter().sum::<usize>() + 3 * (span - 1);
+                let cells = move || {
+                    widths.with(|widths| widths[c..c + span].iter().sum::<usize>() + 3 * (span - 1))
+                };
                 let t = self.paragraph(content, &key, end);
                 let t = match align(c) {
                     ColumnAlign::Center => t.text_center(),
@@ -2405,12 +2417,26 @@ impl Cx {
                 content,
             } => {
                 let url = SharedString::from(url.clone());
-                let outer = self.link.replace(Some(url.clone()));
+                let outer = self
+                    .link
+                    .replace(Some((url.clone(), title.clone().map(SharedString::from))));
                 let span = self.span(content, key);
                 let mut label = String::new();
                 super::document::inline_text(content, &mut label);
                 self.link.replace(outer);
                 let target = element_ref();
+                // Where it goes, shown while the pointer rests on it (an
+                // `#anchor` of the document and a path too: every
+                // destination shows; a terminal links the text to it).
+                let hint = (!is_terminal()).then(|| {
+                    let href = url.clone();
+                    let title = title.clone().map(SharedString::from);
+                    link_hint(
+                        move || Some(href.clone()),
+                        move || title.clone(),
+                        HintAt::Pointer,
+                    )
+                });
                 let el = span
                     .element_ref(&target)
                     .focusable(true)
@@ -2424,6 +2450,7 @@ impl Cx {
                     .role(AccessibilityRole::Link)
                     .label(SharedString::from(label))
                     .when_some(title.clone(), |t, title| t.hint(title))
+                    .when_some(hint, |t, hint| t.child(hint))
                     .on_press(self.link_press(url, target));
                 self.part(el, Part::Link).into_element()
             }
@@ -2524,7 +2551,12 @@ impl Cx {
             .w_full()
             .items_start()
             .children(images.iter().enumerate().map(|(i, (image, link, source))| {
-                let link = link.map(|l| SharedString::from(l.to_owned()));
+                let link = link.map(|(url, title)| {
+                    (
+                        SharedString::from(url.to_owned()),
+                        title.map(|t| SharedString::from(t.to_owned())),
+                    )
+                });
                 let image = self.image(image, link, ImageFlow::Block, &format!("{key}.{i}"));
                 self.source(
                     text("")
@@ -2536,20 +2568,25 @@ impl Cx {
             }))
     }
 
-    /// Image `image`, in a link to `link` if it is in one (a press on it is
-    /// the link's), sized as `flow` says.
-    fn image(
-        &self,
-        image: &Image,
-        link: Option<SharedString>,
-        flow: ImageFlow,
-        key: &str,
-    ) -> AnyElement {
+    /// Image `image`, in a link to `link` (its URL and title) if it is in
+    /// one (a press on it is the link's, and so is its hint), sized as
+    /// `flow` says.
+    fn image(&self, image: &Image, link: Option<LinkTo>, flow: ImageFlow, key: &str) -> AnyElement {
         let scope = self.scope;
         let target = element_ref();
         let pressed = image.clone();
         let is_link = link.is_some();
-        let press_link = link.clone().map(|url| self.link_press(url, target));
+        // Where the link goes, on the image that takes its press (below
+        // it: the image's own title, a tooltip, shows above), as on a link
+        // of text; a terminal links the text it reads as instead.
+        let hint = link.clone().filter(|_| !is_terminal()).map(|(url, title)| {
+            LinkImageHint(link_hint(
+                move || Some(url.clone()),
+                move || title.clone(),
+                HintAt::Link,
+            ))
+        });
+        let press_link = link.map(|(url, _)| self.link_press(url, target));
         // In a link it is the link's; else a press reports the image.
         let press = move |e: &PressEvent| match &press_link {
             Some(press) => press(e),
@@ -2584,6 +2621,7 @@ impl Cx {
                     .label(SharedString::from(image.alt.clone()))
                     .on_press(press)
                     .child(el)
+                    .when_some(hint, |v, hint| v.child(hint.0))
                     .into_element();
             }
             return el.into_element();
@@ -2663,7 +2701,8 @@ impl Cx {
                     .role(role)
                     .focusable(true)
                     .element_ref(&target)
-                    .on_press(press);
+                    .on_press(press)
+                    .when_some(hint, |el, hint| el.tooltip(hint));
                 return view()
                     .w(box_width)
                     .max_w(relative(1.0))
@@ -2688,7 +2727,8 @@ impl Cx {
             .role(role)
             .focusable(true)
             .element_ref(&target)
-            .on_press(press);
+            .on_press(press)
+            .when_some(hint, |el, hint| el.tooltip(hint));
         self.part(el, Part::Image).into_element()
     }
 }
@@ -2701,6 +2741,23 @@ fn row_kind(block: &Block) -> String {
             alert: Some(alert), ..
         } => format!("alert:{alert:?}"),
         _ => block.kind().to_owned(),
+    }
+}
+
+/// A link's URL and title.
+type LinkTo = (SharedString, Option<SharedString>);
+
+/// A link's URL and title, borrowed from its document.
+type LinkRef<'a> = (&'a str, Option<&'a str>);
+
+/// A link's hint on an image in the link: a child of the image, which
+/// takes the link's press and is the hint's anchor (an image takes no
+/// children but its tooltip, which this is, as `Tooltip` is an element's).
+struct LinkImageHint(nsh_core::element::Overlay);
+
+impl IntoTooltip for LinkImageHint {
+    fn apply_tooltip(self, node: &mut nsh_core::element::ElNode) {
+        nsh_core::element::__hint_tooltip(node, self.0.into_element());
     }
 }
 
@@ -2718,13 +2775,13 @@ enum ImageFlow {
 /// with no text.
 type ImageOnly<'a> = (
     &'a Image,
-    Option<&'a str>,
+    Option<LinkRef<'a>>,
     Option<&'a [nsh_core::TextSourceSegment]>,
 );
 fn only_images(content: &[Inline]) -> Option<Vec<ImageOnly<'_>>> {
     fn walk<'a>(
         content: &'a [Inline],
-        link: Option<&'a str>,
+        link: Option<LinkRef<'a>>,
         source: Option<&'a [nsh_core::TextSourceSegment]>,
         out: &mut Vec<ImageOnly<'a>>,
     ) -> bool {
@@ -2734,7 +2791,11 @@ fn only_images(content: &[Inline]) -> Option<Vec<ImageOnly<'_>>> {
                 true
             }
             Inline::Source { content, segments } => walk(content, link, Some(segments), out),
-            Inline::Link { url, content, .. } => walk(content, Some(url), source, out),
+            Inline::Link {
+                url,
+                title,
+                content,
+            } => walk(content, Some((url.as_str(), title.as_deref())), source, out),
             _ => false,
         })
     }
@@ -3292,7 +3353,7 @@ mod tests {
     fn content_of_images_alone_is_shown_as_blocks() {
         let link = |content| Inline::Link {
             url: "https://x.y".into(),
-            title: None,
+            title: Some("X".into()),
             content,
         };
         let content = [image("a.png"), link(vec![image("b.png")])];
@@ -3301,7 +3362,10 @@ mod tests {
             .iter()
             .map(|(i, l, _)| (i.src.as_str(), *l))
             .collect();
-        assert_eq!(found, [("a.png", None), ("b.png", Some("https://x.y"))]);
+        assert_eq!(
+            found,
+            [("a.png", None), ("b.png", Some(("https://x.y", Some("X"))))]
+        );
         // Text, even a space, puts the images in its lines, as gpui-kit's
         // text flow does.
         assert!(only_images(&[image("a.png"), Inline::text(" "), image("b.png")]).is_none());

@@ -1,25 +1,45 @@
-//! Text inputs: an editor of nsh's own, drawn with Direct2D and laid out
-//! with DirectWrite, hosted in the input's view at the content box the
-//! core laid out (inside padding and border). Windows has no child windows
-//! here, so the editor clips and transforms with its view and nothing ever
-//! covers it.
+//! Text inputs: Windows' own text box, a windowless RichEdit control
+//! ([`crate::richedit`]), hosted in the input's view at the content box the
+//! core laid out (inside padding and border) and drawn with Direct2D into
+//! the window's target. There are no child windows here, so the field
+//! clips, transforms and fades with its view and nothing ever covers it.
+//!
+//! RichEdit does the editing as every Windows text box does it: caret
+//! stops, words and lines, the keys (Ctrl+arrows, Ctrl+Backspace,
+//! Shift+Delete, ...), selection by mouse (double and triple clicks,
+//! drags that scroll), multilevel undo, the clipboard, the IME in place
+//! with its candidate window at the caret, Text Services Framework input
+//! (dictation, the emoji panel, the touch keyboard, reconversion), spell
+//! checking (`autoCorrect`), password masking and scrolling. The field
+//! keeps it in plain text mode with one character and paragraph format,
+//! made from the config's font, color, alignment and line height.
 //!
 //! The view draws the decoration (background, border, corners) from the
-//! core's style like any other view; the editor ([`InputState`], a
-//! [`Hosted`] item) draws the selection, the text or the placeholder, the
-//! IME's composition (underlined, at the caret) and the caret, which
-//! blinks at the system's rate on a thread timer, not on the frame ticker,
-//! so a focused field costs no frames.
+//! core's style like any other view; the field ([`InputState`], a
+//! [`Hosted`] item) draws the placeholder while the text is empty, has
+//! RichEdit draw the text and selection, and draws the caret RichEdit
+//! places, which blinks at the system's rate on a thread timer, not on the
+//! frame ticker, so a focused field costs no frames.
 //!
-//! The editing itself (text, selection, caret stops, words, undo) is
-//! [`model`], free of Win32; this file turns pointer, key, character and
-//! IME messages into its operations and its changes into events.
+//! RichEdit's coordinates are the window's client pixels: its client
+//! rectangle is the content box mapped to the window (moved again whenever
+//! the field is pressed, focused or typed in), so the IME it places and the
+//! pointer it is sent agree with the screen; drawing maps them back to the
+//! view's coordinates through the current transform.
 //!
 //! Every user edit increments the input's edit count and reports
 //! `onChangeText` with it (always, as the engine keeps the text); a value
 //! from JS based on an older count is stale and dropped, so fast typing is
 //! never overwritten. Programmatic changes (JS values) report nothing but
-//! the selection. Lengths and offsets JS sees are UTF-16 units.
+//! the selection. Lengths and offsets JS sees are UTF-16 units, as
+//! RichEdit's.
+//!
+//! While the IME composes, RichEdit keeps the composition in its text;
+//! the field reports it with `onCompositionChange` (the text between what
+//! was before and after the selection the composition started at) and
+//! reports `onChangeText` only for what is committed, when it ends (before
+//! the composition's end). A `value` JS sets meanwhile is held and applied
+//! when the composition ends, unless the user's commit made it stale.
 //!
 //! Focus is one field per surface. The window's focus is followed apart
 //! from it, as on Linux: an inactive window keeps its focused field (with
@@ -33,7 +53,13 @@
 //! Ctrl+Return), while Shift+Return and Alt+Return still insert a line
 //! break. The IME takes the keys it uses while it composes (they come as
 //! `VK_PROCESSKEY`), so a return that commits a composition (CJK input
-//! methods) submits nothing.
+//! methods) submits nothing. Tab moves between fields, never into the text.
+//! RichEdit's formatting shortcuts (Ctrl+B, Ctrl+E, ...) are never sent:
+//! the text is plain, and the app's shortcuts get those keys.
+//!
+//! Pastes go through the field (`onPaste`, `pasteBehavior`, line breaks of
+//! a single line turned into spaces), then into RichEdit as a replacement
+//! of the selection that undo takes back.
 //!
 //! `onKeyPress` reports what typing inserts and deletes, as UIKit does
 //! (nothing for pasted text, no Backspace for a selection typed over), and
@@ -53,103 +79,131 @@ use nsh_core::{
     SubmitBehavior, TextAlign,
     geometry::{Point, Size},
     tailwind::state,
-    text_edit::{self as model, Composition, Model, Unit, key_of, pasted, utf16_to_byte},
+    text_edit::{key_of, pasted},
 };
 use rustc_hash::FxHashMap;
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::{
-            Direct2D::D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+            Direct2D::{
+                Common::D2D1_COMPOSITE_MODE_SOURCE_OVER, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, ID2D1CommandList,
+            },
             DirectWrite::{
                 DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_WEIGHT, DWRITE_HIT_TEST_METRICS, DWRITE_LINE_METRICS,
-                DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_TEXT_ALIGNMENT,
+                DWRITE_FONT_WEIGHT, DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_TEXT_ALIGNMENT,
                 DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_JUSTIFIED,
                 DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
-                DWRITE_TEXT_RANGE, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
                 DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP, IDWriteTextFormat,
-                IDWriteTextLayout, IDWriteTextLayout1,
+                IDWriteTextLayout,
             },
         },
         UI::{
+            Controls::RichEdit::{
+                CFE_ITALIC, CFM_BOLD, CFM_COLOR, CFM_FACE, CFM_ITALIC, CFM_SIZE, CFM_SPACING,
+                CFM_WEIGHT, EM_CANREDO, EM_EXSETSEL, EM_GETLANGOPTIONS, EM_GETSCROLLPOS, EM_REDO,
+                EM_SETEDITSTYLE, EM_SETEVENTMASK, EM_SETLANGOPTIONS, EM_SETSCROLLPOS,
+                EM_SETTEXTMODE, EM_SETTYPOGRAPHYOPTIONS, ENM_CHANGE, ENM_ENDCOMPOSITION,
+                ENM_SELCHANGE, ENM_STARTCOMPOSITION, IMF_SPELLCHECKING, IMF_TKBPREDICTION,
+                PFA_CENTER, PFA_JUSTIFY, PFA_LEFT, PFA_RIGHT, PFM_ALIGNMENT, PFM_LINESPACING,
+                PFM_RTLPARA, SES_USECTF, TM_MULTICODEPAGE, TM_MULTILEVELUNDO, TM_PLAINTEXT,
+                TO_ADVANCEDTYPOGRAPHY, TXTBIT_AUTOWORDSEL, TXTBIT_CHARFORMATCHANGE,
+                TXTBIT_CLIENTRECTCHANGE, TXTBIT_D2DDWRITE, TXTBIT_DISABLEDRAG,
+                TXTBIT_HIDESELECTION, TXTBIT_MAXLENGTHCHANGE, TXTBIT_MULTILINE,
+                TXTBIT_PARAFORMATCHANGE, TXTBIT_READONLY, TXTBIT_SCROLLBARCHANGE,
+                TXTBIT_USEPASSWORD, TXTBIT_WORDWRAP,
+            },
             Input::{
                 Ime::{
-                    ATTR_TARGET_CONVERTED, ATTR_TARGET_NOTCONVERTED, CANDIDATEFORM, CFS_EXCLUDE,
-                    CFS_POINT, COMPOSITIONFORM, CPS_CANCEL, CPS_COMPLETE, GCS_COMPATTR,
-                    GCS_COMPSTR, GCS_CURSORPOS, GCS_RESULTSTR, HIMC, IACE_DEFAULT,
-                    IME_COMPOSITION_STRING, ISC_SHOWUICOMPOSITIONWINDOW, ImmAssociateContextEx,
-                    ImmGetCompositionStringW, ImmGetContext, ImmNotifyIME, ImmReleaseContext,
-                    ImmSetCandidateWindow, ImmSetCompositionWindow, NI_COMPOSITIONSTR,
-                    NOTIFY_IME_INDEX,
+                    CPS_CANCEL, CPS_COMPLETE, HIMC, IACE_DEFAULT, ISC_SHOWUICOMPOSITIONWINDOW,
+                    ImmAssociateContextEx, ImmGetContext, ImmNotifyIME, ImmReleaseContext,
+                    NI_COMPOSITIONSTR, NOTIFY_IME_INDEX,
                 },
                 KeyboardAndMouse::{
-                    VK_BACK, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_INSERT, VK_LEFT,
-                    VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_UP,
+                    GetKeyboardState, MAPVK_VK_TO_VSC, MapVirtualKeyW, SetKeyboardState, VK_BACK,
+                    VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_INSERT, VK_LEFT,
+                    VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_UP,
                 },
             },
             WindowsAndMessaging::{
-                DefWindowProcW, GetCaretBlinkTime, KillTimer, SPI_GETCARETWIDTH,
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetTimer, SystemParametersInfoW,
-                WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT,
-                WM_IME_STARTCOMPOSITION,
+                DefWindowProcW, GetCaretBlinkTime, KillTimer, SetTimer, WM_CHAR, WM_CLEAR, WM_COPY,
+                WM_CUT, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT,
+                WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+                WM_LBUTTONUP, WM_MOUSEMOVE,
             },
         },
     },
     core::{HSTRING, Interface},
 };
-use windows_numerics::Vector2;
+use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::{
     input::{KeyEvent, Modifiers, PointerKind},
     render::{DrawCx, rect_f},
+    richedit::{self, Editor, Props},
     surface::Surface,
     view::{Hosted, ItemPointer, NshView},
 };
 
-/// What a drag that started with a press selects by.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Drag {
-    /// Characters, from where it was pressed.
-    Char,
-    /// Whole words, from the word double-clicked (its range).
-    Word(usize, usize),
-    /// Whole lines, from the line triple-clicked.
-    Line(usize, usize),
-}
+/// `EM_SETSEL`.
+const EM_SETSEL: u32 = 0x00B1;
+/// `EM_CANUNDO`.
+const EM_CANUNDO: u32 = 0x00C6;
+/// `EM_UNDO`.
+const EM_UNDO: u32 = 0x00C7;
+/// `EM_REPLACESEL`.
+const EM_REPLACESEL: u32 = 0x00C2;
+/// `ES_AUTOVSCROLL`, `ES_AUTOHSCROLL`: how RichEdit scrolls its text.
+const ES_AUTOVSCROLL: u32 = 0x0040;
+const ES_AUTOHSCROLL: u32 = 0x0080;
+/// `MK_LBUTTON`, `MK_SHIFT`, `MK_CONTROL`.
+const MK_LBUTTON: usize = 0x0001;
+const MK_SHIFT: usize = 0x0004;
+const MK_CONTROL: usize = 0x0008;
 
 /// The text input `view` holds now (`None`: it is no input).
 #[cfg(feature = "dev")]
 pub(crate) fn current_text(view: &crate::view::NshView) -> Option<String> {
     let input = view.state().input.clone()?;
-    let text = input.model.borrow().text().to_owned();
-    Some(text)
+    Some(input.text())
 }
 
 /// The native side of an input view ([`crate::view::ViewState::input`]),
-/// and the editor it hosts.
+/// and the RichEdit control it hosts.
 pub(crate) struct InputState {
     /// The surface's key ([`Surface::by_key`]): `focus()` and `blur()`
     /// come with the view only.
     surface: u64,
     /// The input view's node (`EngineControl::input_scroll`).
     id: NodeId,
-    model: RefCell<Model>,
+    /// The control (`None` when RichEdit could not be made).
+    editor: Option<Editor>,
     config: RefCell<InputConfig>,
     /// A configuration was applied (auto focus happens on the first).
     configured: Cell<bool>,
-    /// The first configuration's scheduled auto-focus task is still live.
-    auto_focus_pending: Cell<bool>,
+    #[cfg(feature = "terminal")]
+    terminal_replaced: RefCell<Option<String>>,
     /// Content box; the whole view until the core sends one.
     content: Cell<Option<Bounds<Points>>>,
-    /// The size the editor was hosted (and last drawn) at.
+    /// The size the field was hosted (and last drawn) at.
     size: Cell<(f32, f32)>,
+    /// The content box's top left in the window's client pixels, and the
+    /// scale the formats were made at.
+    origin: Cell<(i32, i32)>,
+    scale: Cell<f32>,
     /// User edits reported to the engine.
     count: Cell<u32>,
+    /// The text as last reported to the engine (or set by it).
+    reported_text: RefCell<String>,
     /// Selection as last reported (UTF-16).
     reported: Cell<(u32, u32)>,
     /// The caret as last reported, in the view.
     reported_caret: Cell<Bounds<Points>>,
+    /// While the IME composes: the UTF-16 lengths of the text before and
+    /// after the composition.
+    composing: Cell<Option<(u32, u32)>>,
     /// The composition as last reported (`onCompositionChange`): its text
     /// while one is in progress.
     composed: RefCell<Option<String>>,
@@ -157,6 +211,8 @@ pub(crate) struct InputState {
     /// applied when the composition ends: replacing the text under a
     /// composition would drop it without the IME knowing.
     pending: RefCell<Option<(String, u32)>>,
+    /// Changes RichEdit reports are the field's own (a JS value).
+    programmatic: Cell<bool>,
     /// The animated text color, if a native animation sets one.
     anim_color: Cell<Option<Color>>,
     /// It has the surface's focus.
@@ -165,53 +221,104 @@ pub(crate) struct InputState {
     active: Cell<bool>,
     /// The blinking caret's phase.
     caret_on: Cell<bool>,
-    /// Scroll offset of the text: horizontal for one line, vertical for
-    /// several.
-    scroll: Cell<f32>,
     /// The scroll of several lines as last reported to a built-in bar
     /// (`InputConfig::replaced`): offset, text height, width, viewport
     /// height. `None` until reported (again).
     reported_scroll: Cell<Option<(f32, f32, f32, f32)>>,
-    /// The x the caret keeps while it moves up and down lines.
-    goal_x: Cell<Option<f32>>,
     /// A press is selecting.
-    drag: Cell<Option<Drag>>,
-    /// The text's format, made from the config's font.
+    dragging: Cell<bool>,
+    /// The text's format (the placeholder's and the line's height), made
+    /// from the config's font.
     format: RefCell<Option<IDWriteTextFormat>>,
-    /// The shown text, laid out (cleared by every change).
-    layout: RefCell<Option<IDWriteTextLayout>>,
     /// The placeholder, laid out.
     placeholder: RefCell<Option<IDWriteTextLayout>>,
+    /// What RichEdit drew last (in the content box's points), shown again
+    /// when it cannot draw.
+    drawn: RefCell<Option<ID2D1CommandList>>,
 }
 
 impl InputState {
-    fn new(surface: u64, id: NodeId) -> Self {
-        InputState {
-            surface,
-            id,
-            model: RefCell::default(),
-            config: RefCell::default(),
-            configured: Cell::new(false),
-            auto_focus_pending: Cell::new(false),
-            content: Cell::new(None),
-            size: Cell::new((0.0, 0.0)),
-            count: Cell::new(0),
-            reported: Cell::new((0, 0)),
-            reported_caret: Cell::new(Bounds::default()),
-            composed: RefCell::new(None),
-            pending: RefCell::new(None),
-            anim_color: Cell::new(None),
-            focused: Cell::new(false),
-            active: Cell::new(true),
-            caret_on: Cell::new(true),
-            scroll: Cell::new(0.0),
-            reported_scroll: Cell::new(None),
-            goal_x: Cell::new(None),
-            drag: Cell::new(None),
-            format: RefCell::new(None),
-            layout: RefCell::new(None),
-            placeholder: RefCell::new(None),
-        }
+    fn new(surface: &Surface, view: &NshView) -> Rc<Self> {
+        Rc::new_cyclic(|weak: &std::rc::Weak<InputState>| {
+            let hwnd = surface.hwnd();
+            let redraw = {
+                let view = view.downgrade();
+                move || {
+                    if let Some(view) = view.upgrade() {
+                        view.changed();
+                    }
+                }
+            };
+            let after_timer = {
+                let view = view.downgrade();
+                let weak = weak.clone();
+                move || {
+                    if let (Some(view), Some(input)) = (view.upgrade(), weak.upgrade())
+                        && let Some(surface) = Surface::by_key(input.surface)
+                    {
+                        process(&surface, &view, &input);
+                    }
+                }
+            };
+            let editor = Editor::new(
+                hwnd,
+                Props {
+                    bits: base_bits(&InputConfig::default()),
+                    ..Props::default()
+                },
+                Box::new(redraw),
+                Box::new(after_timer),
+            );
+            if let Some(e) = &editor {
+                // Plain text with many undo levels (only while empty), the
+                // notifications the field follows, DirectWrite's shaping.
+                let mode = TM_PLAINTEXT.0 | TM_MULTILEVELUNDO.0 | TM_MULTICODEPAGE.0;
+                e.send(EM_SETTEXTMODE, mode as usize, 0);
+                let mask = ENM_CHANGE | ENM_SELCHANGE | ENM_STARTCOMPOSITION | ENM_ENDCOMPOSITION;
+                e.send(EM_SETEVENTMASK, 0, mask as isize);
+                // Text Services Framework input: dictation, the emoji
+                // panel, the touch keyboard, reconversion, spelling.
+                e.send(EM_SETEDITSTYLE, SES_USECTF as usize, SES_USECTF as isize);
+                e.send(
+                    EM_SETTYPOGRAPHYOPTIONS,
+                    TO_ADVANCEDTYPOGRAPHY as usize,
+                    TO_ADVANCEDTYPOGRAPHY as isize,
+                );
+                e.take_notes();
+            } else {
+                log::error!("no RichEdit for input {}", view.id());
+            }
+            InputState {
+                surface: surface.key(),
+                id: view.id(),
+                editor,
+                config: RefCell::default(),
+                configured: Cell::new(false),
+                #[cfg(feature = "terminal")]
+                terminal_replaced: RefCell::new(None),
+                content: Cell::new(None),
+                size: Cell::new((0.0, 0.0)),
+                origin: Cell::new((0, 0)),
+                scale: Cell::new(0.0),
+                count: Cell::new(0),
+                reported_text: RefCell::default(),
+                reported: Cell::new((0, 0)),
+                reported_caret: Cell::new(Bounds::default()),
+                composing: Cell::new(None),
+                composed: RefCell::new(None),
+                pending: RefCell::new(None),
+                programmatic: Cell::new(false),
+                anim_color: Cell::new(None),
+                focused: Cell::new(false),
+                active: Cell::new(true),
+                caret_on: Cell::new(true),
+                reported_scroll: Cell::new(None),
+                dragging: Cell::new(false),
+                format: RefCell::new(None),
+                placeholder: RefCell::new(None),
+                drawn: RefCell::new(None),
+            }
+        })
     }
 
     pub(crate) fn editable(&self) -> bool {
@@ -222,28 +329,49 @@ impl InputState {
         self.config.borrow().multiline
     }
 
-    fn secure(&self) -> bool {
-        self.config.borrow().secure
+    /// Sends RichEdit a message (nothing without a control).
+    fn send(&self, msg: u32, wparam: usize, lparam: isize) -> (LRESULT, bool) {
+        match &self.editor {
+            Some(e) => e.send(msg, wparam, lparam),
+            None => (LRESULT(0), false),
+        }
+    }
+
+    /// The text, its line breaks `\n`, in UTF-16 units.
+    fn units(&self) -> Vec<u16> {
+        let Some(e) = &self.editor else {
+            return Vec::new();
+        };
+        // RichEdit ends paragraphs with `\r`, one unit as `\n` is.
+        let mut units = e.text_units();
+        for u in &mut units {
+            if *u == u16::from(b'\r') {
+                *u = u16::from(b'\n');
+            }
+        }
+        units
+    }
+
+    fn text(&self) -> String {
+        String::from_utf16_lossy(&self.units())
+    }
+
+    fn selection(&self) -> (u32, u32) {
+        self.editor.as_ref().map_or((0, 0), Editor::selection)
     }
 
     /// The text being composed, while there is any.
     fn composed_text(&self) -> Option<String> {
-        self.model
-            .borrow()
-            .composition
-            .as_ref()
-            .filter(|c| !c.text.is_empty())
-            .map(|c| c.text.clone())
-    }
-
-    /// The text changed what it shows.
-    fn relayout(&self) {
-        self.layout.borrow_mut().take();
+        let (before, after) = self.composing.get()?;
+        let units = self.units();
+        let end = units.len().checked_sub(after as usize)?;
+        let start = (before as usize).min(end);
+        let text = String::from_utf16_lossy(&units[start..end]);
+        (!text.is_empty()).then_some(text)
     }
 
     fn set_size(&self, size: (f32, f32)) {
         if self.size.replace(size) != size {
-            self.relayout();
             self.placeholder.borrow_mut().take();
         }
     }
@@ -288,9 +416,7 @@ impl InputState {
         Some(format)
     }
 
-    /// A layout of `text` in the editor's width: one unwrapped line,
-    /// placed by [`InputState::origin`], or wrapped lines aligned by
-    /// DirectWrite.
+    /// A layout of `text` in the field's width.
     fn make_layout(
         &self,
         text: &[u16],
@@ -299,8 +425,7 @@ impl InputState {
     ) -> Option<IDWriteTextLayout> {
         let format = self.format()?;
         let width = self.size.get().0.max(1.0);
-        let spacing = self.config.borrow().style.letter_spacing.0;
-        // SAFETY: COM calls on the new layout with ranges inside the text.
+        // SAFETY: COM calls on the new layout.
         unsafe {
             let layout = crate::gfx::dwrite()
                 .CreateTextLayout(text, &format, if multiline { width } else { 1.0e6 }, 1.0e6)
@@ -311,42 +436,16 @@ impl InputState {
                 DWRITE_WORD_WRAPPING_NO_WRAP
             });
             let _ = layout.SetTextAlignment(align);
-            if spacing != 0.0
-                && let Ok(l1) = layout.cast::<IDWriteTextLayout1>()
-            {
-                let all = DWRITE_TEXT_RANGE {
-                    startPosition: 0,
-                    length: text.len() as u32,
-                };
-                let _ = l1.SetCharacterSpacing(0.0, spacing, 0.0, all);
-            }
             Some(layout)
         }
     }
 
-    /// The shown text, laid out.
-    fn layout(&self) -> Option<IDWriteTextLayout> {
-        if let Some(l) = &*self.layout.borrow() {
-            return Some(l.clone());
-        }
-        let multiline = self.multiline();
-        let text: Vec<u16> = {
-            let model = self.model.borrow();
-            if self.secure() {
-                // UIKit's and Android's bullet.
-                std::iter::repeat_n(0x2022, model.text().chars().count()).collect()
-            } else {
-                model.display().encode_utf16().collect()
-            }
-        };
-        let align = if multiline {
-            dwrite_align(&self.config.borrow())
-        } else {
-            DWRITE_TEXT_ALIGNMENT_LEADING
-        };
-        let layout = self.make_layout(&text, align, multiline)?;
-        *self.layout.borrow_mut() = Some(layout.clone());
-        Some(layout)
+    /// The height of one line of the font (points).
+    fn line_height(&self) -> f32 {
+        self.make_layout(&[], DWRITE_TEXT_ALIGNMENT_LEADING, false)
+            .map_or(self.config.borrow().style.font_size.0 * 1.3, |l| {
+                metrics(&l).height
+            })
     }
 
     /// The placeholder, laid out (trimmed with an ellipsis on one line).
@@ -382,152 +481,178 @@ impl InputState {
         Some(layout)
     }
 
-    /// Where the layout's origin goes in the editor (and the text's
-    /// metrics): one line is centered vertically, aligned while it fits
-    /// and scrolled when it does not; several lines scroll vertically.
-    fn origin(&self, layout: &IDWriteTextLayout) -> (f32, f32) {
-        let (w, h) = self.size.get();
-        let m = metrics(layout);
+    /// One line is centered vertically in the content box: how far down
+    /// its client rectangle starts (points).
+    fn inset(&self) -> f32 {
         if self.multiline() {
-            let max = (m.height - h).max(0.0);
-            let scroll = self.scroll.get().clamp(0.0, max);
-            self.scroll.set(scroll);
-            return (0.0, -scroll);
+            return 0.0;
         }
-        let text_w = m.widthIncludingTrailingWhitespace;
-        let caret = caret_width();
-        let y = (h - m.height) / 2.0;
-        if text_w + caret <= w {
-            self.scroll.set(0.0);
-            let align = xalign(&self.config.borrow());
-            let x = ((w - text_w) * align).min(w - text_w - caret).max(0.0);
-            return (x, y);
-        }
-        let max = text_w + caret - w;
-        let scroll = self.scroll.get().clamp(0.0, max);
-        self.scroll.set(scroll);
-        (-scroll, y)
+        ((self.size.get().1 - self.line_height()) / 2.0).max(0.0)
     }
 
-    /// The caret's top and height at shown position `pos`, in layout
-    /// coordinates.
-    fn caret_at(&self, layout: &IDWriteTextLayout, pos: u32) -> (f32, f32, f32) {
-        let (mut x, mut y) = (0.0, 0.0);
-        let mut m = DWRITE_HIT_TEST_METRICS::default();
-        // SAFETY: local out values.
-        let _ = unsafe { layout.HitTestTextPosition(pos, false, &mut x, &mut y, &mut m) };
-        let mut stack = [DWRITE_LINE_METRICS::default(); 4];
-        let mut count = 0u32;
-        // SAFETY: `stack` is a valid buffer of 4 elements; `count` is a local out value.
-        let _ = unsafe { layout.GetLineMetrics(Some(&mut stack), &mut count) };
-        let mut heap = Vec::new();
-        let lines: &[DWRITE_LINE_METRICS] = if (count as usize) <= stack.len() {
-            &stack[..count as usize]
+    /// RichEdit's client rectangle: the content box in the window's client
+    /// pixels (one line centered).
+    fn client(&self) -> RECT {
+        let (ox, oy) = self.origin.get();
+        let s = self.scale.get().max(0.01);
+        let (w, h) = self.size.get();
+        let top = oy + (self.inset() * s).round() as i32;
+        RECT {
+            left: ox,
+            top,
+            right: ox + (w * s).round() as i32,
+            bottom: top + (h * s).round() as i32,
+        }
+    }
+
+    /// Moves RichEdit's client rectangle to where the content box of
+    /// `view` is in the window now (it moves with scrolling and layout).
+    fn follow(&self, view: &NshView) {
+        let Some(surface) = Surface::by_key(self.surface) else {
+            return;
+        };
+        let s = surface.scale();
+        let content = content_rect(view, self);
+        let origin = view
+            .to_root()
+            .and_then(|m| m.map(content.origin.x.0, content.origin.y.0))
+            .map_or((0, 0), |(x, y)| {
+                ((x * s).round() as i32, (y * s).round() as i32)
+            });
+        self.set_size((content.size.width.0, content.size.height.0));
+        let scale_changed = self.scale.replace(s) != s;
+        self.origin.set(origin);
+        if scale_changed {
+            self.apply_formats();
+        }
+        self.update_client();
+    }
+
+    /// Tells RichEdit its client rectangle if it changed.
+    fn update_client(&self) {
+        let client = self.client();
+        if let Some(e) = &self.editor
+            && e.props().client != client
+        {
+            e.update(|p| p.client = client, TXTBIT_CLIENTRECTCHANGE);
+        }
+    }
+
+    /// Makes RichEdit's formats and properties from the config at the
+    /// current scale.
+    fn apply_formats(&self) {
+        let Some(e) = &self.editor else { return };
+        let Some(surface) = Surface::by_key(self.surface) else {
+            return;
+        };
+        let s = self.scale.get().max(0.01);
+        // Points → pixels → the twips RichEdit converts back at GDI's DPI.
+        let twips = 1440.0 / richedit::dpi(surface.hwnd());
+        let config = self.config.borrow();
+        let style = &config.style;
+        let color = self.anim_color.get().unwrap_or(style.color);
+        let face = family(style.font_family.map(|f| f.name()).as_deref());
+        let bits = base_bits(&config);
+        e.update(
+            |p| {
+                let cf = &mut p.char_format;
+                cf.Base.dwMask = CFM_FACE
+                    | CFM_SIZE
+                    | CFM_WEIGHT
+                    | CFM_BOLD
+                    | CFM_ITALIC
+                    | CFM_COLOR
+                    | CFM_SPACING;
+                cf.Base.yHeight = (style.font_size.0 * s * twips).round() as i32;
+                cf.wWeight = style.font_weight;
+                cf.Base.dwEffects = if style.italic {
+                    CFE_ITALIC
+                } else {
+                    Default::default()
+                };
+                cf.Base.crTextColor = colorref(color);
+                cf.sSpacing = (style.letter_spacing.0 * s * twips).round() as i16;
+                cf.Base.szFaceName = [0; 32];
+                for (d, u) in cf
+                    .Base
+                    .szFaceName
+                    .iter_mut()
+                    .zip(face.encode_utf16().take(31))
+                {
+                    *d = u;
+                }
+                let pf = &mut p.para_format;
+                pf.Base.dwMask = PFM_ALIGNMENT | PFM_LINESPACING | PFM_RTLPARA;
+                pf.Base.wAlignment = match config.align {
+                    TextAlign::Justify if config.multiline => PFA_JUSTIFY,
+                    _ => match xalign(&config) {
+                        a if a > 0.75 => PFA_RIGHT,
+                        a if a > 0.25 => PFA_CENTER,
+                        _ => PFA_LEFT,
+                    },
+                };
+                pf.Base.Anonymous.wEffects = if config.rtl { 0x0001 } else { 0 };
+                if config.multiline && style.line_height.0 > 0.0 {
+                    // Exactly the line height.
+                    pf.bLineSpacingRule = 4;
+                    pf.dyLineSpacing = (style.line_height.0 * s * twips).round() as i32;
+                } else {
+                    pf.bLineSpacingRule = 0;
+                    pf.dyLineSpacing = 0;
+                }
+                p.bits = bits;
+                p.max_length = config.max_length.unwrap_or(i32::MAX as u32);
+                p.scroll = if config.multiline {
+                    ES_AUTOVSCROLL
+                } else {
+                    ES_AUTOHSCROLL
+                };
+                p.highlight = config
+                    .selection_color
+                    .map(|c| (colorref(c), colorref(color)));
+            },
+            TXTBIT_CHARFORMATCHANGE
+                | TXTBIT_PARAFORMATCHANGE
+                | TXTBIT_MAXLENGTHCHANGE
+                | TXTBIT_SCROLLBARCHANGE,
+        );
+        // Spelling (and the touch keyboard's suggestions) where the app
+        // wants corrections: never in a password.
+        let spell = config.auto_correct && !config.secure && config.editable;
+        drop(config);
+        let (options, _) = self.send(EM_GETLANGOPTIONS, 0, 0);
+        let flags = IMF_SPELLCHECKING | IMF_TKBPREDICTION;
+        let want = if spell {
+            options.0 as u32 | flags
         } else {
-            heap.resize(count as usize, DWRITE_LINE_METRICS::default());
-            // SAFETY: `heap` has `count` elements.
-            let _ = unsafe { layout.GetLineMetrics(Some(&mut heap), &mut count) };
-            &heap[..count as usize]
+            options.0 as u32 & !flags
         };
-        let mut offset = 0u32;
-        let mut top = 0.0f32;
-        for (i, line) in lines.iter().enumerate() {
-            let next = offset.saturating_add(line.length);
-            if pos < next || i + 1 == lines.len() {
-                return (x, top, line.height);
-            }
-            offset = next;
-            top += line.height;
+        if want != options.0 as u32 {
+            self.send(EM_SETLANGOPTIONS, 0, want as isize);
         }
-        (x, y, m.height)
-    }
-
-    /// The caret's rectangle in editor coordinates (x, y, height).
-    fn caret_rect(&self) -> Option<(f32, f32, f32)> {
-        let layout = self.layout()?;
-        let pos = self.model.borrow().display_caret(self.secure());
-        let (ox, oy) = self.origin(&layout);
-        let (x, y, h) = self.caret_at(&layout, pos);
-        Some((ox + x, oy + y, h))
-    }
-
-    /// Input-method windows stay inside the visible input even when a glyph
-    /// overflows a rich editor's narrow native sink.
-    fn ime_caret_rect(&self) -> Option<(f32, f32, f32)> {
-        let (x, y, h) = self.caret_rect()?;
-        let (width, height) = self.size.get();
-        let top = y.clamp(0.0, height);
-        let bottom = (y + h).clamp(top, height);
-        Some((x.clamp(0.0, width), top, bottom - top))
-    }
-
-    /// The shown position at layout point `(x, y)`.
-    fn hit_layout(&self, layout: &IDWriteTextLayout, x: f32, y: f32) -> u32 {
-        let mut trailing = windows_core::BOOL(0);
-        let mut inside = windows_core::BOOL(0);
-        let mut m = DWRITE_HIT_TEST_METRICS::default();
-        // SAFETY: local out values.
-        let _ = unsafe { layout.HitTestPoint(x, y, &mut trailing, &mut inside, &mut m) };
-        m.textPosition + if trailing.as_bool() { m.length } else { 0 }
-    }
-
-    /// The text offset at editor point `(x, y)`.
-    fn hit(&self, x: f32, y: f32) -> usize {
-        let Some(layout) = self.layout() else {
-            return 0;
-        };
-        let (ox, oy) = self.origin(&layout);
-        let pos = self.hit_layout(&layout, x - ox, y - oy);
-        self.model.borrow().text_at(pos, self.secure())
-    }
-
-    /// Scrolls so that the caret shows.
-    fn reveal(&self) {
-        let Some(layout) = self.layout() else { return };
-        let pos = self.model.borrow().display_caret(self.secure());
-        let (x, y, h) = self.caret_at(&layout, pos);
-        let (w, height) = self.size.get();
-        let scroll = self.scroll.get();
-        let scroll = if self.multiline() {
-            if y < scroll {
-                y
-            } else if y + h > scroll + height {
-                y + h - height
-            } else {
-                scroll
-            }
-        } else {
-            let caret = caret_width();
-            if x < scroll {
-                x
-            } else if x + caret > scroll + w {
-                x + caret - w
-            } else {
-                scroll
-            }
-        };
-        self.scroll.set(scroll);
-        // Clamped to the text.
-        self.origin(&layout);
+        self.update_client();
     }
 
     /// Reports how far several lines scrolled, the text's height and the
     /// viewport's to the built-in bar that takes the place of an
     /// indicator (`InputConfig::replaced`), when any of them changed since
-    /// last reported. Called with the clamped scroll ([`InputState::origin`]).
-    fn report_scroll(&self, layout: &IDWriteTextLayout) {
+    /// last reported.
+    fn report_scroll(&self) {
         {
             let config = self.config.borrow();
             if !config.replaced || !config.multiline {
                 return;
             }
         }
+        let Some(e) = &self.editor else { return };
         let (w, h) = self.size.get();
         if w <= 0.0 || h <= 0.0 {
             return;
         }
-        let content = metrics(layout).height.max(h);
-        let now = (self.scroll.get(), content, w, h);
+        let s = self.scale.get().max(0.01);
+        let (min, max, pos, _) = e.vscroll();
+        let content = ((max - min) as f32 / s).max(h);
+        let now = (pos as f32 / s, content, w, h);
         if self.reported_scroll.replace(Some(now)) == Some(now) {
             return;
         }
@@ -551,17 +676,68 @@ impl InputState {
         blink::restart();
     }
 
-    fn text_color(&self) -> Color {
-        self.anim_color
-            .get()
-            .unwrap_or_else(|| self.config.borrow().style.color)
+    /// The caret in the content box (points: x, y, width, height).
+    fn caret_rect(&self) -> Option<(f32, f32, f32, f32)> {
+        let caret = self.editor.as_ref()?.caret();
+        let (ox, oy) = self.origin.get();
+        let s = self.scale.get().max(0.01);
+        Some((
+            (caret.x - ox) as f32 / s,
+            (caret.y - oy) as f32 / s,
+            caret.width as f32 / s,
+            caret.height as f32 / s,
+        ))
+    }
+
+    /// Records what RichEdit draws, in the content box's points, as
+    /// `drawn`. While an input method's edit holds the text (committing a
+    /// composition) RichEdit draws nothing: the last drawing stays, or the
+    /// field would flash empty for a frame. Recorded with a context of
+    /// its own, then drawn in the window's pass.
+    fn record(&self, cx: &DrawCx<'_>, e: &Editor) {
+        let (ox, oy) = self.origin.get();
+        let s = cx.scale.max(0.01);
+        let bounds = self.client();
+        let list = crate::decor::layer::with_context(cx.gfx, |dc| {
+            // SAFETY: COM calls on a context nobody else draws with;
+            // `EndDraw` follows `BeginDraw`, the list is closed before use.
+            unsafe {
+                let list = dc.CreateCommandList().ok()?;
+                dc.SetTarget(&list);
+                dc.SetDpi(96.0 * s, 96.0 * s);
+                dc.BeginDraw();
+                // RichEdit draws in the window's client pixels.
+                dc.SetTransform(
+                    &(Matrix3x2::translation(-ox as f32, -oy as f32)
+                        * Matrix3x2::scale(1.0 / s, 1.0 / s)),
+                );
+                let drawn = e.draw(dc.as_raw(), bounds);
+                let ended = dc.EndDraw(None, None);
+                dc.SetTarget(None);
+                (drawn && ended.is_ok() && list.Close().is_ok()).then_some(list)
+            }
+        })
+        .flatten();
+        if let Some(list) = list {
+            self.drawn.replace(Some(list));
+        }
     }
 }
 
 impl Hosted for InputState {
     fn draw(&self, cx: &mut DrawCx<'_>, size: (f32, f32)) {
+        // Inside the window's paint: what RichEdit invalidates while it
+        // is told its size and drawn is drawn now (asking for another
+        // paint here would be lost).
+        let _drawing = self.editor.as_ref().map(|e| e.drawing());
         self.set_size(size);
-        let Some(layout) = self.layout() else { return };
+        if self.scale.get() != cx.scale {
+            self.scale.set(cx.scale);
+            self.apply_formats();
+        }
+        self.update_client();
+        let Some(e) = &self.editor else { return };
+        self.record(cx, e);
         let (w, h) = size;
         let multiline = self.multiline();
         if multiline {
@@ -571,126 +747,69 @@ impl Hosted for InputState {
             // view's bounds clip it.
             cx.push_clip_rect(0.0, -1.0e4, w, 2.0e4);
         }
-        let (ox, oy) = self.origin(&layout);
         // Every change of the scroll, the text or the size draws again, so
         // a built-in bar hears of each here.
-        self.report_scroll(&layout);
+        self.report_scroll();
         let config = self.config.borrow();
-        let model = self.model.borrow();
-        let secure = config.secure;
-        let color = self.text_color();
-        let focused = self.focused.get();
+        let color = self.anim_color.get().unwrap_or(config.style.color);
+        let empty = e.text_units().is_empty();
 
-        if focused && model.has_selection() {
-            let (s, e) = model.selection();
-            let (s, e) = (model.to_display(s, secure), model.to_display(e, secure));
-            // iOS tints the selection with the system blue when there is
-            // no `selectionColor`.
+        if empty && let Some(placeholder) = self.placeholder_layout() {
             let tint = config
-                .selection_color
-                .unwrap_or(Color::rgba(0x00, 0x7a, 0xff, 0xff))
-                .with_alpha(0.3);
-            for r in hit_rects(&layout, s, e - s, ox, oy) {
-                // An empty line of the selection still shows a sliver.
-                let width = r.width.max(4.0);
-                // SAFETY: a COM call between BeginDraw and EndDraw.
-                unsafe {
-                    cx.dc
-                        .FillRectangle(&rect_f(r.left, r.top, width, r.height), cx.solid(tint));
-                }
-            }
-        }
-
-        let composing = model
-            .composition
-            .as_ref()
-            .is_some_and(|c| !c.text.is_empty());
-        if model.text().is_empty() && !composing {
-            if let Some(placeholder) = self.placeholder_layout() {
-                let tint = config
-                    .placeholder_color
-                    .unwrap_or_else(|| color.with_alpha(0.5));
-                let y = if multiline {
-                    oy
-                } else {
-                    (h - metrics(&placeholder).height) / 2.0
-                };
-                // SAFETY: as above.
-                unsafe {
-                    cx.dc.DrawTextLayout(
-                        Vector2 { X: 0.0, Y: y },
-                        &placeholder,
-                        cx.solid(tint),
-                        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-                    );
-                }
-            }
-        } else {
-            // SAFETY: as above.
+                .placeholder_color
+                .unwrap_or_else(|| color.with_alpha(0.5));
+            let y = if multiline {
+                0.0
+            } else {
+                (h - metrics(&placeholder).height) / 2.0
+            };
+            // SAFETY: a COM call between BeginDraw and EndDraw.
             unsafe {
                 cx.dc.DrawTextLayout(
-                    Vector2 { X: ox, Y: oy },
-                    &layout,
-                    cx.solid(color),
+                    Vector2 { X: 0.0, Y: y },
+                    &placeholder,
+                    cx.solid(tint),
                     D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
                 );
             }
         }
-
-        if let Some(c) = model.composition.as_ref().filter(|c| !c.text.is_empty()) {
-            let start = model.to_display(model.caret(), secure);
-            let len = model::utf16_len(&c.text) as u32;
-            let thin = 1.0 / cx.scale.max(1.0);
-            let underline = |from: u32, len: u32, width: f32| {
-                for r in hit_rects(&layout, from, len, ox, oy) {
-                    let y = r.top + r.height - width / 2.0 - thin;
-                    // SAFETY: as above.
-                    unsafe {
-                        cx.dc.DrawLine(
-                            Vector2 {
-                                X: r.left + thin,
-                                Y: y,
-                            },
-                            Vector2 {
-                                X: r.left + r.width - thin,
-                                Y: y,
-                            },
-                            cx.solid(color),
-                            width,
-                            None,
-                        );
-                    }
-                }
-            };
-            underline(start, len, thin.max(1.0));
-            if let Some((ts, te)) = c.target {
-                let from = start + model::utf16_len(&c.text[..ts]) as u32;
-                let len = model::utf16_len(&c.text[ts..te]) as u32;
-                underline(from, len, 2.0);
+        // RichEdit lays the text out (and sizes its caret from the field's
+        // format) only when it draws: an empty field is drawn too (nothing
+        // shows, the background is transparent), or its first caret keeps
+        // the height of the default font. The recording is in the content
+        // box's points, as this item draws.
+        if let Some(drawn) = &*self.drawn.borrow() {
+            // SAFETY: a COM call between BeginDraw and EndDraw.
+            unsafe {
+                cx.dc.DrawImage(
+                    drawn,
+                    None,
+                    None,
+                    D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                    D2D1_COMPOSITE_MODE_SOURCE_OVER,
+                );
             }
         }
 
-        let caret_shown = focused
+        let caret = e.caret();
+        let caret_shown = self.focused.get()
             && self.active.get()
             && self.caret_on.get()
+            && caret.shown
             && config.editable
-            && !config.caret_hidden
-            && (!model.has_selection() || composing);
-        if caret_shown {
-            let pos = model.display_caret(secure);
-            let (x, y, ch) = self.caret_at(&layout, pos);
-            let width = caret_width();
+            && !config.caret_hidden;
+        if caret_shown && let Some((x, y, cw, ch)) = self.caret_rect() {
             // On whole pixels, so that the caret stays sharp.
             let snap = |v: f32| (v * cx.scale).round() / cx.scale;
-            let x = snap(ox + x);
             let tint = config.caret_color.unwrap_or(color);
             // SAFETY: as above.
             unsafe {
-                cx.dc
-                    .FillRectangle(&rect_f(x, oy + y, width, ch), cx.solid(tint));
+                cx.dc.FillRectangle(
+                    &rect_f(snap(x), y, cw.max(1.0 / cx.scale), ch),
+                    cx.solid(tint),
+                );
             }
         }
-        drop(model);
         drop(config);
         cx.pop();
     }
@@ -706,34 +825,30 @@ impl Hosted for InputState {
     }
 }
 
-/// The hit-test rectangles of shown range `from..from + len`, offset by
-/// the layout's origin.
-fn hit_rects(
-    layout: &IDWriteTextLayout,
-    from: u32,
-    len: u32,
-    ox: f32,
-    oy: f32,
-) -> Vec<DWRITE_HIT_TEST_METRICS> {
-    if len == 0 {
-        return Vec::new();
+/// The property bits of a config (DirectWrite drawing, lines, read-only,
+/// password); RichEdit's own drag and drop stays off (the window is the
+/// drop target of files).
+fn base_bits(config: &InputConfig) -> u32 {
+    // The selection shows only while the field has the keys, as on the
+    // other platforms.
+    let mut bits =
+        TXTBIT_D2DDWRITE | TXTBIT_AUTOWORDSEL | TXTBIT_DISABLEDRAG | TXTBIT_HIDESELECTION;
+    if config.multiline {
+        bits |= TXTBIT_MULTILINE | TXTBIT_WORDWRAP;
     }
-    let mut count = 0;
-    // SAFETY: the first call asks for the count (it fails with "not
-    // enough buffer", which is expected), the second fills a buffer of
-    // that size.
-    unsafe {
-        let _ = layout.HitTestTextRange(from, len, ox, oy, None, &mut count);
-        let mut rects = vec![DWRITE_HIT_TEST_METRICS::default(); count as usize];
-        if layout
-            .HitTestTextRange(from, len, ox, oy, Some(&mut rects), &mut count)
-            .is_err()
-        {
-            return Vec::new();
-        }
-        rects.truncate(count as usize);
-        rects
+    if !config.editable {
+        bits |= TXTBIT_READONLY;
     }
+    if config.secure {
+        bits |= TXTBIT_USEPASSWORD;
+    }
+    bits
+}
+
+fn colorref(c: Color) -> COLORREF {
+    let v = c.0;
+    let (r, g, b) = ((v >> 24) & 0xff, (v >> 16) & 0xff, (v >> 8) & 0xff);
+    COLORREF(r | (g << 8) | (b << 16))
 }
 
 fn metrics(layout: &IDWriteTextLayout) -> DWRITE_TEXT_METRICS {
@@ -741,30 +856,6 @@ fn metrics(layout: &IDWriteTextLayout) -> DWRITE_TEXT_METRICS {
     // SAFETY: a local out value.
     let _ = unsafe { layout.GetMetrics(&mut m) };
     m
-}
-
-/// The caret's width: the system's setting (Ease of Access), in points
-/// at 100%.
-fn caret_width() -> f32 {
-    thread_local! {
-        static WIDTH: Cell<Option<f32>> = const { Cell::new(None) };
-    }
-    if let Some(w) = WIDTH.with(Cell::get) {
-        return w;
-    }
-    let mut px: u32 = 1;
-    // SAFETY: a u32 out value, as SPI_GETCARETWIDTH expects.
-    let _ = unsafe {
-        SystemParametersInfoW(
-            SPI_GETCARETWIDTH,
-            0,
-            Some(&mut px as *mut u32 as *mut _),
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-        )
-    };
-    let w = px.clamp(1, 20) as f32;
-    WIDTH.with(|c| c.set(Some(w)));
-    w
 }
 
 /// The first family of a `fontFamily` list as DirectWrite knows it: the
@@ -814,10 +905,6 @@ fn dwrite_align(config: &InputConfig) -> DWRITE_TEXT_ALIGNMENT {
 
 enum Held {
     Char(String),
-    Ime {
-        result: Option<String>,
-        composition: Option<Composition>,
-    },
     Key(KeyEvent),
     #[cfg(feature = "terminal")]
     Paste(nsh_core::PasteEvent),
@@ -835,8 +922,8 @@ enum Held {
 #[derive(Default)]
 struct Focus {
     view: Option<NshView>,
-    auto_focus: Option<NshView>,
     inactive: bool,
+    auto_focus: Option<NshView>,
     pending: VecDeque<Held>,
     armed: bool,
     after: u64,
@@ -868,7 +955,10 @@ pub(crate) fn stopped(surface: &Surface) {
     if let Some(input) = view.as_ref().and_then(input_of) {
         input.focused.set(false);
         input.active.set(false);
-        input.model.borrow_mut().composition = None;
+        input.composing.set(None);
+        if let Some(e) = &input.editor {
+            e.set_focus(false);
+        }
     }
     blink::update();
 }
@@ -894,7 +984,7 @@ pub(crate) fn accessible_value(view: &NshView) -> Option<crate::access::FieldVal
         text: if config.secure {
             String::new()
         } else {
-            input.model.borrow().text().to_owned()
+            input.text()
         },
         read_only: !config.editable,
         password: config.secure,
@@ -902,8 +992,8 @@ pub(crate) fn accessible_value(view: &NshView) -> Option<crate::access::FieldVal
 }
 
 /// Replaces the field's text as typing it would (UI Automation's
-/// `SetValue`): `maxLength` applies and the change is reported. False
-/// when it cannot (read-only).
+/// `SetValue`): `maxLength` applies, undo takes it back and the change is
+/// reported. False when it cannot (read-only).
 #[allow(dead_code)] // For `crate::access`'s Value pattern.
 pub(crate) fn set_accessible_value(surface: &Rc<Surface>, view: &NshView, text: &str) -> bool {
     let Some(input) = input_of(view) else {
@@ -913,13 +1003,9 @@ pub(crate) fn set_accessible_value(surface: &Rc<Surface>, view: &NshView, text: 
         return false;
     }
     let text = pasted(text, input.multiline());
-    input.model.borrow_mut().select_all();
-    if text.is_empty() {
-        let deleted = input.model.borrow_mut().delete(Unit::Char, false);
-        after_edit(surface, view, &input, deleted);
-    } else {
-        insert(surface, view, &input, &text, false);
-    }
+    input.send(EM_SETSEL, 0, -1);
+    replace_selection(&input, &text);
+    process(surface, view, &input);
     true
 }
 
@@ -931,11 +1017,14 @@ pub(crate) fn focused(surface: &Surface) -> Option<NshView> {
 pub(crate) fn focused_has_selection(surface: &Surface) -> bool {
     focused(surface)
         .and_then(|view| input_of(&view))
-        .is_some_and(|input| input.model.borrow().has_selection())
+        .is_some_and(|input| {
+            let (start, end) = input.selection();
+            start != end
+        })
 }
 
 pub(crate) fn composing(view: &NshView) -> bool {
-    input_of(view).is_some_and(|input| input.model.borrow().composition.is_some())
+    input_of(view).is_some_and(|input| input.composing.get().is_some())
 }
 
 pub(crate) fn composing_focused(surface: &Surface) -> bool {
@@ -946,7 +1035,6 @@ pub(crate) fn composing_focused(surface: &Surface) -> bool {
             if let Some(active) = FOCUS.with(|f| {
                 f.borrow().get(&surface.key()).and_then(|focus| {
                     focus.pending.iter().rev().find_map(|held| match held {
-                        Held::Ime { composition, .. } => Some(composition.is_some()),
                         #[cfg(feature = "terminal")]
                         Held::TerminalComposition {
                             expected: item_expected,
@@ -1004,9 +1092,14 @@ pub(crate) fn focused_view(surface: &Surface) -> Option<NshView> {
     );
     if let Some(input) = input_of(&view) {
         input.focused.set(false);
-        input.drag.set(None);
-        input.model.borrow_mut().composition = None;
-        input.relayout();
+        input.dragging.set(false);
+        #[cfg(feature = "terminal")]
+        cancel_terminal_preedit(&input);
+        input.composing.set(None);
+        if let Some(e) = &input.editor {
+            e.set_focus(false);
+        }
+
         report_composition(surface, &view, &input);
     }
     FOCUS.with(|f| {
@@ -1067,14 +1160,21 @@ fn move_focus(surface: &Rc<Surface>, old: Option<NshView>, view: Option<&NshView
             .checked_add(1)
             .expect("native focus generation exhausted"),
     );
+    surface.chrome.context_area.take();
     crate::input::cancel_keyboard_press(surface);
     if let Some(old) = &old {
-        cancel_composition(surface);
+        notify_composition(surface, CPS_COMPLETE);
         if let Some(input) = input_of(old) {
+            #[cfg(feature = "terminal")]
+            cancel_terminal_preedit(&input);
             input.focused.set(false);
-            input.drag.set(None);
-            input.model.borrow_mut().composition = None;
-            input.relayout();
+            input.dragging.set(false);
+            input.composing.set(None);
+            if let Some(e) = &input.editor {
+                e.set_focus(false);
+            }
+
+            process(surface, old, &input);
             report_composition(surface, old, &input);
         }
         FOCUS.with(|f| f.borrow_mut().entry(surface.key()).or_default().view = None);
@@ -1088,7 +1188,13 @@ fn move_focus(surface: &Rc<Surface>, old: Option<NshView>, view: Option<&NshView
             input.focused.set(true);
             input.active.set(window_active(surface));
             input.wake_caret();
-            input.reveal();
+            input.follow(view);
+            if input.active.get()
+                && let Some(e) = &input.editor
+            {
+                e.set_focus(true);
+            }
+            process(surface, view, &input);
         }
         crate::input::set_state(surface, view, state::FOCUSED, true);
         send(surface, view, EventKind::Focus, || EventPayload::None);
@@ -1100,7 +1206,6 @@ fn move_focus(surface: &Rc<Surface>, old: Option<NshView>, view: Option<&NshView
     surface.sync_focus();
     update_ime(surface);
     blink::update();
-    place_ime(surface);
 }
 
 pub(crate) fn arm(surface: &Surface) {
@@ -1187,7 +1292,6 @@ pub(crate) fn hold_key(surface: &Surface, event: &KeyEvent) -> bool {
 }
 
 pub(crate) fn removing(surface: &Rc<Surface>, view: &NshView) {
-    cancel_auto_focus(view);
     let inside = |candidate: &NshView| {
         let mut at = Some(candidate.clone());
         while let Some(node) = at {
@@ -1312,7 +1416,7 @@ fn flush_pending(surface: &Rc<Surface>) {
             break;
         };
         let needs_editable = match &next {
-            Held::Char(_) | Held::Ime { .. } => true,
+            Held::Char(_) => true,
             #[cfg(feature = "terminal")]
             Held::Paste(_) | Held::TerminalComposition { .. } => true,
             Held::Key(_) => false,
@@ -1331,10 +1435,6 @@ fn flush_pending(surface: &Rc<Surface>) {
         }
         with_replaying(surface, || match next {
             Held::Char(text) => char_input_now(surface, &text),
-            Held::Ime {
-                result,
-                composition,
-            } => apply_ime_composition(surface, result, composition),
             Held::Key(event) => {
                 crate::input::key_now(surface, event);
             }
@@ -1384,157 +1484,27 @@ fn update_ime(surface: &Surface) {
     }
 }
 
-/// Runs `f` with the window's input context.
-fn with_context<R>(hwnd: HWND, f: impl FnOnce(HIMC) -> R) -> Option<R> {
-    // SAFETY: the context is released after use, as the call requires.
-    unsafe {
-        let himc = ImmGetContext(hwnd);
-        if himc.is_invalid() {
-            return None;
-        }
-        let r = f(himc);
-        let _ = ImmReleaseContext(hwnd, himc);
-        Some(r)
-    }
-}
-
-/// Tells the IME to drop what it composes (the field lost the focus).
-fn cancel_composition(surface: &Surface) {
-    notify_composition(surface, CPS_CANCEL);
-}
-
+/// Tells the IME to finish (`CPS_COMPLETE`) or drop (`CPS_CANCEL`) what it
+/// composes.
 fn notify_composition(surface: &Surface, action: NOTIFY_IME_INDEX) {
     let hwnd = surface.hwnd();
     if hwnd.is_invalid() {
         return;
     }
-    with_context(hwnd, |himc| {
-        // SAFETY: a live context.
-        unsafe { ImmNotifyIME(himc, NI_COMPOSITIONSTR, action, 0) }
-    });
-}
-
-/// Moves the IME's composition and candidate windows to the focused
-/// field's caret (window pixels).
-fn place_ime(surface: &Surface) {
-    let hwnd = surface.hwnd();
-    let Some(view) = focused(surface) else { return };
-    if hwnd.is_invalid() {
-        return;
-    }
-    let Some(input) = input_of(&view) else {
-        return;
-    };
-    let Some((x, y, h)) = input.ime_caret_rect() else {
-        return;
-    };
-    let content = content_rect(&view, &input);
-    let Some(m) = view.to_root() else { return };
-    let s = surface.scale();
-    let px = |(x, y): (f32, f32)| POINT {
-        x: (x * s).round() as i32,
-        y: (y * s).round() as i32,
-    };
-    let (Some(top), Some(bottom)) = (
-        m.map(content.origin.x.0 + x, content.origin.y.0 + y),
-        m.map(content.origin.x.0 + x, content.origin.y.0 + y + h),
-    ) else {
-        return;
-    };
-    let (top, bottom) = (px(top), px(bottom));
-    let caret = RECT {
-        left: top.x,
-        top: top.y,
-        right: top.x + 1,
-        bottom: bottom.y,
-    };
-    with_context(hwnd, |himc| {
-        let composition = COMPOSITIONFORM {
-            dwStyle: CFS_POINT,
-            ptCurrentPos: top,
-            rcArea: RECT::default(),
-        };
-        // The candidates go below the caret, never over it.
-        let candidate = CANDIDATEFORM {
-            dwIndex: 0,
-            dwStyle: CFS_EXCLUDE,
-            ptCurrentPos: bottom,
-            rcArea: caret,
-        };
-        // SAFETY: a live context and valid structures.
-        unsafe {
-            let _ = ImmSetCompositionWindow(himc, &composition);
-            let _ = ImmSetCandidateWindow(himc, &candidate);
-        }
-    });
-}
-
-/// A composition string of the context (`GCS_COMPSTR`, `GCS_RESULTSTR`)
-/// as UTF-16 units.
-fn composition_units(himc: HIMC, which: IME_COMPOSITION_STRING) -> Vec<u16> {
-    // SAFETY: the first call asks for the size in bytes, the second fills
-    // a buffer of that size.
+    // SAFETY: the context is released after use.
     unsafe {
-        let bytes = ImmGetCompositionStringW(himc, which, None, 0);
-        if bytes <= 0 {
-            return Vec::new();
+        let himc = ImmGetContext(hwnd);
+        if himc.is_invalid() {
+            return;
         }
-        let mut units = vec![0u16; bytes as usize / 2];
-        let got =
-            ImmGetCompositionStringW(himc, which, Some(units.as_mut_ptr().cast()), bytes as u32);
-        units.truncate(got.max(0) as usize / 2);
-        units
+        let _ = ImmNotifyIME(himc, NI_COMPOSITIONSTR, action, 0);
+        let _ = ImmReleaseContext(hwnd, himc);
     }
 }
 
-/// The attributes of the composition (one byte per UTF-16 unit).
-fn composition_attributes(himc: HIMC) -> Vec<u8> {
-    // SAFETY: as in `composition_units`.
-    unsafe {
-        let bytes = ImmGetCompositionStringW(himc, GCS_COMPATTR, None, 0);
-        if bytes <= 0 {
-            return Vec::new();
-        }
-        let mut attrs = vec![0u8; bytes as usize];
-        let got = ImmGetCompositionStringW(
-            himc,
-            GCS_COMPATTR,
-            Some(attrs.as_mut_ptr().cast()),
-            bytes as u32,
-        );
-        attrs.truncate(got.max(0) as usize);
-        attrs
-    }
-}
-
-/// The composition the IME reports: its text, caret and converted clause.
-fn read_composition(himc: HIMC) -> Composition {
-    let units = composition_units(himc, GCS_COMPSTR);
-    let text = String::from_utf16_lossy(&units);
-    // SAFETY: GCS_CURSORPOS returns the position without a buffer.
-    let cursor = unsafe { ImmGetCompositionStringW(himc, GCS_CURSORPOS, None, 0) };
-    let cursor = if cursor < 0 {
-        text.len()
-    } else {
-        utf16_to_byte(&text, cursor as u32)
-    };
-    let attrs = composition_attributes(himc);
-    let target =
-        target_clause(&attrs).map(|(s, e)| (utf16_to_byte(&text, s), utf16_to_byte(&text, e)));
-    Composition::new(text, cursor, target)
-}
-
-/// The clause being converted (UTF-16 range) from composition attributes.
-fn target_clause(attrs: &[u8]) -> Option<(u32, u32)> {
-    let is_target = |a: &u8| {
-        u32::from(*a) == ATTR_TARGET_CONVERTED || u32::from(*a) == ATTR_TARGET_NOTCONVERTED
-    };
-    let start = attrs.iter().position(is_target)?;
-    let len = attrs[start..].iter().take_while(|a| is_target(a)).count();
-    Some((start as u32, (start + len) as u32))
-}
-
-/// IME messages; `None` for default handling.
+/// IME messages, which RichEdit handles for the focused field (it draws
+/// the composition in place and places the candidates at its caret);
+/// `None` for default handling.
 pub(crate) fn ime(
     surface: &Rc<Surface>,
     hwnd: HWND,
@@ -1544,84 +1514,30 @@ pub(crate) fn ime(
 ) -> Option<LRESULT> {
     let view = focused(surface)?;
     let input = input_of(&view)?;
-    match msg {
-        WM_IME_SETCONTEXT => {
-            // The composition is drawn in the field, not in the IME's own
-            // window.
-            let lparam = LPARAM(lparam.0 & !(ISC_SHOWUICOMPOSITIONWINDOW as isize));
-            // SAFETY: default handling with the adjusted flags.
-            Some(unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) })
-        }
-        WM_IME_STARTCOMPOSITION => {
-            // What is composed replaces the selection.
-            if input.config.borrow().editable && input.model.borrow().has_selection() {
-                let deleted = input.model.borrow_mut().delete(Unit::Char, false);
-                after_edit(surface, &view, &input, deleted);
-            }
-            input.model.borrow_mut().composition = Some(Composition::default());
-            place_ime(surface);
-            // Reported once there is text: the IME may open a composition
-            // and end it with nothing composed.
-            Some(LRESULT(0))
-        }
-        WM_IME_COMPOSITION => {
-            let flags = lparam.0 as u32;
-            let read = with_context(hwnd, |himc| {
-                let result = (flags & GCS_RESULTSTR.0 != 0)
-                    .then(|| String::from_utf16_lossy(&composition_units(himc, GCS_RESULTSTR)));
-                let composition = (flags & GCS_COMPSTR.0 != 0).then(|| read_composition(himc));
-                (result, composition)
-            });
-            let (result, composition) = read.unwrap_or_default();
-            if !queue_if_unsettled(surface, || Held::Ime {
-                result: result.clone(),
-                composition: composition.clone(),
-            }) {
-                apply_ime_composition(surface, result, composition);
-            }
-            Some(LRESULT(0))
-        }
-        WM_IME_ENDCOMPOSITION => {
-            input.model.borrow_mut().composition = None;
-            input.relayout();
-            input.reveal();
-            view.changed();
-            report_composition(surface, &view, &input);
-            Some(LRESULT(0))
-        }
-        _ => None,
-    }
-}
-
-fn apply_ime_composition(
-    surface: &Rc<Surface>,
-    result: Option<String>,
-    composition: Option<Composition>,
-) {
-    let Some(view) = focused(surface) else { return };
-    let Some(input) = input_of(&view) else {
-        return;
+    let lparam = if msg == WM_IME_SETCONTEXT {
+        // The composition is drawn in the field, not in the IME's own
+        // window.
+        LPARAM(lparam.0 & !(ISC_SHOWUICOMPOSITIONWINDOW as isize))
+    } else {
+        lparam
     };
-    if let Some(result) = result.filter(|r| !r.is_empty()) {
-        // A commit ends the composition it came from, even when
-        // the IME starts the next one in the same message (as
-        // GPUI's input handler brings them, one call each): the
-        // committed text's `onChangeText`, the end, then the
-        // composition that follows.
-        input.model.borrow_mut().composition = Some(Composition::default());
-        input.relayout();
-        insert(surface, &view, &input, &result, true);
-        report_composition(surface, &view, &input);
+    if msg == WM_IME_STARTCOMPOSITION {
+        input.follow(&view);
     }
-    input.model.borrow_mut().composition = composition
-        .filter(|c| !c.text.is_empty())
-        .or(Some(Composition::default()));
-    input.relayout();
-    input.wake_caret();
-    input.reveal();
-    view.changed();
-    report_composition(surface, &view, &input);
-    place_ime(surface);
+    let (result, handled) = input.send(msg, wparam.0, lparam.0);
+    if matches!(
+        msg,
+        WM_IME_STARTCOMPOSITION | WM_IME_COMPOSITION | WM_IME_ENDCOMPOSITION
+    ) {
+        input.wake_caret();
+        process(surface, &view, &input);
+    }
+    if handled {
+        Some(result)
+    } else {
+        // SAFETY: default handling of the window's message.
+        Some(unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) })
+    }
 }
 
 // --- Edits and events ----------------------------------------------------------
@@ -1651,12 +1567,7 @@ fn key_press(surface: &Surface, view: &NshView, key: &str) {
 /// Reports the selection if it moved and JS listens, then the caret.
 fn report_selection(surface: &Surface, view: &NshView, input: &InputState) {
     if view.state().events.contains(EventKind::SelectionChange) {
-        let range = {
-            let model = input.model.borrow();
-            let (s, e) = model.selection();
-            let text = model.text();
-            (model::byte_to_utf16(text, s), model::byte_to_utf16(text, e))
-        };
+        let range = input.selection();
         if input.reported.replace(range) != range {
             send(surface, view, EventKind::SelectionChange, || {
                 EventPayload::Map(vec![
@@ -1684,23 +1595,21 @@ fn report_caret(surface: &Surface, view: &NshView, input: &InputState) {
     }
 }
 
-/// The caret in the input view's coordinates (`onCaretMove`'s `bounds`):
-/// in the content box, scrolled with the text.
+/// The caret in the input view's coordinates (`onCaretMove`'s `bounds`).
 fn caret_bounds(view: &NshView, input: &InputState) -> Bounds<Points> {
-    let Some((x, y, h)) = input.caret_rect() else {
+    let Some((x, y, w, h)) = input.caret_rect() else {
         return Bounds::default();
     };
     let content = content_rect(view, input);
     Bounds {
         origin: Point::new(content.origin.x + Points(x), content.origin.y + Points(y)),
-        size: Size::new(Points(caret_width()), Points(h)),
+        size: Size::new(Points(w), Points(h)),
     }
 }
 
 /// Reports the composition if it started, changed or ended since last
 /// reported (and JS listens); once it ended, applies the value JS set
-/// meanwhile. Called after every change of the composition, after the
-/// `onChangeText` of what it committed.
+/// meanwhile.
 fn report_composition(surface: &Surface, view: &NshView, input: &InputState) {
     let now = input.composed_text();
     if *input.composed.borrow() != now {
@@ -1712,7 +1621,7 @@ fn report_composition(surface: &Surface, view: &NshView, input: &InputState) {
             ])
         });
     }
-    if input.composed.borrow().is_none() {
+    if input.composing.get().is_none() {
         let pending = input.pending.borrow_mut().take();
         if let Some((text, count)) = pending {
             set_value(view, input, &text, count);
@@ -1720,57 +1629,103 @@ fn report_composition(surface: &Surface, view: &NshView, input: &InputState) {
     }
 }
 
-/// After a user edit (`changed`: the text changed) or a caret movement:
-/// reports the text with a new edit count, then the selection, and shows
-/// the caret.
-fn after_edit(surface: &Surface, view: &NshView, input: &InputState, changed: bool) {
-    if changed {
-        input.relayout();
-        let count = input.count.get() + 1;
-        input.count.set(count);
-        let text = input.model.borrow().text().to_owned();
-        // Always reported: the engine keeps the text for layout and for
-        // dropping stale values, whether JS listens or not.
-        surface.event(
-            view.id(),
-            EventKind::ChangeText,
-            EventPayload::Text { text, count },
-        );
+/// Reports the text with a new edit count if it differs from what the
+/// engine has.
+fn report_text(surface: &Surface, view: &NshView, input: &InputState) -> bool {
+    let text = input.text();
+    if *input.reported_text.borrow() == text {
+        return false;
     }
-    input.wake_caret();
-    input.reveal();
-    report_selection(surface, view, input);
-    view.changed();
-    place_ime(surface);
+    let count = input.count.get() + 1;
+    input.count.set(count);
+    input.reported_text.replace(text.clone());
+    // Always reported: the engine keeps the text for layout and for
+    // dropping stale values, whether JS listens or not.
+    surface.event(
+        view.id(),
+        EventKind::ChangeText,
+        EventPayload::Text { text, count },
+    );
+    true
 }
 
-/// Inserts typed, pasted or composed text (clipped to `maxLength`);
-/// `typed` text is reported as a key press.
-fn insert(surface: &Surface, view: &NshView, input: &InputState, text: &str, typed: bool) {
-    if !input.config.borrow().editable {
+/// Turns what RichEdit noted since the last time into the field's events:
+/// a composition's start, edits (the text, or what is composed), its end,
+/// the selection and the caret. Returns whether the text changed.
+fn process(surface: &Surface, view: &NshView, input: &InputState) -> bool {
+    let Some(e) = &input.editor else {
+        return false;
+    };
+    let notes = e.take_notes();
+    if let Some((start, end, len)) = notes.composition_start {
+        input.composing.set(Some((start, len.saturating_sub(end))));
+    }
+    let mut changed = false;
+    if notes.changed && !input.programmatic.get() {
+        if input.composing.get().is_some() {
+            report_composition(surface, view, input);
+        } else {
+            changed = report_text(surface, view, input);
+        }
+    }
+    if notes.composition_end {
+        // The commit's `onChangeText`, then the composition's end.
+        changed |= report_text(surface, view, input);
+        input.composing.set(None);
+        report_composition(surface, view, input);
+    } else if notes.composition_start.is_some() {
+        report_composition(surface, view, input);
+    }
+    if notes.changed || notes.selection {
+        input.wake_caret();
+        report_selection(surface, view, input);
+    } else {
+        report_caret(surface, view, input);
+    }
+    input.report_scroll();
+    view.changed();
+    changed
+}
+
+/// Replaces the selection with `text` (undo takes it back; `maxLength`
+/// clips it).
+fn replace_selection(input: &InputState, text: &str) {
+    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    input.send(EM_REPLACESEL, 1, wide.as_ptr() as isize);
+}
+
+/// RichEdit owns native clipboard commands; terminal hosts supply the
+/// clipboard through their transport instead of the hidden window.
+fn edit_command(surface: &Surface, input: &InputState, msg: u32, wparam: usize, lparam: isize) {
+    #[cfg(feature = "terminal")]
+    if surface.terminal_active.get().is_some() && matches!(msg, WM_COPY | WM_CUT) {
+        let config = input.config.borrow();
+        if !config.secure && (msg != WM_CUT || config.editable) {
+            let (start, end) = input.selection();
+            if start != end {
+                let text = input.units();
+                crate::system::set_clipboard_text(&String::from_utf16_lossy(
+                    &text[start as usize..end as usize],
+                ));
+                if msg == WM_CUT {
+                    input.send(WM_CLEAR, 0, 0);
+                }
+            }
+        }
         return;
     }
-    let max = input.config.borrow().max_length;
-    let inserted = input.model.borrow_mut().insert(text, max);
-    input.goal_x.set(None);
-    if let Some(fit) = &inserted
-        && !fit.is_empty()
-        && typed
-    {
-        key_press(surface, view, key_of(fit));
-    }
-    after_edit(surface, view, input, inserted.is_some());
+    let _ = surface;
+    input.send(msg, wparam, lparam);
 }
 
 /// Return submitted the input (`blur`: and unfocuses it).
 fn submit(surface: &Rc<Surface>, view: &NshView, input: &InputState, blur: bool) {
     key_press(surface, view, "Enter");
-    let text = input.model.borrow().text().to_owned();
+    let text = input.text();
     let count = input.count.get();
     send(surface, view, EventKind::SubmitEditing, || {
         EventPayload::Text { text, count }
     });
-    arm(surface);
     if blur {
         set_focus(surface, None);
     }
@@ -1793,7 +1748,7 @@ fn return_key(behavior: SubmitBehavior, multiline: bool, modifiers: Modifiers) -
 
 /// Sets up an input view.
 pub(crate) fn create(surface: &Rc<Surface>, view: &NshView) {
-    let input = Rc::new(InputState::new(surface.key(), view.id()));
+    let input = InputState::new(surface, view);
     input.active.set(window_active(surface));
     view.state_mut().input = Some(input);
     // Nothing has the focus yet: typing must not open a composition.
@@ -1807,63 +1762,31 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
     let Some(input) = input_of(view) else {
         return;
     };
-    {
-        let old = input.config.borrow();
-        let font_changed = old.style != config.style || old.multiline != config.multiline;
-        let shown_changed = font_changed
-            || old.secure != config.secure
-            || old.align != config.align
-            || old.rtl != config.rtl;
-        drop(old);
-        if font_changed {
-            input.format.borrow_mut().take();
-        }
-        if shown_changed {
-            input.relayout();
-        }
-        input.placeholder.borrow_mut().take();
-        if config.multiline != input.multiline() {
-            input.scroll.set(0.0);
-        }
-    }
-    let (editable_changed, became_readonly, became_editable) = {
+    let (font_changed, editable_changed) = {
         let old = input.config.borrow();
         (
+            old.style != config.style || old.multiline != config.multiline,
             old.editable != config.editable || old.secure != config.secure,
-            old.editable && !config.editable,
-            !old.editable && config.editable,
         )
     };
+    if font_changed {
+        input.format.borrow_mut().take();
+    }
+    input.placeholder.borrow_mut().take();
     *input.config.borrow_mut() = config.clone();
-    if became_readonly && input.focused.get() {
-        surface.terminal_focus_generation.set(
-            surface
-                .terminal_focus_generation
-                .get()
-                .checked_add(1)
-                .expect("native focus generation exhausted"),
-        );
-        cancel_composition(surface);
-        if input.model.borrow_mut().composition.take().is_some() {
-            input.relayout();
-            report_composition(surface, view, &input);
-            view.changed();
-        }
+    if input.scale.get() == 0.0 {
+        input.scale.set(surface.scale());
     }
-    if became_editable && input.focused.get() {
-        surface.terminal_focus_generation.set(
-            surface
-                .terminal_focus_generation
-                .get()
-                .checked_add(1)
-                .expect("native focus generation exhausted"),
-        );
-    }
+    input.apply_formats();
     if editable_changed && input.focused.get() {
+        surface.terminal_focus_generation.set(
+            surface
+                .terminal_focus_generation
+                .get()
+                .checked_add(1)
+                .expect("native focus generation exhausted"),
+        );
         update_ime(surface);
-        if config.editable {
-            flush_pending(surface);
-        }
     }
     let first = !input.configured.replace(true);
     if first && config.auto_focus {
@@ -1871,15 +1794,10 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
     }
     place(view, &input);
     // A built-in bar (newly) taking the indicator's place hears where the
-    // text is now, once placed (else on the first draw).
+    // text is now.
     input.reported_scroll.set(None);
-    if config.replaced
-        && config.multiline
-        && let Some(layout) = input.layout()
-    {
-        input.origin(&layout);
-        input.report_scroll(&layout);
-    }
+    input.report_scroll();
+    view.changed();
 }
 
 /// Focuses the field once it is on screen (the batch that made it may
@@ -1890,30 +1808,6 @@ fn auto_focus(surface: &Rc<Surface>, view: &NshView) {
     }
     FOCUS.with(|f| {
         f.borrow_mut().entry(surface.key()).or_default().auto_focus = Some(view.clone());
-    });
-    let Some(input) = input_of(view) else { return };
-    input.auto_focus_pending.set(true);
-    let pending = Rc::downgrade(&input);
-    let view = view.clone();
-    let mut frames = 0;
-    surface.on_draw_frame(move |surface, _| {
-        let Some(input) = pending.upgrade() else {
-            return false;
-        };
-        if !input.auto_focus_pending.get() {
-            return false;
-        }
-        frames += 1;
-        if can_hold_focus(surface, &view) {
-            input.auto_focus_pending.set(false);
-            set_focus(surface, Some(&view));
-            return false;
-        }
-        let waiting = frames < 30 && view.state().input.is_some();
-        if !waiting {
-            input.auto_focus_pending.set(false);
-        }
-        waiting
     });
 }
 
@@ -1928,24 +1822,11 @@ pub(crate) fn end_batch(surface: &Rc<Surface>) {
         return;
     }
     if can_hold_focus(surface, &view) {
-        if let Some(input) = input_of(&view) {
-            input.auto_focus_pending.set(false);
-        }
         set_focus(surface, Some(&view));
     } else {
         FOCUS.with(|f| {
             f.borrow_mut().entry(surface.key()).or_default().auto_focus = Some(view);
         });
-    }
-}
-
-/// Cancels scheduled focus when a subtree leaves the native input tree.
-fn cancel_auto_focus(view: &NshView) {
-    if let Some(input) = input_of(view) {
-        input.auto_focus_pending.set(false);
-    }
-    for child in view.child_views() {
-        cancel_auto_focus(&child);
     }
 }
 
@@ -1966,13 +1847,13 @@ fn content_rect(view: &NshView, input: &InputState) -> Bounds<Points> {
     })
 }
 
-/// Hosts the editor at the content box.
+/// Hosts the field at the content box.
 fn place(view: &NshView, input: &Rc<InputState>) {
     let content = content_rect(view, input);
     if content.size.width.0 <= 0.0 || content.size.height.0 <= 0.0 {
         return;
     }
-    input.set_size((content.size.width.0, content.size.height.0));
+    input.follow(view);
     let item: Rc<dyn Hosted> = input.clone();
     view.set_native(&item, content);
 }
@@ -1984,31 +1865,33 @@ pub(crate) fn value(view: &NshView, text: &str, count: u32) {
     let Some(input) = input_of(view) else {
         return;
     };
-    if input.composed_text().is_some() {
+    if input.composing.get().is_some() {
         input.pending.replace(Some((text.to_owned(), count)));
         return;
     }
     set_value(view, &input, text, count);
 }
 
-/// Applies JS's `text` unless the user edited since JS saw `count`.
+/// Applies JS's `text` unless the user edited since JS saw `count`. The
+/// caret goes to the end of the new text.
 fn set_value(view: &NshView, input: &InputState, text: &str, count: u32) {
-    if count < input.count.get() || input.model.borrow().text() == text {
+    if count < input.count.get() {
         return;
     }
-    {
-        let mut model = input.model.borrow_mut();
-        // A composition the IME opened with nothing in it yet stays open
-        // (a click or a return still completes it).
-        let open = model.composition.is_some();
-        model.set_text(text);
-        if open {
-            model.composition = Some(Composition::default());
-        }
+    if input.text() == text {
+        input.reported_text.replace(text.to_owned());
+        return;
     }
-    input.relayout();
-    if input.focused.get() {
-        input.reveal();
+    let Some(e) = &input.editor else { return };
+    input.programmatic.set(true);
+    e.set_text(text);
+    input.send(EM_SETSEL, usize::MAX >> 1, -1);
+    input.programmatic.set(false);
+    input.reported_text.replace(input.text());
+    if let Some(surface) = surface_of(view) {
+        process(&surface, view, input);
+    } else {
+        e.take_notes();
     }
     view.changed();
 }
@@ -2022,6 +1905,7 @@ pub(crate) fn animated(view: &NshView) {
         (input, s.anim.color)
     };
     if input.anim_color.replace(color) != color {
+        input.apply_formats();
         view.changed();
     }
 }
@@ -2033,11 +1917,10 @@ pub(crate) fn content(view: &NshView, content: Bounds<Points>) {
     };
     input.content.set(Some(content));
     place(view, &input);
-    if input.focused.get() {
-        input.reveal();
-        if let Some(surface) = surface_of(view) {
-            report_caret(&surface, view, &input);
-        }
+    if input.focused.get()
+        && let Some(surface) = surface_of(view)
+    {
+        report_caret(&surface, view, &input);
     }
 }
 
@@ -2093,8 +1976,8 @@ pub(crate) fn tab_to(view: &NshView) {
         && input.focused.get()
         && !input.config.borrow().caret_hidden
     {
-        input.model.borrow_mut().select_all();
-        after_edit(&surface, view, &input, false);
+        input.send(EM_SETSEL, 0, -1);
+        process(&surface, view, &input);
     }
 }
 
@@ -2103,19 +1986,16 @@ pub(crate) fn set_selection(view: &NshView, start: u32, end: u32) {
     let Some(input) = input_of(view) else {
         return;
     };
-    {
-        let mut model = input.model.borrow_mut();
-        let text = model.text();
-        let (s, e) = (utf16_to_byte(text, start), utf16_to_byte(text, end));
-        model.select(s, e);
-    }
-    input.goal_x.set(None);
+    let mut range = windows::Win32::UI::Controls::RichEdit::CHARRANGE {
+        cpMin: start.min(i32::MAX as u32) as i32,
+        cpMax: end.min(i32::MAX as u32) as i32,
+    };
+    input.send(EM_EXSETSEL, 0, &mut range as *mut _ as isize);
     if input.focused.get() {
         input.wake_caret();
-        input.reveal();
     }
     if let Some(surface) = surface_of(view) {
-        report_selection(&surface, view, &input);
+        process(&surface, view, &input);
     }
     view.changed();
 }
@@ -2123,14 +2003,10 @@ pub(crate) fn set_selection(view: &NshView, start: u32, end: u32) {
 /// Characters typed (`WM_CHAR`, the script's `type`). Control characters
 /// are keys ([`key`] handles Return, Backspace and Tab).
 pub(crate) fn char_input(surface: &Rc<Surface>, text: &str) {
-    let text: String = text.chars().filter(|c| !c.is_control()).collect();
-    if text.is_empty() {
+    if queue_if_unsettled(surface, || Held::Char(text.to_owned())) {
         return;
     }
-    if queue_if_unsettled(surface, || Held::Char(text.clone())) {
-        return;
-    }
-    char_input_now(surface, &text);
+    char_input_now(surface, text);
 }
 
 fn char_input_now(surface: &Rc<Surface>, text: &str) {
@@ -2138,36 +2014,45 @@ fn char_input_now(surface: &Rc<Surface>, text: &str) {
     let Some(input) = input_of(&view) else {
         return;
     };
-    insert(surface, &view, &input, text, true);
+    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+    if text.is_empty() || !input.config.borrow().editable {
+        return;
+    }
+    input.follow(&view);
+    for unit in text.encode_utf16() {
+        input.send(WM_CHAR, unit as usize, 1);
+    }
+    let changed = process(surface, &view, &input);
+    if changed {
+        key_press(surface, &view, key_of(&text));
+    }
 }
 
 /// The window got (or lost) the keyboard focus: the focused field keeps
 /// the focus (an app in the background keeps its field), without a caret.
 pub(crate) fn window_focus(surface: &Rc<Surface>, focused_window: bool) {
-    let changed = FOCUS.with(|f| {
-        let mut f = f.borrow_mut();
-        let entry = f.entry(surface.key()).or_default();
-        let changed = entry.inactive == focused_window;
-        entry.inactive = !focused_window;
-        changed
-    });
-    if changed && !focused_window {
-        disarm(surface);
-    }
+    FOCUS.with(|f| f.borrow_mut().entry(surface.key()).or_default().inactive = !focused_window);
     if let Some(view) = focused(surface)
         && let Some(input) = input_of(&view)
     {
         input.active.set(focused_window);
-        input.drag.set(None);
+        input.dragging.set(false);
         input.caret_on.set(true);
+        if let Some(e) = &input.editor {
+            e.set_focus(focused_window);
+        }
+        process(surface, &view, &input);
         view.changed();
     }
     if focused_window {
         update_ime(surface);
-        place_ime(surface);
     }
     blink::update();
-    surface.sync_focus();
+}
+
+/// `lparam` of a mouse message at the window's client pixel `(x, y)`.
+fn mouse_lparam(x: i32, y: i32) -> isize {
+    ((x as u16 as u32) | ((y as u16 as u32) << 16)) as i32 as isize
 }
 
 /// A pointer event on input `view` (its coordinates); true when handled.
@@ -2175,76 +2060,57 @@ pub(crate) fn pointer(surface: &Rc<Surface>, view: &NshView, event: &ItemPointer
     let Some(input) = input_of(view) else {
         return false;
     };
+    if matches!(event.kind, PointerKind::Down) {
+        set_focus(surface, Some(view));
+    }
+    input.follow(view);
     let content = content_rect(view, &input);
-    let (x, y) = (event.x - content.origin.x.0, event.y - content.origin.y.0);
-    match event.kind {
+    let (ox, oy) = input.origin.get();
+    let s = input.scale.get().max(0.01);
+    let x = ox + ((event.x - content.origin.x.0) * s).round() as i32;
+    let y = oy + ((event.y - content.origin.y.0) * s).round() as i32;
+    let mut keys = 0;
+    if event.modifiers.shift {
+        keys |= MK_SHIFT;
+    }
+    if event.modifiers.ctrl {
+        keys |= MK_CONTROL;
+    }
+    let msg = match event.kind {
         PointerKind::Down => {
-            if input.model.borrow().composition.is_some() {
+            if input.composing.get().is_some() {
                 // What is composed is kept, where it was typed.
                 notify_composition(surface, CPS_COMPLETE);
             }
-            set_focus(surface, Some(view));
-            let at = input.hit(x, y);
-            let secure = input.secure();
-            let drag = {
-                let mut model = input.model.borrow_mut();
-                match event.clicks {
-                    0 | 1 => {
-                        model.move_to(at, event.modifiers.shift);
-                        Drag::Char
-                    }
-                    // A double click in a password selects it all: words
-                    // would tell where its spaces are.
-                    2 if !secure => {
-                        let (s, e) = model.word_at(at);
-                        model.select(s, e);
-                        Drag::Word(s, e)
-                    }
-                    _ => {
-                        let (s, e) = if input.multiline() && !secure {
-                            model.line_at(at)
-                        } else {
-                            (0, model.text().len())
-                        };
-                        model.select(s, e);
-                        Drag::Line(s, e)
-                    }
-                }
-            };
-            input.drag.set(Some(drag));
-            input.goal_x.set(None);
-            after_edit(surface, view, &input, false);
-            true
+            input.dragging.set(true);
+            keys |= MK_LBUTTON;
+            // RichEdit counts a third click itself (after a double one).
+            if event.clicks == 2 {
+                WM_LBUTTONDBLCLK
+            } else {
+                WM_LBUTTONDOWN
+            }
         }
         PointerKind::Move => {
-            let Some(drag) = input.drag.get() else {
+            if !input.dragging.get() {
                 return false;
-            };
-            let at = input.hit(x, y);
-            {
-                let mut model = input.model.borrow_mut();
-                match drag {
-                    Drag::Char => model.move_to(at, true),
-                    Drag::Word(s, e) | Drag::Line(s, e) => {
-                        let (ws, we) = match drag {
-                            Drag::Word(..) => model.word_at(at),
-                            _ if input.multiline() => model.line_at(at),
-                            _ => (0, model.text().len()),
-                        };
-                        if at < s {
-                            model.select(e, ws);
-                        } else {
-                            model.select(s, we.max(e));
-                        }
-                    }
-                }
             }
-            after_edit(surface, view, &input, false);
-            true
+            keys |= MK_LBUTTON;
+            WM_MOUSEMOVE
         }
-        PointerKind::Up | PointerKind::Cancel => input.drag.take().is_some(),
-        PointerKind::Leave => false,
-    }
+        PointerKind::Up | PointerKind::Cancel => {
+            if !input.dragging.replace(false) {
+                return false;
+            }
+            WM_LBUTTONUP
+        }
+        PointerKind::Leave => return false,
+    };
+    with_modifiers(event.modifiers, || {
+        input.send(msg, keys, mouse_lparam(x, y));
+    });
+    process(surface, view, &input);
+    true
 }
 
 /// A wheel over input `view`: scrolls the lines of a multiline field that
@@ -2257,16 +2123,18 @@ pub(crate) fn wheel(view: &NshView, dy: f32) -> bool {
     if !input.multiline() {
         return false;
     }
-    let Some(layout) = input.layout() else {
-        return false;
-    };
-    let before = input.scroll.get();
-    input.scroll.set(before + dy);
-    input.origin(&layout);
-    let moved = input.scroll.get() != before;
+    let s = input.scale.get().max(0.01);
+    let mut at = windows::Win32::Foundation::POINT::default();
+    input.send(EM_GETSCROLLPOS, 0, &mut at as *mut _ as isize);
+    let before = at.y;
+    at.y = (at.y as f32 + dy * s).round().max(0.0) as i32;
+    input.send(EM_SETSCROLLPOS, 0, &mut at as *mut _ as isize);
+    let mut now = windows::Win32::Foundation::POINT::default();
+    input.send(EM_GETSCROLLPOS, 0, &mut now as *mut _ as isize);
+    let moved = now.y != before;
     if moved {
         view.changed();
-        input.report_scroll(&layout);
+        input.report_scroll();
         if input.focused.get()
             && let Some(surface) = surface_of(view)
         {
@@ -2285,30 +2153,28 @@ pub(crate) fn scroll_to(view: &NshView, y: Points) {
     if !input.multiline() {
         return;
     }
-    let Some(layout) = input.layout() else {
-        return;
+    let s = input.scale.get().max(0.01);
+    let mut at = windows::Win32::Foundation::POINT {
+        x: 0,
+        y: (y.0 * s).round().max(0.0) as i32,
     };
-    let before = input.scroll.get();
-    input.scroll.set(y.0);
-    // Clamped to the text.
-    input.origin(&layout);
-    if input.scroll.get() != before {
-        view.changed();
-        input.report_scroll(&layout);
-        if input.focused.get()
-            && let Some(surface) = surface_of(view)
-        {
-            report_caret(&surface, view, &input);
-        }
+    input.send(EM_SETSCROLLPOS, 0, &mut at as *mut _ as isize);
+    view.changed();
+    input.report_scroll();
+    if input.focused.get()
+        && let Some(surface) = surface_of(view)
+    {
+        report_caret(&surface, view, &input);
     }
 }
 
 /// A right click on field `view`: it takes the focus (keeping its
-/// selection) and shows Windows' edit menu, each item the field's own key.
+/// selection) and shows Windows' edit menu, each item RichEdit's own
+/// command.
 pub(crate) fn context_menu(surface: &Rc<Surface>, view: &NshView) {
     use nsh_core::desktop::MenuRole;
 
-    use crate::chrome::LocalItem;
+    use crate::chrome::{Action, LocalItem};
     let Some(input) = input_of(view) else {
         return;
     };
@@ -2319,48 +2185,58 @@ pub(crate) fn context_menu(surface: &Rc<Surface>, view: &NshView) {
         let c = input.config.borrow();
         (c.editable, c.secure)
     };
-    let (selected, can_undo, empty, all) = {
-        let m = input.model.borrow();
-        let (s, e) = m.selection();
-        (
-            m.has_selection(),
-            m.can_undo(),
-            m.text().is_empty(),
-            s == 0 && e == m.text().len(),
-        )
+    let (start, end) = input.selection();
+    let len = input.units().len() as u32;
+    let selected = start != end;
+    let can_undo = input.send(EM_CANUNDO, 0, 0).0.0 != 0;
+    let target = view.clone();
+    let command = move |msg: u32, wparam: usize, lparam: isize| -> Action {
+        let view = target.clone();
+        Rc::new(move |s: &Rc<Surface>| {
+            if let Some(input) = input_of(&view) {
+                edit_command(s, &input, msg, wparam, lparam);
+                process(s, &view, &input);
+            }
+        })
     };
-    let item = |role: Option<MenuRole>, label: &'static str, enabled: bool, vk: u16, ctrl: bool| {
+    let paste_action: Action = {
+        let view = view.clone();
+        Rc::new(move |s: &Rc<Surface>| {
+            if let Some(input) = input_of(&view) {
+                paste(s, &view, &input);
+            }
+        })
+    };
+    let item = |role: Option<MenuRole>, label: &'static str, enabled: bool, action: Action| {
         LocalItem::Item {
             role,
             label,
             enabled,
-            action: Rc::new(move |s: &Rc<Surface>| {
-                let event = KeyEvent {
-                    vk,
-                    down: true,
-                    repeat: false,
-                    modifiers: crate::input::Modifiers {
-                        ctrl,
-                        ..Default::default()
-                    },
-                };
-                key(s, &event);
-            }),
+            action,
         }
     };
     crate::chrome::popup_actions(
         surface,
         vec![
-            item(Some(MenuRole::Undo), "", editable && can_undo, 0x5A, true),
+            item(
+                Some(MenuRole::Undo),
+                "",
+                editable && can_undo,
+                command(EM_UNDO, 0, 0),
+            ),
             LocalItem::Separator,
             item(
                 Some(MenuRole::Cut),
                 "",
                 editable && selected && !secure,
-                0x58,
-                true,
+                command(WM_CUT, 0, 0),
             ),
-            item(Some(MenuRole::Copy), "", selected && !secure, 0x43, true),
+            item(
+                Some(MenuRole::Copy),
+                "",
+                selected && !secure,
+                command(WM_COPY, 0, 0),
+            ),
             item(
                 Some(MenuRole::Paste),
                 "",
@@ -2368,14 +2244,74 @@ pub(crate) fn context_menu(surface: &Rc<Surface>, view: &NshView) {
                     && (crate::system::clipboard_has_text()
                         || (view.state().events.contains(EventKind::Paste)
                             && crate::system::clipboard_has_image())),
-                0x56,
-                true,
+                paste_action,
             ),
-            item(None, "Delete", editable && selected, 0x2E, false),
+            item(
+                None,
+                "Delete",
+                editable && selected,
+                command(WM_CLEAR, 0, 0),
+            ),
             LocalItem::Separator,
-            item(Some(MenuRole::SelectAll), "", !empty && !all, 0x41, true),
+            item(
+                Some(MenuRole::SelectAll),
+                "",
+                len > 0 && !(start == 0 && end >= len),
+                command(EM_SETSEL, 0, -1),
+            ),
         ],
     );
+}
+
+/// Runs `f` with the keyboard state's Shift, Ctrl and Alt as `modifiers`
+/// say (RichEdit reads them with `GetKeyState`): keys and clicks that do
+/// not come from the keyboard (the test agent's, a menu's) carry theirs.
+fn with_modifiers<R>(modifiers: Modifiers, f: impl FnOnce() -> R) -> R {
+    let mut state = [0u8; 256];
+    // SAFETY: a 256-byte buffer, as the call requires.
+    if unsafe { GetKeyboardState(&mut state) }.is_err() {
+        return f();
+    }
+    let held = |vk: u16| state[vk as usize] & 0x80 != 0;
+    let wanted = [
+        (VK_SHIFT.0, modifiers.shift),
+        (VK_CONTROL.0, modifiers.ctrl),
+        (VK_MENU.0, modifiers.alt),
+    ];
+    if wanted.iter().all(|&(vk, on)| held(vk) == on) {
+        return f();
+    }
+    let mut changed = state;
+    for (vk, on) in wanted {
+        if on {
+            changed[vk as usize] |= 0x80;
+        } else {
+            changed[vk as usize] &= !0x80;
+        }
+    }
+    // SAFETY: the thread's keyboard state, restored after the call.
+    unsafe {
+        let _ = SetKeyboardState(&changed);
+        let r = f();
+        let _ = SetKeyboardState(&state);
+        r
+    }
+}
+
+/// Sends RichEdit key `vk` as the keyboard would (down, then up).
+fn send_key(input: &InputState, vk: u16, modifiers: Modifiers) {
+    // SAFETY: a plain query.
+    let scan = unsafe { MapVirtualKeyW(vk.into(), MAPVK_VK_TO_VSC) };
+    let extended = [
+        VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN, VK_HOME, VK_END, VK_PRIOR, VK_NEXT, VK_INSERT, VK_DELETE,
+    ]
+    .iter()
+    .any(|k| k.0 == vk);
+    let lparam = 1 | ((scan as isize) << 16) | if extended { 1 << 24 } else { 0 };
+    with_modifiers(modifiers, || {
+        input.send(WM_KEYDOWN, vk as usize, lparam);
+        input.send(WM_KEYUP, vk as usize, lparam | (3 << 30));
+    });
 }
 
 /// A key for the focused field; true when handled.
@@ -2390,82 +2326,49 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
         return false;
     };
     let m = event.modifiers;
-    let (editable, secure, multiline) = {
+    let (editable, multiline) = {
         let c = input.config.borrow();
-        (c.editable, c.secure, c.multiline)
+        (c.editable, c.multiline)
     };
-    let unit = if m.ctrl { Unit::Word } else { Unit::Char };
     let vk = event.vk;
-    #[cfg(feature = "terminal")]
-    if surface.terminal_active.get().is_some()
-        && composing_focused(surface)
-        && (vk == VK_RETURN.0 || vk == VK_ESCAPE.0)
-    {
-        // Only the terminal IME protocol can commit or cancel its preedit.
-        return true;
-    }
-    // Movements: the caret goes, the text stays.
-    let moved = |f: &dyn Fn(&mut Model)| {
-        f(&mut input.model.borrow_mut());
-        after_edit(surface, &view, &input, false);
+    input.follow(&view);
+    // Keys RichEdit takes as they are.
+    let forward = |input: &InputState| {
+        send_key(input, vk, m);
+        process(surface, &view, input);
         true
     };
     match vk {
         // Alt+Left goes back, from a field too (`navigation::key_pressed`).
-        _ if (vk == VK_LEFT.0 || vk == VK_RIGHT.0) && !m.alt => {
-            input.goal_x.set(None);
-            moved(&|model| model.step(unit, vk == VK_RIGHT.0, m.shift))
-        }
-        _ if vk == VK_HOME.0 || vk == VK_END.0 => {
-            input.goal_x.set(None);
-            let end = vk == VK_END.0;
-            let to = if multiline && !m.ctrl {
-                line_edge(&input, end)
-            } else if end {
-                input.model.borrow().text().len()
-            } else {
-                0
-            };
-            moved(&|model| model.move_to(to, m.shift))
-        }
+        _ if (vk == VK_LEFT.0 || vk == VK_RIGHT.0) && !m.alt => forward(&input),
+        _ if (vk == VK_HOME.0 || vk == VK_END.0) && !m.alt => forward(&input),
         _ if multiline
+            && !m.alt
             && (vk == VK_UP.0 || vk == VK_DOWN.0 || vk == VK_PRIOR.0 || vk == VK_NEXT.0) =>
         {
-            let page = vk == VK_PRIOR.0 || vk == VK_NEXT.0;
-            let down = vk == VK_DOWN.0 || vk == VK_NEXT.0;
-            let to = vertical(&input, down, page);
-            moved(&|model| model.move_to(to, m.shift))
+            forward(&input)
         }
         _ if vk == VK_BACK.0 || vk == VK_DELETE.0 => {
             if !editable {
                 return true;
             }
+            let empty = input.units().is_empty();
             if vk == VK_DELETE.0 && m.shift && !m.ctrl {
-                // Shift+Delete cuts, as in every Windows editor.
-                return cut(surface, &view, &input, secure);
+                edit_command(surface, &input, WM_CUT, 0, 0);
+            } else {
+                send_key(&input, vk, m);
             }
-            let (deleted, empty) = {
-                let mut model = input.model.borrow_mut();
-                let empty = model.text().is_empty();
-                (model.delete(unit, vk == VK_DELETE.0), empty)
-            };
             // Backspace in an empty field deletes nothing but is still a
-            // key press.
-            if deleted || empty {
+            // key press; Shift+Delete cuts, which is no key press.
+            let changed = process(surface, &view, &input);
+            let cut = vk == VK_DELETE.0 && m.shift && !m.ctrl;
+            if (changed || empty) && !cut {
                 key_press(surface, &view, "Backspace");
             }
-            input.goal_x.set(None);
-            after_edit(surface, &view, &input, deleted);
             true
         }
         _ if vk == VK_RETURN.0 => {
-            let composing = input
-                .model
-                .borrow()
-                .composition
-                .as_ref()
-                .is_some_and(|c| !c.text.is_empty());
-            if composing {
+            if input.composing.get().is_some() {
                 // The IME takes the return that commits a composition (it
                 // comes as `VK_PROCESSKEY`); one that comes anyway only
                 // commits it.
@@ -2474,7 +2377,14 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
             }
             let behavior = input.config.borrow().submit();
             match return_key(behavior, multiline, m) {
-                None => insert(surface, &view, &input, "\n", true),
+                None => {
+                    if editable {
+                        replace_selection(&input, "\r");
+                        if process(surface, &view, &input) {
+                            key_press(surface, &view, "Enter");
+                        }
+                    }
+                }
                 Some(blur) => submit(surface, &view, &input, blur),
             }
             true
@@ -2482,14 +2392,8 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
         // Reported as on macOS and Linux; navigation then takes the focus
         // from the field (`navigation::key_pressed`).
         _ if vk == VK_ESCAPE.0 => {
-            if input.model.borrow().composition.is_some() {
-                cancel_composition(surface);
-                input.model.borrow_mut().composition = None;
-                input.relayout();
-                input.reveal();
-                view.changed();
-                report_composition(surface, &view, &input);
-                crate::keymap::drop_char(surface);
+            if input.composing.get().is_some() {
+                notify_composition(surface, CPS_CANCEL);
                 return true;
             }
             if !m.ctrl && !m.alt && !event.repeat {
@@ -2498,19 +2402,23 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
             false
         }
         _ if m.ctrl && !m.alt => match vk {
-            0x41 => moved(&|model| model.select_all()),
-            0x43 => {
-                copy(&input, secure);
+            // Select all, copy, cut, undo: RichEdit's (a password copies
+            // and cuts nothing).
+            0x41 => forward(&input),
+            0x43 | 0x58 => {
+                edit_command(
+                    surface,
+                    &input,
+                    if vk == 0x43 { WM_COPY } else { WM_CUT },
+                    0,
+                    0,
+                );
+                process(surface, &view, &input);
                 true
             }
             _ if vk == VK_INSERT.0 && !m.shift => {
-                copy(&input, secure);
-                true
-            }
-            0x58 => {
-                if editable {
-                    cut(surface, &view, &input, secure);
-                }
+                edit_command(surface, &input, WM_COPY, 0, 0);
+                process(surface, &view, &input);
                 true
             }
             0x56 => {
@@ -2520,14 +2428,16 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
                 true
             }
             0x5A if !m.shift => {
-                if editable && input.model.borrow_mut().undo() {
-                    after_edit(surface, &view, &input, true);
+                if editable {
+                    input.send(EM_UNDO, 0, 0);
+                    process(surface, &view, &input);
                 }
                 true
             }
             0x59 | 0x5A => {
-                if editable && input.model.borrow_mut().redo() {
-                    after_edit(surface, &view, &input, true);
+                if editable && input.send(EM_CANREDO, 0, 0).0.0 != 0 {
+                    input.send(EM_REDO, 0, 0);
+                    process(surface, &view, &input);
                 }
                 true
             }
@@ -2541,30 +2451,6 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
         }
         _ => false,
     }
-}
-
-/// Copies the selection (never a password's).
-fn copy(input: &InputState, secure: bool) {
-    let model = input.model.borrow();
-    if secure || !model.has_selection() {
-        return;
-    }
-    crate::system::set_clipboard_text(
-        &model.selected().replace("\r\n", "\n").replace('\n', "\r\n"),
-    );
-}
-
-fn cut(surface: &Surface, view: &NshView, input: &InputState, secure: bool) -> bool {
-    if secure || !input.model.borrow().has_selection() {
-        return true;
-    }
-    copy(input, secure);
-    let deleted = input.model.borrow_mut().delete(Unit::Char, false);
-    if deleted {
-        key_press(surface, view, "Backspace");
-    }
-    after_edit(surface, view, input, deleted);
-    true
 }
 
 /// A paste (Ctrl+V, Shift+Insert, the menu): reports what the clipboard
@@ -2593,60 +2479,9 @@ fn paste(surface: &Surface, view: &NshView, input: &InputState) {
     };
     let text = pasted(&text, input.multiline());
     if !text.is_empty() {
-        insert(surface, view, input, &text, false);
+        replace_selection(input, &text.replace('\n', "\r"));
+        process(surface, view, input);
     }
-}
-
-/// The start or end of the caret's visual line (wrapped lines included).
-fn line_edge(input: &InputState, end: bool) -> usize {
-    let Some(layout) = input.layout() else {
-        return 0;
-    };
-    let secure = input.secure();
-    let pos = input.model.borrow().display_caret(secure);
-    let (_, y, h) = input.caret_at(&layout, pos);
-    let x = if end { 1.0e6 } else { -1.0e6 };
-    let mut at = input.hit_layout(&layout, x, y + h / 2.0);
-    if end {
-        // A wrapped line ends before the break, not after it on the next
-        // line's start.
-        let model = input.model.borrow();
-        let byte = model.text_at(at, secure);
-        let text = model.text();
-        if byte > 0 && text[..byte].ends_with(['\r', '\n']) {
-            at = at.saturating_sub(1);
-        }
-    }
-    input.model.borrow().text_at(at, secure)
-}
-
-/// Where Up / Down (a line) or Page Up / Down (a box) takes the caret,
-/// keeping its x.
-fn vertical(input: &InputState, down: bool, page: bool) -> usize {
-    let Some(layout) = input.layout() else {
-        return 0;
-    };
-    let secure = input.secure();
-    let pos = input.model.borrow().display_caret(secure);
-    let (x, y, h) = input.caret_at(&layout, pos);
-    let goal = *input.goal_x.get().get_or_insert(x);
-    input.goal_x.set(Some(goal));
-    let step = if page { input.size.get().1.max(h) } else { h };
-    let target = if down {
-        y + h / 2.0 + step
-    } else {
-        y + h / 2.0 - step
-    };
-    let height = metrics(&layout).height;
-    let model = input.model.borrow();
-    if target < 0.0 {
-        return 0;
-    }
-    if target > height {
-        return model.text().len();
-    }
-    let at = input.hit_layout(&layout, goal, target);
-    model.text_at(at, secure)
 }
 
 // --- The caret's blinking ----------------------------------------------------
@@ -2677,7 +2512,7 @@ mod blink {
             f.borrow()
                 .values()
                 .filter(|f| !f.inactive)
-                .filter_map(|f| f.view.clone().filter(|view| input_of(view).is_some()))
+                .filter_map(|f| f.view.clone())
                 .collect()
         })
     }
@@ -2724,7 +2559,7 @@ mod blink {
     }
 }
 
-/// The terminal's input method uses the same editing model as IMM32.
+/// The terminal input method edits the same windowless RichEdit control.
 #[cfg(feature = "terminal")]
 pub(crate) fn terminal_target(surface: &Surface) -> Option<(u64, Bounds<Points>)> {
     let view = focused(surface)?;
@@ -2744,36 +2579,7 @@ pub(crate) fn terminal_target(surface: &Surface) -> Option<(u64, Bounds<Points>)
 
 #[cfg(feature = "terminal")]
 pub(crate) fn terminal_candidate(surface: &Surface) -> Option<Bounds<Points>> {
-    let view = focused(surface)?;
-    let input = input_of(&view)?;
-    if !input.config.borrow().editable {
-        return None;
-    }
-    let anchor = if let Some(layout) = input.layout() {
-        let pos = {
-            let model = input.model.borrow();
-            model.to_display(model.caret(), input.secure())
-        };
-        let (ox, oy) = input.origin(&layout);
-        let (x, y, h) = input.caret_at(&layout, pos);
-        let content = content_rect(&view, &input);
-        Bounds {
-            origin: Point::new(
-                content.origin.x + Points(ox + x),
-                content.origin.y + Points(oy + y),
-            ),
-            size: Size::new(Points(caret_width()), Points(h)),
-        }
-    } else {
-        Bounds::default()
-    };
-    let (x, y, w, h) = view.to_root()?.bounds(
-        anchor.origin.x.0,
-        anchor.origin.y.0,
-        anchor.size.width.0,
-        anchor.size.height.0,
-    )?;
-    Some(crate::geom::rect(x, y, w, h))
+    terminal_target(surface).map(|(_, bounds)| bounds)
 }
 
 #[cfg(feature = "terminal")]
@@ -2821,38 +2627,75 @@ fn terminal_composition_now(
     selection: Option<std::ops::Range<usize>>,
     active: bool,
 ) {
-    let Some(view) = focused(surface) else {
-        return;
-    };
-    let Some(input) = input_of(&view) else {
-        return;
-    };
-    if !input.config.borrow().editable {
+    let Some(view) = focused(surface) else { return };
+    let Some(input) = input_of(&view) else { return };
+    if !input.editable() {
         return;
     }
+    input.follow(&view);
     let events_before = surface.events_sent();
-    let selection = selection.unwrap_or(preedit.len()..preedit.len());
-    if !commit.is_empty() {
-        input.model.borrow_mut().composition = None;
-        input.relayout();
-        insert(surface, &view, &input, commit, true);
-        report_composition(surface, &view, &input);
+    // Replace only the previous preedit. Preserve the selected text so a
+    // cancelled terminal composition restores it without a user edit.
+    if let Some((before, after)) = input.composing.get() {
+        let end = input.units().len().saturating_sub(after as usize) as u32;
+        input.send(EM_SETSEL, before as usize, end as isize);
+        replace_preedit(&input, "");
+    } else if active || !commit.is_empty() {
+        let (start, end) = input.selection();
+        let units = input.units();
+        input
+            .terminal_replaced
+            .replace(Some(String::from_utf16_lossy(
+                &units[start as usize..end as usize],
+            )));
     }
-    input.model.borrow_mut().composition = active.then(|| {
-        Composition::new(
-            preedit.to_owned(),
-            selection.end,
-            (selection.start != selection.end).then_some((selection.start, selection.end)),
-        )
-    });
-    input.relayout();
-    input.wake_caret();
-    input.reveal();
-    view.changed();
+    if !commit.is_empty() {
+        input.composing.set(None);
+        replace_selection(&input, &commit.replace('\n', "\r"));
+        process(surface, &view, &input);
+        input.terminal_replaced.borrow_mut().take();
+    }
+    if active {
+        if input.terminal_replaced.borrow().is_none() {
+            input.terminal_replaced.replace(Some(String::new()));
+        }
+        let (start, end) = input.selection();
+        let after = input.units().len().saturating_sub(end as usize) as u32;
+        input.composing.set(Some((start, after)));
+        replace_preedit(&input, &preedit.replace('\n', "\r"));
+        let selection = selection.unwrap_or(preedit.len()..preedit.len());
+        let selected_start = start + preedit[..selection.start].encode_utf16().count() as u32;
+        let selected_end = start + preedit[..selection.end].encode_utf16().count() as u32;
+        input.send(EM_SETSEL, selected_start as usize, selected_end as isize);
+    } else {
+        if commit.is_empty()
+            && let Some(replaced) = input.terminal_replaced.borrow_mut().take()
+        {
+            replace_preedit(&input, &replaced.replace('\n', "\r"));
+        }
+        input.composing.set(None);
+    }
+    process(surface, &view, &input);
     report_composition(surface, &view, &input);
-    report_caret(surface, &view, &input);
     if !active && surface.events_sent() > events_before {
         arm(surface);
+    }
+}
+
+#[cfg(feature = "terminal")]
+fn replace_preedit(input: &InputState, text: &str) {
+    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    input.send(EM_REPLACESEL, 0, wide.as_ptr() as isize);
+}
+
+#[cfg(feature = "terminal")]
+fn cancel_terminal_preedit(input: &InputState) {
+    if let Some(replaced) = input.terminal_replaced.borrow_mut().take()
+        && let Some((before, after)) = input.composing.get()
+    {
+        let end = input.units().len().saturating_sub(after as usize) as u32;
+        input.send(EM_SETSEL, before as usize, end as isize);
+        replace_preedit(input, &replaced.replace('\n', "\r"));
     }
 }
 
@@ -2882,7 +2725,8 @@ fn terminal_paste_now(surface: &Surface, content: nsh_core::PasteEvent) {
     if input.config.borrow().paste_behavior == nsh_core::PasteBehavior::Insert {
         let text = pasted(&content.text, input.multiline());
         if !text.is_empty() {
-            insert(surface, &view, &input, &text, false);
+            replace_selection(&input, &text.replace('\n', "\r"));
+            process(surface, &view, &input);
         }
     }
 }
@@ -2891,10 +2735,10 @@ fn terminal_paste_now(surface: &Surface, content: nsh_core::PasteEvent) {
 pub(crate) fn terminal_text(surface: &Surface) -> Option<String> {
     let view = focused(surface)?;
     let input = input_of(&view)?;
-    if input.secure() {
+    if input.config.borrow().secure {
         return None;
     }
-    let text = input.model.borrow().text().to_owned();
+    let text = input.reported_text.borrow().clone();
     Some(text)
 }
 
@@ -2905,12 +2749,12 @@ pub(crate) fn terminal_validate_selection(
 ) -> Result<(), String> {
     let view = focused(surface).ok_or("no focused native editor")?;
     let input = input_of(&view).ok_or("no focused native editor")?;
-    let model = input.model.borrow();
+    let text = input.text();
     if range.start > range.end {
         return Err("inverted text selection".into());
     }
-    crate::terminal::utf16_offset(model.text(), range.start)?;
-    crate::terminal::utf16_offset(model.text(), range.end)?;
+    crate::terminal::utf16_offset(&text, range.start)?;
+    crate::terminal::utf16_offset(&text, range.end)?;
     Ok(())
 }
 
@@ -2922,443 +2766,6 @@ pub(crate) fn terminal_is_composing(surface: &Surface) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(feature = "js")]
-    fn find_test_view(root: &NshView, test_id: &str) -> Option<NshView> {
-        let mut pending = vec![root.clone()];
-        while let Some(view) = pending.pop() {
-            if view.state().props.test_id.as_deref() == Some(test_id) {
-                return Some(view);
-            }
-            pending.extend(view.child_views());
-        }
-        None
-    }
-
-    #[cfg(feature = "js")]
-    #[test]
-    fn composing_escape_cancels_preedit_without_blurring_or_closing_modal() {
-        let code = nsh_bundler::compile_module(
-            "ComposingEscape.tsx",
-            r#"
-            import { keymap, mount, signal, View } from 'nsh';
-            import { Dialog, Input } from 'nsh/base';
-            function App() {
-                const log = signal('');
-                const open = signal(true);
-                let unbind = () => {};
-                keymap.bind('f2', () => { unbind(); unbind = () => {}; log.set(log() + 'unbound|'); }, { when: 'always' });
-                return (
-                    <View style={{ flex: 1 }}>
-                        <Input testID="log" readonly focusable={false} value={log()} style={{ height: 24 }} />
-                        <Dialog
-                            open={open()}
-                            animation="none"
-                            closeOnEscape
-                            onOpenChange={({ open: next }) => {
-                                if (!next) {
-                                    log.set(log() + 'modal|');
-                                    open.set(false);
-                                }
-                            }}
-                        >
-                            <View ref={node => {
-                                if (node) unbind = keymap.bind('escape', () => log.set(log() + 'bound|'), { within: node, when: 'always' });
-                            }}>
-                                <Input
-                                    testID="editor"
-                                    autoFocus
-                                    value="ab"
-                                    onKeyPress={({ key }) => log.set(log() + 'key:' + key + '|')}
-                                    onCompositionChange={({ composing, text }) =>
-                                        log.set(log() + (composing ? 'comp:' + text : 'end') + '|')
-                                    }
-                                    style={{ width: 200, height: 32 }}
-                                />
-                            </View>
-                        </Dialog>
-                    </View>
-                );
-            }
-            mount(App);
-            "#,
-            &[],
-        )
-        .unwrap();
-        let surface = Surface::new(nsh_core::platform::Environment {
-            window: nsh_core::Size::new(Points(240.0), Points(120.0)),
-            os: nsh_core::platform::Os::Windows,
-            native_focus_scopes: true,
-            fallback_key_bindings: true,
-            ..Default::default()
-        });
-        surface.root.state_mut().frame = crate::geom::rect(0.0, 0.0, 240.0, 120.0);
-        surface.without_shader_renderer();
-        let mut config = nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(code));
-        config.ui_sets = vec![nsh_base::registry()];
-        surface.start(config);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let (editor, log_view) = loop {
-            surface.drain();
-            if let Some(editor) = focused(&surface)
-                && let Some(log_view) = find_test_view(&surface.root, "log")
-                && input_of(&editor).is_some_and(|i| i.model.borrow().text() == "ab")
-            {
-                break (editor, log_view);
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "modal editor did not autoFocus"
-            );
-            std::thread::yield_now();
-        };
-        let editor_input = input_of(&editor).unwrap();
-        editor_input.model.borrow_mut().composition = Some(Composition::new("ni".into(), 2, None));
-        report_composition(&surface, &editor, &editor_input);
-
-        let esc = KeyEvent {
-            vk: VK_ESCAPE.0,
-            down: true,
-            repeat: false,
-            modifiers: Modifiers::default(),
-        };
-        // With an `always` Escape binding inside the modal, composing Escape cancels composition only.
-        assert!(crate::input::key(&surface, esc));
-        assert!(!composing(&editor));
-        assert_eq!(focused(&surface), Some(editor.clone()));
-        while input_of(&log_view).unwrap().model.borrow().text() != "comp:ni|end|" {
-            surface.drain();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "composition cancel log did not arrive"
-            );
-            std::thread::yield_now();
-        }
-        assert_eq!(focused(&surface), Some(editor.clone()));
-
-        // Unbind the Escape shortcut and verify 3-step desktop Escape navigation:
-        // 1st cancels preedit, 2nd leaves editor, 3rd closes Modal.
-        assert!(crate::input::key(
-            &surface,
-            KeyEvent {
-                vk: 0x71, // VK_F2
-                down: true,
-                repeat: false,
-                modifiers: Modifiers::default(),
-            }
-        ));
-        while input_of(&log_view).unwrap().model.borrow().text() != "comp:ni|end|unbound|" {
-            surface.drain();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "f2 unbind did not arrive"
-            );
-            std::thread::yield_now();
-        }
-        editor_input.model.borrow_mut().composition = Some(Composition::new("hao".into(), 3, None));
-        report_composition(&surface, &editor, &editor_input);
-        assert!(crate::input::key(&surface, esc));
-        assert!(!composing(&editor));
-        assert_eq!(focused(&surface), Some(editor.clone()));
-        while input_of(&log_view).unwrap().model.borrow().text()
-            != "comp:ni|end|unbound|comp:hao|end|"
-        {
-            surface.drain();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "second composition cancel log did not arrive"
-            );
-            std::thread::yield_now();
-        }
-
-        // Second Escape (no longer composing) reports Escape and blurs the editor without closing the modal.
-        assert!(crate::input::key(&surface, esc));
-        assert_eq!(focused(&surface), None);
-        while input_of(&log_view).unwrap().model.borrow().text()
-            != "comp:ni|end|unbound|comp:hao|end|key:Escape|"
-        {
-            surface.drain();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "non-composing Escape log did not arrive"
-            );
-            std::thread::yield_now();
-        }
-
-        // Third Escape (unfocused) closes the modal.
-        assert!(crate::input::key(&surface, esc));
-        while input_of(&log_view).unwrap().model.borrow().text()
-            != "comp:ni|end|unbound|comp:hao|end|key:Escape|modal|"
-        {
-            surface.drain();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "modal close log did not arrive"
-            );
-            std::thread::yield_now();
-        }
-        surface.stop();
-    }
-
-    #[cfg(feature = "js")]
-    #[test]
-    fn editing_keys_and_shortcuts_wait_for_pending_focus_events_without_queued_text() {
-        let code = nsh_bundler::compile_module(
-            "FocusFence.tsx",
-            r#"
-            import { keymap, mount, signal, View } from 'nsh';
-            import { Input } from 'nsh/base';
-            function App() {
-                const first = signal('A');
-                const second = signal('BC');
-                let firstNode, secondNode;
-                keymap.bind('ctrl+n', () => secondNode.focus(), { when: 'always' });
-                keymap.bind('ctrl+1', () => firstNode.focus(), { when: 'always' });
-                return (
-                    <View style={{ flex: 1, gap: 4 }}>
-                        <Input
-                            testID="first"
-                            autoFocus
-                            ref={n => firstNode = n}
-                            value={first()}
-                            onChange={({ value }) => first.set(value)}
-                            onSubmit={() => secondNode.focus()}
-                            submitBehavior="submit"
-                            style={{ height: 28 }}
-                        />
-                        <View ref={node => {
-                            if (node) keymap.bind('f6', () => second.set(second() + '!'), { within: node, when: 'always' });
-                        }}>
-                            <Input
-                                testID="second"
-                                ref={n => secondNode = n}
-                                value={second()}
-                                onChange={({ value }) => second.set(value)}
-                                style={{ height: 28 }}
-                            />
-                        </View>
-                        <Input testID="report" readonly focusable={false} value={first() + ':' + second()} style={{ height: 28 }} />
-                    </View>
-                );
-            }
-            mount(App);
-            "#,
-            &[],
-        )
-        .unwrap();
-        let surface = Surface::new(nsh_core::platform::Environment {
-            window: nsh_core::Size::new(Points(240.0), Points(120.0)),
-            os: nsh_core::platform::Os::Windows,
-            native_focus_scopes: true,
-            fallback_key_bindings: true,
-            ..Default::default()
-        });
-        let mut config = nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(code));
-        config.ui_sets = vec![nsh_base::registry()];
-        surface.start(config);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let report = loop {
-            surface.drain();
-            if focused(&surface).is_some()
-                && surface.events_handled() == surface.events_sent()
-                && let Some(report) = find_test_view(&surface.root, "report")
-                && input_of(&report).is_some_and(|i| i.model.borrow().text() == "A:BC")
-            {
-                break report;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "initial fields did not settle"
-            );
-            std::thread::yield_now();
-        };
-
-        let down = |vk: u16, ctrl: bool| KeyEvent {
-            vk,
-            down: true,
-            repeat: false,
-            modifiers: Modifiers {
-                ctrl,
-                ..Default::default()
-            },
-        };
-
-        // Submit + immediate End + Backspace with NO queued text: waits for second field!
-        assert!(crate::input::key(&surface, down(VK_RETURN.0, false)));
-        assert!(crate::input::key(&surface, down(VK_END.0, false)));
-        assert!(crate::input::key(&surface, down(VK_BACK.0, false)));
-        while input_of(&report).unwrap().model.borrow().text() != "A:B" {
-            surface.drain();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "held Backspace without queued text did not edit second field"
-            );
-            std::thread::yield_now();
-        }
-
-        // Move back to first via Ctrl+1, then Ctrl+N + immediate Ctrl+A + Backspace + "Z":
-        assert!(crate::input::key(&surface, down(0x31, true)));
-        while focused(&surface)
-            .and_then(|v| v.state().props.test_id.clone())
-            .as_deref()
-            != Some("first")
-            || surface.events_handled() < surface.events_sent()
-        {
-            surface.drain();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "did not return to first"
-            );
-            std::thread::yield_now();
-        }
-        assert!(crate::input::key(&surface, down(0x4E, true)));
-        assert!(crate::input::key(&surface, down(0x41, true)));
-        assert!(crate::input::key(&surface, down(VK_BACK.0, false)));
-        char_input(&surface, "xy");
-        assert!(crate::input::key(&surface, down(VK_BACK.0, false)));
-        char_input(&surface, "z");
-        assert!(crate::input::key(&surface, down(0x75, false))); // VK_F6 within second's scope
-        while input_of(&report).unwrap().model.borrow().text() != "A:xz!" {
-            surface.drain();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "ordered shortcut + editing key + text did not replay onto second field"
-            );
-            std::thread::yield_now();
-        }
-        surface.stop();
-    }
-
-    #[test]
-    fn narrow_multiline_inputs_keep_the_ime_anchor_inside_the_visible_field() {
-        let surface = Surface::new(Default::default());
-        let view = NshView::new(2, nsh_core::ViewKind::Input);
-        view.insert_before(&surface.root, None);
-        create(&surface, &view);
-        config(
-            &surface,
-            &view,
-            &InputConfig {
-                multiline: true,
-                ..Default::default()
-            },
-        );
-        let input = input_of(&view).unwrap();
-        input.set_size((1.0, 16.0));
-        for source in ["你", "你好", "你好hao"] {
-            input.model.borrow_mut().set_text(source);
-            input.model.borrow_mut().select(source.len(), source.len());
-            input.relayout();
-            input.reveal();
-            let (x, y, height) = input.ime_caret_rect().unwrap();
-            assert_eq!(x, 1.0);
-            assert!(y >= 0.0 && height > 0.0 && y + height <= 16.0);
-        }
-    }
-
-    #[test]
-    fn stopped_surface_releases_editor_without_reactivating_a_hidden_reload() {
-        let surface = Surface::new(Default::default());
-        let view = NshView::new(2, nsh_core::ViewKind::Input);
-        view.insert_before(&surface.root, None);
-        create(&surface, &view);
-        focus_view(&surface, &view);
-        window_focus(&surface, false);
-        let input = input_of(&view).unwrap();
-        surface.stop();
-        assert!(!input.focused.get());
-        assert!(!input.active.get());
-        assert!(FOCUS.with(|focus| focus.borrow()[&surface.key()].view.is_none()));
-        assert!(!window_active(&surface));
-        let key = surface.key();
-        drop(surface);
-        assert!(!FOCUS.with(|focus| focus.borrow().contains_key(&key)));
-    }
-
-    #[test]
-    fn removing_ancestor_blurs_focused_input_and_arms_fence() {
-        let surface = Surface::new(Default::default());
-        let parent = NshView::new(2, nsh_core::ViewKind::View);
-        let child = NshView::new(3, nsh_core::ViewKind::Input);
-        parent.insert_before(&surface.root, None);
-        child.insert_before(&parent, None);
-        create(&surface, &child);
-        focus_view(&surface, &child);
-        let input = input_of(&child).unwrap();
-        assert!(input.focused.get());
-        let generation = surface.terminal_focus_generation.get();
-        removing(&surface, &parent);
-        parent.unparent();
-        assert!(!input.focused.get());
-        assert_eq!(focused_view(&surface), None);
-        assert!(is_armed(&surface));
-        assert!(surface.terminal_focus_generation.get() > generation);
-        focus_view(&surface, &child);
-        assert!(!input.focused.get());
-        assert_eq!(focused_view(&surface), None);
-        parent.state_mut().style.hidden = true;
-        parent.insert_before(&surface.root, None);
-        focus_view(&surface, &child);
-        assert!(!input.focused.get());
-        assert_eq!(focused_view(&surface), None);
-        surface.stop();
-    }
-
-    #[test]
-    fn inactive_editor_retains_selection_and_restores_its_caret_on_activation() {
-        let surface = Surface::new(Default::default());
-        let view = NshView::new(2, nsh_core::ViewKind::Input);
-        view.insert_before(&surface.root, None);
-        create(&surface, &view);
-        let input = input_of(&view).unwrap();
-        input.model.borrow_mut().set_text("a😀b");
-        focus_view(&surface, &view);
-        set_selection(&view, 1, 3);
-        let selection = input.model.borrow().selection();
-        window_focus(&surface, false);
-        assert_eq!(focused(&surface), Some(view.clone()));
-        assert_eq!(input.model.borrow().selection(), selection);
-        assert!(!input.active.get());
-        window_focus(&surface, true);
-        assert_eq!(focused(&surface), Some(view));
-        assert_eq!(input.model.borrow().selection(), selection);
-        assert!(input.active.get());
-        assert!(input.caret_on.get());
-        blur_all(&surface);
-    }
-
-    #[cfg(feature = "terminal")]
-    #[test]
-    fn terminal_preedit_waits_for_protocol_commit_and_replaces_selection_once() {
-        let surface = Surface::new(Default::default());
-        surface.terminal_active.set(Some(true));
-        let view = NshView::new(2, nsh_core::ViewKind::Input);
-        view.insert_before(&surface.root, None);
-        create(&surface, &view);
-        let input = input_of(&view).unwrap();
-        input.model.borrow_mut().set_text("a😀b");
-        focus_view(&surface, &view);
-        set_selection(&view, 1, 3);
-        terminal_composition(&surface, "", "中文", None, true).unwrap();
-        for vk in [0x0D, 0x1B] {
-            assert!(key(
-                &surface,
-                &KeyEvent {
-                    vk,
-                    down: true,
-                    repeat: false,
-                    modifiers: Modifiers::default()
-                }
-            ));
-            assert_eq!(input.model.borrow().text(), "a😀b");
-            assert!(terminal_is_composing(&surface));
-        }
-        terminal_composition(&surface, "中", "", None, false).unwrap();
-        assert_eq!(input.model.borrow().text(), "a中b");
-        assert_eq!(input.count.get(), 1);
-        assert!(!terminal_is_composing(&surface));
-        blur_all(&surface);
-    }
 
     #[test]
     fn alignment() {
@@ -3405,360 +2812,34 @@ mod tests {
     }
 
     #[test]
-    fn composition_clauses() {
-        assert_eq!(target_clause(&[0, 0, 1, 1, 2]), Some((2, 4)));
-        assert_eq!(target_clause(&[3, 0]), Some((0, 1)));
-        assert_eq!(target_clause(&[0, 2]), None);
-    }
-
-    #[test]
-    fn focus_in_an_app_window_outside_its_events_holds() {
-        use nsh_core::{
-            Command, ModalAnimation, ModalConfig, MountItem, NodeId, ROOT_ID, ViewKind,
-            desktop::{DesktopCommand, OpenWindow},
-        };
-
-        let surface = Surface::new(Default::default());
-        let window: NodeId = 2;
-        let field: NodeId = 3;
-        {
-            let mut mounter = surface.mounter.borrow_mut();
-            for item in [
-                MountItem::Create {
-                    id: window,
-                    kind: ViewKind::Modal,
-                },
-                MountItem::ModalConfig {
-                    id: window,
-                    config: ModalConfig {
-                        animation: ModalAnimation::None,
-                        ..Default::default()
-                    },
-                },
-                MountItem::Create {
-                    id: field,
-                    kind: ViewKind::Input,
-                },
-                MountItem::Input {
-                    id: field,
-                    config: Box::new(InputConfig::default()),
-                },
-                MountItem::Insert {
-                    parent: window,
-                    child: field,
-                    before: None,
-                },
-                MountItem::Insert {
-                    parent: ROOT_ID,
-                    child: window,
-                    before: None,
-                },
-                MountItem::Command {
-                    id: window,
-                    command: Command::Desktop(Box::new(DesktopCommand::OpenWindow(Box::new(
-                        OpenWindow::default(),
-                    )))),
-                },
-                MountItem::Command {
-                    id: field,
-                    command: Command::Focus,
-                },
-            ] {
-                mounter.apply(&surface, &item);
-            }
-            mounter.end_batch(&surface);
-        }
-        assert_eq!(focused(&surface).map(|v| v.id()), Some(field));
-        surface.stop();
-    }
-
-    #[test]
-    fn modal_auto_focus_keeps_focus_over_covered_background_input() {
-        use nsh_core::{
-            Command, ModalAnimation, ModalConfig, MountItem, NodeId, ROOT_ID, ViewKind,
-        };
-
-        let surface = Surface::new(Default::default());
-        let bg: NodeId = 2;
-        let modal: NodeId = 3;
-        let dialog_input: NodeId = 4;
-        let apply = |items: &[MountItem]| {
-            let mut mounter = surface.mounter.borrow_mut();
-            for item in items {
-                mounter.apply(&surface, item);
-            }
-            mounter.end_batch(&surface);
-        };
-
-        apply(&[
-            MountItem::Create {
-                id: bg,
-                kind: ViewKind::Input,
-            },
-            MountItem::Input {
-                id: bg,
-                config: Box::new(InputConfig::default()),
-            },
-            MountItem::Insert {
-                parent: ROOT_ID,
-                child: bg,
-                before: None,
-            },
-            MountItem::Command {
-                id: bg,
-                command: Command::Focus,
-            },
-        ]);
-        assert_eq!(focused(&surface).map(|v| v.id()), Some(bg));
-
-        // Child input configures auto_focus before its parent modal inserts (blurring `bg`).
-        let mut auto = InputConfig::default();
-        auto.auto_focus = true;
-        apply(&[
-            MountItem::Create {
-                id: modal,
-                kind: ViewKind::Modal,
-            },
-            MountItem::ModalConfig {
-                id: modal,
-                config: ModalConfig {
-                    animation: ModalAnimation::None,
-                    ..Default::default()
-                },
-            },
-            MountItem::Create {
-                id: dialog_input,
-                kind: ViewKind::Input,
-            },
-            MountItem::Input {
-                id: dialog_input,
-                config: Box::new(auto),
-            },
-            MountItem::Insert {
-                parent: modal,
-                child: dialog_input,
-                before: None,
-            },
-            MountItem::Insert {
-                parent: ROOT_ID,
-                child: modal,
-                before: None,
-            },
-        ]);
-        assert_eq!(focused(&surface).map(|v| v.id()), Some(dialog_input));
-
-        // A delayed focus command for the covered background input must not steal focus.
-        apply(&[MountItem::Command {
-            id: bg,
-            command: Command::Focus,
-        }]);
-        assert_eq!(focused(&surface).map(|v| v.id()), Some(dialog_input));
-
-        // Dismissing the modal restores focus to the background input.
-        apply(&[MountItem::Remove { id: modal }]);
-        assert_eq!(focused(&surface).map(|v| v.id()), Some(bg));
-        surface.stop();
-    }
-
-    #[test]
-    fn editor_sink_with_pointer_events_none_focuses_and_blurs_when_container_inert() {
-        let surface = Surface::new(Default::default());
-        let container = NshView::new(2, nsh_core::ViewKind::View);
-        let sink = NshView::new(3, nsh_core::ViewKind::Input);
-        sink.state_mut().props.pointer_events = nsh_core::PointerEvents::None;
-        container.insert_before(&surface.root, None);
-        sink.insert_before(&container, None);
-        create(&surface, &sink);
-        config(
-            &surface,
-            &sink,
-            &InputConfig {
-                editable: true,
-                caret_hidden: true,
-                multiline: true,
-                ..Default::default()
-            },
-        );
-        input_of(&sink).unwrap().model.borrow_mut().set_text("abc");
-        set_selection(&sink, 3, 3);
-        tab_to(&sink);
-        assert_eq!(focused(&surface), Some(sink.clone()));
+    fn colors() {
         assert_eq!(
-            surface.focus_path(),
-            vec![sink.id(), container.id(), nsh_core::ROOT_ID]
+            colorref(Color::rgba(0x11, 0x22, 0x33, 0xff)),
+            COLORREF(0x332211)
         );
-        assert_eq!(input_of(&sink).unwrap().model.borrow().selection(), (3, 3));
-        #[cfg(feature = "terminal")]
-        assert_eq!(
-            terminal_target(&surface).map(|(id, _)| id),
-            Some(u64::from(sink.id()))
-        );
-
-        let generation = surface.terminal_focus_generation.get();
-        container.state_mut().props.pointer_events = nsh_core::PointerEvents::None;
-        assert_eq!(focused_view(&surface), None);
-        assert!(!input_of(&sink).unwrap().focused.get());
-        assert!(surface.focus_path().is_empty());
-        assert!(surface.terminal_focus_generation.get() > generation);
-        surface.stop();
     }
 
     #[test]
-    fn unfocused_input_readonly_transitions_do_not_advance_focus_generation() {
-        let surface = Surface::new(Default::default());
-        let first = NshView::new(2, nsh_core::ViewKind::Input);
-        let second = NshView::new(3, nsh_core::ViewKind::Input);
-        first.insert_before(&surface.root, None);
-        second.insert_before(&surface.root, None);
-        create(&surface, &first);
-        create(&surface, &second);
-        config(&surface, &first, &InputConfig::default());
-        focus_view(&surface, &first);
-        assert!(input_of(&first).unwrap().focused.get());
-        assert!(!input_of(&second).unwrap().focused.get());
-
-        let generation = surface.terminal_focus_generation.get();
-        config(
-            &surface,
-            &second,
-            &InputConfig {
-                editable: false,
-                ..Default::default()
-            },
-        );
-        assert_eq!(surface.terminal_focus_generation.get(), generation);
-        config(
-            &surface,
-            &second,
-            &InputConfig {
-                editable: true,
-                ..Default::default()
-            },
-        );
-        assert_eq!(surface.terminal_focus_generation.get(), generation);
-
-        config(
-            &surface,
-            &first,
-            &InputConfig {
-                editable: false,
-                ..Default::default()
-            },
-        );
-        let readonly_generation = surface.terminal_focus_generation.get();
-        assert!(readonly_generation > generation);
-        config(
-            &surface,
-            &first,
-            &InputConfig {
-                editable: true,
-                ..Default::default()
-            },
-        );
-        assert!(surface.terminal_focus_generation.get() > readonly_generation);
-        surface.stop();
+    fn mouse_positions() {
+        assert_eq!(mouse_lparam(3, 4), 0x0004_0003);
+        // Negative coordinates are signed words.
+        assert_eq!(mouse_lparam(-1, 0) & 0xffff, 0xffff);
     }
 
-    #[cfg(all(feature = "js", feature = "terminal"))]
     #[test]
-    fn unsettled_terminal_composition_survives_enter_and_escape() {
-        let code = nsh_bundler::compile_module(
-            "UnsettledTerminalIme.tsx",
-            r#"
-            import { mount, signal, View } from 'nsh';
-            import { Input } from 'nsh/base';
-            function App() {
-                const first = signal('A');
-                const second = signal('');
-                const log = signal('');
-                return (
-                    <View style={{ flex: 1, gap: 4 }}>
-                        <Input
-                            testID="first"
-                            autoFocus
-                            value={first()}
-                            onChange={({ value }) => first.set(value)}
-                            style={{ height: 28 }}
-                        />
-                        <Input
-                            testID="second"
-                            value={second()}
-                            onChange={({ value }) => second.set(value)}
-                            onFocus={() => log.set(log() + 'focused|')}
-                            onSubmit={() => log.set(log() + 'submitted|')}
-                            submitBehavior="submit"
-                            style={{ height: 28 }}
-                        />
-                        <Input
-                            testID="report"
-                            readonly
-                            focusable={false}
-                            value={log() + second()}
-                            style={{ height: 28 }}
-                        />
-                    </View>
-                );
-            }
-            mount(App);
-            "#,
-            &[],
-        )
-        .unwrap();
-        let surface = Surface::new(nsh_core::platform::Environment {
-            window: nsh_core::Size::new(Points(240.0), Points(120.0)),
-            os: nsh_core::platform::Os::Windows,
-            native_focus_scopes: true,
-            fallback_key_bindings: true,
+    fn bits() {
+        let mut c = InputConfig {
+            editable: true,
             ..Default::default()
-        });
-        surface.terminal_active.set(Some(true));
-        let mut config = nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(code));
-        config.ui_sets = vec![nsh_base::registry()];
-        surface.start(config);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let (second, report) = loop {
-            surface.drain();
-            if focused(&surface).is_some()
-                && surface.events_handled() == surface.events_sent()
-                && let Some(second) = find_test_view(&surface.root, "second")
-                && let Some(report) = find_test_view(&surface.root, "report")
-            {
-                break (second, report);
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "initial fields did not settle"
-            );
-            std::thread::yield_now();
         };
-
-        focus_view(&surface, &second);
-        assert!(behind(&surface));
-        terminal_composition(&surface, "", "方向", None, true).unwrap();
-        assert!(terminal_is_composing(&surface));
-        for vk in [VK_RETURN.0, VK_ESCAPE.0] {
-            assert!(crate::input::key(
-                &surface,
-                KeyEvent {
-                    vk,
-                    down: true,
-                    repeat: false,
-                    modifiers: Modifiers::default(),
-                },
-            ));
-        }
-        assert_eq!(focused(&surface), Some(second.clone()));
-        terminal_composition(&surface, "方向", "", None, false).unwrap();
-
-        while input_of(&report).unwrap().model.borrow().text() != "focused|方向" {
-            surface.drain();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "unsettled terminal composition did not commit cleanly"
-            );
-            std::thread::yield_now();
-        }
-        assert!(!terminal_is_composing(&surface));
-        surface.stop();
+        assert_eq!(base_bits(&c) & TXTBIT_MULTILINE, 0);
+        c.multiline = true;
+        c.secure = true;
+        c.editable = false;
+        let b = base_bits(&c);
+        assert_ne!(b & TXTBIT_WORDWRAP, 0);
+        assert_ne!(b & TXTBIT_USEPASSWORD, 0);
+        assert_ne!(b & TXTBIT_READONLY, 0);
+        assert_ne!(b & TXTBIT_D2DDWRITE, 0);
     }
 }

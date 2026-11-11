@@ -26,7 +26,7 @@ NSH's UI is built in three layers, as GPUI Kit's is (`gpui`, `gpui-base`, `gpui-
 
 The look of an app is the app's own. Its component library is the third layer: components it writes from the [host elements](../elements/index.md) and `nsh/base`, styled with `style`, [Tailwind](../docs/tailwind.md) classes and its theme, Rust components it ships in [its own crate](../docs/rust.md), or a library the community publishes on the same foundation.
 
-There is no catch-all module: each API lives in exactly one place. The APIs of mobile platforms live in `nsh/mobile` (iOS and Android) and those of the desktops in `nsh/desktop` (macOS, Windows, Linux); both can be imported on every platform, so one bundle runs everywhere (on other platforms their calls return at once, and `platform.os` tells you which platform you are on).
+There is no catch-all module: each API lives in exactly one place. The APIs of mobile platforms live in `nsh/mobile` (iOS and Android) and those of the desktops in `nsh/desktop` (macOS, Windows, Linux), and the page around a web app in `nsh/web`; each can be imported on every platform, so one bundle runs everywhere (on other platforms their calls return at once, and `platform.os` tells you which platform you are on).
 
 Types are generated from the runtime: `nsh init`, `nsh build`, `nsh dev` and `nsh test` write `.nsh/types` next to your app, so the TypeScript declarations always match the runtime you build with (see [Project structure](../docs/project-structure.md)).
 
@@ -38,6 +38,7 @@ Types are generated from the runtime: `nsh init`, `nsh build`, `nsh dev` and `ns
 | `nsh/base` | `Button`, `Input`; `TextView`; `createNavStack`, `NavStack`, `NavPage`, `Dialog`; `AlertDialog` | [nsh/base](./nsh-base.md) |
 | `nsh/mobile` | `isAvailable`, `TabBar` (the system's tab bar, iOS and Android), `InputAccessoryView` (iOS), `BackHandler` (Android) | [nsh/mobile](./nsh-mobile.md) |
 | `nsh/desktop` | `isAvailable`, `Window` (title, title bar, maximize, full screen), `titleBar`, `Menu` (application menu, context menus) | [nsh/desktop](./nsh-desktop.md) |
+| `nsh/web` | `Head` (the page's title, description and metadata, for search engines and link previews) | [nsh/web](./nsh-web.md) |
 | `nsh/i18n` | `t`, `setLocale`, `availableLocales` (the app's translations and the language it shows) | [nsh/i18n](./nsh-i18n.md) |
 | `nsh/updater` | `checkForUpdate`, `downloadUpdate`, `installAndRestart` (a packaged app updates itself) | [nsh/updater](./nsh-updater.md) |
 | Standard modules | `buffer`, `console`, `crypto`, `fs/promises`, `net`, `os`, `path`, `process`, `url`, `websocket`, `zlib` | [Standard modules](./standard-modules.md) |

@@ -312,6 +312,9 @@ impl Model {
     /// The engine [`Model::set_up_engine`] set up started: the test moves
     /// its clock through it.
     pub fn engine_started(&self, engine: nsh_engine::EngineControl) {
+        // Steps reach every view of a page, below its fold too, as the
+        // headless driver's do.
+        engine.set_content_culling(false);
         if let Some(setup) = &mut *self.setup.lock().unwrap_or_else(|e| e.into_inner()) {
             setup.engine = Some(engine);
         }
@@ -1174,6 +1177,11 @@ pub trait Native: Send + Sync {
     /// Goes back as the user does (a back gesture, the back button,
     /// Escape): an error when the platform has none.
     fn back(&self) -> Result<(), String>;
+    /// Goes forward in the browser's history: the web's; the other
+    /// platforms have no forward.
+    fn forward(&self) -> Result<(), String> {
+        Err(crate::failure::web_only("forward"))
+    }
     /// Answers the dialog the app shows now (the oldest): presses its
     /// button with the text `button`, or closes it without one.
     fn answer_dialog(&self, button: Option<&str>) -> Result<(), String>;
@@ -1502,6 +1510,7 @@ impl Agent {
                 done(self.native.press_keys(&keys).and_then(|()| self.settled()))
             }
             TestStep::Back => done(self.native.back().and_then(|()| self.settled())),
+            TestStep::Forward => done(self.native.forward().and_then(|()| self.settled())),
             TestStep::Wait { ms } => {
                 std::thread::sleep(Duration::from_millis(ms));
                 done(self.check())
@@ -2248,7 +2257,11 @@ impl Agent {
     }
 
     fn on_screen(&self) -> String {
-        format!("on screen: {:?}", self.scene.texts().unwrap_or_default())
+        let texts = self.scene.texts().unwrap_or_default();
+        format!(
+            "on screen: [{}]",
+            crate::failure::screen_texts(&texts, Some(crate::failure::SCREEN_TEXT_LIMIT))
+        )
     }
 }
 
@@ -2639,6 +2652,13 @@ mod tests {
             agent.take(TestStep::Back),
             StepOutcome::Failed {
                 message: "no back here".into()
+            }
+        );
+        // Only the web's native goes forward.
+        assert_eq!(
+            agent.take(TestStep::Forward),
+            StepOutcome::Failed {
+                message: crate::failure::web_only("forward")
             }
         );
         // No input to type into.

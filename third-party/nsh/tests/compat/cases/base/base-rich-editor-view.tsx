@@ -1,7 +1,8 @@
 // A case of the API's test suite (docs/dev/compatibility.md): the
 // `RichEditor` view's bubble menu: the app's content shown next to the
-// selection while the app passes it, gone when it does not; and a table
-// shown as a grid of its cells, with the table parts' classes.
+// selection while the app passes it, gone when it does not, with the
+// touch selection's handle parts' classes; and a table shown as a grid of
+// its cells, with the table parts' classes.
 import { Text, View, signal } from "nsh";
 import { RichEditor, StarterKit, TableKit, createRichEditor } from "nsh/base";
 
@@ -24,6 +25,8 @@ function App() {
         bubbleMenu={open() ? <Text>BubbleMenu</Text> : undefined}
         bubbleMenuPlacement="bottom"
         bubbleMenuOffset={4}
+        classes={{ selectionHandle: "bg-blue-500", selectionHandleStart: "size-3", selectionHandleEnd: "size-3" }}
+        styles={{ selectionHandle: { opacity: 0.9 } }}
       />
       <RichEditor
         editor={tables}

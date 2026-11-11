@@ -91,8 +91,10 @@ import { TextView } from "nsh/base";
 ## Reading the selection
 
 `onSelectionChange` on a selectable view (`.on_text_selection_change(..)` in Rust) hears the selected text each
-time the selection changes: `{ text, start }`, what Copy would take and where it starts in the view's whole text, and `""` once nothing is selected (a press elsewhere,
-Escape, another view selecting). It reports only changes. In a selectable view inside another, the outer view
+time the selection changes: `{ text, start, bounds, pageBounds }`, what Copy would take, where it starts in the view's whole text
+and the box around it in the view and in the root view it is in (on macOS and Windows; an `Overlay` anchored at
+`pageBounds` is a bar of actions above the selection), and `""` once nothing is selected (a press elsewhere,
+Escape, another view selecting). It reports only changes, of the text or of its box. In a selectable view inside another, the outer view
 reports, as it holds the one selection. A `selectable` [`TextView`](./text-view.md) reports its own the same way
 (`onSelectionChange`, `.on_selection_change(..)`). A chat uses it to quote the part of a reply the reader selected:
 
@@ -163,6 +165,11 @@ const quote = signal("");
 
 It reads the selection the view holds: in a `selectable` view inside another, the outer view holds it, and the inner
 `TextView`'s ref gives `""`.
+
+On Windows, a right click on a selectable view's text opens the menu of the view's `onContextMenu` when it listens (or a view
+inside it around the text does), with the selection kept: the app shows its own menu with `Menu.popup`, where the
+`copy` and `selectAll` roles act on the selection, beside its own items for what is selected. Without a listener,
+Windows shows Copy and Select All.
 
 An [`Input`](./input.md)'s `onSelectionChange` is its own: the caret and selection in its text (`{ start, end }`).
 

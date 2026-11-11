@@ -526,7 +526,15 @@ impl Field {
                 .0
                 .min(column)
                 .max((column + 1).saturating_sub(self.columns + usize::from(self.room)));
-            self.scroll.1 = self.scroll.1.min(row).max((row + 1).saturating_sub(height));
+            // No blank rows below the text while rows above it are hidden:
+            // a field that grew (its height follows its text a frame late)
+            // shows its first rows again.
+            self.scroll.1 = self
+                .scroll
+                .1
+                .min(row)
+                .max((row + 1).saturating_sub(height))
+                .min(self.rows.len().saturating_sub(height));
         } else {
             self.scroll = (0, 0);
         }

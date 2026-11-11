@@ -460,8 +460,8 @@ const color = flash.interpolate({ inputRange: [0, 1], outputRange: ["#1f2328", "
 | `setOffset(offset)` | `set_offset(offset)` | 在显示值上加上 `offset`：绑定看到的是值 + 偏移，而 `set`、动画和拖动改变的是值本身。 |
 | `flattenOffset()` | `flatten_offset()` | 把偏移加到值上，并把偏移设为 0。 |
 | `extractOffset()` | `extract_offset()` | 把值移入偏移并把值设为 0：下一次拖动就从 0 开始，叠加在上一次停下的位置上。 |
-| `timing(to, { duration?, easing?, delay?, frameRate? })` | `timing(to, ms, easing)`、`timing_with(to, Timing { .. })` | 在 `duration` 毫秒内动画到 `to`（默认 300 毫秒，缓动 `"easeInOut"`）。 |
-| `spring(to, { stiffness?, damping?, mass?, velocity?, frameRate? })` | `spring(to, Spring { .. })` | 以弹簧运动到 `to`（默认 stiffness 170、damping 26、mass 1）。 |
+| `timing(to, { duration?, easing?, delay?, frameRate? })` | `timing(to, ms, easing)`、`timing_with(to, Timing { .. })` | 在 `duration` 毫秒内动画到 `to`（默认 300 毫秒，缓动 `"easeInOut"`）。`duration` 为 NaN 或无穷大时直接跳到 `to`；缓动的参数不是有限值时按线性处理。 |
+| `spring(to, { stiffness?, damping?, mass?, velocity?, frameRate? })` | `spring(to, Spring { .. })` | 以弹簧运动到 `to`（默认 stiffness 170、damping 26、mass 1）。stiffness 和 mass 大于 0 且 damping 为有限值时值才会运动，否则直接跳到 `to`；负的 damping 按 0 处理，值会一直振荡。 |
 | `decay({ velocity?, deceleration?, clamp?, bounce?, frameRate? })` | `decay(velocity, deceleration)`、`decay_within(velocity, deceleration, (min, max), bounce)` | 以 `velocity`（每秒单位数）开始滑行并逐渐减速（默认每毫秒 deceleration 0.998）。设置范围 `[min, max]` 时，它停在边界上，或以 `bounce`（0..1）保留的速度从边界反弹。 |
 
 每个动画都给出一个可以 await 的结果，表示它是否完成：播放到终点时为 `true`，被打断时（`stop()`、`set()`，或同一个值上启动了新动画）为 `false`。在 TSX 中它是 `Promise<{ finished: boolean }>`，在 Rust 中是 `AnimationEnd`，任务 await 它得到这个 `bool`。在运动中的值上启动新动画会平滑地接替旧动画：没有指定速度的弹簧或衰减会沿用该值当前的速度。
@@ -787,14 +787,14 @@ const remove = () => {
 | `easeInEaseOut(onEnd?)`、`linear(onEnd?)`、`spring(onEnd?)` | 用预设调用 `animate_layout` | 使用预设调用 `configureNext`。 |
 | `Types`、`Properties` | `LayoutCurve`、`LayoutProperty` | 构造配置时用的名称。 |
 
-配置为 `{ duration, create?, update?, delete? }`（Rust 中为 `LayoutAnimation { create, update, delete }`）：`create` 用于插入的视图，`update` 用于移动或改变尺寸的视图，`delete` 用于删除的视图。每个阶段为 `{ type?, property?, duration?, delay?, springDamping? }`（`LayoutTransition { curve, property, duration_ms, delay_ms }`），其中 `type` 为 `"easeInEaseOut"`、`"spring"`、`"linear"`、`"easeIn"`、`"easeOut"` 或 `"keyboard"`（软键盘自己的曲线，从键盘开始移动时算起，让为它让位的内容与它一起移动；`LayoutCurve::Keyboard`）；`property` 是出现和消失的视图做什么动画（`"opacity"`、`"scaleXY"`、`"scale"`）；`springDamping`（0..1，默认 0.7；`LayoutCurve::Spring { damping }`）决定弹簧的过冲程度。
+配置为 `{ duration, create?, update?, delete? }`（Rust 中为 `LayoutAnimation { create, update, delete }`）：`create` 用于插入的视图，`update` 用于移动或改变尺寸的视图，`delete` 用于删除的视图。每个阶段为 `{ type?, property?, duration?, delay?, springDamping? }`（`LayoutTransition { curve, property, duration_ms, delay_ms }`），其中 `type` 为 `"easeInEaseOut"`、`"spring"`、`"linear"`、`"easeIn"`、`"easeOut"` 或 `"keyboard"`（软键盘自己的曲线，从键盘开始移动时算起，让为它让位的内容与它一起移动；`LayoutCurve::Keyboard`）；`property` 是出现和消失的视图做什么动画（`"opacity"`、`"scaleXY"`、`"scale"`）；`springDamping`（0..1，默认 0.7；`LayoutCurve::FittedSpring { damping_ratio }`）决定弹簧的过冲程度。
 
 ```rust tabs
 use nsh_core::element::{LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition};
 
 animate_layout(LayoutAnimation {
     create: Some(LayoutTransition::new(LayoutCurve::EaseOut, 300.0)),
-    update: Some(LayoutTransition::new(LayoutCurve::Spring { damping: 0.8 }, 300.0)),
+    update: Some(LayoutTransition::new(LayoutCurve::FittedSpring { damping_ratio: 0.8 }, 300.0)),
     delete: Some(LayoutTransition {
         property: LayoutProperty::Scale,
         ..LayoutTransition::new(LayoutCurve::EaseIn, 300.0)
@@ -814,18 +814,27 @@ LayoutAnimation.configureNext({
 布局动画覆盖这次更新改变的所有帧，无论它们在屏幕上的什么位置：同一次更新中刷新的列表或到达的实时数据也会随之动画。在 Rust 组件中，用 `ElementRef::animate_layout(transition)` 只为一个元素的变化所移动的内容做动画：元素自己和其内容的帧，以及被它的尺寸推动的视图（它的兄弟视图，以及各级祖先的兄弟视图）的帧。这次更新的其他帧立即变化。`nsh/base` 的 `Collapsible` 和 `AccordionPanel` 就是这样展开内容的。
 
 ```rust
-use nsh_core::element::{LayoutCurve, LayoutTransition};
+use nsh_core::element::{LayoutTransition, Spring};
 
 let region = element_ref();
 let open = signal(false);
 let toggle = move || {
-    region.animate_layout(LayoutTransition::new(LayoutCurve::Spring { damping: 1.0 }, 265.0));
+    region.animate_layout(LayoutTransition::spring(Spring::new(180.0)));
     open.update(|o| *o = !*o);
 };
 view()
     .element_ref(&region)
     .overflow_hidden()
     .style_with(move |s| if open.get() { s } else { s.h(px(0.0)) })
+```
+
+按物理参数给出的弹簧（设计系统通常这样给出）为 `LayoutTransition::spring(spring)`，其中 `Spring` 与 gpui-base 的一致：`Spring::new(response_ms)`（无阻尼时的周期，临界阻尼）或 `Spring::from_stiffness(stiffness)`（质量为 1），再用 `.damping_ratio(ζ)` 调整阻尼比。动画持续到弹簧停留在目标的千分之一以内为止（`Spring::settle_ms`），与过渡给定的时长无关，并在每个平台上都按同样的物理规律运动（`LayoutCurve::Spring`）。`LayoutCurve::FittedSpring { damping_ratio }` 是 JS 配置所指的弹簧（`type: "spring"`）：它的刚度按过渡的时长拟合。
+
+```rust
+use nsh_core::element::{LayoutTransition, Spring};
+
+// Material 3 Expressive 的快速空间弹簧：刚度 800，阻尼比 0.6。
+region.animate_layout(LayoutTransition::spring(Spring::from_stiffness(800.0).damping_ratio(0.6)));
 ```
 
 ## 各部分运行在哪里

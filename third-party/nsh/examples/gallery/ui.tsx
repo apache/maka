@@ -3,7 +3,8 @@
 import type { Bounds, JSX, ScrollProps } from "nsh";
 import { Canvas, computed, Image, Scroll, signal, Text, View } from "nsh";
 import { platform, setColorScheme, windowSize } from "nsh";
-import { alpha, Appear, Button, colors, focusedSection, hovered, Icon, type IconName, isDark, Press, radius, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, terminal, Tip } from "../nsh-gallery-ui";
+import { alpha, Appear, Button, colors, focusedSection, focusRing, hovered, Icon, type IconName, isDark, Press, radius, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, terminal, Tip } from "../nsh-gallery-ui";
+import { LucideIcon } from "./icons";
 import { nav, shownDemo } from "./nav";
 import { play, setSoundsOn, soundsOn } from "../nsh-gallery-ui/sound";
 import logoDark from "./logo-dark.svg";
@@ -118,7 +119,46 @@ export const paneWidth = () => windowSize().width - (sidebarOpen() ? SIDEBAR : 0
 export const columnsFor = (min: number, max: number, width = paneWidth(), gap = 20) =>
   Math.max(1, Math.min(max, Math.floor((width - 64 + gap) / (min + gap))));
 
-/** Switches the app between light and dark (`setColorScheme`), whatever the system shows. */
+/** Whether the gallery lays out right to left (the settings' RTL,
+ * the phone's toolbar): the layout takes `direction: "rtl"`, the sidebar
+ * moving to the right; the window's own controls keep their place. Kept
+ * while the app runs. */
+export const rtl = signal(false);
+
+/** The `direction` of the gallery's layout. */
+export const demoDirection = () => (rtl() ? "rtl" : "inherit");
+
+/** Lays the demos out right to left and back. */
+export function DirectionToggle(props: { bar?: boolean }) {
+  const label = () => (rtl() ? "Left to right" : "Right to left");
+  const flip = () => {
+    play("toggle", { rate: rtl() ? 0.9 : 1 });
+    rtl.set(!rtl());
+  };
+  if (props.bar) {
+    return (
+      <Press onPress={flip} scale={0.92} accessibilityLabel={label()} accessibilityState={{ selected: rtl() }}>
+        <View style={{ width: 34, height: 34, alignItems: "center", justifyContent: "center" }}>
+          <LucideIcon name="pilcrow" size={18} tint={rtl() ? colors.accent : colors.text} />
+        </View>
+      </Press>
+    );
+  }
+  return <ToolButton glyph={<LucideIcon name="pilcrow" size={16} tint={rtl() ? colors.accent : colors.muted} />} label={label()} title="RTL" on={rtl()} onPress={flip} />;
+}
+
+/** The appearance the gallery is shown in: the system's (nsh.json
+ * `"appearance": "system"`), or light or dark whatever the system shows. */
+export type Appearance = "system" | "light" | "dark";
+/** The appearance chosen (the settings' Theme, the toolbar's switch). */
+export const appearance = signal<Appearance>("system");
+/** Shows the gallery in `next` (`setColorScheme`). */
+export function setAppearance(next: Appearance) {
+  appearance.set(next);
+  setColorScheme(next);
+}
+
+/** Switches the app between light and dark (`setAppearance`), whatever the system shows. */
 export function ThemeToggle(props: { bar?: boolean }) {
   // In the system's bar (iOS, Android) the system draws the button (iOS's
   // Liquid Glass): the item is the icon alone.
@@ -127,7 +167,7 @@ export function ThemeToggle(props: { bar?: boolean }) {
       <Press
         onPress={() => {
           play("toggle", { rate: isDark() ? 1 : 0.9 });
-          setColorScheme(isDark() ? "light" : "dark");
+          setAppearance(isDark() ? "light" : "dark");
         }}
         scale={0.92}
         accessibilityLabel={isDark() ? "Light appearance" : "Dark appearance"}
@@ -145,7 +185,7 @@ export function ThemeToggle(props: { bar?: boolean }) {
       title="Theme"
       onPress={() => {
           play("toggle", { rate: isDark() ? 1 : 0.9 });
-          setColorScheme(isDark() ? "light" : "dark");
+          setAppearance(isDark() ? "light" : "dark");
         }}
     />
   );
@@ -179,11 +219,11 @@ export function SoundToggle(props: { bar?: boolean }) {
 /**
  * A quiet icon button of the window's toolbars and the sidebar (28 pt, a
  * fill under the pointer and while pressed, `on` while what it toggles is
- * shown). `label` names it for screen readers and its tooltip, `shortcut`
+ * shown; `glyph` in place of the icon). `label` names it for screen readers and its tooltip, `shortcut`
  * (a key's label) follows it there. The terminal shows a text button
  * reading `title` (a word or two), else `label`.
  */
-export function ToolButton(props: { icon: IconName; label: string; title?: string; shortcut?: string; on?: boolean; onPress: () => void }) {
+export function ToolButton(props: { icon?: IconName; glyph?: JSX.Element; label: string; title?: string; shortcut?: string; on?: boolean; onPress: () => void }) {
   if (terminal) {
     return <Button label={props.title ?? props.label} accessibilityLabel={props.label} variant="ghost" selected={props.on} onPress={props.onPress} />;
   }
@@ -196,9 +236,10 @@ export function ToolButton(props: { icon: IconName; label: string; title?: strin
       tooltip={<Tip label={props.label} shortcut={props.shortcut} />}
       hoverStyle={hovered()}
       activeStyle={{ backgroundColor: alpha(colors.text, 0.09) }}
+      focusVisibleStyle={focusRing()}
       style={{ width: 28, height: 28, alignItems: "center", justifyContent: "center", borderRadius: radius.control }}
     >
-      <Icon name={props.icon} size={16} tint={colors.muted} />
+      {props.glyph ?? (props.icon && <Icon name={props.icon} size={16} tint={colors.muted} />)}
     </View>
   );
 }

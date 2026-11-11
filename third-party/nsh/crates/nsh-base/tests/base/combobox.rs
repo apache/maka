@@ -95,6 +95,7 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .multiple(props.multiple)
         .placeholder("Search")
         .accessibility_label("Tags")
+        .input_test_id("tags-input")
         .cleanable(props.cleanable)
         .clear_button(text("Clear"))
         .clear_button_accessibility_label("Clear tags")
@@ -432,6 +433,15 @@ fn typing_in_the_input_opens_the_list_and_filters_it() {
     app.see_row(">Swift");
     app.key("enter");
     app.log_ends("change:swift");
+}
+
+#[test]
+fn ui_tests_find_the_input_by_its_test_id() {
+    let mut app = start(multiple());
+    assert_eq!(app.screen().count("id:tags-input"), Ok(1));
+    app.type_text("id:tags-input", "sw").unwrap();
+    app.wait_for("role:option[Swift]").unwrap();
+    assert_eq!(app.screen().count("role:option").unwrap(), 1);
 }
 
 #[test]

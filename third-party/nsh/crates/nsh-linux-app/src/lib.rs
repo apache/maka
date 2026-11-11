@@ -106,6 +106,17 @@ fn setup() -> Option<(std::path::PathBuf, nsh_platform_linux::AppOptions)> {
             .filter_map(|s| s.as_str().map(str::to_owned))
             .collect();
     }
+    // nsh.json `fileTypes`: the files it opens.
+    options.file_types = info
+        .as_ref()
+        .and_then(|info| info.get("fileTypes"))
+        .map(nsh_platform_linux::file_type::file_types_from_json)
+        .unwrap_or_default();
+    // nsh.json `singleInstance`: a second launch goes to this one.
+    options.single_instance = info
+        .as_ref()
+        .and_then(|info| info.get("singleInstance")?.as_bool())
+        .unwrap_or(false);
     // The window opens in the app's appearance (no flash of the system's).
     match field("appearance").as_deref() {
         Some("light") => options.appearance = Appearance::Light,

@@ -13,8 +13,10 @@
 //! - `NOTIFYICON_VERSION_4`: a primary click is `NIN_SELECT`, Enter or Space
 //!   on the focused icon `NIN_KEYSELECT`, a secondary click or Shift+F10
 //!   `WM_CONTEXTMENU`, each with the icon's position. A primary click (and
-//!   the keyboard's) reports the app's `onClick`, else opens the menu; the
-//!   menu opens at the icon, its items reported as a context menu's are.
+//!   the keyboard's) reports the app's `onClick` with the icon's frame
+//!   (`Shell_NotifyIconGetRect`, in points on the monitor with most of it),
+//!   else opens the menu; the menu opens at the icon, its items reported as
+//!   a context menu's are.
 //! - Explorer forgets every icon when it restarts and broadcasts
 //!   `TaskbarCreated`: the icon is added again ([`taskbar_created`]).
 //! - The icon goes with the window that set it ([`destroyed`]).
@@ -28,6 +30,7 @@ use std::{
 use nsh_core::{
     Color, EventKind, EventPayload, ImageSource, PayloadValue, ROOT_ID,
     desktop::{Tray, menu_icon},
+    geometry::{Bounds, Points},
 };
 use windows::{
     Win32::{
@@ -41,7 +44,7 @@ use windows::{
             Shell::{
                 NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
                 NIM_SETVERSION, NIN_SELECT, NOTIFY_ICON_MESSAGE, NOTIFYICON_VERSION_4,
-                NOTIFYICONDATAW, Shell_NotifyIconW,
+                NOTIFYICONDATAW, NOTIFYICONIDENTIFIER, Shell_NotifyIconGetRect, Shell_NotifyIconW,
             },
             WindowsAndMessaging::{
                 CreateIconIndirect, DestroyIcon, GA_ROOT, GetAncestor, GetWindowTextW, HICON,
@@ -284,11 +287,11 @@ pub(crate) fn message(surface: &Rc<Surface>, hwnd: HWND, wparam: WPARAM, lparam:
     };
     let primary = event == NIN_SELECT || event == NIN_KEYSELECT;
     if primary && click != 0 {
-        surface.event(
-            ROOT_ID,
-            EventKind::Menu,
-            EventPayload::Map(vec![("id", PayloadValue::Number(f64::from(click)))]),
-        );
+        let mut payload = vec![("id", PayloadValue::Number(f64::from(click)))];
+        if let Some(bounds) = icon_bounds(hwnd) {
+            payload.push(("bounds", PayloadValue::Bounds(bounds)));
+        }
+        surface.event(ROOT_ID, EventKind::Menu, EventPayload::Map(payload));
     } else if (primary || event == WM_CONTEXTMENU) && !menu.is_empty() {
         let mut p = anchor;
         // SAFETY: a plain call with a local point.
@@ -296,6 +299,20 @@ pub(crate) fn message(surface: &Rc<Surface>, hwnd: HWND, wparam: WPARAM, lparam:
         let scale = surface.scale();
         crate::chrome::popup_tray(surface, menu, (p.x as f32 / scale, p.y as f32 / scale));
     }
+}
+
+/// The icon's frame in screen points, where the taskbar (or its overflow)
+/// shows it.
+fn icon_bounds(hwnd: HWND) -> Option<Bounds<Points>> {
+    let id = NOTIFYICONIDENTIFIER {
+        cbSize: size_of::<NOTIFYICONIDENTIFIER>() as u32,
+        hWnd: hwnd,
+        uID: UID,
+        ..Default::default()
+    };
+    // SAFETY: a complete structure of its own size.
+    let rect = unsafe { Shell_NotifyIconGetRect(&id) }.ok()?;
+    crate::window_state::screen_bounds(rect)
 }
 
 /// The message Explorer broadcasts when the taskbar is made: when it

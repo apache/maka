@@ -799,6 +799,9 @@ impl Listbox {
                     KeyOptions {
                         when,
                         repeat,
+                        // The open list's: Return and Space choose in it
+                        // while its trigger has the focus.
+                        for_focus: true,
                         ..Default::default()
                     },
                     move |_| f(),
@@ -898,6 +901,7 @@ pub(crate) fn bind_tab_out(open: impl Fn() -> bool + 'static, close: Rc<dyn Fn()
                     when: When::Always,
                     repeat: false,
                     pass_through: true,
+                    ..Default::default()
                 },
                 move |_| close(),
             );
@@ -927,8 +931,9 @@ pub(crate) struct Parts {
     /// `footer`); none for `Select`.
     pub(crate) footer: Option<Footer>,
     /// Desktops: the list opens with its selected item over the trigger
-    /// (`Select`'s, as shadcn/ui's item-aligned select), else on a side of
-    /// it (`Combobox`'s). The view the size of that row it lays over.
+    /// (`Select`'s on macOS, as the system's pop-up buttons and shadcn/ui's
+    /// item-aligned select), else on a side of it (`Select`'s elsewhere,
+    /// `Combobox`'s). The view the size of that row it lays over.
     pub(crate) cover: Option<popup::Cover>,
 }
 
@@ -940,6 +945,8 @@ pub(crate) struct SearchField {
     pub(crate) placeholder: Prop<Option<SharedString>>,
     /// What screen readers call it.
     pub(crate) accessibility_label: Prop<Option<SharedString>>,
+    /// The id UI tests find it by.
+    pub(crate) test_id: Prop<Option<SharedString>>,
 }
 
 /// The part below the rows and what it holds.
@@ -1016,6 +1023,7 @@ fn content(lb: Listbox, sheet: bool, parts: Parts, hooks: Hooks) -> Vec<AnyEleme
                         .unwrap_or_default()
                 })
                 .optional_label(field.accessibility_label)
+                .when_some(field.test_id.get_untracked(), |f, id| f.test_id(&id))
                 // The desktops type into it at once; a touch screen's
                 // keyboard comes when the user asks.
                 .auto_focus(!sheet)

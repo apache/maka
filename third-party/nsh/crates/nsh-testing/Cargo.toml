@@ -3,6 +3,7 @@ name = "nsh-testing"
 description = "Headless tests of nsh apps: the driver that runs an app on an engine without a window and takes a user's steps on it, and the runner of nsh test."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true

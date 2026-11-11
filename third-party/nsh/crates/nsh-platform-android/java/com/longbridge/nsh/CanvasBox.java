@@ -49,6 +49,13 @@ final class CanvasBox extends Box {
 
     /** Composite operations or clearRect: the drawing gets a layer of its own. */
     private boolean needsLayer;
+    /**
+     * The drawing sets a shadow. Android 8 draws no shadow layers of shapes
+     * on a hardware canvas, so there such a drawing is replayed in software
+     * into {@link #software}, then drawn as a bitmap.
+     */
+    private boolean hasShadow;
+    private Bitmap software;
 
     /** Sets the drawing; returns the URIs of the images it draws. */
     java.util.List<String> setDrawing(int[] code, Object[] objects) {
@@ -56,11 +63,13 @@ final class CanvasBox extends Box {
         this.objects = objects;
         java.util.ArrayList<String> uris = new java.util.ArrayList<>();
         needsLayer = false;
+        hasShadow = false;
         Reader r = new Reader();
         while (r.i < code.length) {
             int op = code[r.i];
             if (op == 42) uris.add((String) objects[code[r.i + 1]]);
             if (op == 23 || op == 33 && code[r.i + 1] != 0) needsLayer = true;
+            if (op == 34 && code[r.i + 1] != 0) hasShadow = true;
             if (!r.skip()) break;
         }
         images.keySet().retainAll(uris);
@@ -191,6 +200,28 @@ final class CanvasBox extends Box {
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         if (code.length == 0) return;
+        if (hasShadow && Build.VERSION.SDK_INT < 28 && canvas.isHardwareAccelerated()) {
+            int w = getWidth(), h = getHeight();
+            if (w <= 0 || h <= 0) return;
+            if (software == null || software.getWidth() != w || software.getHeight() != h) {
+                software = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            } else {
+                software.eraseColor(0);
+            }
+            replay(new Canvas(software));
+            canvas.drawBitmap(software, 0, 0, null);
+            return;
+        }
+        replay(canvas);
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        software = null;
+    }
+
+    private void replay(Canvas canvas) {
         s = new State();
         stack.clear();
         path = new Path();

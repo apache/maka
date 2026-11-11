@@ -194,7 +194,7 @@ On macOS and the web, where Tab reaches the views that take presses, a `RadioGro
 
 The arrow keys skip disabled radios; the radio they move to asks to be checked with `onChange`, and the app checks it.
 In a right-to-left layout Left and Right trade places: Left moves to the next radio and Right to the previous; Up and
-Down keep theirs. `focus:` styles show where the focus is. A `Radio` outside a `RadioGroup` is a stop of its own, which Tab reaches
+Down keep theirs. `focus-visible:` styles show where the focus is. A `Radio` outside a `RadioGroup` is a stop of its own, which Tab reaches
 and Space and Return check.
 
 ## Platform notes

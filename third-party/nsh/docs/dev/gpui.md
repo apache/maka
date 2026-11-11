@@ -214,13 +214,13 @@ A fully covering window does not change the gallery capture: `app.screenshot` wh
 | Environment | `system.rs` | Color scheme from the app or the window's appearance (`observe_window_appearance`); locale, font scale, reduce motion, right to left, screen reader and OS version read as each native backend reads them (the settings portal and AT-SPI over D-Bus on Linux, `zbus`); pixel ratio the window's scale factor; safe area and keyboard height 0. The app's state (`lifecycle()`) from the window's activation and visibility (`observe_window_activation`, `observe_window_visibility`): `background` while the surface's window is not presented (`WindowVisibility::Hidden`), `active` while one of the windows showing a surface is the active one, `inactive` otherwise. The preferred languages (`localeSettings()`'s `languages`): `GetUserPreferredUILanguages` on Windows, `CFLocaleCopyPreferredLanguages` on macOS, gettext's `LANGUAGE` / `LC_ALL` / `LC_MESSAGES` / `LANG` with their fallbacks on Linux. The regional preferences (`localeSettings()`'s `hourCycle` and the like), over the region's (`LocaleSettings::parse`): on macOS the hours of `CFDateFormatterCreateDateFormatFromTemplate`'s `j` format, `CFCalendar`'s first weekday, `kCFLocaleMeasurementSystem` and the `AppleTemperatureUnit` preference; on Windows the regional format's `LOCALE_STIMEFORMAT`, `LOCALE_IFIRSTDAYOFWEEK` and `LOCALE_IMEASURE`; on Linux the regions of `LC_TIME` (times, weeks) and `LC_MEASUREMENT` (units), with the settings portal's `clock-format` (`org.gnome.desktop.interface`, live) over the hour cycle. The time zone (`localeSettings()`'s `timeZone`) as the native backends name it: on Windows the setting's zone (`GetDynamicTimeZoneInformation`) by its IANA name from the ICU Windows ships (loaded at run time), elsewhere the zone `TZ` names when it names one (`GMT`, `Europe/Berlin`; a POSIX rule such as `JST-9` names none: `TimeZone::posix`), else the zone `/etc/localtime` links to (else `/etc/timezone`); read again whenever a window becomes the active one (GPUI reports no change of it). |
 | Window chrome (`nsh/desktop`) | `chrome.rs` | Windows open with a transparent title bar (macOS, Windows) so both styles can be drawn later: a title row drawn above the app, or the hidden style with the traffic lights / caption buttons over the app (`WindowControlArea` on Windows); Linux uses the window manager's decorations, or client-side ones when asked and granted. The application menu is GPUI's native menu bar on macOS, a menu bar drawn above the app elsewhere (always, or with `Menu.setMenuBar("autoHide")` only after Alt alone, and while one of its menus is open); its shortcuts are matched on key downs after `nsh`'s bindings and before the focused field (`chrome::shortcut`), except an item whose `when` leaves the field the key (`MenuAction::fires_while_editing`); context menus are popups drawn over the window with keyboard access. A menu item's `icon` (`menus.rs`: not the bar's titles) draws in those rows, in a column of its own that moves a level's labels; it loads when its level first shows and comes in with a redraw, an SVG painted in the row's text color and a bitmap as it is. GPUI's native menu bar on macOS shows none, as `gpui::MenuItem` has no image |
 | Clipboard | `system.rs` | GPUI's (`write_to_clipboard` / `read_from_clipboard`): text, `ClipboardEntry::Image` (a format other than PNG, JPEG, GIF, BMP or WebP, such as TIFF, is made PNG on a worker thread) and `ExternalPaths` (files). GPUI reads one kind per item, preferring files, then text, then images, so an item with text and an image (a browser's copied image with its address) gives the text |
-| File drops | `file_drop.rs` | GPUI makes a drag from another application an internal drag of `ExternalPaths` that only its own elements hear, and the surface's hitbox blocks the mouse for those behind it: while a drag is active the `AppView` lays a layer over the surface whose drag moves and drop pick the destination (the closest `onFileDrop` listener under the pointer, within its modal: `input::file_drop_target`) and deliver absolute paths as `file:` URLs; moving between destinations leaves one and enters the next, and leaving the window, dropping, removal or disablement clear it. The first report after a drag enters is the platform's next move (the layer comes with the drag's frame) |
+| File drops | `file_drop.rs` | GPUI makes a drag from another application an internal drag of `ExternalPaths` that only its own elements hear, and the surface's hitbox blocks the mouse for those behind it: while a drag is active the `AppView` lays a layer over the surface whose drag moves and drop pick the destination (the closest `onFileDrop` listener under the pointer, within its modal: `input::file_drop_target`) and deliver absolute paths as `file:` URLs on entry as well as drop; moving between destinations leaves one and enters the next, and leaving the window, dropping, removal or disablement clear it. The first report after a drag enters is the platform's next move (the layer comes with the drag's frame) |
 | Networking | `nsh_engine::net` | ureq, the stack Windows and Linux use |
 | Dev | `dev.rs` | `AppView::connect_dev_server` (also what `AppSource::DevServer` runs): the dev client on its own thread (reconnecting with a backoff); its events, runtime errors and the reload key drained by a foreground task of the view, which ends when the view connects again; the status line and the error overlay are GPUI elements over the surface; the surface reports errors to the overlay and to the embedding app's `on_error` alike |
 
 ## Frame statistics: `--fps`
 
-`nsh-gpui-host --fps` (`AppOptions::fps`, `NSH_FPS=1`, `AppView::set_fps_monitor` for embedders, the app's `setFpsEnabled`) logs one `nsh::perf` line a
+`nsh-gpui-host --fps` (`AppOptions::fps`, `NSH_FPS=1`, `AppView::set_fps_monitor` for embedders, the app's `setFpsEnabled`) logs one `nsh::fps` line a
 second (`stats.rs`): `fps 145 active 0/145 gap … tick … paint … canvas 0.04 paths 26.0 raf 145 notifies 0`. Frames
 drawn and how many of them GPUI counted active (unfocused windows run at 30 fps unless `inactive_frame_interval` is
 `None`), the gaps between frames, the animation tick (prepaint) and the tree's paint (milliseconds as
@@ -250,7 +250,7 @@ per thread, `/proc/<pid>/task/*/status`, an app showing static text, `nsh-gpui-h
 
 A frame costs more than its main-thread wakeup: under lavapipe each one wakes the four `llvmpipe` threads and the
 renderer's (about 30 wakeups a frame), so an app that changes once a second wakes about 35 times a second, and a
-blinking caret about 65. Check an app's idle cost with `--fps` (no `nsh::perf` line while nothing is drawn) and the
+blinking caret about 65. Check an app's idle cost with `--fps` (no `nsh::fps` line while nothing is drawn) and the
 per-thread counts above.
 
 ## Checking a change: `nsh test --target gpui`
@@ -321,7 +321,19 @@ and Windows.
 The main window is the one the surface fills (`chrome.rs`): the window protocol's attributes and requests on the
 root node act on it when the surface is standalone (`open_app_window`, `run_app`, `AppView::own_window`); an
 embedded view leaves its host's window alone. Runners read the app's `window` options (`bundle.main_window`) before
-they open it, so its first frame has them, and open it where it was kept with `restoreBounds`.
+they open it, so its first frame has them, and open it where it was kept with `restoreBounds`. With `defaultVisible:
+false` they open it with GPUI's `show` and `focus` off, and `run_app` leaves the app inactive; GPUI applies a mode
+as it opens a window, which would show it, so a hidden window opens in the normal mode and takes the mode it opens in
+(`Chrome::opening_mode`) as the app first shows or focuses it, unless the app set a mode or placement of its own
+before. The main window's state
+reads its visibility from the native window (`native::visible`) and is reported after each request on it too, as a
+hidden window draws no frame. The development host opens its window hidden until the first app came (`dev.rs`,
+`DevSession::held`), then shows it unless the app's `defaultVisible` says hidden, at the host's size and in the
+normal mode, as every app's window (the other launch options apply where a runner opens the window); an error shows
+it while it is hidden (held, or hidden by the app: a tray app whose startup failed), so it is seen. GPUI shows a
+window as it opens on Linux, so there the main window shows. On macOS a window with a parent is AppKit's child window
+of it (`native::set_parent`), which AppKit orders in with it: a panel or dialog of a hidden main window shows the
+main window as it shows.
 
 Windows of the app's own (`<Window>`, `Window.open`) are GPUI windows the backend opens itself (`window.rs`): its
 built-in window backend, which a host replaces with `AppOptions::windows`. Each shows one root of the app's single
@@ -337,6 +349,7 @@ on Windows and Linux. Views with `windowDrag`, `windowControl` and `windowResize
 buttons and the frame's edges.
 
 What GPUI and the window managers leave out: Linux windows are placed by the window manager (no positions, levels,
-workspaces, taskbar, shadow, color scheme, content protection, maximum size or aspect ratio; hiding minimizes);
+workspaces, taskbar, shadow, color scheme, content protection, maximum size or aspect ratio; a window shows as it
+opens, and hiding minimizes);
 Windows keeps the title bar a window opened with and applies size limits when the window opens; progress shows
 nowhere; close presses from the taskbar, the system menu or Alt+F4 are reported as the close button's.

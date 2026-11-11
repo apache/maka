@@ -162,6 +162,24 @@ a drag extends through `create_selection_between`, and past the viewport's top o
 as Tiptap's file handler leaves them to its `onPaste`. Copy:
 `clipboard_text_serializer`, else `slice_to_text`.
 
+Touch screens (`view/touch.rs`, after the code `Editor`'s `touch.rs`): a tap places the caret as a press does, a
+double tap (two taps within 300 ms and 24 points, or the platform's click count) selects a word and a triple tap the
+textblock; a long press selects the word under the finger, or places the caret where the finger is off every word
+(a space, past a line's end), and arms a sweep: the content claims the touches as the finger moves
+(`claim_touches(on_move)`, kept from the scroll views) and extends the selection by whole words from the pressed one.
+The range a gesture made is the touch selection; while it is the selection and the editor has the focus, a handle
+(a 32-point wide hit area holding the `selectionHandle` knob, above the start's line and below the end's) stands at
+each end and moves that end as a finger drags it, scrolling the end into view. Anything else that changes the
+selection drops it (`Rv::touch_follow`, from `take_state`). The system's edit menu opens on the sink
+(`ElementRef::open_edit_menu`, `Command::OpenEditMenu`: `UIEditMenuInteraction` on iOS, a floating `ActionMode`
+on Android) over the selection when the long press's finger lifts, after a sweep, a double tap, a handle let go and
+a tap on the selection, and at the caret after a long press on blank space or a tap on the caret. As gpui-kit's
+input, it offers Cut, Copy, Paste and Select All and leaves out what cannot apply (`touch::menu_actions`): Cut and
+Copy without a selection, Cut and Paste in a read-only editor, Select All when everything is selected. The bounds
+are the session's selection, which the view may not have rendered yet, grown by the knobs' room above and below
+while handles show, so the menu leaves them free to take a finger. Paste is the sink's own (its `onPaste`, with
+HTML and files); Cut, Copy and Select All come back as `EventKind::EditAction` and run as the keys' commands do.
+
 The bubble menu (`bubbleMenu`, a slot): an empty box over the selection's lines (`Rv::selection_box`), inside the
 content box so it scrolls with the text, anchors an `overlay()` holding the app's content (`bubbleMenuPlacement`,
 `bubbleMenuOffset`); the overlay flips and stays on screen as the core's overlays do. Whether it shows is the app's:
@@ -297,7 +315,7 @@ JS describes.
 - **Events**: `revision` (the session's subscribers: `{ revision }` after every change, from any source), `create`, `update`, `selectionUpdate`, `transaction` (a summary), `focus`, `blur`, `paste`, `drop`,
   `delete`, `destroy`, posted to JS after the fact.
 - **Formats**: JSON (Tiptap's document JSON loads as is), Markdown (each type's form declared by its extension), HTML
-  (parse rules and `toDOM` per type, `DomParser` / `DomSerializer`), text (`renderText` per type).
+  (parse rules and `toDOM` per type, `DomParser` / `DomSerializer`; `format: "html"` reads `content` and `setContent`, `getHTML()` writes), text (`renderText` per type).
 - **JS face** (`js/extension_api.rs`): `createRichEditor({ extensions: [StarterKit.configure({ heading: { levels:
   [1, 2, 3] } }), Underline], content, editable })`. The built-in extensions are classes whose statics make them
   (`configure`, `extend`); a class itself in `extensions` is the extension with its defaults (`ExtensionEntry` reads a
@@ -326,6 +344,10 @@ commands of the built-in registry (`register_commands` of each module): `setLink
   skipped), `handleClickLink` (`handle_click`: Mod or a read-only editor opens the link through `LinkOptions::open`,
   NSH's `open_url` by default, so the embedding app's URL handler sees it first) and `handlePasteLink`
   (`handle_paste`: a URL pasted over a selection links it; `transform_pasted`: URLs in pasted text are linked).
+  Text with the built-in `link` mark shows its `href` (under its `title`) while the pointer rests on it, on the
+  desktops outside a terminal (`render.rs` `spans`: `link_hint` in the span; hover only, the span takes no press, so
+  the caret, the selection and `handleClickLink` are as without; `elements.md` "A link's hint"). A piece an app's
+  `MarkView` renders is the app's element, and its hint the app's.
   `find_links` is the detector: URLs with a protocol, host names whose top-level domain is a known one (every
   two-letter country code and a list of generic ones), e-mail addresses; trailing punctuation and unbalanced
   closing brackets stay outside, as linkify's. `is_allowed_uri` is Tiptap's expression; `should_auto_link` is

@@ -9,8 +9,9 @@
 //!   labelled images, a group for other labelled views, none otherwise (the
 //!   view is no element then, and VoiceOver goes through to its children);
 //! - its label (`accessibilityLabel`; a text view's text is its value, as
-//!   VoiceOver reads static text), its help (`accessibilityHint`), its
-//!   value (`accessibilityValue`: a range for range roles, the text
+//!   VoiceOver reads static text), its help (`accessibilityDescription`
+//!   and `accessibilityHint`, as WebKit gives `aria-description` the help),
+//!   its value (`accessibilityValue`: a range for range roles, the text
 //!   otherwise; the checked state of checkable roles) and its states
 //!   (`accessibilityState`);
 //! - buttons, links, tabs, checkboxes, radios, switches, menu items,
@@ -24,8 +25,13 @@
 //!   VoiceOver does not see);
 //! - its `testID` as its accessibility identifier (what UI tests find).
 //!
+//! A scroll view is a scroll area (`AXScrollArea`) with a scroll bar on its
+//! axis whose value is where it is scrolled to ([`scroll_bar`]).
+//!
 //! Its screen frame follows the layer tree, including ancestor transforms
 //! and scroll containers, rather than AppKit's untransformed view frames.
+//! A scroll view's children, and a list's in its parent's viewport, are
+//! read in the order they are on screen ([`in_reading_order`]).
 //!
 //! Live regions are emulated by announcing a changed label or text
 //! (`NSAccessibilityAnnouncementRequestedNotification`);
@@ -37,13 +43,15 @@
 //! ([`Applied`]): `ViewProps` also carries touch properties, and `Text`
 //! items come again on every relayout.
 
+pub(crate) mod scroll_bar;
 pub(crate) mod table;
 
 use std::sync::Arc;
 
 use nsh_core::{
     Accessibility, AccessibilityRole as Role, AttributedText, Checked, EventKind, EventMask,
-    LiveRegion, MountBatch, ViewKind, ViewStyle,
+    LiveRegion, MountBatch, Point, Points, ViewKind, ViewStyle, geometry::Axis,
+    scroll::reading_order,
 };
 use objc2::{MainThreadOnly, Message, rc::Retained, runtime::AnyObject};
 use objc2_app_kit::{
@@ -91,6 +99,8 @@ pub(crate) struct Applied {
     ax: AxState,
     /// Stable, non-view columns, created only when an AX client asks.
     columns: Vec<Retained<table::Column>>,
+    /// A scroll area's scroll bar, created only when an AX client asks.
+    scroll_bar: Option<Retained<scroll_bar::ScrollBar>>,
 }
 
 /// Which of its children VoiceOver reaches through a view.
@@ -141,6 +151,61 @@ pub(crate) fn controls(children: Option<Retained<NSArray>>) -> Retained<NSArray>
     }
     gather(children, &mut out);
     NSArray::from_retained_slice(&out)
+}
+
+/// AppKit's accessibility `children` of `view` in the order they are on
+/// screen, for a scroll view (along its axis) and a list in its parent's
+/// viewport (`ViewProps::screen_order`, along the list's), as the other
+/// desktop backends read them ([`reading_order`]): a list recycles its
+/// cells, so its subviews are not in their rows' order. Each element goes
+/// by the frame of the child view it is in (AppKit's children are the
+/// elements inside the subviews that are none). Any other view's children,
+/// and those with an element that is no view of a child, stay in tree
+/// order.
+pub(crate) fn in_reading_order(
+    view: &NshView,
+    children: Option<Retained<NSArray>>,
+) -> Option<Retained<NSArray>> {
+    let axis = view.try_state().and_then(|s| match &s.scroll {
+        Some(scroll) if scroll.horizontal => Some(Axis::Horizontal),
+        Some(_) => Some(Axis::Vertical),
+        None => s.props.screen_order,
+    });
+    let (Some(axis), Some(list)) = (axis, children.as_ref()) else {
+        return children;
+    };
+    if list.count() < 2 {
+        return children;
+    }
+    let container = view.container();
+    let mut keyed = Vec::with_capacity(list.count());
+    for child in list.iter() {
+        let Some(origin) = child
+            .downcast_ref::<NSView>()
+            .and_then(|v| child_origin(&container, v))
+        else {
+            return children;
+        };
+        keyed.push((origin, child));
+    }
+    reading_order(axis, &mut keyed, |(origin, _)| *origin);
+    let ordered: Vec<Retained<AnyObject>> = keyed.into_iter().map(|(_, child)| child).collect();
+    Some(NSArray::from_retained_slice(&ordered))
+}
+
+/// The frame origin of the child view of `container` that `view` is or is
+/// in.
+fn child_origin(container: &NSView, view: &NSView) -> Option<Point<Points>> {
+    let mut at = view.retain();
+    loop {
+        let parent = superview(&at)?;
+        if std::ptr::eq(&*parent, container) {
+            break;
+        }
+        at = parent;
+    }
+    let child = NshView::from_ns(&at)?;
+    child.try_state().map(|s| s.frame.origin)
 }
 
 /// True when the view of `s` is content an element folds into its name.
@@ -221,8 +286,8 @@ fn gather_name(view: &NSView, out: &mut String) {
                 .accessibility
                 .label
                 .as_deref()
-                .or(s.text.as_ref().map(|t| t.text.text.as_str()))
-                .map(str::to_owned),
+                .map(str::to_owned)
+                .or_else(|| s.text.as_ref().map(|t| t.text.visible_text().into_owned())),
         };
         drop(s);
         match own {
@@ -359,6 +424,8 @@ struct AxState {
     enabled: bool,
     selected: bool,
     expanded: bool,
+    /// The content is invalid (`AXInvalid`, which [`invalid`] answers).
+    invalid: bool,
     /// A tree item's depth below the top (AppKit's disclosure level).
     disclosure: Option<u32>,
     /// The children are hidden as a group (`grouped`, or the view is
@@ -392,6 +459,8 @@ enum Ax {
     MenuItem,
     Progress,
     ScrollBar,
+    /// A scroll view.
+    ScrollArea,
     SpinButton,
     Tab,
     TabList,
@@ -412,6 +481,10 @@ enum Ax {
     Navigation,
     /// An item of a tree.
     TreeItem,
+    /// A dialog (ARIA's `dialog`).
+    Dialog,
+    /// An alert dialog (ARIA's `alertdialog`).
+    AlertDialog,
     /// A view standing for the window's close button (`windowControl`).
     CloseButton,
     /// ... its minimize button.
@@ -486,6 +559,8 @@ struct Spec {
     disabled: bool,
     selected: bool,
     expanded: Option<bool>,
+    /// The content does not pass the app's checks (ARIA's `aria-invalid`).
+    invalid: bool,
     /// A tree item's level (1 at the top).
     level: Option<u32>,
     /// Hidden with its subtree.
@@ -539,7 +614,12 @@ pub(crate) fn text_changed(view: &NshView) {
         let Some(drawn) = &s.text else { return };
         let old = s.access.text.replace(drawn.text.clone());
         match old {
-            Some(old) if Arc::ptr_eq(&old, &drawn.text) || old.text == drawn.text.text => return,
+            Some(old)
+                if Arc::ptr_eq(&old, &drawn.text)
+                    || old.visible_text() == drawn.text.visible_text() =>
+            {
+                return;
+            }
             old => old.is_none(),
         }
     };
@@ -620,8 +700,9 @@ fn update(view: &NshView) -> bool {
         let s = &mut *s;
         let a = &s.props.accessibility;
         let pressable = is_pressable(s.events);
-        let text = s.text.as_ref().map(|t| t.text.text.as_str());
-        let mut spec = spec_for(a, s.kind, pressable, text, s.style.hidden);
+        // Hidden runs are not read.
+        let text = s.text.as_ref().map(|t| t.text.visible_text());
+        let mut spec = spec_for(a, s.kind, pressable, text.as_deref(), s.style.hidden);
         if let Some(control) = s.props.window_control
             && !spec.hidden
         {
@@ -739,6 +820,17 @@ fn apply(view: &NSView, spec: &Spec, was: &AxState) -> AxState {
     if was.expanded != expanded {
         view.setAccessibilityExpanded(expanded);
     }
+    let invalid = element && spec.invalid;
+    if was.invalid != invalid && was.role.is_some() {
+        // SAFETY: a view, with WebKit's and Chromium's name for the
+        // notification of a changed `AXInvalid`.
+        unsafe {
+            objc2_app_kit::NSAccessibilityPostNotification(
+                view.as_ref(),
+                &NSString::from_str("AXInvalidStatusChanged"),
+            )
+        };
+    }
     if was.disclosure != disclosure {
         view.setAccessibilityDisclosureLevel(disclosure.unwrap_or(0) as isize);
     }
@@ -752,10 +844,22 @@ fn apply(view: &NSView, spec: &Spec, was: &AxState) -> AxState {
         enabled,
         selected,
         expanded,
+        invalid,
         disclosure,
         grouped,
         range: (min, max),
     }
+}
+
+/// The name of the attribute [`invalid`] answers: WebKit's and Chromium's
+/// for ARIA's `aria-invalid`, which VoiceOver reads ("invalid data").
+/// NSAccessibility has no setter for it, so the view answers it itself.
+pub(crate) const INVALID_ATTRIBUTE: &str = "AXInvalid";
+
+/// Whether the element of the view of `s` reports its content invalid
+/// (`accessibilityState.invalid`; [`INVALID_ATTRIBUTE`]).
+pub(crate) fn invalid(s: &ViewState) -> bool {
+    s.access.ax.invalid
 }
 
 /// The value as it compares: which kind of value AppKit was given, and its
@@ -821,6 +925,7 @@ fn ax_role(role: Ax) -> (Option<Retained<NSString>>, Option<Retained<NSString>>)
             Ax::MenuItem => (constant(NSAccessibilityMenuItemRole), None),
             Ax::Progress => (constant(NSAccessibilityProgressIndicatorRole), None),
             Ax::ScrollBar => (constant(NSAccessibilityScrollBarRole), None),
+            Ax::ScrollArea => (constant(NSAccessibilityScrollAreaRole), None),
             Ax::SpinButton => (constant(NSAccessibilityIncrementorRole), None),
             Ax::Tab => (
                 constant(NSAccessibilityRadioButtonRole),
@@ -863,6 +968,17 @@ fn ax_role(role: Ax) -> (Option<Retained<NSString>>, Option<Retained<NSString>>)
             Ax::Navigation => (
                 constant(NSAccessibilityGroupRole),
                 named("AXLandmarkNavigation"),
+            ),
+            // As WebKit maps ARIA's `dialog` and `alertdialog`: VoiceOver
+            // says "web dialog" / "alert dialog" and the label as it
+            // enters.
+            Ax::Dialog => (
+                constant(NSAccessibilityGroupRole),
+                named("AXApplicationDialog"),
+            ),
+            Ax::AlertDialog => (
+                constant(NSAccessibilityGroupRole),
+                named("AXApplicationAlertDialog"),
             ),
             // As an option: AppKit's outline rows need the outline's rows
             // and columns; an item of a tree is static text that reports
@@ -941,11 +1057,12 @@ fn spec_for(
     Spec {
         role,
         label,
-        help: a.hint.as_deref().map(str::to_owned),
+        help: a.help_text(None),
         value,
         disabled: a.state.disabled,
         selected: a.state.selected,
         expanded: a.state.expanded,
+        invalid: a.state.invalid,
         level: a.level,
         hidden: a.hidden || invisible,
         grouped: (a.accessible == Some(true) || role.folds()) && kind != ViewKind::Text,
@@ -982,6 +1099,7 @@ fn base_role(a: &Accessibility, kind: ViewKind, pressable: bool) -> Ax {
             ViewKind::Image if a.label.is_some() => Ax::Image,
             _ if a.accessible == Some(false) => Ax::Generic,
             _ if pressable => Ax::Button,
+            ViewKind::Scroll => Ax::ScrollArea,
             _ if a.label.is_some() || a.accessible == Some(true) => Ax::Group,
             _ => Ax::Generic,
         },
@@ -1023,6 +1141,8 @@ fn base_role(a: &Accessibility, kind: ViewKind, pressable: bool) -> Ax {
         // A tree is a list of its items, as a listbox is (see `TreeItem`).
         Role::Tree => Ax::List,
         Role::TreeItem => Ax::TreeItem,
+        Role::Dialog => Ax::Dialog,
+        Role::AlertDialog => Ax::AlertDialog,
     }
 }
 
@@ -1048,7 +1168,11 @@ fn announce_live(view: &NshView) {
     while let Some(v) = at {
         let live = v.state().props.accessibility.live_region;
         if live != LiveRegion::None {
-            let text = view.state().text.as_ref().map(|t| t.text.text.clone());
+            let text = view
+                .state()
+                .text
+                .as_ref()
+                .map(|t| t.text.visible_text().into_owned());
             if let Some(text) = text {
                 announce(view.ns(), &text, priority(live));
             }
@@ -1078,6 +1202,7 @@ mod tests {
         assert_eq!(role_for(&none, ViewKind::Text, false), Ax::Text);
         assert_eq!(role_for(&none, ViewKind::View, true), Ax::Button);
         assert_eq!(role_for(&none, ViewKind::Image, false), Ax::Generic);
+        assert_eq!(role_for(&none, ViewKind::Scroll, false), Ax::ScrollArea);
         let not_element = Accessibility {
             accessible: Some(false),
             ..Default::default()
@@ -1129,6 +1254,32 @@ mod tests {
         assert_eq!(s.role, Ax::Button);
         assert_eq!(s.label.as_deref(), Some("Label"));
         assert_eq!(s.help.as_deref(), Some("Opens it"));
+        assert!(!s.invalid);
+        // The description goes before the hint in the help.
+        let described = Accessibility {
+            label: Some("Delete file?".into()),
+            role: Role::AlertDialog,
+            description: Some("This can't be undone.".into()),
+            ..Default::default()
+        };
+        let s = spec_for(&described, ViewKind::View, false, None, false);
+        assert_eq!(s.help.as_deref(), Some("This can't be undone."));
+        let both = Accessibility {
+            description: Some("Plays the album".into()),
+            ..labelled.clone()
+        };
+        let s = spec_for(&both, ViewKind::View, true, None, false);
+        assert_eq!(s.help.as_deref(), Some("Plays the album. Opens it"));
+        // A field whose content the app rejected (`AXInvalid`).
+        let invalid = Accessibility {
+            label: Some("Email".into()),
+            state: AccessibilityState {
+                invalid: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(spec_for(&invalid, ViewKind::View, false, None, false).invalid);
 
         let value = AccessibilityValue {
             min: Some(0.0),
@@ -1190,6 +1341,8 @@ mod tests {
             (Role::TreeItem, Ax::TreeItem),
             (Role::MenuItemCheckbox, Ax::MenuItem),
             (Role::MenuItemRadio, Ax::MenuItem),
+            (Role::Dialog, Ax::Dialog),
+            (Role::AlertDialog, Ax::AlertDialog),
         ] {
             assert_eq!(role_for(&with_role(role), ViewKind::View, false), ax);
         }

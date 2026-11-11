@@ -6,7 +6,7 @@ order: 12.5
 
 # nsh/desktop
 
-`nsh/desktop` holds what only desktops have: the app's windows and their title bars, the displays, the application menu and context menus, the tray and global shortcuts. It works on macOS, Windows and Linux. Rust code finds the same in `nsh_core::element::desktop`: windows of the app's own (`window()`), the window a component renders in (`current_window()`, a `WindowRef`), the displays (`displays`), `quit`, `restart`, the application menu and context menus (`set_application_menu`, `popup_menu`, made of `MenuItem`s), and marks draggable views with `.window_drag(true)`; TSX imports `nsh/desktop`. The module can be imported on every platform, so one bundle runs everywhere: on iOS and Android its functions do nothing, and `isAvailable` tells you whether its windows and menus are there.
+`nsh/desktop` holds what only desktops have: the app's windows and their title bars, the displays, the application menu and context menus, the tray and global shortcuts. It works on macOS, Windows and Linux. Rust code finds the same in `nsh_core::element::desktop`: windows of the app's own (`window()`), the window a component renders in (`current_window()`, a `WindowRef`), the displays (`displays`), `quit`, `restart`, the application menu and context menus (`set_application_menu`, `popup_menu`, made of `MenuItem`s), the tray (`set_tray`) and global shortcuts (`register_global_shortcut`), and marks draggable views with `.window_drag(true)`; TSX imports `nsh/desktop`. The module can be imported on every platform, so one bundle runs everywhere: on iOS and Android its functions do nothing, and `isAvailable` tells you whether its windows and menus are there.
 
 ```rust tabs
 use nsh_core::{
@@ -338,6 +338,33 @@ The main window is there when the app starts. nsh.json's `window` holds its laun
 
 It takes the [options](#options) `defaultSize`, `defaultPosition`, `display` and `defaultMode`, and every [attribute](#attributes). While the app runs, `currentWindow()` outside any `<Window>` (or `Window.get("main")`) is the main window, and its `set()` changes the same attributes.
 
+`"defaultVisible": false` starts the app with its main window hidden: the window is made and the app runs in it, unseen and without taking the keyboard, until the app shows it with `show()` or `focus()`, as a [tray](#tray) app does when its icon is clicked. Until then `state()` reports it hidden; the first time it shows, it opens in its `defaultMode`. A link of one of the app's [URL schemes](./nsh.md#urlscheme) opened while the app runs shows it too, and so does opening the app again on macOS (its Dock icon, the Finder). `nsh run` and `nsh test --target` start it hidden as well. Their development host opens the window as it does for every app: with `--target windows` (`nsh run`'s default on Windows) at the app's `defaultSize` and in its `defaultMode`, with `--target macos`, `linux` or `gpui` at the host's size in the normal mode; GPUI shows a window as it opens on Linux, so with `--target gpui` there it shows. Under `nsh run` an error shows it, so the error is seen.
+
+```json
+{
+  "window": {
+    "title": "Focus",
+    "closeOnPress": false,
+    "defaultVisible": false
+  }
+}
+```
+
+```tsx
+import { currentWindow, Tray } from "nsh/desktop";
+import icon from "./tray.svg";
+
+function App() {
+  const win = currentWindow();
+  // The close button hides the window: the app keeps running in the tray.
+  win.on("closePress", () => win.hide());
+  Tray.set({ icon, onClick: () => win.focus(), menu: [{ role: "quit" }] });
+  return <Timer />;
+}
+```
+
+[`examples/tray`](https://github.com/longbridge/nsh/tree/main/examples/tray) is a tray app made this way.
+
 ### Capabilities
 
 An app without `"capabilities"` in nsh.json may open windows of every kind except overlays. An app that declares its capabilities opens windows of its own when `capabilities.windows` grants them ([Sandbox and capabilities](../docs/sandbox-and-capabilities.md#windows)). Overlays and click-through windows (`pointerEvents: "none"`) are granted only when declared. `Window.open` and `<Window>` throw `ERR_ACCESS_DENIED` with `permission` `"windows"` and `resource` the window's id for a window not granted; an attribute not granted in `set()` is left as it is, with a warning.
@@ -348,6 +375,9 @@ An app without `"capabilities"` in nsh.json may open windows of every kind excep
 const Application: {
   quit(): void;
   restart(): void;
+  on(event: "secondInstance", listener: (launch: { args: string[]; cwd: string }) => void): () => void;
+  on(event: "openFiles", listener: (files: { paths: string[] }) => void): () => void;
+  on(event: "quit", listener: () => void): () => void;
 };
 ```
 
@@ -355,6 +385,9 @@ const Application: {
 |---|---|---|
 | `quit()` | `quit()` | Quits the app, as the application menu's Quit item (`{ role: "quit" }`) and the platform's quit key do. |
 | `restart()` | `restart()` | Quits the app as `quit()` does, then starts it again with the same arguments. |
+| `on("secondInstance", listener)` | `next_second_instance()` | The app was launched again while it runs ([Single instance](#single-instance)). |
+| `on("openFiles", listener)` | `next_open_files()` | The system opened the app with files of the types it declares ([Opening files](#opening-files)). |
+| `on("quit", listener)` | `on_app_quit(f)` | The app is quitting: its cleanup runs ([Quitting](#quitting)). |
 
 `Application.quit()` is for a Quit of the app's own (a menu item with its own label, a button) and for restarting after an
 update. The app stops as when its last window closes, then its run ends, also when closing the window alone would
@@ -380,6 +413,142 @@ async function changeLanguage(language: string) {
   if (await confirmRestart()) Application.restart();
 }
 ```
+
+### Quitting
+
+The app owns its Quit, as a GPUI app owns its `Quit` action. The application menu's `{ role: "quit" }` item and its key
+quit at once. An app that asks first (unsaved changes, a running upload) puts a Quit item of its own in the menu with
+the quit key, asks, then calls `quit()`:
+
+```rust tabs
+use nsh_core::{
+    desktop::MenuItem,
+    element::desktop::{on_app_quit, quit, set_application_menu},
+    prelude::*,
+};
+
+#[component]
+fn Editor() -> impl IntoElement {
+    let dirty = signal(false);
+    set_application_menu(vec![MenuItem::submenu("File", vec![
+        MenuItem::new("Quit").shortcut("mod+q").on_select(move || {
+            if dirty.get_untracked() {
+                ask_to_save(); // its Quit button calls `quit()`
+            } else {
+                quit();
+            }
+        }),
+    ])]);
+    // Runs however the app quits; it cannot keep it running.
+    on_app_quit(move || async move { save_session().await });
+    editor()
+}
+```
+
+```tsx tabs
+import { Application, Menu } from "nsh/desktop";
+
+function Editor() {
+  Menu.setApplicationMenu([
+    {
+      label: "File",
+      submenu: [{ label: "Quit", shortcut: "mod+q", onSelect: () => (dirty() ? askToSave() : Application.quit()) }],
+    },
+  ]);
+  // Runs however the app quits; it cannot keep it running.
+  Application.on("quit", async () => {
+    await saveSession();
+  });
+  return <EditorView />;
+}
+```
+
+`Application.on("quit", listener)` (Rust: `on_app_quit`) is the app's cleanup, as GPUI's `on_app_quit`: it runs
+however the app stops (its Quit item, `quit()`, its last window closing, the Dock's Quit, the system ending it when the
+user logs out, a host app removing its view), and cannot keep it running. A promise the listener returns is awaited,
+200 ms at most for all of them, while the platform waits for the app; past that the app stops. A listener added while a
+component renders goes with the component; the function `on` returns stops it.
+
+### Opening files
+
+An app that opens documents (a media player, an editor) lists their types under `fileTypes` in nsh.json. `nsh package`
+declares them to the system, so the app shows in Open With and opens the files the user double-clicks or drops on its
+icon. The files come to `Application.on("openFiles")` as absolute paths, those that launched the app included. Links of
+the app's [schemes](nsh.md#urlscheme) stay apart, on `UrlScheme.on("open")`. `Application` is imported from
+`nsh/desktop`, and `openFiles` also comes on iOS.
+
+```json
+{
+  "fileTypes": [
+    { "name": "Video", "extensions": ["mp4", "mov"], "mimeTypes": ["video/mp4", "video/quicktime"], "contentTypes": ["public.movie"] }
+  ]
+}
+```
+
+```tsx
+import { Application } from "nsh/desktop";
+
+Application.on("openFiles", ({ paths }) => {
+  for (const path of paths) play(path);
+});
+```
+
+| Key | Description |
+| --- | --- |
+| `name` | What the system calls the kind of file (`"Video"`). Required. |
+| `extensions` | The extensions, without the dot (`["mp4", "mov"]`). |
+| `mimeTypes` | The MIME types (`["video/mp4"]`): Linux lists the app for them. |
+| `contentTypes` | Uniform Type Identifiers (`["public.movie"]`): iOS lists the app for them. |
+| `role` | `"viewer"` (the default) or `"editor"`. |
+
+Each type names `extensions` or `contentTypes`. Rust code awaits `next_open_files()` of `nsh_core::prelude`, a
+`Vec<PathBuf>`. Files that come while nothing listens go to the next listener at once (up to 64, the oldest dropped).
+NSH takes opened files only for an app that declares file types.
+
+| Platform | How the app opens files |
+| --- | --- |
+| macOS | `CFBundleDocumentTypes` in `Info.plist`; Launch Services opens the app, or hands the files to the one that runs |
+| iOS, Mac Catalyst | `CFBundleDocumentTypes` in `Info.plist` (by `contentTypes`); the system hands the app a copy of the file |
+| Windows | The app, under `HKEY_CURRENT_USER\\Software\\Classes`, each time it starts: a ProgID per type, listed in each extension's `OpenWithProgids`. A second launch with files hands them to the running app |
+| Linux | `MimeType` of the desktop entry, with `Exec … %U`; the app runs once and a second launch hands its files to the running app |
+| Android, web | Not declared; `fileTypes` is left out of their packages |
+
+With [`singleInstance`](#single-instance) a second launch also reports `secondInstance`, with its arguments as given.
+
+### Single instance
+
+A desktop app usually runs once: opening it again brings the running app forward. An app opts in with
+`"singleInstance": true` in nsh.json. A second launch then hands its command line to the running app and exits before it
+opens a window or starts its engine; the running app brings its main window forward (shown when it was hidden, as a
+tray app's) and reports the launch as `secondInstance`, with the arguments (the program's path not included) and the
+directory it was started in:
+
+```json
+{ "singleInstance": true }
+```
+
+```tsx
+import { Application } from "nsh/desktop";
+
+Application.on("secondInstance", ({ args, cwd }) => {
+  const file = args.find((arg) => !arg.startsWith("-"));
+  if (file) openDocument(resolve(cwd, file));
+});
+```
+
+Rust code awaits `next_second_instance()` of `nsh_core::prelude`, a `SecondInstance` with `args` and `cwd`. A launch that
+comes while nothing listens waits for the next listener (up to 16, the oldest dropped). Anyone can start the app with
+any arguments, so check them as any other input. Links of the app's [schemes](nsh.md#urlscheme) among the arguments
+also come through `UrlScheme.on("open")`.
+
+| Platform | How the app runs once |
+| --- | --- |
+| Windows | A mutex named after the app's id; the second launch sends its arguments and working directory to the running app's window (`WM_COPYDATA`) |
+| Linux | GApplication's uniqueness on the session bus, by the app's id; the second launch's command line goes to the running app |
+| macOS | Launch Services runs one instance of an app bundle and activates it when it is opened again, so `secondInstance` is not reported; files come through `openFiles` and links through `UrlScheme` |
+| iOS, Android, web | The system runs the app once; `secondInstance` is not reported |
+
+The release runners of `nsh package` read the setting; `nsh run` starts its development host as before.
 
 ## A title bar of your own
 
@@ -775,8 +944,10 @@ interface TrayModule {
 | --- | --- |
 | `icon` | The icon, as `<Image>`'s `src` takes it. Panels draw it at 16 to 24 pixels, so keep it simple and square. On macOS and Windows an SVG is a template drawn in the color of the menu bar's or taskbar's text. Without it, Windows shows the app's icon. |
 | `tooltip` | Shown when the pointer rests on the icon; the app's name without it. |
+| `title` | Text beside the icon, as runs `{ text, color? }`, each in its own color (a CSS color; without one, the menu bar's text color): what the app keeps in sight, such as a price. macOS's menu bar shows it in the menu bar's font. Linux's panels that show AppIndicator labels (GNOME's AppIndicator extension, Unity, MATE, Budgie) show its text right of the icon, in the panel's color; Plasma, Waybar and Windows' notification area show the icon alone. |
+| `titlePlacement` | Which side of the icon the title shows on: `"right"` (the default) or `"left"`. macOS only; Linux's panels always draw the title right of the icon. |
 | `menu` | Its menu, made of the same items as `Menu`'s. A secondary click opens it, and so does a primary one when there is no `onClick`. |
-| `onClick` | Called when the icon is clicked with the primary button (on Windows, Enter or Space on the icon too). |
+| `onClick` | Called when the icon is clicked with the primary button (on Windows, Enter or Space on the icon too), with `{ bounds }`: where the icon is ([below](#a-window-at-the-icon)). |
 
 Call `set` again to change it; inside an `effect` it follows the signals it reads.
 
@@ -796,7 +967,88 @@ Tray.set({
 });
 ```
 
-TSX only for now; Rust components have no tray yet.
+A window the app shows or focuses in `onClick` or in a menu item's `onSelect` comes to the front, on Linux's Wayland desktops too, where the panel hands the app the activation token of the click.
+
+A title keeps something in sight beside the icon in macOS's menu bar, such as a price, its change in a color of the app's theme. A run's color is fixed when `set` is called; set the tray inside an `effect` that reads the color scheme for a theme color to follow light and dark:
+
+```rust tabs
+use nsh_core::desktop::TrayTitleRun;
+
+set_tray(tray().icon(icon).title([
+    TrayTitleRun::new("AAPL 228.00 "),
+    TrayTitleRun::new("+1.33%").color(color(tokens().color("up").unwrap())),
+]));
+```
+
+```tsx tabs
+import { token } from "nsh";
+
+Tray.set({
+  icon,
+  title: [{ text: "AAPL 228.00 " }, { text: "+1.33%", color: token("up") }],
+});
+```
+
+### A window at the icon
+
+`onClick`'s `bounds` is the icon's frame on the screen when it was clicked, in points, in the coordinates of `displays()` and `setBounds`: from the primary display's top left corner, `y` growing down. On macOS it is the status item's place in the menu bar, on Windows the icon's place in the notification area or its overflow. On Linux it is `null`, as the window manager places the app's windows there; it is `null` too whenever the system reports a click without a frame. A popup window opened from it shows next to the icon: below a menu bar at the top of the screen, above a taskbar at the bottom.
+
+```tsx
+import type { Bounds, Point, Size } from "nsh";
+import { Tray, Window, displays } from "nsh/desktop";
+import { TrayPanel } from "./TrayPanel";
+
+const size = { width: 320, height: 240 };
+
+Tray.set({
+  icon,
+  onClick: ({ bounds }) => {
+    if (!bounds) return Window.get("main")?.focus();
+    Window.open(TrayPanel, {
+      id: "tray-panel",
+      kind: "popup",
+      defaultSize: size,
+      defaultPosition: atIcon(bounds, size),
+    }).focus();
+  },
+});
+
+/** Centered on the icon, on the side of its display with more room, kept
+ * in the display's visible area. */
+function atIcon(icon: Bounds, size: Size): Point {
+  const inside = (b: Bounds, p: Point) =>
+    p.x >= b.origin.x && p.x < b.origin.x + b.size.width && p.y >= b.origin.y && p.y < b.origin.y + b.size.height;
+  const display = displays().find(d => inside(d.bounds, icon.origin)) ?? displays()[0];
+  if (!display) return { x: icon.origin.x, y: icon.origin.y + icon.size.height };
+  const area = display.visibleBounds;
+  const below = icon.origin.y < area.origin.y + area.size.height / 2;
+  const x = icon.origin.x + (icon.size.width - size.width) / 2;
+  const y = below ? icon.origin.y + icon.size.height + 4 : icon.origin.y - size.height - 4;
+  const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max);
+  return {
+    x: clamp(x, area.origin.x, area.origin.x + area.size.width - size.width),
+    y: clamp(y, area.origin.y, area.origin.y + area.size.height - size.height),
+  };
+}
+```
+
+In Rust, `set_tray(tray()...)` is the same (`None` removes it): `tray()` is a builder with `.icon(..)`, `.tooltip(..)`, `.title(runs)` (`TrayTitleRun::new(text)`, with `.color(..)`), `.title_placement(..)` (`TrayTitlePlacement`), `.menu(items)` (the same `MenuItem`s as `set_application_menu`) and `.on_click(|e| ..)`, whose `TrayClickEvent` carries `bounds: Option<Bounds<Points>>`. Its handlers run under the owner that set it, while that owner lives; in an `effect` it follows the signals it reads. One tray per app, shared with TSX: the last set wins.
+
+```rust
+use nsh_core::element::desktop::{MenuItem, main_window, quit, set_tray, tray};
+
+set_tray(
+    tray()
+        .icon("tray.svg")
+        .tooltip("Mail")
+        .on_click(|_| main_window().focus())
+        .menu([
+            MenuItem::new("New Message").on_select(compose),
+            MenuItem::separator(),
+            MenuItem::new("Quit").on_select(quit),
+        ]),
+);
+```
 
 ## GlobalShortcut
 
@@ -820,4 +1072,17 @@ On Linux, shortcuts go through the desktop portal (`org.freedesktop.portal.Globa
 import { GlobalShortcut, Window } from "nsh/desktop";
 
 const ok = await GlobalShortcut.register("mod+shift+space", () => Window.get("main")?.focus());
+```
+
+In Rust, `register_global_shortcut(keystroke, on_press)` returns an `Answer<bool>`, awaited in a task or left alone; it panics on a keystroke that is not one, as `MenuItem::shortcut` does. `unregister_global_shortcut(keystroke)` and `unregister_all_global_shortcuts()` give them back, and a shortcut is also given back when the owner that registered it goes.
+
+```rust
+use nsh_core::element::desktop::{main_window, register_global_shortcut};
+
+let taken = register_global_shortcut("mod+shift+space", || main_window().focus());
+spawn(async move {
+    if !taken.await {
+        log::warn!("mod+shift+space is taken");
+    }
+});
 ```

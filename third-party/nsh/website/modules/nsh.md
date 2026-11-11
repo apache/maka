@@ -286,7 +286,8 @@ and the classes naming tokens, `nsh/base` and Rust components' `theme()` follow 
 appearances. An embedding app's [theme overrides](../docs/tailwind.md#theme-tokens) still win over it. `null` gives
 back the theme the app was built with.
 
-The theme is read whole: when a value cannot be read (a color NSH does not know, such as `#zz` or `lab()`, a `var()`
+The theme is read whole: when a value cannot be read (a color NSH does not know, such as `#zz`, `lab()` or
+`rgb(255 0 0)garbage`, a `var()`
 that names no color, or a value that is no color in one appearance where the other's is), `setTheme` throws a
 `TypeError` that names each one, and the theme shown stays. Values of no kind a token has, such as shadows, are left
 out as they are from `nsh.json`'s. Build the new theme from the app's own, so the tokens its classes name keep a value
@@ -305,6 +306,38 @@ function brand(color: string) {
 
 brand("#e11d48");
 setTheme(null); // the app's theme again
+```
+
+## appInfo
+
+```ts
+function appInfo(): AppInfo;
+
+interface AppInfo {
+  readonly id: string | null;
+  readonly name: string | null;
+  readonly version: string | null;
+  readonly build: number | null;
+  readonly development: boolean;
+}
+```
+
+The app as it was built: its id, name, version and build number, and whether it is a development build. A package
+reports what `nsh package` and `nsh publish` name and version it as, their `--id`, `--name`, `--version` and `--build`
+included, with version `1.0.0` and build `1` where nothing gives them; other builds report `nsh.json`'s `"id"`,
+`"name"`, `"version"` and `"build"`, `null` where it leaves them out. `nsh run`, `nsh dev`, `nsh test` and `nsh build`
+without `--release` make development builds; `nsh package`, `nsh publish` and `nsh build --release` make release
+builds. It reads the same on every platform and in any module, at its top level too: the build hands the information
+to the runtime before the app's modules run.
+
+`nsh/updater`'s [`shellInfo()`](./nsh-updater.md#shellinfo) reports the installed app's version.
+
+```tsx
+import { appInfo, Text } from "nsh";
+
+const { version, build, development } = appInfo();
+
+export const About = () => <Text>{`${version} (${build})${development ? " · dev" : ""}`}</Text>;
 ```
 
 ## View, Text, Scroll, Overlay
@@ -1059,6 +1092,25 @@ function setFpsEnabled(enabled: boolean): void;
 <Switch checked={fpsEnabled()} onChange={({ checked }) => setFpsEnabled(checked)} />
 ```
 
+### shadersAvailable
+
+```ts
+const shadersAvailable: Accessor<boolean>;
+```
+
+Whether the platform draws shader views (`Shader`, `ShaderEffect`, `ShaderTransition`, `ScreenEffect`,
+`ScreenTransition`), reactive. It is `true` on iOS, Android, macOS, Windows, Linux, GPUI, the web and in headless tests,
+and `false` in a terminal and in apps built with the `shader` feature turned off. It starts `true` and turns `false`
+for good when the first shader mounts on a machine whose GPU NSH cannot open (a browser without WebGL 2), so show the
+shader while it holds and the app's own drawing otherwise ([Shader](../elements/shader.md#whether-shaders-draw)).
+Rust: `shaders_available() -> bool`.
+
+```tsx
+<If when={shadersAvailable()} else={<Image src={backdrop} style={{ flex: 1 }} />}>
+  <Shader source={BACKDROP} style={{ flex: 1 }} />
+</If>
+```
+
 ### platform
 
 ```ts
@@ -1645,7 +1697,10 @@ writeImage(src: string): Promise<void>;
 
 Puts the image of `src`, a base64 `data:` URL or the `url` `readImage` gave, on the clipboard, replacing what it holds.
 Rust: `set_clipboard_image(src)`. On Windows it takes a PNG, the format browsers, Office and the Snipping Tool read. On
-Android it rejects with `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"`.
+the web the image goes on the clipboard as a PNG, the image format browsers write; an image of another format also goes
+on as it is, as HTML (`<img>`, in a paste's `html`) and, in Chromium browsers, as the original `readImage` returns, so a
+GIF keeps its frames. On Android it rejects with
+`"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"`.
 
 ```rust tabs
 set_clipboard_image(image.url.clone());
@@ -1876,7 +1931,7 @@ for (const { file } of picked) {
 
 | Platform | Picker | Filters |
 |---|---|---|
-| macOS | `NSOpenPanel` sheet | All the extensions at once |
+| macOS | `NSOpenPanel`: a sheet of the app's window, or, while that window is out of sight (a tray app's hidden main window), a panel of its own in front | All the extensions at once |
 | Windows | `IFileOpenDialog` | One choice per filter, shown by its name |
 | Linux | `GtkFileDialog` (the portal's where there is one) | One choice per filter, shown by its name |
 | iOS | `UIDocumentPickerViewController`, as copies | All the extensions at once |
@@ -1964,7 +2019,9 @@ only the running app: one left on screen after the app exits does nothing.
 ### Notifications.permission
 
 `permission()` answers without asking, `requestPermission()` shows the system's prompt the first time. Both resolve with
-`"default"` (not asked yet), `"granted"`, `"denied"` (only the system's settings change it) or `"unavailable"`.
+`"default"` (not asked yet), `"granted"`, `"denied"` (only the system's settings change it) or `"unavailable"`. On Apple
+platforms `requestPermission()` resolves with the permission the system's settings hold once it has asked: `"denied"` for
+an app the user turned notifications off for.
 
 ## UrlScheme
 
@@ -2011,6 +2068,118 @@ files and the system's apps (`http`, `https`, `file`, `mailto`, `tel`, `sms`, ..
 
 An app that embeds NSH owns its schemes and hands a URL to its view: `AppView.open_url` (Linux, iOS), `NshAppView.openURL`
 (Swift), `NshView.openUrl` or `NshView.handleUrlSchemeIntent` (Android).
+
+### UrlScheme.url
+
+`url()` is the app's address and `setUrl(url)` sets it, so an app gives its pages addresses on every platform:
+
+```ts
+const UrlScheme: {
+  on(event: "open", listener: (event: { url: string }) => void): () => void;
+  /** The address moved without the app moving it (the web's back and forward, an address the user typed). */
+  on(event: "change", listener: (event: { url: string; reason: "back" | "forward" | "address" }) => void): () => void;
+  /** The app's address, or null when it has none. */
+  url(): string | null;
+  /** Sets the address of the page shown; the app's pages stay as they are. */
+  setUrl(url: string, options?: { history?: "replace" | "push" }): void;
+};
+```
+
+| Platform | `url()` | `setUrl(url)` |
+| --- | --- | --- |
+| The web, the app the whole page | The page's address: the one it loaded, what `setUrl` set, or the entry's the browser's back went back to | Replaces the current history entry's address, resolved as `history.replaceState` resolves it (against the page's `<base href>`), after the entries of the pages pushed or popped in the same turn; with `history: "push"`, an entry of its own after it, as `history.pushState` makes one (below) |
+| The native platforms, and the web in an iframe | The last link that opened the app (the link that launched it also comes as the first `open`), or what `setUrl` set after it; `null` before either | Keeps the URL for `url()`, with `history: "push"` too (there is no history to push to); giving it to the system (Handoff, App Links) is the embedding app's |
+
+A URL that is not a string, longer than 16 KiB or with whitespace is a `TypeError`, and so on the web, when the app is
+the whole page, is one that is not a URL of the page's origin. The app keeps one address, which Rust reads too, and `url()` reads it as it is: a link,
+Rust's `set_app_url` and `setUrl` show at once. On the platforms
+above, the link that launched the app is there before its code runs, so the first `url()` reads it, and it also comes as the first `open`
+(on the web the page's address is there from the start). Every page pushed
+on a shown stack keeps its own history entry on the web, so the browser's back goes back in the app: the stack's pages
+go back and the address becomes the entry's, with no `open`, as for any page the app pops (a page the app keeps, with
+`popOnBack={false}` or `onBackPress`, keeps its entry and address). A forward to a page the stack no longer has, and
+an entry of an earlier load of the page (a reload keeps them), come as `open` with the entry's address, as a link: the
+app shows the page it names, as below, and an app that shows nothing for it stays where it is. An app that builds its
+first routes from `url()`, sets the top
+page's address in its stack's [`onChange`](../elements/nav-stack.md) and shows the pages a link names has addresses for
+its pages everywhere:
+
+```tsx
+import { UrlScheme } from "nsh";
+import { NavStack, createNavStack } from "nsh/base";
+
+// A route is "" (the inbox) or a message's id: strings, so the routes of an address equal those shown.
+type Route = string;
+
+function routesOf(url: string | null): Route[] {
+  const id = url && new URL(url, "https://app.invalid/").searchParams.get("message");
+  return id ? ["", id] : [""];
+}
+
+// "." is the page's own path, without a query.
+const urlOf = (route: Route) => (route ? `?message=${encodeURIComponent(route)}` : ".");
+
+const nav = createNavStack<Route>(routesOf(UrlScheme.url()));
+
+// A link, and on the web a forward the stack cannot reach by going back.
+UrlScheme.on("open", ({ url }) => nav.setRoutes(routesOf(url)));
+
+export function App() {
+  return (
+    <NavStack
+      state={nav}
+      style={{ flex: 1 }}
+      onChange={({ routes }) => UrlScheme.setUrl(urlOf(routes[routes.length - 1]))}
+    >
+      {(route) => (route ? <Message id={route} /> : <Inbox onOpen={(id) => nav.push(id)} />)}
+    </NavStack>
+  );
+}
+```
+
+Rust code awaits `app_url()` and calls `set_app_url(url)` of `nsh_core::prelude`, beside `next_url_scheme_open()`; the
+same address as `url()` and `setUrl`, and `set_app_url` returns an error for the URLs `setUrl` throws for. On the web it
+resolves a URL against the page's base, as `setUrl` does, and one of another origin than the page's is an error.
+
+An address that is a place of its own in the app, with no page pushed for it (a tab, a filter or sort in the query, a
+split view's selected row), is set with `history: "push"`, so the browser's back goes back to the address before it
+instead of leaving the page. The app hears that back and the forward after it as
+[`change`](#urlschemeonchange):
+
+```tsx
+function selectTab(tab: Tab) {
+  current.set(tab);
+  UrlScheme.setUrl(`?tab=${tab}`, { history: "push" });
+}
+UrlScheme.on("change", ({ url }) => current.set(tabOf(url)));
+```
+
+A push is an entry at the pages shown, after the current one, and drops the browser's forward entries, as
+`history.pushState` does. In the turn that pushes a page, the address goes to the page's entry, with no entry of its
+own (as `onChange` sets it); in the turn that pops one, it is an entry after the one the back lands on. Pushing the
+address shown makes no entry, and in one turn the last address wins and a push wins over a replace. `history` of
+another value is a `TypeError`. Rust calls `set_app_url_with(url, HistoryBehavior::Push)` (`nsh_core::url_scheme`).
+
+### UrlScheme.on("change")
+
+`change` reports a move of the app's address that the app did not make and that its pages do not account for, with the
+address and what moved it. `url()` reads the address already, and the app shows what it names:
+
+```tsx
+// The tab is in the address (`?tab=live`); a back or forward to another tab's entry shows that tab.
+UrlScheme.on("change", ({ url }) => tab.set(tabOf(url)));
+```
+
+| `reason` | When (on the web, the app the whole page) |
+| --- | --- |
+| `"back"`, `"forward"` | The browser's back or forward went to an entry of the same pages with another address (an address the user typed), or a back popped pages and left an address the app did not set as it answered (no `onChange` sets one) |
+| `"address"` | The user gave the page an address of the app's, a `#fragment` typed in the address bar: a new entry after the current one, with the app's pages as they are |
+
+What the stack accounts for stays as it is: a back that pops pages is the stack's (`onChange`), a forward to a page the
+stack no longer has is `open`, and the app's own `setUrl` is no `change`. Moves that come while nothing listens are not
+kept: `url()` has them. The native platforms, GPUI hosts and terminals have no history of addresses, so `change` comes
+only on the web. Rust code awaits `next_app_url_change()` of `nsh_core::prelude`, an `AppUrlChange` with the `url` and
+its `reason`.
 
 ## Speech
 
@@ -2180,7 +2349,7 @@ import { AudioPlayer, Sound } from "nsh";
 ```ts
 declare class Sound {
   static available(): Promise<boolean>;
-  static load(src: string): Promise<Sound>;
+  static load(src: string | Uint8Array): Promise<Sound>;
   play(options?: { volume?: number; rate?: number }): void;
   stop(): void;
   readonly duration: number;
@@ -2226,8 +2395,10 @@ type AudioErrorCode =
 
 Loads a sound from an imported audio file (`import click from "./sounds/click.wav"`: the import is the file's
 `asset:/` URL, and the file ships with the app), a `file:` URL, a `data:` URI or an `http(s)` URL
-the app's `network` capability grants, and decodes it into memory. A source the engine loaded already is shared: two
-components loading the same click cost one decode. The sound is freed by `dispose()`, or when what loaded it goes (a
+the app's `network` capability grants, or from a sound file's bytes (a `Uint8Array` the app made or downloaded; in
+Rust also bytes it embeds, `load_sound(include_bytes!("tick.wav"))`), and decodes it into memory. The bytes' format
+(WAV, AAC, MP3, ...) is read from the bytes themselves. A source the engine loaded already is shared, and so are equal
+bytes: two components loading the same click cost one decode. The sound is freed by `dispose()`, or when what loaded it goes (a
 component unmounts). A sound is at most 8 MB encoded and 5 seconds long, and an app holds at most 64 sounds and 16 MB
 of decoded audio at once; past them `load` rejects with `code` `"ERR_NSH_QUOTA_EXCEEDED"`. Longer audio is an
 `AudioPlayer`'s.

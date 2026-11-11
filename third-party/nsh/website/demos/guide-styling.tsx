@@ -1,6 +1,6 @@
 import { mount, Scroll, signal, Text, View } from "nsh";
 import { reduceMotion } from "nsh";
-import { desktop, focusRing, size, tint, ui, wide } from "./palette";
+import { desktop, focusRing, tint, ui, wide } from "./palette";
 
 // A function, so the styles follow the page's theme.
 const styles = () =>
@@ -56,12 +56,12 @@ function App() {
               onPress={() => picked.set(picked() === i() ? -1 : i())}
               style={[
                 desktop
-                  ? { height: size.control + 6, justifyContent: "center", paddingHorizontal: 14, borderRadius: 8, backgroundColor: ui().raised.backgroundColor, alignItems: "center", borderWidth: 3, borderColor: "transparent" }
+                  ? { height: 38, justifyContent: "center", paddingHorizontal: 14, borderRadius: 8, backgroundColor: ui().raised.backgroundColor, alignItems: "center", borderWidth: 3, borderColor: "transparent" }
                   : { flex: 1, padding: 12, borderRadius: 10, backgroundColor: ui().raised.backgroundColor, alignItems: "center", borderWidth: 3, borderColor: "transparent" },
                 picked() === i() && styles().selected,
               ]}
               hoverStyle={{ opacity: 0.88 }}
-              focusStyle={focusRing()}
+              focusVisibleStyle={focusRing()}
               activeStyle={{ opacity: 0.7 }}
             >
               <Text style={{ color: ui().text, fontSize: desktop ? 13 : undefined }}>{label()}</Text>
@@ -89,7 +89,7 @@ function App() {
           transitionTimingFunction: "ease-in-out",
         }}
         hoverStyle={{ opacity: 0.88 }}
-        focusStyle={focusRing()}
+        focusVisibleStyle={focusRing()}
         activeStyle={{ opacity: 0.7 }}
       >
         <Text style={{ color: ui().page, fontWeight: "600" }}>{on() ? "On" : "Off"}</Text>

@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::Context as _;
-use nsh_bundler::{BundleError, BundleOptions};
+use nsh_bundler::{AppInfo, BundleError, BundleOptions};
 
 use crate::ui;
 
@@ -49,6 +49,10 @@ pub(crate) struct Built {
     /// The files the app ships: those it imports and those its UI sets'
     /// crates ship ([`crate_assets`]).
     pub(crate) assets: Vec<Asset>,
+    /// The directory its imported assets are named from
+    /// (`nsh_bundler::Bundle::asset_root`), where the dev server finds the
+    /// media files a literal `asset:/` URL names; `None` for a Rust app.
+    pub(crate) asset_root: Option<PathBuf>,
     /// Files of the last build, including shared sources outside the app.
     pub(crate) watch_files: Vec<PathBuf>,
     /// What the app declares it may reach (`nsh.json` `capabilities`).
@@ -80,6 +84,7 @@ pub(crate) fn rust_root() -> Built {
         chunks: Vec::new(),
         entry_imports: Vec::new(),
         assets: crate_assets().collect(),
+        asset_root: None,
         watch_files: Vec::new(),
         capabilities: None,
         ui_sets: Vec::new(),
@@ -141,13 +146,18 @@ fn imported_sets(natives: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// The imported resources' logical names and files, plus those the UI sets ship.
-fn assets(imported: &[nsh_bundler::Asset]) -> Vec<Asset> {
+/// The app's assets: `imported` (relative to the app's directory `root`,
+/// the bundle's `asset_root`) and the UI sets' ([`crate_assets`]).
+fn assets(root: &Path, imported: &[PathBuf]) -> Vec<Asset> {
     let mut assets: Vec<Asset> = imported
         .iter()
-        .map(|asset| Asset {
-            path: asset.path.clone(),
-            source: asset.source.clone(),
+        .map(|rel| Asset {
+            path: rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/"),
+            source: root.join(rel),
         })
         .chain(crate_assets())
         .collect();
@@ -189,19 +199,49 @@ impl BuildError {
 /// Bundles `entry` and compiles it to bytecode: one bundle, holding what
 /// `import()` loads too (native packages).
 pub(crate) fn compile(entry: &Path, release: bool) -> Result<Built, BuildError> {
-    compile_with(entry, release, false, release.into())
+    compile_with(entry, release, false, release.into(), AppInfo::default())
+}
+
+/// [`compile`] in release mode for a package of `config`'s app (`split`:
+/// as [`compile_split`] does, for web apps), giving it `config`'s version
+/// and build number (`--version`, `--build`).
+pub(crate) fn compile_package(
+    entry: &Path,
+    split: bool,
+    config: &crate::package::AppConfig,
+) -> Result<Built, BuildError> {
+    compile_with(entry, true, split, true.into(), app_info(entry, config))
 }
 
 /// [`compile`], with what `import()` loads split into chunks
 /// ([`Built::chunks`]) loaded on demand (web apps).
 pub(crate) fn compile_split(entry: &Path, release: bool) -> Result<Built, BuildError> {
-    compile_with(entry, release, true, release.into())
+    compile_with(entry, release, true, release.into(), AppInfo::default())
 }
 
 /// [`compile`] in release mode (minified), with the bytecode stripped as
-/// `strip` says (signed packages keep their line tables by default).
-pub(crate) fn compile_release(entry: &Path, strip: nsh_js::Strip) -> Result<Built, BuildError> {
-    compile_with(entry, true, false, strip)
+/// `strip` says (signed packages keep their line tables by default), giving
+/// the app `config`'s version and build number.
+pub(crate) fn compile_release(
+    entry: &Path,
+    strip: nsh_js::Strip,
+    config: &crate::package::AppConfig,
+) -> Result<Built, BuildError> {
+    compile_with(entry, true, false, strip, app_info(entry, config))
+}
+
+/// The identity a package of `config`'s app carries (after `--id`,
+/// `--name`, `--version` and `--build`, with the defaults the package
+/// writers use: [`crate::package::name_and_id`], `1.0.0`, build `1`), so
+/// `appInfo()` reports what the package says it is.
+fn app_info(entry: &Path, config: &crate::package::AppConfig) -> AppInfo {
+    let (name, id) = crate::package::name_and_id(entry, config);
+    let mut info = AppInfo::default();
+    info.id = Some(id);
+    info.name = Some(name);
+    info.version = Some(config.version.clone().unwrap_or_else(|| "1.0.0".to_owned()));
+    info.build = Some(u64::from(config.build.unwrap_or(1)));
+    info
 }
 
 fn compile_with(
@@ -209,13 +249,17 @@ fn compile_with(
     release: bool,
     split: bool,
     strip: nsh_js::Strip,
+    app: AppInfo,
 ) -> Result<Built, BuildError> {
     let start = Instant::now();
     let mut bundle = nsh_bundler::bundle(&BundleOptions {
         entry: entry.to_path_buf(),
         minify: release,
+        development: !release,
         split,
         ui_sets: crate::ui_sets().to_vec(),
+        app,
+        asset_root_from: None,
     })?;
     let sources: Vec<(&str, &str)> = std::iter::once((nsh_js::BUNDLE_NAME, bundle.code.as_str()))
         .chain(
@@ -248,7 +292,8 @@ fn compile_with(
         source_map: bundle.source_map,
         chunks,
         entry_imports: bundle.entry_imports,
-        assets: assets(&bundle.assets),
+        assets: assets(&bundle.asset_root, &bundle.assets),
+        asset_root: Some(bundle.asset_root),
         watch_files: bundle.watch_files,
         capabilities: bundle.capabilities,
         ui_sets: imported_sets(&bundle.natives),
@@ -272,7 +317,8 @@ pub(crate) fn compile_hot(entry: &Path) -> Result<(Built, nsh_bundler::HotBundle
         source_map,
         chunks: Vec::new(),
         entry_imports: Vec::new(),
-        assets: assets(&hot.assets),
+        assets: assets(&hot.asset_root, &hot.assets),
+        asset_root: Some(hot.asset_root.clone()),
         watch_files: hot.watch_files.clone(),
         capabilities: hot.capabilities.clone(),
         ui_sets: imported_sets(hot.natives()),
@@ -330,7 +376,11 @@ pub(crate) fn build(entry: &Path, out: &Path, release: bool, split: bool) -> any
     fs::write(
         &app,
         crate::package::app_json(
-            serde_json::json!({ "id": id }),
+            {
+                let mut info = serde_json::json!({ "id": id });
+                config.add_file_types_to_app_json(&mut info);
+                info
+            },
             &schemes,
             config.window.as_ref(),
         ),
@@ -378,7 +428,7 @@ pub(crate) fn build(entry: &Path, out: &Path, release: bool, split: bool) -> any
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     /// Separates development bundling, hot-script assembly and QuickJS compilation.
     /// Run with `cargo test -p nsh-cli bench_dev_startup -- --ignored --nocapture`.
@@ -414,5 +464,68 @@ mod tests {
     fn hosts_must_serve_the_ui_sets_an_app_imports() {
         let natives = ["nsh", "nsh/mobile", "nsh/base"].map(String::from);
         assert_eq!(super::imported_sets(&natives), ["nsh/base"]);
+    }
+
+    #[test]
+    fn imported_assets_keep_their_paths_under_the_app() {
+        let assets = super::assets(
+            Path::new("/app"),
+            &[PathBuf::from("img/a.png"), PathBuf::from("b.ttf")],
+        );
+        let paths: Vec<_> = assets
+            .iter()
+            .map(|a| (a.path.as_str(), a.source.clone()))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                ("b.ttf", PathBuf::from("/app/b.ttf")),
+                ("img/a.png", PathBuf::from("/app/img/a.png")),
+            ]
+        );
+    }
+
+    /// An entry below its app (`tests/SubApp.tsx`, which a test opens)
+    /// ships the files it imports from anywhere in the app, named from the
+    /// app's directory as the app's own entry names them (#1483).
+    #[test]
+    fn an_entry_below_its_app_ships_assets_named_from_the_app() {
+        let dir = std::env::temp_dir().join(format!("nsh-cli-sub-assets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::create_dir_all(dir.join("tests")).unwrap();
+        std::fs::write(dir.join("nsh.json"), "{}").unwrap();
+        std::fs::write(dir.join("App.tsx"), "export {};\n").unwrap();
+        // A PNG's header: all the bundler reads of it.
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend(4u32.to_be_bytes());
+        png.extend(4u32.to_be_bytes());
+        png.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        std::fs::write(dir.join("assets/dot.png"), &png).unwrap();
+        std::fs::write(
+            dir.join("tests/SubApp.tsx"),
+            "import { Image, mount } from \"nsh\";\nimport dot from \"../assets/dot.png\";\nmount(() => <Image src={dot} />);\n",
+        )
+        .unwrap();
+        let root = dunce::canonicalize(&dir).unwrap();
+        let check = |built: &super::Built| {
+            assert!(
+                built.code.contains("\"asset:/assets/dot.png\""),
+                "{}",
+                built.code
+            );
+            let asset = built
+                .assets
+                .iter()
+                .find(|a| a.path == "assets/dot.png")
+                .expect("the image ships");
+            assert_eq!(asset.source, root.join("assets/dot.png"));
+            assert!(asset.source.is_file());
+            assert_eq!(built.asset_root.as_deref(), Some(root.as_path()));
+        };
+        let entry = dir.join("tests/SubApp.tsx");
+        check(&super::compile(&entry, false).unwrap());
+        check(&super::compile_hot(&entry).unwrap().0);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

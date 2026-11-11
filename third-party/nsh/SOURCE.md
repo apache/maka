@@ -19,66 +19,66 @@
 
 # Native Shell (NSH)
 
-This tree retires `crates/gpui`, `third-party/gpui-wgpu` and `examples/embed-gpui`. Desktop rendering uses AppKit (`nsh-platform-macos`), Direct2D (`nsh-platform-windows`) and GTK4 (`nsh-platform-linux`); terminal pixel transport uses `crates/nsh-terminal` together with the AppKit and Direct2D offscreen terminal surfaces. The original upstream inventory in `upstream.json` remains provenance for the imported snapshot, including files subsequently removed.
+This directory contains NSH from [`longbridge/nsh`](https://github.com/longbridge/nsh),
+synchronized through revision `2452c93d450bfe0ee1e22da5248191ba0a391051`
+(version 0.5.0). The original import came from `M4n5ter/nsh`, branch
+`tui/terminal-backend`, at `de176695240d550f2b303643b8019146c7989e7f`.
 
+`upstream.json` records the original import and current upstream revision.
+`files` holds SHA-256 hashes of the original source bytes; `file_sources`
+identifies each file's upstream repository and revision. Local modifications
+never replace those provenance hashes. The inventory includes upstream files
+excluded from the maintained tree. Original licenses, source, resources, tests
+and independent workspaces retain their attribution.
 
-This directory initially imported the complete tracked source of
-[`M4n5ter/nsh`, `tui/terminal-backend`](https://github.com/M4n5ter/nsh/tree/tui/terminal-backend)
-at `de176695240d550f2b303643b8019146c7989e7f`. The maintained upstream is
-[`longbridge/nsh`](https://github.com/longbridge/nsh).
+## Upstream integration
 
-The complete upstream tree is synchronized through `longbridge/nsh` revision
-`323a8663f6fdb63340c634a50da9bbb820037b69`. Earlier selective imports are
-consolidated into this baseline; the pixel terminal transport and minimal
-retained adaptations remain in this tree.
+Maka uses the canonical NSH component, event, ref, module and typed-style APIs.
+Desktop `Input` uses the platform's native editing path; Windows uses upstream's
+windowless RichEdit/TSF implementation. The structured skill composer uses
+RichEditor's schema and node-view model, as upstream's structured editors do.
 
-`upstream.json` retains the initial fork's `repository` and `revision`.
-`upstream_revision` records the integrated upstream revision. `files` contains
-SHA-256 hashes of original imported bytes; `file_sources` identifies the
-repository and revision of each upstream file's baseline. Fork-only files keep
-their original hashes and implicit initial-fork source. Merged local content
-is never substituted for upstream source bytes. Upstream deletions remove their
-source records. The source, tests, resources, original licenses and independent
-workspaces are retained; `SOURCE.md` and `upstream.json` are Maka provenance files.
+Lists, reactive item publication, component event traversal, input modality and
+focus-visible behavior use upstream implementations. Immutable captured files
+provide indexed rows through the same list items memo and cell publication,
+without materializing a full JavaScript array. Asset builds use upstream
+app roots and package-relative paths; built-in plugin builds declare the Maka
+repository as their shared root. Callers migrate with upstream rather than
+keeping aliases or older implementations.
 
-## Current upstream integration
+Installed plugin modules are immutable compiled artifacts. A compiler contract
+change requires rebuilding and repinning external UI packages; invalidating a
+build cache alone cannot update installed modules. Built-in packages are rebuilt
+and synchronized with the product.
 
-The latest integration uses a three-way merge against each file's recorded
-baseline, rather than assuming that previous selective imports shared one
-revision. Reusable changes should go to `longbridge/nsh`; later synchronizations
-should replace local patches when upstream provides their required behavior.
-
-Maka and retained examples use the current canonical API directly: Rust element
-helpers come from `nsh_core::element` and its prelude; JavaScript host services
-live in `nsh`, mobile services in `nsh/mobile`, and Input in `nsh/base`. Named
-event payloads, element-specific refs and typed styles replace old shapes.
-Upstream `ItemAlign` replaces the local `LayoutAlign` declaration helper.
-Subscriptions use the unified `on()` API and its returned stop function, with
-reactive-owner cleanup; callers no longer expect subscription objects with
-`remove()`. Migrate consumers and rebuild declarations and bundles together,
-then remove superseded APIs rather than retaining aliases.
-
-`platform.idiom` reports `"terminal"` on cell-based terminals while
-`platform.desktop` remains `true` on desktop and terminal surfaces alike; use
-`platform.idiom === "terminal"` to distinguish cell terminals from graphical
-desktop windows. `Environment::ctrl_for_command` remaps `Command`-based keymap
-shortcuts to `Ctrl` on terminal surfaces (including pixel-terminal offscreen
-AppKit/Direct2D surfaces). `nsh/desktop` window operations take an explicit
-`WindowRef` (`mainWindow()`).
+`platform.idiom === "terminal"` distinguishes cell terminals from graphical
+windows. `Environment::ctrl_for_command` maps Command shortcuts to Ctrl on
+terminal surfaces. Desktop window operations take explicit `WindowRef` values.
 
 ## Retained local capabilities
 
-Local modifications in `third-party/nsh` are kept minimal to ease periodic synchronization with `longbridge/nsh`:
+- **Terminal transport:** `crates/nsh-terminal` and `third-party/icy_sixel`
+  provide Kitty, Sixel and iTerm2 pixel transport, shared with the AppKit and
+  Direct2D offscreen terminal surfaces and the TUI image store. GPUI and its
+  embed example remain retired.
+- **Embedding and packages:** configured host loading, lazy plugin chunks,
+  `import.meta.assetBase` resource namespaces, main-thread lifecycle hooks and
+  terminal inspection are required by Maka's shells and plugin composition.
+- **Source-aware reading:** TextView preserves canonical source identity,
+  byte offsets and reading anchors through Markdown rendering and repair.
+  RichEditor exposes leased geometry for the composer and terminal surfaces.
+- **Input ordering and scopes:** `inputAction`, `ScrollIntent`, scoped/fallback
+  key bindings and focus-event fences preserve editor actions, IME, paste and
+  reload ordering. Scoped lookups also enforce upstream window isolation.
 
-- **GPUI removal and `nsh-terminal`**: `crates/gpui`, `third-party/gpui-wgpu` and `examples/embed-gpui` are removed. `crates/nsh-terminal` and `third-party/icy_sixel` provide Kitty, Sixel and iTerm2 pixel frame encoding and damage/slot state shared with `nsh-platform-macos` (`terminal` feature), `nsh-platform-windows` (`terminal` feature) and `nsh-platform-tui` (`ImageStore`).
-- **Chunk loading, `ScrollIntent` and `inputAction`**: `nsh-engine` exposes `ChunkLoader` (`EngineConfig::chunk_loader`) for lazy plugin chunk evaluation; `nsh-core` and `nsh-js` retain `EventKind::ScrollIntent` and `inputAction` for structured editor/reader interactions.
-- **Text reading and `RichEditor` integration (`nsh-core`, `nsh-base`)**: `TextView` retains its piecewise `Source` mapping and reading-anchor pipeline alongside upstream Markdown selection, and `RichEditor` exposes `geometry_handle` and honors `Environment::ctrl_for_command` on macOS terminal surfaces.
-- **Reactive list and component event fixes (`nsh-core`, `nsh-js`)**: `Core::deliver_component_event` preserves sibling listeners and nested emits, and `ListState` separates deferred length updates from reactive binds while refreshing retained keyed cell `item` values even when zero structural splices occur.
-- **Focus-fence ordering, composing `Escape`, and scoped/fallback key bindings**: `EngineControl::events_sent` pairs with `MountSink::handled` so editing keys, shortcuts, IME/composition, paste and `pause_input` barriers wait for in-flight focus-triggering engine events and pending `autoFocus` targets across AppKit, Win32/Direct2D, GTK4 and TUI. Composing `Escape` cancels active preedit cleanly, and `within`/`fallback` key bindings run in scope order without stealing keys handled by focused controls.
-- **Desktop shell and terminal-surface host hooks**: AppKit, Win32/Direct2D, GTK4 and `nsh-platform-tui` (`AppView` + `LocalEngine` driver) retain `load_with_config`, `run_app_with_config`, `with_running_view`, `quit_app`, `pause_input`/`resume_input`, `pressable_bounds`, and headless inspection helpers required by Maka's desktop shell, terminal shell and real-Host integration tests.
+## Maintenance and verification
 
-## Verification and future synchronization
+Compare retained changes against each recorded upstream baseline. Remove local
+patches when upstream supplies the same behavior; migrate all product, plugin,
+fixture and build consumers together. Keep provenance, generated declarations,
+browser bootstrap, dependency notices and CI input/archive coverage current.
 
-Develop and verify the vendored code together with its Maka callers. Reuse Maka's CI (`scripts/ci.mjs`) for freshly generated declarations, application TypeScript checking, nested `nsh` tests, and native platform suites on Linux (`xvfb-run` GTK4), macOS (AppKit + offscreen terminal) and Windows (Win32/Direct2D + offscreen terminal).
-
-For the next sync, compare each file with its recorded upstream baseline in `upstream.json`, drop local patches superseded by upstream `longbridge/nsh`, migrate consumers to canonical upstream APIs and refresh hashes from the upstream tree.
+Maka's `scripts/ci.mjs` owns the verification entrypoints. Relevant checks include
+core/runtime and component behavior, application contracts, TUI and native
+terminal input, plugin resource packaging and platform-native integration.
+Windows RichEdit/TSF and AppKit behavior require their respective native runners.

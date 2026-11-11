@@ -646,16 +646,24 @@ pub(crate) fn wake(hwnd: isize) {
     }
 }
 
-/// Fills the window's client area with its background before the first
-/// frame. Windows composites and animates a window that has not painted yet
-/// with its default light surface, which flashes white on a dark appearance;
-/// its swap chain does not cover that surface until the first present.
+/// Fills the window's client area with its background: before the first
+/// frame, and as it is resized. Windows composites and animates a window
+/// that has not painted yet with its default light surface, which flashes
+/// white on a dark appearance; its swap chain does not cover that surface
+/// until the first present, nor past the last frame while a resize's is on
+/// its way.
 pub(crate) fn fill_background(surface: &Surface, hwnd: HWND) {
-    if surface.transparent() {
-        return;
+    if !surface.transparent() {
+        fill(hwnd, crate::system::window_background(surface));
     }
+}
+
+/// Fills the client area of `hwnd` with `color` (opaque), through GDI: what
+/// DWM shows of the window where no frame of its swap chain covers it.
+pub(crate) fn fill(hwnd: HWND, color: nsh_core::Color) {
     // `Color` is 0xRRGGBBAA; a GDI color is 0x00BBGGRR.
-    let color = crate::system::window_background(surface).0;
+    let color = color.0;
+    // SAFETY: a plain GDI call; the brush is freed below.
     let brush = unsafe {
         CreateSolidBrush(COLORREF(
             ((color >> 24) & 0xff) | ((color >> 8) & 0xff00) | ((color & 0xff00) << 8),
@@ -793,9 +801,28 @@ pub(crate) fn modifiers() -> Modifiers {
     }
 }
 
+/// The [`WindowData`] of `hwnd`, when it is one of this process's windows
+/// of [`CLASS`]: callers pass windows they did not make too (the foreground
+/// window, which may be another app's), whose `GWLP_USERDATA` is theirs,
+/// not a `WindowData`.
 fn data(hwnd: HWND) -> Option<&'static WindowData> {
-    // SAFETY: the pointer was stored by `WM_NCCREATE` and is freed only in
-    // `WM_NCDESTROY`, after which the slot is cleared.
+    use windows::Win32::{
+        System::Threading::GetCurrentProcessId,
+        UI::WindowsAndMessaging::{GCLP_WNDPROC, GetClassLongPtrW, GetWindowThreadProcessId},
+    };
+    let mut process = 0;
+    // SAFETY: plain queries; an out value for the process id.
+    let ours = unsafe {
+        GetWindowThreadProcessId(hwnd, Some(&mut process)) != 0
+            && process == GetCurrentProcessId()
+            && GetClassLongPtrW(hwnd, GCLP_WNDPROC) == window_proc as *const () as usize
+    };
+    if !ours {
+        return None;
+    }
+    // SAFETY: a window of `CLASS` in this process: the pointer was stored by
+    // `WM_NCCREATE` and is freed only in `WM_NCDESTROY`, after which the
+    // slot is cleared.
     unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowData).as_ref() }
 }
 
@@ -1016,6 +1043,10 @@ fn handle(
             surface.paint();
             // SAFETY: as above.
             let _ = unsafe { EndPaint(hwnd, &ps) };
+            // Handled: `DefWindowProcW` would validate the window again and
+            // drop an invalidation made while the frame was drawn, leaving
+            // `invalid` set and no `WM_PAINT` to come (#1594).
+            return Some(LRESULT(0));
         }
         WM_ERASEBKGND => return Some(LRESULT(1)),
         WM_SIZE if surface.terminal_active.get().is_none() => {
@@ -1023,7 +1054,10 @@ fn handle(
             surface.activation_changed(
                 wparam.0 != SIZE_MINIMIZED as usize && unsafe { GetForegroundWindow() } == hwnd,
             );
+            fill_background(surface, hwnd);
             sync_size(surface, hwnd);
+            // The frame's material follows the zoom state.
+            crate::shell::zoom_changed(hwnd);
             // Drawn now, so that the window never shows stretched or
             // stale pixels while it is resized.
             surface.paint();
@@ -1052,6 +1086,9 @@ fn handle(
             crate::window_state::displays_changed(surface);
         }
         WM_MOUSEMOVE => {
+            if crate::chrome::press_moved(surface, hwnd, lparam) {
+                return Some(LRESULT(0));
+            }
             if !data.tracking.replace(true) {
                 let mut track = TRACKMOUSEEVENT {
                     cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
@@ -1109,6 +1146,9 @@ fn handle(
                 return Some(LRESULT(0));
             }
             let button = button_of(msg, wparam);
+            if msg == WM_LBUTTONUP && crate::chrome::press_released(surface, hwnd, point(lparam)) {
+                return Some(LRESULT(0));
+            }
             data.buttons.set(data.buttons.get() & !(1 << button));
             if data.buttons.get() == 0 {
                 // SAFETY: plain call.
@@ -1124,6 +1164,7 @@ fn handle(
             return Some(LRESULT(1));
         }
         WM_CAPTURECHANGED => {
+            crate::chrome::press_cancelled(surface, hwnd);
             if data.buttons.replace(0) != 0 {
                 crate::input::pointer(
                     surface,
@@ -1308,6 +1349,7 @@ fn window_api(
             let attrs = shell.attrs();
             let scale = dpi(hwnd) as f32 / 96.0;
             let (l, t, r, b) = frame_extents(hwnd);
+            crate::chrome::nc_max_size(hwnd, info);
             let (min, max) = crate::shell::track_sizes(&attrs, scale, (l + r, t + b));
             match min {
                 Some((x, y)) => info.ptMinTrackSize = POINT { x, y },
@@ -1451,7 +1493,7 @@ fn sys_close(hwnd: HWND, lparam: LPARAM) -> crate::shell::SysClose {
 
 /// True when a mouse message was synthesized from touch or pen input,
 /// which comes as `WM_POINTER*` messages too.
-fn from_touch() -> bool {
+pub(crate) fn from_touch() -> bool {
     // MI_WP_SIGNATURE in the extra info marks synthesized mouse messages.
     // SAFETY: plain call.
     let extra = unsafe { GetMessageExtraInfo() }.0 as usize;
@@ -1528,6 +1570,16 @@ fn mouse_event(
         modifiers: modifiers(),
         clicks,
     }
+}
+
+/// A click of the primary button that the window held back
+/// ([`crate::chrome::WindowPress`]): down at `from`, up at `to` (client
+/// points).
+pub(crate) fn click(surface: &Rc<Surface>, from: (f32, f32), to: (f32, f32)) {
+    let down = mouse_event(PointerKind::Down, from.0, from.1, 0, 1, 1, surface);
+    crate::input::pointer(surface, down);
+    let up = mouse_event(PointerKind::Up, to.0, to.1, 0, 0, 1, surface);
+    crate::input::pointer(surface, up);
 }
 
 /// The pointer moved over a view of the app's title bar that answers as
@@ -1880,6 +1932,76 @@ mod tests {
         }
     }
 
+    /// Asks once, while it is drawn, for the window to be drawn again, as a
+    /// web view that leaves does. Counts its frames.
+    struct AsksOnce {
+        surface: std::rc::Weak<Surface>,
+        armed: Cell<bool>,
+        drawn: Cell<u32>,
+    }
+
+    impl crate::view::Hosted for AsksOnce {
+        fn draw(&self, _cx: &mut crate::render::DrawCx<'_>, _size: (f32, f32)) {
+            self.drawn.set(self.drawn.get() + 1);
+            if self.armed.replace(false)
+                && let Some(surface) = self.surface.upgrade()
+            {
+                surface.invalidate();
+            }
+        }
+    }
+
+    fn pump_for(ms: u64) {
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        let mut msg = MSG::default();
+        while std::time::Instant::now() < until {
+            // SAFETY: the test thread's own queue.
+            unsafe {
+                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn a_paint_asked_for_while_drawing_comes() {
+        if crate::gfx::get().is_err() {
+            return;
+        }
+        let surface = Surface::new(Default::default());
+        let hwnd = create(&surface, "NSH paint test", (200, 150), None, false).unwrap();
+        let asks = Rc::new(AsksOnce {
+            surface: Rc::downgrade(&surface),
+            armed: Cell::new(false),
+            drawn: Cell::new(0),
+        });
+        let item: Rc<dyn crate::view::Hosted> = asks.clone();
+        surface
+            .root
+            .set_native(&item, crate::geom::rect(0.0, 0.0, 50.0, 50.0));
+        // SAFETY: plain calls on the test's window.
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        pump_for(200);
+        let before = asks.drawn.get();
+        asks.armed.set(true);
+        // SAFETY: as above.
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            let _ = UpdateWindow(hwnd);
+        }
+        assert_eq!(asks.drawn.get() - before, 1, "drawn by the WM_PAINT");
+        pump_for(200);
+        let after = asks.drawn.get() - before;
+        // SAFETY: as above.
+        unsafe { DestroyWindow(hwnd).unwrap() };
+        assert!(after >= 2, "the frame asked for while drawing never came");
+    }
+
     #[test]
     fn minimized_activation_does_not_report_foreground() {
         assert!(activation_active(WPARAM(WA_ACTIVE as usize)));
@@ -1900,5 +2022,56 @@ mod tests {
         assert_eq!(held_buttons(WPARAM(0x10)), 0b100);
         assert_eq!(held_buttons(WPARAM(0x20)), 0b1000);
         assert_eq!(held_buttons(WPARAM(0x40)), 0b1_0000);
+    }
+
+    unsafe extern "system" fn plain_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        // SAFETY: default handling.
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    /// A window the app did not make (the foreground window can be another
+    /// app's) keeps what it likes in `GWLP_USERDATA`: it is never read as a
+    /// `WindowData`, which crashed the test agent's typing on Windows on Arm.
+    #[test]
+    fn a_window_of_another_class_has_no_window_data() {
+        // SAFETY: a class registered and a window made on this thread, never
+        // shown, destroyed at the end; its user data is set and never read.
+        unsafe {
+            let class = WNDCLASSEXW {
+                cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                lpfnWndProc: Some(plain_proc),
+                hInstance: instance(),
+                lpszClassName: w!("NshTestForeign"),
+                ..Default::default()
+            };
+            RegisterClassExW(&class);
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("NshTestForeign"),
+                w!(""),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                100,
+                100,
+                None,
+                None,
+                Some(instance()),
+                None,
+            )
+            .unwrap();
+            // An address nothing is mapped at, as another app's pointer is.
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0x0000_7FFF_FFFF_0000);
+            assert!(surface_of(hwnd).is_none());
+            assert_eq!(app_window_root(hwnd), None);
+            assert!(shell(hwnd).is_none());
+            DestroyWindow(hwnd).unwrap();
+        }
+        assert!(surface_of(HWND::default()).is_none());
     }
 }

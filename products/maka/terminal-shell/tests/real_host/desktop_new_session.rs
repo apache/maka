@@ -1880,7 +1880,17 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
         .join("../terminal-shell/tests/real_host/model_settings_preview.tsx");
     let output = fixture.directory.path().join("settings-preview");
     let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
         std::fs::read_to_string(compiled.module).unwrap()
     })
     .await
@@ -1965,7 +1975,17 @@ async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection()
         .join("../terminal-shell/tests/real_host/model_settings_preview.tsx");
     let output = fixture.directory.path().join("settings-preview");
     let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
         std::fs::read_to_string(compiled.module).unwrap()
     })
     .await
@@ -2096,7 +2116,17 @@ async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
         .join("../terminal-shell/tests/real_host/mermaid_preview.tsx");
     let output = fixture.directory.path().join("mermaid-preview");
     let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
         std::fs::read_to_string(compiled.module).unwrap()
     })
     .await
@@ -2594,7 +2624,17 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
         .join("../terminal-shell/tests/real_host/permission_preview.tsx");
     let output = fixture.directory.path().join("permission-preview");
     let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
         std::fs::read_to_string(compiled.module).unwrap()
     })
     .await

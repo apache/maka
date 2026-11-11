@@ -168,6 +168,7 @@ expect Image size: Error ERR_ACCESS_DENIED network "https://example.com/a.png"
 expect Image prefetch: Error ERR_ACCESS_DENIED network "https://example.com/b.png"
 expect Fetch: TypeError ERR_ACCESS_DENIED network "https://example.com/data"
 expect WebSocket: Error ERR_ACCESS_DENIED network "ws://example.com/feed"
+expect WebSocket credentials: Error ERR_ACCESS_DENIED network "ws://example.com/feed"
 expect Global WebSocket: error,1006,false
 covers [nsh] Clipboard
 covers [nsh] Picker

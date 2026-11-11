@@ -234,7 +234,7 @@ All of these rows were compiled and called from TSX. A wrong argument names the 
 ### What each kind may do
 
 - **Synchronous** computes and keeps state. It runs outside the reactive runtime, so `signal(..)` panics, and TSX gets `Error: no reactive runtime: signals are used on the engine thread, while components run`. The same goes for `theme()`, `dialog` and the other UI free functions.
-- **`cx: &mut ModuleCx`** reaches the platform in order with the changes TS made before the call: `set_clipboard`, `dialog`, `dismiss_keyboard`, `set_status_bar`, `animate_layout`, `announce_for_accessibility`, `set_color_scheme`.
+- **`cx: &mut ModuleCx`** reaches the platform in order with the changes TS made before the call: `set_clipboard`, `dialog`, `dismiss_keyboard`, `set_status_bar`, `animate_layout`, `announce_for_accessibility`, `set_color_scheme`. It runs in the reactive runtime, so it may `spawn` a task (which runs to its end) and make signals. `cx.run_on_main_thread(f)` runs `f` on the platform's main thread after the call (an `async` function calls `run_on_main_thread(f)`); await the result in a task.
 - **`async`** gets the core's services: `timer`, `fetch`, dialogs. Move blocking work off the thread with `blocking(..)`, and async work with `background(..)`; those two are for native targets. It runs on the engine thread, so a long synchronous stretch inside a task freezes updates.
 
 A synchronous call that blocks freezes the app too. A synchronous call costs about what a JS method call does, so crossing is rarely a reason to move code. Embedded under limits, a call over its budget (default 2 s) is cut off.
@@ -365,6 +365,8 @@ nsh check                 # cargo check --all-targets for each crate, then tsc o
 | The declarations | `nsh_core::element::declarations` (feature `declarations`) | The `.d.ts` text, and `registry().undocumented()` |
 
 See `examples/rust-exports/native/tests/rust_exports/`. Dev-dependencies: `nsh-core` with `declarations`, `nsh-engine`, and `nsh-testing` with `bundle`.
+
+To test TSX without the crate's side effects (a keychain, a device), give `open` stand-ins for the exports it imports: `open("./App.tsx", { modules: { "rust-exports/native": { "Ledger.format": "$9.99", "Ledger.fetchRate": async () => 0.25 } } })`. A value replaces the export (a function's stand-in returns it at once). A function answers each call with its arguments, and the app's call returns a promise of the answer. Headless runs only.
 
 Test on a platform (`nsh test --target macos`) only what needs real input or a native component. Headless runs have no platform views, so a `#[native_components]` view is empty there.
 

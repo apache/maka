@@ -385,6 +385,45 @@ fn encoded_bytes_are_kept_least_recently_used_out() {
 }
 
 #[test]
+fn a_new_encoded_limit_drops_what_no_longer_fits() {
+    let mut l3 = Encoded::new(100);
+    for key in ["a", "b", "c", "d"] {
+        l3.insert(key, vec![0; 20].into());
+    }
+    assert!(l3.get("a").is_some(), "a is now the most recently used");
+    // 40 bytes: the two most recently used stay, and an entry over a
+    // quarter of the new limit (10) goes however recent.
+    l3.set_limit(40);
+    assert!(
+        l3.get("b").is_none()
+            && l3.get("c").is_none()
+            && l3.get("a").is_none()
+            && l3.get("d").is_none()
+    );
+    assert_eq!(l3.used, 0);
+    // Five of 10 bytes (each within a quarter of 40): one too many, and
+    // the least recently used goes.
+    l3.set_limit(100);
+    for key in ["e", "f", "g", "h", "i"] {
+        l3.insert(key, vec![0; 10].into());
+    }
+    assert!(l3.get("e").is_some(), "e is now the most recently used");
+    l3.set_limit(40);
+    assert!(l3.get("f").is_none(), "the least recently used went");
+    assert!(
+        l3.get("e").is_some()
+            && l3.get("g").is_some()
+            && l3.get("h").is_some()
+            && l3.get("i").is_some()
+    );
+    assert_eq!(l3.used, 40);
+    l3.set_limit(0);
+    assert_eq!(l3.used, 0);
+    l3.insert("j", vec![0; 1].into());
+    assert!(l3.get("j").is_none(), "0 keeps none");
+}
+
+#[test]
 fn asset_directories_take_the_first_that_has_the_file() {
     let root = std::env::temp_dir().join(format!("nsh-asset-dirs-{}", std::process::id()));
     let (app, host) = (root.join("app"), root.join("host"));
@@ -406,6 +445,42 @@ fn asset_directories_take_the_first_that_has_the_file() {
     );
     // In none: the first's, which fails to read naming it.
     assert_eq!(file("asset:/c.png"), app.join("c.png"));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn bundled_files_load_whatever_fs_read_roots_are_declared() {
+    let root = std::env::temp_dir().join(format!("nsh-asset-fs-read-{}", std::process::id()));
+    let (bundle, data) = (root.join("bundle"), root.join("data"));
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(bundle.join("logo.png"), b"logo").unwrap();
+    std::fs::write(root.join("outside.png"), b"outside").unwrap();
+    let declared = crate::access::Capabilities::from_json(&serde_json::json!({
+        "fs": { "read": [data.to_str().unwrap()] }
+    }))
+    .unwrap();
+    let access = Access {
+        declared,
+        granted: None,
+    };
+    let context = Context {
+        asset_base: Some(AssetBase::Directory(bundle.clone())),
+        media_files: Arc::new(crate::access::MediaFiles::new(
+            &access,
+            None,
+            &Default::default(),
+            true,
+        )),
+        ..Context::default()
+    };
+    let read = |uri: &str| read_now(&context.resolve(uri).unwrap(), &context);
+    assert_eq!(&*read("asset:/logo.png").unwrap(), b"logo");
+    // Out of the bundle by `..`: an `fs.read` read, outside the roots.
+    assert!(read("asset:/../outside.png").is_err());
+    let outside = root.join("outside.png");
+    assert!(read(outside.to_str().unwrap()).is_err());
     std::fs::remove_dir_all(&root).unwrap();
 }
 
@@ -612,4 +687,15 @@ fn wanted_sizes_pick_buckets_by_natural_size() {
         Want::natural(2.0).longest(Natural::Pixels(4000, 3000), 1.0, None),
         4000
     );
+}
+
+#[cfg(feature = "loader")]
+#[test]
+fn loopback_urls_skip_the_environment_proxy() {
+    use super::http::is_loopback;
+    assert!(is_loopback("http://127.0.0.1:8790/assets/logo.svg"));
+    assert!(is_loopback("http://localhost:8790/assets/a.ttf"));
+    assert!(is_loopback("http://[::1]:8790/assets/a.png"));
+    assert!(!is_loopback("http://10.0.0.2:8790/assets/a.png"));
+    assert!(!is_loopback("https://pbs.twimg.com/media/a?format=jpg"));
 }

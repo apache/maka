@@ -80,8 +80,8 @@ use nsh_engine::Access;
 use webkit6::{
     CookiePersistentStorage, LoadEvent, NavigationPolicyDecision, NetworkError, NetworkSession,
     PolicyDecisionType, PolicyError, ResponsePolicyDecision, URIRequest, UserContentInjectedFrames,
-    UserContentManager, UserScript, UserScriptInjectionTime, UserStyleLevel, UserStyleSheet,
-    WebView, prelude::*,
+    UserContentManager, UserMediaPermissionRequest, UserScript, UserScriptInjectionTime,
+    UserStyleLevel, UserStyleSheet, WebView, prelude::*,
 };
 
 use super::{Emitter, UNSCROLLABLE, error, fill_sized};
@@ -170,6 +170,7 @@ impl WebHost {
         };
         let mut handlers = vec![
             decide_policy(&web, &shared),
+            permission_request(&web, &shared),
             load_changed(&web, &shared),
             load_failed(&web, &shared),
             web.connect_web_process_terminated(|_, reason| {
@@ -386,6 +387,39 @@ fn decide_policy(web: &WebView, shared: &Rc<Shared>) -> glib::SignalHandlerId {
             _ => false,
         },
         _ => false,
+    })
+}
+
+/// The page's `getUserMedia` gets what the app's `webview.media` grants;
+/// WebKit's other permission requests keep its own handling.
+fn permission_request(web: &WebView, shared: &Rc<Shared>) -> glib::SignalHandlerId {
+    use nsh_core::access::WebMedia;
+    let allows = |media| {
+        shared
+            .access
+            .as_deref()
+            .is_some_and(|a| a.allows_web_media(media))
+    };
+    let (microphone, camera) = (allows(WebMedia::Microphone), allows(WebMedia::Camera));
+    if (microphone || camera)
+        && let Some(settings) = WebViewExt::settings(web)
+    {
+        settings.set_enable_media_stream(true);
+    }
+    web.connect_permission_request(move |_, request| {
+        let Some(media) = request.downcast_ref::<UserMediaPermissionRequest>() else {
+            return false;
+        };
+        let granted = !webkit6::functions::user_media_permission_is_for_display_device(media)
+            && (!media.is_for_audio_device() || microphone)
+            && (!media.is_for_video_device() || camera);
+        if granted {
+            request.allow();
+        } else {
+            log::warn!(target: "js", "web view media capture is not granted: add it to capabilities.webview.media");
+            request.deny();
+        }
+        true
     })
 }
 

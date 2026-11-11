@@ -91,11 +91,17 @@ pub(crate) fn add_config(
 /// `<name>-<version>-<os>-<arch>.<extension>`: what a release publishes, one
 /// per platform (desktop packages are built on the platform they are for).
 fn archive_name(name: &str, version: &str, extension: &str) -> String {
+    platform_archive_name(name, version, &nsh_updater::platform(), extension)
+}
+
+/// [`archive_name`] for `platform` (`macos-x86_64`): a macOS package built
+/// for another processor (`nsh package --arch`).
+fn platform_archive_name(name: &str, version: &str, platform: &str, extension: &str) -> String {
     let name: String = name
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    format!("{name}-{version}-{}.{extension}", nsh_updater::platform())
+    format!("{name}-{version}-{platform}.{extension}")
 }
 
 /// Copies the package's archive under its release name, for an app with
@@ -123,17 +129,29 @@ pub(crate) fn copy_archive(
 /// `"updater"`. `tar` keeps the bundle's links and modes, which its
 /// signature covers; `COPYFILE_DISABLE` keeps out the AppleDouble files
 /// (`._<name>`) it would add for extended attributes, which it does not.
+/// `platforms` are the updater's names of the platforms the app runs on
+/// (`macos-aarch64`), one archive each: a universal app is the update of
+/// either.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn archive_macos_app(
     config: &AppConfig,
     name: &str,
     app: &Path,
     out: &Path,
+    platforms: &[String],
 ) -> anyhow::Result<()> {
     if config.updater.is_none() {
         return Ok(());
     }
-    let release = out.join(archive_name(name, version(config), "tar.gz"));
+    let Some((first, others)) = platforms.split_first() else {
+        return Ok(());
+    };
+    let release = out.join(platform_archive_name(
+        name,
+        version(config),
+        first,
+        "tar.gz",
+    ));
     let output = Command::new("tar")
         .env("COPYFILE_DISABLE", "1")
         .arg("-czf")
@@ -151,6 +169,16 @@ pub(crate) fn archive_macos_app(
         );
     }
     ui::done(format!("update archive {}", ui::path(&release)));
+    for platform in others {
+        let copy = out.join(platform_archive_name(
+            name,
+            version(config),
+            platform,
+            "tar.gz",
+        ));
+        fs::copy(&release, &copy).with_context(|| format!("copy {}", release.display()))?;
+        ui::done(format!("update archive {}", ui::path(&copy)));
+    }
     Ok(())
 }
 
@@ -432,9 +460,17 @@ mod tests {
         let config: AppConfig =
             serde_json::from_str(r#"{ "version": "1.2.0", "updater": {} }"#).unwrap();
 
-        archive_macos_app(&config, "App", &dir.join("App.app"), &dir).unwrap();
+        // A universal app: the archive of both processors.
+        let platforms = ["macos-aarch64".to_owned(), "macos-x86_64".to_owned()];
+        archive_macos_app(&config, "App", &dir.join("App.app"), &dir, &platforms).unwrap();
 
-        let archive = dir.join(archive_name("App", "1.2.0", "tar.gz"));
+        let intel = dir.join("App-1.2.0-macos-x86_64.tar.gz");
+        assert_eq!(
+            archive_platform("App-1.2.0-macos-x86_64.tar.gz", "1.2.0").as_deref(),
+            Some("macos-x86_64")
+        );
+        let archive = dir.join("App-1.2.0-macos-aarch64.tar.gz");
+        assert_eq!(fs::read(&intel).unwrap(), fs::read(&archive).unwrap());
         let gz = flate2::read::GzDecoder::new(fs::File::open(archive).unwrap());
         let mut tar = tar::Archive::new(gz);
         let names: Vec<String> = tar

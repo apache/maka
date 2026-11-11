@@ -114,6 +114,9 @@ limit its height:
 />
 ```
 
+An overlay limited this way still chooses its side at its full size: when its content grows past the room below, or it
+opens again with that room still set, it goes above as soon as it fits there whole, and `available` tells the new room.
+
 ## Dismissing
 
 An overlay reports what usually closes a popup and leaves the decision to you:

@@ -2,17 +2,22 @@
 //! inside a container view that carries the decoration (background,
 //! border, corners, shadow) like any other view.
 
-use std::{cell::Cell, ffi::CStr};
+use std::{
+    cell::{Cell, RefCell},
+    ffi::CStr,
+};
 
 use nsh_core::{
-    AutoCapitalize, AutoFill, Bounds, Color, InputConfig, KeyboardAppearance, KeyboardType, NodeId,
-    Points, ReturnKeyType, SubmitBehavior, TextAlign,
+    AutoCapitalize, AutoFill, Bounds, Color, EditAction, EventKind, EventPayload, InputConfig,
+    KeyboardAppearance, KeyboardType, NodeId, PayloadValue, Points, ReturnKeyType, SubmitBehavior,
+    TextAlign,
+    element::PropEnum,
     geometry::{point, px, size},
 };
 use nsh_engine::EngineControl;
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
-    rc::Retained,
+    rc::{Allocated, Retained, Weak},
     runtime::{AnyClass, AnyObject, Bool, ProtocolObject, Sel},
     sel,
 };
@@ -54,6 +59,19 @@ pub(crate) struct InputIvars {
     /// The scrolling last reported (offset y, content width and height,
     /// viewport width and height): only changes are reported again.
     scroll_reported: Cell<Option<[CGFloat; 5]>>,
+    /// The event target the input reports to, which is also its delegate.
+    /// Kept here, not read back from `delegate`: a host may wrap the
+    /// delegate (BlocksKit puts an `NSProxy` there that answers
+    /// `isKindOfClass:` for the object it wraps), and a downcast of that
+    /// proxy would read its memory as the target's.
+    target: RefCell<Weak<EventTarget>>,
+    /// The edit menu a component that draws its own selection opened on
+    /// the input (`Command::OpenEditMenu`): what it offers and what it
+    /// points at, in the input. While set, the edit actions are the
+    /// component's.
+    edit_menu: RefCell<Option<(Vec<EditAction>, CGRect)>>,
+    /// `UIEditMenuInteraction` (iOS 16), made on first use.
+    edit_interaction: RefCell<Option<Retained<AnyObject>>>,
 }
 
 impl Default for InputIvars {
@@ -74,6 +92,9 @@ impl Default for InputIvars {
             paste_inserts: Cell::new(true),
             scroll_replaced: Cell::new(false),
             scroll_reported: Cell::new(None),
+            target: RefCell::default(),
+            edit_menu: RefCell::new(None),
+            edit_interaction: RefCell::new(None),
         }
     }
 }
@@ -118,23 +139,66 @@ define_class!(
         }
 
         /// A paste (the edit menu, Command+V): reported, and its text
-        /// inserted as `pasteBehavior` says.
+        /// inserted as `pasteBehavior` says, within `maxLength`.
         #[unsafe(method(paste:))]
         fn paste(&self, sender: Option<&AnyObject>) {
             if pasting(self.as_ref(), self.ivars()) {
-                // SAFETY: calling the superclass implementation.
-                let _: () = unsafe { msg_send![super(self), paste: sender] };
+                if self.ivars().max_length.get().is_some() {
+                    paste_text(self.as_ref(), &objc2_ui_kit::UIPasteboard::generalPasteboard());
+                } else {
+                    // SAFETY: calling the superclass implementation.
+                    let _: () = unsafe { msg_send![super(self), paste: sender] };
+                }
             }
         }
 
-        /// Paste is offered for images and files too while the app listens.
+        /// Paste is offered for images and files too while the app listens;
+        /// a component's edit menu offers what it asked for.
         #[unsafe(method(canPerformAction:withSender:))]
         fn can_perform(&self, action: Sel, sender: Option<&AnyObject>) -> Bool {
+            if let Some(offers) = edit_menu_offers(self.ivars(), action) {
+                return Bool::new(offers);
+            }
             if action == sel!(paste:) && can_paste_more(self.as_ref(), self.ivars()) {
                 return Bool::YES;
             }
             // SAFETY: calling the superclass implementation.
             unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] }
+        }
+
+        #[unsafe(method(cut:))]
+        fn cut(&self, sender: Option<&AnyObject>) {
+            if !edit_menu_chose(self.as_ref(), self.ivars(), EditAction::Cut) {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), cut: sender] };
+            }
+        }
+
+        #[unsafe(method(copy:))]
+        fn copy(&self, sender: Option<&AnyObject>) {
+            if !edit_menu_chose(self.as_ref(), self.ivars(), EditAction::Copy) {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), copy: sender] };
+            }
+        }
+
+        #[unsafe(method(selectAll:))]
+        fn select_all(&self, sender: Option<&AnyObject>) {
+            if !edit_menu_chose(self.as_ref(), self.ivars(), EditAction::SelectAll) {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), selectAll: sender] };
+            }
+        }
+
+        /// `UIEditMenuInteractionDelegate`: the menu keeps clear of what
+        /// the component selected.
+        #[unsafe(method(editMenuInteraction:targetRectForConfiguration:))]
+        fn edit_menu_target_rect(&self, _interaction: &AnyObject, _configuration: &AnyObject) -> CGRect {
+            self.ivars()
+                .edit_menu
+                .borrow()
+                .as_ref()
+                .map_or(CGRect::ZERO, |(_, rect)| *rect)
         }
 
         #[unsafe(method(deleteBackward))]
@@ -184,12 +248,7 @@ impl Area {
         if !self.ivars().scroll_replaced.get() {
             return;
         }
-        // SAFETY: UITextView's `delegate`, set to the target.
-        let delegate: Option<Retained<AnyObject>> = unsafe { msg_send![self, delegate] };
-        if let Some(target) = delegate
-            .as_deref()
-            .and_then(|d| d.downcast_ref::<EventTarget>())
-        {
+        if let Some(target) = self.ivars().target.borrow().load() {
             target.input_scrolled(self.as_ref());
         }
     }
@@ -269,23 +328,66 @@ define_class!(
         }
 
         /// A paste (the edit menu, Command+V): reported, and its text
-        /// inserted as `pasteBehavior` says.
+        /// inserted as `pasteBehavior` says, within `maxLength`.
         #[unsafe(method(paste:))]
         fn paste(&self, sender: Option<&AnyObject>) {
             if pasting(self.as_ref(), self.ivars()) {
-                // SAFETY: calling the superclass implementation.
-                let _: () = unsafe { msg_send![super(self), paste: sender] };
+                if self.ivars().max_length.get().is_some() {
+                    paste_text(self.as_ref(), &objc2_ui_kit::UIPasteboard::generalPasteboard());
+                } else {
+                    // SAFETY: calling the superclass implementation.
+                    let _: () = unsafe { msg_send![super(self), paste: sender] };
+                }
             }
         }
 
-        /// Paste is offered for images and files too while the app listens.
+        /// Paste is offered for images and files too while the app listens;
+        /// a component's edit menu offers what it asked for.
         #[unsafe(method(canPerformAction:withSender:))]
         fn can_perform(&self, action: Sel, sender: Option<&AnyObject>) -> Bool {
+            if let Some(offers) = edit_menu_offers(self.ivars(), action) {
+                return Bool::new(offers);
+            }
             if action == sel!(paste:) && can_paste_more(self.as_ref(), self.ivars()) {
                 return Bool::YES;
             }
             // SAFETY: calling the superclass implementation.
             unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] }
+        }
+
+        #[unsafe(method(cut:))]
+        fn cut(&self, sender: Option<&AnyObject>) {
+            if !edit_menu_chose(self.as_ref(), self.ivars(), EditAction::Cut) {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), cut: sender] };
+            }
+        }
+
+        #[unsafe(method(copy:))]
+        fn copy(&self, sender: Option<&AnyObject>) {
+            if !edit_menu_chose(self.as_ref(), self.ivars(), EditAction::Copy) {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), copy: sender] };
+            }
+        }
+
+        #[unsafe(method(selectAll:))]
+        fn select_all(&self, sender: Option<&AnyObject>) {
+            if !edit_menu_chose(self.as_ref(), self.ivars(), EditAction::SelectAll) {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), selectAll: sender] };
+            }
+        }
+
+        /// `UIEditMenuInteractionDelegate`: the menu keeps clear of what
+        /// the component selected.
+        #[unsafe(method(editMenuInteraction:targetRectForConfiguration:))]
+        fn edit_menu_target_rect(&self, _interaction: &AnyObject, _configuration: &AnyObject) -> CGRect {
+            self.ivars()
+                .edit_menu
+                .borrow()
+                .as_ref()
+                .map_or(CGRect::ZERO, |(_, rect)| *rect)
         }
 
         /// The text's size changes after edits and layout without a
@@ -442,15 +544,174 @@ pub(crate) fn test_paste(
     }
     // SAFETY: UIPasteboard's setter of items (type to value).
     let _: () = unsafe { msg_send![&board, setItems: &*NSArray::from_retained_slice(&items)] };
-    let inserts = pasting_from(view, ivars, &board);
-    // SAFETY: plain getters of the test's pasteboard.
-    if inserts && let Some(text) = unsafe { board.string() } {
-        // SAFETY: UIKeyInput's method, which both input classes implement.
-        let _: () = unsafe { msg_send![view, insertText: &*text] };
+    if pasting_from(view, ivars, &board) {
+        paste_text(view, &board);
     }
     // SAFETY: a plain getter; the test's pasteboard is not used again.
     objc2_ui_kit::UIPasteboard::removePasteboardWithName(&*unsafe { board.name() });
     Ok(())
+}
+
+/// Pastes `board`'s text into input `view`, cut to what `maxLength` leaves
+/// room for between composed character sequences, as a browser's
+/// `maxlength`. Not UIKit's `paste:`: a paste of it the delegate refuses
+/// leaves an undo step that crashes the app.
+fn paste_text(view: &UIView, board: &objc2_ui_kit::UIPasteboard) {
+    // SAFETY: a plain getter, read on the user's paste.
+    let (Some(text), Some((start, end))) = (unsafe { board.string() }, selection(view)) else {
+        return;
+    };
+    let range = NSRange::new(start as usize, (end - start) as usize);
+    let current = view
+        .downcast_ref::<Field>()
+        .and_then(|f| f.text())
+        .or_else(|| view.downcast_ref::<Area>().map(|a| a.text()))
+        .unwrap_or_default();
+    let room = max_length(view).map_or(usize::MAX, |max| {
+        (max as usize).saturating_sub(current.length() - range.length.min(current.length()))
+    });
+    let text = if room < text.length() {
+        let cut = text.rangeOfComposedCharacterSequenceAtIndex(room).location;
+        text.substringToIndex(cut)
+    } else {
+        text
+    };
+    if text.length() == 0 {
+        return;
+    }
+    let Some(target) = target_of(view) else {
+        return;
+    };
+    // `insertText:` skips the delegate, so it is asked first, as for any edit.
+    // SAFETY: the event target implements both delegates' methods.
+    let allows: Bool = unsafe {
+        if view.downcast_ref::<Field>().is_some() {
+            msg_send![&*target, textField: view, shouldChangeCharactersInRange: range, replacementString: &*text]
+        } else {
+            msg_send![&*target, textView: view, shouldChangeTextInRange: range, replacementText: &*text]
+        }
+    };
+    if allows.as_bool() {
+        // SAFETY: UIKeyInput's method, which both input classes implement.
+        let _: () = unsafe { msg_send![view, insertText: &*text] };
+    }
+}
+
+/// The ivars of input view `view` (a field or a text area).
+fn ivars_of(view: &UIView) -> Option<&InputIvars> {
+    view.downcast_ref::<Field>()
+        .map(|f| f.ivars())
+        .or_else(|| view.downcast_ref::<Area>().map(|a| a.ivars()))
+}
+
+/// What a component's edit menu offers of `action`, while it has one open
+/// on the input: only what it asked for (Paste with something to paste),
+/// so UIKit's other actions for the input's own text stay out.
+fn edit_menu_offers(ivars: &InputIvars, action: Sel) -> Option<bool> {
+    let menu = ivars.edit_menu.borrow();
+    let (actions, _) = menu.as_ref()?;
+    let offers = |a: EditAction| actions.contains(&a);
+    let board = || objc2_ui_kit::UIPasteboard::generalPasteboard();
+    Some(if action == sel!(cut:) {
+        offers(EditAction::Cut)
+    } else if action == sel!(copy:) {
+        offers(EditAction::Copy)
+    } else if action == sel!(paste:) {
+        // SAFETY: plain getters, which show no paste notice.
+        offers(EditAction::Paste)
+            && unsafe { board().hasStrings() || board().hasImages() || board().hasURLs() }
+    } else if action == sel!(selectAll:) {
+        offers(EditAction::SelectAll)
+    } else {
+        false
+    })
+}
+
+/// Reports `action` chosen from a component's edit menu (`onEditAction`),
+/// if one is open on input `view`; whether it did.
+fn edit_menu_chose(view: &UIView, ivars: &InputIvars, action: EditAction) -> bool {
+    if ivars.edit_menu.borrow().is_none() {
+        return false;
+    }
+    if let Some(target) = target_of(view) {
+        target.dispatch(
+            view.tag() as NodeId,
+            EventKind::EditAction,
+            EventPayload::Map(vec![("action", PayloadValue::Str(action.js_name().into()))]),
+        );
+    }
+    true
+}
+
+/// Opens the system's edit menu on input `view` over `rect` (in the
+/// input), offering `actions` (`Command::OpenEditMenu`).
+// `UIMenuController` before iOS 16.
+#[allow(deprecated)]
+pub(crate) fn open_edit_menu(view: &UIView, rect: CGRect, actions: Vec<EditAction>) {
+    let Some(ivars) = ivars_of(view) else { return };
+    ivars.edit_menu.replace(Some((actions, rect)));
+    if !view.isFirstResponder() && !view.becomeFirstResponder() {
+        return;
+    }
+    let interaction = AnyClass::get(c"UIEditMenuInteraction").map(|class| {
+        ivars
+            .edit_interaction
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                // SAFETY: `initWithDelegate:` is the interaction's
+                // initializer; the input implements the delegate method it
+                // answers and outlives the interaction (its view).
+                let interaction: Retained<AnyObject> = unsafe {
+                    let alloc: Allocated<AnyObject> = msg_send![class, alloc];
+                    msg_send![alloc, initWithDelegate: view]
+                };
+                // SAFETY: UIView's `addInteraction:` with a UIInteraction.
+                let _: () = unsafe { msg_send![view, addInteraction: &*interaction] };
+                interaction
+            })
+            .clone()
+    });
+    match (interaction, AnyClass::get(c"UIEditMenuConfiguration")) {
+        (Some(menu), Some(configuration)) => {
+            let source = CGPoint::new(rect.origin.x + rect.size.width / 2.0, rect.origin.y);
+            // SAFETY: UIEditMenuConfiguration's factory (a nil identifier)
+            // and the interaction's `presentEditMenuWithConfiguration:`.
+            unsafe {
+                let config: Retained<AnyObject> = msg_send![
+                    configuration,
+                    configurationWithIdentifier: Option::<&AnyObject>::None,
+                    sourcePoint: source
+                ];
+                // Above the selection where it fits, as a text view's menu
+                // (`UIEditMenuArrowDirectionDown`); the system picks
+                // another side where it does not.
+                let _: () = msg_send![&*config, setPreferredArrowDirection: 2isize];
+                let _: () = msg_send![&*menu, presentEditMenuWithConfiguration: &*config];
+            }
+        }
+        _ => {
+            let mtm = MainThreadMarker::from(view);
+            objc2_ui_kit::UIMenuController::sharedMenuController(mtm)
+                .showMenuFromView_rect(view, rect);
+        }
+    }
+}
+
+/// Closes the edit menu [`open_edit_menu`] opened on input `view`; the
+/// edit actions are the input's own again.
+#[allow(deprecated)]
+pub(crate) fn close_edit_menu(view: &UIView) {
+    let Some(ivars) = ivars_of(view) else { return };
+    if ivars.edit_menu.take().is_none() {
+        return;
+    }
+    if let Some(menu) = ivars.edit_interaction.borrow().as_ref() {
+        // SAFETY: UIEditMenuInteraction's `dismissMenu`.
+        let _: () = unsafe { msg_send![&**menu, dismissMenu] };
+    } else if AnyClass::get(c"UIEditMenuInteraction").is_none() {
+        let mtm = MainThreadMarker::from(view);
+        objc2_ui_kit::UIMenuController::sharedMenuController(mtm).hideMenuFromView(view);
+    }
 }
 
 /// Whether input `view` offers Paste for what UIKit's own paste would not:
@@ -466,12 +727,7 @@ fn can_paste_more(view: &UIView, ivars: &InputIvars) -> bool {
 /// Reports `paste` to the app (`onPaste`), through the input's delegate,
 /// the event target.
 pub(crate) fn report_paste(view: &UIView, paste: nsh_core::PasteEvent) {
-    // SAFETY: both input classes have a `delegate`, set to the target.
-    let delegate: Option<Retained<AnyObject>> = unsafe { msg_send![view, delegate] };
-    if let Some(target) = delegate
-        .as_deref()
-        .and_then(|d| d.downcast_ref::<EventTarget>())
-    {
+    if let Some(target) = target_of(view) {
         target.pasted(view.tag() as NodeId, paste);
     }
 }
@@ -521,12 +777,7 @@ fn set_paste(view: &UIView, listens: bool, inserts: bool) {
 /// Reports `Backspace` for a delete in an empty input (to its delegate,
 /// the event target).
 fn backspace_on_empty(view: &UIView) {
-    // SAFETY: both input classes have a `delegate`, set to the target.
-    let delegate: Option<Retained<AnyObject>> = unsafe { msg_send![view, delegate] };
-    if let Some(target) = delegate
-        .as_deref()
-        .and_then(|d| d.downcast_ref::<EventTarget>())
-    {
+    if let Some(target) = target_of(view) {
         target.key_press(view.tag() as NodeId, "Backspace".to_owned());
     }
 }
@@ -588,6 +839,15 @@ pub(crate) fn caret_changed(view: &UIView, caret: Bounds<Points>) -> bool {
         .map(|f| f.ivars())
         .or_else(|| view.downcast_ref::<Area>().map(|a| a.ivars()));
     ivars.is_none_or(|i| i.caret.replace(caret) != caret)
+}
+
+/// The event target of input view `view`, set when it was attached.
+pub(crate) fn target_of(view: &UIView) -> Option<Retained<EventTarget>> {
+    let ivars = view
+        .downcast_ref::<Field>()
+        .map(|f| f.ivars())
+        .or_else(|| view.downcast_ref::<Area>().map(|a| a.ivars()))?;
+    ivars.target.borrow().load()
 }
 
 /// Selects `start..end` (UTF-16 units, clamped to the text).
@@ -654,7 +914,7 @@ fn inset(r: CGRect, i: UIEdgeInsets) -> CGRect {
 }
 
 /// True if replacing `range` of `current` with `replacement` keeps the
-/// text within `max` UTF-16 units (pasting may still be cut by the platform).
+/// text within `max` UTF-16 units.
 pub(crate) fn fits(
     current: &NSString,
     range: NSRange,
@@ -758,6 +1018,7 @@ impl Input {
         view.setBackgroundColor(None);
         match &self.editor {
             Editor::Line(field) => {
+                *field.ivars().target.borrow_mut() = Weak::new(target);
                 // SAFETY: the target implements the delegate protocol and
                 // `handleEditingChanged:`, and outlives the field (both are
                 // owned by the mounter).
@@ -771,6 +1032,7 @@ impl Input {
                 }
             }
             Editor::Area { view, placeholder } => {
+                *view.ivars().target.borrow_mut() = Weak::new(target);
                 // SAFETY: as above.
                 unsafe { view.setDelegate(Some(ProtocolObject::from_ref(target))) };
                 view.textContainer().setLineFragmentPadding(0.0);

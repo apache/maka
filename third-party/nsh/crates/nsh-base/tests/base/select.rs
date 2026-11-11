@@ -100,6 +100,7 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .default_open(props.default_open)
         .search_placeholder("Search")
         .search_accessibility_label("Search food")
+        .search_test_id("food-search")
         .accessibility_label("Food")
         .trigger(
             view()
@@ -895,6 +896,19 @@ fn screen_readers_hear_the_search_field_by_its_label() {
 }
 
 #[test]
+fn ui_tests_find_the_search_field_by_its_test_id() {
+    let mut app = desktop(HarnessProps {
+        searchable: true,
+        ..props(fruits())
+    });
+    app.open_list();
+    assert_eq!(app.screen().count("id:food-search"), Ok(1));
+    app.type_text("id:food-search", "cel").unwrap();
+    app.see_row(">Celery");
+    assert!(!app.shows("Apple"));
+}
+
+#[test]
 fn a_search_keystroke_in_a_long_list_sends_only_the_rows_in_view() {
     let mut app = desktop(HarnessProps {
         searchable: true,
@@ -1027,6 +1041,49 @@ fn on_the_desktops_the_popup_is_at_the_trigger_as_wide_and_within_the_window() {
     assert_eq!(frame.size.width, px(160.0), "{frame:?}");
     // Never past the window: its rows scroll.
     assert!(frame.origin.y + frame.size.height <= px(844.0), "{frame:?}");
+}
+
+/// The popup's frame once the list of `props` opened on `os` (a desktop).
+fn popup_frame_on(os: Os, props: HarnessProps) -> Bounds<Points> {
+    let mut app = start_on(props, os, Idiom::Desktop, false);
+    app.open_list();
+    app.see("Carrot");
+    app.wait(Duration::from_millis(100)).unwrap();
+    let list = app.role_id(AccessibilityRole::Listbox);
+    let seen = app.seen.lock().unwrap();
+    seen.frames[&seen.parents[&list]]
+}
+
+#[test]
+fn on_macos_the_chosen_item_opens_over_the_trigger() {
+    let chosen = HarnessProps {
+        value: Some("carrot".into()),
+        ..props(fruits())
+    };
+    let frame = popup_frame_on(Os::MacOs, chosen);
+    // Its rows above Carrot go above the trigger (at 100), so Carrot's row
+    // lies over it, as a pop-up button's menu does.
+    assert!(frame.origin.y < px(100.0), "{frame:?}");
+    assert_eq!(frame.origin.x, px(40.0));
+    // With nothing chosen there is no row to lay over it: below.
+    let frame = popup_frame_on(Os::MacOs, props(fruits()));
+    assert_eq!(frame.origin.y, px(130.0), "{frame:?}");
+}
+
+#[test]
+fn on_windows_and_linux_the_list_drops_below_the_trigger() {
+    for os in [Os::Windows, Os::Linux, Os::Web] {
+        let chosen = HarnessProps {
+            value: Some("carrot".into()),
+            ..props(fruits())
+        };
+        let frame = popup_frame_on(os, chosen);
+        // Below the trigger (its 160 × 30 view at 40, 100), at its start,
+        // as wide, whatever is chosen.
+        assert_eq!(frame.origin.x, px(40.0), "{os:?}");
+        assert_eq!(frame.origin.y, px(130.0), "{os:?}: {frame:?}");
+        assert_eq!(frame.size.width, px(160.0), "{os:?}: {frame:?}");
+    }
 }
 
 // 10. Accessibility.

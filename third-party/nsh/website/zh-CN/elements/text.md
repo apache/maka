@@ -80,6 +80,25 @@ text("提交前先运行 ")
 
 Tailwind 类同样适用：`<Text class="bg-gray-100 rounded">`。内边距和边框是方框样式，片段上不起作用；在片段内两侧加空格，方框两边就会留出空间。
 
+### 隐藏片段
+
+片段上的 `visibility: "hidden"`（Rust 中为 `.invisible()`，类名 `invisible`）让它的字符原地隐藏：字符仍在行中占位，文字的排版与显示时完全相同，但不绘制任何内容（字形、彩色 emoji、装饰线、背景、阴影）。复制选区和屏幕阅读器都会略过这些字符，它们也不响应按压。隐藏片段里的片段随之隐藏，其中的视图和图片也一样：保留位置、不绘制、不响应按压。重新显示（`visibility: "visible"`）在字符原来的位置绘制它们，不重新测量文字，也不移动任何内容，适合在流式输出的段落末尾逐词显示：
+
+```rust tabs
+text("The answer is ")
+    .select_text()
+    .child(text("forty-two").invisible())
+    .child(".")
+```
+
+```tsx tabs
+<Text style={{ userSelect: "text" }}>
+  The answer is <Text style={{ visibility: "hidden" }}>forty-two</Text>.
+</Text>
+```
+
+这段文字与 “The answer is forty-two.” 一样宽，显示为 “The answer is”，复制得到 “The answer is .”。
+
 ### 链接
 
 带按压处理函数的片段就是链接：按在它的字符上由该片段处理，按在其他位置则由段落处理。在终端里，每个链接也是一个键盘焦点停靠点：Tab 依次到达段落里的链接，Return 按下获得焦点的那一个。

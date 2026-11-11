@@ -665,6 +665,10 @@ pub struct ImageOptions {
     /// `objectPosition`: where the image sits in its box once the resize
     /// mode has sized it ([`crate::ResizeMode::fit`]).
     pub position: crate::style::ObjectPosition,
+    /// The color an SVG source's `currentColor` paints with: the element's
+    /// text color, for an `svg()` the platform draws as an image (the web
+    /// runtime); `None` for an image, whose `currentColor` stays the SVG's.
+    pub current_color: Option<crate::style::Color>,
 }
 
 /// One instruction for the platform backend.

@@ -25,13 +25,14 @@ final class A11y extends View.AccessibilityDelegate {
         "android.widget.GridView", "android.view.View", "android.view.View", "android.view.View", "android.view.View",
         "android.widget.ListView", "android.view.View", "android.view.View", "android.view.View",
         "android.view.View", "android.view.View", "android.view.View", "android.view.View", "android.view.View",
+        "android.view.View", "android.view.View",
     };
     /** Spoken role descriptions for roles without a widget class. */
     private static final String[] ROLE_DESCRIPTIONS = {
         null, null, "link", null, null, null, null, null, null, null, "summary", "alert", null, null, "menu",
         "menu bar", "menu item", null, null, null, "scroll bar", null, null, "tab", "tab list", "timer", null,
         null, null, null, "row", "cell", "column header", "row group", null, "option", null, "region",
-        "navigation", "tree", "tree item", "menu item", "menu item",
+        "navigation", "tree", "tree item", "menu item", "menu item", "dialog", "alert dialog",
     };
     /** Spoken states of `accessibilityState.current`, by its kind in the state's bits 11 to 13. */
     private static final String[] CURRENT_DESCRIPTIONS = {
@@ -93,6 +94,8 @@ final class A11y extends View.AccessibilityDelegate {
         if (testId != null) info.setViewIdResourceName(testId);
         if ((state & 1) != 0) info.setEnabled(false);
         if ((state & 2) != 0) info.setSelected(true);
+        // ARIA's `aria-invalid`: the content does not pass the app's checks.
+        if ((state & (1 << 14)) != 0) info.setContentInvalid(true);
         StringBuilder stateText = new StringBuilder();
         if ((state & 8) != 0) {
             info.setCheckable(true);
@@ -127,6 +130,12 @@ final class A11y extends View.AccessibilityDelegate {
                 info.setRangeInfo(AccessibilityNodeInfo.RangeInfo.obtain(
                         AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_FLOAT, min, max, now));
             }
+        }
+        if ((state & (1 << 14)) != 0) {
+            // TalkBack reads content invalid only with an error text: the
+            // state is read as WebKit reads it.
+            if (stateText.length() > 0) stateText.append(", ");
+            stateText.append("invalid data");
         }
         if (stateText.length() > 0 && Build.VERSION.SDK_INT >= 30) info.setStateDescription(stateText);
         if (role == ROLE_ADJUSTABLE || has("increment")) info.addAction(AccessibilityAction.ACTION_SCROLL_FORWARD);

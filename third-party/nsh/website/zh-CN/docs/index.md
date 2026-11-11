@@ -201,7 +201,7 @@ NSH 为用 AI 编写的软件而设计，完整的应用和生成的界面都是
 | 平台 | 系统要求 | 后端 | 嵌入方式 |
 |---|---|---|---|
 | [iOS](./ios.md) | iOS 15.0+ | UIKit | `NativeShell.xcframework` |
-| [Android](./android.md) | Android 9+ | Android 视图 | `nsh.aar` |
+| [Android](./android.md) | Android 8+ | Android 视图 | `nsh.aar` |
 | [macOS](./macos.md) | macOS 14+ | AppKit | `AppView` |
 | [Windows](./windows.md) | Windows 10 1809+ | Win32、Direct2D | `AppView` |
 | [Linux](./linux.md) | GTK 4.14+ | GTK 4 | `AppView` |

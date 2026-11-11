@@ -29,7 +29,9 @@
 //! `accessibilityRole`'s, `Text` for text views, `Button` for views with
 //! press handlers, `Image` for labelled images, `Group` for other labelled
 //! views), its `testID` as the automation id, its `accessibilityHint` as
-//! help text, and the patterns its role and state call for: Invoke
+//! help text, its `accessibilityDescription` as its full description
+//! (ARIA's `aria-description`, as browsers expose it), and the patterns
+//! its role and state call for: Invoke
 //! (presses; [`activate`] sends the press as a tap would, or the
 //! `activate` action), Toggle (`accessibilityState.checked`),
 //! ExpandCollapse (`expanded`), SelectionItem (tabs, radios, options,
@@ -154,6 +156,12 @@ pub(crate) enum Control {
     Tree,
     /// `UIA_TreeItemControlTypeId`.
     TreeItem,
+    /// A pane read as "dialog", with `UIA_IsDialogPropertyId` (ARIA's
+    /// `dialog`, as browsers map it).
+    Dialog,
+    /// A pane read as "alert dialog", with `UIA_IsDialogPropertyId`
+    /// (ARIA's `alertdialog`).
+    AlertDialog,
 }
 
 impl Control {
@@ -227,6 +235,8 @@ impl Control {
             Control::Switch => "toggle switch",
             Control::Timer => "timer",
             Control::Grid => "grid",
+            Control::Dialog => "dialog",
+            Control::AlertDialog => "alert dialog",
             _ => return None,
         })
     }
@@ -251,11 +261,14 @@ struct Spec {
     /// content is followed through its texts' changes).
     name: Option<Arc<str>>,
     help: Option<String>,
+    /// The full description (`accessibilityDescription`).
+    description: Option<Arc<str>>,
     disabled: bool,
     selected: bool,
     checked: Option<Checked>,
     expanded: Option<bool>,
     busy: bool,
+    invalid: bool,
     /// The current value of a range.
     now: Option<f32>,
     live: LiveRegion,
@@ -317,6 +330,8 @@ pub(crate) fn control_for(a: &Accessibility, kind: ViewKind, pressable: bool) ->
         Role::Navigation => Control::Navigation,
         Role::Tree => Control::Tree,
         Role::TreeItem => Control::TreeItem,
+        Role::Dialog => Control::Dialog,
+        Role::AlertDialog => Control::AlertDialog,
     })
 }
 
@@ -441,7 +456,8 @@ pub(crate) fn name_of(view: &NshView) -> Option<String> {
         return Some(label.to_string());
     }
     if let Some(t) = &s.text {
-        return Some(t.text.text.clone());
+        // Hidden runs are not read.
+        return Some(t.text.visible_text().into_owned());
     }
     let grouping = match part(&s) {
         Part::Element(c) => groups(&s, c),
@@ -476,7 +492,8 @@ fn content_name(view: &NshView, out: &mut String) {
                     .accessibility
                     .label
                     .as_deref()
-                    .or(s.text.as_ref().map(|t| t.text.text.as_str())),
+                    .map(std::borrow::Cow::Borrowed)
+                    .or_else(|| s.text.as_ref().map(|t| t.text.visible_text())),
             };
             match own {
                 Some(text) => {
@@ -537,13 +554,15 @@ fn spec_of(s: &ViewState) -> Spec {
         name: a
             .label
             .clone()
-            .or_else(|| s.text.as_ref().map(|t| Arc::from(t.text.text.as_str()))),
+            .or_else(|| s.text.as_ref().map(|t| Arc::from(&*t.text.visible_text()))),
         help: help_of(a, control),
+        description: a.description.clone(),
         disabled: a.state.disabled,
         selected: a.state.selected,
         checked: toggled(a),
         expanded: a.state.expanded,
         busy: a.state.busy,
+        invalid: a.state.invalid,
         now: a.value.as_ref().and_then(|v| v.now),
         live: a.live_region,
     }
@@ -657,10 +676,10 @@ fn update(surface: &Rc<Surface>, view: &NshView) -> bool {
             let old = s.access.text.replace(drawn.text.clone());
             if let Some(old) = old
                 && !Arc::ptr_eq(&old, &drawn.text)
-                && old.text != drawn.text.text
+                && old.visible_text() != drawn.text.visible_text()
             {
                 text_changed = true;
-                text = Some(drawn.text.text.clone());
+                text = Some(drawn.text.visible_text().into_owned());
             }
         }
         if s.access.spec.as_deref() == Some(&spec) && !text_changed {
@@ -702,6 +721,8 @@ pub(crate) struct Exposed {
     pub(crate) name: Option<Arc<str>>,
     /// The help text.
     pub(crate) help: Option<String>,
+    /// The full description.
+    pub(crate) description: Option<Arc<str>>,
     /// Enabled.
     pub(crate) enabled: bool,
     /// Selected.
@@ -712,6 +733,8 @@ pub(crate) struct Exposed {
     pub(crate) expanded: Option<bool>,
     /// Busy.
     pub(crate) busy: bool,
+    /// The content does not pass the app's checks.
+    pub(crate) invalid: bool,
     /// A range's value.
     pub(crate) now: Option<f32>,
 }
@@ -720,11 +743,13 @@ fn exposed_of(s: &Spec) -> Exposed {
     Exposed {
         name: s.name.clone(),
         help: s.help.clone(),
+        description: s.description.clone(),
         enabled: !s.disabled,
         selected: s.selected,
         checked: s.checked,
         expanded: s.expanded,
         busy: s.busy,
+        invalid: s.invalid,
         now: s.now,
     }
 }
@@ -1014,7 +1039,7 @@ mod tests {
     ///   └ 22 text "Footer"
     fn tree() -> (NshView, Vec<NshView>) {
         let root = view(0, ViewKind::View, Accessibility::default());
-        root.set_invalidate(Rc::new(|_| {}));
+        root.set_invalidate(Rc::new(|_, _| {}));
         let plain = view(2, ViewKind::View, Accessibility::default());
         let title = text(4, "Title");
         let button = pressable(6, Accessibility::default());
@@ -1115,7 +1140,7 @@ mod tests {
     #[test]
     fn a_scroll_views_content_is_read_in_screen_order() {
         let root = view(0, ViewKind::View, Accessibility::default());
-        root.set_invalidate(Rc::new(|_| {}));
+        root.set_invalidate(Rc::new(|_, _| {}));
         let list = view(2, ViewKind::Scroll, Accessibility::default());
         list.insert_before(&root, None);
         for (id, y) in [(4, 160.0), (6, 200.0), (8, 80.0), (10, 120.0)] {
@@ -1182,6 +1207,15 @@ mod tests {
             help_of(&button, Some(Control::Button)).as_deref(),
             Some("3 of 10. Plays")
         );
+        // The description is the full description, not part of the help.
+        let described = Accessibility {
+            description: Some("The whole album".into()),
+            ..button.clone()
+        };
+        assert_eq!(
+            help_of(&described, Some(Control::Button)).as_deref(),
+            Some("3 of 10. Plays")
+        );
         // Defaults: 0 to 100; the value is clamped; no value, no range.
         let progress = Accessibility {
             value: Some(AccessibilityValue {
@@ -1241,6 +1275,8 @@ mod tests {
             (Role::TreeItem, Control::TreeItem),
             (Role::MenuItemCheckbox, Control::MenuItem),
             (Role::MenuItemRadio, Control::MenuItem),
+            (Role::Dialog, Control::Dialog),
+            (Role::AlertDialog, Control::AlertDialog),
         ] {
             assert_eq!(
                 control_for(&with_role(role), ViewKind::View, false),

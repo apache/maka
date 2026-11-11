@@ -18,6 +18,7 @@
 
 use std::{
     cell::RefCell,
+    ops::Range,
     rc::{Rc, Weak},
     sync::Arc,
 };
@@ -143,6 +144,10 @@ impl SelectionTexts for Texts {
         &self.texts[i].text
     }
 
+    fn copied(&self, i: usize, range: std::ops::Range<u32>) -> String {
+        self.texts[i].copied_text(range)
+    }
+
     fn frame(&self, i: usize) -> Bounds<Points> {
         self.frames[i]
     }
@@ -162,6 +167,11 @@ impl SelectionTexts for Texts {
 
     fn continues(&self, i: usize) -> bool {
         self.views[i].state().props.continues_text
+    }
+
+    fn range_bounds(&self, i: usize, range: Range<u32>) -> Option<Bounds<Points>> {
+        let local = crate::text::range_bounds(&self.views[i].state(), range.start, range.end)?;
+        self.to_area(&self.to_root[i], local)
     }
 }
 
@@ -226,8 +236,18 @@ struct Current {
     autoscrolling: bool,
     /// The virtual list rows its ends are in, kept rendered.
     kept: KeptRows,
-    /// The selected text last reported to the area's `onSelectionChange`.
-    reported: String,
+    /// The selected text and its box last reported to the area's
+    /// `onSelectionChange`.
+    reported: Selected,
+}
+
+/// What `onSelectionChange` reports: the selected text, where it starts and
+/// the box around it in the area.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Selected {
+    text: String,
+    start: u32,
+    bounds: Option<Bounds<Points>>,
 }
 
 impl Current {
@@ -243,7 +263,7 @@ impl Current {
             last: None,
             autoscrolling: false,
             kept: KeptRows::default(),
-            reported: String::new(),
+            reported: Selected::default(),
         }
     }
 
@@ -308,6 +328,32 @@ thread_local! {
     static DIRTY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// A Copy or Select All of the app's menu for an area: acts on that area,
+/// as its own menu does; true when handled.
+pub(crate) fn menu_role(
+    surface: &Surface,
+    area: &NshView,
+    role: nsh_core::desktop::MenuRole,
+) -> bool {
+    use nsh_core::desktop::MenuRole;
+    if !area.attached() {
+        return false;
+    }
+    match role {
+        MenuRole::Copy => {
+            if let Some(text) = selected_text(surface.key(), Some(area)) {
+                crate::system::set_clipboard_text(&text);
+            }
+            true
+        }
+        MenuRole::SelectAll => {
+            select_all(surface.key(), area);
+            true
+        }
+        _ => false,
+    }
+}
+
 /// The current area of `surface`, taken out (put it back with
 /// [`put`]).
 fn take(surface: u64, area: Option<&NshView>) -> Option<Current> {
@@ -339,17 +385,17 @@ fn put(current: Current) {
 /// reported a selected text (and is still there) reports `""`.
 fn end(mut current: Current) {
     current.unhighlight();
-    if !current.reported.is_empty() && current.area.attached() {
+    if current.reported != Selected::default() && current.area.attached() {
         let id = current.area.state().id;
         if let Some(surface) = Surface::by_key(current.surface) {
-            send(&surface, id, String::new(), 0);
+            send(&surface, id, Selected::default());
         }
     }
 }
 
 /// Reports the current area's selected text to its `onSelectionChange`
-/// when it changed (after it is put back: the handler may change what is
-/// shown).
+/// when it changed, or its box moved (after it is put back: the handler
+/// may change what is shown).
 fn report(surface: u64) {
     let Some(mut current) = take(surface, None) else {
         return;
@@ -360,38 +406,39 @@ fn report(surface: u64) {
     };
     let mut change = None;
     if listens {
-        let (text, start) = if current.model.is_empty() {
-            (String::new(), 0)
+        let selected = if current.model.is_empty() {
+            Selected::default()
         } else {
             let texts = Texts::of(&current.area);
-            (
-                current.model.text(&texts),
-                current.model.start_offset(&texts),
-            )
+            Selected {
+                text: current.model.text(&texts),
+                start: current.model.start_offset(&texts),
+                bounds: current.model.selected_bounds(&texts),
+            }
         };
-        if text != current.reported {
-            current.reported.clone_from(&text);
-            change = Some((text, start));
+        if selected != current.reported {
+            current.reported.clone_from(&selected);
+            change = Some(selected);
         }
     }
     CURRENT.set(Some(current));
-    if let Some((text, start)) = change
+    if let Some(selected) = change
         && let Some(surface) = Surface::by_key(surface)
     {
-        send(&surface, id, text, start);
+        send(&surface, id, selected);
     }
 }
 
-/// Sends `onSelectionChange` with `text` to view `id`.
-fn send(surface: &Surface, id: NodeId, text: String, start: u32) {
-    surface.event(
-        id,
-        EventKind::SelectionChange,
-        EventPayload::Map(vec![
-            ("text", PayloadValue::Str(text)),
-            ("start", PayloadValue::Number(f64::from(start))),
-        ]),
-    );
+/// Sends `onSelectionChange` with `selected` to view `id`.
+fn send(surface: &Surface, id: NodeId, selected: Selected) {
+    let mut fields = vec![
+        ("text", PayloadValue::Str(selected.text)),
+        ("start", PayloadValue::Number(f64::from(selected.start))),
+    ];
+    if let Some(bounds) = selected.bounds {
+        fields.push(("bounds", PayloadValue::Bounds(bounds)));
+    }
+    surface.event(id, EventKind::SelectionChange, EventPayload::Map(fields));
 }
 
 /// Ends the current area's selection (a single text was selected).
@@ -414,8 +461,9 @@ pub(crate) fn clear_surface(surface: &Surface) {
     }
 }
 
-/// A mount item changed texts or the tree: the selection is clamped to
-/// them at the end of the batch.
+/// A mount item changed texts, the tree or where views are: the selection
+/// is clamped to them, and its box measured again, at the end of the
+/// batch.
 pub(crate) fn tree_changed() {
     DIRTY.set(true);
 }
@@ -676,6 +724,8 @@ fn selected_text(surface: u64, area: Option<&NshView>) -> Option<String> {
         let texts = Texts::of(&current.area);
         current.model.text(&texts)
     });
+    // A selection of hidden characters only copies nothing.
+    let text = text.filter(|t| !t.is_empty());
     put(current);
     text
 }

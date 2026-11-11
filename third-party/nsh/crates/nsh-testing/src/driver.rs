@@ -57,6 +57,11 @@ pub(crate) trait Driver: Send {
     fn choose_menu_item(&mut self, label: &str) -> Result<(), String>;
     fn close_menu(&mut self) -> Result<(), String>;
     fn back(&mut self) -> Result<(), String>;
+    /// Goes forward in the browser's history (`app.forward`): the web's
+    /// alone.
+    fn forward(&mut self) -> Result<(), String> {
+        Err(crate::failure::web_only("forward"))
+    }
     fn wait(&mut self, time: Duration) -> Result<(), String>;
     fn wait_for_within(&mut self, selector: &str, timeout: Duration) -> Result<(), String>;
     fn wait_for_gone(&mut self, selector: &str, timeout: Duration) -> Result<(), String>;
@@ -469,6 +474,7 @@ fn step_name(step: &TestStep) -> Option<String> {
         TestStep::CloseMenu => "closeMenu".to_owned(),
         TestStep::HostSend { name, .. } => format!("host.send({name})"),
         TestStep::Back => "back".to_owned(),
+        TestStep::Forward => "forward".to_owned(),
         TestStep::PressWindowClose { id } => format!("window({id}).pressClose"),
         TestStep::Wait { ms } => format!("wait({ms})"),
         TestStep::Clock {
@@ -603,6 +609,9 @@ impl Driver for Remote {
     }
     fn back(&mut self) -> Result<(), String> {
         self.action(TestStep::Back)
+    }
+    fn forward(&mut self) -> Result<(), String> {
+        self.action(TestStep::Forward)
     }
     // On a manual clock the app's time passes too, as headless.
     fn wait(&mut self, time: Duration) -> Result<(), String> {

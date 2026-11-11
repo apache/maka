@@ -25,8 +25,8 @@
 //! SVG images (sniffed from their bytes) are drawn by
 //! [`nsh_core::svg`] at the bucket's size, then go through the same blur,
 //! color matrix, tint and budget as decoded bitmaps; their size is their
-//! intrinsic size in points (CSS pixels of the SVG). Canvases draw bitmaps
-//! only.
+//! intrinsic size in points (CSS pixels of the SVG). Canvases draw them as
+//! their rasterized bitmap.
 //!
 //! Animated GIF / PNG / WebP images play through a keyframe animation of the
 //! layer's `contents`. The `placeholder` shows until the image arrives (and
@@ -155,7 +155,8 @@ fn context(surface: &Surface, uri: &str) -> Context {
     Context {
         asset_base,
         read_asset,
-        access: Arc::default(),
+        access: surface.native.access(),
+        media_files: surface.media_files.borrow().clone(),
         disk: remote
             .then(|| surface.image_cache.borrow().clone())
             .flatten(),
@@ -511,7 +512,10 @@ fn images() -> &'static Images<Picture> {
         Images::new(
             nsh_core::image::budget(),
             |bytes: &ImageData, target: &Target| {
-                let picture = decode(bytes, target)?;
+                let picture = match bytes.rgba() {
+                    Some(rgba) => from_rgba(rgba)?,
+                    None => decode(bytes, target)?,
+                };
                 let cost = picture.cost();
                 Ok((picture.clone(), picture.natural, cost))
             },
@@ -771,6 +775,29 @@ fn decode(bytes: &[u8], target: &Target) -> Result<Picture, String> {
     }
 }
 
+/// A pixel buffer ([`ImageSrc::rgba`](nsh_core::element::ImageSrc::rgba)),
+/// taken as it is: no decode, at its own size; any thread.
+fn from_rgba((width, height, rgba): (u32, u32, &[u8])) -> Result<Picture, String> {
+    let mut pixels = rgba.to_vec();
+    for px in pixels.as_chunks_mut::<4>().0 {
+        let a = u16::from(px[3]);
+        for c in &mut px[..3] {
+            *c = ((u16::from(*c) * a + 127) / 255) as u8;
+        }
+    }
+    let mut raster = nsh_core::svg::Raster::default();
+    raster.width = width;
+    raster.height = height;
+    raster.pixels = pixels;
+    let image = rgba_image(&raster).ok_or("cannot make a CGImage")?;
+    Ok(Picture {
+        frames: Arc::new([image]),
+        key_times: Arc::new([0.0, 1.0]),
+        duration: 0.0,
+        natural: Natural::Pixels(width, height),
+    })
+}
+
 /// Draws an SVG, its longest side `longest` pixels; any thread.
 fn decode_svg(bytes: &[u8], longest: u32) -> Result<Picture, String> {
     let raster = nsh_core::svg::rasterize(bytes, longest.max(1)).map_err(|e| e.to_string())?;
@@ -930,8 +957,9 @@ fn frame_delay(source: &CGImageSource, i: usize) -> u32 {
 /// Loads the bitmap `uri` (`https://…`, `asset:/…`, a file path, `data:`)
 /// for a canvas, at its natural size, and hands over its (first) frame;
 /// `done` runs on the main thread (before this returns when it is in
-/// memory: callers must not hold a borrow `done` takes). Canvases draw
-/// bitmaps: an SVG is an image that failed to load.
+/// memory: callers must not hold a borrow `done` takes). An SVG is
+/// rasterized by the shared SVG renderer and its frame handed over as a
+/// bitmap.
 pub(crate) fn load(
     surface: &Rc<Surface>,
     uri: &str,
@@ -1006,14 +1034,10 @@ pub(crate) fn load_icon(
     )
 }
 
-/// The first frame of `picture`, loaded from `uri`, unless it is an SVG.
-fn bitmap(uri: &str, picture: Picture) -> Result<CFRetained<CGImage>, String> {
-    match picture.natural {
-        Natural::Vector(_) => Err(format!(
-            "{uri} is an SVG image: canvases draw bitmaps (PNG, JPEG, ...)"
-        )),
-        Natural::Pixels(..) => Ok(picture.frames[0].clone()),
-    }
+/// The first frame of `picture`, loaded from `uri`; an SVG is rasterized
+/// by the shared SVG renderer, so its frame is a bitmap here too.
+fn bitmap(_uri: &str, picture: Picture) -> Result<CFRetained<CGImage>, String> {
+    Ok(picture.frames[0].clone())
 }
 
 /// `Command::ImageInfo` (`Image.getSize`, `Image.prefetch`): reads the
@@ -1653,10 +1677,11 @@ mod tests {
     }
 
     #[test]
-    fn svg_is_no_canvas_image() {
+    fn svg_is_a_canvas_image() {
         let logo = decoded(SVG_LOGO, 48).unwrap();
-        let error = bitmap("asset:/logo.svg", logo).unwrap_err();
-        assert!(error.starts_with("asset:/logo.svg"), "{error}");
+        let image = bitmap("asset:/logo.svg", logo).unwrap();
+        assert_eq!(CGImage::width(Some(&*image)), 48);
+        assert_eq!(CGImage::height(Some(&*image)), 24);
         let png = decoded(&png_pixel(), 0).unwrap();
         assert_eq!(png.natural, Natural::Pixels(1, 1));
         assert!(bitmap("asset:/a.png", png).is_ok());

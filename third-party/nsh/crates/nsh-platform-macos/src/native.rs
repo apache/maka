@@ -49,6 +49,7 @@ use std::{
 };
 
 use block2::RcBlock;
+use nsh_core::access::WebMedia;
 use nsh_core::{
     Bounds, Command, EventKind, EventPayload, JsonValue, NativeProps, NodeId, PayloadValue, Points,
     ResizeMode, Size, VideoProps, ViewKind, WebInput, WebKey, WebProps, WebSource, geometry::Point,
@@ -272,6 +273,12 @@ impl NativeState {
         *self.access.borrow_mut() = Some(Arc::new(access));
     }
 
+    /// What the running app may reach (all before an app starts): what
+    /// its image loads check their redirects against.
+    pub(crate) fn access(&self) -> Arc<Access> {
+        self.access.borrow().clone().unwrap_or_default()
+    }
+
     /// Drops every control (the app stopped): media stops playing.
     pub(crate) fn clear(&self) {
         let hosts = std::mem::take(&mut *self.hosts.borrow_mut());
@@ -424,14 +431,42 @@ pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) 
                 web_input(&web, input);
             }
         }
+        Command::Evaluate { .. } | Command::CancelEvaluate { .. } => {
+            let found = match surface.native.hosts.borrow().get(&view.id()) {
+                Some(Host::Web(web)) => Some((
+                    web.handler.ivars().evaluations.clone(),
+                    web.props.as_ref().is_none_or(|p| p.javascript_enabled),
+                )),
+                _ => None,
+            };
+            let Some((evaluations, scripts)) = found else {
+                return;
+            };
+            match command {
+                Command::Evaluate { request, script } => {
+                    evaluations.start(*request, script, scripts)
+                }
+                Command::CancelEvaluate { request } => evaluations.cancel(*request),
+                _ => {}
+            }
+        }
         _ => {
             // WebKit may call the handler back synchronously (`stopLoading`
             // fails the navigation): the hosts are not borrowed meanwhile.
-            let web = match surface.native.hosts.borrow().get(&view.id()) {
-                Some(Host::Web(web)) => web.web.clone(),
+            let found = match surface.native.hosts.borrow().get(&view.id()) {
+                Some(Host::Web(web)) => web
+                    .web
+                    .clone()
+                    .map(|w| (w, web.handler.ivars().evaluations.clone())),
                 _ => None,
             };
-            if let Some(web) = web {
+            if let Some((web, evaluations)) = found {
+                if matches!(
+                    command,
+                    Command::Reload | Command::GoBack | Command::GoForward | Command::Load(_)
+                ) {
+                    evaluations.navigated();
+                }
                 web_command(&web, command);
             }
         }
@@ -916,6 +951,8 @@ struct VideoHost {
     /// The props applied (`None` before the first).
     props: Option<VideoProps>,
     repeat: Rc<Cell<bool>>,
+    /// The item played to its end (and does not loop).
+    ended: Rc<Cell<bool>>,
 }
 
 impl VideoHost {
@@ -931,6 +968,7 @@ impl VideoHost {
             status: Rc::default(),
             props: None,
             repeat: Rc::default(),
+            ended: Rc::default(),
         }
     }
 
@@ -953,6 +991,11 @@ impl VideoHost {
         }
         self.repeat.set(p.repeat);
         if let Some(player) = &self.player {
+            // Played from the end, a video starts over: a seek the app
+            // makes in the same turn arrives after these props.
+            if !p.paused && old.paused && self.ended.replace(false) {
+                seek_exactly(player, 0.0);
+            }
             // SAFETY: AVPlayer's documented API.
             unsafe {
                 let _: () = msg_send![player, setMuted: Bool::new(p.muted)];
@@ -984,6 +1027,7 @@ impl VideoHost {
     fn open(&mut self, source: Option<&str>, base: Option<&AssetBase>) {
         self.close();
         self.status = Rc::default();
+        self.ended.set(false);
         let Some(source) = source else { return };
         let url = match locate(source, base) {
             Some(Location::Uri(uri)) => NSURL::URLWithString(&NSString::from_str(&uri)),
@@ -1005,10 +1049,15 @@ impl VideoHost {
         // The end of the item: report it, and loop if asked.
         // SAFETY: AVPlayer's documented API.
         let item: Option<Retained<AnyObject>> = unsafe { msg_send![&player, currentItem] };
-        let (emitter, repeat) = (self.emitter.clone(), self.repeat.clone());
+        let (emitter, repeat, ended) = (
+            self.emitter.clone(),
+            self.repeat.clone(),
+            self.ended.clone(),
+        );
         let weak_player = objc2::rc::Weak::from_retained(&player);
         let block = RcBlock::new(move |_: NonNull<NSNotification>| {
             emitter.emit(EventKind::End, || EventPayload::None);
+            ended.set(!repeat.get());
             if repeat.get()
                 && let Some(player) = weak_player.load()
             {
@@ -1125,19 +1174,32 @@ impl VideoHost {
     }
 
     fn seek(&self, seconds: f64) {
-        if let Some(player) = &self.player {
-            let zero = CMTime::from_seconds(0.0);
+        let Some(player) = &self.player else { return };
+        seek_exactly(player, seconds);
+        // The player stopped itself at the end; a video the app has not
+        // paused plays on from where it was sought.
+        if self.ended.replace(false)
+            && let Some(props) = &self.props
+            && !props.paused
+        {
             // SAFETY: AVPlayer's documented API.
-            let _: () = unsafe {
-                msg_send![
-                    player,
-                    seekToTime: CMTime::from_seconds(seconds.max(0.0)),
-                    toleranceBefore: zero,
-                    toleranceAfter: zero
-                ]
-            };
+            let _: () = unsafe { msg_send![player, setRate: props.rate] };
         }
     }
+}
+
+/// Seeks `player` to `seconds`, to the frame.
+fn seek_exactly(player: &AnyObject, seconds: f64) {
+    let zero = CMTime::from_seconds(0.0);
+    // SAFETY: AVPlayer's documented API.
+    let _: () = unsafe {
+        msg_send![
+            player,
+            seekToTime: CMTime::from_seconds(seconds.max(0.0)),
+            toleranceBefore: zero,
+            toleranceAfter: zero
+        ]
+    };
 }
 
 impl Drop for VideoHost {
@@ -1247,6 +1309,12 @@ struct WebIvars {
     navigation: Cell<Option<usize>>,
     /// Response policies that converted a navigation into a download.
     downloading: RefCell<FxHashSet<usize>>,
+    /// The folder path (`/a/b/`) of the `file://` page the app last loaded
+    /// here: the only files this web view may open (its pages can link to
+    /// each other, never to a file outside it).
+    file: RefCell<Option<String>>,
+    /// `evaluate()`'s requests in this web view.
+    evaluations: Rc<nsh_platform_apple::web_evaluation::Evaluations>,
 }
 
 /// A download under way: its `WKDownload` (kept alive until it ends) and
@@ -1300,13 +1368,13 @@ define_class!(
                     .map(|s| s.to_string());
                 (main, url.unwrap_or_default())
             };
-            let allowed = !main
-                || url.is_empty()
-                || self
-                    .ivars()
-                    .access
-                    .as_ref()
-                    .is_none_or(|a| a.allows_webview(&url));
+            let ivars = self.ivars();
+            let allowed = navigation_allowed(
+                ivars.access.as_deref(),
+                ivars.file.borrow().as_deref(),
+                main,
+                &url,
+            );
             if !allowed {
                 log::warn!(target: "js", "web view navigation to {url} is not granted");
                 let message = format!("navigation to {url} is not granted");
@@ -1335,6 +1403,34 @@ define_class!(
                 };
             // WKNavigationActionPolicyCancel = 0, Allow = 1, Download = 2.
             decide.call((if download { 2 } else { allowed as isize },));
+        }
+
+        /// The page's `getUserMedia` gets what the app's `webview.media`
+        /// capability grants; the system still asks the user.
+        #[unsafe(method(webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:))]
+        fn media_capture(
+            &self,
+            _web: &AnyObject,
+            _origin: &AnyObject,
+            _frame: &AnyObject,
+            kind: isize,
+            decide: &block2::Block<dyn Fn(isize)>,
+        ) {
+            // WKMediaCaptureTypeCamera = 0, Microphone = 1, CameraAndMicrophone = 2.
+            let wanted: &[WebMedia] = match kind {
+                0 => &[WebMedia::Camera],
+                1 => &[WebMedia::Microphone],
+                _ => &[WebMedia::Camera, WebMedia::Microphone],
+            };
+            let access = self.ivars().access.as_ref();
+            let granted = wanted
+                .iter()
+                .all(|m| access.is_some_and(|a| a.allows_web_media(*m)));
+            if !granted {
+                log::warn!(target: "js", "web view media capture is not granted: add it to capabilities.webview.media");
+            }
+            // WKPermissionDecisionGrant = 1, Deny = 2.
+            decide.call((if granted { 1 } else { 2 },));
         }
 
         /// What the page cannot show, or the server sends as an attachment,
@@ -1433,11 +1529,17 @@ define_class!(
 
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
         fn did_start(&self, web: &AnyObject, navigation: Option<&AnyObject>) {
+            self.ivars().evaluations.navigated();
             self.ivars().navigation.set(navigation.map(download_key));
             self.emit(EventKind::LoadStart, || navigation_state(web, true));
             self.emit(EventKind::NavigationStateChange, || {
                 navigation_state(web, true)
             });
+        }
+
+        #[unsafe(method(webViewWebContentProcessDidTerminate:))]
+        fn process_terminated(&self, _web: &AnyObject) {
+            self.ivars().evaluations.process_terminated();
         }
 
         #[unsafe(method(webView:didFinishNavigation:))]
@@ -1474,6 +1576,7 @@ impl WebHandler {
         emitter: Emitter,
         access: Option<Arc<Access>>,
         downloads: Option<PathBuf>,
+        evaluations: Rc<nsh_platform_apple::web_evaluation::Evaluations>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(WebIvars {
             emitter,
@@ -1482,6 +1585,8 @@ impl WebHandler {
             active: RefCell::default(),
             navigation: Cell::default(),
             downloading: RefCell::default(),
+            file: RefCell::new(None),
+            evaluations,
         });
         // SAFETY: NSObject's designated initializer.
         unsafe { msg_send![super(this), init] }
@@ -1719,6 +1824,100 @@ fn describe(object: &AnyObject) -> String {
     d.to_string()
 }
 
+/// Whether a web view may navigate to `url`: a frame inside the page, a
+/// file in the folder of the `file://` page the app itself loaded there
+/// (`folder`, which the `webview` grant, made of web hosts, can't name),
+/// and what the grant allows. Never a file outside that folder.
+fn navigation_allowed(
+    access: Option<&Access>,
+    folder: Option<&str>,
+    main: bool,
+    url: &str,
+) -> bool {
+    if !main || url.is_empty() {
+        return true;
+    }
+    if is_file_url(url) {
+        return folder.is_some_and(|dir| {
+            local_file_path(url).is_some_and(|path| path.starts_with(dir) && !has_dot_segment(path))
+        });
+    }
+    access.is_none_or(|a| a.allows_webview(url))
+}
+
+fn is_file_url(url: &str) -> bool {
+    url.get(..5)
+        .is_some_and(|s| s.eq_ignore_ascii_case("file:"))
+}
+
+/// The path of a local `file://` URL, without query or fragment: `None`
+/// for any other URL and for a file on another host. `file:///a` and
+/// `file://localhost/a` are the same file, `/a`.
+fn local_file_path(url: &str) -> Option<&str> {
+    const SCHEME: &str = "file://";
+    if !url
+        .get(..SCHEME.len())
+        .is_some_and(|s| s.eq_ignore_ascii_case(SCHEME))
+    {
+        return None;
+    }
+    let rest = &url[SCHEME.len()..];
+    let slash = rest.find('/')?;
+    let host = &rest[..slash];
+    if !(host.is_empty() || host.eq_ignore_ascii_case("localhost")) {
+        return None;
+    }
+    let path = &rest[slash..];
+    Some(path.split(['?', '#']).next().unwrap_or(path))
+}
+
+/// Whether `path` has a `.` or `..` segment, written out or
+/// percent-encoded (`%2e`, `..%2f`), which could name a folder above the
+/// one it seems to.
+fn has_dot_segment(path: &str) -> bool {
+    percent_decoded(path)
+        .split(|&b| b == b'/')
+        .any(|segment| segment == b"." || segment == b"..")
+}
+
+/// The folder path (`/a/b/`) a `file://` page may read: the file's own and
+/// what is under it, nothing above. `None` for any other URL, which loads
+/// as a request, for a file on another host, for a file at the root, whose
+/// folder is the whole disk (`file://localhost/a.pdf` included), and for a
+/// path with a `.` or `..` segment.
+fn file_read_scope(uri: &str) -> Option<&str> {
+    let path = local_file_path(uri)?;
+    if has_dot_segment(path) {
+        return None;
+    }
+    let end = path.rfind('/')? + 1;
+    (end > 1).then(|| &path[..end])
+}
+
+/// `s` with each `%XX` turned into its byte; a `%` not followed by two hex
+/// digits stays as it is.
+fn percent_decoded(s: &str) -> Vec<u8> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && let (Some(h), Some(l)) = (
+                bytes.get(i + 1).copied().and_then(hex),
+                bytes.get(i + 2).copied().and_then(hex),
+            )
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// A JS string literal for `s`.
 fn js_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -1763,7 +1962,24 @@ impl WebHost {
         access: Option<Arc<Access>>,
         downloads: Option<PathBuf>,
     ) -> Self {
-        let handler = WebHandler::new(surface.mtm, Emitter::new(surface, view), access, downloads);
+        // Replies are internal events: they reach the engine whether or not
+        // the app listens.
+        let weak = Rc::downgrade(surface);
+        let evaluations = nsh_platform_apple::web_evaluation::Evaluations::new(
+            view.id(),
+            Box::new(move |id, kind, payload| {
+                if let Some(surface) = weak.upgrade() {
+                    surface.event(id, kind, payload);
+                }
+            }),
+        );
+        let handler = WebHandler::new(
+            surface.mtm,
+            Emitter::new(surface, view),
+            access,
+            downloads,
+            evaluations,
+        );
         WebHost {
             holder: objc2::rc::Weak::new(&**view),
             web: None,
@@ -1811,6 +2027,7 @@ impl WebHost {
                     configuration: &*config
                 ];
                 let _: () = msg_send![&web, setNavigationDelegate: &**handler];
+                let _: () = msg_send![&web, setUIDelegate: &**handler];
                 // Transparent by default (WebKit paints white otherwise): a
                 // page without a background shows the view behind it, the
                 // way `backgroundColor` on the node expects.
@@ -1821,6 +2038,7 @@ impl WebHost {
             }
         });
         self.web = web.flatten();
+        self.handler.ivars().evaluations.set_web(self.web.as_ref());
     }
 
     /// Whether `view` is its `WKWebView`.
@@ -1841,6 +2059,9 @@ impl WebHost {
             self.make(p);
         }
         let Some(web) = &self.web else { return };
+        if !p.javascript_enabled {
+            self.handler.ivars().evaluations.scripts_disabled();
+        }
         let old = self.props.take();
         let first = old.is_none();
         let old = old.unwrap_or_default();
@@ -1887,12 +2108,29 @@ impl WebHost {
                 msg_send![&prefs, setAllowsContentJavaScript: Bool::new(p.javascript_enabled)];
             // Scripts apply to pages loaded from now on: load again.
             if first || p.source != old.source || scripts_changed {
+                // Only the file this load opens is the page's own: none for
+                // any other source.
+                *self.handler.ivars().file.borrow_mut() = None;
+                if p.source != WebSource::None {
+                    self.handler.ivars().evaluations.navigated();
+                }
                 match &p.source {
                     WebSource::Uri(uri) => {
-                        if let (Some(url), Some(cls)) = (
-                            NSURL::URLWithString(&NSString::from_str(uri)),
-                            class(c"NSURLRequest"),
-                        ) {
+                        let url = NSURL::URLWithString(&NSString::from_str(uri));
+                        let dir = file_read_scope(uri);
+                        let scope = dir.and_then(|dir| {
+                            NSURL::URLWithString(&NSString::from_str(&format!("file://{dir}")))
+                        });
+                        if let (Some(url), Some(scope), Some(dir)) = (&url, scope, dir) {
+                            *self.handler.ivars().file.borrow_mut() = Some(dir.to_owned());
+                            // A request for a file URL shows nothing: WebKit
+                            // reads a local file only where it is let.
+                            let _: Option<Retained<AnyObject>> = msg_send![
+                                web,
+                                loadFileURL: &**url,
+                                allowingReadAccessToURL: &*scope
+                            ];
+                        } else if let (Some(url), Some(cls)) = (url, class(c"NSURLRequest")) {
                             let request: Retained<AnyObject> =
                                 msg_send![cls, requestWithURL: &*url];
                             let _: Option<Retained<AnyObject>> =
@@ -1920,12 +2158,14 @@ impl WebHost {
 impl Drop for WebHost {
     fn drop(&mut self) {
         self.handler.cancel_downloads();
+        self.handler.ivars().evaluations.dispose();
         let Some(web) = &self.web else { return };
         // SAFETY: breaks the cycle web view → content controller → handler
         // and stops the page.
         unsafe {
             let _: () = msg_send![web, stopLoading];
             let _: () = msg_send![web, setNavigationDelegate: std::ptr::null::<AnyObject>()];
+            let _: () = msg_send![web, setUIDelegate: std::ptr::null::<AnyObject>()];
             let config: Retained<AnyObject> = msg_send![web, configuration];
             let content: Retained<AnyObject> = msg_send![&config, userContentController];
             let _: () = msg_send![
@@ -2183,6 +2423,144 @@ mod tests {
             Some(Location::Path("/Users/me/a.mp4".into()))
         );
         assert_eq!(locate("", None), None);
+    }
+
+    #[test]
+    fn a_file_url_reads_its_own_folder_and_nothing_wider() {
+        assert_eq!(
+            file_read_scope("file:///tmp/opened/7f/Invoice%20May.pdf"),
+            Some("/tmp/opened/7f/")
+        );
+        assert_eq!(
+            file_read_scope("FILE:///tmp/x/a.pdf#page=2"),
+            Some("/tmp/x/")
+        );
+        assert_eq!(
+            file_read_scope("file://localhost/tmp/x/a.pdf"),
+            Some("/tmp/x/")
+        );
+        assert_eq!(
+            file_read_scope("file://LOCALHOST/tmp/x/a.pdf"),
+            Some("/tmp/x/")
+        );
+        assert_eq!(
+            file_read_scope("file:///tmp/x/a.pdf?/b/c"),
+            Some("/tmp/x/"),
+            "a slash after the path is no folder"
+        );
+        assert_eq!(
+            file_read_scope("file:///tmp/x/..a/b..pdf"),
+            Some("/tmp/x/..a/"),
+            "dots in a name are a name"
+        );
+        assert_eq!(file_read_scope("file:///tmp/x/a%20.pdf"), Some("/tmp/x/"));
+        for uri in [
+            "file:///a.pdf",
+            "file://localhost/a.pdf",
+            "file://localhost/",
+            "file://server/share/a.pdf",
+            "file://localhost",
+            "file:///tmp/x/../../a.pdf",
+            "file:///tmp/x/./a.pdf",
+            "file:///tmp/x/%2e%2e/%2E%2E/a.pdf",
+            "file:///tmp/x/.%2e/a.pdf",
+            "file:///tmp/x/..%2f..%2fetc/a.pdf",
+            "file:///tmp/x/..%2F/a.pdf",
+            "file://localhost/tmp/../a.pdf",
+            "file:///tmp/../a.pdf#page=2",
+            "http://127.0.0.1:8790/file/raw/m1/a.pdf",
+            "https://example.com/a.pdf",
+            "about:blank",
+            "/tmp/b.pdf",
+            "",
+        ] {
+            assert_eq!(file_read_scope(uri), None, "{uri}");
+        }
+    }
+
+    #[test]
+    fn a_web_view_opens_only_files_in_the_folder_it_was_given() {
+        let dir = "/tmp/opened/7f/";
+        let native = Policy::default().access();
+        let go =
+            |loaded: Option<&str>, url: &str| navigation_allowed(Some(&native), loaded, true, url);
+        for url in [
+            "file:///tmp/opened/7f/a.pdf",
+            "file:///tmp/opened/7f/a.pdf#page=2",
+            "FILE:///tmp/opened/7f/a.pdf",
+            "file://localhost/tmp/opened/7f/a.pdf",
+            "file:///tmp/opened/7f/b.html",
+            "file:///tmp/opened/7f/sub/c.html?x=1",
+        ] {
+            assert!(go(Some(dir), url), "same folder: {url}");
+        }
+        for url in [
+            "file:///tmp/opened/a.pdf",
+            "file:///etc/passwd",
+            "file://localhost/etc/passwd",
+            "file://server/tmp/opened/7f/a.pdf",
+            "file:///tmp/opened/7f/../x.pdf",
+            "file:///tmp/opened/7f/%2e%2e/x.pdf",
+            "file:///tmp/opened/7fx/a.pdf",
+        ] {
+            assert!(!go(Some(dir), url), "outside the folder: {url}");
+        }
+        assert!(
+            !go(None, "file:///tmp/opened/7f/a.pdf"),
+            "a web view that loaded no file (the mail reader)"
+        );
+        assert!(
+            !navigation_allowed(None, None, true, "file:///tmp/a.pdf"),
+            "nothing known of the app"
+        );
+        // Not a file: the grant decides, unrestricted or not.
+        assert!(go(Some(dir), "https://example.com/a"));
+        assert!(go(None, "about:blank"));
+        let granted = nsh_core::access::Capabilities::from_json(
+            &serde_json::json!({ "webview": { "hosts": ["example.com"] } }),
+        )
+        .unwrap();
+        let app = Access {
+            declared: granted,
+            granted: None,
+        };
+        for url in [
+            "data:text/html,<p>x</p>",
+            "buwiz://chat/new",
+            "javascript:alert(1)",
+        ] {
+            assert!(!go(Some(dir), url), "not a web page: {url}");
+            assert!(
+                !navigation_allowed(Some(&app), Some(dir), true, url),
+                "{url}"
+            );
+        }
+        assert!(!navigation_allowed(
+            Some(&app),
+            Some(dir),
+            true,
+            "https://evil.example/a"
+        ));
+        assert!(
+            navigation_allowed(Some(&app), Some(dir), true, "file:///tmp/opened/7f/a.pdf"),
+            "a JS app's own file page"
+        );
+        assert!(!navigation_allowed(
+            Some(&app),
+            None,
+            true,
+            "file:///tmp/opened/7f/a.pdf"
+        ));
+        assert!(navigation_allowed(
+            Some(&app),
+            None,
+            true,
+            "https://example.com/a"
+        ));
+        assert!(
+            navigation_allowed(Some(&app), None, false, "file:///etc/passwd"),
+            "a frame inside the page"
+        );
     }
 
     #[test]

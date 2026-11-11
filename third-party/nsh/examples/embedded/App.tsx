@@ -8,8 +8,11 @@
 // `setOpenUrlHandler`), else the system opens it. `App.test.tsx` plays the
 // host app's part.
 // The theme pill takes the host's brand through setThemeOverrides.
+// The page scrolls in `nativeID="embedded.scroll"`, which the host app watches
+// (`NshView.watchScroll`): a native label follows its offset in the frame of
+// the scroll and a native button scrolls it back to the top.
 
-import { mount, type NativeComponentRef, signal, Text, View } from "nsh";
+import { mount, type NativeComponentRef, Scroll, signal, Text, View } from "nsh";
 import { nativeComponent } from "nsh";
 import { host } from "nsh";
 import { openUrl } from "nsh";
@@ -43,44 +46,50 @@ function App() {
     }
   };
   return (
-    <View style={{ flex: 1, padding: 20, paddingTop: "calc(env(safe-area-inset-top) + 20px)", paddingRight: "calc(env(safe-area-inset-right) + 20px)", paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)", paddingLeft: "calc(env(safe-area-inset-left) + 20px)", gap: 16, backgroundColor: "#f6f8fa" }}>
-      <Text style={{ fontSize: 22, fontWeight: "700" }}>{`Hello, ${user}`}</Text>
-      <Text style={{ color: "#57606a" }}>
-        The badge below is a native view of the host app: nsh lays it out, sends it props and gets its events.
-      </Text>
-      <View class="self-start rounded-(--radius) bg-primary px-3 py-2">
-        <Text class="text-primary-foreground">Styled by the host app's theme</Text>
+    <Scroll nativeID="embedded.scroll" testID="embedded.scroll" style={{ flex: 1, backgroundColor: "#f6f8fa" }}>
+      <View style={{ padding: 20, paddingTop: "calc(env(safe-area-inset-top) + 20px)", paddingRight: "calc(env(safe-area-inset-right) + 20px)", paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)", paddingLeft: "calc(env(safe-area-inset-left) + 20px)", gap: 16, backgroundColor: "#f6f8fa" }}>
+        <Text style={{ fontSize: 22, fontWeight: "700" }}>{`Hello, ${user}`}</Text>
+        <Text style={{ color: "#57606a" }}>
+          The badge below is a native view of the host app: nsh lays it out, sends it props and gets its events.
+        </Text>
+        <View class="self-start rounded-(--radius) bg-primary px-3 py-2">
+          <Text class="text-primary-foreground">Styled by the host app's theme</Text>
+        </View>
+        <Badge
+          ref={(node) => (badge = node)}
+          text={taps() === 0 ? "Tap the native badge" : `Tapped ${taps()}×`}
+          color={colors[taps() % colors.length]}
+          onTap={(e) => {
+            taps.set(e.count);
+            badge?.command("pulse");
+            host.post("tapped", { count: e.count });
+          }}
+          style={{ alignSelf: "flex-start", borderRadius: 8, overflow: "hidden" }}
+        />
+        <Text>{`JS saw ${taps()} taps`}</Text>
+        <Text style={{ color: "#57606a" }}>{message()}</Text>
+        <View
+          onPress={ask}
+          role="button"
+          style={{ alignSelf: "flex-start", paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: "#0969da" }}
+          activeStyle={{ opacity: 0.7 }}
+        >
+          <Text style={{ color: "#ffffff", fontWeight: "600" }}>Ask the host for the time</Text>
+        </View>
+        <Text>{answer()}</Text>
+        <Text
+          role="link"
+          onPress={() => openUrl("https://github.com/longbridge/nsh")}
+          style={{ color: "#0969da", textDecorationLine: "underline" }}
+        >
+          Read the documentation
+        </Text>
+        {/* Room to scroll: the host app follows the offset. */}
+        {Array.from({ length: 12 }, (_, i) => (
+          <Text style={{ color: "#57606a", paddingVertical: 12 }}>{`Row ${i + 1}`}</Text>
+        ))}
       </View>
-      <Badge
-        ref={(node) => (badge = node)}
-        text={taps() === 0 ? "Tap the native badge" : `Tapped ${taps()}×`}
-        color={colors[taps() % colors.length]}
-        onTap={(e) => {
-          taps.set(e.count);
-          badge?.command("pulse");
-          host.post("tapped", { count: e.count });
-        }}
-        style={{ alignSelf: "flex-start", borderRadius: 8, overflow: "hidden" }}
-      />
-      <Text>{`JS saw ${taps()} taps`}</Text>
-      <Text style={{ color: "#57606a" }}>{message()}</Text>
-      <View
-        onPress={ask}
-        role="button"
-        style={{ alignSelf: "flex-start", paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: "#0969da" }}
-        activeStyle={{ opacity: 0.7 }}
-      >
-        <Text style={{ color: "#ffffff", fontWeight: "600" }}>Ask the host for the time</Text>
-      </View>
-      <Text>{answer()}</Text>
-      <Text
-        role="link"
-        onPress={() => openUrl("https://github.com/longbridge/nsh")}
-        style={{ color: "#0969da", textDecorationLine: "underline" }}
-      >
-        Read the documentation
-      </Text>
-    </View>
+    </Scroll>
   );
 }
 

@@ -219,6 +219,7 @@ pub(crate) struct ImageStore {
     asset_base: Option<AssetBase>,
     read_asset: Option<ReadAsset>,
     access: Arc<Access>,
+    media_files: Arc<nsh_core::access::MediaFiles>,
     disk: Option<DiskCache>,
     entries: HashMap<NodeId, ViewEntry>,
     next_load_id: u64,
@@ -232,6 +233,7 @@ impl Default for ImageStore {
             asset_base: None,
             read_asset: None,
             access: Arc::default(),
+            media_files: Arc::default(),
             disk: None,
             entries: HashMap::new(),
             next_load_id: 1,
@@ -466,11 +468,13 @@ impl ImageStore {
         &mut self,
         assets: Option<Arc<dyn nsh_engine::Assets>>,
         access: Arc<Access>,
+        media_files: Arc<nsh_core::access::MediaFiles>,
         disk: Option<DiskCache>,
     ) {
         self.asset_base = assets.as_ref().and_then(|a| a.base());
         self.read_asset = assets.map(|a| ReadAsset::new(move |uri: &str| a.read(uri)));
         self.access = access;
+        self.media_files = media_files;
         self.disk = disk;
     }
 
@@ -488,6 +492,7 @@ impl ImageStore {
             asset_base: self.asset_base.clone(),
             read_asset: self.read_asset.clone(),
             access: self.access.clone(),
+            media_files: self.media_files.clone(),
             disk: remote.then(|| self.disk.clone()).flatten(),
             transport: None,
         }
@@ -784,6 +789,7 @@ impl ImageStore {
                         asset_base: self.asset_base.clone(),
                         read_asset: self.read_asset.clone(),
                         access: self.access.clone(),
+                        media_files: self.media_files.clone(),
                         disk: None,
                         transport: None,
                     };

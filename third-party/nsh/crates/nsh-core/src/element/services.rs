@@ -127,6 +127,11 @@ pub(crate) fn announce(message: String) -> Action {
     Action::Command(ROOT_ID, Command::Announce(message))
 }
 
+/// The device plays `haptic`.
+pub(crate) fn haptic(haptic: crate::Haptic) -> Action {
+    Action::Command(ROOT_ID, Command::Haptic(haptic))
+}
+
 /// Turns the performance monitor on or off.
 pub(crate) fn perf_monitor(enabled: bool) -> Action {
     Action::Command(ROOT_ID, Command::PerfMonitor(enabled))

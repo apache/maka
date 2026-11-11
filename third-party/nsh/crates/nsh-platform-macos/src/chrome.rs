@@ -159,6 +159,9 @@ pub(crate) struct TitleBar {
     /// Set while [`place_controls`] runs: the frames it sets post the
     /// notifications that call it.
     placing: Cell<bool>,
+    /// Set while a measure of the area from `contentLayoutRect` waits for
+    /// AppKit's layout ([`update_area`]).
+    remeasure: Cell<bool>,
 }
 
 impl Drop for Chrome {
@@ -187,12 +190,13 @@ pub(crate) fn full_screen(window: &NSWindow) -> bool {
 /// change, a resize, full screen).
 pub(crate) fn update_area(surface: &Surface) {
     let bar = &surface.main_window.title_bar;
-    let area = match window(surface) {
+    let window = window(surface);
+    let area = match &window {
         Some(window) => {
             // The buttons are placed first: whether NSH holds them decides
             // the height.
-            place_controls(surface, ROOT_ID, bar, &window);
-            title_bar_area(bar, &window)
+            place_controls(surface, ROOT_ID, bar, window);
+            title_bar_area(bar, window)
         }
         None => Edges::default(),
     };
@@ -201,6 +205,37 @@ pub(crate) fn update_area(surface: &Surface) {
         env.title_bar = area;
         surface.set_environment(env);
     }
+    // Read from `contentLayoutRect`, the area may be the old frame's: that
+    // rectangle is laid out for a new frame only after the resize, and the
+    // root view's size, which the next measure waits for, may stay the
+    // same. Measured again once AppKit has laid the window out.
+    if let Some(window) = window
+        && bar.style.get() == TitleBarStyle::Hidden
+        && !full_screen(&window)
+        && reads_layout_rect(&window)
+        && !bar.remeasure.replace(true)
+    {
+        let key = surface.key();
+        DispatchQueue::main().exec_async(move || {
+            if let Some(surface) = Surface::with_key(key) {
+                update_area(&surface);
+                surface.main_window.title_bar.remeasure.set(false);
+            }
+        });
+    }
+}
+
+/// Whether [`title_bar_area`] reads `window`'s toolbar height from
+/// `contentLayoutRect`: a toolbar without the title bar view around the
+/// window's buttons (a window without them).
+fn reads_layout_rect(window: &NSWindow) -> bool {
+    measured_from_layout(window.toolbar().is_some(), title_bar_view_height(window))
+}
+
+/// Whether a title bar's area is read from `contentLayoutRect`, given
+/// whether the window has a toolbar and its title bar view's height.
+fn measured_from_layout(toolbar: bool, title_bar_view: Option<f32>) -> bool {
+    toolbar && title_bar_view.is_none()
 }
 
 /// The area of `window`'s hidden title bar `bar` over its content: its
@@ -1144,6 +1179,18 @@ mod tests {
         assert_eq!(toolbar_height(800.0, rect(12.0, 750.0), 22.0), 38.0);
         // An embedding host's expanded toolbar occupies its full native area.
         assert_eq!(toolbar_height(800.0, rect(0.0, 730.0), 22.0), 70.0);
+    }
+
+    #[test]
+    fn only_a_toolbar_without_a_title_bar_view_waits_for_the_layout() {
+        // With a title bar view (the window's buttons), its height is read,
+        // which is right during a resize; without a toolbar the area is the
+        // natural or the app's height.
+        assert!(!measured_from_layout(true, Some(40.0)));
+        assert!(!measured_from_layout(false, None));
+        assert!(!measured_from_layout(false, Some(32.0)));
+        // A host's toolbar on a window without buttons: `contentLayoutRect`.
+        assert!(measured_from_layout(true, None));
     }
 
     #[test]

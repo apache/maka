@@ -94,7 +94,7 @@ pub fn bundle() {
         let key = hex::encode(Sha256::digest(entry.as_os_str().as_encoded_bytes()));
         let directory = ui_bundles.join(&key);
         retained.insert(key);
-        let manifest = maka_ui_build::compile_cached(entry, &directory, &compiler)
+        let manifest = maka_ui_build::compile_cached(entry, &directory, Some(repo), &compiler)
             .expect("compile product NSH UI entry");
         inputs.extend(manifest.inputs.iter().cloned());
         index.insert(

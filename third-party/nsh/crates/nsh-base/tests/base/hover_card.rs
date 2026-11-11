@@ -287,17 +287,17 @@ fn the_focus_moving_from_the_trigger_into_the_card_keeps_it_open() {
     app.run_for(Duration::from_millis(650)).unwrap();
     assert!(app.shows("Ada Lovelace"), "open after its delay");
     app.wait_for("Within: in").unwrap();
-    // Back from the trigger, around to the last stop: the card's link. The
-    // card's overlay is inside the hover card's view, so the focus never
-    // leaves it: no `on_focus_out` (the pointer is not on the card, so one
-    // would close it).
-    app.press_key("shift+tab").unwrap();
+    // From the trigger into the card's link, which follows it. The card's
+    // overlay is inside the hover card's view, so the focus never leaves
+    // it: no `on_focus_out` (the pointer is not on the card, so one would
+    // close it).
+    app.press_key("tab").unwrap();
     app.wait_for("Profile focused: true").unwrap();
     app.run_for(Duration::from_millis(1000)).unwrap();
     assert!(app.shows("Ada Lovelace"), "the focus in the card keeps it");
     assert!(app.shows("Within: in"), "never out");
-    // From the card to the trigger: still in one of them.
-    app.press_key("tab").unwrap();
+    // From the card back to the trigger: still in one of them.
+    app.press_key("shift+tab").unwrap();
     app.wait_for("Profile focused: false").unwrap();
     app.run_for(Duration::from_millis(1000)).unwrap();
     assert!(
@@ -306,8 +306,9 @@ fn the_focus_moving_from_the_trigger_into_the_card_keeps_it_open() {
     );
     assert!(app.shows("Within: in"), "never out");
     app.wait_for("Changes: true:Focus").unwrap();
-    // Out of both: it closes after its close delay.
-    app.press_key("tab").unwrap();
+    // Out of both, around to the last stop: it closes after its close
+    // delay.
+    app.press_key("shift+tab").unwrap();
     app.wait_for("Within: in out").unwrap();
     app.run_for(Duration::from_millis(250)).unwrap();
     assert!(app.shows("Ada Lovelace"), "not before 300 ms");
@@ -321,15 +322,16 @@ fn the_focus_in_the_card_keeps_it_open_after_the_pointer_left() {
     let mut app = start_with_link();
     open_by_hover(&mut app);
     app.hover("id:card").unwrap();
-    // With no focus, Shift+Tab goes to the last stop: the card's link.
+    // With no focus, Shift+Tab goes to the last stop, then back to the
+    // card's link, which follows the trigger.
+    app.press_key("shift+tab").unwrap();
     app.press_key("shift+tab").unwrap();
     app.wait_for("Profile focused: true").unwrap();
     app.hover("id:away").unwrap();
     app.run_for(Duration::from_millis(1000)).unwrap();
     assert!(app.shows("Ada Lovelace"), "the focus keeps it");
     app.wait_for("Changes: true:Hover").unwrap();
-    // Around to the trigger, then out: closed once the focus left both.
-    app.press_key("tab").unwrap();
+    // On to the stop after the card: closed once the focus left both.
     app.press_key("tab").unwrap();
     app.run_for(Duration::from_millis(350)).unwrap();
     assert!(!app.shows("Ada Lovelace"));
@@ -341,6 +343,7 @@ fn escape_closes_a_hover_card_with_the_focus_in_it() {
     let mut app = start_with_link();
     open_by_hover(&mut app);
     app.hover("id:card").unwrap();
+    app.press_key("shift+tab").unwrap();
     app.press_key("shift+tab").unwrap();
     app.wait_for("Profile focused: true").unwrap();
     app.press_key("escape").unwrap();

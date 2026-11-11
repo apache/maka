@@ -43,7 +43,7 @@ use taffy::{
     AvailableSpace, BlockContext, Cache, CacheTree, DetailedGridInfo, DetailedLayoutInfo, Display,
     FlexDirection, FlexWrap, Layout, LayoutBlockContainer, LayoutContainingBlock,
     LayoutFlexboxContainer, LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree,
-    NodeId, RequestedAxis, RunMode, Size, Style, TraversePartialTree, TraverseTree,
+    NodeId, RequestedAxis, RunMode, Size, SizingMode, Style, TraversePartialTree, TraverseTree,
     compute_block_layout, compute_cached_layout, compute_flexbox_layout, compute_grid_layout,
     compute_hidden_layout, compute_oof_layout, compute_root_layout,
 };
@@ -585,6 +585,67 @@ impl<C> LayoutTree<C> {
         relaid
     }
 
+    /// The extent `node` would take along one axis (`vertical`, else
+    /// horizontal) with its max size that way at `cap` instead of its own,
+    /// in as much space as `cap` that way, the other way as its parent's
+    /// last full layout gave it: a measuring
+    /// pass, after which its style and cache are what they were and no
+    /// layout has changed (what it measured in the nodes under it stays in
+    /// their caches, answers for their own styles). `None` before it was
+    /// laid out.
+    pub(crate) fn extent_capped<M>(
+        &mut self,
+        node: NodeId,
+        vertical: bool,
+        cap: f32,
+        measure: M,
+    ) -> Option<f32>
+    where
+        M: FnMut(LayoutInput, NodeId, Option<&mut C>, &Style) -> LayoutOutput,
+    {
+        let n = &mut self.nodes[key(node)];
+        let (mut input, _) = n.last.clone()?;
+        let mut style = n.style.clone();
+        let max = taffy::LengthPercentageAuto::length(cap);
+        // The space too: an absolutely placed box's parent gives it the
+        // space clamped by its own max size, and an auto size never grows
+        // past the space it is given.
+        let space = AvailableSpace::Definite(cap);
+        if vertical {
+            style.max_size.height = max;
+            input.known_dimensions.height = None;
+            input.available_space.height = space;
+            input.axis = RequestedAxis::Vertical;
+        } else {
+            style.max_size.width = max;
+            input.known_dimensions.width = None;
+            input.available_space.width = space;
+            input.axis = RequestedAxis::Horizontal;
+        }
+        input.run_mode = RunMode::ComputeSize;
+        input.sizing_mode = SizingMode::InherentSize;
+        // Its own style, cache and recorded answers are put back: what is
+        // computed with the other style is kept nowhere.
+        let own = std::mem::replace(&mut n.style, style);
+        let cache = std::mem::replace(&mut n.cache, Cache::new());
+        let measured = n.measured.take();
+        let mut view = View {
+            tree: self,
+            measure,
+            framed: false,
+        };
+        let output = view.compute_child_layout(node, input, None);
+        let n = &mut self.nodes[key(node)];
+        n.style = own;
+        n.cache = cache;
+        n.measured = measured;
+        Some(if vertical {
+            output.size.height
+        } else {
+            output.size.width
+        })
+    }
+
     /// Lays out the tree under `root` within `available`, measuring leaves
     /// with `measure` (`taffy::TaffyTree::compute_layout_with_measure`'s).
     pub(crate) fn compute_layout_with_measure<M>(
@@ -604,12 +665,13 @@ impl<C> LayoutTree<C> {
     }
 }
 
-/// Taffy's flexbox, with a row's width as CSS's shrink-to-fit has it. In
-/// definite space Taffy adds up the items' flex bases, so an item with
-/// `flex: 1` counts for nothing, however much text it holds: a view around
-/// the row, sized by it, ends up narrower than the width its items' heights
-/// were measured at. The row's width is its max-content width, up to that
-/// space.
+/// Taffy's flexbox, with a container's main size as CSS's shrink-to-fit
+/// has it. In definite space Taffy adds up the items' flex bases, so an
+/// item with `flex: 1` counts for nothing, however much content it holds:
+/// a row sized by it ends up narrower than the width its items' heights
+/// were measured at (#927), and a column inside a row that doesn't stretch
+/// it ends up shorter than its items, which paint past it (#1614). The
+/// container's main size is its max-content size, up to that space.
 fn compute_flex_layout<C, M>(
     view: &mut View<'_, C, M>,
     node: NodeId,
@@ -619,38 +681,60 @@ where
     M: FnMut(LayoutInput, NodeId, Option<&mut C>, &Style) -> LayoutOutput,
 {
     let n = view.node(node);
-    if let (None, AvailableSpace::Definite(space)) =
-        (inputs.known_dimensions.width, inputs.available_space.width)
-        && matches!(
-            n.style.flex_direction,
-            FlexDirection::Row | FlexDirection::RowReverse
+    let vertical = matches!(
+        n.style.flex_direction,
+        FlexDirection::Column | FlexDirection::ColumnReverse
+    );
+    let (known, available) = if vertical {
+        (
+            inputs.known_dimensions.height,
+            inputs.available_space.height,
         )
+    } else {
+        (inputs.known_dimensions.width, inputs.available_space.width)
+    };
+    if let (None, AvailableSpace::Definite(space)) = (known, available)
         && n.style.flex_wrap == FlexWrap::NoWrap
-        && n.children
-            .iter()
-            .any(|&child| view.node(child).style.flex_grow > 0.0)
+        && view
+            .child_ids(node)
+            .any(|child| view.node(child).style.flex_grow > 0.0)
     {
         let measuring = LayoutInput {
             run_mode: RunMode::ComputeSize,
-            axis: RequestedAxis::Horizontal,
+            axis: if vertical {
+                RequestedAxis::Vertical
+            } else {
+                RequestedAxis::Horizontal
+            },
             ..inputs
         };
-        let bases = compute_flexbox_layout(view, node, measuring).size.width;
-        let content = compute_flexbox_layout(
-            view,
-            node,
-            LayoutInput {
-                available_space: Size {
-                    width: AvailableSpace::MaxContent,
-                    ..inputs.available_space
+        let main = |size: Size<f32>| if vertical { size.height } else { size.width };
+        let bases = main(compute_flexbox_layout(view, node, measuring).size);
+        let mut content_space = inputs.available_space;
+        if vertical {
+            content_space.height = AvailableSpace::MaxContent;
+        } else {
+            content_space.width = AvailableSpace::MaxContent;
+        }
+        let content = main(
+            compute_flexbox_layout(
+                view,
+                node,
+                LayoutInput {
+                    available_space: content_space,
+                    ..measuring
                 },
-                ..measuring
-            },
-        )
-        .size
-        .width;
-        inputs.known_dimensions.width = Some(bases.max(content.min(space)));
-        inputs.known_dimensions_are_definite.width = true;
+            )
+            .size,
+        );
+        let size = Some(bases.max(content.min(space)));
+        if vertical {
+            inputs.known_dimensions.height = size;
+            inputs.known_dimensions_are_definite.height = true;
+        } else {
+            inputs.known_dimensions.width = size;
+            inputs.known_dimensions_are_definite.width = true;
+        }
     }
     compute_flexbox_layout(view, node, inputs)
 }
@@ -693,6 +777,10 @@ where
             && !measured.iter().any(|(asked, _)| *asked == inputs)
         {
             if measured.len() < MEASURED {
+                // A layout asks most leaves twice (a measuring pass, then
+                // the final one): room for that, then for one more at a
+                // time, not the four a growing `Vec` starts with.
+                measured.reserve_exact(if measured.is_empty() { 2 } else { 1 });
                 measured.push((inputs, output.clone()));
             } else {
                 n.measured = None;

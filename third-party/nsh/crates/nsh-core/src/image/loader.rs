@@ -23,9 +23,10 @@
 //!   same limits; the loader keeps the policy around it.
 //! - **Failures** are remembered for [`FAILURE_TTL`]: a broken URL in a list
 //!   is not fetched again for every row.
-//! - **L3**: the last bytes read ([`ENCODED_BYTES`]) stay, so a decode at
-//!   another size, an SVG parsed again or `Image.getSize` reads nothing
-//!   again. An entry over a quarter of it is not kept.
+//! - **L3**: the last bytes read ([`ENCODED_BYTES`] by default, an app's
+//!   own with [`Loader::set_encoded_limit`]) stay, so a decode at another
+//!   size, an SVG parsed again or `Image.getSize` reads nothing again. An
+//!   entry over a quarter of it is not kept.
 //!
 //! [`super::Images`] adds the decoded images (L4, [`super::MemoryCache`]) on top.
 //!
@@ -64,7 +65,8 @@ pub const MAX_REDIRECTS: usize = 20;
 /// How long a failed read is remembered.
 pub const FAILURE_TTL: Duration = Duration::from_secs(30);
 
-/// The encoded bytes kept in memory (L3).
+/// The encoded bytes kept in memory (L3) by default; an app sets its own
+/// with [`Loader::set_encoded_limit`].
 pub const ENCODED_BYTES: usize = if cfg!(any(target_os = "ios", target_os = "android")) {
     16 << 20
 } else {
@@ -111,6 +113,20 @@ impl AssetBase {
             }
         }
     }
+
+    /// Whether `path` is one of its bundled files (by its text, `..`
+    /// resolved): those are the app's own, read whatever `fs.read` roots
+    /// it declares.
+    fn holds(&self, path: &std::path::Path) -> bool {
+        let path = crate::access::lexical(path);
+        let dirs = match self {
+            AssetBase::Http(_) => return false,
+            AssetBase::Directory(dir) => std::slice::from_ref(dir),
+            AssetBase::Directories(dirs) => dirs.as_slice(),
+        };
+        dirs.iter()
+            .any(|dir| path.starts_with(crate::access::lexical(dir)))
+    }
 }
 
 type AssetReader = dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync;
@@ -143,6 +159,9 @@ pub struct Context {
     pub read_asset: Option<ReadAsset>,
     /// What the app may load, for the redirects.
     pub access: Arc<Access>,
+    /// The roots the app's local media files are read under (a sound's
+    /// load checks its source against them).
+    pub media_files: Arc<crate::access::MediaFiles>,
     /// The disk cache remote images go through.
     pub disk: Option<DiskCache>,
     /// How remote images download: `None`, the process's
@@ -799,6 +818,20 @@ impl Loader {
         lock(&self.encoded).insert(key, bytes.clone());
     }
 
+    /// The most L3's encoded bytes take, in bytes.
+    pub fn encoded_limit(&self) -> usize {
+        lock(&self.encoded).limit
+    }
+
+    /// Sets the most L3's encoded bytes take ([`ENCODED_BYTES`] by
+    /// default), dropping the least recently used that no longer fit. An app
+    /// whose images are on disk anyway (the disk cache keeps downloads) can
+    /// keep less; 0 keeps none, so a decode at another size reads the disk
+    /// again.
+    pub fn set_encoded_limit(&self, limit: usize) {
+        lock(&self.encoded).set_limit(limit);
+    }
+
     /// Why `key` failed, if it did in the last [`FAILURE_TTL`].
     fn failed(&self, key: &str) -> Option<String> {
         let mut failures = lock(&self.failures);
@@ -850,9 +883,21 @@ fn read(
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<ImageData, String> {
     match location {
-        Location::File(path) => std::fs::read(path)
-            .map(ImageData::from)
-            .map_err(|e| format!("{}: {e}", path.display())),
+        Location::File(path) => {
+            // A bundled file is the app's own: not one of its `fs.read`
+            // reads.
+            let bundled = context
+                .asset_base
+                .as_ref()
+                .is_some_and(|base| base.holds(path));
+            let none = crate::access::MediaFiles::default();
+            let files = if bundled {
+                &none
+            } else {
+                &*context.media_files
+            };
+            read_file(path, files).map_err(|e| format!("{}: {e}", path.display()))
+        }
         Location::Data(uri) => super::decode_data_uri(uri).map(|(_, bytes)| bytes.into()),
         Location::Memory(_, data) => Ok(data.clone()),
         Location::Asset(uri, read) => (read.read)(uri).map(ImageData::from),
@@ -869,6 +914,24 @@ pub fn read_now(location: &Location, context: &Context) -> Result<ImageData, Str
         return Ok(bytes);
     }
     read(location, context, &AtomicBool::new(false), &mut |_, _| {})
+}
+
+/// Reads the file at `path`: for an app with `fs.read` roots, through the
+/// root that holds it, so a link made after the check is not followed out
+/// of it ([`crate::access::MediaFiles::open`]).
+fn read_file(
+    path: &std::path::Path,
+    files: &crate::access::MediaFiles,
+) -> Result<ImageData, String> {
+    use std::io::Read;
+    let mut file = match files.open(path) {
+        Some(file) => file,
+        None => std::fs::File::open(path),
+    }
+    .map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(bytes.into())
 }
 
 fn fetch(
@@ -956,19 +1019,42 @@ mod http {
         image::{CacheHeaders, Fetched},
     };
 
-    /// The HTTP agent all downloads share. It never follows redirects: each
-    /// hop is checked before it is requested.
-    fn agent() -> &'static ureq::Agent {
-        static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-        AGENT.get_or_init(|| {
-            ureq::Agent::config_builder()
+    /// The HTTP agents all downloads share. They never follow redirects:
+    /// each hop is checked before it is requested. Loopback hosts (the dev
+    /// server's `127.0.0.1` assets) skip the environment's proxy: a proxy
+    /// such as `HTTP_PROXY=http://127.0.0.1:7890` would otherwise carry the
+    /// request, or refuse it when it is not running.
+    fn agent(url: &str) -> &'static ureq::Agent {
+        static PROXIED: OnceLock<ureq::Agent> = OnceLock::new();
+        static DIRECT: OnceLock<ureq::Agent> = OnceLock::new();
+        let direct = is_loopback(url);
+        (if direct { &DIRECT } else { &PROXIED }).get_or_init(|| {
+            let config = ureq::Agent::config_builder()
                 .timeout_global(Some(TIMEOUT))
+                .tls_config(
+                    ureq::tls::TlsConfig::builder()
+                        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                        .build(),
+                )
                 .http_status_as_error(false)
                 .max_redirects(0)
-                .max_redirects_will_error(false)
-                .build()
-                .into()
+                .max_redirects_will_error(false);
+            let config = if direct { config.proxy(None) } else { config };
+            config.build().into()
         })
+    }
+
+    /// Whether `url` names this machine: `localhost` or a loopback address.
+    pub(super) fn is_loopback(url: &str) -> bool {
+        let Ok(url) = url::Url::parse(url) else {
+            return false;
+        };
+        match url.host() {
+            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        }
     }
 
     /// GETs `url` with `headers`, following redirects one hop at a time.
@@ -979,7 +1065,7 @@ mod http {
     ) -> Result<ureq::http::Response<ureq::Body>, String> {
         let mut url = url.to_owned();
         for _ in 0..=MAX_REDIRECTS {
-            let mut request = agent().get(&url);
+            let mut request = agent(&url).get(&url);
             for (name, value) in headers {
                 request = request.header(*name, value);
             }
@@ -1079,6 +1165,28 @@ impl Encoded {
             self.used -= old.len();
         }
         self.used += size;
+        self.evict();
+    }
+
+    fn set_limit(&mut self, limit: usize) {
+        self.limit = limit;
+        // What a new limit no longer takes in: over a quarter of it.
+        let big: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|(_, (b, _))| b.len() > limit / 4)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in big {
+            if let Some((bytes, _)) = self.entries.remove(&key) {
+                self.used -= bytes.len();
+            }
+        }
+        self.evict();
+    }
+
+    /// Drops the least recently used until what is kept fits.
+    fn evict(&mut self) {
         // A few hundred entries at most: a scan for the oldest beats an
         // ordered index kept up to date on every hit.
         while self.used > self.limit {

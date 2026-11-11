@@ -16,3 +16,9 @@ prop label:Team accessibilityValue text=Choose a team
 # The app's `trigger` is shown as the app made it.
 expect Owner: Build team
 covers [props] placeholder
+# style-device-variants
+tap id:case-style-device-variants
+# A terminal's pointer is fine, and `terminal:` applies.
+style id:device backgroundColor #00ff00ff
+nostyle id:device opacity
+style id:device borderWidth 2

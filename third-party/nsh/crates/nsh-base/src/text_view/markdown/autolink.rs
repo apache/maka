@@ -2,9 +2,10 @@
 //! where Chinese, Japanese or Korean text starts. A literal runs to the next
 //! whitespace, and CJK text puts no space after a URL: `https://example.com。
 //! 下一句` would link `。下一句` too. A URL ends before the first CJK
-//! character (full-width punctuation included, as the CJK-friendly
-//! amendment to CommonMark defines them, `cjk::is_cjk`) or curly quotation
-//! mark (`‘’“”`, which CJK text quotes with) after its start: [`END`], a
+//! punctuation mark (full-width forms included) or curly quotation mark
+//! (`‘’“”`, which CJK text quotes with), and before any other CJK character
+//! (`cjk::is_cjk`) only until its path starts: `https://example.com中文`
+//! ends at `中`, `https://zh.wikipedia.org/wiki/中文` keeps it. [`END`], a
 //! whitespace character, is placed there before parsing, so the parser
 //! ends the literal (and trims its trailing punctuation) as at a space, and
 //! `offsets.rs` takes it out of the tree after parsing. A URL written in
@@ -41,11 +42,25 @@ pub(super) fn end_urls<'s>(source: &'s str, at: &mut Vec<usize>) -> Cow<'s, str>
         };
         i += prefix;
         // To the whitespace (or `<`) that ends the literal anyway.
+        // Letters of any script belong to a path (`/wiki/中文`); before
+        // the path starts, a CJK letter is prose after the host.
         let rest = &source[i..];
-        let end = rest
-            .find(|c: char| c.is_whitespace() || c == '<' || stops_url(c))
-            .unwrap_or(rest.len());
-        if rest[end..].chars().next().is_some_and(stops_url) {
+        let mut in_path = false;
+        let mut end = rest.len();
+        let mut stopped = false;
+        for (j, c) in rest.char_indices() {
+            if c.is_whitespace() || c == '<' {
+                end = j;
+                break;
+            }
+            if stops_url(c, in_path) {
+                end = j;
+                stopped = true;
+                break;
+            }
+            in_path |= c == '/';
+        }
+        if stopped {
             at.push(i + end);
         }
         i += end;
@@ -64,9 +79,30 @@ pub(super) fn end_urls<'s>(source: &'s str, at: &mut Vec<usize>) -> Cow<'s, str>
     Cow::Owned(out)
 }
 
-/// Whether `c` ends a bare URL.
-fn stops_url(c: char) -> bool {
-    is_cjk(c) || matches!(c, '‘' | '’' | '“' | '”')
+/// Whether `c` ends a bare URL: CJK punctuation (full-width forms
+/// included) and curly quotes anywhere, other CJK characters only before
+/// the path starts (`in_path`, a `/` after the host).
+fn stops_url(c: char, in_path: bool) -> bool {
+    is_cjk_punctuation(c) || (!in_path && is_cjk(c))
+}
+
+/// CJK and full-width punctuation and curly quotation marks: symbols and
+/// punctuation (`、。「」…`), vertical and small forms, and the full-width
+/// ASCII punctuation (`！，：（）［］｛｝`) and half-width CJK punctuation.
+fn is_cjk_punctuation(c: char) -> bool {
+    matches!(
+        c,
+        '‘' | '’'
+            | '“'
+            | '”'
+            | '\u{3000}'..='\u{303F}'
+            | '\u{FE10}'..='\u{FE1F}'
+            | '\u{FE30}'..='\u{FE6F}'
+            | '\u{FF01}'..='\u{FF0F}'
+            | '\u{FF1A}'..='\u{FF20}'
+            | '\u{FF3B}'..='\u{FF40}'
+            | '\u{FF5B}'..='\u{FF65}'
+    )
 }
 
 /// The length of the prefix of a bare URL starting at byte `at` of
@@ -145,9 +181,41 @@ mod tests {
             "https://a.dev中https://b.dev。",
             "https://a.dev|中https://b.dev|。",
         );
+        check("https://example.com中文", "https://example.com|中文");
+        check("https://a.dev/文档）后", "https://a.dev/文档|）后");
+        check("https://a.dev/文档、后", "https://a.dev/文档|、后");
+        check("https://a.dev/文档！", "https://a.dev/文档|！");
+    }
+
+    #[test]
+    fn cjk_paths_stay_in_urls() {
         check(
             "https://zh.wikipedia.org/wiki/中文",
-            "https://zh.wikipedia.org/wiki/|中文",
+            "https://zh.wikipedia.org/wiki/中文",
+        );
+        check(
+            "https://zh.wikipedia.org/wiki/2024年",
+            "https://zh.wikipedia.org/wiki/2024年",
+        );
+        check(
+            "https://zh.wikipedia.org/wiki/C語言",
+            "https://zh.wikipedia.org/wiki/C語言",
+        );
+        check(
+            "- 链接：https://example.com/p/日志脱敏-gear-log-与-zaplog",
+            "- 链接：https://example.com/p/日志脱敏-gear-log-与-zaplog",
+        );
+        check(
+            "https://ko.wikipedia.org/wiki/한국어",
+            "https://ko.wikipedia.org/wiki/한국어",
+        );
+        check(
+            "https://zh.wikipedia.org/wiki/中文，然后",
+            "https://zh.wikipedia.org/wiki/中文|，然后",
+        );
+        check(
+            "https://zh.wikipedia.org/wiki/中文。下一句",
+            "https://zh.wikipedia.org/wiki/中文|。下一句",
         );
     }
 

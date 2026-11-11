@@ -75,7 +75,7 @@ In Rust each prop is a builder method in snake case (`injected_java_script`, `ja
 |---|---|---|---|
 | `src` | `string` | | The URL of the page to show. |
 | `html` | `string` | | Inline HTML, shown instead of `src`. |
-| `baseUrl` | `string` | | What `html`'s relative URLs resolve against. |
+| `baseUrl` | `string` | | What `html`'s relative URLs resolve against. It needs the same grant as a page there (`webview.hosts`); without it the HTML loads with no base URL and `onError` reports `ERR_ACCESS_DENIED`. |
 | `injectedJavaScript` | `string` | | Runs after each page loads. |
 | `injectedJavaScriptBeforeContentLoaded` | `string` | | Runs before each page's own scripts. |
 | `javaScriptEnabled` | `boolean` | `true` | Pages run scripts. |
@@ -91,7 +91,7 @@ Events:
 |---|---|---|
 | `onLoadStart` | `WebViewNavigation` | A page started loading. |
 | `onLoad` | `WebViewNavigation` | A page finished loading. |
-| `onError` | `{ message }` | Loading failed. |
+| `onError` | `{ message, code? }` | Loading failed, or the platform shows no web view (`code` `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"`, below). |
 | `onNavigationStateChange` | `WebViewNavigation` | The URL, title, loading state or history changed. |
 | `onMessage` | `{ data: string }` | The page posted a message (below). |
 
@@ -442,6 +442,49 @@ If your `nsh.json` declares `"capabilities"`, a web view may only show and navig
 
 The check covers the web view's `src` and every top-level navigation the page makes (links, redirects, `location` changes); it is decided natively when the platform asks whether a navigation may proceed. A page's own subresources (scripts, images, frames) are the web content's business and are not checked. `*.example.com` matches subdomains only; list `example.com` as well for the bare domain. An app without a `"capabilities"` key may show any page. See [Sandbox and capabilities](./sandbox-and-capabilities.md).
 
+### When there is no web engine
+
+A web view needs the platform's web engine, and some installs have none: a Linux runtime built without WebKitGTK, a
+Windows machine without the WebView2 Runtime, an Android device without an enabled system WebView. The web view then
+shows a placeholder, and the app can show something else instead (a code block, a link, a file card) at once.
+
+Ask ahead with `web_view_available()` (`WebView.available()`): it resolves `false` where the platform knows from the
+start that it shows no web view, and where the app's capabilities do not grant `webview`.
+
+```rust tabs
+use nsh_core::prelude::*;
+
+let web = signal(true);
+spawn(async move { web.set(web_view_available().await) });
+```
+
+```tsx tabs
+import { signal, WebView } from "nsh";
+
+const web = signal(true);
+WebView.available().then((available) => web.set(available));
+```
+
+Some engines only fail once a web view starts (WebView2 on Windows), so a web view also tells: its `onError` comes with
+`code` `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` as soon as the platform knows.
+
+```tsx
+import { signal, Text, WebView } from "nsh";
+
+function Preview(props: { url: string }) {
+  const failed = signal(false);
+  return (
+    <If when={!failed()} else={<Text>{props.url}</Text>}>
+      <WebView
+        src={props.url}
+        onError={(e) => e.code === "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" && failed.set(true)}
+        style={{ flex: 1 }}
+      />
+    </If>
+  );
+}
+```
+
 ## Video
 
 ```rust tabs
@@ -523,7 +566,7 @@ function Player() {
 mount(Player);
 ```
 
-Playback is controlled by props: set `paused`, `muted`, `volume` and `rate` from signals and the player follows. The ref has `seek(seconds)`.
+Playback is controlled by props: set `paused`, `muted`, `volume` and `rate` from signals and the player follows. Unpausing a video that played to its end plays it again from the start. The ref has `seek(seconds)`.
 
 In Rust, `video(url)` makes the player (the URL a value, a signal or a closure) and each prop is a builder method in snake case (`paused`, `repeat(true)`, `object_fit(ResizeMode::Contain)` (the `objectFit` style), `progress_interval` for `progressUpdateInterval`); `on_load` gets a `VideoInfo` (`duration`, `size`), `on_progress` a `VideoProgress` (`current_time`, `duration`) and `on_buffer` a `bool`.
 

@@ -10,7 +10,6 @@ import type { InputStyle, ViewStyle } from "nsh";
 import { platform, Text } from "nsh";
 import { Icon } from "../icons";
 import { colors, finish, radius, terminal, TERMINAL_COLUMN, TERMINAL_ROW, type Tone, toneColor, toneTint } from "../theme";
-import { controlSize } from "./surface";
 
 const pointer = platform.desktop;
 
@@ -20,15 +19,17 @@ type Live<T> = T | (() => T);
 const read = <T,>(v: Live<T> | undefined): T | undefined => (typeof v === "function" ? (v as () => T)() : v);
 
 /**
- * A text field's sizes: 28 points high, text 13 and 8 points in from its
- * edges with a pointer; 46 high, text 15 and 14 in on a touch screen. In the
+ * A text field's sizes, shared by every single-line field and picker
+ * trigger (an input, a number input, a select, a combobox, a palette's
+ * trigger): 32 points high, text 14 and 10 points in from its edges with a
+ * pointer (shadcn's `text-sm`); 46 high, text 15 and 14 in on a touch screen. In the
  * terminal a field is three rows (its border's and the text's), the text one
  * Cell inside the border's own column.
  */
 export const fieldSize = terminal
   ? { height: 3 * TERMINAL_ROW, font: 13, pad: 2 * TERMINAL_COLUMN - 1 }
   : pointer
-    ? { height: 28, font: 13, pad: 8 }
+    ? { height: 32, font: 14, pad: 10 }
     : { height: 46, font: 15, pad: 14 };
 
 /** Options of `fieldLook` and `inputLook`. */
@@ -55,8 +56,11 @@ interface EdgeOptions {
   hoverVariant?: string;
   /** The focus tone: the accent, or the danger tone while invalid. */
   invalid?: boolean;
-  /** `focus:` for a well that has the keys itself, `focus-within:` (the default) for one around what has them. */
-  focus?: "focus" | "focus-within";
+  /**
+   * `focus:` for a well that has the keys itself, `focus-within:` (the default) for one around what has them,
+   * `focus-visible:` for a button drawn as a field (its focus shows only after a key).
+   */
+  focus?: "focus" | "focus-within" | "focus-visible";
 }
 
 /**
@@ -120,33 +124,40 @@ export function fieldLook(o?: FieldLookOptions) {
 
 /** Options of `fieldText`. */
 export interface FieldTextOptions {
-  /** Read-only: the value in the muted color. */
+  /** Read-only: the value keeps the text color, as shadcn's read-only input (the well lies flat: `fieldLook`). */
   readonly?: boolean;
   /** Several lines: a least height and the padding above and below instead of a set height. */
   multiline?: boolean;
+  /** Inside a `fieldLook` well, whose 1-point edge is part of the field's height: the text is that much shorter, so the
+   * whole field is as tall as a lone input, a select or a number input. */
+  inWell?: boolean;
 }
 
 /**
  * An input's text in a field: the field's size and padding, the text color
- * (muted while read-only), a faint placeholder, the caret and selection in
- * the accent. Call it where the style is read, so it follows the theme.
+ * (read-only too: the flat well tells it apart, and disabled dims to 50%),
+ * the placeholder in the muted color (shadcn's `muted-foreground`), the
+ * caret and selection in the accent. Call it where the style is read, so it
+ * follows the theme.
  */
 export function fieldText(o?: FieldTextOptions): InputStyle {
+  // The well's edge above and below.
+  const edge = o?.inWell && !terminal ? 2 : 0;
   const box = terminal
     ? o?.multiline
       ? { minHeight: 3 * TERMINAL_ROW, paddingTop: TERMINAL_ROW - 1, paddingBottom: TERMINAL_ROW - 1 }
       : { height: 3 * TERMINAL_ROW }
     : o?.multiline
       ? pointer
-        ? { minHeight: fieldSize.height, paddingTop: 6, paddingBottom: 6 }
-        : { minHeight: fieldSize.height, paddingTop: 13, paddingBottom: 13 }
-      : { height: fieldSize.height };
+        ? { minHeight: fieldSize.height - edge, paddingTop: 7 - edge / 2, paddingBottom: 7 - edge / 2 }
+        : { minHeight: fieldSize.height - edge, paddingTop: 13 - edge / 2, paddingBottom: 13 - edge / 2 }
+      : { height: fieldSize.height - edge };
   return {
     flex: 1,
     paddingHorizontal: fieldSize.pad,
     fontSize: fieldSize.font,
-    color: o?.readonly ? colors.muted : colors.text,
-    placeholderColor: colors.faint,
+    color: colors.text,
+    placeholderColor: colors.muted,
     caretColor: colors.accent,
     selectionColor: colors.accent,
     ...box,
@@ -174,8 +185,8 @@ export function inputLook(o?: FieldLookOptions) {
 
 /** The step buttons' feedback: lit under the pointer, darker while pressed, faded where a step does nothing. */
 const press = terminal
-  ? "justify-center disabled:opacity-35"
-  : "items-center justify-center transition-colors duration-100 motion-reduce:transition-none enabled:hover:bg-accent active:bg-track disabled:opacity-35";
+  ? "justify-center disabled:opacity-50"
+  : "items-center justify-center transition-colors duration-100 motion-reduce:transition-none enabled:hover:bg-accent active:bg-track disabled:opacity-50";
 
 /**
  * A number input's parts as classes (`NumberInput`'s `class` and its
@@ -189,7 +200,7 @@ const press = terminal
 export const numberInputClasses = {
   frame: terminal
     ? "h-4 flex-row items-stretch bg-field pl-2 disabled:opacity-50"
-    : [pointer ? "h-8 rounded-md" : "h-11 rounded-lg", "flex-row items-stretch overflow-hidden border bg-field", edgeClass({ rest: "border-input", hover: "border-faint", hoverVariant: "enabled:hover" })].join(" "),
+    : [pointer ? "h-8 rounded-[7px]" : "h-11 rounded-lg", "flex-row items-stretch overflow-hidden border bg-field", edgeClass({ rest: "border-input", hover: "border-faint", hoverVariant: "enabled:hover" })].join(" "),
   press,
   stepBefore: (w: string) => `${w} ${press} border-r border-line`,
   stepAfter: (w: string) => `${w} ${press} border-l border-line`,
@@ -203,9 +214,9 @@ export function numberInputText(): InputStyle {
     flex: 1,
     minWidth: 0,
     paddingHorizontal: 8,
-    fontSize: controlSize.label,
+    fontSize: fieldSize.font,
     color: colors.text,
-    placeholderColor: colors.faint,
+    placeholderColor: colors.muted,
     fontVariant: ["tabular-nums"],
     ...(terminal ? { textAlign: "right" as const } : {}),
   };
@@ -255,8 +266,12 @@ export function numberInputSteps(kind: "split" | "pair", w: string, icon: number
   };
 }
 
-/** A time field's well (`DatePicker`'s `timeFieldClass`): a number input's, its segments inside. */
-export const timeFieldClass = [pointer ? "h-8 rounded-md px-2" : "h-11 rounded-lg px-3", "items-center border bg-field", edgeClass({ rest: "border-input", hover: "border-faint", hoverVariant: "enabled:hover" })].join(" ");
+/**
+ * A time field's well (`DatePicker`'s `timeFieldClass`): a number input's, its segments inside. It sits in the
+ * calendar's popup, so in dark it is shadcn's input there (`bg-input/30`, a shade over the popup) rather than the
+ * field color, which is the page's and would read as a hole.
+ */
+export const timeFieldClass = [pointer ? "h-8 rounded-[7px] px-2" : "h-11 rounded-lg px-3", terminal ? "items-center border bg-field" : "items-center border bg-field dark:bg-input/30", edgeClass({ rest: "border-input", hover: "border-faint", hoverVariant: "enabled:hover" })].join(" ");
 
 /** The cells of a code of six: 36 × 44 with a pointer, 44 × 52 on a touch screen. */
 export const otpCells = pointer ? "w-9 h-11 text-lg" : "w-11 h-13 text-xl";

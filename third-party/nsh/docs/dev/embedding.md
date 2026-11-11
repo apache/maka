@@ -4,25 +4,27 @@
   `nsh.json` next to the entry (`name`, `id`, `version`, `build`, `icon`; `appearance` also sets `UIUserInterfaceStyle`
   and a dark window theme, so the launch screen is in it) or flags. iOS and macOS packages add the app's
   `ios` / `macos` `infoPlist` keys and `entitlements` (`crates/nsh-cli/src/apple.rs`: JSON as property list values,
-  the keys NSH sets refused with what to set instead; device builds check entitlements against the profile, which
-  keeps the app's values in place of its own). iOS: `.app`, `.ipa` with `--sign <identity>
+  the keys NSH sets refused with what to set instead; `MinimumOSVersion` / `LSMinimumSystemVersion` are the runtime's
+  minimum, `IOS_MINIMUM` / `MACOS_MINIMUM`, which an app may raise but not lower (checked when `nsh.json` is read;
+  `actool` compiles the iOS icon for the version declared); device builds check entitlements against the profile,
+  which keeps the app's values in place of its own). iOS: `.app`, `.ipa` with `--sign <identity>
   --profile <file.mobileprovision>` (entitlements come from the profile; icons are compiled by `actool` into `Assets.car`).
   Android: an APK assembled without Gradle (`aapt2 link`, native libraries stored uncompressed and 16 KB ZIP aligned, `apksigner`;
   the debug key unless `--keystore`). Linux: a directory `<name>/` with the release runner (`crates/nsh-linux-app`) as
-  the executable, `nsh/bundle.nshc`, `nsh/assets/` and `nsh/app.json` (the window title and the GTK application id,
-  which the runner reads next to itself), `<id>.desktop` (`StartupWMClass` is the id, which GTK makes the window's
-  app id) and `<id>.png`, plus the same as `<name>.tar.gz`; GTK 4, Pango and WebKitGTK 6.0 (the runner's default
-  `webview` feature, `linux.md`) must be installed where it runs. macOS: `<name>.app` with the
-  release runner (`crates/nsh-macos-app`) as `Contents/MacOS/<executable>`, `Contents/Resources/nsh/` holding
-  `bundle.nshc`, `assets/` and `app.json` (the window title and appearance), the icon as `AppIcon.icns` (`sips`), signed
-  ad hoc (`codesign -s -`); `--run` opens it.
+  the executable, `nsh/bundle.nshc`, `nsh/assets/` and `nsh/app.json` (the window title, the GTK application id and
+  nsh.json `window`, the main window's options, which the runner reads next to itself), `<id>.desktop` (`StartupWMClass`
+  is the id, which GTK makes the window's app id) and `<id>.png`, plus the same as `<name>.tar.gz`; GTK 4, Pango and
+  WebKitGTK 6.0 (the runner's default `webview` feature, `linux.md`) must be installed where it runs. macOS:
+  `<name>.app` with the release runner (`crates/nsh-macos-app`) as `Contents/MacOS/<executable>`,
+  `Contents/Resources/nsh/` holding `bundle.nshc`, `assets/` and `app.json` (the window title, appearance and nsh.json
+  `window`), the icon as `AppIcon.icns` (`sips`), signed ad hoc (`codesign -s -`); `--run` opens it.
   Windows: a directory `<name>\` with the release runner (`crates/nsh-windows-app`, a windowed program: no console)
   as `<name>.exe` (characters Windows forbids in file names dropped), the icon embedded as its icon group 1 (which the
   window class loads, and Explorer and the taskbar show) with Windows' resource update API (`crates/nsh-cli/src/windows.rs`:
   16 to 64 pixels as DIBs plus a 256-pixel PNG; packaging off Windows keeps the runner's icon, with a warning), and
   `nsh\bundle.nshc`, `nsh\assets\` and `nsh\app.json` (the window title, the app id, which groups the app's windows in
-  the taskbar, the version and the appearance, which the window opens in); plus the same as `<name>.zip`. No tools
-  are needed; `--run` launches the executable.
+  the taskbar, the version, the appearance, which the window opens in, and nsh.json `window`, the main window's
+  options); plus the same as `<name>.zip`. No tools are needed; `--run` launches the executable.
   GPUI is the backend for embedding in GPUI and GPUI Kit apps (below), which ship it in their own executable: `nsh
   package` refuses `--target gpui` and names this OS's target, the one backend each desktop packages apps with.
 - Links: `nsh.json` `"schemes": [...]` names the URL schemes a packaged app claims (checked by
@@ -45,7 +47,9 @@
   applies: `libnsh.so` finds `TextLayouts`, `NshView`, `Net` and `TestAgent` and their members by name over JNI
   (`JNI_OnLoad` fails without them) and binds the `native` methods of `Native`, `Net` and `SelectableView` by name,
   while Java code names few of them, so R8 removed or renamed them (`ClassNotFoundException: TextLayouts`). The rule
-  keeps the whole package rather than a list that a new JNI lookup would have to extend.
+  keeps the whole package rather than a list that a new JNI lookup would have to extend, including the
+  package-private `NshView.handle` field custom Rust hosts read. Hosts packaging the Java sources or `classes.jar`
+  themselves include the same consumer rule, plus rules keeping their own JNI bridge names.
 - Fonts the host ships: `NshView.registerFont(byte[])` and `NshAppView.registerFont(_:)` register a TrueType, OpenType, WOFF or WOFF2 file with the view, before a load or while an app runs. Apps then set `fontFamily` to the family name in the file and do not import it, so the file is not packed into each bundle. The same file registered again is kept once.
 - Embedding: iOS apps link `NativeShell.xcframework` and `import NativeShell` (Swift: `NshAppView`, a `UIView`;
   `NshTrust`, `NshPackage`, `NshLimits`, `NshError`); Android apps add `nsh.aar` and use `com.longbridge.nsh.NshView`.
@@ -64,6 +68,11 @@
   the focus it is given (`Focusable`). The crate depends on `gpui-fast` 0.1 from crates.io (re-exported as
   `nsh_platform_gpui::gpui`); GPUI Kit's `gpui-fast` feature makes `gpui_component` use that same crate, so both share
   one GPUI. `open_app_window` opens a window showing an app in a running GPUI app.
+- **An application-owned Tokio runtime (Rust-linked mobile hosts)**: iOS `SurfaceOptions::runtime` and Android
+  `nsh::set_runtime(handle, runtime)` (`host.rs`) forward an optional `tokio::runtime::Handle` to
+  `EngineConfig::runtime`, per view; `None` keeps the process-wide shared runtime. Both are read each time an engine
+  starts, so a change applies from the next load and a running engine keeps its runtime. NSH only clones the handle;
+  the app owns the runtime. The engine's `runtime` tests cover it (`nsh-engine/tests/engine/runtime.rs`).
 - **Native components** (`nsh`'s `nativeComponent`; `component.rs`, `ComponentBox.java`): the embedding app registers its own native
   views by name — Swift `NshAppView.register(component:) { context in … }` (`NshComponent`: `view`, `setProp`,
   `command`), Java `NshView.registerComponent(name, factory)` (`NshComponent`), Rust `AppView::register_component`
@@ -96,7 +105,7 @@
   gets the values then, and bindings that change are handed over again. While bound, a static value of the same name is
   kept but not sent; unbinding (JS: the prop is a plain value again) sends it, or `None`. The C ABI takes the callbacks
   through `nsh_app_register_component_with_animation` (`NshComponentAnimationCallbacks`); `nsh_app_register_component` is
-  unchanged and its components get the values as `set_prop` JSON. GPUI delivers them with the next frame, as props;
+  unchanged and its components get the values as `set_prop` JSON. GPUI delivers them with the next frame;
   the web has no registered components and ignores them.
   On the GPUI backend (`nsh-platform-gpui`, `native.rs`) a component renders a GPUI element
   (`NativeComponent::render(window, cx) -> Option<AnyElement>`, any GPUI / GPUI Kit element or `Entity` view): the
@@ -107,11 +116,34 @@
   then the app's `keymap` bindings (as while a text field is focused, so a binding whose `when` is `auto` leaves
   typing keys to the component) and the menu's shortcuts, and nothing else of NSH's (`input::component_key`); one that returns its widget's
   handle from `NativeComponent::focus_handle` is a Tab stop among the text fields (in tree order, in the newest modal's
-  scope). Props and commands reach it with the next frame, before `render`, with the window and `App` (`set_prop(name,
-  value, window, cx)`, `command(name, args, window, cx)`), so it can update its entities. `render` is also called while
+  scope). Props and commands reach it soon after they arrive, in a main-thread task of their own (never inside a frame),
+  before the next `render`, with its window and `App` (`set_prop(name, value, window, cx)`, `command(name, args, window,
+  cx)`), so it can update its entities; they do not wait for a frame, so a host that hides the view or a window in the
+  background still gets them, in order and once (a frame that comes first delivers them itself). `render` is also called while
   the box is empty, so a component can size itself. Content masks are
   rectangles: rounded corners do not cut a component (videos follow them).
   `crates/gpui/nsh-platform-gpui/examples/embed.rs` runs `examples/embedded` with its badge as a GPUI element.
+- **Watched scroll views** (`NshView.watchScroll`, `NshScrollHandle`): native UI of the host that moves with the
+  app's content in every frame (a sheet the end of the content pulls up) follows a `<Scroll>` by its `nativeID`, on
+  the UI thread, in the frame of the scroll: `onScroll` through JS would be a frame late. `nativeID` (not `testID`,
+  which is for tests) reaches the platforms in `ViewProps::native_id`. Both axes, and the same names on Android, iOS
+  (Swift, C, Rust): `onAttached`/`onDetached`, `scrollX`/`scrollY`, `contentWidth`/`contentHeight`,
+  `viewportWidth`/`viewportHeight`, `contentView`, `scrollBy(dx, dy, animated)`, `stopScrolling`, `onScroll(scrollX,
+  scrollY, dx, dy)`, `onContentSizeChange(contentWidth, contentHeight)`; only listener removal follows each platform
+  (Android `remove…Listener`, Swift a returned closure, C/Rust an id). The mounter keys a `ScrollBox` by the
+  `nativeID` of its props (`Mounter.keyScroll`, the newest of an id wins) and unkeys it when it is deleted, loses the
+  id or its app stops (`destroyComponents`), which tells the watcher and kills its handle (`isAlive`, by the box's
+  `hostKey`). Host listeners run in the platform scroll view's scroll callback after the core's report, and from
+  `setContentSize` when the size changes without a scroll. Host scrolls are the user's kind, not the core's
+  (`applied` stays): the app hears them; `hostStop` ends a fling with two empty smooth scrolls (a zero fling would
+  leave one running). Nothing runs for a scroll view no host watches but an empty-list check.
+  On iOS (`NshAppView.watchScroll`, `scroll_watch.rs`; `AppView::watch_scroll`, `nsh_app_watch_scroll`) the
+  watchers live in the view's options (`ScrollWatchers`) and a surface's keyed scroll views in `SurfaceScrolls`,
+  shared by its mounter (props, content sizes, deletes, its drop when the app stops) and its event target, which calls
+  the listeners from `scrollViewDidScroll` without borrowing the mounter (a listener may scroll, which calls back in).
+  Offsets count from the start of the content (the adjusted insets added back); `stop_scrolling` sets the current
+  offset without animation, which ends UIKit's glide or animation, and reports the glide's end to the app, as UIKit
+  does not. Desktop and web have no equivalent: they are not embedded.
 - **Native modules** (`nsh`'s `nativeModule`; `platform_modules.rs`, `modules::host_module`): an embedding app
   written in Rust gives its engines a UI set of its own (`Registry::ui_set("host/trading")` with its `#[module]`s,
   `#[class]`es and Rust components) next to NSH's (`set_ui_sets` of the platform crate, `EngineConfig::ui_sets`), and
@@ -261,6 +293,9 @@
   with arm64 by `lipo`: apps whose simulator builds run under Rosetta; `rustup target add x86_64-apple-ios`);
   `--no-catalyst` and `--no-dev` leave out the Catalyst slice and `NativeShellDev`. The C functions return errors as strings
   (`nsh_string_free`) that Swift throws as `NshError`; the error handler's context is released by a callback.
+  `NativeShell`'s logs go to the unified log under the host app's bundle identifier (`nsh_platform_apple::unified_log`,
+  installed by the first `nsh_app_create` or `nsh_trust_create` unless the process has a logger; `macos.md` "Packaged
+  apps' logs"); `NativeShellDev`'s go to the dev server while connected, to stderr otherwise (`dev.rs`).
 
 ## GPUI and GPUI Kit apps
 

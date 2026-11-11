@@ -45,7 +45,7 @@ use self::{
 use super::{
     commands::CommandRegistry,
     extensions::{ExtensionManager, history, starter},
-    formats::{DocFormat, MarkdownFormat, MarkdownNames, PlainTextFormat},
+    formats::{DocFormat, MarkdownFormat, MarkdownNames, PlainTextFormat, doc_to_html},
     model::{Node, Schema, SchemaSpec},
     state::{EditorState, EditorStateConfig, PluginKey, Selection, Transaction, TransactionOrigin},
     view::{
@@ -231,6 +231,7 @@ fn serialize(doc: &Node, format: RichFormat) -> Result<String, String> {
         RichFormat::Text => PlainTextFormat::default()
             .serialize(doc)
             .map_err(|e| e.to_string()),
+        RichFormat::Html => Ok(doc_to_html(doc)),
     }
 }
 
@@ -890,6 +891,13 @@ impl RichEditorSession {
     #[allow(non_snake_case)]
     pub(crate) fn getJSON(&self) -> NodeJson {
         self.doc()
+    }
+
+    /// The document's content as HTML, written with the schema's `toDOM`
+    /// specs, named as Tiptap's `getHTML`.
+    #[allow(non_snake_case)]
+    pub(crate) fn getHTML(&self) -> Result<String, String> {
+        serialize(self.session.state().doc(), RichFormat::Html)
     }
 
     /// The document as Markdown (the starter schema's names).
@@ -1706,6 +1714,24 @@ mod tests {
             .collect();
         assert!(names.contains(&"getJSON"), "{names:?}");
         assert!(!names.contains(&"getJson"), "{names:?}");
+    }
+
+    /// HTML is a format of its own: `content` in `format: "html"` is read
+    /// with the schema's parse rules and `getHTML()` writes it back.
+    #[test]
+    fn html_is_read_and_written() {
+        let schema = starter::schema();
+        let html = "<h2>Title</h2><p>Some <strong>bold</strong> text</p>";
+        let doc = doc_of(&schema, &Content::Text(html.into()), Some(RichFormat::Html)).unwrap();
+        assert_eq!(doc.child(0).ty().name(), "heading");
+        assert_eq!(serialize(&doc, RichFormat::Html).unwrap(), html);
+        use nsh_core::element::Class;
+        let names: Vec<_> = RichEditorSession::DEF
+            .members
+            .iter()
+            .map(|m| m.name)
+            .collect();
+        assert!(names.contains(&"getHTML"), "{names:?}");
     }
 
     fn editor(markdown: &str) -> EditorSession {

@@ -1,6 +1,6 @@
 import { cleanup, signal, Text, View } from "nsh";
 import { DataTable, type DataTableColumn, type DataTableRef, type DataTableSelection, type DataTableSort } from "nsh/base";
-import { Button as GalleryButton, dataTableClasses, dataTableFitPadding, Segmented, terminal } from "../ui";
+import { Button as GalleryButton, dataTableClasses, dataTableFitPadding, Segmented, terminal, ToggleButton } from "../ui";
 
 // `nsh/base`'s `DataTable` over a million stocks of sixty columns the app
 // does not hold, with live quotes as gpui-component's data table story: a
@@ -277,7 +277,7 @@ export function DataTableDemo() {
   return (
     <View class="flex-1 gap-3 bg-background p-4">
       <View class="flex-row flex-wrap items-center gap-3">
-        <View class="w-[260px]">
+        <View>
           <Segmented
             options={[
               { value: "row", label: "Rows" },
@@ -291,8 +291,8 @@ export function DataTableDemo() {
             size="small"
           />
         </View>
-        <Tool label="Toggle live updates" name={live() ? "Live on" : "Live off"} onPress={() => live.set(!live())} />
-        <Tool label="Toggle stripes" name={stripe() ? "Stripes on" : "Stripes off"} onPress={() => stripe.set(!stripe())} />
+        <ToggleButton label="Live" accessibilityLabel="Toggle live updates" on={live()} onPress={() => live.set(!live())} />
+        <ToggleButton label="Stripes" accessibilityLabel="Toggle stripes" on={stripe()} onPress={() => stripe.set(!stripe())} />
         <Tool label="Go to row 500000" name="Row 500,000" onPress={() => table?.scrollToRow(499_999)} />
         <Tool label="Go to Indicator 30" name="Indicator 30" onPress={() => table?.scrollToColumn("x30")} />
       </View>
@@ -300,11 +300,15 @@ export function DataTableDemo() {
           would move the table under the pointer dragging its bar. The
           tick gives way first. */}
       <View class={terminal ? "flex-row items-center gap-x-6" : "flex-row items-center gap-3"}>
-        <Text class="shrink-0 font-mono text-[12px] text-foreground">{describe()}</Text>
-        <Text class="shrink-0 font-mono text-[12px] text-muted-foreground">
-          {`rows ${visible().start + 1}–${visible().end} of ${ROWS.toLocaleString("en-US")}`}
+        {/* Muted as the rest of the line; only a selection, a value, in the text color. */}
+        <Text class={`shrink-0 text-xs ${selection() ? "text-foreground" : "text-muted-foreground"}`}>{describe()}</Text>
+        <Text class="shrink-0 text-xs tabular-nums text-muted-foreground">
+          {`Rows ${visible().start + 1}–${visible().end} of ${ROWS.toLocaleString("en-US")}`}
         </Text>
-        <Text style={{ numberOfLines: 1 }} class="shrink font-mono text-[12px] text-muted-foreground">{`${columns.length} columns · tick ${ticks()}`}</Text>
+        <Text style={{ numberOfLines: 1 }} class="shrink text-xs tabular-nums text-muted-foreground">{`${columns.length} columns · ${ticks()} updates`}</Text>
+        <If when={!live()}>
+          <Text class="shrink-0 text-xs text-muted-foreground">Paused</Text>
+        </If>
       </View>
       <DataTable
         ref={(r) => (table = r)}

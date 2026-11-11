@@ -1600,7 +1600,7 @@ style_keys! {
     OutlineColor = "outlineColor": View "ColorValue",
     OutlineStyle = "outlineStyle": View "\"solid\" | \"dashed\" | \"dotted\" | \"none\" | \"hidden\"",
     OutlineOffset = "outlineOffset": View "number" "Distance from the border edge (negative: inside).",
-    Visibility = "visibility": View "\"visible\" | \"hidden\" | \"collapse\"" "Hidden views keep their space.",
+    Visibility = "visibility": View "\"visible\" | \"hidden\" | \"collapse\"" "Hidden views keep their space. On a nested text (a span), its characters keep their place, are not drawn, and are left out of copies and screen readers.",
     Cursor = "cursor": View "\"auto\" | \"default\" | \"context-menu\" | \"alias\" | \"copy\" | \"cell\" | \"pointer\" | \"text\" | \"vertical-text\" | \"wait\" | \"progress\" | \"help\" | \"crosshair\" | \"move\" | \"all-scroll\" | \"grab\" | \"grabbing\" | \"not-allowed\" | \"no-drop\" | \"zoom-in\" | \"zoom-out\" | \"col-resize\" | \"e-resize\" | \"w-resize\" | \"ew-resize\" | \"row-resize\" | \"n-resize\" | \"s-resize\" | \"ns-resize\" | \"ne-resize\" | \"nw-resize\" | \"se-resize\" | \"sw-resize\" | \"nesw-resize\" | \"nwse-resize\" | \"none\"" "The pointer over the view (pointers and desktops).",
     TransitionProperty = "transitionProperty": View "string" "The properties that animate when they change (`\"opacity, transform\"`, `\"all\"`, `\"colors\"`).",
     TransitionDuration = "transitionDuration": View "number | `${number}ms` | `${number}s`" "Milliseconds as a number, or `\"150ms\"` / `\"0.2s\"`.",

@@ -14,11 +14,6 @@ on:
     paths:
       - ".github/workflows/packages.yml"
       - ".github/packages/**"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/packages.yml"
-      - ".github/packages/**"
   merge_group:
     types: [checks_requested]
   workflow_dispatch:

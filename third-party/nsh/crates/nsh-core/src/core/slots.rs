@@ -83,6 +83,7 @@ pub(super) fn split(attrs: &Attrs) -> (Attrs, Attrs) {
         accessible: attrs.accessible,
         label: attrs.label.clone(),
         hint: attrs.hint.clone(),
+        description: attrs.description.clone(),
         role: attrs.role,
         state: attrs.state,
         value: attrs.value.clone(),
@@ -128,6 +129,7 @@ pub(super) fn merged(js: &Attrs, own: &Attrs) -> Attrs {
         accessible: own.accessible.or(js.accessible),
         label: own.label.clone().or_else(|| js.label.clone()),
         hint: own.hint.clone().or_else(|| js.hint.clone()),
+        description: own.description.clone().or_else(|| js.description.clone()),
         role: if own.role == AccessibilityRole::None {
             js.role
         } else {
@@ -142,6 +144,7 @@ pub(super) fn merged(js: &Attrs, own: &Attrs) -> Attrs {
             pressed: own.state.pressed.or(js.state.pressed),
             current: own.state.current.or(js.state.current),
             has_popup: own.state.has_popup || js.state.has_popup,
+            invalid: own.state.invalid || js.state.invalid,
         },
         value: own.value.clone().or_else(|| js.value.clone()),
         pointer_events: if own.pointer_events == PointerEvents::default() {
@@ -173,6 +176,9 @@ fn absorb(js: &mut Attrs, prop: &Prop) -> bool {
         Prop::Accessibility(A::Accessible(v)) => js.accessible = *v,
         Prop::Accessibility(A::Label(v)) => js.label = v.clone().map(SharedString::from),
         Prop::Accessibility(A::Hint(v)) => js.hint = v.clone().map(SharedString::from),
+        Prop::Accessibility(A::Description(v)) => {
+            js.description = v.clone().map(SharedString::from)
+        }
         Prop::Accessibility(A::Role(v)) => js.role = *v,
         Prop::Accessibility(A::State(v)) => js.state = *v,
         Prop::Accessibility(A::Value(v)) => js.value = v.clone(),
@@ -336,6 +342,7 @@ impl<M: TextEngine> Core<M> {
             js.accessible = a.accessible;
             js.label = a.label.clone().map(SharedString::from);
             js.hint = a.hint.clone().map(SharedString::from);
+            js.description = a.description.clone().map(SharedString::from);
             js.role = a.role;
             js.state = a.state;
             js.value = a.value.clone();

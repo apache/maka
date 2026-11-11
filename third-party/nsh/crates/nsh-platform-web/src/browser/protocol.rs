@@ -149,6 +149,7 @@ pub(crate) fn decode_command<'js>(name: &str, arg: Value<'js>) -> compat::Result
         "stopLoading" => Command::StopLoading,
         "injectJavaScript" => Command::InjectJavaScript(string(&arg)?),
         "postMessage" => Command::PostMessage(string(&arg)?),
+        "insertText" => Command::InsertText(string(&arg)?),
         "sendInput" => match web_input(&arg) {
             Some(input) => Command::SendInput(input),
             None => return Ok(None),
@@ -209,6 +210,15 @@ pub(crate) fn decode_command<'js>(name: &str, arg: Value<'js>) -> compat::Result
                 .and_then(|o| o.get::<_, Option<bool>>("animated").ok().flatten())
                 .unwrap_or(true),
         },
+        "reveal" => Command::Reveal(
+            <nsh_core::RevealOptions as HostValue>::decode(&Js(arg.clone()), &mut HostCx::default())
+                .ok_or_else(|| {
+                    Exception::throw_type(
+                        arg.ctx(),
+                        "reveal: vertical and horizontal must be \"start\", \"center\", \"end\" or \"nearest\"",
+                    )
+                })?,
+        ),
         "layoutAnimation" => Command::LayoutAnimation(
             <LayoutAnimation as HostValue>::decode(&Js(arg), &mut HostCx::default())
                 .unwrap_or_default(),

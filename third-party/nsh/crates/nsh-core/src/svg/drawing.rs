@@ -17,7 +17,7 @@
 //! is black, and a radial gradient stretched by its transform strokes with
 //! its circle. Masks and filters are left out (what they apply to is drawn
 //! as it is), a pattern paints nothing, and `<text>` and `<image>` are not
-//! drawn, as in the rasters.
+//! drawn (this vector replay has no fonts or images).
 
 use std::sync::Arc;
 
@@ -79,7 +79,7 @@ pub fn drawing(source: &str) -> Result<Drawing, Error> {
         } else {
             source
         };
-        let tree = super::parse_with(text.as_bytes(), &super::options())?;
+        let tree = super::parse_drawing(text)?;
         let size = tree.size();
         let natural = Size::new(px(size.width()), px(size.height()));
         let view_box =
@@ -204,7 +204,7 @@ impl Recorder {
             match node {
                 usvg::Node::Group(g) => self.group(g, alpha)?,
                 usvg::Node::Path(p) => self.path(p, alpha),
-                // No fonts or images are loaded.
+                // The vector replay has no fonts or images.
                 usvg::Node::Image(_) | usvg::Node::Text(_) => {}
             }
         }

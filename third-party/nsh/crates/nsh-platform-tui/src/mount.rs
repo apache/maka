@@ -37,6 +37,9 @@ pub(crate) struct Mounter {
     /// The Cells text was drawn on this frame (by buffer index), kept to
     /// reuse its allocation (`render.rs`).
     pub(crate) text_cells: Vec<bool>,
+    /// The Cells drawn this frame that hold a glyph inside a view with an
+    /// `href` (by buffer index), kept to reuse its allocation (`link.rs`).
+    pub(crate) links: crate::link::Painted,
     /// The links of the texts drawn last that are stops of Tab
     /// (`TextLink::focus_stop`), by the span's node: no views of their own,
     /// each stands after its text view in the focus order.
@@ -70,6 +73,7 @@ impl Default for Mounter {
             image_infos: Vec::new(),
             scroll_bars: Vec::new(),
             text_cells: Vec::new(),
+            links: Default::default(),
             spans: HashMap::new(),
             focused_span: None,
             dialogs: Default::default(),

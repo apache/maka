@@ -307,7 +307,7 @@ view().p_4().rounded(px(12.0)).bg(white()).shadow([
 | Key | Type | Rust | Description |
 |---|---|---|---|
 | `opacity` | `number \| AnimatedNode` | `.opacity(o)`, `.bind_opacity(&value)` | 0 (invisible) to 1. Takes a native animated value. |
-| `visibility` | `"visible" \| "hidden" \| "collapse"` | | Hidden views keep their space in layout (unlike `display: "none"`). |
+| `visibility` | `"visible" \| "hidden" \| "collapse"` | | Hidden views keep their space in layout (unlike `display: "none"`). On a span, its characters keep their place and are left out of copies and screen readers. |
 | `overflow` | `"visible" \| "hidden"` | `.overflow_hidden()` | `"hidden"` clips children to the view's bounds (and corners). |
 | `backfaceVisibility` | `"visible" \| "hidden"` | `.backface_hidden()`, `.backface_visible()` | `"hidden"`: invisible while a 3D rotation turns it away. |
 | `verticalAlign` | `"baseline" \| "text-top" \| "text-bottom" \| "middle"` | `.align_baseline()`, `.align_text_top()`, `.align_text_bottom()`, `.align_middle()` | Where a view or image inside a `<Text>` sits in its line, as CSS's `vertical-align`: its bottom on the baseline (default), its top or bottom at the text font's top or bottom, or its middle half the x height above the baseline. The line grows to hold it. |

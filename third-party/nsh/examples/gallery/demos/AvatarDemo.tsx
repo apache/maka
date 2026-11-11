@@ -12,9 +12,21 @@ import {
   DemoPage,
   focusRing,
   hovered,
+  photoUrl,
   Segmented,
   Button as UiButton,
 } from "../ui";
+
+/**
+ * A member's picture: a maintainer's GitHub portrait, but Floyd Wang's is a white disc that glares beside the other
+ * portraits in dark, so he shows one of the gallery's photographs instead (the night launch, on no other avatar of
+ * this page). The same picture in either appearance, so a person keeps their face as the theme changes.
+ */
+const portrait = (name: string) => (name === "Floyd Wang" ? photoUrl("moon", "360x360") : avatarPortrait(name));
+
+/** An avatar's image status as people say it. */
+const said: Record<string, string> = { idle: "Nothing to load", loading: "Loading", loaded: "Loaded", error: "Failed" };
+const say = (status: string) => said[status] ?? status;
 
 // `nsh/base`'s `Avatar` owns the image's loading state (the fallback while
 // it loads, after `fallbackDelay`, and when it fails; the image once it has
@@ -73,7 +85,9 @@ function Person(props: {
       fallbackDelay={props.delay}
       onStatusChange={({ status }) => props.onStatus?.(status)}
       style={{ flex: 1 }}
-      imageClass={`${round()} ${props.fadeIn ? fade(300) : ""}`}
+      // A hairline of the text color and the muted fill under the picture,
+      // so a white portrait keeps its edge on a white card and in dark.
+      imageClass={`${round()} border border-foreground/10 bg-muted ${props.fadeIn ? fade(300) : ""}`}
       fallbackClass={`${round()} items-center justify-center font-semibold text-[${Math.round(props.side / 2.8)}px] text-[${id().foreground}]`}
       fallbackStyle={{ backgroundColor: id().background, borderWidth: 1, borderColor: id().border }}
       fallback={props.fallback}
@@ -172,7 +186,7 @@ export function AvatarDemo() {
     const presence = signal<Presence[]>(TEAM.map((m) => m.presence));
     const online = () => presence().filter((p) => p === "online").length;
     return (
-      <Card title="Team" subtitle="Presence dots over the pictures; press a member to change theirs" right={<Badge label={`${online()} online`} tone="up" />}>
+      <Card title="Team" subtitle="Presence dots; press one to change theirs" right={<Badge label={`${online()} online`} tone="up" />}>
         <View>
           <Each of={TEAM}>
             {(m, i) => {
@@ -197,9 +211,9 @@ export function AvatarDemo() {
                   }}
                   hoverStyle={hovered()}
                   activeStyle={{ backgroundColor: alpha(colors.text, 0.08) }}
-                  focusStyle={focusRing()}
+                  focusVisibleStyle={focusRing()}
                 >
-                  <Person name={m().name} side={row} src={avatarPortrait(m().name)} label={`${m().name}, ${p()}`}>
+                  <Person name={m().name} side={row} src={portrait(m().name)} label={`${m().name}, ${p()}`}>
                     <Dot presence={p()} side={row} />
                   </Person>
                   <View style={{ flex: 1, gap: 2 }}>
@@ -224,7 +238,7 @@ export function AvatarDemo() {
     const people = () => MEMBERS.slice(0, count());
     const more = () => Math.max(0, count() - shown());
     return (
-      <Card title="Stacked group" subtitle="The first few overlap; the overflow stands for the rest" right={<Badge label={`${count()} members`} />}>
+      <Card title="Stacked group" subtitle="The first few overlap; a count for the rest" right={<Badge label={`${count()} members`} />}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <AvatarGroup
             limit={shown()}
@@ -238,7 +252,7 @@ export function AvatarDemo() {
             <Each of={people()}>
               {(name, i) => (
                 <View style={{ marginLeft: i() === 0 ? 0 : -side / 4 }}>
-                  <Person name={name()} side={side} ring src={avatarPortrait(name())} />
+                  <Person name={name()} side={side} ring src={portrait(name())} />
                 </View>
               )}
             </Each>
@@ -276,7 +290,7 @@ export function AvatarDemo() {
           <Each of={["Jason Lee", "Sunli", "Floyd Wang"]}>
             {(name, i) => (
               <View style={{ marginLeft: i() === 0 ? 0 : -6 }}>
-                <Person name={name()} side={28} ring src={avatarPortrait(name())} label="" />
+                <Person name={name()} side={28} ring src={portrait(name())} label="" />
               </View>
             )}
           </Each>
@@ -287,7 +301,7 @@ export function AvatarDemo() {
 
   function Thread() {
     const comments = [
-      { name: "Sunli", time: "2h", text: "The compiler change is in. Benchmarks look steady.", src: avatarPortrait("Sunli"), reply: false },
+      { name: "Sunli", time: "2h", text: "The compiler change is in. Benchmarks look steady.", src: portrait("Sunli"), reply: false },
       { name: "Alan Turing", time: "1h", text: "Did the cold start move? The last run was noisy.", src: AVATAR_BROKEN, reply: true },
       { name: "Barbara Liskov", time: "40m", text: "Same as before within a millisecond.", src: undefined, reply: true },
     ];
@@ -316,20 +330,21 @@ export function AvatarDemo() {
   function Profile() {
     const pictures = ["Jason Lee", "Sunli", "Floyd Wang"];
     const picture = signal<number | null>(0);
-    const status = signal("—");
+    const status = signal("idle");
     const side = pointer ? 64 : 76;
     return (
-      <Card title="Profile header" subtitle="A large picture that fades in when it changes, initials without one" right={<Badge label={status()} tone={status() === "loaded" ? "up" : "neutral"} />}>
+      // The badge once the picture is in; nothing to say before.
+      <Card title="Profile header" subtitle="Fades in on a change; initials without one" right={status() === "loaded" ? <Badge label="Loaded" tone="up" /> : undefined}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
           <Person
             name="Jason Lee"
             side={side}
             ring
             fadeIn
-            src={picture() === null ? undefined : avatarPortrait(pictures[picture()!])}
+            src={picture() === null ? undefined : portrait(pictures[picture()!])}
             onStatus={(s) => {
               status.set(s);
-              last.set(`Profile picture: ${s}`);
+              last.set(`Profile picture: ${say(s).toLowerCase()}`);
             }}
           >
             <View
@@ -386,14 +401,14 @@ export function AvatarDemo() {
     const round = signal(0);
     const statuses = signal<Record<string, string>>({});
     const cases = [
-      { key: "loads", title: "Loads", name: "Floyd Wang", src: avatarPortrait("Floyd Wang") },
+      { key: "loads", title: "Loads", name: "Floyd Wang", src: portrait("Floyd Wang") },
       { key: "fails", title: "Fails", name: "Alan Turing", src: AVATAR_BROKEN },
       { key: "none", title: "No picture", name: "Donald Knuth", src: undefined },
       { key: "anon", title: "No name", name: undefined, src: undefined },
     ];
     const side = pointer ? 44 : 52;
     return (
-      <Card title="Loading and failing" subtitle="The fallback while a picture loads, when it fails, and without one" right={<Badge label={`round ${round() + 1}`} />}>
+      <Card title="Loading and failing" subtitle="While loading, on failure, and without one">
         <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
           <Each of={cases}>
             {(c) => (
@@ -411,7 +426,7 @@ export function AvatarDemo() {
                   )}
                 </Each>
                 <Text style={{ fontSize: note, fontWeight: "500", color: colors.text }}>{c().title}</Text>
-                <Text style={{ fontSize: note - 1, color: colors.faint }}>{statuses()[c().key] ?? "idle"}</Text>
+                <Text style={{ fontSize: note - 1, color: colors.muted }}>{say(statuses()[c().key] ?? "idle")}</Text>
               </View>
             )}
           </Each>
@@ -423,7 +438,7 @@ export function AvatarDemo() {
           onPress={() => {
             statuses.set({});
             round.set(round() + 1);
-            last.set(`Load again: round ${round() + 1}`);
+            last.set("Loaded again");
           }}
         />
       </Card>
@@ -432,38 +447,44 @@ export function AvatarDemo() {
 
   function Delay() {
     const round = signal(0);
-    const log = signal<string[]>([]);
+    // When the delayed picture came in, which decides whether its fallback showed.
+    const loadedAt = signal<number | null>(null);
     let start = Date.now();
-    const report = (who: string) => (s: string) => log.set([`${who}: ${s} at ${Date.now() - start} ms`, ...log()].slice(0, 4));
+    const delayed = (s: string) => {
+      if (s === "loaded") loadedAt.set(Date.now() - start);
+    };
+    const verdict = () => {
+      const at = loadedAt();
+      if (at === null) return "Loading the pictures";
+      return at < 400 ? `In ${at} ms, inside the 400 ms: no fallback flashed` : `In ${at} ms: the fallback showed from 400 ms`;
+    };
     const side = pointer ? 44 : 52;
     return (
-      <Card title="Without a flash" subtitle="The fallback waits 400 ms while the picture loads, and the picture fades in">
+      <Card title="Without a flash" subtitle="The fallback waits 400 ms; the picture fades in">
         <View style={{ flexDirection: "row", gap: 24 }}>
           <Each of={[round()]}>
             {() => (
             <>
             <View style={{ alignItems: "center", gap: 6 }}>
-              <Person name="Sunli" side={side} src={avatarPortrait("Sunli")} onStatus={report("no delay")} />
+              <Person name="Sunli" side={side} src={portrait("Sunli")} />
               <Text style={{ fontSize: note, color: colors.muted }}>No delay</Text>
             </View>
             <View style={{ alignItems: "center", gap: 6 }}>
-              <Person name="Sunli" side={side} src={avatarPortrait("Sunli")} delay={400} fadeIn onStatus={report("400 ms")} />
+              <Person name="Sunli" side={side} src={portrait("Sunli")} delay={400} fadeIn onStatus={delayed} />
               <Text style={{ fontSize: note, color: colors.muted }}>400 ms, fades in</Text>
             </View>
             </>
             )}
           </Each>
         </View>
-        <View style={{ gap: 2, minHeight: 4 * (note + 6) }}>
-          <Each of={log()}>{(line) => <Text style={{ fontSize: note, color: colors.faint, fontVariant: ["tabular-nums"] }}>{line()}</Text>}</Each>
-        </View>
+        <Text style={{ fontSize: note, color: colors.muted, fontVariant: ["tabular-nums"] }}>{verdict()}</Text>
         <UiButton
           label="Replay"
           icon="play"
           size="small"
           onPress={() => {
             start = Date.now();
-            log.set([]);
+            loadedAt.set(null);
             round.set(round() + 1);
             last.set("Replay");
           }}

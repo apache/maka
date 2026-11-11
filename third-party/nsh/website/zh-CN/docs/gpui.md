@@ -111,7 +111,9 @@ view.load(App::Js(Bundle::source(code)));
 `AssetBase::Http`）。字节码 bundle（`bundle.nshc`）用 `unsafe { Bundle::bytecode(bytes) }`（或同样是 unsafe 的
 `Bundle::read_trusted(path)`）加载：QuickJS 字节码是受信任的输入，只应从你自己应用的文件中加载。
 
-- `open_app_window(source, options, cx)` 在运行中的 GPUI 应用里打开一个带 `AppView` 的窗口。
+- `open_app_window(source, options, cx)` 在运行中的 GPUI 应用里打开一个带 `AppView` 的窗口，并带上应用 nsh.json
+  中 `window` 的设置。设置了 `"defaultVisible": false` 时，它在 macOS 和 Windows 上以隐藏状态打开，等应用显示它时才显示
+  （[主窗口](../modules/nsh-desktop.md#主窗口)）；在 Linux 上 GPUI 打开窗口时就会显示它。
 - `run_app(source, options)` 启动 GPUI，在一个窗口中运行一个应用直到窗口关闭（开发宿主就是这样做的）。
 - `AppView::register_component(name, factory)` 在加载前注册你自己的原生组件（[原生组件](./native-components.md)）。
 - `AppOptions::cache`（或 `AppView::set_cache`，作用于之后加载的应用）设置应用保存缓存（[下载的图片](./images-and-assets.md#磁盘缓存)）的位置和每种缓存的大小：`CacheOptions { location, images }`，`CacheLocation::System`（默认）、`Dir(path)` 或 `Off`，`CachePolicy::Default`（256 MiB）、`MaxSize(ByteSize::mib(n))` 或 `Off`。

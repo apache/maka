@@ -14,20 +14,34 @@ When neither is specified, prefer Rust for an app shipped in its binary.
 Before building feature screens, read the Design and Coding Guides and establish
 or reuse the app's design standards, semantic Theme Tokens and styled component
 library. Keep them in the app repository. `nsh-base` (`nsh/base`) supplies unstyled
-behavior, as [`gpui-base`](https://gpui-kit.com/base) does; the styled layer analogous to [`gpui-component`](https://gpui-kit.com/component)
-belongs to the app or its chosen community library.
+behavior; the styled layer above it belongs to the app (its `ui` layer) or its
+chosen community library.
 
 Define theme colors centrally and consume semantic tokens throughout pages,
 components and states: `theme()` in Rust; token classes or `token()` in TSX.
 Do not introduce raw hex, RGBA/HSLA or palette classes in presentation code. Add
 missing roles to the theme first. User-selected or data colors remain data.
-Build complete styled controls for the feature's needs, then compose pages from
-them; extend shared variants instead of restyling base controls per screen.
+Create the app's `ui` layer (`src/ui/`) with the core set of styled controls
+before the first screen, then compose pages only from it; extend shared variants
+instead of restyling controls per screen.
+
+Motion is part of the foundations, not polish added later. Define the app's
+motion tokens (durations, easings, distances, scales) beside its theme, and build
+the styled controls with their motion: hover washes, press scales, glyph swaps,
+popups growing from their trigger, a sliding selection. Plan each screen's state
+changes with its layout and pick the native tool from the Design Guides' "Motion"
+section (transitions, motions, springs, `LayoutAnimation`, `Shader`), honoring
+reduced motion. A screen whose every change is an instant swap is unfinished.
+Before writing a screen's code, write its motion inventory (Design Guides,
+"Motion inventory") in the app's `DESIGN.md`; before finishing, verify every
+line in the running app and report it. Finish every UI change by running the
+Design Guides' "Finishing checklist" (radius, typography, spacing, alignment,
+color, hover, pressed, states, motion) on screenshots in light and dark, and report each group.
 
 Choose the app's Desktop, Mobile, Web and TUI targets explicitly. Adapt density,
 navigation, input and overlays to those targets, preserving shared semantics.
 TUI uses character Cells and terminal colors; Web follows the device's input.
-Review token use, component reuse and platform states before finishing. For a
+Review token use, component reuse, motion and platform states before finishing. For a
 narrow change, extend the existing system within the requested scope.
 
 ## Choose the Mode, Then Read Its Page
@@ -133,7 +147,12 @@ A floor, not a substitute for the guides.
   store with private signals. In Rust with TSX, one side owns each piece of state.
 - **The look is the app's.** `nsh_base` / `nsh/base` has behavior and no look, and NSH
   has no styled component library. Draw with theme tokens: `theme().primary` in Rust,
-  `bg-primary` in TSX. Wrap each base component once in the app's own UI module.
+  `bg-primary` in TSX.
+- **Features are built from the app's `ui` layer.** Create `src/ui/` with the core
+  set (Design Guides, "The app's `ui` layer") before the first screen. Its components
+  take `variant`, `size`, states and slots, never colors or radii; features import
+  them, never controls from `nsh/base`, and never style controls themselves. A look
+  `ui` lacks becomes a new variant there first.
 - **Parts draw nothing until styled.** A switch with no track and thumb style shows no
   switch, and a test still passes. Style every part, and look at the result.
 - **Use the semantic component.** Button, Menu, Popover, Sheet, Dialog and Select bring
@@ -147,6 +166,15 @@ A floor, not a substitute for the guides.
   `close_on_escape`, `disabled`), never a callback returning a boolean.
 - **Do not change NSH to fit an app.** Solve it in the app first: its own components, a
   Rust crate, or a native component.
+- **Every screen has a motion inventory.** Written before its code, every state
+  change named with its tool and tokens, each line verified in the running app
+  before the work is called done (Design Guides, "Motion inventory").
+- **Accessibility and keyboard are required.** Every action works by keyboard (Tab
+  order, arrows in groups, Enter / Space, Escape) with visible focus, and every
+  control has a role and name for screen readers; a screen that fails is broken.
+- **Design per target family.** Desktop and web share one design (compact pointer
+  controls); mobile follows iOS and Android (44pt / 48dp targets, sheets, back);
+  TUI is keyboard-first on whole cells.
 - **TSX has no DOM, no Node and no npm UI.** Standard modules are exactly `buffer`,
   `console`, `crypto`, `fs/promises`, `net`, `os`, `path`, `process`, `url`, `websocket`,
   `zlib`.

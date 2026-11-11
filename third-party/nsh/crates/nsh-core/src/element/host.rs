@@ -381,8 +381,8 @@ crate::static_reactive!(Painter: Painter, Drawing);
 /// budget (`docs/dev/images.md`), leased while an element shows it. Inline
 /// markup and a drawing in memory show in the first frame; others when
 /// they load. A source that cannot be drawn draws nothing (logged). The
-/// web runtime shows it as an image the browser draws, where
-/// `currentColor` is black.
+/// web runtime shows it as an image the browser draws, with its
+/// `currentColor` written out as the element's text color.
 pub fn svg(src: impl IntoReactive<super::ImageSrc>) -> Svg {
     #[cfg(all(feature = "svg", not(target_arch = "wasm32")))]
     {
@@ -402,6 +402,11 @@ pub fn svg(src: impl IntoReactive<super::ImageSrc>) -> Svg {
             crate::PropertyValue::ObjectFit(Some(ResizeMode::Contain)),
         );
         node.bind_attr(src, |attrs, src| attrs.src = Some(src));
+        // The platform draws it: its `currentColor` is the text color.
+        set(
+            &mut node,
+            Prop::Image(crate::ImageProp::SvgCurrentColor(true)),
+        );
         Svg(node)
     }
 }
@@ -1553,6 +1558,19 @@ impl WebView {
     /// A page failed to load (the message).
     pub fn on_error<M>(self, listener: impl IntoListener<str, M>) -> Self {
         self.listen(EventKind::Error, listener.into_listener(), events::message)
+    }
+
+    /// The platform shows no web view here: it has no web engine, or its
+    /// engine failed to start (the message; TS: `onError` with `code`
+    /// `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"`). [`on_error`](Self::on_error)
+    /// hears it too. [`web_view_available`](crate::element::web_view_available)
+    /// asks ahead.
+    pub fn on_unavailable<M>(self, listener: impl IntoListener<str, M>) -> Self {
+        self.listen(
+            EventKind::Error,
+            listener.into_listener(),
+            events::unavailable,
+        )
     }
 
     /// The page called `window.nsh.postMessage(data)`.

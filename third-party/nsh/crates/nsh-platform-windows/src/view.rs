@@ -323,8 +323,10 @@ impl ViewState {
 }
 
 /// Called with the view of the tree that changed: the root's surface draws
-/// it again ([`crate::surface::Surface::invalidate_view`]).
-pub(crate) type Invalidate = Rc<dyn Fn(&NshView)>;
+/// it again ([`crate::surface::Surface::invalidate_view`]). With a
+/// rectangle, only that part of it changed, in its own coordinates (a
+/// canvas's animated values): the surface draws only there.
+pub(crate) type Invalidate = Rc<dyn Fn(&NshView, Option<Bounds<Points>>)>;
 
 /// A rectangle in the window's DIPs (points).
 pub(crate) type WindowRect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
@@ -395,7 +397,24 @@ impl std::fmt::Debug for NshView {
     }
 }
 
+/// A view that does not keep its node alive ([`NshView::downgrade`]).
+#[derive(Clone)]
+pub(crate) struct WeakView(Weak<Node>);
+
+impl WeakView {
+    /// The view, while its node lives.
+    pub(crate) fn upgrade(&self) -> Option<NshView> {
+        self.0.upgrade().map(NshView)
+    }
+}
+
 impl NshView {
+    /// A handle that does not keep the node alive (callbacks the node's
+    /// own state holds).
+    pub(crate) fn downgrade(&self) -> WeakView {
+        WeakView(Rc::downgrade(&self.0))
+    }
+
     /// A new, detached view of node `id`.
     pub(crate) fn new(id: NodeId, kind: ViewKind) -> Self {
         NshView(Rc::new(Node {
@@ -450,6 +469,17 @@ impl NshView {
     /// again (if it is in one), and it and the views it is in hold a newer
     /// change ([`Self::changes`]: a shader picturing them takes them again).
     pub(crate) fn changed(&self) {
+        self.changed_in(None);
+    }
+
+    /// Part of what it draws changed (`rect`, in its own coordinates, y
+    /// down): only that is drawn again (a canvas's animated values).
+    pub(crate) fn changed_rect(&self, rect: Bounds<Points>) {
+        self.changed_in(Some(rect));
+    }
+
+    /// It changed in `rect` (all of it without one).
+    fn changed_in(&self, rect: Option<Bounds<Points>>) {
         let stamp = next_change_stamp();
         let mut node = self.0.clone();
         loop {
@@ -465,7 +495,7 @@ impl NshView {
         }
         let invalidate = node.invalidate.borrow().clone();
         if let Some(f) = invalidate {
-            f(self);
+            f(self, rect);
         }
     }
 
@@ -490,7 +520,7 @@ impl NshView {
         }
         let invalidate = node.invalidate.borrow().clone();
         if let Some(f) = invalidate {
-            f(self);
+            f(self, None);
         }
     }
 
@@ -504,6 +534,12 @@ impl NshView {
     /// surface, which clears it when it draws.
     pub(crate) fn set_queued(&self, queued: bool) {
         self.0.queued.set(queued);
+    }
+
+    /// Whether it is on its surface's list of changed views
+    /// ([`Self::set_queued`]): a full redraw of it is coming.
+    pub(crate) fn is_queued(&self) -> bool {
+        self.0.queued.get()
     }
 
     /// Records where the window's frame painted it.

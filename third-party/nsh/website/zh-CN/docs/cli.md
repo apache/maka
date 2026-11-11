@@ -92,13 +92,13 @@ nsh run my-app/App.tsx --target web
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--target <TARGET>` | macOS 上为 `macos`，Linux 上为 `linux`，Windows 上为 `windows` | `catalyst`：Mac Catalyst 宿主，一个 iPhone 大小的窗口（390×844）。`ios`：iOS 模拟器中的宿主。`android`：Android 设备或模拟器上的宿主。`macos`：AppKit 宿主，一个 1200×800 的窗口（[macOS](./macos.md)）。`linux`：GTK 宿主，一个 390×844 的窗口（[Linux](./linux.md)）。`windows`：Win32 宿主，一个 1200×800 的窗口（[Windows](./windows.md)）。`gpui`：GPUI 宿主，一个 1200×800 的窗口，可在 macOS、Windows 或 Linux 上运行，以嵌入它的 GPUI 应用的方式显示 TSX 应用（[GPUI](./gpui.md)）。`tui`：当前终端中的宿主（[TUI](./tui.md)）。`web`：开发服务器的页面，地址会打印出来（[Web](./web.md#在浏览器里开发)）。 |
+| `--target <TARGET>` | macOS 上为 `macos`，Linux 上为 `linux`，Windows 上为 `windows` | `catalyst`：Mac Catalyst 宿主，一个 iPhone 大小的窗口（390×844）。`ios`：iOS 模拟器中的宿主。`android`：Android 设备或模拟器上的宿主。`macos`：AppKit 宿主，一个 1200×800 的窗口（[macOS](./macos.md)）。`linux`：GTK 宿主，一个 390×844 的窗口（[Linux](./linux.md)）。`windows`：Win32 宿主，一个 1200×800 的窗口（[Windows](./windows.md)）。`gpui`：GPUI 宿主，一个 1200×800 的窗口，可在 macOS、Windows 或 Linux 上运行，以嵌入它的 GPUI 应用的方式显示 TSX 应用（[GPUI](./gpui.md)）。`tui`：当前终端中的宿主（[TUI](./tui.md)）。`web`：开发服务器的页面，地址会打印出来（[Web](./web.md#在浏览器里开发)）。其他名字运行在 NSH 之外构建的同名平台（[外部 target](#外部-target)）。 |
 | `--device <DEVICE>` | | 要使用的 iOS 模拟器，按名称（`"iPhone 16 Pro"`）或 UDID 指定。默认：已启动的模拟器，否则启动最新的 iPhone。 |
 | `--port <PORT>` | 此应用上次的端口，否则从 `8790` 起第一个空闲端口 | 开发服务器端口。等待此端口上的旧 NSH 开发会话清理完成后接管。 |
 | `--release` | | 压缩代码并去掉调试信息。release 包没有热模块替换：每次保存都会重新加载应用。 |
 | `--limits [<LIMITS>]` | | 按嵌入在其他应用中的方式运行应用，使用宿主应用设置的限制：`memory` 和 `stack`（单位为 `KB`、`MB` 或 `GB`）、`load` 和 `call`（单位为 `ms` 或 `s`）以及 `nodes`，例如 `--limits memory=128MB,call=500ms`。没写的项保持嵌入时的默认值，只写 `--limits` 就全部使用默认值（[沙箱与能力](./sandbox-and-capabilities.md#限制)）。不带它时，应用像打包后的应用一样独立运行。仅 TSX 入口。 |
 | `--trace` | | 宿主把每次 commit 的耗时（JS、布局、挂载项）记录到终端。 |
-| `--fps` | | 性能监视器：帧率、每帧和每次 commit 的开销、CPU、GPU 和内存；macOS 上显示在应用上方（[macOS](./macos.md#性能监视器)）；macOS、Linux、Windows 和 iOS 上每秒输出一行日志。`tui` 在角落显示 FPS/idle、帧 p95、应用批次/绘制/刷新耗时、字节数和变化的 Cell 数，`C-h p` 切换显示。 |
+| `--fps` | | 性能监视器：帧率、每帧和每次 commit 的开销、CPU、GPU 和内存；macOS 上显示在应用上方（[macOS](./macos.md#性能监视器)）；macOS、Linux、Windows 和 iOS 上每秒输出一行日志，用 `-v` 显示。`tui` 在角落显示 FPS/idle、帧 p95、应用批次/绘制/刷新耗时、字节数和变化的 Cell 数，`C-h p` 切换显示。 |
 | `--name <NAME>` | `nsh.json` 的 name | 菜单栏中的应用显示名称及初始窗口标题（`--target macos`，TSX 入口）。 |
 | `--points-per-cell <WIDTHxHEIGHT>` | `nsh.json` 的 `tui.pointsPerCell`，否则 `8x16` | 终端单元格的宽高，单位为点（`--target tui`）。 |
 | `--window-size <WIDTHxHEIGHT>` | 宿主默认值 | 初始窗口尺寸，单位为点，例如 `800x600`（`--target macos`、`linux`、`windows` 和 `gpui`，TSX 入口）。 |
@@ -132,7 +132,7 @@ nsh dev [ENTRY] [--target catalyst|ios|android|macos|linux|windows|gpui|tui|web]
 ## nsh test
 
 ```sh
-nsh test [PATH] [--filter <NAME>] [--trace] [--fps] [--junit <FILE>] [--target <TARGET>] [--browser <PATH>] [--web-host <JS>] [--display <N>] [--foreground]
+nsh test [PATH] [--filter <NAME>] [--trace] [--fps] [--junit <FILE>] [--target <TARGET>] [--browser <PATH>] [--web-host <JS>] [--device <DEVICE>] [--display <N>] [--foreground]
 ```
 
 以无界面方式运行应用的测试（[测试](./testing-and-trace.md)）：运行目录 `PATH`（默认为当前目录；跳过隐藏目录、`node_modules` 和 `target`）中的测试文件（`*.test.tsx`、`*.test.ts`，导入 `nsh/test`），或者测试文件 `PATH` 本身。如果传入的是带有自己 Rust crate 的应用（`nsh.json` `"rust"`：Rust 应用，或带 crate 的 TSX 应用）的目录，它会先在目录中每个 crate 自己的目录下运行 `cargo test`，并把每个 Rust 测试与 TypeScript 测试一起显示和计数，归在其测试目标的文件下（`src/lib.rs › tests::adds`）；只有 Rust 测试的 Rust 应用也这样测试。每个测试文件在各自的引擎上运行，测试打开的每个应用又在另一个全新的引擎上运行。它为每个测试打印一行；失败时还会打印抛出的内容、它在测试文件中的位置和屏幕上的文字。只要有失败，就以非零退出码结束。如果传入的是应用入口（`nsh test App.tsx`；Rust 应用为 `nsh test nsh.json`），它会在真实网络下打开应用，让它运行 1.2 s，然后执行标准输入给出的步骤（`await app.press("Add")`，其中 `app` 就是这个应用）。TSX 应用在 CLI 自己的进程里运行；带有自己 Rust crate 的应用在用这些 crate 构建的无界面运行器中运行，由 CLI 为它构建入口。除非测试以 Android 打开应用（`open` 的 `platform`），无界面运行按 iOS 处理：`platform.os` 为 `"ios"`，`ios:` 类和 `ios={{…}}` 属性都会生效。
@@ -150,6 +150,7 @@ nsh test [PATH] [--filter <NAME>] [--trace] [--fps] [--junit <FILE>] [--target <
 | `--junit <FILE>` | 同时把结果以 JUnit XML 报告写入 `FILE`，CI 服务按这种格式展示测试结果：每个测试文件一个 `testsuite`，每个测试一个 `testcase`。 |
 | `--target <TARGET>` | 在该平台的开发 host 上运行测试打开的应用，而不是 headless（`macos`、`linux`、`windows`、`gpui`、`tui`、`web`、`ios` 和 `android`；`tui` 在内存终端里运行，`web` 在 headless 的 Chrome、Edge 或 Chromium 里运行）：步骤用平台自己的输入执行（[测试](./testing-and-trace.md#在真实平台上运行)），`open` 会按该平台检查它的选项，平台无法满足的选项会被拒绝（`ERR_NSH_TEST_UNSUPPORTED`：iOS 和 Android 上的 `width` 与 `height`、属于另一类设备的 `platform`）。crate 的 Rust 测试在本机运行，属于不带 `--target` 的运行。 |
 | `--browser <PATH>` | `--target web` 运行应用所用的 Chrome、Edge 或 Chromium 可执行文件（默认：本机安装的那个）。 |
+| `--device <DEVICE>` | 配合 `--target ios`：应用在哪个模拟器里运行，按名称（`"iPhone 16 Pro"`）或 UDID 指定。默认：已启动的模拟器，否则启动最新的 iPhone。 |
 | `--display <N>` | 配合 `--target macos`：应用窗口在哪个显示器上居中打开：`1` 是主显示器（带菜单栏的那个），`2` 是下一个，依此类推；没有这个编号的显示器时在主显示器上打开。默认在副显示器（主显示器之外的第一个，且不是它的镜像）上打开，让测试运行占用一块单独的屏幕；只有一个显示器时在主显示器上打开。测试在每个显示器上的运行结果相同。 |
 | `--foreground` | 配合 `--target macos`：让应用成为当前活跃的应用，和用户使用时一样。默认应用在后台运行：窗口照常显示，键盘留在你正在输入的应用里，测试的点击、按键和快捷键直接发给这些窗口。依赖应用处于活跃状态的测试（`lifecycle()` 随应用是否活跃而变），或 `examples/gallery/tools/perf.py` 这类性能测量（它会传入该选项），应带上它运行。 |
 | `--web-host <JS>` | headless 运行时测试打开的应用所用的 Web 页面宿主模块（默认：`nsh.json` 的 `web.host`；它导出 `createHost(player)`）：它应答应用的 [`host`](../modules/nsh.md#host) 调用，它的 `player.hostEvent` 会送到 `host.on`（[测试](./testing-and-trace.md#页面的宿主)）。只用于 headless 运行；`--target web` 运行 `nsh.json` 的 `web.host`。 |
@@ -204,7 +205,7 @@ nsh package [ENTRY] --target ios|ios-simulator|android|macos|linux|windows|web [
 
 | 参数 | 说明 |
 |---|---|
-| `--target <TARGET>` | 必填。`ios`：iOS 设备，签名的 `.ipa`（不带 `--sign` 时为未签名的 `.app`）。`ios-simulator`：ad hoc 签名的 `.app`。`android`：签名的 `.apk`。`macos`：ad hoc 签名的 `.app`（[macOS](./macos.md#打包)）。`linux`：一个目录 `<Name>/`（可执行文件、`nsh/`、`.desktop` 文件）和 `<Name>.tar.gz`（[Linux](./linux.md#打包)）。`windows`：一个目录 `<Name>\`（`<Name>.exe`、`nsh\`）和 `<Name>.zip`（[Windows](./windows.md#打包)）。`web`：一个目录 `<Name>/`，即静态站点（`index.html` 和以内容命名的文件）（[Web](./web.md#发布应用)）。 |
+| `--target <TARGET>` | 必填。`ios`：iOS 设备，签名的 `.ipa`（不带 `--sign` 时为未签名的 `.app`）。`ios-simulator`：ad hoc 签名的 `.app`。`android`：签名的 `.apk`。`macos`：ad hoc 签名的 `.app`（[macOS](./macos.md#打包)）。`linux`：一个目录 `<Name>/`（可执行文件、`nsh/`、`.desktop` 文件）和 `<Name>.tar.gz`（[Linux](./linux.md#打包)）。`windows`：一个目录 `<Name>\`（`<Name>.exe`、`nsh\`）、`<Name>.zip`、Inno Setup 脚本 `<Name>.iss`，以及装有 Inno Setup 时生成的安装程序 `<Name>-setup.exe`（[Windows](./windows.md#打包)）。`web`：一个目录 `<Name>/`，即静态站点（`index.html` 和以内容命名的文件）（[Web](./web.md#发布应用)）。其他名字为在 NSH 之外构建的同名平台打包（[外部 target](#外部-target)）。 |
 | `-o, --out <OUT>` | 输出目录（默认 `.nsh/out`）。 |
 | `--name <NAME>` | 显示名称。 |
 | `--id <ID>` | Bundle identifier，例如 `com.example.app`。 |
@@ -218,6 +219,7 @@ nsh package [ENTRY] --target ios|ios-simulator|android|macos|linux|windows|web [
 | `--keystore-password <PASSWORD>` | Android：keystore 密码，也可从 `NSH_KEYSTORE_PASSWORD` 读取。 |
 | `--format <FORMAT>` | Android：`apk`（默认）或 `aab`，即用于 Google Play 的 Android App Bundle，使用 `jarsigner` 签名。不能与 `--run` 同时使用。 |
 | `--abi <ABI>` | Android：APK 包含的 ABI（`arm64-v8a`、`armeabi-v7a`、`x86_64`），可重复或用逗号分隔。默认：`arm64-v8a` 和 `armeabi-v7a`，加上 `--run` 时还有设备的 ABI。 |
+| `--arch <ARCH>` | macOS：应用运行的处理器，`arm64`（Apple 芯片）、`x86_64`（Intel）或 `universal`（两者合在一个可执行文件里）。默认：本机的。为另一种处理器编 runner 需要它的 Rust target（`rustup target add x86_64-apple-darwin`）。 |
 | `--run` | 打包完成后安装并启动应用：在模拟器中（`ios-simulator`）或在已连接的 Android 设备上；`macos`、`linux` 和 `windows` 则直接启动它；`web` 在本机提供站点服务，并打印其地址。 |
 | `--asset-url <URL>` | Web：站点文件所在的 http(s) 地址（CDN），页面按它引用这些文件；`index.html` 和 `manifest.webmanifest` 仍在页面自己的地址下（和不带它时一样按相对路径引用），CDN 要返回 `Access-Control-Allow-Origin`。默认：放在页面旁边，用相对路径引用。`--run` 从本机直接提供站点，所以不带它。 |
 
@@ -232,6 +234,35 @@ nsh package my-app --target web
 ```
 
 参见[打包](./packaging.md)。
+
+## 外部 target
+
+`nsh dev`、`nsh run`、`nsh test` 和 `nsh package` 的 `--target` 不是 NSH 自带的 target 时，会运行在 NSH 之外构建的同名平台：`PATH` 上的程序 `nsh-platform-<name>`，就像 Cargo 运行 `cargo-<name>` 一样。它收到命令和除 `--target` 及其值以外的所有参数，以及环境变量 `NSH`（当前的 `nsh` 可执行文件）、`NSH_VERSION` 和 `NSH_TARGET`（平台名）；它的退出码就是命令的退出码。
+
+```sh
+nsh package my-app --target miniprogram --out dist
+# 运行：nsh-platform-miniprogram package my-app --out dist
+```
+
+名字由小写字母、数字和短横线组成，以字母开头。`PATH` 上没有对应程序时，`nsh` 会说明这一点并列出自带的 target。[构建平台](./platform-extensions.md)介绍了这样的平台需要实现什么。
+
+## nsh update
+
+把已安装的 `nsh` 更新到所在渠道的最新构建；指定渠道即切换（与 `rustup update nightly` 一致）（[安装](./installation.md#更新)）。
+
+```sh
+nsh update [stable|nightly]
+```
+
+## nsh component
+
+添加、删除或列出已安装 `nsh` 旁边的运行时：它所在平台之外的那些（`android`、`android-symbols`、`ios`、`web`、`gpui`、`tui`）。需要某个运行时的命令第一次运行时会自己添加它（[安装](./installation.md#组件)）。
+
+```sh
+nsh component list
+nsh component add <NAME>...
+nsh component remove <NAME>...
+```
 
 ## 签名命令
 

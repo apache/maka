@@ -54,6 +54,36 @@ backends additionally integrate with platform view and text-input infrastructure
 supply their own integration with those services; rendering architecture alone does not establish whether a
 particular framework supports accessibility or autofill.
 
+## API design
+
+NSH's public API follows [GPUI Kit](https://gpui-kit.com)'s coding guides: an API is shaped by what it means, not
+by how a feature works today. [docs/dev/api-naming.md](docs/dev/api-naming.md) records each name and why it was
+chosen; these rules apply when adding one.
+
+- **Short, accurate, neutral names.** Name an API by what it does in one plain word where one exists, never by a
+  phrase describing the feature or its mechanism: such a name ties the API to today's implementation and is longer
+  to read and write. Reuse the project's word for the same concept before borrowing the web's: a ref's method that
+  brings its view into view is `reveal`, as `Tree.revealItem` and `Editor.revealPosition` are, not the DOM's
+  `scrollIntoView`.
+- **Names match the semantics.** A borrowed name brings its meaning with it. When the behavior differs, choose a
+  name that says what NSH does: physical alignments are `vertical` / `horizontal`, not the DOM's `block` / `inline`,
+  which follow the writing direction.
+- **Differences from GPUI Kit are written down.** A name, shape or option that differs from its GPUI, `gpui-base` or
+  `gpui-component` counterpart gets a row in `docs/dev/api-naming.md` saying what it maps to and why.
+- **Options are one named object.** Parameters that may grow are one options object named `<Method>Options`
+  (`RevealOptions`), declared as a named TypeScript type that apps can import, not an inline object type.
+- **Rust options read as one expression.** An options struct is `#[non_exhaustive]` with `Default` and public fields,
+  plus a setter per field that takes and returns `Self`, so a caller in another crate writes the value in place:
+
+  ```rust
+  row.reveal(RevealOptions::default().vertical(ScrollAlignment::Center));
+  ```
+
+- **Generated from one definition.** A string union is a Rust enum with `#[derive(PropEnum)]` (and
+  `#[non_exhaustive]`), never a hand-written `from_name`, a union typed out in a declaration or a list of names in an
+  error message. A value JS passes is decoded by one `HostValue` implementation in `nsh-core`, which QuickJS and the
+  browser runtime share and which declares its TypeScript type, never by a decoder written once per runtime.
+
 ## NSH and React Native
 
 NSH has a design of its own, and React Native is a reference for which capabilities a mobile UI framework

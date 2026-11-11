@@ -564,7 +564,23 @@ export function executor(
       await nextest(id);
       await cargo(['test', ...suites.nsh.cargoArgs, '--doc']);
       await cargo(['nextest', 'run', ...webTextArgs]);
-      await node(['--test', 'third-party/nsh/crates/nsh-platform-web/web/nsh.test.mjs']);
+      await cargo([
+        'run',
+        '--locked',
+        '--manifest-path',
+        manifests.nsh,
+        '-p',
+        'nsh-bundler',
+        '--example',
+        'browser_bootstrap',
+        '--',
+        '--check',
+      ]);
+      await node([
+        '--test',
+        'third-party/nsh/crates/nsh-platform-web/web/nsh.test.mjs',
+        'third-party/nsh/crates/nsh-platform-web/web/browser/dom.test.mjs',
+      ]);
     } else if (!['native', 'native-build'].includes(id)) {
       throw new Error(`Unknown suite: ${id}`);
     }

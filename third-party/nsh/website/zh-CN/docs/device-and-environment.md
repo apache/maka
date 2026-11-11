@@ -477,6 +477,19 @@ const hapticsSupported = platform.os === "ios" || (platform.os === "android" && 
 在终端中（[终端后端](./tui.md)），`platform.idiom` 为 `"terminal"`，`platform.desktop` 为 `true`，`platform.os` 是本机自己的系统。
 `colorScheme()` 跟随终端的背景色，`reduceMotion()` 为 `true`，安全区域和键盘高度为 0。
 
+## 应用数据目录
+
+Rust 中的 `data_dir()`，即 TSX 中的 `process.dataDir`，是应用存放自己文件（例如 SQLite 数据库）的目录：`<数据目录>/<应用 id>`，与 `storage.json` 同一目录，在所有原生平台上可用，包括 Android 和 iOS。宿主不为应用保存文件时（例如 Web）为 `None`（`undefined`）。目录可能尚未创建，写入前先创建。
+
+```rust
+use nsh_core::prelude::*;
+
+if let Some(dir) = data_dir() {
+    std::fs::create_dir_all(&dir)?;
+    let db = dir.join("app.sqlite");
+}
+```
+
 ## 像素密度
 
 Rust 中的 `pixel_ratio()` 和 `round_to_nearest_pixel(points)`，以及 TSX 中 `nsh` 的 `pixelRatio()`，在点与设备像素之间换算。

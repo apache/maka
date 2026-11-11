@@ -107,3 +107,31 @@ test("every value operation has a code of its own", async () => {
   const keys = value(50, values.put({ a: 1, b: 2 }), 0, 0, 0);
   assert.equal(values.get(keys), "a\0b");
 });
+
+test("accessor keys are exact numbers, and strings past the generations a number holds", () => {
+  const values = new Values();
+  const keys = new Set();
+  for (const owner of [0, 1, 2 ** 32 - 1]) {
+    for (const generation of [0, 1, 2 ** 21 - 1]) {
+      const key = values.accessorKey(owner, generation);
+      assert.equal(typeof key, "number");
+      assert.ok(Number.isSafeInteger(key));
+      keys.add(key);
+    }
+  }
+  assert.equal(keys.size, 9);
+  assert.equal(values.accessorKey(7, 2 ** 21), `7:${2 ** 21}`);
+  assert.notEqual(values.accessorKey(7, 2 ** 21), values.accessorKey(7, 2 ** 21 - 1));
+});
+
+test("an accounting waits twenty times as long as the last one took, and at least 100 ms", () => {
+  const values = new Values();
+  values.lastCollect = 1000;
+  values.lastCollectCost = 0.5;
+  assert.equal(values.collectDelay(1000), 100);
+  assert.equal(values.collectDelay(1060), 40);
+  assert.equal(values.collectDelay(1200), 0);
+  // A 10 ms accounting is followed by 190 ms without one: a twentieth of the time.
+  values.lastCollectCost = 10;
+  assert.equal(values.collectDelay(1010), 190);
+});

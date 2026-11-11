@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::{
     ImageSource,
+    color::Hsla,
     element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropEnum, PropError, TsTypes},
     geometry::{Point, Points},
     keymap::{self, Keystroke, Modifiers, When},
@@ -853,6 +854,45 @@ impl DesktopCommand {
     }
 }
 
+/// A run of a tray's title ([`Tray::title`]): text in one color, as GPUI's
+/// `TextRun`s are.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct TrayTitleRun {
+    /// The text.
+    pub text: String,
+    /// Its color; `None`: the panel's text color (on macOS the menu bar's,
+    /// which follows its appearance).
+    pub color: Option<Hsla>,
+}
+
+impl TrayTitleRun {
+    /// A run of `text` in the panel's text color.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            color: None,
+        }
+    }
+
+    /// The run in `color`.
+    pub fn color(mut self, color: impl Into<Hsla>) -> Self {
+        self.color = Some(color.into());
+        self
+    }
+}
+
+/// Which side of the tray's icon its title shows on ([`Tray::title_placement`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
+pub enum TrayTitlePlacement {
+    /// Right of the icon, as menu bar apps usually show it.
+    #[default]
+    Right,
+    /// Left of the icon. macOS only: Linux's panels draw the title right of
+    /// the icon.
+    Left,
+}
+
 /// The app's icon in the system tray ([`DesktopCommand::SetTray`]).
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
@@ -863,11 +903,22 @@ pub struct Tray {
     pub icon: Option<ImageSource>,
     /// Shown when the pointer rests on it; `""` for the app's name.
     pub tooltip: String,
+    /// Text beside the icon, in runs each of its own color: what the app
+    /// keeps in sight (a price, a count). macOS's menu bar shows it in its
+    /// colors; Linux's panels that show AppIndicator labels (GNOME's
+    /// AppIndicator extension, Unity, MATE, Budgie) show its text right of
+    /// the icon; Windows' notification area shows the icon alone. Empty: the
+    /// icon alone.
+    pub title: Vec<TrayTitleRun>,
+    /// Which side of the icon the title shows on.
+    pub title_placement: TrayTitlePlacement,
     /// Its menu: opened by a secondary click (a primary one too when
     /// [`Self::click`] is 0); empty for none.
     pub menu: Arc<[MenuItem]>,
     /// Reported as [`crate::EventKind::Menu`] when the icon is clicked
-    /// (primary button); 0: the click opens the menu.
+    /// (primary button), with `bounds`: the icon's frame in screen points
+    /// (as [`WindowState::bounds`]), left out where the platform does not
+    /// know it; 0: the click opens the menu.
     pub click: u32,
 }
 

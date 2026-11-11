@@ -48,11 +48,22 @@ pub(crate) fn starter(browser: Option<&Path>) -> anyhow::Result<StartHost> {
     // Built (in a checkout) or found once, before the first test.
     let runtime = crate::runtime::test_web()?;
     let host = Arc::new(crate::web::dev_host(&runtime, false)?);
-    // One browser for the run, started with the first app.
-    let running = Arc::new(Mutex::new(None::<Arc<Browser>>));
     Ok(Arc::new(move |entry: &Path, options: &HostOptions| {
-        start(&exe, &running, &host, entry, options).map(|h| Box::new(h) as Box<dyn Host>)
+        start(&exe, &host, entry, options).map(|h| Box::new(h) as Box<dyn Host>)
     }))
+}
+
+/// One browser for the run, started with the first app.
+static RUNNING: Mutex<Option<Arc<Browser>>> = Mutex::new(None);
+
+/// Closes the run's browser, once one that is starting started. A test
+/// that did not end in time leaves its thread behind with the browser,
+/// which the process would otherwise leave running as it ends.
+pub(crate) fn close() {
+    let browser = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(browser) = browser {
+        browser.close();
+    }
 }
 
 /// An app on a page, and the agent that takes its test's steps.
@@ -82,7 +93,6 @@ impl Drop for WebHost {
 /// browser (started first if it is not running).
 fn start(
     exe: &Path,
-    running: &Mutex<Option<Arc<Browser>>>,
     host: &(String, Vec<(String, Vec<u8>)>),
     entry: &Path,
     options: &HostOptions,
@@ -92,7 +102,7 @@ fn start(
         crate::web::with_page_host(host.clone(), entry).map_err(|e| format!("{e:#}"))?;
     server.serve_web(page, files);
     let browser = {
-        let mut running = running.lock().unwrap_or_else(|e| e.into_inner());
+        let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
         match &*running {
             Some(browser) if browser.alive() => browser.clone(),
             _ => {
@@ -557,6 +567,16 @@ impl Native for WebNative {
             .call(
                 "Runtime.evaluate",
                 json!({ "expression": "history.back()" }),
+            )
+            .map(drop)
+    }
+
+    fn forward(&self) -> Result<(), String> {
+        // The browser's forward button.
+        self.page
+            .call(
+                "Runtime.evaluate",
+                json!({ "expression": "history.forward()" }),
             )
             .map(drop)
     }

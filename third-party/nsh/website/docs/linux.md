@@ -74,7 +74,7 @@ Writes a directory and the same as an archive:
   <Name>                 the executable: a Rust app's own runner, built with its crate; nsh's release runner for TSX
   nsh/bundle.nshc        a TSX app, compiled
   nsh/assets/…           the assets it imports (a Rust crate's `assets!()` too)
-  nsh/app.json           the window title and the application id
+  nsh/app.json           the window title, the application id and nsh.json's window options
   <id>.desktop           a desktop entry (StartupWMClass is the id)
   <id>.png               the icon, when nsh.json names one
 .nsh/out/<Name>.tar.gz

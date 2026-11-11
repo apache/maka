@@ -66,6 +66,9 @@ define_class!(
     impl TouchTracker {
         #[unsafe(method(touchesBegan:withEvent:))]
         fn touches_began(&self, touches: &NSSet<UITouch>, _event: &UIEvent) {
+            self.ivars()
+                .target
+                .input_with(nsh_core::platform::InputModality::Pointer);
             let mut began = Vec::new();
             for touch in touches.iter() {
                 let Some(view) = touch.view() else { continue };
@@ -226,6 +229,7 @@ impl TouchTracker {
                     page: point(Points(page.x as f32), Points(page.y as f32)),
                     location: point(Points(local.x as f32), Points(local.y as f32)),
                     changed: is_changed,
+                    pointer_type: nsh_core::PointerType::Touch,
                 }
             })
             .collect();

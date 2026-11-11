@@ -173,6 +173,7 @@ const toggle = (id: number) =>
 | `empty` | `.empty(..)` | 组件或元素 | | 没有条目时代替条目显示。 |
 | `separator` | `.separator(\|\| ..)` | 组件或元素 | | 条目之间（单列）。 |
 | `initialScrollIndex` | `.initial_scroll_index(i)` | `number` | | 第一帧之前滚动到该条目。 |
+| `initialScrollAtEnd` | `.initial_scroll_at_end()` | `boolean` | `false` | 首帧前滚动到末尾并在行高测量时保持末尾位置。短内容从顶部排列；TSX 中优先于 `initialScrollIndex`；Rust 中最后调用的初始滚动方法生效。 |
 | `onLoadMore` | `.on_load_more(..)` | `() => void` | | 接近末尾（见下文）。 |
 | `loadMoreThreshold` | `.load_more_threshold(..)` | `number` | `1` | 距离末尾多少个视口时触发 `onLoadMore`。 |
 | `onLoadMoreAtStart` | `.on_load_more_at_start(..)` | `() => void` | | 滚动后接近开头（见下文）。 |
@@ -183,7 +184,7 @@ const toggle = (id: number) =>
 | `refreshing` / `onRefresh` | `.refreshing(..)` / `.on_refresh(..)` | `boolean` / `() => void` | | 下拉刷新。 |
 | `refreshIndicator` | `.refresh_indicator(..)` | `{ height: number }` | | 应用自己的下拉刷新指示器，取代平台的转圈（见[滚动](./scrolling.md#自己的指示器)）。 |
 | `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | 显示滚动条：平台的滚动指示器，或应用设置主题后的[内置滚动条](../elements/scrollbar.md#内置滚动条)；对象是该视图自己的主题。 |
-| `ref` | `.element_ref(&list)` | `ListRef` | | `scrollToIndex`、`scrollToOffset`、`scrollToEnd`、`scrollTo`。 |
+| `ref` | `.element_ref(&list)` | `ListRef` | | `scrollToIndex`、`scrollToOffset`、`scrollToEnd`、`scrollTo`、`measureScrollPosition`。 |
 
 头部、尾部和空状态插槽接受元素（在 TSX 中也可以是组件：`header={Header}`）。它们是独立的单元格，从不被复用，并且和其他元素一样是响应式的：整个插槽是一个 `<If>` 或 `<Each>` 时，它随条件或数据更新；组件只调用一次。
 
@@ -455,7 +456,19 @@ function Chat() {
           submitBehavior="submit"
           returnKeyType="send"
           placeholder="Message"
-          style={{ flex: 1, maxHeight: 120, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 18, paddingHorizontal: 12, paddingVertical### 底部对齐
+          style={{ flex: 1, maxHeight: 120, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8 }}
+        />
+      </View>
+    </View>
+  );
+}
+
+mount(Chat);
+```
+
+在倒置列表上调用 `scroll_to_end(..)` / `scrollToEnd()` 会滚动到它的开头，也就是最新的消息。
+
+### 底部对齐
 
 `alignment="bottom"`（Rust 中为 `.alignment(ListAlignment::Bottom)`）是构建聊天界面最简单的方式：消息按阅读顺序排列，最旧的在前，列表打开时显示最新消息。回复流式输出、追加消息或键盘弹出时，列表保持在末尾；用户向上滚动后，可见内容保持不动，滚回末尾后继续跟随。消息不足一屏时位于视口底部。
 
@@ -473,18 +486,6 @@ virtual_list(move || messages.with(Vec::len), move |at| bubble(messages, at))
   {(m) => <Bubble message={m()} />}
 </List>
 ```
-
-: 8 }}
-        />
-      </View>
-    </View>
-  );
-}
-
-mount(Chat);
-```
-
-在倒置列表上调用 `scroll_to_end(..)` / `scrollToEnd()` 会滚动到它的开头，也就是最新的消息。
 
 ### 让非倒置列表跟随末尾
 
@@ -779,7 +780,48 @@ let list!: ListRef;
 list.scrollToIndex({ index: 120, viewPosition: 0.5 });
 ```
 
-滚动到索引（以及滚动到末尾）由原生根据当时已知的尺寸计算：已测量的行用实测值，其余用预估尺寸。之后在目标附近的行被测量时，列表会持续跟随目标，因此能准确落位，直到用户自己滚动或数据变化为止。要让列表一打开就停在某个条目，请用 `initialScrollIndex`（`.initial_scroll_index(..)`），而不是在第一帧之后再滚动。
+滚动到索引（以及滚动到末尾）由原生根据当时已知的尺寸计算：已测量的行用实测值，其余用预估尺寸。之后在目标附近的行被测量时，列表会持续跟随目标，因此能准确落位，直到用户自己滚动或数据变化为止。要让列表一打开就停在某个条目，请用 `initialScrollIndex`（`.initial_scroll_index(..)`），停在末尾则用 `initialScrollAtEnd`（`.initial_scroll_at_end()`），而不是在第一帧之后再滚动。
+
+<a id="keeping-a-reading-position"></a>
+
+### 记住阅读位置
+
+`measureScrollPosition()`（`measure_scroll_position()`）在本轮改动排版后给出视口起点落在哪一行：`{ index, offset }`，即那一行和视口起点在行内多深，用的是列表自己排行的位置（已测量的行按实测尺寸，其余按预估尺寸）。在列表滚动时读取并保存；`scrollToIndex({ index, viewOffset: -offset })` 能把视口起点放回原处，无论是同一个列表还是重新创建的列表（它会随该行被测量而跟随）。没有条目的列表返回 `null`。它沿列表主轴、从第 0 项所在的一侧算起（倒置列表是底部）；视口起点在第一行之前的列表头里时，`index` 为 0，`offset` 为负。
+
+```rust tabs
+let list = element_ref();
+let reading = signal(None::<ListScrollPosition>);
+
+virtual_list(count, row)
+    .estimated_item_size(px(48.0))
+    .on_scroll(move |_| {
+        spawn(async move { reading.set(list.measure_scroll_position().await) });
+    })
+    .element_ref(&list)
+
+// 之后，在重新创建的列表里：
+if let Some(at) = reading.get() {
+    list.scroll_to_index(at.index, percentage(0.0), -at.offset, false);
+}
+```
+
+```tsx tabs
+let list!: ListRef;
+let reading: { index: number; offset: number } | null = null;
+
+<List
+  ref={list}
+  each={items}
+  estimatedItemSize={48}
+  onScroll={async () => (reading = await list.measureScrollPosition())}
+  style={{ flex: 1 }}
+>
+  …
+</List>;
+
+// 之后，在重新创建的列表里：
+if (reading) list.scrollToIndex({ index: reading.index, viewOffset: -reading.offset, animated: false });
+```
 
 <a id="a-settings-style-list"></a>
 

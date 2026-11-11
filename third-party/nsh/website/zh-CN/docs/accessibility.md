@@ -47,6 +47,7 @@ view()
 | `.accessible(..)` | `accessible` | `boolean` | 视图作为一个整体元素提供给辅助技术；子元素不单独暴露。 |
 | `.label(..)` | `accessibilityLabel` | `string` | 屏幕阅读器朗读的内容，代替内部的文字。 |
 | `.hint(..)` | `accessibilityHint` | `string` | 激活元素会发生什么，在停顿后朗读。 |
+| `.accessibility_description(..)` | `accessibilityDescription` | `string` | 名字之外对元素的说明，在名字之后朗读：对话框的说明文字、输入框要求的格式。 |
 | `.role(..)` | `role` | `AccessibilityRole` | 元素是什么。 |
 | `.accessibility_state(..)` | `accessibilityState` | `AccessibilityState` | 它的状态：禁用、选中、勾选、忙碌、展开、按下、当前项、弹出层。`selected` 同时让选中样式生效，`checked` 为 true 时让勾选样式生效，为 `"mixed"` 时让半选样式生效，`pressed` 为 true 时让按下样式生效。 |
 | `.accessibility_level(..)` | `accessibilityLevel` | `number` | 标题的级别（1 为最高），树节点的深度（顶层为 1）。 |
@@ -62,7 +63,7 @@ view()
 
 ### 角色
 
-角色（`.role(AccessibilityRole::Header)`、`role="header"`）告诉用户这是哪一类元素、如何操作。在 Rust 中它是 `AccessibilityRole` 的一个变体（`Button`、`Header`、`Switch` 等）；TSX 的取值有 `"none"`、`"button"`、`"link"`、`"search"`、`"image"`、`"imagebutton"`、`"keyboardkey"`、`"text"`、`"adjustable"`、`"header"`、`"summary"`、`"alert"`、`"checkbox"`、`"combobox"`、`"menu"`、`"menubar"`、`"menuitem"`、`"progressbar"`、`"radio"`、`"radiogroup"`、`"scrollbar"`、`"spinbutton"`、`"switch"`、`"tab"`、`"tablist"`、`"timer"`、`"toolbar"`、`"list"`、`"grid"`、`"table"`、`"rowgroup"`、`"row"`、`"columnheader"`、`"cell"`（[`Table`](../elements/table.md) 各部件的角色），以及 `"listbox"` 和 `"option"`（一组可供选择的选项，例如 [`Select`](../elements/select.md) 弹出的列表，及其中的选项，选中的那项由 `accessibilityState.selected` 标出），`"group"`（一组相关的元素），`"region"`（值得单独到达的一块区域，例如折叠面板的内容），`"navigation"`（在应用内跳转的一组链接，例如分页），`"tree"` 和 `"treeitem"`（可展开、收起的节点，各在自己的 `accessibilityLevel`），`"menuitemcheckbox"` 和 `"menuitemradio"`（可勾选的菜单项，单独勾选或在一组中单选）。
+角色（`.role(AccessibilityRole::Header)`、`role="header"`）告诉用户这是哪一类元素、如何操作。在 Rust 中它是 `AccessibilityRole` 的一个变体（`Button`、`Header`、`Switch` 等）；TSX 的取值有 `"none"`、`"button"`、`"link"`、`"search"`、`"image"`、`"imagebutton"`、`"keyboardkey"`、`"text"`、`"adjustable"`、`"header"`、`"summary"`、`"alert"`、`"checkbox"`、`"combobox"`、`"menu"`、`"menubar"`、`"menuitem"`、`"progressbar"`、`"radio"`、`"radiogroup"`、`"scrollbar"`、`"spinbutton"`、`"switch"`、`"tab"`、`"tablist"`、`"timer"`、`"toolbar"`、`"list"`、`"grid"`、`"table"`、`"rowgroup"`、`"row"`、`"columnheader"`、`"cell"`（[`Table`](../elements/table.md) 各部件的角色），以及 `"listbox"` 和 `"option"`（一组可供选择的选项，例如 [`Select`](../elements/select.md) 弹出的列表，及其中的选项，选中的那项由 `accessibilityState.selected` 标出），`"group"`（一组相关的元素），`"region"`（值得单独到达的一块区域，例如折叠面板的内容），`"navigation"`（在应用内跳转的一组链接，例如分页），`"tree"` 和 `"treeitem"`（可展开、收起的节点，各在自己的 `accessibilityLevel`），`"menuitemcheckbox"` 和 `"menuitemradio"`（可勾选的菜单项，单独勾选或在一组中单选），`"dialog"` 和 `"alertdialog"`（位于应用其余内容之上、以 `accessibilityLabel` 命名的对话框，以及请用户确认某件事的对话框；[`Dialog`](../elements/dialog.md) 默认是 `"dialog"`，除非它的 `role` 另有指定）。
 
 最常用的几个：
 
@@ -132,7 +133,7 @@ view()
 </View>
 ```
 
-状态在 Rust 中是 `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent>, has_popup }`，在 TSX 中是 `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time", hasPopup? }`。`pressed` 让按钮成为切换按钮（ARIA 的 `aria-pressed`）；`current` 标出一组中的当前项（ARIA 的 `aria-current`）：分页的当前页、向导的当前步骤；`hasPopup` 标出打开弹出层、菜单或列表的触发器（ARIA 的 `aria-haspopup`），它的 `expanded` 表示弹出层是否打开，没有 `hasPopup` 的 `expanded` 元素是就地展开内容的折叠项（`Popover`、`Menu`、`HoverCard`、`Select`、`Combobox` 和 `DatePicker` 会在各自的触发器上设置它）。禁用视图（`.disabled(..)`、`disabled`）也意味着禁用状态。带 `min`、`max` 和 `now` 的 `accessibilityValue` 以百分比朗读；带 `text` 时按原文朗读（"3 of 10"、"Medium"）。
+状态在 Rust 中是 `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent>, has_popup, invalid }`，在 TSX 中是 `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time", hasPopup?, invalid? }`。`pressed` 让按钮成为切换按钮（ARIA 的 `aria-pressed`）；`current` 标出一组中的当前项（ARIA 的 `aria-current`）：分页的当前页、向导的当前步骤；`hasPopup` 标出打开弹出层、菜单或列表的触发器（ARIA 的 `aria-haspopup`），它的 `expanded` 表示弹出层是否打开，没有 `hasPopup` 的 `expanded` 元素是就地展开内容的折叠项（`Popover`、`Menu`、`HoverCard`、`Select`、`Combobox` 和 `DatePicker` 会在各自的触发器上设置它）；`invalid` 标出没有通过应用校验的内容（ARIA 的 `aria-invalid`）：文字被拒绝的输入框、必选却留空的下拉选择。读屏随元素一起读出它，`aria-invalid:` 类可以为它设置样式。禁用视图（`.disabled(..)`、`disabled`）也意味着禁用状态。带 `min`、`max` 和 `now` 的 `accessibilityValue` 以百分比朗读；带 `text` 时按原文朗读（"3 of 10"、"Medium"）。
 
 ## 操作
 

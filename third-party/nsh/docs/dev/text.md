@@ -7,6 +7,10 @@
   Chrome and Android would slant them), `letterSpacing`, `textDecorationLine` + `textDecorationColor`, `textTransform`, `lineHeight`, `textAlign`,
   `textAlignVertical` (the core moves the content box down). `adjustsFontSizeToFit` shrinks the fonts (down to
   `minimumFontScale`, at least 0.1) until the text fits its box and lines (`Paragraph::fit`, a binary search in the core).
+  On iOS and macOS, a positive fixed-height box keeps its first line even when that line is taller than the box
+  (Dynamic Type on iOS; on both, a box a fraction of a point shorter than the line's measured height).
+  CoreText positions it from the same top edge as an unconstrained line; the view's drawing bounds clip the
+  excess. Empty and zero-height boxes stay empty.
   `onTextLayout` reports the final lines (`TextEngine::lines`: range, box, ascender, descender, cap / x height).
   Final layouts are hit-tested by their engine too, in the content box (`TextEngine::hit_test`,
   `caret_rect`, `range_rects`): the caret position nearest a point (`TextPosition`: a UTF-16 offset and its
@@ -98,6 +102,11 @@
   responder clears, so a surface shows one selection. Android (`selectable_view.rs`, `SelectableView.java`): the
   shared Rust model runs on the UI thread over JNI, hit-testing through a Java callback; a long press selects a word,
   then handles and a floating `ActionMode` (Copy, Select all, Share).
+- **Color changes**: a text whose spans change only their colors (text, decoration and background) or which of them
+  are hidden keeps its typesetting, measurements and layout where the platform draws colors from the text it mounts
+  (`TextEngine::draws_colors_from_text`: macOS, Windows, Linux and GPUI, which also read `hidden` there): only the new
+  text is mounted with the layout, so a word fading in, or shown after waiting hidden, costs one draw, not a new layout
+  of its paragraph. The other backends typeset it again.
 - **Span backgrounds**: `backgroundColor` / `borderRadius` on a nested `<Text>` (its view style, which spans otherwise
   ignore) become `ResolvedTextStyle::background` (`TextBackground`: color, radius and the span's node, so neighboring
   spans that look the same stay apart), inherited by the spans inside it; the block's own background stays its view's.
@@ -107,6 +116,17 @@
   inline box), rounded on every line (`box-decoration-break: clone`), drawn behind the selection and the glyphs. CoreText
   splits runs where the background's `NshBackground` attribute changes; the web emits the boxes as elements behind
   the runs.
+- **Hidden spans**: `visibility: "hidden"` on a nested `<Text>` (`.invisible()`) marks its runs, and those of the
+  spans inside it, `ResolvedTextStyle::hidden`. The core resolves them in `collect_text`: their characters stay in the
+  text and lay out as visible ones (`hidden` is not part of `layout_eq`, so toggling it draws again without measuring,
+  and where colors are drawn from the text without typesetting either), and they make no links; attachments inside them are hidden views (`Core::hide_attachments`). Each backend skips the
+  hidden runs when it draws (glyphs, color emoji, decorations, shadows, animated colors), never relying on the
+  transparent color alone; macOS, Windows, Linux and GPUI also leave them out of selection highlights
+  (`AttributedText::visible_ranges`), while iOS and Android highlight a selection over them. What leaves
+  the text through the user goes through `AttributedText::copied_text` (copies: hidden runs and attachments'
+  placeholders left out) and `visible_text` (screen readers, the test model's texts); selectable views copy through
+  `SelectionTexts::copied`. Android marks the runs with a span of their own in the laid out text, which its drawing,
+  copies and TalkBack read; the web gives the runs `visibility: hidden`.
 - **Inline attachments**: any other element inside a `<Text>` (also inside its spans) is an attachment: laid out as its own
   layout root at its content size (`update_attachments`), it becomes an object replacement character (U+FFFC,
   `AttributedText::attachments`) that the engine sizes to it (CTRunDelegate; Android a `ReplacementSpan`), so
