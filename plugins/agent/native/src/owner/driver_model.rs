@@ -2599,16 +2599,9 @@ impl DriverModel {
                 }
                 let published = async {
                     let view = state.frontier(run).await?;
-                    // Stop, finish and steering replace ordinary retry; the token alone does not.
+                    // Stop and finish replace ordinary retry; the token alone does not.
                     if matches!(error, RunError::Model(maka_model::ModelError::Cancelled))
-                        && (view.stopped
-                            || view.finish_requested()
-                            || !state
-                                .queue()
-                                .steering(view.spec.session_id.clone(), run)
-                                .await?
-                                .entries
-                                .is_empty())
+                        && (view.stopped || view.finish_requested())
                     {
                         return Ok(());
                     }
@@ -2851,16 +2844,7 @@ impl DriverModel {
             let parts = self
                 .validate_cold_contract(view, attempt, &request, &frozen)
                 .await?;
-            let steered = original.cleanup
-                == maka_plugin_core::operation::OperationCleanup::Confirmed
-                && !self
-                    .state
-                    .queue()
-                    .steering(view.spec.session_id.clone(), view.run)
-                    .await?
-                    .entries
-                    .is_empty();
-            if parts.is_empty() && !steered {
+            if parts.is_empty() {
                 return Ok(RecoveryEvidence {
                     recovery: AttemptRecovery::Blocked {
                         diagnostic:
