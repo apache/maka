@@ -274,7 +274,7 @@ impl Projection {
             )) {
                 continue;
             }
-            let PreviewField::Text { text_kind } = &part.field else {
+            let PreviewField::Text { text_kind, .. } = &part.field else {
                 continue;
             };
             let kind = match text_kind {

@@ -94,6 +94,7 @@ fn base(
             model_part: None,
             has_references: false,
             final_output: false,
+            final_answer: false,
             model: None,
             origin: None,
             compaction: None,
@@ -354,12 +355,17 @@ pub(super) async fn project(
                     reported_model_id,
                 });
             }
-            match part {
+            let final_output_part = match part {
                 ModelPart::Text {
                     text_kind,
                     text: body,
                     provider_options,
                 } => {
+                    let phase = provider_options
+                        .as_deref()
+                        .and_then(maka_agent_facts::model::responses_message_phase);
+                    row.chunk.final_answer =
+                        *text_kind == TextKind::Text && phase == Some("final_answer");
                     row.chunk.field = if *text_kind == TextKind::Thinking {
                         HistoryField::Thinking
                     } else {
@@ -379,6 +385,7 @@ pub(super) async fn project(
                     if let ModelPart::Text { text: original, .. } = part {
                         row.fields[0].1 = Field::Text(original.clone());
                     }
+                    *text_kind == TextKind::Text && phase != Some("commentary")
                 }
                 ModelPart::Source { source } => {
                     let body = match source {
@@ -394,6 +401,7 @@ pub(super) async fn project(
                             .map_or_else(|| title.clone(), |file| format!("{title} ({file})")),
                     };
                     text(&mut row, SourceField::Body, body.into());
+                    true
                 }
                 ModelPart::ToolCall { call } => {
                     row.chunk.role = Role::ToolCall;
@@ -418,6 +426,7 @@ pub(super) async fn project(
                             ToolInput::InvalidJson { raw } => Field::Text(raw.clone().into()),
                         },
                     ));
+                    false
                 }
                 ModelPart::ToolResult {
                     id,
@@ -440,8 +449,9 @@ pub(super) async fn project(
                     );
                     row.fields
                         .push((SourceField::Result, Field::Json(output.clone())));
+                    false
                 }
-            }
+            };
             if let std::collections::btree_map::Entry::Vacant(e) = views.entry(item.recorded.run) {
                 let view = reader
                     .view_at(item.recorded.run)
@@ -452,14 +462,7 @@ pub(super) async fn project(
             let view = &views[&item.recorded.run];
             row.chunk.final_output = view.terminal == Some(Terminal::Completed)
                 && view.current_attempt == Some(*attempt)
-                && matches!(
-                    part,
-                    ModelPart::Source { .. }
-                        | ModelPart::Text {
-                            text_kind: TextKind::Text,
-                            ..
-                        }
-                );
+                && final_output_part;
             if let ModelPart::ToolCall { call } = part {
                 let key = ToolKey {
                     attempt: *attempt,

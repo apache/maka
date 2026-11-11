@@ -354,6 +354,7 @@ const readingColumn = {
   paddingLeft: 16,
   paddingRight: platform.idiom === 'terminal' ? 24 : 16,
 } as const;
+const historyEndTolerance = 1;
 
 export function Conversation(props: ConversationProps) {
   const host = useHost();
@@ -441,7 +442,7 @@ export function Conversation(props: ConversationProps) {
     through: 0,
     items: [],
   });
-  const awayFromLatest = signal(false);
+  const historyFollowPaused = signal(false);
   const visibleTurn = signal<string | null>(null);
   const navigation = signal<HistoryNavigation | null>(null);
   const navigatingTurn = computed(() => {
@@ -499,13 +500,15 @@ export function Conversation(props: ConversationProps) {
   };
   const readingSize = signal({ width: 640, height: 192 });
   let historyOffset = 0;
+  let historyMaxOffset = 0;
+  let historyScrollInput: 'idle' | 'pending' | 'dragging' = 'idle';
   const innerReader = signal<string | null>(null);
   // The process group whose activity list last reported its end.
   const readerAtEnd = signal<string | null>(null);
   // At the end of a paused group there is nothing below to reach, only
   // following to resume, and nothing to follow once the run has ended.
   const pausedAtEnd = () =>
-    !awayFromLatest() && innerReader() !== null && innerReader() === readerAtEnd();
+    !historyFollowPaused() && innerReader() !== null && innerReader() === readerAtEnd();
   const metrics = signal<any>(null);
   const turnStates = new Map<string, TurnViewState>();
   const groupStates = new Map<string, GroupViewState>();
@@ -746,19 +749,17 @@ export function Conversation(props: ConversationProps) {
         speak();
         openTurn = turnId;
       }
-      // The terminal needs a summary as soon as there is folded work to reopen.
       const outcome = turn && turnOutcome(turn);
-      const streamingFold =
-        turn && turn.answerOutputIds.length > 0 && outcome === null && workFold(turn) === 'closed';
+      const foldedWork = turn && workFold(turn) === 'closed';
       if (
         turn &&
         (entry.kind === 'process' ||
           row?.role === 'assistant' ||
           // Recovered failures sit under the summary that folds them.
           (row?.role === 'failure' &&
-            (platform.idiom !== 'terminal' || outcome === 'completed' || streamingFold))) &&
+            (platform.idiom !== 'terminal' || outcome === 'completed' || foldedWork))) &&
         !summaries.has(turn.turnKey) &&
-        (platform.idiom !== 'terminal' || outcome !== null || streamingFold)
+        (platform.idiom !== 'terminal' || outcome !== null || foldedWork)
       ) {
         summaries.add(turn.turnKey);
         result.push({
@@ -836,6 +837,10 @@ export function Conversation(props: ConversationProps) {
     previouslyVisible = visible;
   });
   const displayByKey = computed(() => new Map(display().map((item) => [item.key, item])));
+  effect(() => {
+    const reader = innerReader();
+    if (reader !== null && !displayByKey().has(reader)) innerReader.set(null);
+  });
   const displayKeys = computed(() => display().map((item) => item.key));
   const latestQuestion = computed(() =>
     display().findLastIndex(
@@ -900,6 +905,12 @@ export function Conversation(props: ConversationProps) {
       : null;
   };
   let list: ListRef | undefined;
+  const resumeHistoryFollowing = () => {
+    historyFollowPaused.set(false);
+    innerReader.set(null);
+    // Replace the list's reading anchor when manual scrolling reaches the end.
+    list?.scrollToEnd({ animated: false });
+  };
   let compactScroll: ScrollRef | undefined;
   let followCompact = false;
   let alive = true;
@@ -1074,7 +1085,7 @@ export function Conversation(props: ConversationProps) {
           page.after === null && page.before === null ? 0 : undefined,
         );
         ready.set(true);
-        awayFromLatest.set(position.kind !== 'tail');
+        historyFollowPaused.set(position.kind !== 'tail');
         innerReader.set(null);
       });
       if (page.after === null && latestKnown > through) void follow().catch(report);
@@ -1669,7 +1680,7 @@ export function Conversation(props: ConversationProps) {
       innerReader.set(null);
       list?.focus();
     }
-    awayFromLatest.set(true);
+    historyFollowPaused.set(true);
     list?.scrollToIndex({
       index: displayKeys().indexOf(entry.key),
       viewPosition: 0,
@@ -2748,8 +2759,6 @@ export function Conversation(props: ConversationProps) {
     jumpLatest(turnId, reload = false) {
       if (!alive) return;
       const showLatest = () => {
-        awayFromLatest.set(false);
-        innerReader.set(null);
         const group = projection().entries.findLast(
           (entry) => entry.kind === 'process' && entry.turnKey === (turnId ?? runTurn()),
         );
@@ -2759,7 +2768,7 @@ export function Conversation(props: ConversationProps) {
           if (state.list) state.list.scrollToEnd({ animated: false });
           else state.opening = 'bottom';
         }
-        list?.scrollToEnd({ animated: false });
+        resumeHistoryFollowing();
       };
       // The loaded window already reaches the latest row and follows new ones:
       // scroll it in place, keeping the rows above, without waiting on the Host.
@@ -2836,7 +2845,7 @@ export function Conversation(props: ConversationProps) {
       !observed.hasUnread ||
       !ready() ||
       !atHistoryTail() ||
-      awayFromLatest() ||
+      historyFollowPaused() ||
       navigation() !== null ||
       runId() !== null ||
       observed.through < runThrough ||
@@ -3655,17 +3664,24 @@ export function Conversation(props: ConversationProps) {
               loadMoreAtStartThreshold={HISTORY_LOOKAHEAD_VIEWPORTS}
               onLoadMoreAtStart={prefetchOlder}
               onScrollDragStart={({ offset }) => {
+                historyScrollInput = 'dragging';
                 historyScrolled = true;
                 if (offset.y <= 1) prefetchOlder();
+              }}
+              onScrollEnd={({ offset }) => {
+                // Native scroll-end can arrive ahead of the last offset report.
+                if (historyScrollInput !== 'idle')
+                  historyScrollInput = offset.y === historyOffset ? 'idle' : 'pending';
               }}
               onScrollIntent={(event) => {
                 if (event.intent === 'start') void navigateStart().catch(report);
                 else {
                   cancelNavigation();
                   if (event.intent === 'scroll') {
+                    if (historyScrollInput !== 'dragging') historyScrollInput = 'pending';
                     historyScrolled = true;
                     if (nearHistoryStart()) prefetchOlder();
-                  }
+                  } else if (atHistoryTail()) resumeHistoryFollowing();
                 }
               }}
               onBlur={() => {
@@ -3680,8 +3696,11 @@ export function Conversation(props: ConversationProps) {
               }}
               estimatedItemSize={96}
               maintainVisibleContentPosition={
-                atHistoryTail() && innerReader() === null && navigation() === null
-                  ? { autoscrollToBottomThreshold: 32 }
+                atHistoryTail() &&
+                !historyFollowPaused() &&
+                innerReader() === null &&
+                navigation() === null
+                  ? { autoscrollToBottomThreshold: historyEndTolerance }
                   : {}
               }
               // The list spans the margins too, so the wheel scrolls it anywhere
@@ -3693,14 +3712,26 @@ export function Conversation(props: ConversationProps) {
               }}
               style={{ flex: 1, minHeight: 0 }}
               onScroll={(event) => {
-                const towardHistory = event.offset.y < historyOffset;
-                historyOffset = event.offset.y;
-                if (towardHistory && nearHistoryStart()) prefetchOlder();
-                changedReadExposure();
-                awayFromLatest.set(
-                  !atHistoryTail() ||
-                    event.offset.y < Math.max(0, event.contentSize.height - event.size.height) - 32,
-                );
+                const offset = event.offset.y;
+                const end = Math.max(0, event.contentSize.height - event.size.height);
+                const distance = end - offset;
+                const movement = offset - historyOffset;
+                // Resizing and growing content can also move the native offset.
+                const scrolled = historyScrollInput !== 'idle' || end === historyMaxOffset;
+                historyOffset = offset;
+                historyMaxOffset = end;
+                if (movement !== 0 && historyScrollInput === 'pending') historyScrollInput = 'idle';
+                if (scrolled && movement < 0 && distance > historyEndTolerance)
+                  historyFollowPaused.set(true);
+                else if (
+                  scrolled &&
+                  movement > 0 &&
+                  distance <= historyEndTolerance &&
+                  historyFollowPaused() &&
+                  atHistoryTail()
+                )
+                  resumeHistoryFollowing();
+                if (movement < 0 && nearHistoryStart()) prefetchOlder();
                 const reader = innerReader();
                 const row = reader === null ? undefined : projection().rowsById.get(reader);
                 const toolReader =
@@ -3712,14 +3743,11 @@ export function Conversation(props: ConversationProps) {
                   reader !== null &&
                   !groupStates.get(reader)?.list &&
                   !toolReader &&
-                  event.offset.y >= Math.max(0, event.contentSize.height - event.size.height) - 1
+                  distance <= historyEndTolerance
                 )
                   innerReader.set(null);
-                if (
-                  event.offset.y >=
-                  Math.max(0, event.contentSize.height - event.size.height) - 32
-                )
-                  void loadNewer();
+                if (distance <= 32) void loadNewer();
+                changedReadExposure();
               }}
               empty={
                 <If when={showHistoryLoading()}>
@@ -3744,7 +3772,7 @@ export function Conversation(props: ConversationProps) {
             >
               <ReturnToLatest
                 visible={
-                  awayFromLatest() ||
+                  historyFollowPaused() ||
                   (innerReader() !== null && (!pausedAtEnd() || run() === 'running'))
                 }
                 paused={pausedAtEnd()}

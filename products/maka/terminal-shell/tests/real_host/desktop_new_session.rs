@@ -1249,16 +1249,6 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     assert!(tool.bottom() <= thinking.top());
     desktop.artifact("streaming-thinking-order");
     answer.delta("The goal is unchanged.").await;
-    desktop
-        .until("turn work stayed open while the answer streamed", || {
-            (desktop.controls("Toggle tool GetGoal").is_empty()
-                && desktop.controls("Thinking · Checking the log").is_empty())
-            .then_some(())
-        })
-        .await;
-    desktop.artifact("streaming-answer-folded-work");
-    desktop.press("Turn work details").await;
-    desktop.control("Toggle tool GetGoal").await;
     answer.finish().await;
     let sessions = desktop.sessions().await;
     let session = sessions
@@ -1269,11 +1259,83 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         .unwrap();
     fixture.idle(&desktop.client, session).await;
     desktop.control("Copy message").await;
+    desktop
+        .until("completed answer did not fold the turn's work", || {
+            (desktop.controls("Toggle tool GetGoal").is_empty()
+                && desktop.controls("Thinking · Checking the log").is_empty())
+            .then_some(())
+        })
+        .await;
+    desktop.artifact("completed-answer-folded-work");
+    desktop.press("Turn work details").await;
+    desktop.control("Toggle tool GetGoal").await;
     assert_eq!(
         desktop.control("Turn work details").await.origin,
         summary.origin
     );
-    assert!(!desktop.controls("Toggle tool GetGoal").is_empty());
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_folds_work_when_responses_starts_the_final_answer() {
+    let mut fixture = Fixture::configured(Options {
+        responses: true,
+        ..Options::default()
+    })
+    .await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("Check the log").await;
+    desktop.submit().await;
+    let mut reply = desktop.request(&mut fixture).await;
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"reasoning","id":"reasoning-1",
+            "summary":[{"type":"summary_text","text":"Checking the log"}]
+        }}))
+        .await;
+    let thought = "Thinking · Checking the log";
+    desktop.control(thought).await;
+    let message = |id, phase, content| json!({"type":"message","role":"assistant","id":id,"phase":phase,"content":content});
+    let added = |id, phase| json!({"type":"response.output_item.added","item":message(id, phase, json!([]))});
+    let delta = |id, text| json!({"type":"response.output_text.delta","item_id":id,"delta":text});
+    let done = |id, phase, text| {
+        json!({"type":"response.output_item.done","item":
+            message(id, phase, json!([{"type":"output_text","text":text}]))})
+    };
+    reply.packet(added("progress", "commentary")).await;
+    reply.packet(delta("progress", "I found the log.")).await;
+    reply
+        .packet(done("progress", "commentary", "I found the log."))
+        .await;
+    reply.packet(added("answer", "final_answer")).await;
+    reply.packet(delta("answer", "The log is clean.")).await;
+    desktop
+        .until(
+            "the final answer did not fold the work while streaming",
+            || {
+                (desktop.controls(thought).is_empty()
+                    && !desktop.controls("Stop response").is_empty())
+                .then_some(())
+            },
+        )
+        .await;
+    desktop.artifact("streaming-final-answer-folded-work");
+    assert!(desktop.controls("Return to latest").is_empty());
+
+    reply
+        .packet(done("answer", "final_answer", "The log is clean."))
+        .await;
+    reply
+        .packet(json!({"type":"response.completed","response":{
+            "id":"response-1","usage":{"input_tokens":10,"output_tokens":20}
+        }}))
+        .await;
+    reply.finish_stream().await;
+    desktop.control("Copy message").await;
+    assert!(desktop.controls(thought).is_empty());
+    desktop.press("Turn work details").await;
+    desktop.control(thought).await;
     desktop.close().await;
     fixture.finish().await;
 }
@@ -2687,6 +2749,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu",
     "desktop_edits_a_message_in_place_and_forks_only_when_sent",
     "desktop_lists_a_scripts_tool_calls_in_place_of_the_script",
+    "desktop_folds_work_when_responses_starts_the_final_answer",
     "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
     "desktop_file_gestures_preserve_drafts_and_stage_an_image",
@@ -2738,6 +2801,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_lists_a_scripts_tool_calls_in_place_of_the_script" => {
             runtime.block_on(desktop_lists_a_scripts_tool_calls_in_place_of_the_script())
+        }
+        "desktop_folds_work_when_responses_starts_the_final_answer" => {
+            runtime.block_on(desktop_folds_work_when_responses_starts_the_final_answer())
         }
         "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened" => {
             runtime.block_on(desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened())

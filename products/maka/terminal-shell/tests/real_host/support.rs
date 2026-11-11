@@ -148,6 +148,7 @@ pub struct Options {
     pub images: bool,
     pub session_tools: bool,
     pub code_mode: bool,
+    pub responses: bool,
 }
 
 impl Fixture {
@@ -226,8 +227,7 @@ impl Fixture {
         let selection = configure(
             owner.clone(),
             &format!("http://{}/v1", listener.local_addr().unwrap()),
-            options.images,
-            options.code_mode,
+            &options,
             sandbox_mode,
         )
         .await;
@@ -312,6 +312,7 @@ impl Fixture {
             async move { host.serve_local(local, CancellationToken::new()).await }
         });
         let (send, requests) = mpsc::channel(8);
+        let responses = options.responses;
         let request_count = Arc::new(AtomicUsize::new(0));
         let provider = AbortOnDropHandle::new(tokio::spawn({
             let count = request_count.clone();
@@ -319,7 +320,18 @@ impl Fixture {
                 let mut connections = JoinSet::new();
                 loop {
                     tokio::select! {
-                        accepted=listener.accept()=> {let (stream,_)=accepted.unwrap(); let send=send.clone(); let count=count.clone(); connections.spawn(async move {ModelRequest::serve(stream,send,count).await;});},
+                        accepted = listener.accept() => {
+                            let (stream, _) = accepted.unwrap();
+                            let send = send.clone();
+                            let count = count.clone();
+                            connections.spawn(async move {
+                                if responses {
+                                    ModelRequest::serve_responses(stream, send, count).await;
+                                } else {
+                                    ModelRequest::serve(stream, send, count).await;
+                                }
+                            });
+                        },
                         Some(result)=connections.join_next(),if !connections.is_empty()=>{result.unwrap();}
                     }
                 }
@@ -419,8 +431,7 @@ impl Fixture {
 pub(crate) async fn configure(
     owner: Arc<RootOwner>,
     base: &str,
-    vision: bool,
-    code_mode: bool,
+    options: &Options,
     sandbox_mode: maka_agent_facts::execution::SandboxMode,
 ) -> Value {
     use maka_agent_facts::configuration::CatalogMutationResult;
@@ -429,9 +440,15 @@ pub(crate) async fn configure(
             .await
             .unwrap(),
     );
-    let provider = json!({"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"});
+    let provider_name = if options.responses {
+        "openai-responses-compatible"
+    } else {
+        "openai-compatible"
+    };
+    let provider = json!({"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":provider_name});
+    let vision = options.images;
     let mut overrides = json!({"fixture-model":{"contextWindow":200000,"vision":vision},"fixture-model-alt":{"contextWindow":200000,"vision":vision}});
-    if code_mode {
+    if options.code_mode {
         overrides["fixture-model"]["codeMode"] = json!(true);
     }
     let enabled_models = json!(["fixture-model", "fixture-model-alt"]);
@@ -523,8 +540,19 @@ pub struct ModelRequest {
 type ModelBody = UnsyncBoxBody<Bytes, Infallible>;
 
 enum ModelReply {
-    Event(Bytes),
+    Event(Value),
+    Done,
     Rejected(Value),
+}
+
+impl ModelReply {
+    fn sse(self) -> Bytes {
+        match self {
+            Self::Event(value) => Bytes::from(format!("data: {value}\n\n")),
+            Self::Done => Bytes::from_static(b"data: [DONE]\n\n"),
+            Self::Rejected(_) => panic!("HTTP status cannot change after streaming starts"),
+        }
+    }
 }
 
 fn model_http_error(body: Value) -> Response<ModelBody> {
@@ -576,18 +604,12 @@ impl ModelRequest {
                     .await
                     .unwrap();
                 let first = match receiver.recv().await {
-                    Some(ModelReply::Event(bytes)) => Some(bytes),
                     Some(ModelReply::Rejected(body)) => return Ok(model_http_error(body)),
-                    None => None,
+                    reply => reply.map(ModelReply::sse),
                 };
                 let events = stream::iter(first)
                     .chain(stream::unfold(receiver, |mut receiver| async move {
-                        receiver.recv().await.map(|reply| {
-                            let ModelReply::Event(bytes) = reply else {
-                                panic!("HTTP status cannot change after streaming starts");
-                            };
-                            (bytes, receiver)
-                        })
+                        receiver.recv().await.map(|reply| (reply.sse(), receiver))
                     }))
                     .map(|bytes| Ok::<_, Infallible>(Frame::data(bytes)));
                 Ok(Response::builder()
@@ -607,13 +629,54 @@ impl ModelRequest {
             assert!(!error.is_parse(), "invalid fixture HTTP request: {error}");
         }
     }
-    async fn packet(&mut self, value: Value) {
-        let data = format!("data: {value}\n\n");
+    async fn serve_responses(
+        socket: TcpStream,
+        requests: mpsc::Sender<Self>,
+        count: Arc<AtomicUsize>,
+    ) {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::{
+            Message,
+            handshake::server::{Request, Response},
+        };
+
+        let mut socket =
+            tokio_tungstenite::accept_hdr_async(socket, |request: &Request, response: Response| {
+                assert_eq!(request.uri().path(), "/v1/responses");
+                assert_eq!(
+                    request.headers()["authorization"],
+                    format!("Bearer {PROVIDER_KEY}")
+                );
+                Ok(response)
+            })
+            .await
+            .unwrap();
+        let frame = socket.next().await.unwrap().unwrap().into_text().unwrap();
+        let body: Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(body["type"], "response.create");
+        let (response, mut receiver) = mpsc::channel(1);
+        let completed = Arc::new(Notify::new());
+        count.fetch_add(1, Ordering::SeqCst);
+        requests
+            .send(Self {
+                body,
+                response,
+                completed: completed.clone(),
+            })
+            .await
+            .unwrap();
+        while let Some(reply) = receiver.recv().await {
+            let ModelReply::Event(value) = reply else {
+                panic!("the Responses fixture expects JSON events");
+            };
+            socket.send(Message::text(value.to_string())).await.unwrap();
+        }
+        completed.notify_one();
+    }
+
+    pub async fn packet(&mut self, value: Value) {
         // The Agent may cancel an in-flight response and close its HTTP body.
-        let _ = self
-            .response
-            .send(ModelReply::Event(Bytes::from(data)))
-            .await;
+        let _ = self.response.send(ModelReply::Event(value)).await;
     }
     pub async fn delta(&mut self, text: &str) {
         self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]})).await;
@@ -642,10 +705,11 @@ impl ModelRequest {
 
     async fn finish_with_reason(mut self, reason: &str) {
         self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}})).await;
-        let _ = self
-            .response
-            .send(ModelReply::Event(Bytes::from_static(b"data: [DONE]\n\n")))
-            .await;
+        let _ = self.response.send(ModelReply::Done).await;
+        self.finish_stream().await;
+    }
+
+    pub async fn finish_stream(self) {
         drop(self.response);
         self.completed.notified().await;
     }

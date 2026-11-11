@@ -1219,6 +1219,8 @@ pub struct PreviewPart {
 pub enum PreviewField {
     Text {
         text_kind: ContentKind,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        final_answer: bool,
     },
     ToolInput {
         tool_use_id: String,
@@ -1378,9 +1380,12 @@ pub struct HistoryChunk {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_references: bool,
     /// Part of the successfully completed native Turn's final output at `through`.
-    /// Includes all body parts and source citations; never a Thinking field.
+    /// Includes body text and source citations; never a Thinking field.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub final_output: bool,
+    /// The provider identified this text as final before the Turn completed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub final_answer: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<maka_agent_ports::session::history::HistoryModel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1572,6 +1577,7 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
                     model_part: chunk.model_part,
                     has_references: chunk.has_references,
                     final_output: chunk.final_output,
+                    final_answer: chunk.final_answer,
                     model: chunk.model,
                     origin: chunk.origin,
                     compaction: chunk.compaction,
