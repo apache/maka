@@ -31,6 +31,7 @@ pub mod configuration;
 
 use crate::model::Credentials;
 use crate::model::Transport;
+use crate::model::{Connect, Error as ModelError, Socket, TextStream};
 use authentication::{Authenticate, Credential, Interaction};
 pub use configuration::{Connection, Descriptor, Model, Resolve, UsageAuthentication};
 use futures_util::future::BoxFuture;
@@ -40,12 +41,68 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+/// Local-only authentication context (such as API-key validation) does not
+/// acquire network authority merely to satisfy the provider interface.
+struct NoNetwork;
+
+impl Transport for NoNetwork {
+    fn send_text(
+        &self,
+        _: Arc<dyn Socket>,
+        _: TextStream,
+    ) -> BoxFuture<'_, Result<(), ModelError>> {
+        Box::pin(async {
+            Err(ModelError::LocalAuthorization(
+                "this credential exchange has no WebSocket dispatch authority".into(),
+            ))
+        })
+    }
+
+    fn identity(&self) -> u64 {
+        0
+    }
+
+    fn request(
+        &self,
+        _: maka_capabilities::http::Request,
+        _: CancellationToken,
+    ) -> BoxFuture<'_, Result<maka_capabilities::http::Response, ModelError>> {
+        Box::pin(async {
+            Err(ModelError::Adapter(
+                "settings_authentication_network_unavailable".into(),
+            ))
+        })
+    }
+
+    fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, ModelError>> {
+        Box::pin(async {
+            Err(ModelError::Adapter(
+                "settings_authentication_network_unavailable".into(),
+            ))
+        })
+    }
+}
+
+pub fn no_network_transport() -> Arc<dyn Transport> {
+    Arc::new(NoNetwork)
+}
+
 #[derive(Clone)]
 pub struct Context {
     pub transport: Arc<dyn Transport>,
     pub cancellation: CancellationToken,
     /// Present only for a Host-admitted interactive login.
     pub interaction: Option<Arc<dyn Interaction>>,
+}
+
+impl Context {
+    pub fn local(cancellation: CancellationToken) -> Self {
+        Self {
+            transport: no_network_transport(),
+            cancellation,
+            interaction: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, thiserror::Error)]

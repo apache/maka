@@ -6669,6 +6669,7 @@ dependencies = [
  "maka-plugin-core",
  "maka-process",
  "maka-product-native",
+ "maka-providers",
  "maka-sandbox",
  "maka-schema",
  "maka-settings-native",
