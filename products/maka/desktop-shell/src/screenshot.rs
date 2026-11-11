@@ -287,13 +287,12 @@ impl Stage {
         let scale = screen.backingScaleFactor();
         let origin = CGDisplayBounds(display).origin;
         let windows = windows_on(origin, scale);
-        let excluded = window.windowNumber() as u32;
         let stage = Arc::new(MainThreadBound::new(self.retain(), self.mtm()));
         let found = RcBlock::new(
             move |content: *mut SCShareableContent, error: *mut NSError| {
                 // SAFETY: ScreenCaptureKit passes content or an error, alive for the call.
                 let request = match unsafe { content.as_ref() } {
-                    Some(content) => request(content, display, excluded, scale),
+                    Some(content) => request(content, display, scale),
                     None => Err(describe(error)),
                 };
                 let (filter, configuration) = match request {
@@ -682,7 +681,6 @@ fn describe(error: *mut NSError) -> String {
 fn request(
     content: &SCShareableContent,
     display: CGDirectDisplayID,
-    excluded: u32,
     scale: f64,
 ) -> Result<(Retained<SCContentFilter>, Retained<SCStreamConfiguration>), String> {
     // SAFETY: plain property reads of the content ScreenCaptureKit handed over.
@@ -692,10 +690,18 @@ fn request(
             .iter()
             .find(|candidate| candidate.displayID() == display)
             .ok_or("ScreenCaptureKit does not list the display")?;
+        // Maka's floating windows: these stages and a launcher still fading out. Its
+        // ordinary windows stay, so Maka can be captured too.
+        let pid = std::process::id() as i32;
         let own: Vec<Retained<SCWindow>> = content
             .windows()
             .iter()
-            .filter(|window| window.windowID() == excluded)
+            .filter(|window| {
+                window.windowLayer() != 0
+                    && window
+                        .owningApplication()
+                        .is_some_and(|application| application.processID() == pid)
+            })
             .collect();
         let filter = SCContentFilter::initWithDisplay_excludingWindows(
             SCContentFilter::alloc(),
