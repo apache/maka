@@ -38,7 +38,8 @@
 use std::{f32::consts::PI, rc::Rc};
 
 use nsh_core::{
-    Command, EventKind, EventPayload, Points, ScrollBehavior, Size, StickyCell, ViewKind,
+    Command, EventKind, EventPayload, PayloadValue, Points, ScrollBehavior, Size, StickyCell,
+    ViewKind,
     geometry::point,
     scroll::{
         dragged, ease_out, indicator_alpha, indicator_hold_left, indicator_span, projected, rate,
@@ -2037,6 +2038,12 @@ pub(crate) fn key_scroll(
         (base, viewport(&state, s.horizontal), min, max)
     };
     let to = key_target(m, base, viewport, min, max);
+    let intent = match m {
+        KeyMove::Start => "start",
+        KeyMove::End => "end",
+        _ => "scroll",
+    };
+    scroll_intent(surface, &view, intent);
     interrupt(surface, &view);
     animate_to(surface, &view, to, KEY_ANIMATION, false, true);
     true
@@ -2046,17 +2053,29 @@ pub(crate) fn key_scroll(
 /// `(dx, dy)` can move; for vertical keys one along that axis first, then
 /// a horizontal one (as vertical wheels move those).
 fn key_scroll_view(view: &NshView, horizontal: bool, dx: f32, dy: f32) -> Option<NshView> {
-    let mut chain = Vec::new();
-    let mut current = Some(view.clone());
-    while let Some(v) = current {
-        current = v.parent_view();
-        if v.kind() == ViewKind::Scroll && can_scroll(&v, dx, dy) {
-            chain.push(v);
-        }
+    nsh_core::input::key_scroll_target(
+        std::iter::successors(Some(view.clone()), NshView::parent_view),
+        horizontal,
+        |v| v.state().scroll.as_ref().map(|s| s.horizontal),
+        |v| v.kind() == ViewKind::Scroll && can_scroll(v, dx, dy),
+        listens_to_scroll_intent,
+    )
+}
+
+pub(crate) fn listens_to_scroll_intent(view: &NshView) -> bool {
+    let state = view.state();
+    state.events.contains(EventKind::ScrollIntent)
+        && state.scroll.as_ref().is_some_and(|s| s.behavior.enabled)
+}
+
+pub(crate) fn scroll_intent(surface: &Surface, view: &NshView, intent: &'static str) {
+    if listens_to_scroll_intent(view) {
+        surface.event(
+            view.state().id,
+            EventKind::ScrollIntent,
+            EventPayload::Map(vec![("intent", PayloadValue::Str(intent.into()))]),
+        );
     }
-    let along = |v: &NshView| v.state().scroll.as_ref().is_some_and(|s| s.horizontal) == horizontal;
-    let first = chain.iter().position(along).unwrap_or(0);
-    chain.into_iter().nth(first)
 }
 
 /// Scrolls the scroll views around `target` (animated) so that it shows,

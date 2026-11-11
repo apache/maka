@@ -852,6 +852,12 @@ impl Keyboard {
                         .is_some_and(|s| s.can_scroll(v.frame.size, delta))
                 })
             },
+            |id| {
+                tree.get(*id).is_some_and(|v| {
+                    v.events.contains(EventKind::ScrollIntent)
+                        && v.scroll.as_ref().is_some_and(|s| s.behavior.enabled)
+                })
+            },
         );
         let Some(id) = target else {
             return unused;
