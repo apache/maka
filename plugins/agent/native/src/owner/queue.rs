@@ -22,10 +22,7 @@ use super::*;
 use futures_util::FutureExt;
 use maka_agent_facts::durable::*;
 use maka_agent_facts::tools::ToolError;
-use maka_agent_state::{
-    Admission, ReadyCause,
-    queue::{Consume, Placement as QueuePlacement},
-};
+use maka_agent_state::{Admission, ReadyCause, queue::Consume};
 use maka_plugin_core::operation::OperationCleanup;
 
 impl Owner {
@@ -38,6 +35,7 @@ impl Owner {
         self.start_goals();
         self.start_schedules();
         self.start_bot_wake();
+        self.start_completion_notifications();
         let owner = self.clone();
         self.producers.spawn(async move { owner.schedule().await });
     }
@@ -186,7 +184,7 @@ impl Owner {
             for ready in page {
                 after = Some(ready.cursor);
                 let session = ready.entry.request.spec.session_id.clone();
-                if !matches!(ready.entry.placement, QueuePlacement::Followup) {
+                if !ready.entry.placement.is_followup() {
                     continue;
                 }
                 let goal = if matches!(ready.entry.request.spec.trigger, Trigger::Goal { .. }) {
@@ -266,7 +264,7 @@ impl Owner {
         let Some(entry) = queue
             .entries
             .iter()
-            .find(|entry| matches!(entry.placement, QueuePlacement::Followup))
+            .find(|entry| entry.placement.is_followup())
         else {
             return Ok(());
         };

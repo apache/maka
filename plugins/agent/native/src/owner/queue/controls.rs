@@ -90,7 +90,8 @@ impl Owner {
                 origin: source.message.origin,
                 message_id: entry.request.message_id,
                 kind: match entry.placement {
-                    durable_queue::Placement::Followup => QueueKind::Followup,
+                    durable_queue::Placement::Followup
+                    | durable_queue::Placement::Completion { .. } => QueueKind::Followup,
                     durable_queue::Placement::Steering { .. } => QueueKind::Steering,
                 },
                 preview: text

@@ -289,7 +289,7 @@ impl DriverModel {
         })?;
         let capture: RequestSource = reader.decode(run, &body.source_capture).await?;
         if body.checkpoint.covered_through != capture.current.through_sequence
-            || body.checkpoint.source_digest != capture.current.digest
+            || body.checkpoint.source_digest != capture.cut.digest
         {
             return Err(RunError::InvalidInput(
                 "compacted context coverage differs from its original canonical source capture"

@@ -19,15 +19,15 @@
 
 import { LoadingState } from './Loading';
 import { cleanup, inputAction, signal, Text, View } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
+import { Button } from 'nsh/base';
 import { useHost } from './host';
 import { tr } from './locale';
 import { SettingsEditor } from './SettingsField';
 import { SessionRevisionConflict } from './sessionLifecycle';
 import type { SessionAction, SessionActionTarget } from './sessionLifecycle';
 import { createText, errorText } from './text';
-import { Icon } from './Icon';
-import { dialogTop } from './chrome';
+import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
+import { SettingsButton } from './SettingsPage';
 import {
   C,
   bodyTextStyle,
@@ -151,136 +151,74 @@ export function SessionCompactionPrompt(props: {
   };
   void load();
   return (
-    <Dialog
-      animation="none"
-      closeOnEscape={false}
-      closeOnBackdropPress={false}
-      closeOnSwipe={false}
-      onCancel={close}
-      style={{
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        padding: 16,
-        paddingTop: dialogTop(16),
-        backgroundColor: C.scrim,
-      }}
-    >
-      <View
-        style={{
-          width: '100%',
-          maxWidth: 880,
-          flex: 1,
-          maxHeight: 800,
-          minHeight: 0,
-          padding: 16,
-          gap: 12,
-          backgroundColor: C.surface,
-          borderWidth: 1,
-          borderColor: C.line,
-          borderRadius: 16,
-        }}
-      >
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Text style={{ ...bodyTextStyle, flex: 1, color: C.text, fontWeight: '600' }}>
-            {tr('Conversation compaction prompt')}
-          </Text>
-          <Button
-            disabled={pending()}
-            accessibilityLabel={tr('Close conversation compaction prompt')}
-            onPress={inputAction(close, null)}
-            style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Icon name="close" color={C.secondary} />
-          </Button>
-        </View>
+    <ModalDialog size="editor" height={800} onCancel={close}>
+      <View style={{ gap: 8 }}>
+        <DialogHeader title={tr('Conversation compaction prompt')} />
         <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
           {target.title || tr('Untitled conversation')}
         </Text>
-        <If when={state().kind === 'loading'}>
-          <LoadingState />
-        </If>
+      </View>
+      <If when={state().kind === 'loading'}>
+        <LoadingState />
+      </If>
+      <Each of={forms()} key={() => target.id}>
+        {(value) => (
+          <SettingsEditor
+            label={tr('Conversation compaction prompt')}
+            value={editorText(value())}
+            change={edit}
+            disabled={pending()}
+            autoFocus
+          />
+        )}
+      </Each>
+      <If when={error()}>
+        <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
+          {error()}
+        </Text>
+      </If>
+      <DialogFooter>
         <Each of={forms()} key={() => target.id}>
           {(value) => (
-            <SettingsEditor
-              label={tr('Conversation compaction prompt')}
-              value={editorText(value())}
-              change={edit}
-              disabled={pending()}
-              autoFocus
-            />
-          )}
-        </Each>
-        <If when={error()}>
-          <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-            {error()}
-          </Text>
-        </If>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-          <Each of={forms()} key={() => target.id}>
-            {(value) => (
-              <Button
-                disabled={pending()}
-                selected={value().choice.kind === 'inherited'}
-                accessibilityLabel={tr('Use global compaction prompt')}
-                onPress={inputAction(inherit, null)}
-                style={controlStyle}
-                selectedStyle={{ backgroundColor: C.raised }}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Text style={{ ...captionTextStyle, color: C.text }}>
-                  {tr('Use global settings')}
-                </Text>
-              </Button>
-            )}
-          </Each>
-          <View style={{ flex: 1 }} />
-          <If when={state().kind === 'failed' || state().kind === 'conflict'}>
             <Button
-              accessibilityLabel={
-                state().kind === 'conflict' ? tr('Reload (discard edits)') : tr('Retry')
-              }
-              onPress={inputAction(load, null)}
+              disabled={pending()}
+              selected={value().choice.kind === 'inherited'}
+              accessibilityLabel={tr('Use global compaction prompt')}
+              onPress={inputAction(inherit, null)}
               style={controlStyle}
+              selectedStyle={{ backgroundColor: C.raised }}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
+              disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...captionTextStyle, color: C.text }}>
-                {state().kind === 'conflict' ? tr('Reload (discard edits)') : tr('Retry')}
+                {tr('Use global settings')}
               </Text>
             </Button>
-          </If>
-          <Button
-            disabled={pending()}
-            accessibilityLabel={tr('Cancel conversation compaction prompt')}
-            onPress={inputAction(close, null)}
-            style={controlStyle}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Cancel')}</Text>
-          </Button>
-          <Button
-            disabled={state().kind !== 'editing' || !dirty()}
-            accessibilityLabel={tr('Save conversation compaction prompt')}
-            onPress={inputAction(save, null)}
-            style={{ ...controlStyle, backgroundColor: C.accent }}
-            hoverStyle={{ backgroundColor: C.accentHover }}
-            focusStyle={{ backgroundColor: C.accentHover }}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Text style={{ ...captionTextStyle, color: C.background }}>
-              {state().kind === 'saving' ? tr('Saving…') : tr('Save')}
-            </Text>
-          </Button>
-        </View>
-      </View>
-    </Dialog>
+          )}
+        </Each>
+        <View style={{ flex: 1 }} />
+        <If when={state().kind === 'failed' || state().kind === 'conflict'}>
+          <SettingsButton
+            label={state().kind === 'conflict' ? tr('Reload (discard edits)') : tr('Retry')}
+            onPress={() => void load()}
+          />
+        </If>
+        <SettingsButton
+          label={tr('Cancel')}
+          accessibilityLabel={tr('Cancel conversation compaction prompt')}
+          tone="quiet"
+          disabled={pending()}
+          onPress={close}
+        />
+        <SettingsButton
+          label={state().kind === 'saving' ? tr('Saving…') : tr('Save')}
+          accessibilityLabel={tr('Save conversation compaction prompt')}
+          tone="primary"
+          disabled={state().kind !== 'editing' || !dirty()}
+          onPress={() => void save()}
+        />
+      </DialogFooter>
+    </ModalDialog>
   );
 }

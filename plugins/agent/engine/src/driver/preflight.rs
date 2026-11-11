@@ -76,9 +76,7 @@ impl Engine {
             if view.terminal.is_some() {
                 return Ok(exit(&view));
             }
-            if self.recover_legacy_compaction(&claim, &view, at).await?
-                || self.resolve_recovered_cells(&claim, &view, at).await?
-            {
+            if self.resolve_recovered_cells(&claim, &view, at).await? {
                 continue;
             }
             let recovery = if view.cancelled_by_risk {

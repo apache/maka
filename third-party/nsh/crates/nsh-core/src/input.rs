@@ -631,19 +631,48 @@ pub fn touchpad_wait(last: Option<f64>, now: f64) -> Option<f64> {
 /// along the wheel's axis take it: a vertical wheel over a carousel
 /// scrolls the page around it, as in browsers; horizontal views take
 /// vertical wheels only where nothing around scrolls vertically.
+/// If no view can move, `at_edge` lets a scroll intent listener take it.
 pub fn scroll_target<V>(
     views: Vec<V>,
     dx: Points,
     dy: Points,
     axis: impl Fn(&V) -> Option<bool>,
     takes: impl Fn(&V) -> bool,
+    at_edge: impl Fn(&V) -> bool,
 ) -> Option<V> {
     let horizontal = dx.0.abs() > dy.0.abs();
     let along = |v: &V| axis(v) == Some(horizontal);
     let any_along = views.iter().any(along);
-    views
-        .into_iter()
-        .find(|v| (!any_along || along(v)) && takes(v))
+    let eligible = |v: &V| !any_along || along(v);
+    let index = views
+        .iter()
+        .position(|v| eligible(v) && takes(v))
+        .or_else(|| views.iter().position(|v| eligible(v) && at_edge(v)))?;
+    views.into_iter().nth(index)
+}
+
+/// A keyboard scroll prefers a movable view along its axis, then another
+/// movable view, then an intent listener along its axis at a boundary.
+pub fn key_scroll_target<V>(
+    views: impl IntoIterator<Item = V>,
+    horizontal: bool,
+    axis: impl Fn(&V) -> Option<bool>,
+    takes: impl Fn(&V) -> bool,
+    at_edge: impl Fn(&V) -> bool,
+) -> Option<V> {
+    let (mut across, mut edge) = (None, None);
+    for view in views {
+        let Some(axis) = axis(&view) else { continue };
+        if takes(&view) {
+            if axis == horizontal {
+                return Some(view);
+            }
+            across.get_or_insert(view);
+        } else if axis == horizontal && edge.is_none() && at_edge(&view) {
+            edge = Some(view);
+        }
+    }
+    across.or(edge)
 }
 
 // --- The keyboard -------------------------------------------------------------------
@@ -944,26 +973,50 @@ mod tests {
 
     #[test]
     fn wheels_take_scroll_views_along_their_axis() {
-        // (id, axis, can scroll)
+        // (id, axis, can scroll, listens at the edge)
         let views = vec![
-            (1, Some(true), true),
-            (2, None, false),
-            (3, Some(false), true),
+            (1, Some(true), true, false),
+            (2, None, false, false),
+            (3, Some(false), true, false),
         ];
-        let target = |dx, dy, views: &Vec<(i32, Option<bool>, bool)>| {
+        let target = |dx, dy, views: &[(i32, Option<bool>, bool, bool)]| {
             scroll_target(
-                views.clone(),
+                views.to_vec(),
                 Points(dx),
                 Points(dy),
                 |v| v.1,
                 |v| v.1.is_some() && v.2,
+                |v| v.3,
             )
             .map(|v| v.0)
         };
         assert_eq!(target(0.0, 5.0, &views), Some(3));
         assert_eq!(target(5.0, 0.0, &views), Some(1));
         // Only a horizontal view: it takes vertical wheels too.
-        assert_eq!(target(0.0, 5.0, &views[..2].to_vec()), Some(1));
+        assert_eq!(target(0.0, 5.0, &views[..2]), Some(1));
+        let short = (4, Some(false), false, true);
+        assert_eq!(target(0.0, -5.0, &[short, views[2]]), Some(3));
+        assert_eq!(target(0.0, -5.0, &[short]), Some(4));
+    }
+
+    #[test]
+    fn scroll_keys_reach_a_short_view_when_no_ancestor_can_move() {
+        let short = (1, false, false, true);
+        let outer = (2, false, true, false);
+        let horizontal = (3, true, true, false);
+        let target = |views: &[(i32, bool, bool, bool)]| {
+            key_scroll_target(
+                views.iter().copied(),
+                false,
+                |v| Some(v.1),
+                |v| v.2,
+                |v| v.3,
+            )
+            .map(|v| v.0)
+        };
+        assert_eq!(target(&[short, horizontal, outer]), Some(2));
+        assert_eq!(target(&[short, horizontal]), Some(3));
+        assert_eq!(target(&[short]), Some(1));
     }
 
     #[test]

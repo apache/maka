@@ -215,14 +215,14 @@ impl Owner {
             })
             .map(|definition| definition.name.as_str())
             .collect();
-        let selected = live_tools.excluding(&excluded);
-        if selected.contains(discovery::MEMORY) {
-            selected
-                .with_always_visible(&[discovery::MEMORY])
-                .map_err(|error| RunError::InvalidInput(error.to_string()))
-        } else {
-            Ok(selected)
-        }
+        let catalog = live_tools.excluding(&excluded);
+        let always_visible: Vec<_> = [bot::SEND_USER, bot::SLEEP, discovery::MEMORY]
+            .into_iter()
+            .filter(|name| catalog.contains(name))
+            .collect();
+        catalog
+            .with_always_visible(&always_visible)
+            .map_err(|error| RunError::InvalidInput(error.to_string()))
     }
 
     async fn unavailable_current(

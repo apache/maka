@@ -224,6 +224,9 @@ impl Owner {
         operation: &maka_plugin_core::operation::RecoveryRef,
         parent: &maka_capabilities::call::Scope,
     ) -> Result<NativeMutation<SendResult>, String> {
+        let completion_request = self
+            .completion_request(parent, &input.session_id, input.on_complete)
+            .await?;
         let Send {
             session_id: id,
             message: text,
@@ -232,6 +235,7 @@ impl Owner {
             attachments,
             delivery,
             expected_run_id,
+            on_complete: _,
         } = input;
         if quotes.len() > 16
             || quotes.iter().any(|q| q.text.trim().is_empty())
@@ -312,7 +316,15 @@ impl Owner {
                 run_id: view.run,
             };
             return self
-                .steer_message(message, attachments, &execution, &basis, operation, parent)
+                .steer_message(
+                    message,
+                    attachments,
+                    &execution,
+                    &basis,
+                    operation,
+                    parent,
+                    completion_request,
+                )
                 .await;
         }
         let mut unprepared = message;
@@ -390,7 +402,19 @@ impl Owner {
             },
         };
         let writer = self.durable.queue();
-        let change = if let Some(fence) = after_stop {
+        let completion = completion_request
+            .as_ref()
+            .map(|_| CompletionRegistration::Registered);
+        let change = if let Some(request) = completion_request {
+            writer.prepare_with(
+                id.clone(),
+                command,
+                contents,
+                followup,
+                after_stop,
+                self.completion_statement(&id, &message_id, request)?,
+            )
+        } else if let Some(fence) = after_stop {
             writer.prepare_after_stop(id.clone(), command, contents, fence)
         } else if let Some(original) = followup {
             writer.prepare_followup(id.clone(), command, contents, original)
@@ -399,6 +423,7 @@ impl Owner {
         };
         Ok(NativeMutation::Commit {
             value: SendResult::Queued {
+                completion,
                 session_id: id,
                 message_id,
                 revision: queue

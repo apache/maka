@@ -65,7 +65,7 @@ export function createSessionPermissions(host: Host, sessionId: string, control:
       expectedRevision: session.revision,
       title: session.title,
       labels: [...session.labels],
-      permissions: { settings, revokeGrants: true },
+      permissions: { settings, revokeGrants: false },
     };
     pending.set(true);
     try {

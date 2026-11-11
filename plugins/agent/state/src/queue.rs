@@ -32,7 +32,9 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
 
 mod sql;
-pub(crate) use sql::{DeliveryTarget, Event, consume, consume_external_steering, consume_steering};
+pub(crate) use sql::{
+    DeliveryTarget, Event, consume, consume_external_steering, consume_steering, stop_completions,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -60,6 +62,12 @@ pub struct SteeringTarget {
 pub enum Placement {
     Followup,
     Steering { run: RunId, expected_head: Head },
+    Completion { caller: RunId },
+}
+impl Placement {
+    pub fn is_followup(&self) -> bool {
+        matches!(self, Self::Followup | Self::Completion { .. })
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -192,6 +200,26 @@ impl QueueStore {
             contents,
             admission_fence: None,
             work_fence: Some(Arc::new(fence)),
+        })
+    }
+    pub fn prepare_with<S: Statement>(
+        &self,
+        session: String,
+        command: QueueCommand,
+        contents: Vec<ContentBlob>,
+        original: Option<RunId>,
+        fence: Option<SessionWorkFence>,
+        extra: S,
+    ) -> maka_event_log::root_store::DataChange {
+        self.data.prepare(WithExtra {
+            queue: Write {
+                session,
+                command,
+                contents,
+                admission_fence: original,
+                work_fence: fence.map(Arc::new),
+            },
+            extra,
         })
     }
     pub async fn execute(
@@ -371,5 +399,40 @@ impl Query for ReadMessageEntry {
     type Output = Option<QueueEntry>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::message_entry(c, &self.0, &self.1)
+    }
+}
+
+struct WithExtra<S> {
+    queue: Write,
+    extra: S,
+}
+impl<S: Statement> Statement for WithExtra<S> {
+    type Value = (QueueCommit, S::Value);
+    type Output = QueueCommit;
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
+    fn retain(&self) -> Vec<Arc<dyn Send + Sync>> {
+        let mut retained = self.queue.retain();
+        retained.extend(self.extra.retain());
+        retained
+    }
+    fn prepare(mut self) -> Result<Self, StoreError> {
+        self.extra = self.extra.prepare()?;
+        Ok(self)
+    }
+    fn execute(self, c: &Connection) -> Result<Prepared<Self::Value>, StoreError> {
+        let queue = self.queue.execute(c)?;
+        let extra = self.extra.execute(c)?;
+        Ok(Prepared {
+            value: (queue.value, extra.value),
+            changed: queue.changed || extra.changed,
+            notification: queue.notification.combine(extra.notification),
+        })
+    }
+    fn committed((queue, extra): Self::Value) -> Self::Output {
+        S::committed(extra);
+        queue
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        Write::isolated_rejection(error)
     }
 }

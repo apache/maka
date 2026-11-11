@@ -693,11 +693,15 @@ export function SettingsButton(props: {
   icon?: 'plus' | 'refresh' | 'trash';
   /** Shows only the icon; the label still names the button. */
   iconOnly?: boolean;
+  autoFocus?: boolean;
 }) {
   const primary = () => props.tone === 'primary';
   const quiet = () => props.tone === 'quiet';
   return (
     <Button
+      ref={(node) => {
+        if (props.autoFocus) node.focus();
+      }}
       accessibilityLabel={props.accessibilityLabel ?? props.label}
       disabled={props.disabled}
       selected={props.selected}

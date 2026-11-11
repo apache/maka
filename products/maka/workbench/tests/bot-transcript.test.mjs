@@ -417,11 +417,16 @@ test('a Bot Turn started by a worker finishing reports that worker; other Turns 
     { turnId: 't2' },
     { turnId: 't3', origin: { kind: 'goal', goalId: 'g1', objective: 'x' } },
     { turnId: 't4', origin: { kind: 'bot_worker', sessionId: 'worker-b' } },
+    {
+      turnId: 't5',
+      origin: { kind: 'session_completion', sessionId: 'worker-c', messageId: 'task-c' },
+    },
   ];
   assert.equal(reportedWorker(rows, 't1'), 'worker-a');
   assert.equal(reportedWorker(rows, 't2'), undefined, 'a user Turn reports no worker');
   assert.equal(reportedWorker(rows, 't3'), undefined, 'another origin is not a worker');
   assert.equal(reportedWorker(rows, 't4'), 'worker-b');
+  assert.equal(reportedWorker(rows, 't5'), 'worker-c');
   assert.equal(reportedWorker(rows, 'missing'), undefined);
 });
 
