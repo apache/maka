@@ -2475,6 +2475,15 @@ mod model_recovery {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delegated_task_attention_is_delivered_once_and_completion_still_follows() {
+        delegated_notifications("stop").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delegated_notifications_survive_caller_failure_before_consumption() {
+        delegated_notifications("length").await;
+    }
+
+    async fn delegated_notifications(caller_finish: &'static str) {
         use maka_agent_facts::interaction::{InteractionOutcome, InteractionRecord};
         use maka_plugin_core::contract::ServiceTarget;
         let mut rig = Rig::new().unwrap();
@@ -2491,14 +2500,14 @@ mod model_recovery {
                     async move {
                         let body = axum::body::to_bytes(request.into_body(), usize::MAX).await.unwrap();
                         let request: Value = serde_json::from_slice(&body).unwrap();
-                        let (reply, response) = oneshot::channel::<String>();
+                        let (reply, response) = oneshot::channel::<(&'static str, &'static str)>();
                         requests.send((request, reply)).await.unwrap();
-                        let text = response.await.unwrap();
+                        let (text, finish) = response.await.unwrap();
                         let body = format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
                             json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
                                 "choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]}),
                             json!({"id":"delegation","object":"chat.completion.chunk","created":1,"model":"llama3.2",
-                                "choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
+                                "choices":[{"index":0,"delta":{},"finish_reason":finish}],
                                 "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}}));
                         ([("content-type", "text/event-stream")], body)
                     }
@@ -2556,11 +2565,9 @@ mod model_recovery {
             assert_eq!(delegated["kind"], "queued");
             assert_eq!(delegated["completion"], "registered");
             let (_, worker_reply) = observed.recv().await.ok_or("worker HTTP request missing")?;
+            let caller_run = access.execution().run_id;
             drop(request);
             drop(access);
-            caller_reply.send("The task is delegated; I am resting.".into()).unwrap();
-            quiescent_message(client, caller, &sent["messageId"]).await?;
-            owner.deliver_completions().await?;
 
             let worker_access = owner.runs.state().await.controls.get(worker)
                 .and_then(|control| control.access.upgrade()).ok_or("worker access missing")?;
@@ -2574,34 +2581,37 @@ mod model_recovery {
             };
             owner.durable.interactions().establish(worker_access.claim(), (&view).into(), question, None, vec![]).await?;
             owner.deliver_completions().await?;
+            caller_reply.send(("The task is delegated.", caller_finish)).unwrap();
             let (attention, attention_reply) = observed.recv().await.ok_or("attention HTTP request missing")?;
             let messages = serde_json::to_string(attention["messages"].as_array()
                 .and_then(|messages| messages.iter().rev().find(|message| message["role"] == "user"))
                 .ok_or("attention user message missing")?)?;
             assert!(messages.contains("needs attention") && messages.contains("delegated-question"), "{messages}");
             let attention_run = owner.durable.latest_run(caller.clone()).await?.ok_or("attention Run missing")?;
-            let attention_view = owner.durable.frontier(attention_run).await?;
-            let Trigger::Message {message_id} = attention_view.spec.trigger else {return Err("attention trigger missing".into())};
-            attention_reply.send("I have seen the pending question.".into()).unwrap();
-            quiescent_message(client, caller, &json!(message_id)).await?;
+            assert_eq!(attention_run == caller_run, caller_finish == "stop");
+            if caller_finish == "length" {
+                assert_eq!(owner.durable.frontier(caller_run).await?.terminal, Some(Terminal::Failed));
+            }
             for _ in 0..2 { owner.deliver_completions().await?; }
             let queue = call(client, "agent", "queue", json!({"sessionId":caller})).await?;
             assert_eq!(queue["entries"], json!([]), "the same pending question was queued again");
             assert_eq!(owner.durable.latest_run(caller.clone()).await?, Some(attention_run));
             owner.durable.interactions().commit_outcome(worker, "delegated-question",
                 InteractionOutcome::QuestionAnswer {answers:vec![Some("Brief".into())],committed_at:now()}).await?;
-            worker_reply.send("Delegated task completed.".into()).unwrap();
+            worker_reply.send(("Delegated task completed.", "stop")).unwrap();
             completed_message(client, worker, &delegated["messageId"]).await?;
             owner.deliver_completions().await?;
+            attention_reply.send(("I have seen the pending question.", "stop")).unwrap();
             let (completion, completion_reply) = observed.recv().await.ok_or("completion HTTP request missing")?;
             let messages = serde_json::to_string(completion["messages"].as_array()
                 .and_then(|messages| messages.iter().rev().find(|message| message["role"] == "user"))
                 .ok_or("completion user message missing")?)?;
             assert!(messages.contains("ended with status completed") && messages.contains(delegated["messageId"].as_str().unwrap()), "{messages}");
             let final_run = owner.durable.latest_run(caller.clone()).await?.ok_or("completion Run missing")?;
+            assert_eq!(final_run == caller_run, caller_finish == "stop");
             let final_view = owner.durable.frontier(final_run).await?;
             let Trigger::Message {message_id} = final_view.spec.trigger else {return Err("completion trigger missing".into())};
-            completion_reply.send("The delegated result is ready.".into()).unwrap();
+            completion_reply.send(("The delegated result is ready.", "stop")).unwrap();
             quiescent_message(client, caller, &json!(message_id)).await?;
             owner.deliver_completions().await?;
             let queue = call(client, "agent", "queue", json!({"sessionId":caller})).await?;
@@ -3555,7 +3565,7 @@ mod tool_history;
 mod permission_boundary;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn completion_watch_retires_when_original_caller_is_stopped() {
+async fn stop_cancels_an_unconsumed_completion_notice() {
     let mut rig = Rig::new().unwrap();
     let result: TestResult<()> = async {
         let session = rig.start().await?;
@@ -3576,16 +3586,12 @@ async fn completion_watch_retires_when_original_caller_is_stopped() {
             .store
             .register_message_completion(&owner.prefix, &worker, "task", &session, request)
             .await?;
-        // A live caller keeps the notification pending, even if its worker is gone.
         owner.deliver_completions().await?;
-        assert_eq!(
-            owner
-                .store
-                .message_completions(&owner.prefix, None)
-                .await?
-                .len(),
-            1
-        );
+        let queue = owner.durable.queue();
+        let pending = queue.steering(session.clone(), source.run_id).await?;
+        let [notice] = pending.entries.as_slice() else {
+            return Err("original caller did not get the pending notification".into());
+        };
         rig.append(
             vec![Fact::StopRequested {
                 diagnostic: "user_requested_stop".into(),
@@ -3593,22 +3599,17 @@ async fn completion_watch_retires_when_original_caller_is_stopped() {
             vec![],
         )
         .await?;
-        owner.deliver_completions().await?;
-        assert!(
-            owner
-                .store
-                .message_completions(&owner.prefix, None)
-                .await?
-                .is_empty()
+        let message = notice.request.message_id.clone();
+        assert_eq!(
+            queue
+                .resolve_message(session.clone(), message.clone())
+                .await?,
+            maka_agent_state::queue::MessageResolution::Cancelled
         );
-        assert!(
-            owner
-                .durable
-                .queue()
-                .read(session)
-                .await?
-                .entries
-                .is_empty()
+        queue.rebuild(session.clone()).await?;
+        assert_eq!(
+            queue.resolve_message(session, message).await?,
+            maka_agent_state::queue::MessageResolution::Cancelled
         );
         Ok(())
     }

@@ -1484,6 +1484,9 @@ pub(crate) fn append(
         };
         view.apply(&recorded)?;
         record(c, &recorded)?;
+        if matches!(recorded.fact, Fact::StopRequested { .. }) {
+            crate::queue::stop_completions(c, &view.spec.session_id, run, recorded.at)?;
+        }
         model_evidence::validate_partial(c, &view, &recorded)?;
         model_evidence::validate_source_failure(c, &view, &recorded)?;
         if matches!(recorded.fact, Fact::ExternalPublication { .. }) {
