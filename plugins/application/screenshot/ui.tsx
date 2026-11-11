@@ -19,7 +19,7 @@
 
 import { nativeComponent, openUrl, platform, signal, Text, View, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
-import { displays, Window, type WindowRef } from 'nsh/desktop';
+import { currentWindow, displays, Window, type WindowRef } from 'nsh/desktop';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
@@ -41,6 +41,8 @@ const Stage = nativeComponent<{}, { ready: null; copied: null; cancel: null; fai
 );
 
 function Overlay(props: { finish(): void }) {
+  // The stage takes the keys without activating Maka, which would bring its main window forward.
+  currentWindow().focus();
   const failure = signal<Failure | null>(null);
   return (
     <View style={{ flex: 1 }}>
@@ -120,6 +122,7 @@ function capture() {
         display: display.id,
         defaultPosition: { x: display.bounds.origin.x, y: display.bounds.origin.y },
         defaultSize: { width: display.bounds.size.width, height: display.bounds.size.height },
+        activate: false,
         level: 'aboveDock',
         transparent: true,
         shadow: false,
