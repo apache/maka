@@ -222,7 +222,18 @@ impl Owner {
         let selection = crate::tools::SelectionSnapshot {
             definitions: catalog.definitions().cloned().collect(),
             direct_only: catalog.direct_only_names().into_iter().collect(),
-            services: basis.tools.as_ref().clone(),
+            services: if basis
+                .executor
+                .as_ref()
+                .is_some_and(|executor| executor.selection.executor != "external")
+            {
+                Vec::new()
+            } else {
+                self.tool_basis
+                    .iter()
+                    .map(crate::tools::SelectedTool::declaration)
+                    .collect()
+            },
             internal_bindings: basis.internal_bindings.as_ref().clone(),
         };
         let mut contents = Vec::new();

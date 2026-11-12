@@ -61,11 +61,17 @@ use std::{panic::AssertUnwindSafe, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct SelectedTool {
     selection: ServiceTool,
     binding: String,
+}
+
+/// The tool selected by the Agent's configuration, resolved through its current
+/// authorized service slot. An admitted operation captures its own binding.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ServiceSelection {
+    selection: ServiceTool,
 }
 
 /// Frozen declarations and binding evidence. These bytes are never live tool authority.
@@ -74,7 +80,7 @@ pub(crate) struct SelectedTool {
 pub(crate) struct SelectionSnapshot {
     pub definitions: Vec<ToolDefinition>,
     pub direct_only: std::collections::BTreeSet<String>,
-    pub services: Vec<SelectedTool>,
+    pub services: Vec<ServiceSelection>,
     pub internal_bindings: std::collections::BTreeMap<String, Option<String>>,
 }
 
@@ -88,6 +94,11 @@ impl SelectedTool {
             && self.binding == binding
             && self.selection.confirmation == ToolConfirmation::Preapproved
     }
+    pub(crate) fn declaration(&self) -> ServiceSelection {
+        ServiceSelection {
+            selection: self.selection.clone(),
+        }
+    }
     fn services(&self, services: &NativeServices) -> Result<NativeServices, String> {
         if services.binding(&self.selection.target)?.execution_basis() != self.binding {
             return Err("original native tool binding changed".into());
@@ -96,7 +107,35 @@ impl SelectedTool {
     }
 }
 
+impl ServiceSelection {
+    pub(crate) fn name(&self) -> &str {
+        &self.selection.name
+    }
+
+    fn matches(&self, live: &SelectedTool) -> bool {
+        let admitted = &self.selection;
+        let current = &live.selection;
+        admitted.name == current.name
+            && admitted.target == current.target
+            && admitted.method == current.method
+            && admitted.input == current.input
+            && admitted.result == current.result
+            && admitted.confirmation == current.confirmation
+            && admitted.nestable == current.nestable
+    }
+}
+
 impl SelectionSnapshot {
+    pub(crate) fn matches_service(&self, name: &str, actual: &[SelectedTool]) -> bool {
+        let original = self.services.iter().find(|tool| tool.name() == name);
+        let current = actual.iter().find(|tool| tool.name() == name);
+        match (original, current) {
+            (Some(original), Some(current)) => original.matches(current),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
     pub(crate) fn selected_service(
         &self,
         services: &NativeServices,
@@ -113,10 +152,11 @@ impl SelectionSnapshot {
             }
             return Ok(None);
         };
-        if !actual.contains(original) {
-            return Err("original native tool declaration changed".into());
-        }
-        Ok(Some((original.clone(), original.services(services)?)))
+        let current = actual
+            .iter()
+            .find(|tool| original.matches(tool))
+            .ok_or("original native tool declaration changed")?;
+        Ok(Some((current.clone(), current.services(services)?)))
     }
     pub(crate) fn validate_recovery_service(
         &self,
@@ -145,24 +185,26 @@ impl SelectionSnapshot {
         {
             return Err("original native tool descriptor differs from its caller intent".into());
         }
-        let original = SelectedTool {
-            selection: descriptor.selection,
-            binding: descriptor.binding,
-        };
-        if !self.services.contains(&original) || !actual.contains(&original) {
+        let current = &selected.0;
+        if !self
+            .services
+            .iter()
+            .any(|original| original.matches(current))
+            || !actual.contains(current)
+        {
             return Err("original native tool selection or declaration changed".into());
         }
-        let binding = services.binding(&original.selection.target)?;
+        if descriptor.selection != current.selection || descriptor.binding != current.binding {
+            return Err("original native tool scope differs from its caller intent".into());
+        }
+        let binding = services.binding(&descriptor.selection.target)?;
         if binding.consumer().instance() != &intent.consumer
             || binding.provider().instance() != &intent.reference.namespace
             || binding.export() != intent.reference.export
-            || original.selection.method != intent.reference.method
-            || binding.execution_basis() != original.binding
+            || descriptor.method != intent.reference.method
+            || binding.execution_basis() != descriptor.binding
         {
             return Err("original native tool provider binding changed".into());
-        }
-        if selected.0 != original {
-            return Err("original native tool scope differs from its caller intent".into());
         }
         Ok(())
     }
@@ -1028,5 +1070,42 @@ impl maka_tools::request::RequestBinding for SkillBinding {
                 maka_tools::request::BoundTool::Prepared(Arc::new(service) as Arc<dyn ToolPreparer>),
             )]))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SelectedTool, SelectionSnapshot};
+    use serde_json::json;
+
+    #[test]
+    fn existing_tool_declaration_uses_current_binding_for_the_same_method() {
+        let selection = json!({
+            "name": "ModelList",
+            "description": "List models.",
+            "target": {"kind": "export", "name": "agent"},
+            "method": "models",
+            "result": "json",
+            "confirmation": "preapproved"
+        });
+        let stored = serde_json::from_value::<SelectionSnapshot>(json!({
+            "definitions": [],
+            "directOnly": [],
+            "services": [{
+                "selection": selection,
+                "binding": "sha256:ac28b16a6969b0d128053a6a8610f4ada2322ac005feec42869ed31343d4f17c"
+            }],
+            "internalBindings": {}
+        }))
+        .unwrap();
+        let mut live = SelectedTool {
+            selection: serde_json::from_value(selection).unwrap(),
+            binding: "sha256:20379da95853ba9498588b280113bf12e6e59301840666f025af97879bb548ee"
+                .into(),
+        };
+        assert!(stored.matches_service("ModelList", std::slice::from_ref(&live)));
+
+        live.selection.method = "list".into();
+        assert!(!stored.matches_service("ModelList", &[live]));
     }
 }
