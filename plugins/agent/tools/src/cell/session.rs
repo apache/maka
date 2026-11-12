@@ -249,15 +249,31 @@ impl CodeCells {
                     "Run script",
                     "运行脚本",
                     "執行腳本",
-                )))
+                ))
+                .presented("maka.agent.Builtin@1/exec".into()))
             }
             "wait" => {
                 let input = super::wait_input(input)?;
+                let title = if input.terminate {
+                    maka_agent_facts::display::Text::localized(
+                        "Stop script",
+                        "停止脚本",
+                        "停止腳本",
+                    )
+                } else {
+                    maka_agent_facts::display::Text::localized(
+                        "Wait for script",
+                        "等待脚本",
+                        "等待腳本",
+                    )
+                };
                 Ok(PreparedEffect::new(move |effect_cancel| {
                     Box::pin(
                         async move { cells.observe(input, port, effect_cancel, steering).await },
                     )
-                }))
+                })
+                .titled(title)
+                .presented("maka.agent.Builtin@1/wait".into()))
             }
             _ => Err(ToolRejection::Unavailable),
         }

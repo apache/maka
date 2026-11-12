@@ -196,8 +196,17 @@ impl Availability {
         if input.query.trim().is_empty() || !(1..=20).contains(&input.limit) {
             return Err(invalid());
         }
+        use maka_agent_facts::display::Text;
+        let title = Text::single_line(&input.query).map(|query| {
+            let query = query.fallback;
+            Text::localized(
+                &format!("Find tools · {query}"),
+                &format!("查找工具 · {query}"),
+                &format!("尋找工具 · {query}"),
+            )
+        });
         let availability = self.clone();
-        Ok(PreparedEffect::new(move |_| {
+        let effect = PreparedEffect::new(move |_| {
             Box::pin(async move {
                 let found = availability.search(&input).await?;
                 let loaded_tools = found.activated.iter().cloned().collect();
@@ -206,7 +215,13 @@ impl Availability {
                 Ok(maka_agent_facts::tool_output::ToolSuccess::from(output)
                     .with_loaded_tools(loaded_tools))
             })
-        }))
+        })
+        .presented("maka.agent.Builtin@1/tool_search".into());
+        Ok(if let Some(title) = title {
+            effect.titled(title)
+        } else {
+            effect
+        })
     }
     fn direct(&self, name: &str) -> bool {
         self.catalog.always_visible(name) || direct(name)

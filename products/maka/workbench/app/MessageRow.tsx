@@ -469,6 +469,7 @@ export function MessageRow({
                         if (expanded()) onToolReading?.(rowKey(row()));
                       }}
                       previewImage={previewImage}
+                      senders={senders}
                       userScroll={userScroll}
                       expand={setExpanded}
                       showOriginal={setSourceMode}
