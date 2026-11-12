@@ -4069,6 +4069,21 @@ async fn compacted_history_checks_the_producing_requests_original_cut() {
         };
         let summary_text = "Continue the original task.";
         rig.record_model_reply(Preparation::Initial, None).await?;
+        let view = driver.state.frontier(run).await?;
+        let mut main = model
+            .prepare_step(&view, Preparation::Initial, driver)
+            .await?;
+        let encoded = ContentBlob::json(&main.request)?;
+        main.contents.push(encoded.clone());
+        rig.append(
+            vec![Fact::StepPrepared {
+                step: main.request.step,
+                request: encoded.reference().clone(),
+                adjudications: vec![],
+            }],
+            main.contents,
+        )
+        .await?;
         let (summary, summary_attempt, started) =
             rig.record_model_request(Preparation::Summary).await?;
         let observe = || {
