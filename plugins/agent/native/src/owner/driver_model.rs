@@ -1375,8 +1375,6 @@ impl DriverModel {
                     &availability,
                     self.source.accepted.code_language,
                 )
-                .await
-                .map_err(RunError::Tool)?
             } else {
                 let visible = availability.snapshot().await.map_err(RunError::Tool)?;
                 let mut definitions: Vec<_> = visible.definitions().cloned().collect();

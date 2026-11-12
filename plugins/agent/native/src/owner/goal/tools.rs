@@ -20,12 +20,11 @@
 use super::*;
 use maka_agent_facts::{tool_call::ToolRejection, tool_output::ToolOutput, tools::*};
 use maka_goal::goal::{Report, ReportKind};
-use maka_tools::request::{BindingFuture, BindingRequest, BoundTool, RequestBinding};
 
 pub(in crate::owner) const NAMES: &[&str] = &["CreateGoal", "GetGoal", "GoalStatus"];
 const CREATE: &str = "Create a persistent Goal for this conversation ONLY when the user explicitly asks to create or set a Goal. Do not infer a Goal from ordinary tasks. Provide token_budget only if explicitly requested by the user. The current execution becomes its first iteration; unfinished active Goals automatically continue after a turn ends. Cannot replace an unfinished Goal.";
 const READ: &str = "Read this conversation's Goal, current status, token consumption, remaining budget and elapsed time. Missing usage means consumption is a lower bound and remaining budget is unknown.";
-const UPDATE: &str = "Record Goal progress or change status. achieved: objective actually accomplished, no work remains; include evidence. paused: ONLY on the user's explicit request; stop Goal work. blocked: the same blocking condition has recurred across at least three consecutive Goal turns and no meaningful progress is possible without user input or an external change. Do not block for an isolated failure, uncertainty, difficult work or a nearly exhausted budget. progress records a checkpoint and keeps pursuing. A resumed blocked Goal starts a fresh blockage audit. Cannot change budgets or resume a paused Goal.";
+const UPDATE: &str = "Record Goal progress or change status. Use GetGoal to read the current status and budget. achieved: objective actually accomplished, no work remains; include evidence. paused: ONLY on the user's explicit request; stop Goal work. blocked: the same blocking condition has recurred across at least three consecutive Goal turns and no meaningful progress is possible without user input or an external change. Do not block for an isolated failure, uncertainty, difficult work or a nearly exhausted budget. progress records a checkpoint and keeps pursuing. A resumed blocked Goal starts a fresh blockage audit. Cannot change budgets or resume a paused Goal.";
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Create {
@@ -74,44 +73,6 @@ impl Goals {
                 handler: ToolHandler::Prepared(self.clone()),
             })
             .collect()
-    }
-}
-impl RequestBinding for Goals {
-    fn bind(&self, request: BindingRequest) -> BindingFuture {
-        let owner = self.owner.get().and_then(Weak::upgrade);
-        Box::pin(async move {
-            let owner = owner.ok_or_else(|| failed("Goal unavailable"))?;
-            let state = match owner
-                .goal(GoalRead {
-                    session_id: request.execution.session_id.clone(),
-                })
-                .await
-            {
-                Ok(current) => serde_json::to_string(&current).map_err(failed)?,
-                Err(error) => {
-                    tracing::warn!(cause = %error, "Goal state unavailable for model request");
-                    "Goal state is temporarily unavailable. GetGoal can retry the read; other work can continue.".into()
-                }
-            };
-            request
-                .tools
-                .into_iter()
-                .map(|name| {
-                    let description = if name == "GoalStatus" {
-                        format!("{UPDATE}\nCurrent Goal for this model step:\n{state}")
-                    } else {
-                        description(&name).into()
-                    };
-                    Ok((
-                        name,
-                        BoundTool::Described {
-                            handler: owner.goals.clone(),
-                            description,
-                        },
-                    ))
-                })
-                .collect()
-        })
     }
 }
 impl ToolPreparer for Goals {

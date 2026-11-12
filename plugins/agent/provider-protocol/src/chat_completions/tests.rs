@@ -22,23 +22,35 @@ use crate::output::{Event, Stop};
 use serde_json::json;
 
 #[test]
-fn usage_keeps_an_explicit_cache_miss_distinct_from_missing_accounting() {
-    for (raw, expected) in [
-        (json!({"prompt_tokens":100, "completion_tokens":10}), None),
+fn usage_preserves_reported_cache_reads_and_writes() {
+    for (raw, read, write, uncached) in [
         (
-            json!({"prompt_tokens":100, "prompt_tokens_details":{"cached_tokens":0}}),
+            json!({"prompt_tokens":100, "completion_tokens":10}),
+            None,
+            None,
+            None,
+        ),
+        (
+            json!({"prompt_tokens":100, "prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":80}}),
             Some(0),
+            Some(80),
+            Some(20),
         ),
         (
             json!({"prompt_tokens":100, "prompt_cache_hit_tokens":70}),
             Some(70),
+            None,
+            Some(30),
         ),
     ] {
         let usage = response::usage(&serde_json::to_vec(&raw).unwrap())
             .unwrap()
             .unwrap();
         assert_eq!(usage.input, Some(100));
-        assert_eq!(usage.cache_read, expected);
+        assert_eq!(
+            (usage.cache_read, usage.cache_write, usage.uncached_input),
+            (read, write, uncached)
+        );
     }
 }
 

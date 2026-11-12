@@ -536,8 +536,7 @@ impl Rig {
                 "slug":"wait-local", "name":"wait-local",
                 "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
                 "configuration":{"baseUrl":format!("http://{}/v1", self.model_listener.local_addr()?)},
-                "enabled":true, "enabledModelIds":["llama3.2"],
-                "modelOverrides":{"llama3.2":{"codeMode":true}}
+                "enabled":true, "enabledModelIds":["llama3.2"]
             }
         }))?).await?;
         let CatalogMutationResult::Committed {

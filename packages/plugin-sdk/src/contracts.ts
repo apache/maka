@@ -49849,7 +49849,7 @@ export const contracts: {
                   },
                   codeMode: {
                     description:
-                      'Omitted means model-specific defaults; false is an explicit opt-out.',
+                      'Code Mode is enabled by default. Set false to select direct tool calls.',
                     type: 'boolean',
                   },
                   codeModeLanguage: {
@@ -50622,7 +50622,7 @@ export const contracts: {
                   },
                   codeMode: {
                     description:
-                      'Omitted means model-specific defaults; false is an explicit opt-out.',
+                      'Code Mode is enabled by default. Set false to select direct tool calls.',
                     type: 'boolean',
                   },
                   codeModeLanguage: {
@@ -52618,7 +52618,7 @@ export const contracts: {
                   },
                   codeMode: {
                     description:
-                      'Omitted means model-specific defaults; false is an explicit opt-out.',
+                      'Code Mode is enabled by default. Set false to select direct tool calls.',
                     type: 'boolean',
                   },
                   codeModeLanguage: {
@@ -54010,7 +54010,7 @@ export const contracts: {
                   },
                   codeMode: {
                     description:
-                      'Omitted means model-specific defaults; false is an explicit opt-out.',
+                      'Code Mode is enabled by default. Set false to select direct tool calls.',
                     type: 'boolean',
                   },
                   codeModeLanguage: {

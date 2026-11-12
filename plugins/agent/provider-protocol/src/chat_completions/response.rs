@@ -40,6 +40,7 @@ pub struct Usage {
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct InputDetails {
     pub cached_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
     #[serde(flatten)]
     pub extensions: BTreeMap<String, Value>,
 }
@@ -63,6 +64,10 @@ impl Usage {
                     .get("prompt_cache_hit_tokens")
                     .and_then(Value::as_u64)
             });
+        let cache_write = self
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|v| v.cache_write_tokens);
         let reasoning = self
             .completion_tokens_details
             .as_ref()
@@ -70,11 +75,11 @@ impl Usage {
             .unwrap_or(0);
         output::Usage {
             input: self.prompt_tokens,
-            uncached_input: self
-                .prompt_tokens
-                .zip(cache)
-                .map(|(input, cache)| i128::from(input) - i128::from(cache)),
+            uncached_input: self.prompt_tokens.zip(cache).map(|(input, cache)| {
+                i128::from(input) - i128::from(cache) - i128::from(cache_write.unwrap_or(0))
+            }),
             cache_read: cache,
+            cache_write,
             output: Some(output),
             reasoning: Some(reasoning),
             text: Some(i128::from(output.saturating_sub(reasoning))),

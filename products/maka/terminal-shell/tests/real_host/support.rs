@@ -447,10 +447,10 @@ pub(crate) async fn configure(
     };
     let provider = json!({"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":provider_name});
     let vision = options.images;
-    let mut overrides = json!({"fixture-model":{"contextWindow":200000,"vision":vision},"fixture-model-alt":{"contextWindow":200000,"vision":vision}});
-    if options.code_mode {
-        overrides["fixture-model"]["codeMode"] = json!(true);
-    }
+    let overrides = json!({
+        "fixture-model":{"contextWindow":200000,"vision":vision,"codeMode":options.code_mode},
+        "fixture-model-alt":{"contextWindow":200000,"vision":vision,"codeMode":false}
+    });
     let enabled_models = json!(["fixture-model", "fixture-model-alt"]);
     let CatalogMutationResult::Committed {connection:Some(connection),..} = config.create_connection(serde_json::from_value(json!({
         "expectedCatalogRevision":0,"connection":{"slug":"nsh-fixture","name":"NSH fixture","provider":provider,"configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":enabled_models,"modelOverrides":overrides}
