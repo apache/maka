@@ -38,7 +38,7 @@ import {
   CommandSettings,
   createCommands,
   entryKey,
-  LAUNCHER_SHORTCUT,
+  LauncherShortcutRow,
   type Commands,
   type ToolEntry,
 } from './QuickCommands';
@@ -227,7 +227,8 @@ export function QuickToolsSettings(props: {
         navigation: () =>
           selected() === null ? '' : `${selected()!.key}/${tool.inner()?.navigation() ?? ''}`,
         back() {
-          if (selected() === null) return true;
+          // At the list, Escape first stops recording the launcher shortcut.
+          if (selected() === null) return tool.back();
           if (tool.back()) close();
           return false;
         },
@@ -268,11 +269,18 @@ export function QuickToolsSettings(props: {
             label={tr('Turn on quick tools')}
             description={tr(
               'Press {shortcut} anywhere to open the quick launcher, with its tools, commands and Maka Bot. Still being refined.',
-              { shortcut: keymap.label(LAUNCHER_SHORTCUT) },
+              { shortcut: keymap.label(quick.commands.launcher()) },
             )}
             checked={quick.enabled()}
             onPress={() => quick.setEnabled(!quick.enabled())}
           />
+          <If when={quick.enabled()}>
+            <LauncherShortcutRow
+              all={quick.entries()}
+              commands={quick.commands}
+              recording={tool.recording}
+            />
+          </If>
         </SettingsSection>
         <If when={quick.enabled()}>
           <SettingsSection

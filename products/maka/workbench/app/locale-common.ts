@@ -246,6 +246,17 @@ export const commonMessages = {
       '在任何地方按 {shortcut} 打开快捷面板，使用其中的工具、命令和 Maka Bot。仍在完善中。',
       '在任何地方按 {shortcut} 開啟快速面板，使用其中的工具、命令和 Maka Bot。仍在完善中。',
     ],
+  'Quick launcher': ['Quick launcher', '快捷面板', '快速面板'],
+  'Shortcut to open the quick launcher': [
+    'Shortcut to open the quick launcher',
+    '打开快捷面板的快捷键',
+    '開啟快速面板的快速鍵',
+  ],
+  'The {shortcut} shortcut is unavailable': [
+    'The {shortcut} shortcut is unavailable',
+    '快捷键 {shortcut} 不可用',
+    '快速鍵 {shortcut} 無法使用',
+  ],
   'Record shortcut': ['Record shortcut', '录制快捷键', '錄製快速鍵'],
   'Press keys…': ['Press keys…', '请按下快捷键…', '請按下快速鍵…'],
   'Remove shortcut': ['Remove shortcut', '移除快捷键', '移除快速鍵'],

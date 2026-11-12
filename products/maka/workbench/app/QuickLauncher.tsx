@@ -57,7 +57,7 @@ import {
   quickInputStyle,
 } from './QuickBar';
 import { tr } from './locale';
-import { LAUNCHER_SHORTCUT, type ToolEntry } from './QuickCommands';
+import type { ToolEntry } from './QuickCommands';
 import { expandAlias } from './quick-commands';
 import { createToolNavigation, QuickToolSettings, type QuickTools } from './QuickTools';
 import {
@@ -749,17 +749,17 @@ export function QuickLauncher(
       if (untracked(props.opened)) void props.close();
       return;
     }
-    void GlobalShortcut.register(LAUNCHER_SHORTCUT, toggle).then((registered) => {
+    const shortcut = commands.launcher();
+    void GlobalShortcut.register(shortcut, toggle).then((registered) => {
+      commands.registered(shortcut, registered);
       if (!registered)
         props.report(
           new Error(
-            platform.os === 'macos'
-              ? tr('The Option+Space shortcut is unavailable')
-              : tr('The Alt+Space shortcut is unavailable'),
+            tr('The {shortcut} shortcut is unavailable', { shortcut: keymap.label(shortcut) }),
           ),
         );
     }, props.report);
-    cleanup(() => GlobalShortcut.unregister(LAUNCHER_SHORTCUT));
+    cleanup(() => GlobalShortcut.unregister(shortcut));
   });
   return (
     <>
