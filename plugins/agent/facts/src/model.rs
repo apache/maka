@@ -86,6 +86,10 @@ pub fn merge_provider_options(target: &mut Option<Value>, next: Option<Value>) {
     }
 }
 
+pub fn responses_message_phase(options: &Value) -> Option<&str> {
+    options["openai"]["messagePhase"].as_str()
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModelUsage {
     pub input_tokens: Option<u64>,

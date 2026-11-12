@@ -27,6 +27,12 @@ pub(super) async fn query(
     selected: Option<NativeRuntime>,
     cancellation: CancellationToken,
 ) -> Result<Value, Error> {
+    if kind == "usage_limits" {
+        let config = runtime::resolve(&commands[&NativeRuntime::Antigravity], cwd)
+            .await
+            .require()?;
+        return agy::usage_limits(&config, cwd, cancellation).await;
+    }
     let mut result = Vec::new();
     for (&runtime, config) in commands
         .iter()

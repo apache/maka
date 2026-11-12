@@ -29,6 +29,98 @@ pub(super) fn tool_id(run: RunId, tool: &ToolKey) -> String {
     maka_agent_facts::tool_call::tool_use_id(run, &format!("{}:{}", tool.attempt, tool.call))
 }
 
+pub(super) fn executor_tool_id(run: RunId, task: ExternalTaskId, id: &str) -> String {
+    maka_agent_facts::tool_call::tool_use_id(run, &format!("{task}:{id}"))
+}
+
+pub(super) fn executor_tool_display(
+    name: &str,
+    input: &serde_json::Value,
+) -> (
+    Option<maka_agent_facts::display::Text>,
+    Option<maka_agent_ports::session::history::ExternalToolTarget>,
+) {
+    use maka_agent_facts::display::Text;
+    use maka_agent_ports::session::history::ExternalToolTarget;
+    let string = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| input[*key].as_str().filter(|text| !text.is_empty()))
+    };
+    let preview = |text: &str| {
+        let mut chars = text.chars();
+        let mut value: String = chars
+            .by_ref()
+            .take(4096)
+            .filter(|&ch| !ch.is_control() || ch == '\n' || ch == '\t')
+            .collect();
+        if chars.next().is_some() {
+            value.push('…');
+        }
+        value
+    };
+    let summary =
+        string(&["toolSummary", "description", "Description"]).and_then(Text::single_line);
+    match name {
+        "run_command" | "Bash" | "commandExecution" | "shell" | "execute" => {
+            let command = string(&["command", "CommandLine"]);
+            (
+                summary.or_else(|| command.and_then(Text::single_line)),
+                command.map(|command| ExternalToolTarget::Command {
+                    command: preview(command),
+                    cwd: string(&["cwd", "Cwd"]).map(preview),
+                }),
+            )
+        }
+        "read_file"
+        | "view_file"
+        | "Read"
+        | "write_to_file"
+        | "Write"
+        | "Edit"
+        | "MultiEdit"
+        | "replace_file_content"
+        | "multi_replace_file_content"
+        | "fileChange"
+        | "apply_patch"
+        | "list_dir"
+        | "Glob"
+        | "find_by_name" => {
+            let path = string(&[
+                "path",
+                "Path",
+                "AbsolutePath",
+                "TargetFile",
+                "file_path",
+                "DirectoryPath",
+                "SearchDirectory",
+                "pattern",
+            ])
+            .or_else(|| {
+                input["changes"]
+                    .as_array()
+                    .filter(|changes| changes.len() == 1)
+                    .and_then(|changes| changes[0]["path"].as_str())
+            });
+            (
+                summary.or_else(|| path.and_then(Text::single_line)),
+                path.map(|path| ExternalToolTarget::File {
+                    path: preview(path),
+                }),
+            )
+        }
+        "Grep" | "grep_search" | "WebSearch" | "webSearch" | "search_web" => {
+            let query = string(&["query", "pattern", "Query", "RegexPattern"]);
+            (
+                summary.or_else(|| query.and_then(Text::single_line)),
+                query.map(|query| ExternalToolTarget::Search {
+                    query: preview(query),
+                }),
+            )
+        }
+        _ => (None, None),
+    }
+}
+
 pub(super) fn recorded_settlement(
     reply: &maka_agent_facts::operation::RecordedOperationReply,
 ) -> Option<ToolSettlement> {
@@ -133,11 +225,41 @@ pub(super) fn project(item: &HistoryItem, turn_id: String) -> Result<Delivery, S
             tool_use_id: tool_id(run, tool),
             settlement: *settlement,
         },
+        Fact::ToolResultAccepted {
+            tool,
+            outcome: AcceptedResult::Failed,
+            ..
+        } => DeliveryFact::ToolSettled {
+            tool_use_id: tool_id(run, tool),
+            settlement: ToolSettlement::Failed,
+        },
+        Fact::ExternalTaskObserved { task, output, .. } => {
+            use maka_agent_facts::executor::Output;
+            match output {
+                Output::ToolStart {
+                    tool_call_id,
+                    name,
+                    input,
+                } => DeliveryFact::ExecutorToolStart {
+                    tool_use_id: executor_tool_id(run, *task, tool_call_id),
+                    name: name.clone(),
+                    title: executor_tool_display(name, input).0,
+                },
+                Output::ToolResult {
+                    tool_call_id,
+                    is_error,
+                    ..
+                } => DeliveryFact::ExecutorToolResult {
+                    tool_use_id: executor_tool_id(run, *task, tool_call_id),
+                    is_error: *is_error,
+                },
+                _ => DeliveryFact::TranscriptChanged,
+            }
+        }
         Fact::RunTerminated { terminal, .. } => DeliveryFact::Ended {
             failed: *terminal != Terminal::Completed,
         },
-        // External tasks and Cells have their own typed identity, not a model attempt.
-        // History supplies their complete output; this is only invalidation metadata.
+        // History supplies complete output; this is only invalidation metadata.
         _ => DeliveryFact::TranscriptChanged,
     };
     Ok(Delivery {

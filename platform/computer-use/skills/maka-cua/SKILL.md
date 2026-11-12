@@ -11,10 +11,15 @@ required-tools:
 
 # Maka Cua
 
-Discover `cua_repl` with `tool_search` and call it directly. It has a persistent
-JavaScript environment independent of Code Mode. Variables and bindings survive
-calls and Turns within the current Host process; a Host restart or `cua_reset`
-clears them. Current tool results supersede an earlier REPL-state snapshot.
+Call `cua_repl` directly when it is available in the current request. If it is
+missing and tool search is available, look up `cua_repl` with `tool_search`
+(`maka_tool_search` on Responses) and call it on the next model step once it is
+exposed. Apply the same rule to `cua_reset` when a reset is needed.
+
+`cua_repl` has a persistent JavaScript environment independent of Code Mode.
+Variables and bindings survive calls and Turns within the current Host process.
+A Host restart or `cua_reset` clears them. Current tool results supersede an
+earlier REPL-state snapshot.
 
 Discovery and selection emit API documentation and inventory or initial state:
 
@@ -25,6 +30,8 @@ const tab = await cua.getTab({ url: "https://example.com" });
 ```
 
 These are alternative entry points. `getApp({windowId})` selects an exact window.
+Use a `bindable: true` entry from `cua.listWindows()`. On macOS, use `pid`,
+`applicationId` and `appPath` to distinguish similarly named windows.
 macOS can launch a named app; Linux requires an open window. Windows can launch
 an inventory app ID with `cua.computer.launch_app`, then bind its open window.
 Browser IDs identify configured CDP providers and their existing profiles; when

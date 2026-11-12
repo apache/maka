@@ -18,13 +18,21 @@
  */
 
 import { displayText, tr } from './locale';
+import { formatDuration } from './duration';
 import { computed, effect, inputAction, platform, Scroll, signal, Text, View } from 'nsh';
 import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Row } from './history';
 import type { ImagePreview } from './ImageThumbnail';
 import { ToolImage, ToolImageStrip, toolImages } from './ToolImage';
 import { createToolSource, OriginalToolSource, type ToolSourceRef } from './ToolSource';
-import { cardFamily, processFamily, toolArguments, toolResult, type ToolFamily } from './toolCards';
+import {
+  cardFamily,
+  processFamily,
+  toolArguments,
+  toolResult,
+  type ToolFamily,
+  type ToolProjection,
+} from './toolCards';
 import { ToolReader } from './ToolReader';
 import {
   C,
@@ -235,11 +243,26 @@ function Field(props: {
   const family = cardFamily(source.original.presentation);
   const renderer = () => plugins.renderer(source.original.presentation);
   const value = computed(() => (source.format() === 'json' ? source.json() : source.content()));
-  const projection = computed(() =>
-    props.reference.field === 'arguments'
-      ? toolArguments(family, value())
-      : toolResult(family, value()),
-  );
+  const projection = computed<ToolProjection | null>(() => {
+    if (props.reference.field !== 'arguments') return toolResult(family, value());
+    const target = props.tool().call?.externalTarget;
+    switch (target?.kind) {
+      case 'command':
+        return {
+          kind: 'sections',
+          sections: [
+            { label: tr('Requested command'), text: target.command },
+            ...(target.cwd ? [{ label: tr('Working directory'), text: target.cwd }] : []),
+          ],
+        };
+      case 'file':
+        return { kind: 'sections', sections: [{ label: tr('File'), text: target.path }] };
+      case 'search':
+        return { kind: 'sections', sections: [{ label: tr('Search query'), text: target.query }] };
+      default:
+        return toolArguments(family, value());
+    }
+  });
   effect(() => {
     if (props.showsCommand && (source.complete() || source.error()))
       props.showsCommand(!renderer() && !source.error() && projection()?.kind === 'process');
@@ -256,7 +279,9 @@ function Field(props: {
               label={
                 props.reference.field === 'arguments'
                   ? tr('Original arguments')
-                  : tr('Original result')
+                  : !props.original() && props.tool().call?.origin === 'executor'
+                    ? tr('Output')
+                    : tr('Original result')
               }
             />
           }
@@ -330,11 +355,25 @@ export function ToolCard(props: {
   reading?(): void;
   expand(action: { sessionId: string; key: string; value: boolean }): void;
   showOriginal(action: { sessionId: string; key: string; value: boolean }): void;
+  inspect?(key: string): void;
   previewImage(image: ImagePreview): void;
   userScroll(): void;
 }) {
   const tool = (): HistoryTool | null => props.row().tool ?? null;
   const family = () => cardFamily(tool()?.call?.presentation);
+  const externalTarget = () => tool()?.call?.externalTarget;
+  const icon = () => {
+    switch (externalTarget()?.kind) {
+      case 'command':
+        return 'terminal';
+      case 'file':
+        return 'file';
+      case 'search':
+        return 'search';
+      default:
+        return familyIcon(family());
+    }
+  };
   const title = () => {
     const supplied = tool()?.call?.title;
     if (supplied) return displayText(supplied);
@@ -397,6 +436,7 @@ export function ToolCard(props: {
         return { label: tr('Rejected'), kind: 'rejected' };
       if (value.result.isError || value.result.settlement === 'failed')
         return { label: tr('Error'), kind: 'error' };
+      if (value.call?.origin === 'executor') return { label: tr('Completed'), kind: 'success' };
       return { label: tr('Recorded'), kind: 'recorded' };
     }
     // History references describe their fence, never current execution liveness.
@@ -406,6 +446,17 @@ export function ToolCard(props: {
         : { label: tr('Input recorded'), kind: 'pending' }
       : { label: tr('Not completed'), kind: 'pending' };
   };
+  const resultDetails = () => {
+    const details = tool()?.result?.details;
+    const exit = details?.exitCode;
+    const time = details?.durationMs;
+    return [
+      exit == null ? '' : tr('Exit {code}', { code: String(exit) }),
+      time == null ? '' : formatDuration(time, true),
+    ]
+      .filter(Boolean)
+      .join(' · ');
+  };
   return (
     <View style={{ width: '100%', minWidth: 0, gap: detailsGap }}>
       <Disclosure
@@ -413,7 +464,7 @@ export function ToolCard(props: {
           name: tool()?.call?.name ?? tr('Tool details'),
         })}
         tooltip={title()}
-        icon={familyIcon(family())}
+        icon={icon()}
         open={props.expanded()}
         terminalInset={controlStyle.paddingHorizontal}
         onPress={inputAction(props.expand, {
@@ -429,6 +480,13 @@ export function ToolCard(props: {
                 through={imageThrough}
                 images={images}
                 preview={props.previewImage}
+              />
+            </If>
+            <If when={props.expanded() && props.inspect !== undefined}>
+              <IconButton
+                label={tr('Inspect in execution process')}
+                icon="children"
+                onPress={inputAction((key: string) => props.inspect?.(key), props.ownerKey())}
               />
             </If>
             <If when={props.expanded()}>
@@ -512,6 +570,9 @@ export function ToolCard(props: {
             }}
             contentStyle={{ gap: 16 }}
           >
+            <If when={resultDetails() !== ''}>
+              <Text style={{ ...captionTextStyle, color: C.secondary }}>{resultDetails()}</Text>
+            </If>
             <Each of={images()} key={(value) => value.key}>
               {(value) => (
                 <ToolImage

@@ -381,6 +381,7 @@ pub(crate) async fn emit_result(
             tool_call_id: id,
             text: text.into(),
             is_error,
+            details: None,
         },
     )
     .await

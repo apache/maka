@@ -22,8 +22,12 @@ use maka_host_runtime::{
     application::host::{Client, discovery},
 };
 use std::{path::PathBuf, process::ExitCode};
+#[cfg(not(target_os = "macos"))]
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
+
+#[cfg(target_os = "macos")]
+mod disclaimed;
 
 /// The shell beside this launcher. macOS shows a process with the name and icon
 /// of the bundle its executable is in, so there it runs from inside `Maka.app`.
@@ -91,15 +95,23 @@ impl Args {
         }
         let launcher = std::env::current_exe()?.canonicalize()?;
         let executable = launcher.with_file_name(SHELL);
-        let mut child = Command::new(&executable)
-            .env("MAKA_HOST_ROOT", std::path::absolute(root)?)
-            .env("MAKA_HOST_ENDPOINT", &registered.endpoint)
-            .env("MAKA_HOST_EPOCH", registered.host_epoch.to_string())
+        let root = std::path::absolute(root)?;
+        let epoch = registered.host_epoch.to_string();
+        let variables: [(&str, &std::ffi::OsStr); 4] = [
+            ("MAKA_HOST_ROOT", root.as_ref()),
+            ("MAKA_HOST_ENDPOINT", registered.endpoint.as_ref()),
+            ("MAKA_HOST_EPOCH", epoch.as_ref()),
             // The shell starts the Root's next Host through it.
-            .env("MAKA_LAUNCHER", &launcher)
+            ("MAKA_LAUNCHER", launcher.as_ref()),
+        ];
+        #[cfg(target_os = "macos")]
+        let child = disclaimed::Shell::spawn(&executable, &variables);
+        #[cfg(not(target_os = "macos"))]
+        let child = Command::new(&executable)
+            .envs(variables)
             .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| format!("{}: {error}", executable.display()))?;
+            .spawn();
+        let mut child = child.map_err(|error| format!("{}: {error}", executable.display()))?;
         let waited = tokio::select! {
             status = child.wait() => status,
             _ = stop.cancelled() => {

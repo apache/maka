@@ -31,12 +31,14 @@ import {
   conversationPreviewView,
   settingsViewContract,
   type ConversationCompact,
+  type SettingsPageInput,
   type ConversationShell,
   type ConversationSessionHandle,
   type ConversationPreviewHandle,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { currentWindow } from 'nsh/desktop';
 import { QuickLauncher } from './QuickLauncher';
+import { createQuickTools, QuickToolsSettings, type QuickTools } from './QuickTools';
 import { ownTitleBar } from './chrome';
 import { Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
@@ -68,6 +70,7 @@ type SidePane = {
 function App(
   props: UiRootProps<JSX.Element> & {
     saveWith(prepare: () => Promise<SavedRoot>): () => void;
+    quick: QuickTools;
   },
 ) {
   const { context, runtime } = props;
@@ -370,7 +373,7 @@ function App(
     >
       <If when={ownTitleBar}>
         <QuickLauncher
-          runtime={runtime}
+          quick={props.quick}
           openBot={openBot}
           vacate={vacate}
           open={openAssistant}
@@ -503,13 +506,22 @@ function App(
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   let prepare: () => Promise<unknown> = async () => context.restored;
+  // The launcher and Settings › Quick tools show the same tools, commands and pages.
+  const quick = createQuickTools(context.runtime);
   return {
     exports: {
+      quickTools: {
+        kind: 'settings',
+        render: ({ input }) => (
+          <QuickToolsSettings quick={quick} input={input as SettingsPageInput | undefined} />
+        ),
+      },
       root: {
         kind: 'root',
         render: (props) => (
           <App
             {...props}
+            quick={quick}
             saveWith={(next) => {
               prepare = next;
               return () => {

@@ -37,6 +37,9 @@ use std::{collections::BTreeMap, panic::AssertUnwindSafe, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub mod agy_hook;
 pub(crate) mod attachments;
 pub(crate) mod cleanup;
 mod credentials;

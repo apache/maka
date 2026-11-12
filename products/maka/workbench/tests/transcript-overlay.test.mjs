@@ -23,6 +23,7 @@ import {
   orderProcessRows,
   projectProcessGroups,
   sameProcessRows,
+  turnOutcome,
   turnWorkFold,
 } from '../app/processGroups.ts';
 import { historyTurnKey, stableRowId } from '../app/history.ts';
@@ -177,7 +178,7 @@ test('thinking appears in turn work when there is a readable summary', () => {
   assert.deepEqual(project([opaque, withText]).entries[0].rowIds, [stableRowId(withText)]);
 });
 
-test('work folds on the first streamed answer and reopens if the turn does more work', () => {
+test('work stays open during streamed text and folds when the answer is confirmed', () => {
   const request = row('request', 'Summarize', 1, { role: 'user' });
   const thought = row('thought', 'Checking', 2, { role: 'thinking', field: 'thinking' });
   const answer = row('answer', 'Here', 3);
@@ -196,9 +197,9 @@ test('work folds on the first streamed answer and reopens if the turn does more 
   assert.equal(chat(project([preview])), 'unavailable', 'a direct reply has no work to fold');
   for (const body of [preview, answer]) {
     const turn = project([thought, body]);
-    assert.equal(chat(turn), 'closed');
+    assert.equal(chat(turn), 'open');
     assert.deepEqual(turn.answerOutputIds, [stableRowId(body)], 'keep the streamed answer visible');
-    assert.equal(turnWorkFold(turn, true), 'closed', 'terminal Chat folds too');
+    assert.equal(turnWorkFold(turn, true), 'unavailable', 'terminal Chat keeps showing the work');
   }
 
   const resumed = project([thought, answer], {
@@ -208,6 +209,13 @@ test('work folds on the first streamed answer and reopens if the turn does more 
   const nextThought = row('next-thought', '', 4, { role: 'thinking', field: 'thinking' });
   assert.equal(chat(project([thought, answer, nextThought])), 'open');
   assert.equal(chat(project([thought, answer], { answerTurnId: null })), 'open');
+  const finalPreview = { ...preview, messageId: 'final-preview', finalAnswer: true };
+  assert.equal(chat(project([thought, answer, { ...finalPreview, text: '' }])), 'open');
+  const streamingFinal = project([thought, answer, finalPreview]);
+  assert.equal(chat(streamingFinal), 'closed');
+  assert.equal(turnOutcome(streamingFinal), null, 'the turn is still running');
+  assert.deepEqual(streamingFinal.answerOutputIds, [stableRowId(finalPreview)]);
+  assert.equal(chat(project([thought, answer, finalPreview, nextThought])), 'open');
   const timing = { startedAt: 1, finished: { outcome: 'completed', at: 5 } };
   const catchingUp = project([{ ...thought, timing }, answer], { activeTurnId: null });
   assert.equal(chat(catchingUp), 'closed');
@@ -215,6 +223,7 @@ test('work folds on the first streamed answer and reopens if the turn does more 
   const final = row('final', 'Done', 5, { finalOutput: true });
   const completed = project([thought, answer, final]);
   assert.equal(chat(completed), 'closed');
+  assert.equal(turnWorkFold(completed, true), 'closed');
   assert.deepEqual(completed.answerOutputIds, [], 'the earlier text now belongs to the work');
 });
 

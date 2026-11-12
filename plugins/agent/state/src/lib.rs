@@ -205,4 +205,9 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "own executor profile contents",
         sql: include_str!("../migrations/0035_profile_content_owners.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 37,
+        description: "track proactive summary attempts",
+        sql: include_str!("../migrations/0037_proactive_summary.sql"),
+    },
 ];

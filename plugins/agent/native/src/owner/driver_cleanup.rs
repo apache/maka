@@ -41,7 +41,6 @@ struct RetainedMaterial {
 pub(super) struct RetainedScope {
     material: std::sync::Mutex<Option<RetainedMaterial>>,
     close_requested: CancellationToken,
-    close_round_finished: CancellationToken,
     observer: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
@@ -123,18 +122,7 @@ impl Owner {
             scope.close_requested.cancel();
         }
         for scope in scopes {
-            scope.close_round_finished.cancelled().await;
-            let observer = {
-                let mut observer = scope.observer.lock().unwrap();
-                if observer
-                    .as_ref()
-                    .is_some_and(|observer| observer.is_finished())
-                {
-                    observer.take()
-                } else {
-                    None
-                }
-            };
+            let observer = scope.observer.lock().unwrap().take();
             if let Some(observer) = observer
                 && let Err(error) = observer.await
             {
@@ -185,7 +173,6 @@ impl Owner {
                 settlement,
             })),
             close_requested: CancellationToken::new(),
-            close_round_finished: CancellationToken::new(),
             observer: std::sync::Mutex::new(None),
         });
         let mut runs = self.runs.state().await;
@@ -208,11 +195,7 @@ impl RetainedScope {
             return;
         }
         let retained = self.clone();
-        let exit_notice = retained.close_round_finished.clone().drop_guard();
         let observer = tokio::spawn(async move {
-            let _exit_notice = exit_notice;
-            // A close request wakes the observer; it must never abandon an admitted read.
-            let mut close_seen = false;
             let mut notices = match owner.durable.subscribe() {
                 Ok(notices) => Some(notices),
                 Err(error) => {
@@ -314,18 +297,17 @@ impl RetainedScope {
                     retained.release(&owner, &session).await;
                     return;
                 }
-                if close_round {
-                    close_seen = true;
-                    retained.close_round_finished.cancel();
-                }
                 match confirmed {
                     Ok(true) => unreachable!("confirmed scope handled"),
                     Ok(false) => {}
                     Err(error) => tracing::error!(%error, "original cleanup remains unconfirmed"),
                 }
+                if close_round {
+                    return;
+                }
                 tokio::select! {
                     biased;
-                    () = retained.close_requested.cancelled(), if !close_seen => { close_seen = true; },
+                    () = retained.close_requested.cancelled() => {},
                     changed = async { model_changes.as_mut().expect("original model receiver branch enabled").changed().await }, if model_changes.is_some() => if changed.is_err() { model_changes = None; },
                     changed = async { notices.as_mut().expect("SQL receiver branch enabled").changed().await }, if notices.is_some() => if changed.is_err() { notices = None; },
                     _ = physical.next(), if !physical.is_empty() => {},

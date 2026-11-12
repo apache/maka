@@ -39,6 +39,7 @@ mod replay;
 mod runtime;
 mod steering;
 mod tools;
+const PRESENTATION_VERSION: u32 = 3;
 pub(crate) use history::Inputs;
 pub(crate) use tools::{HostEffects, HostTools};
 
@@ -65,6 +66,8 @@ pub(crate) enum NativeTask {
     Antigravity {
         conversation: String,
         user_step: u64,
+        #[serde(default)]
+        step_annotations: bool,
     },
 }
 
@@ -304,7 +307,7 @@ impl External {
             NativeTask::Antigravity { .. } => NativeRuntime::Antigravity,
             NativeTask::Claude { .. } | NativeTask::ClaudeStream { .. } => NativeRuntime::Claude,
         };
-        if binding.adapter_version != 2
+        if !matches!(binding.adapter_version, 2 | PRESENTATION_VERSION)
             || request
                 .settings
                 .runtime
@@ -441,7 +444,7 @@ impl External {
             .get("kind")
             .and_then(Value::as_str)
             .ok_or_else(|| Error::Invalid("Missing external query kind".into()))?;
-        if !matches!(kind, "status" | "catalog" | "models") {
+        if !matches!(kind, "status" | "catalog" | "models" | "usage_limits") {
             return Err(Error::Invalid("Unsupported external query kind".into()));
         }
         let selected = request
@@ -450,6 +453,11 @@ impl External {
             .transpose()?;
         if selected.is_none() && kind == "models" {
             return Err(Error::Invalid("Models require a runtime selection".into()));
+        }
+        if kind == "usage_limits" && !selected.is_some_and(NativeRuntime::reports_usage_limits) {
+            return Err(Error::Invalid(
+                "Usage limits require a supported runtime".into(),
+            ));
         }
         if kind == "catalog" {
             let (discovery, catalog_runtime) = {

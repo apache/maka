@@ -106,7 +106,7 @@ pub(super) struct RequestAt(
 impl Query for RequestAt {
     type Output = RequestSpec;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        sql::request(c, &self.0, &self.1, self.2, self.3)
+        sql::request_preparation(c, &self.0, &self.1, self.2, self.3).map(|(request, _)| request)
     }
 }
 

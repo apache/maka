@@ -1233,7 +1233,7 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn executor_progress_and_failed_result_keep_the_original_call() {
-    use maka_agent_facts::executor::{Output, Selection, Settings};
+    use maka_agent_facts::executor::{Output, Selection, Settings, ToolResultDetails, TurnUsage};
     let mut rig = Rig::new().unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
         let session = rig.start().await?;
@@ -1244,7 +1244,13 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
             .frontier(driver.access.execution().run_id)
             .await?;
         let mut spec = original.spec.clone();
-        let descriptor = ContentBlob::json(&json!({"fixture":"executor"}))?;
+        let selection = Selection {
+            executor: "fixture".into(),
+            settings: Settings::default(),
+        };
+        let descriptor = ContentBlob::json(&json!({
+            "selection":selection,"import":"fixture","member":0,"basis":"fixture"
+        }))?;
         let mut contents = vec![descriptor.clone()];
         for reference in [&spec.input, &spec.system_prompt, &spec.tool_selection] {
             contents.push(ContentBlob::new(
@@ -1259,10 +1265,7 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
             message_id: Uuid::new_v4().to_string(),
         };
         spec.backend = BackendSpec::Executor {
-            selection: Selection {
-                executor: "fixture".into(),
-                settings: Settings::default(),
-            },
+            selection,
             descriptor: descriptor.reference().clone(),
         };
         let admitted = driver
@@ -1276,8 +1279,8 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
         let outputs = [
             Output::ToolStart {
                 tool_call_id: "read/config".into(),
-                name: "Read configuration".into(),
-                input: json!({"path":"config.toml"}),
+                name: "run_command".into(),
+                input: json!({"CommandLine":"cat config.toml", "toolSummary":"Read configuration"}),
             },
             Output::ToolProgress {
                 tool_call_id: "read/config".into(),
@@ -1287,9 +1290,25 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
                 tool_call_id: "read/config".into(),
                 text: "File not found".into(),
                 is_error: true,
+                details: Some(ToolResultDetails {
+                    exit_code: Some(1),
+                    duration_ms: Some(512),
+                }),
+            },
+            Output::TurnUsage {
+                usage: TurnUsage {
+                    tokens: maka_agent_facts::model::ModelUsage {
+                        input_tokens: Some(150),
+                        output_tokens: Some(25),
+                        cache_read_tokens: Some(50),
+                        ..Default::default()
+                    },
+                    total_tokens: Some(175),
+                    duration_ms: Some(700),
+                },
             },
         ];
-        let facts =
+        let mut facts =
             [
                 Fact::ExternalTaskPrepared {
                     task,
@@ -1310,12 +1329,50 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
             .append(
                 &claim,
                 (&view).into(),
+                facts
+                    .by_ref()
+                    .take(3)
+                    .map(|fact| Change::new(fact, at()))
+                    .collect(),
+                vec![],
+            )
+            .await?;
+        let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
+        let active = tools(&live(&rig, &session, wire::Position::Tail).await?);
+        assert_eq!(observed["toolSeeds"][0]["toolUseId"], active[0].tool_use_id);
+        assert_eq!(
+            active[0]
+                .call
+                .as_ref()
+                .unwrap()
+                .title
+                .as_ref()
+                .unwrap()
+                .fallback,
+            "Read configuration"
+        );
+        let view = driver.state.frontier(run).await?;
+        driver
+            .state
+            .append(
+                &claim,
+                (&view).into(),
                 facts.map(|fact| Change::new(fact, at())).collect(),
                 vec![],
             )
             .await?;
+        let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
+        assert_eq!(observed["toolSeeds"], json!([]));
         let page = live(&rig, &session, wire::Position::Tail).await?;
         let displayed = tools(&page);
+        let usage = page["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|chunk| chunk["timing"].get("executorUsage"))
+            .unwrap();
+        assert_eq!(usage["totalTokens"], 175);
+        assert_eq!(usage["tokens"]["cache_read_tokens"], 50);
         assert!(
             page["chunks"]
                 .as_array()
@@ -1331,16 +1388,32 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
                 .any(|tool| tool.result.as_ref().is_some_and(|result| result.is_error))
         );
         for tool in &displayed {
+            let call = tool.call.as_ref().unwrap();
+            assert_eq!(call.name, "run_command");
             assert_eq!(
-                tool.call.as_ref().map(|call| call.name.as_str()),
+                call.external_target.as_deref(),
+                Some(&wire::ExternalToolTarget::Command {
+                    command: "cat config.toml".into(),
+                    cwd: None
+                }),
+            );
+            assert_eq!(
+                call.title.as_ref().map(|title| title.fallback.as_str()),
                 Some("Read configuration")
             );
             assert!(tool.result.as_ref().is_some_and(|result| result.is_error));
-            assert_eq!(tool.tool_use_id, displayed[0].tool_use_id);
             assert_eq!(
-                tool.call.as_ref().unwrap().position,
-                displayed[0].call.as_ref().unwrap().position
+                tool.result
+                    .as_ref()
+                    .unwrap()
+                    .details
+                    .as_ref()
+                    .unwrap()
+                    .exit_code,
+                Some(1)
             );
+            assert_eq!(tool.tool_use_id, displayed[0].tool_use_id);
+            assert_eq!(call.position, displayed[0].call.as_ref().unwrap().position);
         }
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))

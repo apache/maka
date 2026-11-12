@@ -67,6 +67,10 @@ pub(super) fn visible(fact: &Fact) -> bool {
             super::super::delivery::recorded_settlement(reply).is_some()
         }
         Fact::Cell { .. } | Fact::ModelInterrupted { .. } => false,
+        Fact::ExternalTaskObserved {
+            output: maka_agent_facts::executor::Output::TurnUsage { .. },
+            ..
+        } => false,
         Fact::ExternalEffect { event } => matches!(
             event,
             maka_agent_facts::external_effects::ExternalEffectEvent::Prepared { .. }
@@ -94,6 +98,7 @@ fn base(
             model_part: None,
             has_references: false,
             final_output: false,
+            final_answer: false,
             model: None,
             origin: None,
             compaction: None,
@@ -197,6 +202,7 @@ fn tool(row: &mut Row, id: String, name: Option<String>, is_error: Option<bool>)
             title: None,
             pending: false,
             dispatched: false,
+            external_target: None,
         }),
         result: is_error.map(|is_error| wire::ToolResult {
             settlement: None,
@@ -204,6 +210,7 @@ fn tool(row: &mut Row, id: String, name: Option<String>, is_error: Option<bool>)
             is_error,
             image: false,
             images: 0,
+            details: None,
         }),
     });
 }
@@ -354,12 +361,17 @@ pub(super) async fn project(
                     reported_model_id,
                 });
             }
-            match part {
+            let final_output_part = match part {
                 ModelPart::Text {
                     text_kind,
                     text: body,
                     provider_options,
                 } => {
+                    let phase = provider_options
+                        .as_deref()
+                        .and_then(maka_agent_facts::model::responses_message_phase);
+                    row.chunk.final_answer =
+                        *text_kind == TextKind::Text && phase == Some("final_answer");
                     row.chunk.field = if *text_kind == TextKind::Thinking {
                         HistoryField::Thinking
                     } else {
@@ -379,6 +391,7 @@ pub(super) async fn project(
                     if let ModelPart::Text { text: original, .. } = part {
                         row.fields[0].1 = Field::Text(original.clone());
                     }
+                    *text_kind == TextKind::Text && phase != Some("commentary")
                 }
                 ModelPart::Source { source } => {
                     let body = match source {
@@ -394,6 +407,7 @@ pub(super) async fn project(
                             .map_or_else(|| title.clone(), |file| format!("{title} ({file})")),
                     };
                     text(&mut row, SourceField::Body, body.into());
+                    true
                 }
                 ModelPart::ToolCall { call } => {
                     row.chunk.role = Role::ToolCall;
@@ -418,6 +432,7 @@ pub(super) async fn project(
                             ToolInput::InvalidJson { raw } => Field::Text(raw.clone().into()),
                         },
                     ));
+                    false
                 }
                 ModelPart::ToolResult {
                     id,
@@ -440,8 +455,9 @@ pub(super) async fn project(
                     );
                     row.fields
                         .push((SourceField::Result, Field::Json(output.clone())));
+                    false
                 }
-            }
+            };
             if let std::collections::btree_map::Entry::Vacant(e) = views.entry(item.recorded.run) {
                 let view = reader
                     .view_at(item.recorded.run)
@@ -452,14 +468,7 @@ pub(super) async fn project(
             let view = &views[&item.recorded.run];
             row.chunk.final_output = view.terminal == Some(Terminal::Completed)
                 && view.current_attempt == Some(*attempt)
-                && matches!(
-                    part,
-                    ModelPart::Source { .. }
-                        | ModelPart::Text {
-                            text_kind: TextKind::Text,
-                            ..
-                        }
-                );
+                && final_output_part;
             if let ModelPart::ToolCall { call } = part {
                 let key = ToolKey {
                     attempt: *attempt,
@@ -727,11 +736,20 @@ pub(super) async fn project(
                     input,
                 } => {
                     row.chunk.role = Role::ToolCall;
-                    let id = maka_agent_facts::tool_call::tool_use_id(
+                    let id = super::super::delivery::executor_tool_id(
                         item.recorded.run,
-                        &format!("{task}:{tool_call_id}"),
+                        *task,
+                        tool_call_id,
                     );
                     tool(&mut row, id, Some(name.clone()), None);
+                    if let Some(call) = row.chunk.tool.as_mut().and_then(|tool| tool.call.as_mut())
+                    {
+                        let (title, target) =
+                            super::super::delivery::executor_tool_display(name, input);
+                        call.origin = wire::ToolCallOrigin::Executor;
+                        call.title = title.map(Box::new);
+                        call.external_target = target.map(Box::new);
+                    }
                     row.fields
                         .push((SourceField::ToolName, Field::Text(name.clone().into())));
                     row.fields
@@ -747,18 +765,30 @@ pub(super) async fn project(
                     ..
                 } => {
                     row.chunk.role = Role::ToolResult;
-                    let id = maka_agent_facts::tool_call::tool_use_id(
+                    let id = super::super::delivery::executor_tool_id(
                         item.recorded.run,
-                        &format!("{task}:{tool_call_id}"),
+                        *task,
+                        tool_call_id,
                     );
                     let is_error = match output {
                         Output::ToolResult { is_error, .. } => Some(*is_error),
                         _ => None,
                     };
                     tool(&mut row, id, None, is_error);
+                    if let Output::ToolResult { details, .. } = output
+                        && let Some(result) = row
+                            .chunk
+                            .tool
+                            .as_mut()
+                            .and_then(|tool| tool.result.as_mut())
+                    {
+                        result.details = details.clone();
+                    }
                     text(&mut row, SourceField::Result, body.clone().into());
                 }
-                Output::MessageStart { .. } | Output::MessageEnd { .. } => return Ok(result),
+                Output::MessageStart { .. }
+                | Output::MessageEnd { .. }
+                | Output::TurnUsage { .. } => return Ok(result),
             }
             result.push(row);
         }
@@ -784,24 +814,18 @@ pub(super) async fn project(
                 data::content(reader, item.recorded.run, baseline).await?;
             compact.validate().map_err(str::to_owned)?;
             let mut row = base(item, turn, 0, Role::Compaction, address)?;
-            let started = reader
-                .compaction_started_at(
+            let duration_ms = reader
+                .compaction_duration_ms(
                     item.recorded.run,
+                    compact
+                        .summary_origin
+                        .map_or(item.recorded.run, |origin| origin.run),
                     compact.checkpoint.summary_step_id,
                     item.sequence,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            let duration = item
-                .recorded
-                .at
-                .0
-                .checked_sub(started.0)
-                .and_then(|value| u64::try_from(value).ok())
-                .ok_or("agent_history_compaction_timing_invalid")?;
-            row.chunk.compaction = Some(wire::Compaction {
-                duration_ms: duration,
-            });
+            row.chunk.compaction = Some(wire::Compaction { duration_ms });
             if let maka_agent_facts::context::CheckpointContent::Text(summary) =
                 compact.checkpoint.summary
             {

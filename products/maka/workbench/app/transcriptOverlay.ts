@@ -169,6 +169,7 @@ class PreviewAssembly {
         totalBytes: part.totalBytes,
         prefix: true,
         modelPart,
+        finalAnswer: part.field.finalAnswer,
         preview: { stepOrder: this.stepOrder, ordinal: modelPart.ordinal, revision: page.revision },
         closedAt: null,
       };

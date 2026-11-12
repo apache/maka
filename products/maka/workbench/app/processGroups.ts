@@ -41,6 +41,7 @@ export type ProcessRow = Pick<
   | 'importedTurn'
   | 'timing'
   | 'finalOutput'
+  | 'finalAnswer'
   | 'origin'
   | 'metadataThrough'
   | 'sequence'
@@ -82,6 +83,7 @@ export type TurnPresentation = {
   finalOutputIds: string[];
   /** Trailing assistant text until more work arrives or history identifies the final output. */
   answerOutputIds: string[];
+  finalAnswerStarted: boolean;
   interleavedInput: boolean;
   /** Whether the turn did anything besides its final answer: steps or text between them. */
   worked: boolean;
@@ -103,15 +105,12 @@ export function turnWorkFold(
   const outcome = turnOutcome(turn);
   if (!turn.worked || turn.interleavedInput || (outcome !== null && outcome !== 'completed'))
     return 'unavailable';
-  if (
-    turn.answerOutputIds.length > 0 ||
-    (outcome === 'completed' && (!turn.active || turn.finalOutputIds.length > 0))
-  )
-    return 'closed';
+  if (turn.finalAnswerStarted) return 'closed';
+  if (outcome === 'completed' && (!turn.active || turn.finalOutputIds.length > 0)) return 'closed';
   return terminal ? 'unavailable' : 'open';
 }
 
-function displayOrder(row: ProcessRow): HistoryOrder | undefined {
+export function displayOrder(row: ProcessRow): HistoryOrder | undefined {
   if (row.order) return row.order;
   const sequence = row.startSequence ?? row.sequence;
   return sequence === undefined ? undefined : { path: [sequence], itemIndex: 0 };
@@ -207,6 +206,7 @@ export function sameProcessRows(
         Boolean(row.tool?.call) === Boolean(next.tool?.call) &&
         Boolean(row.tool?.result) === Boolean(next.tool?.result) &&
         row.finalOutput === next.finalOutput &&
+        row.finalAnswer === next.finalAnswer &&
         row.timing === next.timing &&
         row.metadataThrough === next.metadataThrough
       );
@@ -268,6 +268,7 @@ export function projectProcessGroups(input: {
         active: input.activeTurnId === turnKey,
         finalOutputIds: [],
         answerOutputIds: [],
+        finalAnswerStarted: false,
         interleavedInput: false,
         worked: false,
       };
@@ -360,6 +361,12 @@ export function projectProcessGroups(input: {
     });
     current = undefined;
   };
+  const moveAnswerToWork = (presentation: TurnPresentation) => {
+    if (presentation.answerOutputIds.length === 0) return;
+    presentation.worked = true;
+    presentation.answerOutputIds.length = 0;
+    presentation.finalAnswerStarted = false;
+  };
   const append = (turnKey: string, member: MemberRef) => {
     if (current?.turnKey !== turnKey) {
       flush(true);
@@ -369,12 +376,7 @@ export function projectProcessGroups(input: {
     progressed.add(turnKey);
     const presentation = turn(turnKey);
     presentation.worked = true;
-    presentation.answerOutputIds.length = 0;
-  };
-  const moveAnswerToWork = (presentation: TurnPresentation) => {
-    if (presentation.answerOutputIds.length === 0) return;
-    presentation.worked = true;
-    presentation.answerOutputIds.length = 0;
+    moveAnswerToWork(presentation);
   };
   const activities = input.toolActivity
     .filter((activity) => !canonicalTools.has(activity.toolUseId))
@@ -443,10 +445,16 @@ export function projectProcessGroups(input: {
         if (body && !row.finalOutput) {
           message.processTurnKey = rowTurn;
           if (rowTurn === input.answerTurnId && !row.timing?.finished) {
-            if (row.text) presentation.answerOutputIds.push(position.rowId);
+            if (row.text) {
+              if (row.finalAnswer && !presentation.finalAnswerStarted) {
+                moveAnswerToWork(presentation);
+                presentation.finalAnswerStarted = true;
+              }
+              presentation.answerOutputIds.push(position.rowId);
+            }
           } else {
             presentation.worked = true;
-            presentation.answerOutputIds.length = 0;
+            moveAnswerToWork(presentation);
           }
         } else moveAnswerToWork(presentation);
         if (body) progressed.add(rowTurn);

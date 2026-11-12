@@ -21,6 +21,7 @@
 //! disposable values, never a second execution log or a recovery authority.
 use crate::{contract as ui, owner::Owner};
 use maka_agent_facts::{
+    context::ModelPurpose,
     durable::*,
     input::RunInput,
     model::{ModelPart, TextKind, body::TextBody},
@@ -105,6 +106,101 @@ pub(super) async fn read(
     let page = window(owner, scope, &history, &cut, &input).await?;
     authorize(owner, scope, &input.session_id).await?;
     Ok(page.into())
+}
+
+pub(super) async fn requests(
+    owner: &Owner,
+    scope: &Scope,
+    input: ui::HistoryRequestsRead,
+) -> Result<ui::HistoryRequests, String> {
+    use maka_agent_state::session_history::source_tree::{SourceItem, SourceTree};
+    const LIMIT: u32 = 24;
+    let history = open(owner, scope, &input.session_id).await?;
+    let cut = cut(&history, Some(input.through)).await?;
+    let tree = SourceTree::live(&history, &cut)
+        .await
+        .map_err(|error| error.to_string())?;
+    let item = tree
+        .item(&input.position)
+        .await
+        .map_err(|error| error.to_string())?;
+    let SourceItem::Canonical(item) = item else {
+        authorize(owner, scope, &input.session_id).await?;
+        return Ok(ui::HistoryRequests {
+            requests: Vec::new(),
+            next: None,
+        });
+    };
+    let qualified = tree
+        .positions(Some(input.position.clone()), false, true, 1)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|row| row.address == input.position)
+        .ok_or("agent_history_source_missing")?;
+    let data = tree
+        .source_for_path(input.position.path(), source::snapshot_id(&input.position))
+        .await
+        .map_err(|error| error.to_string())?;
+    let traces = data
+        .model_request_traces(item.recorded.run, input.after.unwrap_or(0), LIMIT + 1)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut path = qualified.order.path;
+    let leaf = path
+        .len()
+        .checked_sub(1)
+        .ok_or("agent_history_source_missing")?;
+    let mut result = Vec::new();
+    let mut last = None;
+    let more = traces.len() > LIMIT as usize;
+    let millis =
+        |value: UnixMillis| u64::try_from(value.0).map_err(|_| "agent_history_timestamp_invalid");
+    for trace in traces.into_iter().take(LIMIT as usize) {
+        if scope.cancellation.is_cancelled() {
+            return Err("agent_history_cancelled".into());
+        }
+        path[leaf] = trace.sequence;
+        last = Some(trace.sequence);
+        result.push(ui::HistoryRequest {
+            order: wire::HistoryOrder {
+                path: path.clone(),
+                item_index: 0,
+            },
+            step_id: trace.step,
+            attempt_id: trace.attempt,
+            model_id: trace.model_id,
+            purpose: trace.purpose,
+            started_at: trace.started_at.map(millis).transpose()?,
+            first_token_at: trace.first_token_at.map(millis).transpose()?,
+            estimated_input_tokens: trace.context.estimated_input_tokens,
+            context_window: trace
+                .context
+                .model_context
+                .as_ref()
+                .and_then(|model| model.model_context_window),
+            input_limit: trace
+                .context
+                .model_context
+                .and_then(|model| model.context_window),
+            finished: trace
+                .finished
+                .map(|finished| {
+                    Ok::<_, String>(ui::HistoryRequestFinished {
+                        at: millis(finished.at)?,
+                        outcome: finished.outcome,
+                        usage: finished.usage,
+                        diagnostic: finished.diagnostic,
+                    })
+                })
+                .transpose()?,
+        });
+    }
+    authorize(owner, scope, &input.session_id).await?;
+    Ok(ui::HistoryRequests {
+        requests: result,
+        next: if more { last } else { None },
+    })
 }
 
 pub(crate) async fn read_page(
@@ -458,16 +554,52 @@ pub(super) async fn observation(
             .view_at(&cut, latest.run)
             .await
             .map_err(|e| e.to_string())?;
-        if view.terminal.is_none() && matches!(view.spec.trigger, Trigger::ContextCompact) {
-            compacting = Some(ui::CompactionProgress {
-                id: latest.admission.id.to_string(),
-                started_at: latest
-                    .admission
-                    .at
-                    .0
-                    .try_into()
-                    .map_err(|_| "agent_compaction_timestamp_invalid")?,
-            });
+        if view.terminal.is_none() {
+            let progress = if matches!(view.spec.trigger, Trigger::ContextCompact) {
+                Some((latest.admission.id.to_string(), latest.admission.at))
+            } else if !view.stopped
+                && let Some((attempt, summary)) = view.proactive_summary_attempt()
+                && summary.closed.is_none()
+                && summary.interrupted.is_none()
+                && view.waits.values().any(|wait| {
+                    wait.satisfied.is_none()
+                        && wait.cancelled.is_none()
+                        && matches!(wait.reason, WaitReason::Model { attempt: id } if id == attempt)
+                })
+            {
+                let (_, prepared_at) = history
+                    .request_preparation(&cut, view.run, summary.step)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Some((summary.step.to_string(), prepared_at))
+            } else if !view.stopped
+                && let Some(step) = view.current_step
+                && !view
+                    .current_attempt
+                    .and_then(|id| view.attempts.get(&id))
+                    .is_some_and(|attempt| {
+                        attempt.step == step
+                            && (attempt.closed.is_some() || attempt.interrupted.is_some())
+                    })
+            {
+                let (request, prepared_at) = history
+                    .request_preparation(&cut, view.run, step)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                (request.accounting.purpose == ModelPurpose::Summary)
+                    .then(|| (step.to_string(), prepared_at))
+            } else {
+                None
+            };
+            if let Some((id, started)) = progress {
+                compacting = Some(ui::CompactionProgress {
+                    id,
+                    started_at: started
+                        .0
+                        .try_into()
+                        .map_err(|_| "agent_compaction_timestamp_invalid")?,
+                });
+            }
         }
         let backend = match &view.spec.backend {
             BackendSpec::Model { .. } => Some(ui::RunBackend::Model),
@@ -501,8 +633,20 @@ pub(super) async fn observation(
                     ui::RunState::Running
                 },
             });
-            for tool in view.tools.values().filter(|tool| tool.accepted.is_none()) {
-                let tool_use_id = super::delivery::tool_id(view.run, &tool.key);
+            let mut active_tools: Vec<_> = view
+                .tools
+                .values()
+                .filter(|tool| tool.accepted.is_none())
+                .map(|tool| super::delivery::tool_id(view.run, &tool.key))
+                .collect();
+            if let Some(task) = view.external.as_ref().filter(|task| task.closed.is_none()) {
+                active_tools.extend(
+                    task.active_tools
+                        .iter()
+                        .map(|id| super::delivery::executor_tool_id(view.run, task.task, id)),
+                );
+            }
+            for tool_use_id in active_tools {
                 if let Some(position) = history
                     .tool_position(&cut, &tool_use_id)
                     .await

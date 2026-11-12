@@ -411,6 +411,27 @@ impl Store {
     ) -> Result<Option<FactId>, StoreError> {
         fallback::compaction_progress(&self.data, run, current_main).await
     }
+    pub async fn ready_summary(
+        &self,
+        run: RunId,
+        step: StepId,
+        current_attempt: Option<ModelAttemptId>,
+    ) -> Result<Option<ModelAttemptId>, StoreError> {
+        self.data
+            .query(fallback::ReadySummary(run, step, current_attempt))
+            .await
+    }
+    pub async fn previous_proactive_summary(
+        &self,
+        view: &RunView,
+    ) -> Result<Option<maka_agent_facts::context::SummaryOrigin>, StoreError> {
+        let Some(step) = view.current_step else {
+            return Ok(None);
+        };
+        self.data
+            .query(sql::compaction::PreviousProactiveSummary(view.run, step))
+            .await
+    }
     pub async fn finished_or_stopped(
         &self,
         owner: RunOwner,
@@ -903,6 +924,13 @@ impl Store {
             })
             .await
     }
+    pub async fn tool_admission_revision(
+        &self,
+        run: RunId,
+        tool: ToolKey,
+    ) -> Result<Option<u64>, StoreError> {
+        self.data.query(ReadToolAdmissionRevision(run, tool)).await
+    }
     pub async fn model_attempt(
         &self,
         run: RunId,
@@ -1095,6 +1123,13 @@ impl Query for ReadHistory {
     type Output = Vec<RecordedFact>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::history(c, self.run, self.after_revision, self.limit)
+    }
+}
+struct ReadToolAdmissionRevision(RunId, ToolKey);
+impl Query for ReadToolAdmissionRevision {
+    type Output = Option<u64>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::tool_admission_revision(c, self.0, self.1)
     }
 }
 struct ReadModelAttempt(RunId, ModelAttemptId);

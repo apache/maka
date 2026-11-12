@@ -78,7 +78,7 @@ struct Controller {
 }
 impl Controller {
     async fn open() -> Result<Self> {
-        let namespace = tokio::task::spawn_blocking(isolated::protected_namespace)
+        let namespace = tokio::task::spawn_blocking(maka_sandbox::native_task_namespace)
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;

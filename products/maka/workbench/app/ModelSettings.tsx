@@ -35,11 +35,13 @@ import type {
   UiContributionRef,
   UiHost,
 } from '../../../../packages/plugin-sdk/src/workbench.js';
-import type {
-  SettingsPageInput,
-  SettingsPageNavigation,
-  SettingsRoute,
-  SettingsViewInput,
+import {
+  quickToolsSettings,
+  quickToolView,
+  type SettingsPageInput,
+  type SettingsPageNavigation,
+  type SettingsRoute,
+  type SettingsViewInput,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { sameValue } from '../../../../plugins/shared/value';
 import type { SettingsOperations } from './settingsOperations';
@@ -77,7 +79,25 @@ export function ModelSettings(props: {
   const operations = props.operations;
   const navigation = signal<Registration | null>(null);
   const rail = () => windowSize().width >= 880 && !compact();
-  const contributed = () => runtime.settings().find((item) => matches(item, props.route()));
+  // A quick tool's own page sits under Quick tools, beside its commands, as in the launcher; Quick
+  // tools comes last, after Maka's own pages.
+  const quickTool = (item: UiContributionRef) =>
+    runtime
+      .contributions()
+      .some(
+        (tool) =>
+          tool.declaration.kind === 'view' &&
+          tool.declaration.contract === quickToolView.id &&
+          sameValue(tool.instance.instance, item.instance.instance),
+      );
+  const pages = () => {
+    const shown = runtime.settings().filter((item) => !quickTool(item));
+    return [
+      ...shown.filter((item) => item.id !== quickToolsSettings),
+      ...shown.filter((item) => item.id === quickToolsSettings),
+    ];
+  };
+  const contributed = () => pages().find((item) => matches(item, props.route()));
   const page = () => {
     const registered = navigation();
     return registered && registered.key === contributed()?.key ? registered.value : null;
@@ -89,8 +109,7 @@ export function ModelSettings(props: {
   });
   effect(() => {
     if (!runtime.ready() || contributed()) return;
-    const fallback =
-      runtime.settings().find((item) => matches(item, props.defaultRoute)) ?? runtime.settings()[0];
+    const fallback = pages().find((item) => matches(item, props.defaultRoute)) ?? pages()[0];
     props.route.set(fallback ? { instance: fallback.instance.instance, id: fallback.id } : null);
   });
   // The page may hold the exit behind a prompt, so the request is checked again when it runs.
@@ -107,7 +126,7 @@ export function ModelSettings(props: {
       request.from !== request.to;
     if (!valid()) return;
     leave(() => {
-      const target = runtime.settings().find((item) => item.key === request.to);
+      const target = pages().find((item) => item.key === request.to);
       if (!valid() || !target) return;
       if (!operations.pending().length) {
         operations.error.set('');
@@ -200,7 +219,7 @@ export function ModelSettings(props: {
             {tr('Settings')}
           </Text>
         </If>
-        <Each of={runtime.settings()} key={(item) => item.key}>
+        <Each of={pages()} key={(item) => item.key}>
           {(item) => (
             <Button
               accessibilityLabel={tr('Settings section {section}', {

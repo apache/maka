@@ -663,7 +663,7 @@ impl DriverModel {
             })?;
             let capture = ContentBlob::json(&source_evidence)?;
             let projection = ContentBlob::json(&json!({
-                "execution": self.execution, "canonicalRevision": view.revision,
+                "execution": self.execution, "canonicalRevision": source_evidence.current_revision,
                 "input": view.spec.input, "historicalSourceDigest": source_evidence.cut.digest,
                 "steering": steering_refs,
                 "notifications": &frozen.notifications,
@@ -800,9 +800,43 @@ impl DriverModel {
                 .state
                 .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
             let root = self.ancestry_root(view.run, input).await?;
+            let mut current = history.capture().await?;
+            let mut summary_view = None;
+            if summary && !matches!(input, RunInput::ContextCompact { .. }) {
+                let mut revision = view.revision;
+                if let Some(step) = view.current_step {
+                    let pending = self.state.request(view.run, step).await?;
+                    if pending.accounting.purpose == ModelPurpose::Main {
+                        let source: RequestSource =
+                            self.decode(view.run, &pending.source_capture).await?;
+                        revision = source.current_revision;
+                    }
+                }
+                // An automatic Summary starts from the same source as its pending
+                // Main. Later results and newly consumed inputs remain in the tail.
+                let before = revision
+                    .checked_sub(1)
+                    .ok_or_else(|| unsupported("summary-source-revision"))?;
+                let anchor = self
+                    .state
+                    .history(view.run, before, 1)
+                    .await?
+                    .pop()
+                    .filter(|record| record.revision == revision)
+                    .ok_or_else(|| unsupported("summary-source-revision"))?;
+                let sequence = history
+                    .fact_sequence(&current, view.run, anchor.id)
+                    .await?
+                    .ok_or_else(|| unsupported("summary-source-sequence"))?;
+                current = history.capture_at(sequence).await?;
+                if revision != view.revision {
+                    summary_view = Some(history.view_at(&current, view.run).await?);
+                }
+            }
+            let view = summary_view.as_ref().unwrap_or(view);
             let mut source_evidence = RequestSource {
                 cut: history.capture_before(root).await?,
-                current: history.capture().await?,
+                current,
                 current_revision: view.revision,
             };
             let captured = HistorySource::live(&self.state, &source_evidence.current);
@@ -873,9 +907,7 @@ impl DriverModel {
                 let (source, baseline) = self
                     .request_base(target, reader, view.run, &request, &mut messages)
                     .await?;
-                source_evidence = source;
-                source_evidence.current = history.capture().await?;
-                source_evidence.current_revision = view.revision;
+                source_evidence.cut = source.cut;
                 system = baseline;
                 previous_checkpoint_id =
                     self.request_checkpoint(reader, view.run, &request).await?;
@@ -1337,11 +1369,16 @@ impl DriverModel {
         )
         .await
         .map_err(RunError::Tool)?;
-        let visible = availability.snapshot().await.map_err(RunError::Tool)?;
         let visible_defs =
             if self.source.accepted.tool_mode == maka_agent_facts::execution::ToolMode::CodeMode {
-                maka_tools::CodeCells::definitions_for(&visible, self.source.accepted.code_language)
+                maka_tools::CodeCells::definitions_for(
+                    &availability,
+                    self.source.accepted.code_language,
+                )
+                .await
+                .map_err(RunError::Tool)?
             } else {
+                let visible = availability.snapshot().await.map_err(RunError::Tool)?;
                 let mut definitions: Vec<_> = visible.definitions().cloned().collect();
                 if let Some(search) = availability.definition() {
                     definitions.push(search);
@@ -1617,7 +1654,7 @@ impl DriverModel {
                     }
                     Some(Base::Compacted { id, run, baseline }) => {
                         let capture = self
-                            .append_compacted(reader, run, &baseline, target, messages)
+                            .append_compacted(reader, run, &baseline, target, language, messages)
                             .await?;
                         (Some(capture.current.through_sequence), Some(id.to_string()))
                     }
@@ -1805,7 +1842,7 @@ impl DriverModel {
                     }
                     Base::Compacted { id, baseline } => {
                         let capture = self
-                            .append_compacted(reader, run, &baseline, target, messages)
+                            .append_compacted(reader, run, &baseline, target, language, messages)
                             .await?;
                         (
                             Some(id.to_string()),
@@ -2231,6 +2268,7 @@ impl DriverModel {
         let cancellation = work.cancellation.clone();
         let cleanup = self.cleanup.clone();
         let state = self.state.clone();
+        let log = self.log.clone();
         let preview = self.preview.clone();
         let attempt_binding = maka_agent_facts::model::assembly::AttemptBinding {
             execution: self.execution.clone(),
@@ -2244,9 +2282,9 @@ impl DriverModel {
             cut.through_sequence,
         )?;
         // Bind in admission order, not when an arbitrarily delayed stream first emits.
-        preview.send_replace(
-            (request.accounting.purpose == ModelPurpose::Main).then(|| writer.snapshot()),
-        );
+        if request.accounting.purpose == ModelPurpose::Main {
+            preview.send_replace(Some(writer.snapshot()));
+        }
         let (send, recv) = mpsc::channel(4);
         let original_cleanup = self.original_cleanup.clone();
         self.workers.spawn(work.worker.track_future(async move {
@@ -2373,10 +2411,11 @@ impl DriverModel {
                     &observation,
                     &send,
                     &cancellation,
+                    &log,
                 ))
                 .catch_unwind()
                 .await;
-                if !matches!(&received, Ok(Ok(()))) {
+                if !matches!(&received, Ok(Ok(ReceiveOutcome::Completed))) {
                     let cut = writer.snapshot();
                     if cut.binding.purpose == ModelPurpose::Main && cut.revision > 0 {
                         private_cut = Some(cut);
@@ -2401,6 +2440,25 @@ impl DriverModel {
                     }
                     _ => None,
                 };
+                let steered_closure =
+                    if matches!(&received, Ok(Ok(ReceiveOutcome::Steered))) {
+                        // Fence further admissions from this response while its own transport closes.
+                        cancellation.cancel();
+                        Some(
+                            async {
+                                witness.closed(
+                            maka_agent_facts::accounting::Outcome::Aborted,
+                            Some(maka_agent_state::fold::ModelClosure::STEERED_DIAGNOSTIC.into()),
+                            Default::default(),
+                            Value::Null,
+                            witnessed_at()?,
+                        ).await
+                            }
+                            .await,
+                        )
+                    } else {
+                        None
+                    };
                 let observer = stream.cleanup_observer();
                 let settled = stream.cancel_and_wait().await;
                 let source_settled = settled.is_ok();
@@ -2412,6 +2470,15 @@ impl DriverModel {
                             Ok(None)
                         }
                     };
+                    if let Some(closure) = steered_closure {
+                        let fact = closure?;
+                        emit(
+                            &send,
+                            &cancellation,
+                            Ok(ModelObservation::Recorded { fact }),
+                        )
+                        .await;
+                    }
                     if let Some(failure) = failure {
                         let transport =
                             if source_settled {
@@ -2501,7 +2568,7 @@ impl DriverModel {
                     std::future::pending::<()>().await;
                 }
                 match received {
-                    Ok(Ok(())) => Ok(()),
+                    Ok(Ok(_)) => Ok(()),
                     Ok(Err(error)) => Err(error),
                     Err(_) => Err(RunError::ReconciliationRequired(
                         "original model stream observer panicked".into(),
@@ -2673,13 +2740,27 @@ impl DriverModel {
             .get(&attempt)
             .ok_or_else(|| RunError::InvalidInput("prefix attempt is missing".into()))?;
         let request = self.state.request(view.run, original.step).await?;
-        let parts = self.canonical_parts(view, attempt).await?;
         let frozen = self.frozen_input(reader, view.run, &request).await?;
         if frozen.adapter != proof.adapter || frozen.accepted != self.source.accepted {
             return Err(RunError::ReconciliationRequired(
                 "prefix adapter contract changed".into(),
             ));
         }
+        let parts = match &proof.basis {
+            PrefixBasis::ProviderFailure { failure }
+                if frozen.item_acceptance
+                    && failure.retained_output_safe()
+                    && failure.retryable() =>
+            {
+                failure.validate()?;
+                self.canonical_parts(view, attempt).await?
+            }
+            PrefixBasis::ClosedItems { contract } if contract == &request.recovery_contract => {
+                self.validate_cold_contract(view, attempt, &request, &frozen)
+                    .await?
+            }
+            _ => return Err(unsupported("prefix-proof-version")),
+        };
         if proof.run != view.run
             || proof.attempt != attempt
             || proof.request != request.request
@@ -2690,20 +2771,6 @@ impl DriverModel {
             return Err(RunError::ReconciliationRequired(
                 "model prefix protocol evidence differs from canonical output".into(),
             ));
-        }
-        match &proof.basis {
-            PrefixBasis::ProviderFailure { failure }
-                if frozen.item_acceptance
-                    && failure.retained_output_safe()
-                    && failure.retryable() =>
-            {
-                failure.validate()?
-            }
-            PrefixBasis::ClosedItems { contract } if contract == &request.recovery_contract => {
-                self.validate_cold_contract(view, attempt, &request, &frozen)
-                    .await?;
-            }
-            _ => return Err(unsupported("prefix-proof-version")),
         }
         ensure_no_unknown_provider_effect(attempt, &parts)?;
         Ok(())
@@ -2750,53 +2817,56 @@ impl DriverModel {
             return Err(unsupported("recovery-adapter-revision"));
         }
         let mut parts = Vec::new();
-        let mut after = 0;
-        'history: loop {
-            let page = self.state.history(view.run, after, 256).await?;
+        let observed = view.attempts[&attempt].observed;
+        while (parts.len() as u64) < observed {
+            let next = parts.len() as u64;
+            let page = self
+                .state
+                .model_items(
+                    view.run,
+                    attempt,
+                    next.checked_sub(1),
+                    (observed - next).min(256) as u32,
+                )
+                .await?;
             if page.is_empty() {
-                break;
+                return Err(unsupported("incomplete-canonical-prefix"));
             }
             for item in page {
                 if item.revision > view.revision {
-                    break 'history;
+                    return Err(unsupported("model-prefix-after-canonical-cut"));
                 }
-                after = item.revision;
-                if let Fact::ModelObserved {
-                    attempt: original,
+                let Fact::ModelObserved {
                     index,
                     part,
                     continuation,
+                    ..
                 } = item.fact
+                else {
+                    unreachable!("model_items returns canonical parts");
+                };
+                let reference = continuation
+                    .ok_or_else(|| unsupported("closed-item-without-continuation-proof"))?;
+                let proof: ItemContinuation = self
+                    .protocol_data(view.run, &reference, "continuation-proof-schema")
+                    .await?;
+                let cursor = binding
+                    .continuation_cursor(contract, &part)
+                    .ok_or_else(|| unsupported("unreplayable-signature-item"))?;
+                if index != parts.len() as u64
+                    || proof.protocol != format!("{PROTOCOL}/continuation")
+                    || proof.version != VERSION
+                    || proof.run != view.run
+                    || proof.attempt != attempt
+                    || proof.contract != request.recovery_contract
+                    || proof.index != index
+                    || proof.part_digest != maka_agent_engine::digest(&part)?
+                    || proof.cursor != cursor
                 {
-                    if original != attempt {
-                        continue;
-                    }
-                    let reference = continuation
-                        .ok_or_else(|| unsupported("closed-item-without-continuation-proof"))?;
-                    let proof: ItemContinuation = self
-                        .protocol_data(view.run, &reference, "continuation-proof-schema")
-                        .await?;
-                    let cursor = binding
-                        .continuation_cursor(contract, &part)
-                        .ok_or_else(|| unsupported("unreplayable-signature-item"))?;
-                    if index != parts.len() as u64
-                        || proof.protocol != format!("{PROTOCOL}/continuation")
-                        || proof.version != VERSION
-                        || proof.run != view.run
-                        || proof.attempt != attempt
-                        || proof.contract != request.recovery_contract
-                        || proof.index != index
-                        || proof.part_digest != maka_agent_engine::digest(&part)?
-                        || proof.cursor != cursor
-                    {
-                        return Err(unsupported("closed-item-proof-mismatch"));
-                    }
-                    parts.push(part);
+                    return Err(unsupported("closed-item-proof-mismatch"));
                 }
+                parts.push(part);
             }
-        }
-        if parts.len() as u64 != view.attempts[&attempt].observed {
-            return Err(unsupported("incomplete-canonical-prefix"));
         }
         ensure_no_unknown_provider_effect(attempt, &parts)?;
         Ok(parts)
@@ -2844,7 +2914,12 @@ impl DriverModel {
             let parts = self
                 .validate_cold_contract(view, attempt, &request, &frozen)
                 .await?;
-            if parts.is_empty() {
+            if parts.is_empty()
+                && !original
+                    .closed
+                    .as_ref()
+                    .is_some_and(maka_agent_state::fold::ModelClosure::steered)
+            {
                 return Ok(RecoveryEvidence {
                     recovery: AttemptRecovery::Blocked {
                         diagnostic:
@@ -2915,35 +2990,30 @@ async fn canonical_parts_for(
     attempt: ModelAttemptId,
 ) -> Result<Vec<maka_agent_facts::model::ModelPart>, RunError> {
     let mut parts = Vec::new();
-    let mut after = 0;
+    const PAGE: u32 = 256;
     loop {
-        let page = state.history(view.run, after, 256).await?;
-        if page.is_empty() {
-            break;
-        }
+        let page = state
+            .model_items(view.run, attempt, (parts.len() as u64).checked_sub(1), PAGE)
+            .await?;
+        let done = page.len() < PAGE as usize;
         for item in page {
             if item.revision > view.revision {
                 return Ok(parts);
             }
-            after = item.revision;
-            if let Fact::ModelObserved {
-                attempt: original,
-                index,
-                part,
-                ..
-            } = item.fact
-                && original == attempt
-            {
-                if index != parts.len() as u64 {
-                    return Err(RunError::ReconciliationRequired(
-                        "canonical model prefix is not contiguous".into(),
-                    ));
-                }
-                parts.push(part);
+            let Fact::ModelObserved { index, part, .. } = item.fact else {
+                unreachable!("model_items returns canonical parts");
+            };
+            if index != parts.len() as u64 {
+                return Err(RunError::ReconciliationRequired(
+                    "canonical model prefix is not contiguous".into(),
+                ));
             }
+            parts.push(part);
+        }
+        if done {
+            return Ok(parts);
         }
     }
-    Ok(parts)
 }
 
 fn extend_observation(
@@ -3109,8 +3179,9 @@ impl ObservationProtocol {
         writer: &mut maka_agent_facts::model::assembly::AttemptWriter,
         send: &mpsc::Sender<Result<ModelObservation, RunError>>,
         cancellation: &CancellationToken,
-    ) -> Result<(), RunError> {
+    ) -> Result<bool, RunError> {
         let continuation = self.continuation(index, &part)?;
+        let replayable = continuation.is_some();
         let fact = self
             .witness
             .part(index, part, continuation, witnessed_at()?)
@@ -3134,7 +3205,7 @@ impl ObservationProtocol {
             sequence,
         });
         publish_preview(&self.preview, writer.snapshot());
-        Ok(())
+        Ok(replayable)
     }
     async fn recorded_batch(
         &self,
@@ -3189,6 +3260,26 @@ impl ObservationProtocol {
         Ok(())
     }
 }
+enum ReceiveOutcome {
+    Completed,
+    Steered,
+}
+
+async fn pending_steering(log: &SessionStore, state: &Store, run: RunId) -> Result<(), RunError> {
+    let mut changes = log.subscribe_commits()?;
+    let queue = state.queue();
+    loop {
+        changes.borrow_and_update();
+        if queue.has_pending_steering(log.id().into(), run).await? {
+            return Ok(());
+        }
+        changes
+            .changed()
+            .await
+            .map_err(|_| maka_event_log::StoreError::ConnectionClosed)?;
+    }
+}
+
 async fn receive(
     stream: &mut maka_model::ModelStream,
     writer: &mut maka_agent_facts::model::assembly::AttemptWriter,
@@ -3196,20 +3287,50 @@ async fn receive(
     observation: &ObservationProtocol,
     send: &mpsc::Sender<Result<ModelObservation, RunError>>,
     cancellation: &CancellationToken,
-) -> Result<(), RunError> {
-    use maka_agent_facts::model::recorded::ModelObservation as RawObservation;
+    log: &SessionStore,
+) -> Result<ReceiveOutcome, RunError> {
+    use maka_agent_facts::model::{ModelEvent, recorded::ModelObservation as RawObservation};
     let private_summary = observation.scope.purpose == ModelPurpose::Summary;
     let mut pending = BTreeMap::new();
     let mut emitted = 0u64;
-    while let Some(next) = stream.next().await {
+    let mut saw_token = false;
+    let mut can_steer = !private_summary && observation.contract.is_some();
+    let steering = pending_steering(log, &observation.state, observation.run);
+    tokio::pin!(steering);
+    loop {
+        // Only poll steering between complete event observations. Dropping a
+        // partially published item could leave its tool or replay proof orphaned.
+        let next = tokio::select! {
+            next = stream.next() => next,
+            result = &mut steering, if can_steer => {
+                result?;
+                return Ok(ReceiveOutcome::Steered);
+            }
+        };
+        let Some(next) = next else { break };
         let emission = next?;
-        let finished = matches!(
-            &emission.event,
-            maka_agent_facts::model::ModelEvent::Finished { .. }
-        );
-        let observations = writer.push(emission.event, std::time::SystemTime::now())?;
+        let finished = matches!(&emission.event, ModelEvent::Finished { .. });
+        let first_token = !saw_token
+            && match &emission.event {
+                ModelEvent::PartDelta { text, .. } | ModelEvent::ToolInputDelta { text, .. } => {
+                    !text.is_empty()
+                }
+                ModelEvent::ToolInputStarted { name, .. } => !name.is_empty(),
+                ModelEvent::ToolCall(_) => true,
+                _ => false,
+            };
+        let at = std::time::SystemTime::now();
+        let observations = writer.push(emission.event, at)?;
         if !private_summary {
             publish_preview(&observation.preview, writer.snapshot());
+        }
+        if first_token {
+            let fact = observation
+                .witness
+                .first_token(observation_time(at)?)
+                .await?;
+            saw_token = true;
+            emit(send, cancellation, Ok(ModelObservation::Recorded { fact })).await;
         }
         if item_acceptance && !private_summary && !finished {
             for event in observations {
@@ -3218,7 +3339,7 @@ async fn receive(
                 }
             }
             while let Some(part) = pending.remove(&emitted) {
-                observation
+                can_steer &= observation
                     .part(part, emitted, writer, send, cancellation)
                     .await?;
                 emitted += 1;
@@ -3283,7 +3404,7 @@ async fn receive(
                     .await?;
             }
             emit(send, cancellation, Ok(ModelObservation::Recorded { fact })).await;
-            return Ok(());
+            return Ok(ReceiveOutcome::Completed);
         }
     }
     Err(maka_model::ModelError::Adapter(
@@ -3307,7 +3428,11 @@ fn private_partial_blob(
     )?)
 }
 fn witnessed_at() -> Result<UnixMillis, RunError> {
-    let at = std::time::SystemTime::now()
+    observation_time(std::time::SystemTime::now())
+}
+
+fn observation_time(time: std::time::SystemTime) -> Result<UnixMillis, RunError> {
+    let at = time
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| RunError::Internal(error.to_string()))?
         .as_millis()

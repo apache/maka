@@ -18,6 +18,7 @@
  */
 
 use super::{CodeInput, WaitInput};
+use crate::availability::Availability;
 use crate::{CodeExecutor, PreparedEffect, ToolCatalog, ToolDefinition};
 use futures_util::FutureExt;
 use maka_agent_facts::{
@@ -200,21 +201,25 @@ impl CodeCells {
             admission: tokio::sync::Mutex::new(()),
         }))
     }
-    pub fn definitions(&self, catalog: &ToolCatalog) -> Vec<ToolDefinition> {
-        Self::definitions_for(catalog, self.0.executor.language())
+    pub async fn definitions(
+        &self,
+        availability: &Availability,
+    ) -> Result<Vec<ToolDefinition>, ToolError> {
+        Self::definitions_for(availability, self.0.executor.language()).await
     }
-    pub fn definitions_for(
-        catalog: &ToolCatalog,
+    pub async fn definitions_for(
+        availability: &Availability,
         language: maka_agent_facts::execution::CodeLanguage,
-    ) -> Vec<ToolDefinition> {
+    ) -> Result<Vec<ToolDefinition>, ToolError> {
+        let visible = availability.snapshot().await?;
         let mut exec = super::definition(language);
         exec.description.push_str(&super::declarations(
-            catalog.nested().definitions(),
+            visible.nested().definitions(),
             language,
         ));
         let mut definitions = vec![exec, super::wait_definition()];
-        definitions.extend(catalog.direct_only().definitions().cloned());
-        definitions
+        definitions.extend(availability.direct_only().definitions().cloned());
+        Ok(definitions)
     }
     pub fn prepare(
         &self,

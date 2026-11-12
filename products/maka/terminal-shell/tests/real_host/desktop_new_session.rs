@@ -470,6 +470,38 @@ impl Desktop {
         }
     }
 
+    fn drag(
+        &self,
+        from: nsh_terminal::Point<nsh_terminal::Pixels>,
+        to: nsh_terminal::Point<nsh_terminal::Pixels>,
+    ) {
+        self.platform
+            .dispatch_input(PlatformInput::MouseDown(native!(MouseDownEvent {
+                button: MouseButton::Left,
+                position: from,
+                click_count: 1,
+            })))
+            .unwrap();
+        self.pump();
+        for part in 1..=5 {
+            self.platform
+                .dispatch_input(PlatformInput::MouseMove(native!(MouseMoveEvent {
+                    pressed_button: Some(MouseButton::Left),
+                    position: point(from.x + (to.x - from.x) * (part as f32 / 5.), from.y),
+                })))
+                .unwrap();
+            self.pump();
+        }
+        self.platform
+            .dispatch_input(PlatformInput::MouseUp(native!(MouseUpEvent {
+                button: MouseButton::Left,
+                position: to,
+                click_count: 1,
+            })))
+            .unwrap();
+        self.pump();
+    }
+
     async fn held(&self, gate: &ReplyGate) {
         self.wait(
             "the original Host result was not held",
@@ -992,6 +1024,63 @@ async fn desktop_continues_a_failed_run_without_duplicating_the_user_message() {
             json!({"error":{"type":"invalid_request_error","message":"FIXTURE_TURN_FAILED"}}),
         )
         .await;
+    desktop.control("Continue response").await;
+    let sessions = desktop.sessions().await;
+    let session = sessions
+        .iter()
+        .find(|value| value["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId":session}))
+        .await
+        .unwrap();
+    let history = desktop
+        .client
+        .query(
+            "agent",
+            "history",
+            json!({
+                "sessionId":session, "through":observed["through"], "position":{"kind":"tail"},
+                "view":"conversation"
+            }),
+        )
+        .await
+        .unwrap();
+    let opening = history["chunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["role"] == "user")
+        .unwrap();
+    let trace = desktop
+        .client
+        .query(
+            "agent",
+            "historyRequests",
+            json!({
+                "sessionId":session, "through":observed["through"], "position":opening["position"]
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(trace["requests"].as_array().unwrap().len(), 1);
+    assert!(trace["requests"][0]["firstTokenAt"].is_null());
+    let finished = &trace["requests"][0]["finished"];
+    assert_eq!(finished["outcome"], "error");
+    assert!(
+        finished["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("FIXTURE_TURN_FAILED")
+    );
+    desktop.press("Trajectory").await;
+    desktop.press("Inspect model request fixture-model").await;
+    desktop.control("Close record details").await;
+    desktop.artifact("trajectory-failed-request");
+    desktop.press("Chat").await;
     desktop.press("Continue response").await;
     let retry = desktop.request(&mut fixture).await;
     let users: Vec<_> = retry.body["messages"]
@@ -1248,18 +1337,6 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     assert!(working.bottom() <= tool.top());
     assert!(tool.bottom() <= thinking.top());
     desktop.artifact("streaming-thinking-order");
-    answer.delta("The goal is unchanged.").await;
-    desktop
-        .until("turn work stayed open while the answer streamed", || {
-            (desktop.controls("Toggle tool GetGoal").is_empty()
-                && desktop.controls("Thinking · Checking the log").is_empty())
-            .then_some(())
-        })
-        .await;
-    desktop.artifact("streaming-answer-folded-work");
-    desktop.press("Turn work details").await;
-    desktop.control("Toggle tool GetGoal").await;
-    answer.finish().await;
     let sessions = desktop.sessions().await;
     let session = sessions
         .iter()
@@ -1267,13 +1344,256 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         .unwrap()["id"]
         .as_str()
         .unwrap();
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId":session}))
+        .await
+        .unwrap();
+    let history = desktop
+        .client
+        .query(
+            "agent",
+            "history",
+            json!({
+                "sessionId":session, "through":observed["through"], "position":{"kind":"tail"},
+                "view":"conversation"
+            }),
+        )
+        .await
+        .unwrap();
+    let opening = history["chunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["role"] == "user")
+        .unwrap();
+    let read_requests = |through: u64| {
+        desktop.client.query(
+            "agent",
+            "historyRequests",
+            json!({
+                "sessionId":session, "through":through, "position":opening["position"]
+            }),
+        )
+    };
+    let live_first_token = desktop
+        .wait(
+            "the streaming request has no first-token timestamp",
+            async {
+                loop {
+                    let observed = desktop
+                        .client
+                        .query("agent", "observe", json!({"sessionId":session}))
+                        .await
+                        .unwrap();
+                    let live = read_requests(observed["through"].as_u64().unwrap())
+                        .await
+                        .unwrap();
+                    let streaming = &live["requests"][1];
+                    if let Some(at) = streaming["firstTokenAt"].as_u64() {
+                        assert!(streaming["finished"].is_null());
+                        break at;
+                    }
+                }
+            },
+        )
+        .await;
+    answer.delta("The goal is unchanged.").await;
+    answer.finish().await;
     fixture.idle(&desktop.client, session).await;
     desktop.control("Copy message").await;
+    desktop
+        .until("completed answer did not fold the turn's work", || {
+            (desktop.controls("Toggle tool GetGoal").is_empty()
+                && desktop.controls("Thinking · Checking the log").is_empty())
+            .then_some(())
+        })
+        .await;
+    desktop.artifact("completed-answer-folded-work");
+    desktop.press("Turn work details").await;
+    desktop.control("Toggle tool GetGoal").await;
     assert_eq!(
         desktop.control("Turn work details").await.origin,
         summary.origin
     );
-    assert!(!desktop.controls("Toggle tool GetGoal").is_empty());
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId":session}))
+        .await
+        .unwrap();
+    let trace = read_requests(observed["through"].as_u64().unwrap())
+        .await
+        .unwrap();
+    let attempts = trace["requests"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[1]["firstTokenAt"], live_first_token);
+    for attempt in attempts {
+        assert_eq!(attempt["finished"]["outcome"], "success");
+        assert_eq!(attempt["finished"]["usage"]["input_tokens"], 1);
+        let started = attempt["startedAt"].as_u64().unwrap();
+        let first_token = attempt["firstTokenAt"].as_u64().unwrap();
+        assert!(
+            started <= first_token && first_token <= attempt["finished"]["at"].as_u64().unwrap()
+        );
+        assert!(attempt["estimatedInputTokens"].is_number());
+    }
+    let after = attempts[0]["order"]["path"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    let tail = desktop.client.query("agent", "historyRequests", json!({
+        "sessionId":session, "through":observed["through"], "position":opening["position"], "after":after
+    })).await.unwrap();
+    assert_eq!(tail["requests"], json!([attempts[1]]));
+    desktop.press("Turn work details").await;
+    desktop.press("Trajectory").await;
+    desktop.control("Inspect User input").await;
+    desktop.control("Inspect exec").await;
+    desktop.control("Inspect Assistant output").await;
+    let parent = desktop.control("Inspect exec").await;
+    let child = desktop.control("Inspect GetGoal").await;
+    assert!(parent.bottom() <= child.top());
+    let requests = desktop
+        .until(
+            "both model requests must be visible, including the tool-only request",
+            || {
+                let rows = desktop.controls("Inspect model request fixture-model");
+                (rows.len() == 2).then_some(rows)
+            },
+        )
+        .await;
+    assert!(requests[0].bottom() <= parent.top());
+    desktop.artifact("trajectory-ledger");
+    desktop.press_at(requests[0].center());
+    desktop.control("Close record details").await;
+    desktop.artifact("trajectory-model-request");
+    desktop.press("Close record details").await;
+
+    let started = attempts[0]["startedAt"].as_i64().unwrap();
+    let local = jiff::Timestamp::from_millisecond(started)
+        .unwrap()
+        .to_zoned(jiff::tz::TimeZone::system());
+    let timeline_label = format!(
+        "Go to request at {:02}:{:02}:{:02}.{:03}",
+        local.hour(),
+        local.minute(),
+        local.second(),
+        started % 1000
+    );
+    let full_bar = desktop.control(&timeline_label).await;
+    let from = full_bar.center();
+    let to = point(from.x + full_bar.size.width * 0.3, from.y);
+    desktop.drag(from, to);
+    desktop.control("Clear timeline selection").await;
+    desktop.control("Inspect model request fixture-model").await;
+    assert!(desktop.controls("Inspect Assistant output").is_empty());
+    desktop.artifact("trajectory-selected-range");
+
+    desktop.press("Zoom in timeline").await;
+    desktop.control("Zoom out timeline").await;
+    let zoomed = desktop.control(&timeline_label).await;
+    assert!(zoomed.size.width > full_bar.size.width);
+    desktop.press_at(zoomed.center());
+    desktop.control("Close record details").await;
+    desktop.artifact("trajectory-zoomed-request");
+    desktop.press("Close record details").await;
+    desktop.press("Zoom out timeline").await;
+    desktop.press("Fit timeline").await;
+    assert_eq!(desktop.control(&timeline_label).await, full_bar);
+    desktop.press("Clear timeline selection").await;
+    desktop.control("Inspect Assistant output").await;
+
+    desktop.press("Collapse all subcalls").await;
+    desktop.control("Expand all subcalls").await;
+    assert!(desktop.controls("Inspect GetGoal").is_empty());
+    desktop.press("Collapse all turns").await;
+    let fold = desktop.control("Expand all turns").await;
+    assert!(desktop.controls("Inspect GetGoal").is_empty());
+    let previous = desktop.platform.text_input_target();
+    desktop.press_at(point(fold.left() - px(32.), fold.center().y));
+    desktop.target_after(previous).await;
+    assert!(desktop.platform.paste(nsh_core::PasteEvent::new("GetGoal")));
+    desktop.press("Inspect GetGoal").await;
+    desktop.control("Close record details").await;
+    desktop.control("Toggle original tool details").await;
+    desktop.artifact("trajectory-record-inspector");
+
+    desktop.press("Chat").await;
+    desktop.control("Copy message").await;
+    assert!(desktop.controls("Toggle tool GetGoal").is_empty());
+
+    desktop.press("Turn work details").await;
+    desktop.control("Toggle tool GetGoal").await;
+    if desktop.controls("Inspect in execution process").is_empty() {
+        desktop.press("Toggle tool GetGoal").await;
+    }
+    desktop.press("Inspect in execution process").await;
+    desktop.control("Inspect GetGoal").await;
+    desktop.control("Close record details").await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_folds_work_when_responses_starts_the_final_answer() {
+    let mut fixture = Fixture::configured(Options {
+        responses: true,
+        ..Options::default()
+    })
+    .await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("Check the log").await;
+    desktop.submit().await;
+    let mut reply = desktop.request(&mut fixture).await;
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"reasoning","id":"reasoning-1",
+            "summary":[{"type":"summary_text","text":"Checking the log"}]
+        }}))
+        .await;
+    let thought = "Thinking · Checking the log";
+    desktop.control(thought).await;
+    let message = |id, phase, content| json!({"type":"message","role":"assistant","id":id,"phase":phase,"content":content});
+    let added = |id, phase| json!({"type":"response.output_item.added","item":message(id, phase, json!([]))});
+    let delta = |id, text| json!({"type":"response.output_text.delta","item_id":id,"delta":text});
+    let done = |id, phase, text| {
+        json!({"type":"response.output_item.done","item":
+            message(id, phase, json!([{"type":"output_text","text":text}]))})
+    };
+    reply.packet(added("progress", "commentary")).await;
+    reply.packet(delta("progress", "I found the log.")).await;
+    reply
+        .packet(done("progress", "commentary", "I found the log."))
+        .await;
+    reply.packet(added("answer", "final_answer")).await;
+    reply.packet(delta("answer", "The log is clean.")).await;
+    desktop
+        .until(
+            "the final answer did not fold the work while streaming",
+            || {
+                (desktop.controls(thought).is_empty()
+                    && !desktop.controls("Stop response").is_empty())
+                .then_some(())
+            },
+        )
+        .await;
+    desktop.artifact("streaming-final-answer-folded-work");
+    assert!(desktop.controls("Return to latest").is_empty());
+
+    reply
+        .packet(done("answer", "final_answer", "The log is clean."))
+        .await;
+    reply
+        .packet(json!({"type":"response.completed","response":{
+            "id":"response-1","usage":{"input_tokens":10,"output_tokens":20}
+        }}))
+        .await;
+    reply.finish_stream().await;
+    desktop.control("Copy message").await;
+    assert!(desktop.controls(thought).is_empty());
+    desktop.press("Turn work details").await;
+    desktop.control(thought).await;
     desktop.close().await;
     fixture.finish().await;
 }
@@ -2727,6 +3047,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu",
     "desktop_edits_a_message_in_place_and_forks_only_when_sent",
     "desktop_lists_a_scripts_tool_calls_in_place_of_the_script",
+    "desktop_folds_work_when_responses_starts_the_final_answer",
     "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
     "desktop_file_gestures_preserve_drafts_and_stage_an_image",
@@ -2778,6 +3099,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_lists_a_scripts_tool_calls_in_place_of_the_script" => {
             runtime.block_on(desktop_lists_a_scripts_tool_calls_in_place_of_the_script())
+        }
+        "desktop_folds_work_when_responses_starts_the_final_answer" => {
+            runtime.block_on(desktop_folds_work_when_responses_starts_the_final_answer())
         }
         "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened" => {
             runtime.block_on(desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened())

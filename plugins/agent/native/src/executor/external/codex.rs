@@ -18,7 +18,10 @@
  */
 
 use super::*;
-use maka_agent_facts::executor::Output;
+use maka_agent_facts::{
+    executor::{Output, ToolResultDetails, TurnUsage},
+    model::ModelUsage,
+};
 use runtime::{Pipe, RpcError, string};
 
 pub(super) async fn proxy_resolved(
@@ -181,6 +184,7 @@ async fn run(
     io.request("initialize", serde_json::json!({"clientInfo":{"name":"maka","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
     io.notify("initialized", serde_json::json!({})).await?;
     let resume = journal.native_session();
+    let fresh_thread = resume.is_none();
     let mut params = serde_json::json!({"cwd":request["cwd"],"approvalPolicy":"never","sandbox":"danger-full-access","config":{"mcp_servers":{"maka":{"url":bridge.url,"http_headers":{"Authorization":format!("Bearer {}",bridge.bearer())},"enabled":true}}}});
     if let Some(model) = request.get("model") {
         params["model"] = model.clone();
@@ -271,6 +275,9 @@ async fn run(
         turn: turn.clone(),
         messages: Default::default(),
         final_message_id: None,
+        presentation: true,
+        fresh_thread,
+        usage: None,
     });
     journal
         .bind_task(NativeTask::Codex {
@@ -367,6 +374,9 @@ struct Turn {
     turn: String,
     messages: std::collections::BTreeMap<String, Message>,
     final_message_id: Option<String>,
+    presentation: bool,
+    fresh_thread: bool,
+    usage: Option<TurnUsage>,
 }
 #[derive(Default)]
 struct Message {
@@ -589,43 +599,83 @@ impl Turn {
                             })
                             .await?;
                     } else {
+                        let status = item["status"].as_str();
+                        let exit_code = item["exitCode"]
+                            .as_i64()
+                            .and_then(|code| i32::try_from(code).ok());
+                        let duration_ms = item["durationMs"].as_u64();
+                        let details = (self.presentation
+                            && (exit_code.is_some() || duration_ms.is_some()))
+                        .then_some(ToolResultDetails {
+                            exit_code,
+                            duration_ms,
+                        });
+                        let text = if self.presentation && kind == "commandExecution" {
+                            item["aggregatedOutput"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .replace('\0', "\\0")
+                        } else {
+                            serde_json::to_string(item).expect("native item is JSON")
+                        };
                         output
                             .emit(Output::ToolResult {
                                 tool_call_id,
-                                text: serde_json::to_string(item).expect("native item is JSON"),
-                                is_error: item.get("status").and_then(Value::as_str)
-                                    == Some("failed"),
+                                text,
+                                details,
+                                is_error: status == Some("failed")
+                                    || (self.presentation
+                                        && exit_code.is_some_and(|code| code != 0)),
                             })
                             .await?;
                     }
                 }
             }
+            "thread/tokenUsage/updated" if self.presentation && self.fresh_thread => {
+                if let Some(total) = p.pointer("/tokenUsage/total").and_then(Value::as_object) {
+                    let counter = |key| total.get(key).and_then(Value::as_u64);
+                    self.usage = Some(TurnUsage {
+                        tokens: ModelUsage {
+                            input_tokens: counter("inputTokens"),
+                            output_tokens: counter("outputTokens"),
+                            reasoning_tokens: counter("reasoningOutputTokens"),
+                            cache_read_tokens: counter("cachedInputTokens"),
+                            cache_write_tokens: counter("cacheWriteInputTokens"),
+                        },
+                        total_tokens: counter("totalTokens"),
+                        duration_ms: None,
+                    });
+                }
+            }
             "turn/completed" => {
-                return Ok(Some(
-                    match p.pointer("/turn/status").and_then(Value::as_str) {
-                        Some("completed") => Outcome::Completed {
-                            message_id: self.final_message_id.clone(),
-                        },
-                        Some("interrupted") => Outcome::Cancelled {
-                            reason: Some("native_interrupted".into()),
-                        },
-                        Some("failed") => Outcome::Failed {
-                            code: Some("native_turn_failed".into()),
-                            message: p
-                                .pointer("/turn/error/message")
-                                .and_then(Value::as_str)
-                                .filter(|message| !message.is_empty())
-                                .unwrap_or("Codex turn failed")
-                                .into(),
-                            recoverable: false,
-                        },
-                        _ => {
-                            return Err(Error::Invalid(
-                                "Codex terminal has no recognized status".into(),
-                            ));
-                        }
+                let outcome = match p.pointer("/turn/status").and_then(Value::as_str) {
+                    Some("completed") => Outcome::Completed {
+                        message_id: self.final_message_id.clone(),
                     },
-                ));
+                    Some("interrupted") => Outcome::Cancelled {
+                        reason: Some("native_interrupted".into()),
+                    },
+                    Some("failed") => Outcome::Failed {
+                        code: Some("native_turn_failed".into()),
+                        message: p
+                            .pointer("/turn/error/message")
+                            .and_then(Value::as_str)
+                            .filter(|message| !message.is_empty())
+                            .unwrap_or("Codex turn failed")
+                            .into(),
+                        recoverable: false,
+                    },
+                    _ => {
+                        return Err(Error::Invalid(
+                            "Codex terminal has no recognized status".into(),
+                        ));
+                    }
+                };
+                if let Some(mut usage) = self.usage.take() {
+                    usage.duration_ms = p["turn"]["durationMs"].as_u64();
+                    output.emit(Output::TurnUsage { usage }).await?;
+                }
+                return Ok(Some(outcome));
             }
             _ => {}
         }
@@ -738,6 +788,9 @@ pub(super) async fn replay(
         turn: turn.clone(),
         messages: Default::default(),
         final_message_id: None,
+        presentation: binding.adapter_version >= PRESENTATION_VERSION,
+        fresh_thread: true,
+        usage: None,
     };
     let mut acknowledged = std::collections::BTreeSet::new();
     let mut outcome = None;

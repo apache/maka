@@ -412,6 +412,8 @@ fn cell_wire_rejects_unknown_parts_and_does_not_search_child_input_for_markers()
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
+    ResetComputer,
+    DeniedComputerEvaluation,
     Baseline,
     Draft,
     Interrupted,
@@ -519,6 +521,12 @@ impl Model {
             return sse(json!({"content":"auxiliary complete"}), "stop");
         }
         let tools = body["tools"].as_array().unwrap();
+        for name in ["cua_repl", "cua_reset"] {
+            assert!(
+                tools.iter().any(|tool| tool["function"]["name"] == name),
+                "Code Mode with tool discovery must advertise {name} as a direct tool"
+            );
+        }
         for (name, field) in [("exec", "code"), ("wait", "cell_id")] {
             let tool = tools
                 .iter()
@@ -559,8 +567,8 @@ impl Model {
             self.step = Step::Report;
             return self.wait(self.draft.clone().unwrap());
         }
-        if self.step == Step::Baseline && self.pending.is_empty() {
-            return self.exec(self.baseline_code.clone());
+        if self.step == Step::ResetComputer && self.pending.is_empty() {
+            return self.tool("cua_reset", json!({}));
         }
         assert_ne!(
             self.step,
@@ -571,6 +579,29 @@ impl Model {
             .iter()
             .find(|message| message["role"] == "tool" && message["tool_call_id"] == self.pending)
             .expect("actual result of the exact previous call");
+        if self.step == Step::ResetComputer {
+            assert!(
+                output["content"]
+                    .to_string()
+                    .contains("Computer Use REPL reset. Bind targets again."),
+                "model must receive the saved CUA output: {output}"
+            );
+            self.step = Step::DeniedComputerEvaluation;
+            return self.tool(
+                "cua_repl",
+                json!({"code":"await cua.listWindows({emit: false})"}),
+            );
+        }
+        if self.step == Step::DeniedComputerEvaluation {
+            assert!(
+                output["content"]
+                    .to_string()
+                    .contains("desktop and browser resources cannot prove compatibility with the caller's sandbox floor"),
+                "model must receive the original CUA error: {output}"
+            );
+            self.step = Step::Baseline;
+            return self.exec(self.baseline_code.clone());
+        }
         let values = tool_objects(&output["content"])
             .unwrap_or_else(|error| panic!("{error}; actual tool result: {output}"));
         let (summary, cell) = cell_observation(&values)
@@ -972,7 +1003,7 @@ async fn case(
     .await?;
     assert_eq!(saved["kind"], "saved");
     let created = mutate(&clients[0], "agent", "create", json!({
-        "title":"CodeMode canonical store and cold Root","automaticTitle":false,"labels":[],"tools":["Shell"],
+        "title":"CodeMode canonical store and cold Root","automaticTitle":false,"labels":[],"tools":["Shell","cua_repl","cua_reset"],
         "workspace":{"kind":"directory","path":sandbox.workspace},
         "backend":{"kind":"model","connectionId":connection,"modelId":"gpt-4.1","thinkingLevel":null}
     }), Attachments::new()).await?;
@@ -1423,7 +1454,7 @@ async fn cold_root(language: CodeLanguage) {
         draft_code,
         read_code,
         nonce,
-        step: Step::Baseline,
+        step: Step::ResetComputer,
         serial: 0,
         pending: String::new(),
         baseline: None,

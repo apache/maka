@@ -590,6 +590,9 @@ impl Handler for Agent {
                 "historyPrompt" => {
                     encode(history::prompt(&owner, context.scope(), decode(input)?).await?)
                 }
+                "historyRequests" => {
+                    encode(history::requests(&owner, context.scope(), decode(input)?).await?)
+                }
                 "search" => encode(history::search(&owner, context.scope(), decode(input)?).await?),
                 "source" => encode(history::source(&owner, context.scope(), decode(input)?).await?),
                 "toolImage" => {
@@ -605,6 +608,12 @@ impl Handler for Agent {
                             .external_agents(input.inspect, context.scope())
                             .await?,
                     )
+                }
+                "externalUsageLimits" => {
+                    let input: maka_agent_api::external::ExternalUsageLimitsRead = decode(input)?;
+                    owner
+                        .external_usage_limits(input.runtime, context.scope())
+                        .await
                 }
                 "executors" => {
                     let _: ExecutorsRead = decode(input)?;

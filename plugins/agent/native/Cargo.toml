@@ -76,6 +76,7 @@ maka-session-title.workspace = true
 maka-tools.workspace = true
 maka-web.workspace = true
 futures-util.workspace = true
+jiff.workspace = true
 jsonschema.workspace = true
 libc.workspace = true
 schemars.workspace = true

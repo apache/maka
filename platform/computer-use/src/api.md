@@ -41,6 +41,9 @@ ChatGPT and stock OpenCLI compatibility is best effort. Stock OpenCLI currently 
 Entry points (selection emits initial state):
 - `await cua.getState({emit?})`: app and available browser inventory, including inventory errors.
 - `await cua.listApps({emit?})`, `await cua.listWindows({emit?})`.
+  Window entries include `pid` and `bindable`. Select a window with `bindable: true`.
+  An unavailable binding includes `bindingError`. Bindable macOS entries also include
+  `applicationId` and `appPath`. App consent and live identity are checked when binding.
 - `const app = await cua.getApp("Name / bundle ID / app path")` or `getApp({windowId})`.
   macOS launches a missing app. Windows getApp selects an already open window;
   use `await cua.computer.launch_app({app: appId})` with an ID from cua.listApps(),

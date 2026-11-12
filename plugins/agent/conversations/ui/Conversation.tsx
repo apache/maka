@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createTrajectoryRequests } from './trajectoryRequests';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
 import { delayed } from '../../../../products/maka/workbench/app/delayed';
@@ -102,6 +103,27 @@ import {
   TranscriptOverlay,
   type LivePart,
 } from '../../../../products/maka/workbench/app/transcriptOverlay';
+import {
+  TrajectoryInspector,
+  TrajectoryOverview,
+  TrajectoryRecord,
+  TrajectoryRequest,
+  TrajectoryRequestInspector,
+  TrajectoryToolbar,
+  TrajectoryTurn,
+  trajectoryLabel,
+} from '../../../../products/maka/workbench/app/TrajectoryLedger';
+import {
+  projectTrajectory,
+  trajectoryOverlaps,
+  trajectoryRecordMatches,
+  trajectoryRecordKey,
+  trajectoryTurnKey,
+  trajectoryTimeline,
+  visibleTrajectory,
+  type TrajectoryEntry,
+  type TrajectoryRange,
+} from '../../../../products/maka/workbench/app/trajectory';
 import { thinkingSummary } from '../../../../products/maka/workbench/app/thinkingSummary';
 import type {
   ComposerSession,
@@ -354,6 +376,7 @@ const readingColumn = {
   paddingLeft: 16,
   paddingRight: platform.idiom === 'terminal' ? 24 : 16,
 } as const;
+const historyEndTolerance = 1;
 
 export function Conversation(props: ConversationProps) {
   const host = useHost();
@@ -441,7 +464,7 @@ export function Conversation(props: ConversationProps) {
     through: 0,
     items: [],
   });
-  const awayFromLatest = signal(false);
+  const historyFollowPaused = signal(false);
   const visibleTurn = signal<string | null>(null);
   const navigation = signal<HistoryNavigation | null>(null);
   const navigatingTurn = computed(() => {
@@ -478,6 +501,13 @@ export function Conversation(props: ConversationProps) {
   const recovering = signal(false);
   const notice = createTransientText();
   const reading = signal<'chat' | 'trajectory'>('chat');
+  const trajectoryQuery = signal('');
+  const trajectoryRange = signal<TrajectoryRange | null>(null);
+  const trajectoryFiltering = () => !!trajectoryQuery().trim() || trajectoryRange() !== null;
+  const trajectoryCollapsed = signal<ReadonlySet<string>>(new Set());
+  const trajectoryCollapsedTools = signal<ReadonlySet<string>>(new Set());
+  const trajectorySelection = signal<string | null>(null);
+  const trajectorySideBySide = signal(false);
   // In the Bot Session, Chat shows what the Bot told the user (SendUser); its own
   // replies and steps stay in Trajectory.
   const bot = createBotTranscript(host, sessionId, () => props.botSession?.());
@@ -499,13 +529,15 @@ export function Conversation(props: ConversationProps) {
   };
   const readingSize = signal({ width: 640, height: 192 });
   let historyOffset = 0;
+  let historyMaxOffset = 0;
+  let historyScrollInput: 'idle' | 'pending' | 'dragging' = 'idle';
   const innerReader = signal<string | null>(null);
   // The process group whose activity list last reported its end.
   const readerAtEnd = signal<string | null>(null);
   // At the end of a paused group there is nothing below to reach, only
   // following to resume, and nothing to follow once the run has ended.
   const pausedAtEnd = () =>
-    !awayFromLatest() && innerReader() !== null && innerReader() === readerAtEnd();
+    !historyFollowPaused() && innerReader() !== null && innerReader() === readerAtEnd();
   const metrics = signal<any>(null);
   const turnStates = new Map<string, TurnViewState>();
   const groupStates = new Map<string, GroupViewState>();
@@ -655,7 +687,61 @@ export function Conversation(props: ConversationProps) {
   const unfoldTurn = (turn: TurnPresentation) => {
     if (!turnExpanded(turn)) turnState(turn.turnKey).expanded.set(true);
   };
+  const trajectoryRequests = createTrajectoryRequests({
+    active: () => reading() === 'trajectory' && props.visible(),
+    rows,
+    through: () => historyWindow()?.through,
+    read: (through, position, after) =>
+      host.query('agent', 'historyRequests', {
+        sessionId,
+        through,
+        position,
+        after,
+      }),
+    failed: (reason) => report(reason),
+  });
+  const trajectory = computed(() => projectTrajectory(projection(), trajectoryRequests()));
+  const trajectoryByKey = computed(() => new Map(trajectory().map((entry) => [entry.key, entry])));
+  const trajectoryOverview = computed(() => trajectoryTimeline(trajectory()));
+  const trajectoryTurns = computed(() =>
+    trajectory().flatMap((entry) => (entry.kind === 'trajectory-turn' ? [entry.turnKey] : [])),
+  );
+  const trajectoryParents = computed(
+    () =>
+      new Set(
+        trajectory().flatMap((entry) =>
+          entry.kind === 'trajectory-record' ? entry.ancestorToolKeys : [],
+        ),
+      ),
+  );
+  const allTrajectorySubcallsCollapsed = computed(
+    () =>
+      trajectoryParents().size > 0 &&
+      [...trajectoryParents()].every((key) => trajectoryCollapsedTools().has(key)),
+  );
+  const toggleTrajectoryTool = (key: string) => {
+    const next = new Set(trajectoryCollapsedTools());
+    if (!next.delete(key)) next.add(key);
+    trajectoryCollapsedTools.set(next);
+  };
+  const allTrajectoryTurnsCollapsed = computed(
+    () =>
+      trajectoryTurns().length > 0 &&
+      trajectoryTurns().every((key) => trajectoryCollapsed().has(key)),
+  );
+  const toggleTrajectoryTurn = (key: string) => {
+    const next = new Set(trajectoryCollapsed());
+    if (!next.delete(key)) next.add(key);
+    trajectoryCollapsed.set(next);
+  };
+  const selectedTrajectory = computed(() => {
+    if (reading() !== 'trajectory') return null;
+    const key = trajectorySelection();
+    const entry = key === null ? undefined : trajectoryByKey().get(key);
+    return entry && entry.kind !== 'trajectory-turn' ? entry : null;
+  });
   type DisplayEntry =
+    | TrajectoryEntry
     | { kind: 'summary'; key: string; turnKey: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
     | { kind: 'row'; key: string; rowId: string; repeats?: number }
@@ -664,12 +750,45 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'botWorking'; key: string }
     | { kind: 'botWaiting'; key: string; workers: readonly ActiveWorker[] };
   const display = computed<DisplayEntry[]>(() => {
+    if (reading() === 'trajectory') {
+      const query = trajectoryQuery().trim().toLocaleLowerCase();
+      const range = trajectoryRange();
+      return visibleTrajectory(
+        trajectory(),
+        trajectoryCollapsed(),
+        trajectoryCollapsedTools(),
+        query || range
+          ? (entry) => {
+              if (entry.kind === 'trajectory-request') {
+                const { modelId, startedAt, firstTokenAt, finished } = entry.request;
+                return (
+                  (!query || modelId.toLocaleLowerCase().includes(query)) &&
+                  (!range ||
+                    (startedAt != null &&
+                      trajectoryOverlaps(
+                        range,
+                        startedAt,
+                        finished?.at ?? firstTokenAt ?? undefined,
+                      )))
+                );
+              }
+              const row = currentRow(entry.rowId);
+              return (
+                row !== undefined &&
+                (!query || trajectoryRecordMatches(row, query, trajectoryLabel(row))) &&
+                (!range ||
+                  (row.timestamp !== undefined && trajectoryOverlaps(range, row.timestamp)))
+              );
+            }
+          : undefined,
+      );
+    }
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
     // Until the Host has said whether this is the Bot, assume it is: showing the model's
     // own text on the Bot's Chat would publish internal output, while a short blank on an
     // ordinary conversation only delays it. Reading a Bot never becomes visible by failing.
-    const botChat = botView() !== 'ordinary' && reading() === 'chat';
+    const botChat = botView() !== 'ordinary';
     // The Bot's reply to a Turn is what it sent with SendUser during that Turn,
     // shown after the Turn's own entries.
     let openTurn: string | undefined;
@@ -746,19 +865,17 @@ export function Conversation(props: ConversationProps) {
         speak();
         openTurn = turnId;
       }
-      // The terminal needs a summary as soon as there is folded work to reopen.
       const outcome = turn && turnOutcome(turn);
-      const streamingFold =
-        turn && turn.answerOutputIds.length > 0 && outcome === null && workFold(turn) === 'closed';
+      const foldedWork = turn && workFold(turn) === 'closed';
       if (
         turn &&
         (entry.kind === 'process' ||
           row?.role === 'assistant' ||
           // Recovered failures sit under the summary that folds them.
           (row?.role === 'failure' &&
-            (platform.idiom !== 'terminal' || outcome === 'completed' || streamingFold))) &&
+            (platform.idiom !== 'terminal' || outcome === 'completed' || foldedWork))) &&
         !summaries.has(turn.turnKey) &&
-        (platform.idiom !== 'terminal' || outcome !== null || streamingFold)
+        (platform.idiom !== 'terminal' || outcome !== null || foldedWork)
       ) {
         summaries.add(turn.turnKey);
         result.push({
@@ -788,14 +905,6 @@ export function Conversation(props: ConversationProps) {
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
         if (row.role === 'failure' && turn && !turnExpanded(turn)) continue;
-        if (
-          reading() === 'trajectory' &&
-          ((row.role === 'user' && !row.origin) ||
-            (row.finalOutput && botView() === 'ordinary') ||
-            row.role === 'compaction' ||
-            (historyTurnKey(row) === undefined && row.role !== 'failure'))
-        )
-          continue;
         result.push({
           kind: 'row',
           key: entry.key,
@@ -836,6 +945,10 @@ export function Conversation(props: ConversationProps) {
     previouslyVisible = visible;
   });
   const displayByKey = computed(() => new Map(display().map((item) => [item.key, item])));
+  effect(() => {
+    const reader = innerReader();
+    if (reader !== null && !displayByKey().has(reader)) innerReader.set(null);
+  });
   const displayKeys = computed(() => display().map((item) => item.key));
   const latestQuestion = computed(() =>
     display().findLastIndex(
@@ -895,11 +1008,78 @@ export function Conversation(props: ConversationProps) {
     const entry = displayByKey().get(key);
     if (entry?.kind === 'summary') return entry.turnKey;
     if (entry?.kind === 'process') return entry.group.turnKey;
+    if (entry && 'turnKey' in entry) return entry.turnKey;
     return entry?.kind === 'row'
       ? (historyTurnKey(projection().rowsById.get(entry.rowId)) ?? null)
       : null;
   };
   let list: ListRef | undefined;
+  const scrollToTurn = (turnKey: string) => {
+    const index =
+      reading() === 'trajectory'
+        ? displayKeys().indexOf(trajectoryTurnKey(turnKey))
+        : displayKeys().findIndex((key) => entryTurn(key) === turnKey);
+    if (index >= 0) list?.scrollToIndex({ index, viewPosition: 0, animated: false });
+  };
+  let pendingTrajectoryAnchor: string | null = null;
+  const selectTrajectory = (key: string) => {
+    if (selectedTrajectory() === null && !trajectorySideBySide()) pendingTrajectoryAnchor = key;
+    trajectorySelection.set(key);
+  };
+  const closeTrajectoryInspector = () => {
+    pendingTrajectoryAnchor = null;
+    trajectorySelection.set(null);
+    if (!historyFollowPaused() && atHistoryTail()) resumeHistoryFollowing();
+  };
+  const selectTrajectoryRange = (range: TrajectoryRange | null) => {
+    batch(() => {
+      trajectoryRange.set(range);
+      if (range) historyFollowPaused.set(true);
+    });
+    const selected = trajectorySelection();
+    const keys = displayKeys();
+    if (selected !== null && !keys.includes(selected)) closeTrajectoryInspector();
+    if (range && keys.length > 0) list?.scrollToIndex({ index: 0, animated: false });
+  };
+  const jumpTrajectoryEntry = (key: string) => {
+    const entry = trajectoryByKey().get(key);
+    if (!entry) return;
+    batch(() => {
+      trajectoryQuery.set('');
+      if (trajectoryRange() !== null && !displayByKey().has(key)) trajectoryRange.set(null);
+      if (entry.turnKey !== null && trajectoryCollapsed().has(entry.turnKey))
+        toggleTrajectoryTurn(entry.turnKey);
+      if (entry.kind === 'trajectory-record' && entry.ancestorToolKeys.length > 0) {
+        const expanded = new Set(trajectoryCollapsedTools());
+        for (const ancestor of entry.ancestorToolKeys) expanded.delete(ancestor);
+        trajectoryCollapsedTools.set(expanded);
+      }
+      if (entry.kind !== 'trajectory-turn') selectTrajectory(key);
+      historyFollowPaused.set(true);
+    });
+    const index = displayKeys().indexOf(key);
+    if (index >= 0) list?.scrollToIndex({ index, viewPosition: 0, animated: false });
+    list?.focus();
+  };
+  const jumpTrajectoryTurn = (turnKey: string) => jumpTrajectoryEntry(trajectoryTurnKey(turnKey));
+  const inspectToolInTrajectory = (rowId: string) => {
+    const key = trajectoryRecordKey(rowId);
+    if (!trajectoryByKey().has(key)) return;
+    cancelNavigation();
+    batch(() => {
+      innerReader.set(null);
+      reading.set('trajectory');
+    });
+    if (!trajectorySideBySide()) pendingTrajectoryAnchor = key;
+    jumpTrajectoryEntry(key);
+  };
+
+  const resumeHistoryFollowing = () => {
+    historyFollowPaused.set(false);
+    innerReader.set(null);
+    // Replace the list's reading anchor when manual scrolling reaches the end.
+    list?.scrollToEnd({ animated: false });
+  };
   let compactScroll: ScrollRef | undefined;
   let followCompact = false;
   let alive = true;
@@ -1074,7 +1254,7 @@ export function Conversation(props: ConversationProps) {
           page.after === null && page.before === null ? 0 : undefined,
         );
         ready.set(true);
-        awayFromLatest.set(position.kind !== 'tail');
+        historyFollowPaused.set(position.kind !== 'tail');
         innerReader.set(null);
       });
       if (page.after === null && latestKnown > through) void follow().catch(report);
@@ -1669,7 +1849,7 @@ export function Conversation(props: ConversationProps) {
       innerReader.set(null);
       list?.focus();
     }
-    awayFromLatest.set(true);
+    historyFollowPaused.set(true);
     list?.scrollToIndex({
       index: displayKeys().indexOf(entry.key),
       viewPosition: 0,
@@ -1759,7 +1939,8 @@ export function Conversation(props: ConversationProps) {
       if (navigation() !== target) return;
       const row = rows().find((candidate) => historyTurnKey(candidate) === item.turnKey);
       if (!row) throw new UiError('This turn is no longer available.');
-      revealRow(row);
+      if (reading() === 'trajectory') jumpTrajectoryTurn(item.turnKey);
+      else revealRow(row);
     } finally {
       if (navigation() === target) navigation.set(null);
     }
@@ -2541,10 +2722,16 @@ export function Conversation(props: ConversationProps) {
     }
   };
   const chooseReading = ({ owner, mode }: { owner: string; mode: 'chat' | 'trajectory' }) => {
-    if (alive && owner === sessionId) {
-      cancelNavigation();
+    if (!alive || owner !== sessionId || reading() === mode) return;
+    const anchor = visibleTurn();
+    pendingTrajectoryAnchor = null;
+    cancelNavigation();
+    batch(() => {
+      innerReader.set(null);
       reading.set(mode);
-    }
+    });
+    if (historyFollowPaused() && anchor !== null) scrollToTurn(anchor);
+    else if (atHistoryTail()) resumeHistoryFollowing();
   };
   const sendRendered = ({
     owner,
@@ -2712,6 +2899,11 @@ export function Conversation(props: ConversationProps) {
     },
     focusActivity(turnId) {
       cancelNavigation();
+      if (reading() === 'trajectory') {
+        const target = turnId ?? runTurn();
+        if (target !== null) jumpTrajectoryTurn(target);
+        return;
+      }
       const group = projection().entries.findLast(
         (entry) => entry.kind === 'process' && entry.turnKey === turnId,
       );
@@ -2748,18 +2940,20 @@ export function Conversation(props: ConversationProps) {
     jumpLatest(turnId, reload = false) {
       if (!alive) return;
       const showLatest = () => {
-        awayFromLatest.set(false);
-        innerReader.set(null);
-        const group = projection().entries.findLast(
-          (entry) => entry.kind === 'process' && entry.turnKey === (turnId ?? runTurn()),
-        );
+        if (reading() === 'trajectory' && trajectoryRange() !== null) selectTrajectoryRange(null);
+        const group =
+          reading() === 'chat'
+            ? projection().entries.findLast(
+                (entry) => entry.kind === 'process' && entry.turnKey === (turnId ?? runTurn()),
+              )
+            : undefined;
         if (group?.kind === 'process') {
           const state = groupState(group.key);
           state.following.set(true);
           if (state.list) state.list.scrollToEnd({ animated: false });
           else state.opening = 'bottom';
         }
-        list?.scrollToEnd({ animated: false });
+        resumeHistoryFollowing();
       };
       // The loaded window already reaches the latest row and follows new ones:
       // scroll it in place, keeping the rows above, without waiting on the Host.
@@ -2836,7 +3030,7 @@ export function Conversation(props: ConversationProps) {
       !observed.hasUnread ||
       !ready() ||
       !atHistoryTail() ||
-      awayFromLatest() ||
+      historyFollowPaused() ||
       navigation() !== null ||
       runId() !== null ||
       observed.through < runThrough ||
@@ -3132,6 +3326,55 @@ export function Conversation(props: ConversationProps) {
               viewPosition: 0,
               animated: false,
             });
+          if (initial.kind === 'trajectory-turn') {
+            return (
+              <TrajectoryTurn
+                turn={() => projection().turns.get(initial.turnKey) ?? initial.turn}
+                opening={() => currentRow(initial.rowId)}
+                collapsed={() =>
+                  !trajectoryFiltering() && trajectoryCollapsed().has(initial.turnKey)
+                }
+                canFold={() => !trajectoryFiltering()}
+                toggle={inputAction(toggleTrajectoryTurn, initial.turnKey)}
+              />
+            );
+          }
+          if (initial.kind === 'trajectory-request') {
+            return (
+              <TrajectoryRequest
+                request={() => {
+                  const latest = entry();
+                  return latest.kind === 'trajectory-request' ? latest.request : initial.request;
+                }}
+                selected={() => trajectorySelection() === initial.key}
+                select={inputAction(selectTrajectory, initial.key)}
+              />
+            );
+          }
+          if (initial.kind === 'trajectory-record') {
+            const first = currentRow(initial.rowId);
+            if (!first) return <View />;
+            const row = () => currentRow(initial.rowId) ?? first;
+            return (
+              <TrajectoryRecord
+                row={row}
+                selected={() => trajectorySelection() === initial.key}
+                progress={() => (row().tool ? toolProgress(row().tool!.toolUseId) : null)}
+                select={inputAction(selectTrajectory, initial.key)}
+                canFold={() =>
+                  !trajectoryFiltering() &&
+                  initial.toolKey !== undefined &&
+                  trajectoryParents().has(initial.toolKey)
+                }
+                folded={() =>
+                  initial.toolKey !== undefined && trajectoryCollapsedTools().has(initial.toolKey)
+                }
+                toggle={
+                  initial.toolKey ? inputAction(toggleTrajectoryTool, initial.toolKey) : undefined
+                }
+              />
+            );
+          }
           if (initial.kind === 'summary') {
             const first = projection().turns.get(initial.turnKey);
             if (!first) return <View />;
@@ -3197,6 +3440,7 @@ export function Conversation(props: ConversationProps) {
                 toolActivity={tool}
                 liveTools={liveTools}
                 toolProgress={toolProgress}
+                inspectTool={inspectToolInTrajectory}
                 state={groupState(initial.group.key)}
                 row={currentRow}
                 rowState={rowState}
@@ -3285,6 +3529,7 @@ export function Conversation(props: ConversationProps) {
               }}
               toolMaxHeight={() => readingSize().height}
               toolProgress={toolProgress}
+              inspectTool={inspectToolInTrajectory}
               ownerKey={() => initial.rowId}
               viewState={rowState(initial.rowId)}
               sessionId={sessionId}
@@ -3626,10 +3871,13 @@ export function Conversation(props: ConversationProps) {
         </Button>
       </View>
       <View
+        onLayout={({ bounds }) =>
+          trajectorySideBySide.set(platform.idiom !== 'terminal' && bounds.size.width >= 760)
+        }
         style={{
           display: ownHandle.empty() ? 'none' : 'flex',
           flex: 1,
-          flexDirection: 'column',
+          flexDirection: selectedTrajectory() !== null && trajectorySideBySide() ? 'row' : 'column',
           minHeight: 0,
           width: '100%',
           // Keep the desktop rail clear of the list, whose scroll bar ends beside it.
@@ -3644,28 +3892,68 @@ export function Conversation(props: ConversationProps) {
             width: '100%',
           }}
         >
+          <If when={reading() === 'trajectory'}>
+            <TrajectoryOverview
+              timeline={trajectoryOverview}
+              selection={trajectoryRange}
+              select={selectTrajectoryRange}
+              jump={jumpTrajectoryEntry}
+            />
+            <TrajectoryToolbar
+              query={trajectoryQuery}
+              search={(value) => trajectoryQuery.set(value)}
+              allCollapsed={allTrajectoryTurnsCollapsed}
+              canFold={() => !trajectoryFiltering() && trajectoryTurns().length > 0}
+              toggleAll={() =>
+                trajectoryCollapsed.set(
+                  new Set(allTrajectoryTurnsCollapsed() ? [] : trajectoryTurns()),
+                )
+              }
+              canFoldSubcalls={() => !trajectoryFiltering() && trajectoryParents().size > 0}
+              subcallsCollapsed={allTrajectorySubcallsCollapsed}
+              toggleSubcalls={() =>
+                trajectoryCollapsedTools.set(
+                  new Set(allTrajectorySubcallsCollapsed() ? [] : trajectoryParents()),
+                )
+              }
+              hasOlder={() => historyWindow()?.before != null}
+              loadOlder={loadOlder}
+            />
+          </If>
           <View style={{ flex: 1, minHeight: 0, flexDirection: 'row' }}>
             <List
               ref={list}
               onLayout={({ bounds: frame }) => {
                 readingSize.set(frame.size);
+                if (pendingTrajectoryAnchor !== null && reading() === 'trajectory') {
+                  const index = displayKeys().indexOf(pendingTrajectoryAnchor);
+                  pendingTrajectoryAnchor = null;
+                  if (index >= 0) list?.scrollToIndex({ index, viewPosition: 0, animated: false });
+                }
                 changedReadExposure();
               }}
               each={displayKeys()}
               loadMoreAtStartThreshold={HISTORY_LOOKAHEAD_VIEWPORTS}
               onLoadMoreAtStart={prefetchOlder}
               onScrollDragStart={({ offset }) => {
+                historyScrollInput = 'dragging';
                 historyScrolled = true;
                 if (offset.y <= 1) prefetchOlder();
+              }}
+              onScrollEnd={({ offset }) => {
+                // Native scroll-end can arrive ahead of the last offset report.
+                if (historyScrollInput !== 'idle')
+                  historyScrollInput = offset.y === historyOffset ? 'idle' : 'pending';
               }}
               onScrollIntent={(event) => {
                 if (event.intent === 'start') void navigateStart().catch(report);
                 else {
                   cancelNavigation();
                   if (event.intent === 'scroll') {
+                    if (historyScrollInput !== 'dragging') historyScrollInput = 'pending';
                     historyScrolled = true;
                     if (nearHistoryStart()) prefetchOlder();
-                  }
+                  } else if (atHistoryTail()) resumeHistoryFollowing();
                 }
               }}
               onBlur={() => {
@@ -3678,10 +3966,17 @@ export function Conversation(props: ConversationProps) {
                 visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
                 changedReadExposure();
               }}
-              estimatedItemSize={96}
+              estimatedItemSize={
+                reading() === 'trajectory' ? (platform.idiom === 'terminal' ? 16 : 32) : 96
+              }
               maintainVisibleContentPosition={
-                atHistoryTail() && innerReader() === null && navigation() === null
-                  ? { autoscrollToBottomThreshold: 32 }
+                atHistoryTail() &&
+                !historyFollowPaused() &&
+                innerReader() === null &&
+                selectedTrajectory() === null &&
+                (reading() !== 'trajectory' || trajectoryRange() === null) &&
+                navigation() === null
+                  ? { autoscrollToBottomThreshold: historyEndTolerance }
                   : {}
               }
               // The list spans the margins too, so the wheel scrolls it anywhere
@@ -3693,14 +3988,27 @@ export function Conversation(props: ConversationProps) {
               }}
               style={{ flex: 1, minHeight: 0 }}
               onScroll={(event) => {
-                const towardHistory = event.offset.y < historyOffset;
-                historyOffset = event.offset.y;
-                if (towardHistory && nearHistoryStart()) prefetchOlder();
-                changedReadExposure();
-                awayFromLatest.set(
-                  !atHistoryTail() ||
-                    event.offset.y < Math.max(0, event.contentSize.height - event.size.height) - 32,
-                );
+                const offset = event.offset.y;
+                const end = Math.max(0, event.contentSize.height - event.size.height);
+                const distance = end - offset;
+                const movement = offset - historyOffset;
+                // Resizing and growing content can also move the native offset.
+                const scrolled = historyScrollInput !== 'idle' || end === historyMaxOffset;
+                historyOffset = offset;
+                historyMaxOffset = end;
+                if (movement !== 0 && historyScrollInput === 'pending') historyScrollInput = 'idle';
+                if (scrolled && movement < 0 && distance > historyEndTolerance)
+                  historyFollowPaused.set(true);
+                else if (
+                  scrolled &&
+                  movement > 0 &&
+                  distance <= historyEndTolerance &&
+                  historyFollowPaused() &&
+                  (reading() !== 'trajectory' || trajectoryRange() === null) &&
+                  atHistoryTail()
+                )
+                  resumeHistoryFollowing();
+                if (movement < 0 && nearHistoryStart()) prefetchOlder();
                 const reader = innerReader();
                 const row = reader === null ? undefined : projection().rowsById.get(reader);
                 const toolReader =
@@ -3712,17 +4020,27 @@ export function Conversation(props: ConversationProps) {
                   reader !== null &&
                   !groupStates.get(reader)?.list &&
                   !toolReader &&
-                  event.offset.y >= Math.max(0, event.contentSize.height - event.size.height) - 1
+                  distance <= historyEndTolerance
                 )
                   innerReader.set(null);
-                if (
-                  event.offset.y >=
-                  Math.max(0, event.contentSize.height - event.size.height) - 32
-                )
-                  void loadNewer();
+                if (distance <= 32) void loadNewer();
+                changedReadExposure();
               }}
               empty={
-                <If when={showHistoryLoading()}>
+                <If
+                  when={showHistoryLoading()}
+                  else={
+                    <If when={reading() === 'trajectory'}>
+                      <View style={{ ...readingColumn, paddingVertical: 12 }}>
+                        <Text style={{ ...captionTextStyle, color: C.muted }}>
+                          {trajectoryFiltering()
+                            ? tr('No matching execution records')
+                            : tr('No execution records')}
+                        </Text>
+                      </View>
+                    </If>
+                  }
+                >
                   <LoadingState label={tr('Loading session history…')} />
                 </If>
               }
@@ -3744,7 +4062,7 @@ export function Conversation(props: ConversationProps) {
             >
               <ReturnToLatest
                 visible={
-                  awayFromLatest() ||
+                  historyFollowPaused() ||
                   (innerReader() !== null && (!pausedAtEnd() || run() === 'running'))
                 }
                 paused={pausedAtEnd()}
@@ -3762,6 +4080,54 @@ export function Conversation(props: ConversationProps) {
             )}
           </Each>
         </View>
+        <Each
+          of={selectedTrajectory() === null ? [] : [selectedTrajectory()!]}
+          key={(item) => item.key}
+        >
+          {(item) => {
+            const selected = item();
+            const details =
+              selected.kind === 'trajectory-request' ? (
+                <TrajectoryRequestInspector
+                  request={() => {
+                    const current = item();
+                    return current.kind === 'trajectory-request'
+                      ? current.request
+                      : selected.request;
+                  }}
+                  close={closeTrajectoryInspector}
+                />
+              ) : (
+                <TrajectoryInspector
+                  row={() => currentRow(selected.rowId)!}
+                  rowId={selected.rowId}
+                  sessionId={sessionId}
+                  through={() => latestKnown}
+                  previewImage={props.previewImage}
+                  openLink={props.openLink}
+                  toolProgress={toolProgress}
+                  maxHeight={() => Math.max(32, readingSize().height - 80)}
+                  close={closeTrajectoryInspector}
+                />
+              );
+            return (
+              <View
+                style={{
+                  width: trajectorySideBySide() ? 352 : '100%',
+                  height: trajectorySideBySide() ? '100%' : '44%',
+                  flexShrink: 0,
+                  minHeight: 0,
+                  borderLeftWidth: trajectorySideBySide() ? 1 : 0,
+                  borderLeftColor: C.line,
+                  borderTopWidth: trajectorySideBySide() ? 0 : 1,
+                  borderTopColor: C.line,
+                }}
+              >
+                {details}
+              </View>
+            );
+          }}
+        </Each>
         <If when={platform.idiom !== 'terminal' && railShown()}>
           <View
             style={{

@@ -119,6 +119,13 @@ pub enum DispatchOutcome {
 /// Native fences replaced activations before returning a new driver claim. These
 /// methods execute/observe the Engine's decision; they do not select another action.
 pub trait DriverPorts: Send + Sync {
+    /// Check the candidate against the frozen Main before publishing its checkpoint.
+    fn proactive_summary_matches<'a>(
+        &'a self,
+        view: &'a RunView,
+        origin: maka_agent_facts::context::SummaryOrigin,
+    ) -> BoxFuture<'a, Result<bool, RunError>>;
+
     fn model_admission(
         &self,
         _run: RunId,
