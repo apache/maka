@@ -111,10 +111,13 @@ impl Owner {
     ) -> Result<Vec<String>, String> {
         match &basis.executor {
             Some(executor) if executor.selection.executor == "external" => Ok(self
-                .external_catalog(self.selected_tools(session, basis, false, None)?)
-                .names()),
+                .selected_tools(session, basis, None)?
+                .names()
+                .into_iter()
+                .filter(|name| self.host_tools.contains(name))
+                .collect()),
             Some(_) => Ok(Vec::new()),
-            None => Ok(self.selected_tools(session, basis, false, editing)?.names()),
+            None => Ok(self.selected_tools(session, basis, editing)?.names()),
         }
     }
     pub(crate) async fn skill_candidates(
@@ -164,12 +167,12 @@ impl Owner {
             }
             BackendPreference::Executor { .. } => return Ok(SkillCandidates::default()),
         };
-        let tool_names = |selected: maka_tools::ToolCatalog| {
-            if external {
-                self.external_catalog(selected).names()
-            } else {
-                selected.names()
-            }
+        let tool_names = |selected: crate::tools::Declarations| {
+            selected
+                .names()
+                .into_iter()
+                .filter(|name| !external || self.host_tools.contains(name))
+                .collect::<Vec<_>>()
         };
         let (method, payload) = match &input.target {
             CompletionTarget::Session { session_id } => {

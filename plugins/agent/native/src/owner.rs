@@ -239,7 +239,7 @@ pub(crate) struct Owner {
     /// stands for.
     pub home: Option<std::path::PathBuf>,
     code_executor: maka_tools::CodeExecutor,
-    tools: maka_tools::ToolCatalog,
+    tools: crate::tools::Declarations,
     internal_registrations: Vec<maka_agent_facts::tools::ToolRegistration>,
     mcp: crate::mcp::Servers,
     mcp_projects: Arc<crate::mcp::Projects>,
@@ -494,30 +494,7 @@ impl Owner {
             .iter()
             .map(|tool| tool.definition.clone())
             .collect();
-        let prepared_tools = crate::tools::catalog(
-            context.services(),
-            configuration.clone(),
-            &settings.tools,
-            additional,
-            workers.clone(),
-        )
-        .and_then(|mut catalog| {
-            if settings.goals {
-                catalog.tools = catalog
-                    .tools
-                    .with_always_visible(goal::tools::NAMES)
-                    .map_err(|error| error.to_string())?;
-            }
-            // The Bot's only voice and its rules must not hide behind tool discovery.
-            // Other Sessions never select SendUser, so this does not reach them.
-            if settings.bot {
-                catalog.tools = catalog
-                    .tools
-                    .with_always_visible(&[bot::SEND_USER, bot::SLEEP])
-                    .map_err(|error| error.to_string())?;
-            }
-            Ok(catalog)
-        });
+        let prepared_tools = crate::tools::catalog(context.services(), &settings.tools, additional);
         let crate::tools::Catalog {
             tools,
             basis: tool_basis,
@@ -1179,33 +1156,26 @@ impl Owner {
         &self,
         session: &str,
         basis: &CapturedRun,
-        discovery: bool,
         editing: Option<maka_agent_facts::execution::EditingTools>,
-    ) -> Result<maka_tools::ToolCatalog, String> {
+    ) -> Result<crate::tools::Declarations, String> {
         let catalog = match &basis.mcp_catalog {
             Some(catalog) => catalog.clone(),
             None => self.mcp_projects.catalog(basis.mcp_revision.as_deref())?,
         };
-        let selected = self.select_catalog_tools(
+        Ok(self.select_catalog_tools(
             &catalog.tools,
             Some(session),
             basis.allowed_tools.as_deref(),
             editing,
-        );
-        let selected = if discovery {
-            selected.with_discovery()
-        } else {
-            selected
-        };
-        Ok(selected)
+        ))
     }
     fn select_catalog_tools(
         &self,
-        catalog: &maka_tools::ToolCatalog,
+        catalog: &crate::tools::Declarations,
         session: Option<&str>,
         allowed_tools: Option<&[String]>,
         editing: Option<maka_agent_facts::execution::EditingTools>,
-    ) -> maka_tools::ToolCatalog {
+    ) -> crate::tools::Declarations {
         let bot = session.is_some_and(|session| self.bot.is(session));
         let excluded: Vec<_> = catalog
             .definitions()
