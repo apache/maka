@@ -193,16 +193,21 @@ impl Protocol<'_> {
             .journal
             .instruction_update(self.request["instructions"].as_str())
         {
-            let setup = io.request("session/prompt", json!({
-                "sessionId":session,
-                "prompt":[{"type":"text","text":runtime::bootstrap_message(Some(&update.text))}]
-            })).await?;
+            let setup = io
+                .request(
+                    "session/prompt",
+                    json!({
+                        "sessionId":session,
+                        "prompt":[{"type":"text","text":runtime::bootstrap_message(&update.text)}]
+                    }),
+                )
+                .await?;
             if setup["stopReason"] != "end_turn" {
                 return Err(Error::Provider(
                     "agy ACP did not complete the instructions turn".into(),
                 ));
             }
-            self.journal.confirm_instructions(Some(update)).await?;
+            self.journal.confirm_instructions(update).await?;
         }
         Ok((
             session.clone(),
@@ -445,7 +450,7 @@ fn command_result(update: &mut Value) -> Option<i32> {
     }
     let exit_code = i32::try_from(update["rawOutput"]["exit_code"].as_i64()?).ok()?;
     if let Some(raw) = update["rawOutput"]["output"].as_str() {
-        let (body, _) = agy::command_output(raw);
+        let (body, _) = command_output(raw);
         update["content"] = json!([{
             "type":"content",
             "content":{"type":"text","text":body.replace('\0', "\\0")}
@@ -455,6 +460,34 @@ fn command_result(update: &mut Value) -> Option<i32> {
         update["status"] = "failed".into();
     }
     Some(exit_code)
+}
+
+fn command_output(raw: &str) -> (&str, Option<i32>) {
+    let mut body = raw;
+    for label in ["Created At: ", "Completed At: "] {
+        if body.starts_with(label) {
+            let Some((_, rest)) = body.split_once('\n') else {
+                return (raw, None);
+            };
+            body = rest;
+        }
+    }
+    let (status, rest) = body.split_once('\n').unwrap_or((body, ""));
+    let code = status
+        .strip_prefix("Command exited with code ")
+        .and_then(|code| code.trim_end_matches('\r').strip_suffix('.'))
+        .and_then(|code| code.parse::<i32>().ok());
+    match (code, rest.trim_start_matches(['\r', '\n'])) {
+        (Some(code), "") => ("", Some(code)),
+        (Some(code), rest)
+            if let Some(output) = rest
+                .strip_prefix("Command output:\n")
+                .or_else(|| rest.strip_prefix("Command output:\r\n")) =>
+        {
+            (output, Some(code))
+        }
+        _ => (raw, None),
+    }
 }
 
 struct CommandResult<'a> {

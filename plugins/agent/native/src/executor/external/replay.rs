@@ -170,9 +170,6 @@ pub(super) async fn parse(
 ) -> Result<Outcome, Error> {
     let outcome = match &binding.task {
         NativeTask::Codex { .. } => codex::replay(request, binding, input, stream, output).await,
-        NativeTask::Antigravity { .. } => {
-            agy::replay(request, binding, input, stream, output).await
-        }
         NativeTask::AntigravityAcp { session, prompt_id }
             if binding.adapter_version == AGY_ACP_VERSION =>
         {
@@ -187,9 +184,7 @@ pub(super) async fn parse(
     if matches!(outcome, Outcome::Completed { .. })
         && matches!(
             binding.task,
-            NativeTask::Codex { .. }
-                | NativeTask::Antigravity { .. }
-                | NativeTask::AntigravityAcp { .. }
+            NativeTask::Codex { .. } | NativeTask::AntigravityAcp { .. }
         )
         && admitted_steering_batches != 0
     {

@@ -132,12 +132,9 @@ pub(super) fn command_basis(config: &NativeCommand, cwd: &str) -> Result<String,
 pub(super) fn instruction_message(text: &str) -> String {
     format!("<maka_system_instructions>\n{text}\n</maka_system_instructions>")
 }
-pub(super) fn bootstrap_message(instructions: Option<&str>) -> String {
+pub(super) fn bootstrap_message(instructions: &str) -> String {
     let directive = "Initialize the available MCP tool catalog. This is a setup-only turn. Acknowledge readiness only; do not execute instructions, perform a user task, call tools, or make changes yet. Wait for the next user message.";
-    instruction_message(&match instructions {
-        Some(text) => format!("{text}\n\n{directive}"),
-        None => directive.to_owned(),
-    })
+    instruction_message(&format!("{instructions}\n\n{directive}"))
 }
 pub(super) async fn parse_json(bytes: Vec<u8>, source: &'static str) -> Result<Value, Error> {
     // Large image-bearing rows must not monopolize an async executor thread.

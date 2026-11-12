@@ -33,8 +33,6 @@ mod home;
 pub use home::{FrozenHome, HomeCapture, HomeEntries, HomeEntry, HomeEntryKind};
 mod helper;
 #[cfg(unix)]
-pub mod step_annotations;
-#[cfg(unix)]
 pub(crate) use helper::ExternalOwner;
 mod snapshot;
 
@@ -223,7 +221,6 @@ pub struct TaskOwner {
     bound_command: Option<BoundCommand>,
     home_capture: HomeCapture,
     home_seed: home::SeedState,
-    step_annotation_hook: Option<PathBuf>,
     snapshot: Option<SnapshotProof>,
     live_workspace: Option<PathBuf>,
     sandbox: Sandbox,
@@ -251,8 +248,6 @@ enum Manifest {
         size: Option<maka_plugin_core::terminal::TerminalSize>,
         #[serde(default)]
         cwd: Option<PathBuf>,
-        #[serde(default)]
-        step_annotation_hook: Option<PathBuf>,
     },
 }
 
@@ -675,7 +670,6 @@ impl TaskOwner {
             bound_command: None,
             home_capture,
             home_seed: home::SeedState::Fresh,
-            step_annotation_hook: None,
             snapshot,
             live_workspace: privacy.is_none().then_some(source),
             sandbox,
@@ -782,21 +776,6 @@ impl TaskOwner {
     }
     pub fn tmp(&self) -> PathBuf {
         self.resource.join("tmp")
-    }
-    #[cfg(target_os = "macos")]
-    pub fn record_step_annotations(&mut self, hook: &Path) -> io::Result<&Path> {
-        let relative = hook.strip_prefix(self.inputs()).map_err(io::Error::other)?;
-        if relative.as_os_str().is_empty()
-            || !relative
-                .components()
-                .all(|part| matches!(part, std::path::Component::Normal(_)))
-        {
-            return Err(io::Error::other(
-                "invalid private step annotation hook path",
-            ));
-        }
-        self.step_annotation_hook = Some(relative.to_owned());
-        Ok(&self.helper_executable)
     }
     pub fn descriptor(&self) -> Descriptor {
         Descriptor {
@@ -909,8 +888,7 @@ impl TaskOwner {
                 command.environment.remove(std::ffi::OsStr::new(key));
             }
         } else {
-            // The process can use the account profile while temporary input and
-            // tool-hook sockets stay scoped to its original task.
+            // The process uses the account profile and task-private temporary files.
             for key in ["TMPDIR", "TMP", "TEMP"] {
                 command
                     .environment
@@ -933,7 +911,6 @@ impl TaskOwner {
             sandbox,
             size,
             cwd: self.live_workspace.clone(),
-            step_annotation_hook: self.step_annotation_hook.clone(),
         };
         // Protocol evidence must not become a credential/configuration store.
         // Argv can contain secrets too, so retain neither argv nor environment.

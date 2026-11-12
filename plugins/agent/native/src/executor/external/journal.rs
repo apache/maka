@@ -125,12 +125,8 @@ impl ProtocolSession {
         let text = instruction_text(instructions);
         Some(InstructionUpdate { digest, text })
     }
-    pub async fn confirm_instructions(
-        &mut self,
-        update: Option<InstructionUpdate>,
-    ) -> Result<(), Error> {
-        self.session.instructions_digest =
-            Some(update.map_or_else(|| instruction_digest(None), |update| update.digest));
+    pub async fn confirm_instructions(&mut self, update: InstructionUpdate) -> Result<(), Error> {
+        self.session.instructions_digest = Some(update.digest);
         self.revision = Some(self.save(&self.session).await?);
         Ok(())
     }
@@ -165,7 +161,7 @@ impl ProtocolSession {
     }
 }
 
-pub(super) fn instruction_text(instructions: Option<&str>) -> String {
+fn instruction_text(instructions: Option<&str>) -> String {
     match instructions {
             Some(text) => format!("These are the current Maka instructions. They replace all earlier Maka instruction blocks; do not retain superseded Maka instructions.\n\n{text}"),
             None => "The previous Maka instruction blocks are now cleared. Do not apply their instructions to subsequent requests. Continue following your native system instructions and the user's requests.".into(),
