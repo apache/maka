@@ -200,6 +200,7 @@ struct Usage {
 #[derive(Deserialize)]
 struct InputTokens {
     cached_tokens: Option<u64>,
+    cache_write_tokens: Option<u64>,
 }
 #[derive(Deserialize)]
 struct OutputTokens {
@@ -807,7 +808,11 @@ impl Decoder {
                         output: usage.output_tokens,
                         cache_read: usage
                             .input_tokens_details
+                            .as_ref()
                             .and_then(|details| details.cached_tokens),
+                        cache_write: usage
+                            .input_tokens_details
+                            .and_then(|details| details.cache_write_tokens),
                         reasoning: usage
                             .output_tokens_details
                             .and_then(|details| details.reasoning_tokens),
@@ -1057,6 +1062,33 @@ mod tests {
             matches!(&end[..], [OutputEvent::Finished { reason: Stop::Stop, usage, .. }] if usage.input == Some(5) && usage.output == Some(3))
         );
         decoder.end().unwrap();
+    }
+
+    #[test]
+    fn completion_preserves_reported_cache_reads_and_writes() {
+        for (details, read, write) in [
+            (json!({}), None, None),
+            (
+                json!({"cached_tokens":0,"cache_write_tokens":80}),
+                Some(0),
+                Some(80),
+            ),
+            (
+                json!({"cached_tokens":80,"cache_write_tokens":0}),
+                Some(80),
+                Some(0),
+            ),
+        ] {
+            let end = Decoder::new(ReasoningMode::Encrypted, None)
+                .push(
+                    json!({"type":"response.completed","response":{"output":[],"usage":{
+                        "input_tokens":100,"input_tokens_details":details
+                    }}}),
+                )
+                .unwrap();
+            assert!(matches!(&end[..], [OutputEvent::Finished { usage, .. }]
+                if (usage.input, usage.cache_read, usage.cache_write) == (Some(100), read, write)));
+        }
     }
 
     #[test]

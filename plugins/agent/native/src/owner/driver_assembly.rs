@@ -190,15 +190,6 @@ impl Owner {
             live.tools = live
                 .tools
                 .with_always_visible(super::goal::tools::NAMES)
-                .and_then(|tools| {
-                    tools.with_request_binding(
-                        super::goal::tools::NAMES
-                            .iter()
-                            .map(|name| (*name).into())
-                            .collect(),
-                        self.goals.clone(),
-                    )
-                })
                 .map_err(|error| RunError::InvalidInput(error.to_string()))?;
         }
         let live_tools = mcp

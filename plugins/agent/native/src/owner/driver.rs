@@ -432,11 +432,7 @@ impl NativeDriver {
         let definitions = match &self.backend {
             NativeBackend::Model {
                 cells: Some(cells), ..
-            } => cells
-                .coordinator
-                .definitions(&bound)
-                .await
-                .map_err(RunError::Tool)?,
+            } => cells.coordinator.definitions(&bound),
             NativeBackend::Model { cells: None, .. } => {
                 let visible = bound.snapshot().await.map_err(RunError::Tool)?;
                 let mut definitions: Vec<_> = visible.definitions().cloned().collect();
