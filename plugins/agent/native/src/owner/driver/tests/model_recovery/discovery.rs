@@ -874,7 +874,7 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
     );
     assert_eq!(
         publication["discovery"]["workerTurnId"],
-        page["records"][0]["source"]["turnId"]
+        entry["source"]["turnId"]
     );
     f.reopen().await;
     assert_eq!(f.outbox().await, original);
