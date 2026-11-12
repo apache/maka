@@ -1375,8 +1375,6 @@ impl DriverModel {
                     &availability,
                     self.source.accepted.code_language,
                 )
-                .await
-                .map_err(RunError::Tool)?
             } else {
                 let visible = availability.snapshot().await.map_err(RunError::Tool)?;
                 let mut definitions: Vec<_> = visible.definitions().cloned().collect();
@@ -2990,35 +2988,30 @@ async fn canonical_parts_for(
     attempt: ModelAttemptId,
 ) -> Result<Vec<maka_agent_facts::model::ModelPart>, RunError> {
     let mut parts = Vec::new();
-    let mut after = 0;
+    const PAGE: u32 = 256;
     loop {
-        let page = state.history(view.run, after, 256).await?;
-        if page.is_empty() {
-            break;
-        }
+        let page = state
+            .model_items(view.run, attempt, (parts.len() as u64).checked_sub(1), PAGE)
+            .await?;
+        let done = page.len() < PAGE as usize;
         for item in page {
             if item.revision > view.revision {
                 return Ok(parts);
             }
-            after = item.revision;
-            if let Fact::ModelObserved {
-                attempt: original,
-                index,
-                part,
-                ..
-            } = item.fact
-                && original == attempt
-            {
-                if index != parts.len() as u64 {
-                    return Err(RunError::ReconciliationRequired(
-                        "canonical model prefix is not contiguous".into(),
-                    ));
-                }
-                parts.push(part);
+            let Fact::ModelObserved { index, part, .. } = item.fact else {
+                unreachable!("model_items returns canonical parts");
+            };
+            if index != parts.len() as u64 {
+                return Err(RunError::ReconciliationRequired(
+                    "canonical model prefix is not contiguous".into(),
+                ));
             }
+            parts.push(part);
+        }
+        if done {
+            return Ok(parts);
         }
     }
-    Ok(parts)
 }
 
 fn extend_observation(
@@ -3385,6 +3378,7 @@ async fn receive(
             let protocol = serde_json::to_value(maka_agent_facts::context::ModelClosureProtocol {
                 finish_reason: step.finish_reason,
                 provider_options: step.provider_options.map(Arc::unwrap_or_clone),
+                cache_read_reported: (step.usage.cache_read_tokens == Some(0)).then_some(true),
                 response_id: step.response_id,
                 model: step.model,
                 timestamp: step.timestamp,

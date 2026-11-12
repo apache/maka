@@ -30,7 +30,7 @@ use maka_agent_state::{
 };
 use maka_event_log::StoreError;
 use maka_plugin_core::operation::OperationOutcome;
-use std::{fmt, sync::Arc, time::Duration};
+use std::{fmt, future::poll_fn, sync::Arc, task::Poll, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 mod cells;
@@ -781,7 +781,7 @@ impl Engine {
                         .store
                         .request(run, view.attempts[&attempt].step)
                         .await?;
-                    live.work.insert(WorkKey::Model(attempt));
+                    live.work.insert(WorkKey::Assess(attempt));
                     let ports = ports.clone();
                     let snapshot = view.clone();
                     work.push(
@@ -1127,9 +1127,16 @@ impl Engine {
                     }
                 }
             }
-            // Poll a ready completion after every policy decision: a model with a
-            // large tool frontier cannot starve either its stream or completed tools.
-            let completion = if let Some(completion) = work.next().now_or_never().flatten() {
+            // Poll once with the driver's waker so children can wake it even
+            // while it is awaiting the next frontier read.
+            let ready = poll_fn(|cx| {
+                Poll::Ready(match work.poll_next_unpin(cx) {
+                    Poll::Ready(completion) => completion,
+                    Poll::Pending => None,
+                })
+            })
+            .await;
+            let completion = if let Some(completion) = ready {
                 Some(completion)
             } else if idle && !work.is_empty() {
                 let remaining = view
@@ -1757,7 +1764,7 @@ impl Engine {
                 basis,
                 result,
             } => {
-                live.work.remove(&WorkKey::Model(attempt));
+                live.work.remove(&WorkKey::Assess(attempt));
                 if retiring || Head::from(&view) != basis {
                     return Ok(());
                 }

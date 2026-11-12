@@ -128,7 +128,7 @@ pub(crate) async fn open(
                         "Original native cleanup binding has a different resource or adapter",
                     ));
                 }
-                let pipe = !matches!(binding.task, super::external::NativeTask::Claude { .. });
+                let pipe = !binding.task.is_pty();
                 Some((binding.snapshot, pipe))
             }
             Some(RecoveryDescriptor::Service { .. }) => {
@@ -309,7 +309,7 @@ pub(crate) async fn open(
 type Reading = BoxFuture<'static, Result<Option<CleanupEvidence>, isolated::Error>>;
 struct NativeSource {
     resource: Descriptor,
-    expected: Option<(SnapshotProof, bool)>,
+    expected: Option<(Option<SnapshotProof>, bool)>,
     watch: Option<EvidenceWatch>,
     reading: Option<Reading>,
     retirement: CancellationToken,
@@ -331,7 +331,7 @@ impl ExternalCleanupSource for NativeSource {
                 match evidence.map_err(|error| unavailable(error.to_string()))? {
                     Some(evidence) => {
                         if let Some((snapshot, pipe)) = &self.expected {
-                            if evidence.snapshot() != snapshot {
+                            if evidence.snapshot() != snapshot.as_ref() {
                                 return Err(unavailable(
                                     "Original native cleanup snapshot changed",
                                 ));

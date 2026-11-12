@@ -237,6 +237,100 @@ async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn history_exposes_only_reported_prompt_cache_usage() -> TestResult<()> {
+    use maka_agent_engine::DriverExit;
+
+    for reported in [Some(60), Some(0), None] {
+        let mut rig = Rig::new()?;
+        let mut usage = json!({"prompt_tokens": 100, "completion_tokens": 5});
+        if let Some(read) = reported {
+            usage["prompt_tokens_details"] = json!({"cached_tokens": read});
+        }
+        let event = json!({
+            "id":"cache-reply",
+            "choices":[{"index":0,"delta":{"role":"assistant","content":"Cached turn."},"finish_reason":"stop"}],
+            "usage":usage,
+        });
+        let body = format!("data: {event}\n\ndata: [DONE]\n\n");
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(
+                move || async move { ([("content-type", "text/event-stream")], body) },
+            ),
+        );
+        let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+        let stop = CancellationToken::new();
+        let server_stop = stop.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(server_stop.cancelled_owned())
+                .await
+        });
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble_model(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let engine = maka_agent_engine::Engine::new(driver.state.clone());
+            let mut changes = driver.state.subscribe()?;
+            loop {
+                changes.borrow_and_update();
+                let exit = engine
+                    .drive(
+                        driver.access.claim().clone(),
+                        driver.clone(),
+                        CancellationToken::new(),
+                    )
+                    .await?;
+                if matches!(exit, DriverExit::Waiting { due_at: None, .. }) {
+                    changes.changed().await?;
+                    continue;
+                }
+                assert!(
+                    matches!(
+                        exit,
+                        DriverExit::Terminal {
+                            terminal: Terminal::Completed,
+                            ..
+                        }
+                    ),
+                    "{exit:?}"
+                );
+                break;
+            }
+            let page = live(&rig, &session, wire::Position::Tail).await?;
+            let reply = page["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|chunk| chunk["finalOutput"] == true)
+                .expect("completed reply");
+            assert_eq!(reply["text"], "Cached turn.");
+            assert_eq!(
+                reply["timing"].get("promptCache").cloned(),
+                reported.map(|read| json!({"inputTokens":100,"readTokens":read})),
+            );
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        stop.cancel();
+        server.await??;
+        assert_eq!(rig.finish().await, Vec::<String>::new());
+        result.expect("prompt cache history assertion failed")??;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn named_cell_tools_survive_receipt_only_pages_and_frozen_history() {
     let mut rig = Rig::new().unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
@@ -1232,8 +1326,8 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn executor_progress_and_failed_result_keep_the_original_call() {
-    use maka_agent_facts::executor::{Output, Selection, Settings};
+async fn executor_history_keeps_message_boundaries_and_tool_results() {
+    use maka_agent_facts::executor::{Output, Selection, Settings, ToolResultDetails, TurnUsage};
     let mut rig = Rig::new().unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
         let session = rig.start().await?;
@@ -1245,8 +1339,11 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
             .await?;
         let mut spec = original.spec.clone();
         let selection = Selection {
-            executor: "fixture".into(),
-            settings: Settings::default(),
+            executor: "external".into(),
+            settings: Settings {
+                runtime: Some("antigravity".into()),
+                ..Settings::default()
+            },
         };
         let descriptor = ContentBlob::json(&json!({
             "selection":selection,"import":"fixture","member":0,"basis":"fixture"
@@ -1276,7 +1373,15 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
         let claim = driver.state.claim(run).await?;
         let task = ExternalTaskId::new();
         let view = driver.state.frontier(run).await?;
+        let message_id = "native-reply".to_owned();
         let outputs = [
+            Output::MessageStart {
+                message_id: message_id.clone(),
+            },
+            Output::OutputDelta {
+                message_id: message_id.clone(),
+                text: "Written `tmp_test_fi".into(),
+            },
             Output::ToolStart {
                 tool_call_id: "read/config".into(),
                 name: "run_command".into(),
@@ -1290,6 +1395,41 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
                 tool_call_id: "read/config".into(),
                 text: "File not found".into(),
                 is_error: true,
+                details: Some(ToolResultDetails {
+                    exit_code: Some(1),
+                    duration_ms: Some(512),
+                }),
+            },
+            Output::ToolStart {
+                tool_call_id: "write".into(),
+                name: "write_file".into(),
+                input: json!({"Path":"tmp_test_file.txt"}),
+            },
+            Output::ToolResult {
+                tool_call_id: "write".into(),
+                text: String::new(),
+                is_error: false,
+                details: None,
+            },
+            Output::OutputDelta {
+                message_id: message_id.clone(),
+                text: "le.txt` successfully.".into(),
+            },
+            Output::TurnUsage {
+                usage: TurnUsage {
+                    tokens: maka_agent_facts::model::ModelUsage {
+                        input_tokens: Some(150),
+                        output_tokens: Some(25),
+                        cache_read_tokens: Some(50),
+                        cache_write_tokens: Some(25),
+                        ..Default::default()
+                    },
+                    total_tokens: Some(250),
+                    duration_ms: Some(700),
+                },
+            },
+            Output::MessageEnd {
+                message_id: message_id.clone(),
             },
         ];
         let mut facts =
@@ -1297,6 +1437,7 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
                 Fact::ExternalTaskPrepared {
                     task,
                     descriptor: descriptor.reference().clone(),
+                    live_workspace: true,
                 },
                 Fact::ExternalTaskAdmitted { task },
             ]
@@ -1315,14 +1456,24 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
                 (&view).into(),
                 facts
                     .by_ref()
-                    .take(3)
+                    .take(5)
                     .map(|fact| Change::new(fact, at()))
                     .collect(),
                 vec![],
             )
             .await?;
         let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
-        let active = tools(&live(&rig, &session, wire::Position::Tail).await?);
+        let streaming = live(&rig, &session, wire::Position::Tail).await?;
+        let first = streaming["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|chunk| chunk["role"] == "assistant")
+            .unwrap();
+        assert_eq!(first["text"], "Written `tmp_test_fi");
+        assert!(first["finalOutput"].is_null());
+        let position: wire::HistoryRowAddress = serde_json::from_value(first["position"].clone())?;
+        let active = tools(&streaming);
         assert_eq!(observed["toolSeeds"][0]["toolUseId"], active[0].tool_use_id);
         assert_eq!(
             active[0]
@@ -1336,7 +1487,7 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
             "Read configuration"
         );
         let view = driver.state.frontier(run).await?;
-        driver
+        let end = driver
             .state
             .append(
                 &claim,
@@ -1344,11 +1495,81 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
                 facts.map(|fact| Change::new(fact, at())).collect(),
                 vec![],
             )
+            .await?
+            .facts
+            .last()
+            .unwrap()
+            .id;
+        let view = driver.state.frontier(run).await?;
+        driver
+            .state
+            .append(
+                &claim,
+                (&view).into(),
+                vec![Change::new(
+                    Fact::ExternalTaskClosed {
+                        task,
+                        outcome: Terminal::Completed,
+                        diagnostic: None,
+                        final_message: Some(ExternalFinalMessage { message_id, end }),
+                    },
+                    at(),
+                )],
+                vec![],
+            )
             .await?;
         let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
         assert_eq!(observed["toolSeeds"], json!([]));
         let page = live(&rig, &session, wire::Position::Tail).await?;
+        let mut replies = page["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|chunk| chunk["role"] == "assistant");
+        let reply = replies.next().unwrap();
+        assert_eq!(reply["position"], first["position"]);
+        assert_eq!(reply["messageId"], first["messageId"]);
+        assert_eq!(reply["text"], "Written `tmp_test_file.txt` successfully.");
+        assert_eq!(reply["finalOutput"], true);
+        assert!(replies.next().is_none());
+        let body = query(
+            &rig,
+            "source",
+            json!({
+                "sessionId":session, "through":page["through"],
+                "source":{"kind":"row","position":position}, "field":"body",
+                "position":{"kind":"start"}
+            }),
+        )
+        .await?;
+        assert_eq!(body["source"]["text"], reply["text"]);
         let displayed = tools(&page);
+        let (writes, displayed): (Vec<_>, Vec<_>) = displayed.into_iter().partition(|tool| {
+            tool.call
+                .as_ref()
+                .is_some_and(|call| call.name == "write_file")
+        });
+        assert_eq!(writes.len(), 2);
+        assert!(writes.iter().all(|tool| {
+            let call = tool.call.as_ref().unwrap();
+            call.title
+                .as_ref()
+                .is_some_and(|title| title.fallback == "Write file · tmp_test_file.txt")
+                && tool.result.as_ref().is_some_and(|result| !result.is_error)
+        }));
+        let usage = page["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|chunk| chunk["timing"].get("executorUsage"))
+            .unwrap();
+        assert_eq!(usage["totalTokens"], 250);
+        assert_eq!(usage["tokens"]["input_tokens"], 225);
+        assert_eq!(
+            reply["timing"]["promptCache"],
+            json!({"inputTokens":225,"readTokens":50})
+        );
+        assert_eq!(usage["tokens"]["cache_read_tokens"], 50);
         assert!(
             page["chunks"]
                 .as_array()
@@ -1367,10 +1588,27 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
             let call = tool.call.as_ref().unwrap();
             assert_eq!(call.name, "run_command");
             assert_eq!(
+                call.external_target.as_deref(),
+                Some(&wire::ExternalToolTarget::Command {
+                    command: "cat config.toml".into(),
+                    cwd: None
+                }),
+            );
+            assert_eq!(
                 call.title.as_ref().map(|title| title.fallback.as_str()),
                 Some("Read configuration")
             );
             assert!(tool.result.as_ref().is_some_and(|result| result.is_error));
+            assert_eq!(
+                tool.result
+                    .as_ref()
+                    .unwrap()
+                    .details
+                    .as_ref()
+                    .unwrap()
+                    .exit_code,
+                Some(1)
+            );
             assert_eq!(tool.tool_use_id, displayed[0].tool_use_id);
             assert_eq!(call.position, displayed[0].call.as_ref().unwrap().position);
         }

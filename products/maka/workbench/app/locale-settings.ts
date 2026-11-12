@@ -79,6 +79,7 @@ export const settingsMessages = {
     '更新連線憑證後即可查看用量限制',
   ],
   'Usage limit': ['Usage limit', '使用额度', '用量限制'],
+  'Usage limits': ['Usage limits', '使用额度', '用量限制'],
   Balance: ['Balance', '余额', '餘額'],
   Unlimited: ['Unlimited', '不限量', '無限量'],
   'Monthly limit': ['Monthly limit', '月额度', '每月用量限制'],

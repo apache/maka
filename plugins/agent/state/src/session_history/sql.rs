@@ -1331,6 +1331,7 @@ pub(super) fn view_at(
     history: &HistoryNamespace,
     cut: &HistoryCut,
     run: RunId,
+    mut observe: impl FnMut(u64, &RecordedFact),
 ) -> Result<crate::fold::RunView, StoreError> {
     check_cut(c, history, cut)?;
     let source = run_source(c, history, run)?;
@@ -1338,7 +1339,7 @@ pub(super) fn view_at(
         return Err(invalid("Run was not admitted within the captured cut"));
     }
     let mut view = crate::fold::RunView::admitted(run, source.spec)?;
-    let mut statement=c.prepare_cached("SELECT f.schema_version,b.payload,b.content_sha256 FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence<=? ORDER BY f.revision")?;
+    let mut statement=c.prepare_cached("SELECT f.schema_version,b.payload,b.content_sha256,f.sequence FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence<=? ORDER BY f.revision")?;
     let mut rows = statement.query(params![run.to_string(), bind_u64(cut.through_sequence)?])?;
     while let Some(row) = rows.next()? {
         let bytes: Vec<u8> = row.get(1)?;
@@ -1346,7 +1347,9 @@ pub(super) fn view_at(
         if content_digest(&bytes) != digest {
             return Err(invalid("canonical history bytes corrupt"));
         }
-        view.apply(&decode_record(row.get(0)?, &bytes)?)?;
+        let record = decode_record(row.get(0)?, &bytes)?;
+        view.apply(&record)?;
+        observe(read_u64(row, 3)?, &record);
     }
     Ok(view)
 }

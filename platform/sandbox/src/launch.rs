@@ -64,7 +64,7 @@ impl Sandbox {
     /// appends its original executable and arguments after a wrapper's arguments.
     /// Failure must never fall back to Direct or retry the original effect.
     pub fn prepare(&self, cwd: &Path) -> Result<Launch, Error> {
-        self.prepare_network(cwd, None, None, None)
+        self.prepare_network(cwd, None, None)
     }
 
     /// Linux must mount the admitted cwd inode because bubblewrap resolves
@@ -75,7 +75,7 @@ impl Sandbox {
         cwd: &Path,
         directory: Option<&std::fs::File>,
     ) -> Result<Launch, Error> {
-        self.prepare_network(cwd, None, directory, None)
+        self.prepare_network(cwd, None, directory)
     }
 
     /// The execution owner binds and retains the gateway before compiling this
@@ -90,24 +90,7 @@ impl Sandbox {
                 "sandbox proxy must be a loopback listener".into(),
             ));
         }
-        self.prepare_network(cwd, Some(proxy), None, None)
-    }
-
-    /// The isolated launch owner binds this task-private observation socket.
-    #[cfg(target_os = "macos")]
-    pub fn prepare_with_private_socket(
-        &self,
-        cwd: &Path,
-        proxy: Option<std::net::SocketAddr>,
-        socket: &Path,
-    ) -> Result<Launch, Error> {
-        if proxy.is_some_and(|address| !address.ip().is_loopback() || address.port() == 0) {
-            return Err(Error::Invalid(
-                "sandbox proxy must be a loopback listener".into(),
-            ));
-        }
-        crate::path::validate(socket)?;
-        self.prepare_network(cwd, proxy, None, Some(socket))
+        self.prepare_network(cwd, Some(proxy), None)
     }
 
     fn prepare_network(
@@ -115,7 +98,6 @@ impl Sandbox {
         cwd: &Path,
         proxy: Option<std::net::SocketAddr>,
         _directory: Option<&std::fs::File>,
-        _private_socket: Option<&Path>,
     ) -> Result<Launch, Error> {
         crate::path::validate(cwd)?;
         match self {
@@ -137,7 +119,7 @@ impl Sandbox {
                 let filesystem = filesystem.compile()?;
                 #[cfg(target_os = "macos")]
                 {
-                    crate::seatbelt::prepare(&filesystem, network, proxy, _private_socket)
+                    crate::seatbelt::prepare(&filesystem, network, proxy)
                 }
                 #[cfg(target_os = "linux")]
                 {

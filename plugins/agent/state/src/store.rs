@@ -534,7 +534,11 @@ impl Store {
         run: RunId,
         change: Change,
     ) -> maka_event_log::root_store::DataChange {
-        self.data.prepare(StopLatest { run, change })
+        self.data.prepare(StopRun {
+            run,
+            change,
+            retract_pending: true,
+        })
     }
     pub async fn external_effect_descriptor(
         &self,
@@ -924,6 +928,13 @@ impl Store {
             })
             .await
     }
+    pub async fn tool_admission_revision(
+        &self,
+        run: RunId,
+        tool: ToolKey,
+    ) -> Result<Option<u64>, StoreError> {
+        self.data.query(ReadToolAdmissionRevision(run, tool)).await
+    }
     pub async fn model_attempt(
         &self,
         run: RunId,
@@ -1116,6 +1127,13 @@ impl Query for ReadHistory {
     type Output = Vec<RecordedFact>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::history(c, self.run, self.after_revision, self.limit)
+    }
+}
+struct ReadToolAdmissionRevision(RunId, ToolKey);
+impl Query for ReadToolAdmissionRevision {
+    type Output = Option<u64>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::tool_admission_revision(c, self.0, self.1)
     }
 }
 struct ReadModelAttempt(RunId, ModelAttemptId);
@@ -1323,11 +1341,12 @@ impl Statement for ObserveArtifacts {
         Admit::isolated_rejection(error)
     }
 }
-struct StopLatest {
-    run: RunId,
-    change: Change,
+pub(crate) struct StopRun {
+    pub(crate) run: RunId,
+    pub(crate) change: Change,
+    pub(crate) retract_pending: bool,
 }
-impl Statement for StopLatest {
+impl Statement for StopRun {
     type Value = Commit;
     type Output = Commit;
     fn execute(self, c: &Connection) -> Result<Prepared<Commit>, StoreError> {
@@ -1345,7 +1364,7 @@ impl Statement for StopLatest {
                 notification: Notification::NONE,
             });
         }
-        if sql::latest(c, view.spec.session_id.clone())? == Some(self.run) {
+        if self.retract_pending && sql::latest(c, view.spec.session_id.clone())? == Some(self.run) {
             crate::queue::retract_interactive(c, &view.spec.session_id, &self.change)?;
         }
         let (value, changed) = sql::append(

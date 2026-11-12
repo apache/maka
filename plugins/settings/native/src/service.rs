@@ -197,11 +197,8 @@ async fn model_defaults(
             resolved.info.context_window,
             resolved.info.input_limit,
         ),
-        code_mode: maka_agent_facts::execution::ToolMode::for_model(
-            model,
-            &resolved.base_url,
-            None,
-        ) == maka_agent_facts::execution::ToolMode::CodeMode,
+        code_mode: maka_agent_facts::execution::ToolMode::default()
+            == maka_agent_facts::execution::ToolMode::CodeMode,
         code_mode_language: Default::default(),
         apply_patch: maka_agent_facts::execution::EditingTools::for_model(
             model,

@@ -29,11 +29,15 @@ use super::{RunView, require};
 pub struct ExternalTask {
     pub task: ExternalTaskId,
     pub descriptor: ContentRef,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live_workspace: bool,
     pub admitted: bool,
     pub binding: Option<ContentRef>,
     pub observed: u64,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub active_tools: std::collections::BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_usage: Option<maka_agent_facts::executor::TurnUsage>,
     pub closed: Option<ExternalClosure>,
     pub cleanup: OperationCleanup,
     pub cleanup_not_before: Option<UnixMillis>,
@@ -57,7 +61,11 @@ impl RunView {
     /// Common run, revision and control-frontier checks belong to the parent fold.
     pub(super) fn apply_external(&mut self, recorded: &RecordedFact) -> Result<(), StoreError> {
         match &recorded.fact {
-            Fact::ExternalTaskPrepared { task, descriptor } => {
+            Fact::ExternalTaskPrepared {
+                task,
+                descriptor,
+                live_workspace,
+            } => {
                 require(
                     matches!(self.spec.backend, BackendSpec::Executor { .. }),
                     "only an executor run can prepare an external task",
@@ -66,17 +74,22 @@ impl RunView {
                     .validate()
                     .map_err(|error| StoreError::InvalidTransition(error.into()))?;
                 if let Some(existing) = &self.external {
-                    if existing.task != *task || existing.descriptor != *descriptor {
+                    if existing.task != *task
+                        || existing.descriptor != *descriptor
+                        || existing.live_workspace != *live_workspace
+                    {
                         return Err(StoreError::EventConflict);
                     }
                 } else {
                     self.external = Some(ExternalTask {
                         task: *task,
                         descriptor: descriptor.clone(),
+                        live_workspace: *live_workspace,
                         admitted: false,
                         binding: None,
                         observed: 0,
                         active_tools: Default::default(),
+                        turn_usage: None,
                         closed: None,
                         cleanup: OperationCleanup::Unconfirmed,
                         cleanup_not_before: None,
@@ -159,6 +172,9 @@ impl RunView {
                     }
                     Output::ToolResult { tool_call_id, .. } => {
                         external.active_tools.remove(tool_call_id);
+                    }
+                    Output::TurnUsage { usage } => {
+                        external.turn_usage = Some(usage.clone());
                     }
                     _ => {}
                 }

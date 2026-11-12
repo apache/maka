@@ -22,16 +22,17 @@ use async_channel::{Receiver, Sender};
 use futures_util::{FutureExt, future::Shared};
 use rusqlite::{Connection, OpenFlags};
 use std::{
+    collections::VecDeque,
     future::Future,
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
-use tokio::sync::{Semaphore, oneshot, watch};
+use tokio::sync::{Notify, Semaphore, oneshot, watch};
 
 mod authority;
 pub use authority::ConnectionAuthority;
@@ -182,15 +183,112 @@ impl PreparedWrite {
 }
 type ReadOperation =
     Box<dyn FnOnce(&mut Option<Connection>, Result<(), StoreError>) -> (bool, Reply) + Send>;
+struct ReadSlots {
+    idle: Mutex<Option<VecDeque<usize>>>,
+    changed: Notify,
+}
+impl ReadSlots {
+    fn new() -> Self {
+        Self {
+            idle: Mutex::new(Some((0..PURE_READERS).collect())),
+            changed: Notify::new(),
+        }
+    }
+    async fn acquire(self: &Arc<Self>) -> Result<ReadSlot, StoreError> {
+        loop {
+            let changed = self.changed.notified();
+            let index = self
+                .idle
+                .lock()
+                .unwrap()
+                .as_mut()
+                .ok_or(StoreError::ConnectionClosed)?
+                .pop_front();
+            if let Some(index) = index {
+                return Ok(ReadSlot {
+                    index,
+                    slots: self.clone(),
+                });
+            }
+            changed.await;
+        }
+    }
+    fn close(&self) {
+        let was_open = self.idle.lock().unwrap().take().is_some();
+        if was_open {
+            self.changed.notify_waiters();
+        }
+    }
+}
 struct ReadSlot {
     index: usize,
-    idle: Sender<usize>,
+    slots: Arc<ReadSlots>,
 }
 impl Drop for ReadSlot {
     fn drop(&mut self) {
-        let _ = self.idle.try_send(self.index);
+        let was_empty = {
+            let mut idle = self.slots.idle.lock().unwrap();
+            let Some(idle) = idle.as_mut() else { return };
+            let was_empty = idle.is_empty();
+            idle.push_back(self.index);
+            was_empty
+        };
+        // A waiting query can belong to a child future whose driver is
+        // waiting for a slot itself. Every waiter can recheck availability.
+        if was_empty {
+            self.slots.changed.notify_waiters();
+        }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    #[derive(Default)]
+    struct WakeFlag(AtomicBool);
+
+    impl Wake for WakeFlag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    #[tokio::test]
+    async fn returned_reader_wakes_a_driver_behind_its_children() {
+        let slots = Arc::new(ReadSlots::new());
+        let first = slots.acquire().await.unwrap();
+        let _second = slots.acquire().await.unwrap();
+        let first_index = first.index;
+
+        // Older child reads cannot be polled again until their driver resumes.
+        let mut child = std::pin::pin!(slots.acquire());
+        let mut driver = std::pin::pin!(slots.acquire());
+        let wake = Arc::new(WakeFlag::default());
+        let waker = Waker::from(wake.clone());
+        assert!(
+            child
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        assert!(
+            driver
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+
+        drop(first);
+        assert!(wake.0.load(Ordering::Relaxed));
+        let Poll::Ready(Ok(slot)) = driver.as_mut().poll(&mut Context::from_waker(&waker)) else {
+            panic!("driver must acquire the returned slot while the older child is parked");
+        };
+        assert_eq!(slot.index, first_index);
+    }
+}
+
 struct ReadJob {
     _slot: Option<ReadSlot>,
     open: bool,
@@ -201,12 +299,12 @@ struct Admission {
     accepting: Arc<AtomicBool>,
     reads: Vec<Sender<ReadJob>>,
     writer: Sender<Envelope>,
-    idle_readers: Sender<usize>,
+    read_slots: Arc<ReadSlots>,
 }
 impl Admission {
     fn stop(&self) {
         self.accepting.store(false, Ordering::Release);
-        self.idle_readers.close();
+        self.read_slots.close();
         for lane in &self.reads {
             lane.close();
         }
@@ -248,14 +346,11 @@ pub struct OwnedConnection {
     writer_identity: WriterIdentity,
     physical_released: Arc<AtomicBool>,
     writer: WriterIngress,
-    reads: Vec<Sender<ReadJob>>,
     read_on_owner: bool,
     temporary: bool,
     closed: Shared<BoxFuture<'static, Result<(), String>>>,
     changes: watch::Receiver<()>,
     custody: Option<Custody>,
-    idle_readers: Sender<usize>,
-    read_slots: Receiver<usize>,
 }
 #[derive(Clone)]
 pub(crate) struct WriterIngress {
@@ -470,14 +565,11 @@ impl OwnedConnection {
             writer_identity: self.writer_identity,
             physical_released: self.physical_released.clone(),
             writer: self.writer.clone(),
-            reads: self.reads.clone(),
             read_on_owner: self.read_on_owner,
             temporary: self.temporary,
             closed: self.closed.clone(),
             changes: self.changes.clone(),
             custody: self.custody.clone(),
-            idle_readers: self.idle_readers.clone(),
-            read_slots: self.read_slots.clone(),
         }
     }
     pub(crate) fn scoped(&self, custody: Custody) -> Self {
@@ -538,12 +630,7 @@ impl OwnedConnection {
             async_channel::bounded::<Preparation>(WRITE_CAPACITY);
         let (reads, read_receivers): (Vec<_>, Vec<_>) =
             (0..PURE_READERS).map(|_| async_channel::bounded(1)).unzip();
-        let (idle_readers, read_slots) = async_channel::bounded(PURE_READERS);
-        for index in 0..PURE_READERS {
-            idle_readers
-                .try_send(index)
-                .expect("new reader-slot channel fits every lane");
-        }
+        let read_slots = Arc::new(ReadSlots::new());
         let accepting = Arc::new(AtomicBool::new(true));
         let physical_released = Arc::new(AtomicBool::new(false));
         let writer_physical_released = physical_released.clone();
@@ -556,7 +643,7 @@ impl OwnedConnection {
             accepting: accepting.clone(),
             reads: reads.clone(),
             writer: jobs.clone(),
-            idle_readers: idle_readers.clone(),
+            read_slots: read_slots.clone(),
         });
         let writer = WriterIngress {
             jobs: jobs.clone(),
@@ -624,7 +711,7 @@ impl OwnedConnection {
                         Err(error) => {
                             startup_error.get_or_insert(StoreError::Io(error));
                             accepting.store(false, Ordering::Release);
-                            idle_readers.close();
+                            read_slots.close();
                             for lane in &reads {
                                 lane.close();
                             }
@@ -638,7 +725,7 @@ impl OwnedConnection {
                         let authority = authority.clone();
                         let options = options.clone();
                         let read_accepting = accepting.clone();
-                        let read_idle = idle_readers.clone();
+                        let reader_slots = read_slots.clone();
                         let read_lanes = reads.clone();
 
                         match std::thread::Builder::new()
@@ -650,7 +737,7 @@ impl OwnedConnection {
                                 .unwrap_or_else(|_| Err("database reader panicked".into()));
                                 if result.is_err() {
                                     read_accepting.store(false, Ordering::Release);
-                                    read_idle.close();
+                                    reader_slots.close();
                                     for lane in read_lanes {
                                         lane.close();
                                     }
@@ -668,7 +755,7 @@ impl OwnedConnection {
                             Err(error) => {
                                 startup_error.get_or_insert(StoreError::Io(error));
                                 accepting.store(false, Ordering::Release);
-                                idle_readers.close();
+                                read_slots.close();
                                 for lane in &reads {
                                     lane.close();
                                 }
@@ -764,7 +851,7 @@ impl OwnedConnection {
                                 if let Err(error) = result {
                                     failure.get_or_insert(error);
                                     accepting.store(false, Ordering::Release);
-                                    idle_readers.close();
+                                    read_slots.close();
                                     for lane in &reads {
                                         lane.close();
                                     }
@@ -773,7 +860,7 @@ impl OwnedConnection {
                             }
                             Command::Take(reply) => {
                                 accepting.store(false, Ordering::Release);
-                                idle_readers.close();
+                                read_slots.close();
                                 for lane in &reads {
                                     lane.close();
                                 }
@@ -799,7 +886,7 @@ impl OwnedConnection {
                     } else {
                         retained.extend(active);
                         drop(permits);
-                        idle_readers.close();
+                        read_slots.close();
                         failure.get_or_insert("database transaction cleanup failed".into());
                         accepting.store(false, Ordering::Release);
                         for lane in &reads {
@@ -859,8 +946,6 @@ impl OwnedConnection {
             })?;
         match initialized.await.unwrap_or(Err(StoreError::Initialization)) {
             Ok(writer_identity) => Ok(Self {
-                reads: admission.reads.clone(),
-                idle_readers: admission.idle_readers.clone(),
                 admission,
                 writer_identity,
                 physical_released,
@@ -870,7 +955,6 @@ impl OwnedConnection {
                 closed: close_receipt,
                 changes,
                 custody: None,
-                read_slots,
             }),
             Err(cause) => {
                 admission.stop();
@@ -939,15 +1023,8 @@ impl OwnedConnection {
             return self.run(operation).await;
         }
         let (reply, result) = oneshot::channel();
-        let slot = ReadSlot {
-            index: self
-                .read_slots
-                .recv()
-                .await
-                .map_err(|_| StoreError::ConnectionClosed)?,
-            idle: self.idle_readers.clone(),
-        };
-        let jobs = &self.reads[slot.index];
+        let slot = self.admission.read_slots.acquire().await?;
+        let jobs = &self.admission.reads[slot.index];
         jobs.send(ReadJob {
             _slot: Some(slot),
             open: true,

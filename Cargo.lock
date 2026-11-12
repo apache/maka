@@ -6432,6 +6432,7 @@ dependencies = [
  "futures-util",
  "hex",
  "image",
+ "jiff",
  "jsonschema 0.60.1",
  "libc",
  "maka-acp-native",
@@ -7449,8 +7450,11 @@ dependencies = [
 name = "maka-sandbox"
 version = "0.2.0"
 dependencies = [
+ "cap-fs-ext",
+ "cap-std",
  "flatbuffers",
  "globset",
+ "hex",
  "libc",
  "mxc-sdk",
  "regex-syntax",
@@ -7458,6 +7462,7 @@ dependencies = [
  "seccompiler",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tracelogging",

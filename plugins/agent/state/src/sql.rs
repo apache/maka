@@ -557,6 +557,8 @@ fn upsert<T: Serialize>(
 struct ExternalHeader<'a> {
     task: ExternalTaskId,
     descriptor: &'a ContentRef,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    live_workspace: bool,
     admitted: bool,
     binding: &'a Option<ContentRef>,
     observed: u64,
@@ -569,6 +571,7 @@ fn external_header(task: &fold::ExternalTask) -> Result<String, serde_json::Erro
     serde_json::to_string(&ExternalHeader {
         task: task.task,
         descriptor: &task.descriptor,
+        live_workspace: task.live_workspace,
         admitted: task.admitted,
         binding: &task.binding,
         observed: task.observed,
@@ -1585,6 +1588,29 @@ pub(crate) fn history(
     }
     Ok(facts)
 }
+pub(crate) fn tool_admission_revision(
+    c: &Connection,
+    run: RunId,
+    tool: ToolKey,
+) -> Result<Option<u64>, StoreError> {
+    let locator = maka_agent_facts::tool_call::tool_use_id(run, &fold::tool_key(&tool));
+    let id: Option<String> = c
+        .prepare_cached(
+            "SELECT h.fact_id FROM agent_run_specs s
+             CROSS JOIN agent_session_history h INDEXED BY agent_session_history_tool
+             WHERE s.run=?1 AND h.owner=s.owner AND h.session=s.session AND h.run=s.run
+               AND h.tool_use_id=?2 AND h.kind='tool_admitted'",
+        )?
+        .query_row(params![run.to_string(), locator], |row| row.get(0))
+        .optional()?;
+    let Some(id) = id else { return Ok(None) };
+    let recorded = fact(c, run, identity(id)?)?
+        .ok_or_else(|| invalid("tool admission index is missing its canonical fact"))?;
+    if !matches!(recorded.fact, Fact::ToolAdmitted { tool: admitted } if admitted == tool) {
+        return Err(invalid("tool admission index names another fact"));
+    }
+    Ok(Some(recorded.revision))
+}
 pub(crate) fn request(c: &Connection, run: RunId, step: StepId) -> Result<RequestSpec, StoreError> {
     let bytes: Vec<u8> = c.prepare_cached("SELECT c.payload FROM agent_request_specs r JOIN contents c ON c.id=r.content_id WHERE r.run=? AND r.step=?")?
         .query_row(params![run.to_string(), step.to_string()], |row| row.get(0))?;
@@ -2132,12 +2158,11 @@ pub(crate) fn model_items(
     after: Option<u64>,
     count: u32,
 ) -> Result<Vec<RecordedFact>, StoreError> {
-    let mut statement=c.prepare_cached("SELECT f.schema_version,c.payload FROM agent_model_items i JOIN agent_facts f ON f.id=i.fact_id JOIN contents c ON c.id=f.body_content_id WHERE i.run=? AND i.attempt=? AND (? IS NULL OR i.item_index>?) ORDER BY i.item_index LIMIT ?")?;
+    let mut statement=c.prepare_cached("SELECT f.schema_version,c.payload FROM agent_model_items i JOIN agent_facts f ON f.id=i.fact_id JOIN contents c ON c.id=f.body_content_id WHERE i.run=? AND i.attempt=? AND i.item_index>? ORDER BY i.item_index LIMIT ?")?;
     let mut rows = statement.query(params![
         run.to_string(),
         attempt.to_string(),
-        after.map(signed).transpose()?,
-        after.map(signed).transpose()?,
+        after.map(signed).transpose()?.unwrap_or(-1),
         limit(count)?
     ])?;
     let mut result = Vec::new();

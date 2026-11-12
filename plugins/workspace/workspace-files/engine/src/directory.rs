@@ -18,7 +18,6 @@
  */
 
 //! Read-only identity checks for ordinary file grants. No workspace marker is created.
-use cap_fs_ext::MetadataExt;
 use cap_std::{ambient_authority, fs::Dir};
 use maka_sandbox::workspace::DirectoryIdentity;
 use std::{
@@ -33,7 +32,7 @@ pub fn capture(path: &Path) -> io::Result<(PathBuf, DirectoryIdentity)> {
 }
 pub fn open(path: &Path, expected: &DirectoryIdentity) -> io::Result<Dir> {
     let directory = Dir::open_ambient_dir(path, ambient_authority())?;
-    if &identity(&directory)? != expected {
+    if !expected.matches(&directory)? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "authorized directory was replaced",
@@ -43,14 +42,5 @@ pub fn open(path: &Path, expected: &DirectoryIdentity) -> io::Result<Dir> {
 }
 /// Identify the held directory, without reopening its ambient pathname.
 pub fn identity(directory: &Dir) -> io::Result<DirectoryIdentity> {
-    let metadata = directory.dir_metadata()?;
-    let birth = metadata
-        .created()
-        .ok()
-        .and_then(|time| time.into_std().duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| (duration.as_secs(), duration.subsec_nanos()));
-    let bytes =
-        serde_json::to_vec(&(metadata.dev(), metadata.ino(), birth)).map_err(io::Error::other)?;
-    DirectoryIdentity::try_from(maka_agent_facts::artifact::content_digest(&bytes))
-        .map_err(io::Error::other)
+    DirectoryIdentity::capture(directory)
 }

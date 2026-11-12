@@ -201,17 +201,16 @@ impl CodeCells {
             admission: tokio::sync::Mutex::new(()),
         }))
     }
-    pub async fn definitions(
-        &self,
-        availability: &Availability,
-    ) -> Result<Vec<ToolDefinition>, ToolError> {
-        Self::definitions_for(availability, self.0.executor.language()).await
+    pub fn definitions(&self, availability: &Availability) -> Vec<ToolDefinition> {
+        Self::definitions_for(availability, self.0.executor.language())
     }
-    pub async fn definitions_for(
+    pub fn definitions_for(
         availability: &Availability,
         language: maka_agent_facts::execution::CodeLanguage,
-    ) -> Result<Vec<ToolDefinition>, ToolError> {
-        let visible = availability.snapshot().await?;
+    ) -> Vec<ToolDefinition> {
+        // Code Mode discovers deferred tools through ALL_TOOLS. Promoting
+        // them into exec's description after a call invalidates the prefix.
+        let visible = availability.select(&BTreeSet::new());
         let mut exec = super::definition(language);
         exec.description.push_str(&super::declarations(
             visible.nested().definitions(),
@@ -219,7 +218,7 @@ impl CodeCells {
         ));
         let mut definitions = vec![exec, super::wait_definition()];
         definitions.extend(availability.direct_only().definitions().cloned());
-        Ok(definitions)
+        definitions
     }
     pub fn prepare(
         &self,

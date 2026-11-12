@@ -507,15 +507,6 @@ impl Owner {
                 catalog.tools = catalog
                     .tools
                     .with_always_visible(goal::tools::NAMES)
-                    .and_then(|tools| {
-                        tools.with_request_binding(
-                            goal::tools::NAMES
-                                .iter()
-                                .map(|name| (*name).into())
-                                .collect(),
-                            goals.clone(),
-                        )
-                    })
                     .map_err(|error| error.to_string())?;
             }
             // The Bot's only voice and its rules must not hide behind tool discovery.

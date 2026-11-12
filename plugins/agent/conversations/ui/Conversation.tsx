@@ -1156,6 +1156,7 @@ export function Conversation(props: ConversationProps) {
     });
     hydrateAttachmentMetadata();
   };
+  const executorTextChanges = new Set<string>();
   const requestMetadata = (row: Pick<Row, 'position' | 'order' | 'field'> | undefined) => {
     if (!row?.position || !row.order) return;
     const next = { position: row.position, order: row.order, field: row.field };
@@ -1424,17 +1425,37 @@ export function Conversation(props: ConversationProps) {
       do {
         followAgain = false;
         const fence = latestKnown;
+        const refresh = refreshFrom;
+        refreshFrom = null;
         const currentWindow = historyWindow();
         if (currentWindow?.after === null) {
+          const tail = rows().at(-1);
+          const changedRows = [...executorTextChanges].flatMap((id) => {
+            const row = canonicalRows().byMessage.get(id);
+            return row && row !== tail && row.position?.kind === 'live' ? [row] : [];
+          });
+          executorTextChanges.clear();
+          // A native message can keep streaming after another row has taken the tail.
+          for (const row of changedRows) {
+            let position = historyFollowPosition(row, []);
+            const chunks: AgentHistoryChunk[] = [];
+            for (;;) {
+              const page = await history(fence, position);
+              if (!ownsWindow(owner.identity)) return;
+              const matching = page.chunks.filter(
+                (chunk) =>
+                  sameHistoryRow(chunk.position, row.position!) && chunk.field === row.field,
+              );
+              chunks.push(...matching);
+              if (page.after === null || matching.length !== page.chunks.length) break;
+              position = { kind: 'after', cursor: page.after };
+            }
+            publishHistory(chunks, fence);
+          }
           const windowStart =
             currentWindow.before && rows()[0] ? rootEventSequence(rows()[0]) : undefined;
           const snap = overlay.snapshot();
-          const initial = historyFollowPosition(
-            rows().at(-1),
-            snap.rows,
-            snap.closedStarts,
-            windowStart,
-          );
+          const initial = historyFollowPosition(tail, snap.rows, snap.closedStarts, windowStart);
           const coveredFrom =
             initial.kind === 'start' ? 0 : initial.kind === 'event' ? initial.sequence : undefined;
           let position = initial;
@@ -1450,8 +1471,6 @@ export function Conversation(props: ConversationProps) {
           const current = historyWindow()!;
           historyWindow.set({ ...current, through: fence, after: null });
         }
-        const refresh = refreshFrom;
-        refreshFrom = null;
         const last = rows().at(-1);
         if (refresh !== null && last?.position) {
           let cursor: HistoryPosition = {
@@ -1586,6 +1605,12 @@ export function Conversation(props: ConversationProps) {
         case 'executor_tool_result':
           changed = true;
           break;
+        case 'executor_text_changed': {
+          const id = `${fact.messageId}/${fact.thinking ? 'thinking' : 'body'}`;
+          if (atHistoryTail() || canonicalRows().byMessage.has(id)) executorTextChanges.add(id);
+          changed = true;
+          break;
+        }
         case 'transcript_changed':
           void observe().catch(report);
           changed = true;
@@ -1609,7 +1634,12 @@ export function Conversation(props: ConversationProps) {
       );
     const observed = await observe();
     if (!alive) return;
-    const after = replayStartCursor(observed.through, observed.parts, observed.toolSeeds);
+    const tailThrough = atHistoryTail() ? historyWindow()?.through : undefined;
+    const after = replayStartCursor(
+      Math.min(tailThrough ?? observed.through, observed.through),
+      observed.parts,
+      observed.toolSeeds,
+    );
     const stream = await host.subscribe('agent', 'watch', { sessionId, after });
     if (!alive) {
       await stream.close();

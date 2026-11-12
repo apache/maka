@@ -35,6 +35,20 @@ impl HistoryDataSource {
             Self::Snapshot(source) => source.view_at(run).await,
         }
     }
+    pub async fn executor_view(
+        &self,
+        run: RunId,
+    ) -> Result<(crate::fold::RunView, ExecutorTranscript), StoreError> {
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(ExecutorViewAt(history.clone(), cut.clone(), run))
+                    .await
+            }
+            Self::Snapshot(snapshot) => snapshot.executor_view(run).await,
+        }
+    }
     pub async fn terminated(
         &self,
         run: RunId,

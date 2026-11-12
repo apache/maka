@@ -443,6 +443,8 @@ pub enum Fact {
     ExternalTaskPrepared {
         task: ExternalTaskId,
         descriptor: ContentRef,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        live_workspace: bool,
     },
     ExternalTaskAdmitted {
         task: ExternalTaskId,

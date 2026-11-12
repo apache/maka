@@ -35,11 +35,6 @@ use std::{future::Future, pin::Pin};
 pub enum BoundTool {
     Unavailable,
     Prepared(Arc<dyn ToolPreparer>),
-    /// Update descriptive process state without changing schema or authority.
-    Described {
-        handler: Arc<dyn ToolPreparer>,
-        description: String,
-    },
     /// A request-scoped model input projection; execution retains its registered binding.
     Input {
         handler: Arc<dyn ToolPreparer>,
@@ -105,20 +100,6 @@ impl ToolCatalog {
                 let entry = entries.get(&name).expect("selected entry");
                 let mut projected = (**entry).clone();
                 let handler = match projection {
-                    BoundTool::Described {
-                        handler,
-                        description,
-                    } => {
-                        if description.trim().is_empty() {
-                            return Err(ToolError::Failed(
-                                "request tool description invalid".into(),
-                            ));
-                        }
-                        if projected.definition.description != description {
-                            Arc::make_mut(&mut projected.definition).description = description;
-                        }
-                        Some(handler)
-                    }
                     BoundTool::Input { handler, schema } => {
                         let schema = crate::input::inline_refs(schema);
                         if schema != projected.definition.input_schema {

@@ -285,7 +285,7 @@ impl HistoryCheckpoints {
         let gates = self.session.gates.clone();
         worker(log, gates.clone(), move |log, objects| async move {
             let directory = parent.directory();
-            if directory_identity(directory)? != request.operation.parent_identity {
+            if !request.operation.parent_identity.matches(directory)? {
                 return Err(invalid("restore parent directory changed"));
             }
             workspace::validate_alias(directory, &request.operation.parent)?;
@@ -575,7 +575,7 @@ fn verify_destination(
     use std::io::Read;
     fence.validate_owner(&objects.owner)?;
     let (parent, name) = fence.child_parent()?;
-    if directory_identity(parent)? != operation.parent_identity {
+    if !operation.parent_identity.matches(parent)? {
         return Err(invalid("restore parent directory changed"));
     }
     workspace::validate_alias(parent, &operation.parent)?;
@@ -589,7 +589,7 @@ fn verify_destination(
             "restore destination no longer names its original directory",
         ));
     }
-    if &directory_identity(root)? != identity {
+    if !identity.matches(root)? {
         return Err(invalid("restore destination directory changed"));
     }
     let entries = workspace::inventory(objects, &prepared.workspace)?;
@@ -699,20 +699,5 @@ fn verify_destination(
 pub(super) fn directory_identity(
     directory: &cap_std::fs::Dir,
 ) -> Result<maka_sandbox::workspace::DirectoryIdentity, StoreError> {
-    use cap_fs_ext::MetadataExt;
-    let metadata = directory.dir_metadata()?;
-    let birth = metadata
-        .created()
-        .ok()
-        .and_then(|time| time.into_std().duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| (d.as_secs(), d.subsec_nanos()));
-    maka_sandbox::workspace::DirectoryIdentity::try_from(format!(
-        "sha256:{}",
-        crate::checkpoints::digest(&serde_json::to_vec(&(
-            metadata.dev(),
-            metadata.ino(),
-            birth,
-        ))?)
-    ))
-    .map_err(invalid)
+    Ok(DirectoryIdentity::capture(directory)?)
 }

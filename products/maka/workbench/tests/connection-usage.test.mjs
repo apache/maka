@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { watchConnectionUsage } from '../app/connectionUsage.ts';
+import { watchUsageLimits } from '../app/usageLimitsReading.ts';
 
 const ready = {
   kind: 'ready',
@@ -31,7 +31,7 @@ test('refresh keeps the previous reading and stops publishing when the card clos
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const reads = [];
   const published = [];
-  const stop = watchConnectionUsage(
+  const stop = watchUsageLimits(
     () => new Promise((resolve) => reads.push(resolve)),
     (reading) => published.push(reading),
     null,

@@ -41,7 +41,7 @@ struct TextSpan {
 }
 
 /// Projects one ACP prompt turn into committed public executor observations.
-pub(crate) struct Projection {
+pub struct Projection {
     session_id: String,
     invocation_id: String,
     tools: BTreeMap<String, Tool>,
@@ -56,7 +56,7 @@ impl Projection {
     pub(crate) fn session_id(&self) -> &str {
         &self.session_id
     }
-    pub(crate) fn new(session_id: String, invocation_id: String) -> Self {
+    pub fn new(session_id: String, invocation_id: String) -> Self {
         Self {
             session_id,
             invocation_id,
@@ -69,7 +69,7 @@ impl Projection {
         }
     }
 
-    pub(crate) fn last_body_message_id(&self) -> Option<String> {
+    pub fn last_body_message_id(&self) -> Option<String> {
         self.last_body.clone()
     }
 
@@ -121,7 +121,7 @@ impl Projection {
         Ok(())
     }
 
-    async fn close_message(&mut self, sink: &dyn OutputSink) -> Result<(), Error> {
+    pub async fn close_message(&mut self, sink: &dyn OutputSink) -> Result<(), Error> {
         if let Some(span) = &self.span {
             emit(
                 sink,
@@ -140,6 +140,16 @@ impl Projection {
 
     pub(crate) fn take_config_options(&mut self) -> Option<Vec<acp::SessionConfigOption>> {
         self.config_options.take()
+    }
+
+    pub async fn update_json(
+        &mut self,
+        notification: serde_json::Value,
+        sink: &dyn OutputSink,
+    ) -> Result<(), Error> {
+        let notification = serde_json::from_value(notification)
+            .map_err(|error| Error::Invalid(format!("Invalid ACP session update: {error}")))?;
+        self.update(notification, sink).await
     }
 
     pub(crate) async fn update(
@@ -280,11 +290,7 @@ impl Projection {
     }
 
     /// Only a confirmed normal finish completes the open text span.
-    pub(crate) async fn finish(
-        &mut self,
-        sink: &dyn OutputSink,
-        completed: bool,
-    ) -> Result<(), Error> {
+    pub async fn finish(&mut self, sink: &dyn OutputSink, completed: bool) -> Result<(), Error> {
         self.finished = true;
         if completed {
             self.close_message(sink).await?;
@@ -381,6 +387,7 @@ pub(crate) async fn emit_result(
             tool_call_id: id,
             text: text.into(),
             is_error,
+            details: None,
         },
     )
     .await
