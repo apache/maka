@@ -99,12 +99,6 @@ const statusIcons = {
 function Status(props: { label: string; kind?: StatusKind }) {
   const active = () => props.kind === 'preparing' || props.kind === 'running';
   const silent = () => !props.kind || props.kind === 'success' || props.kind === 'recorded';
-  const showLabel = () =>
-    platform.idiom !== 'terminal' &&
-    (props.kind === 'error' ||
-      props.kind === 'unknown' ||
-      props.kind === 'rejected' ||
-      props.kind === 'stopped');
   const color = () =>
     props.kind === 'error'
       ? C.danger
@@ -117,10 +111,8 @@ function Status(props: { label: string; kind?: StatusKind }) {
       accessibilityLabel={props.label}
       tooltip={silent() ? undefined : textTooltip(() => props.label)}
       style={{
-        minWidth: 20,
+        width: 20,
         height: 20,
-        flexDirection: 'row',
-        gap: 4,
         alignItems: 'center',
         justifyContent: 'center',
         flexShrink: 0,
@@ -132,11 +124,6 @@ function Status(props: { label: string; kind?: StatusKind }) {
           else={<Icon name={statusIcons[props.kind as keyof typeof statusIcons]} color={color()} />}
         >
           <LoadingIndicator label={props.label} color={color()} />
-        </If>
-        <If when={showLabel()}>
-          <Text accessibilityElementsHidden style={{ ...captionTextStyle, color: color() }}>
-            {props.label}
-          </Text>
         </If>
       </If>
     </View>
