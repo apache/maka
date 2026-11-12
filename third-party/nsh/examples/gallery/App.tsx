@@ -126,6 +126,7 @@ const allGroups: { title: string; demos: DemoEntry[] }[] = [
       { name: "Stocks", detail: "A live watchlist and a stock: candles, depth, the tape, a tick every 50 ms", icon: "stocks", screen: lazy(() => import("./demos/Stocks").then((m) => m.Stocks)) },
       { name: "AI Chat", detail: "Local Claude / Codex, streaming replies, web simulation", icon: "chat", screen: lazy(() => import("./demos/Chat").then((m) => m.Chat)) },
       { name: "Photos", detail: "A long recycled list: images, pull to refresh, paging", icon: "photos", screen: lazy(() => import("./demos/Photos").then((m) => m.Photos)) },
+      { name: "Block editor", detail: "A Notion-style document: a / menu of blocks, a handle on each block to add, drag and turn it into another, a toolbar over the selection", icon: "richtext", screen: lazy(() => import("./demos/BlockEditorDemo").then((m) => m.BlockEditorDemo)) },
     ],
   },
   {

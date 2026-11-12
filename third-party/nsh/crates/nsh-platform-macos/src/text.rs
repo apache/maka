@@ -20,14 +20,15 @@ use objc2_core_foundation::{
 use objc2_core_graphics::{CGColor, CGContext, CGPath};
 use objc2_core_text::{
     CTFont, CTFontDescriptor, CTFontManagerRegisterFontsForURL, CTFontManagerScope,
-    CTFontSymbolicTraits, CTFrame, CTFramesetter, CTLine, CTLineTruncationType, CTParagraphStyle,
-    CTParagraphStyleSetting, CTParagraphStyleSpecifier, CTRun, CTRunDelegate,
-    CTRunDelegateCallbacks, CTRunStatus, CTTextAlignment, CTTypesetter, CTWritingDirection,
-    kCTFontAttributeName, kCTFontCascadeListAttribute, kCTFontFamilyNameAttribute,
-    kCTFontFeatureSettingsAttribute, kCTFontOpenTypeFeatureTag, kCTFontOpenTypeFeatureValue,
-    kCTFontTraitsAttribute, kCTFontWeightTrait, kCTForegroundColorFromContextAttributeName,
-    kCTKernAttributeName, kCTParagraphStyleAttributeName, kCTRunDelegateAttributeName,
-    kCTRunDelegateCurrentVersion, kCTUnderlineStyleAttributeName,
+    CTFontSymbolicTraits, CTFrame, CTFramesetter, CTLine, CTLineBoundsOptions,
+    CTLineTruncationType, CTParagraphStyle, CTParagraphStyleSetting, CTParagraphStyleSpecifier,
+    CTRun, CTRunDelegate, CTRunDelegateCallbacks, CTRunStatus, CTTextAlignment, CTTypesetter,
+    CTWritingDirection, kCTFontAttributeName, kCTFontCascadeListAttribute,
+    kCTFontFamilyNameAttribute, kCTFontFeatureSettingsAttribute, kCTFontOpenTypeFeatureTag,
+    kCTFontOpenTypeFeatureValue, kCTFontTraitsAttribute, kCTFontWeightTrait,
+    kCTForegroundColorFromContextAttributeName, kCTKernAttributeName,
+    kCTParagraphStyleAttributeName, kCTRunDelegateAttributeName, kCTRunDelegateCurrentVersion,
+    kCTUnderlineStyleAttributeName,
 };
 use rustc_hash::FxHashMap;
 
@@ -985,6 +986,16 @@ impl TextEngine for CoreTextEngine {
         Size::new(Points(size.width as f32), Points(size.height as f32))
     }
 
+    fn first_baseline(&self, prepared: &Prepared, width: Points) -> Option<Points> {
+        // Typeset at the size it measures `width` wide, as the text is laid
+        // out: its first line's origin is its baseline, from the box's
+        // bottom.
+        let layout = self.layout(prepared, self.measure(prepared, Some(width)));
+        let layout = layout.downcast::<CoreTextLayout>()?;
+        let first = layout.lines.first()?;
+        Some(Points((layout.height - first.origin.y) as f32))
+    }
+
     fn breaks_lines_greedily(&self) -> bool {
         true
     }
@@ -1362,6 +1373,145 @@ pub(crate) fn draws_the_same(
             .selection
             .as_ref()
             .is_none_or(|s| s.range.get().is_none())
+}
+
+/// What of `view` draws otherwise with these ([`Damage`], view coordinates,
+/// y down): nothing when it already shows them ([`draws_the_same`]), the
+/// lines of the characters drawn otherwise when only colors or hidden runs
+/// changed in the same layout and box (the core's colors-only path: a
+/// word-by-word fade shows a word or two of a long paragraph per frame),
+/// else all of it.
+///
+/// A line's part reaches from the top to the bottom of its glyphs' ink and
+/// its typographic box, past them by what decorations and the text's shadow
+/// add, across the view's width: a glyph's ink, an ellipsis or a selection
+/// may stand anywhere along the line. What the rect cuts through is drawn
+/// again whole, as `draw` walks every line under the clip.
+pub(crate) fn damage(
+    view: &crate::view::NshView,
+    text: &std::sync::Arc<AttributedText>,
+    layout: &TextLayout,
+    content: nsh_core::Bounds<nsh_core::Points>,
+) -> nsh_core::canvas::Damage {
+    use nsh_core::canvas::Damage;
+    if draws_the_same(view, text, layout, content) {
+        return Damage::None;
+    }
+    let state = view.state();
+    let Some(drawn) = &state.text else {
+        return Damage::All;
+    };
+    let partial = std::sync::Arc::ptr_eq(&drawn.layout.0, &layout.0)
+        && drawn.content == content
+        && !drawn.cut.get()
+        && drawn.area_range.get().is_none()
+        && drawn
+            .selection
+            .as_ref()
+            .is_none_or(|s| s.range.get().is_none());
+    if !partial {
+        return Damage::All;
+    }
+    let Some(laid) = layout.downcast::<CoreTextLayout>() else {
+        return Damage::All;
+    };
+    recolored_damage(
+        &drawn.text,
+        text,
+        laid,
+        content,
+        view.ns().frame().size.width,
+    )
+}
+
+/// The lines `new` draws otherwise than `old` in `layout` ([`damage`]),
+/// `width` wide; all of it unless only colors or hidden runs changed.
+fn recolored_damage(
+    old: &AttributedText,
+    new: &AttributedText,
+    layout: &CoreTextLayout,
+    content: nsh_core::Bounds<nsh_core::Points>,
+    width: CGFloat,
+) -> nsh_core::canvas::Damage {
+    use nsh_core::canvas::Damage;
+    let Some(ranges) = old.recolored_ranges(new) else {
+        return Damage::All;
+    };
+    if ranges.is_empty() {
+        return Damage::None;
+    }
+    // Never drawn yet: nothing to keep, and no lines to look up.
+    let Some(lines) = layout.laid.get() else {
+        return Damage::All;
+    };
+    let (above, below) = ink_margins(old, new);
+    let height = content.size.height.0 as CGFloat;
+    let (mut top, mut bottom) = (CGFloat::INFINITY, CGFloat::NEG_INFINITY);
+    let last = lines.lines.len().saturating_sub(1);
+    for (i, line) in lines.lines.iter().enumerate() {
+        let start = line.range.location.max(0) as u32;
+        let end = line.hit_end.max(line.range.location) as u32;
+        // Characters past the last line shown lend their style to its
+        // ellipsis.
+        let end = if i == last { u32::MAX } else { end };
+        if !ranges.iter().any(|r| r.start < end && start < r.end) {
+            continue;
+        }
+        let (mut ascent, mut descent) = (0.0, 0.0);
+        // SAFETY: a valid line and out pointers; no options that need
+        // more.
+        let ink = unsafe {
+            line.line
+                .typographic_bounds(&mut ascent, &mut descent, std::ptr::null_mut());
+            line.line
+                .bounds_with_options(CTLineBoundsOptions::UseGlyphPathBounds)
+        };
+        let (mut high, mut low) = (ascent, -descent);
+        if !ink.is_empty() && ink.size.height.is_finite() {
+            high = high.max(ink.origin.y + ink.size.height);
+            low = low.min(ink.origin.y);
+        }
+        // Lines stand y up from the bottom of the box, as `draw` places
+        // them.
+        top = top.min(height - (line.origin.y + high) - above);
+        bottom = bottom.max(height - (line.origin.y + low) + below);
+    }
+    if top >= bottom {
+        return Damage::All;
+    }
+    let y = content.origin.y.0 as CGFloat;
+    let (top, bottom) = ((y + top).floor(), (y + bottom).ceil());
+    Damage::Rect(content_box(0.0, top, width, bottom - top))
+}
+
+/// How far past its lines' boxes and glyphs `old` or `new` text draws
+/// above and below a line: anti-aliasing, decorations off the glyphs and
+/// the text's shadow with its blur.
+fn ink_margins(old: &AttributedText, new: &AttributedText) -> (CGFloat, CGFloat) {
+    /// Anti-aliasing, with room for rounding at any scale.
+    const AA: f32 = 2.0;
+    let (mut above, mut below) = (AA, AA);
+    for span in old.spans.iter().chain(&new.spans) {
+        let style = &span.style;
+        if !style.decoration.underline && !style.decoration.line_through {
+            continue;
+        }
+        let thickness = style
+            .decoration_thickness
+            .map_or(style.font_size.0 * 0.1, |t| t.0)
+            .max(1.0);
+        // Double and wavy lines reach a thickness or two past their center;
+        // the font's own underline sits within its descent.
+        let reach = thickness * 3.0 + style.underline_offset.map_or(0.0, |o| o.0.abs());
+        below = below.max(AA + reach);
+        above = above.max(AA + thickness * 3.0);
+    }
+    if let Some(shadow) = new.shadow {
+        let blur = shadow.radius.0.max(0.0) * 2.0;
+        above += blur + (-shadow.offset_y.0).max(0.0);
+        below += blur + shadow.offset_y.0.max(0.0);
+    }
+    (above as CGFloat, below as CGFloat)
 }
 
 /// The view draws selectable text: mouse drags over it select rather
@@ -2868,6 +3018,124 @@ mod tests {
         }
     }
 
+    /// Showing words of a long paragraph or recoloring them draws again
+    /// only their lines, across the box; anything else that changed draws
+    /// all of it.
+    #[test]
+    fn recolored_words_damage_only_their_lines() {
+        use nsh_core::{Bounds, Point, canvas::Damage};
+        let style = ResolvedTextStyle {
+            font_size: Points(16.0),
+            ..ResolvedTextStyle::default()
+        };
+        let red = ResolvedTextStyle {
+            color: nsh_core::Color(0xff00_00ff),
+            ..style
+        };
+        let hidden = ResolvedTextStyle {
+            color: nsh_core::Color::TRANSPARENT,
+            hidden: true,
+            ..style
+        };
+        // 60 words, those from `shown` on hidden; `red` recolors one.
+        let words = |shown: usize, recolored: Option<usize>| {
+            let mut text = AttributedText::default();
+            for i in 0..60 {
+                let s = if Some(i) == recolored {
+                    red
+                } else if i >= shown {
+                    hidden
+                } else {
+                    style
+                };
+                text.push(&format!("word{i:02} "), s);
+            }
+            text
+        };
+        let engine = CoreTextEngine::default();
+        let typeset = words(30, None);
+        let prepared = engine.prepare(&typeset);
+        let size = engine.measure(&prepared, Some(Points(200.0)));
+        let layout = engine.layout(&prepared, size);
+        let layout = layout
+            .downcast::<super::CoreTextLayout>()
+            .expect("CoreText");
+        assert!(layout.lines.len() >= 10, "{} lines", layout.lines.len());
+        let content = Bounds::new(Point::new(Points(4.0), Points(10.0)), size);
+        let damage = |old: &AttributedText, new: &AttributedText| {
+            super::recolored_damage(old, new, layout, content, 220.0)
+        };
+        // Where the line holding character `at` stands in the view.
+        let line_of = |at: u32| {
+            let line = layout
+                .lines
+                .iter()
+                .map(|l| super::LineBox::of(layout, l))
+                .find(|l| l.start as u32 <= at && at < l.end as u32)
+                .expect("a line");
+            (10.0 + line.top as f32, 10.0 + line.bottom as f32)
+        };
+        let char_of = |word: u32| word * 7;
+        let covers = |damage: Damage, word: u32| {
+            let Damage::Rect(r) = damage else {
+                panic!("{damage:?}")
+            };
+            let (top, bottom) = line_of(char_of(word));
+            r.origin.y.0 <= top && bottom <= r.origin.y.0 + r.size.height.0
+        };
+        let misses = |damage: Damage, word: u32| {
+            let Damage::Rect(r) = damage else {
+                panic!("{damage:?}")
+            };
+            let (top, bottom) = line_of(char_of(word));
+            bottom <= r.origin.y.0 || r.origin.y.0 + r.size.height.0 <= top
+        };
+        // The next word starts showing: its line, not the paragraph.
+        let started = words(31, None);
+        let next = damage(&typeset, &started);
+        assert!(
+            covers(next, 30) && misses(next, 0) && misses(next, 59),
+            "{next:?}"
+        );
+        let Damage::Rect(r) = next else {
+            unreachable!()
+        };
+        assert_eq!((r.origin.x.0, r.size.width.0), (0.0, 220.0));
+        assert!(r.size.height.0 < size.height.0 / 4.0, "{r:?} of {size:?}");
+        // One recolored at the top: the top line.
+        let top = damage(&typeset, &words(30, Some(0)));
+        assert!(covers(top, 0) && misses(top, 30), "{top:?}");
+        // Two apart: everything between them too, in one rect.
+        let both = damage(&typeset, &words(31, Some(0)));
+        assert!(
+            covers(both, 0) && covers(both, 15) && covers(both, 30),
+            "{both:?}"
+        );
+        // Nothing drawn otherwise; anything but colors changed.
+        assert_eq!(damage(&typeset, &typeset.clone()), Damage::None);
+        let mut bold = words(30, None);
+        bold.spans[0].style.font_weight = 700;
+        assert_eq!(damage(&typeset, &bold), Damage::All);
+        // An underline far below the glyphs reaches into the rect.
+        let underlined = |shown| {
+            let mut text = words(shown, None);
+            for span in &mut text.spans {
+                span.style.decoration.underline = true;
+                span.style.underline_offset = Some(Points(12.0));
+            }
+            text
+        };
+        let plain = next;
+        let lined = damage(&underlined(30), &underlined(31));
+        let (Damage::Rect(plain), Damage::Rect(lined)) = (plain, lined) else {
+            panic!("{lined:?}")
+        };
+        assert!(
+            lined.origin.y.0 + lined.size.height.0 >= plain.origin.y.0 + plain.size.height.0 + 12.0,
+            "{lined:?} {plain:?}"
+        );
+    }
+
     /// A layout typeset for one text draws another that differs only in
     /// its colors, spans split elsewhere, in that text's colors: glyphs and
     /// CoreText's underlines (`TextEngine::draws_colors_from_text`).
@@ -3444,5 +3712,41 @@ mod hit_regressions {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod first_baseline {
+    use super::*;
+
+    fn baseline(size: f32) -> (f32, nsh_core::TextLine) {
+        let engine = CoreTextEngine::default();
+        let mut text = AttributedText::default();
+        text.push(
+            "Chat",
+            ResolvedTextStyle {
+                font_size: Points(size),
+                ..Default::default()
+            },
+        );
+        let prepared = engine.prepare(&text);
+        let width = engine.measure(&prepared, None).width;
+        let baseline = engine
+            .first_baseline(&prepared, width)
+            .expect("a first line");
+        let laid = engine.layout(&prepared, engine.measure(&prepared, Some(width)));
+        (baseline.0, engine.lines(&laid).remove(0))
+    }
+
+    #[test]
+    fn is_where_the_first_line_is_drawn_and_grows_with_the_font() {
+        let (small, line) = baseline(12.0);
+        // The line is drawn its ascender above its baseline.
+        assert!(
+            (small - (line.y.0 + line.ascender.0)).abs() < 0.01,
+            "{small} {line:?}"
+        );
+        let (large, _) = baseline(24.0);
+        assert!(large > small * 1.5, "{small} {large}");
     }
 }

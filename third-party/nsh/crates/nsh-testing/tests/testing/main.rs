@@ -126,7 +126,7 @@ fn headless_runs_play_the_platform_s_part() {
     let results = run_file(&run, &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
     let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
     assert!(failed.is_empty(), "{failed:#?}");
-    assert_eq!(results.len(), 12);
+    assert_eq!(results.len(), 13);
 }
 
 #[test]
@@ -154,7 +154,7 @@ fn open_sets_the_environment_and_routes_answer_requests() {
     let results = run_file(&run, &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
     let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
     assert!(failed.is_empty(), "{failed:#?}");
-    assert_eq!(results.len(), 13);
+    assert_eq!(results.len(), 14);
 }
 
 #[test]
@@ -230,6 +230,51 @@ fn a_test_file_reads_its_imports_wherever_its_entry_is_written() {
         let _ = std::fs::remove_dir_all(&outside);
         let _ = std::fs::remove_dir_all(&app);
     }
+}
+
+/// Test files of one name in different directories of an app run their
+/// own tests from entries of their own in its `.nsh/test`: the parallel
+/// `nsh test`s of an app never write one's entry over the other's.
+#[test]
+fn test_files_of_one_name_run_from_entries_of_their_own() {
+    let app = std::env::temp_dir().join(format!("nsh-testing-names-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&app);
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("nsh.json"), "{}").unwrap();
+    let dirs = ["core", "state"];
+    for dir in dirs {
+        let file = app.join(format!("src/{dir}/typing.test.ts"));
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            format!("import {{ test }} from \"nsh/test\";\ntest(\"{dir}\", () => {{}});\n"),
+        )
+        .unwrap();
+    }
+    let run = TestRun {
+        work_dir: app.join(".nsh/test"),
+        ..test_run(None)
+    };
+    for dir in dirs {
+        let results = run_file(
+            &run,
+            &app.join(format!("src/{dir}/typing.test.ts")),
+            &mut |_| {},
+        )
+        .unwrap();
+        let names: Vec<_> = results.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, [dir]);
+    }
+    for dir in dirs {
+        let entry = app.join(format!(".nsh/test/src/{dir}/typing.test.ts.run.js"));
+        let code =
+            std::fs::read_to_string(&entry).unwrap_or_else(|e| panic!("{}: {e}", entry.display()));
+        assert!(
+            code.contains(&format!("/src/{dir}/typing.test.ts\"")),
+            "{code}"
+        );
+    }
+    std::fs::remove_dir_all(&app).unwrap();
 }
 
 #[test]
@@ -335,6 +380,19 @@ fn a_press_reaches_a_header_button_above_a_large_title_page_s_content() {
 fn a_press_reaches_a_view_across_a_scroll_view_s_fold() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testing/scroll-hit");
     let results = run_file(&test_run(None), &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
+    let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
+    assert!(failed.is_empty(), "{failed:#?}");
+    assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn a_view_removed_under_the_pointer_or_with_the_focus_hears_no_more() {
+    let run = TestRun {
+        compile: compiler(vec![nsh_base::registry()]),
+        ..test_run(None)
+    };
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testing/hover-removed");
+    let results = run_file(&run, &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
     let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
     assert!(failed.is_empty(), "{failed:#?}");
     assert_eq!(results.len(), 2);

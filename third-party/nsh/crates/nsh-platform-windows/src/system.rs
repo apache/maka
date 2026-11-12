@@ -48,7 +48,12 @@
 //!   the window (an embedded surface's root window) is minimized or hidden,
 //!   active while the app is the active one (its windows get
 //!   `WM_ACTIVATEAPP`; before the first, the foreground window is the
-//!   process's), inactive otherwise;
+//!   process's), inactive otherwise; background too from the moment the
+//!   session may end (signing out, shutting down: [`crate::session`]);
+//! - the wake count (`wakeCount()`): one more on every
+//!   `WM_POWERBROADCAST` with `PBT_APMRESUMEAUTOMATIC` ([`woke`]), which
+//!   top-level windows get on every resume (an embedded surface's root
+//!   window passes it on);
 //! - the time zone (`localeSettings()`'s): the zone of the system's setting
 //!   (`GetDynamicTimeZoneInformation`, its Windows key name) by its IANA
 //!   name, which the ICU Windows ships knows
@@ -370,9 +375,19 @@ pub(crate) fn lifecycle_changed(surface: &Surface) {
     surface.set_environment(env);
 }
 
+/// The system woke from sleep: `surface` counts it (`wakeCount()`).
+pub(crate) fn woke(surface: &Surface) {
+    let mut env: Environment = surface.environment.get();
+    env.wake_count = env.wake_count.wrapping_add(1);
+    surface.set_environment(env);
+}
+
 /// The app's state as `surface` sees it; `current` before its window
 /// exists.
 fn lifecycle(surface: &Surface, current: Lifecycle) -> Lifecycle {
+    if crate::session::ending() {
+        return Lifecycle::Background;
+    }
     if let Some(active) = surface.terminal_active.get() {
         return if active {
             Lifecycle::Active
@@ -388,9 +403,18 @@ fn lifecycle(surface: &Surface, current: Lifecycle) -> Lifecycle {
     let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
     // SAFETY: as above.
     let shown = unsafe { IsWindowVisible(root).as_bool() && !IsIconic(root).as_bool() };
-    if !shown {
+    lifecycle_of(shown, crate::session::ending(), || {
+        ACTIVE.with(Cell::get).unwrap_or_else(foreground_is_ours)
+    })
+}
+
+/// The app's state with its window `shown` (not minimized or hidden),
+/// the session `ending` ([`crate::session`]) and whether it is the
+/// `active` app.
+fn lifecycle_of(shown: bool, ending: bool, active: impl FnOnce() -> bool) -> Lifecycle {
+    if !shown || ending {
         Lifecycle::Background
-    } else if ACTIVE.with(Cell::get).unwrap_or_else(foreground_is_ours) {
+    } else if active() {
         Lifecycle::Active
     } else {
         Lifecycle::Inactive
@@ -2285,6 +2309,15 @@ pub(crate) fn clipboard_has_text() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ending_session_puts_the_app_in_the_background() {
+        assert_eq!(lifecycle_of(true, false, || true), Lifecycle::Active);
+        assert_eq!(lifecycle_of(true, false, || false), Lifecycle::Inactive);
+        assert_eq!(lifecycle_of(false, false, || true), Lifecycle::Background);
+        assert_eq!(lifecycle_of(true, true, || true), Lifecycle::Background);
+        assert_eq!(lifecycle_of(true, true, || false), Lifecycle::Background);
+    }
 
     #[test]
     fn bitmaps_become_bmp_files() {

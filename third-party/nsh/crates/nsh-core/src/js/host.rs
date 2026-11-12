@@ -550,6 +550,19 @@ export interface WheelEvent {
   modifiers: Modifiers;
 }
 
+/** A touchpad pinch over a view: the payload of `onPinch` (GPUI's `PinchEvent`). */
+export interface PinchEvent {
+  /** Position in the view (its transforms undone). */
+  position: Point;
+  /** Position in the root view the view is in (the surface or its modal), as touches' `pageX` / `pageY`. */
+  pagePosition: Point;
+  /** How much the scale changed since the last event, as a fraction: 0.1 is 10 % bigger, negative smaller. */
+  delta: number;
+  /** Where it is in the gesture, as a touch's phase. */
+  phase: "start" | "move" | "end";
+  modifiers: Modifiers;
+}
+
 /** A mouse button (GPUI's `MouseButton`). */
 export type MouseButton = "left" | "right" | "middle" | "back" | "forward";
 
@@ -686,6 +699,12 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         "A mouse wheel or touchpad scrolled over the view (or a view inside it); desktops and the web. The nearest listener hears it. A listener nearer than any scroll view under the pointer takes the wheel: nothing scrolls or zooms natively (a canvas zooms on `e.modifiers.ctrl` and pans otherwise); a scroll view listening, or a view around one, only observes it.",
     ),
     (
+        EventKind::Pinch,
+        on::ALL,
+        "(e: PinchEvent) => void",
+        "A touchpad pinch over the view (or a view inside it); macOS, Linux, the GPUI backend and Safari (Windows and the other browsers report a touchpad pinch as Control + wheel: `onWheel`). The nearest listener hears it; a listener nearer than any view that pinches natively takes it, and nothing zooms natively. A pinch stays on the view its start went to. Fingers pinching a touchscreen are `onPinchStart`'s.",
+    ),
+    (
         EventKind::MouseUp,
         on::ALL,
         "(e: MouseEvent) => void",
@@ -810,7 +829,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         EventKind::Error,
         on::IMAGE | on::WEBVIEW | on::VIDEO,
         "(e: { message: string; code?: string }) => void",
-        "The source failed to load. `code` is `\"ERR_ACCESS_DENIED\"` when the app's capabilities do not grant it (an image's or video's URL: `network`; a web view's page or `html`: `webview`), and `\"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM\"` for a web view where the platform shows none (`WebView.available()`).",
+        "The source failed to load. `code` is `\"ERR_ACCESS_DENIED\"` when the app's capabilities do not grant it (an image's or video's URL: `network`; a web view's page or `html`: `webview`), `\"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM\"` for a web view where the platform shows none (`WebView.available()`), and `\"ERR_NSH_WEBVIEW_TERMINATED\"` when a web view's web content process ended (it shows no page until `reload()`, `load()` or a new source).",
     ),
     (
         EventKind::LoadEnd,

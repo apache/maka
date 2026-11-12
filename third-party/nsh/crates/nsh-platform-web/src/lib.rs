@@ -476,6 +476,8 @@ fn environment(width: f32, height: f32, dark: bool, pixel_ratio: f32) -> Environ
 fn page() -> Environment {
     PAGE.with(Cell::get).unwrap_or(Environment {
         os: Os::Web,
+        // Browsers' screen readers follow `aria-activedescendant`.
+        reads_active_descendants: true,
         ..Environment::default()
     })
 }
@@ -1318,8 +1320,36 @@ pub unsafe extern "C" fn nsh_picked_file(
     PICKED.with_borrow_mut(|files| files.push(file));
 }
 
-/// Answers pick `request` with the files [`nsh_picked_file`] gave (none:
-/// cancelled).
+/// A file picked for the pick `nsh.js` is answering (`Picker.pickFiles`)
+/// that is larger than the pick reads: its name, its type, its size in
+/// bytes and when it was last changed (ms since the Unix epoch), without its
+/// bytes. [`nsh_picked`] sends it with the others.
+///
+/// # Safety
+///
+/// The two ranges are memory from [`nsh_alloc`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_picked_too_large(
+    name: *const u8,
+    name_len: usize,
+    mime: *const u8,
+    mime_len: usize,
+    len: f64,
+    last_modified: f64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let (name, mime) = unsafe { (string(name, name_len), string(mime, mime_len)) };
+    // A `File.size`: a whole number of bytes (`as` saturates).
+    let mut file = nsh_core::picker::PickedFile::too_large(name, mime, len.max(0.0) as u64);
+    if last_modified.is_finite() && last_modified >= 0.0 {
+        file.last_modified =
+            Some(std::time::UNIX_EPOCH + std::time::Duration::from_millis(last_modified as u64));
+    }
+    PICKED.with_borrow_mut(|files| files.push(file));
+}
+
+/// Answers pick `request` with the files [`nsh_picked_file`] and
+/// [`nsh_picked_too_large`] gave (none: cancelled).
 #[unsafe(no_mangle)]
 pub extern "C" fn nsh_picked(request: u32) -> f64 {
     let files = PICKED.with_borrow_mut(std::mem::take);

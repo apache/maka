@@ -49,10 +49,10 @@ use std::{
 };
 
 use block2::RcBlock;
-use nsh_core::access::WebMedia;
 use nsh_core::{
     Bounds, Command, EventKind, EventPayload, JsonValue, NativeProps, NodeId, PayloadValue, Points,
-    ResizeMode, Size, VideoProps, ViewKind, WebInput, WebKey, WebProps, WebSource, geometry::Point,
+    ResizeMode, Size, VideoProps, ViewKind, WebInput, WebKey, WebProps, WebSource,
+    access::WebMedia, geometry::Point,
 };
 use nsh_engine::{Access, App, EngineControl, Policy};
 use objc2::{
@@ -1540,6 +1540,19 @@ define_class!(
         #[unsafe(method(webViewWebContentProcessDidTerminate:))]
         fn process_terminated(&self, _web: &AnyObject) {
             self.ivars().evaluations.process_terminated();
+            // The app keeps running; the page comes back on its next reload.
+            self.emit(EventKind::Error, || {
+                EventPayload::Map(vec![
+                    (
+                        "message",
+                        PayloadValue::Str("The web content process terminated".into()),
+                    ),
+                    (
+                        "code",
+                        PayloadValue::Str(nsh_core::element::codes::WEBVIEW_TERMINATED.into()),
+                    ),
+                ])
+            });
         }
 
         #[unsafe(method(webView:didFinishNavigation:))]

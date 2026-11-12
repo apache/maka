@@ -34,7 +34,11 @@
 //! read in the order they are on screen ([`in_reading_order`]).
 //!
 //! Live regions are emulated by announcing a changed label or text
-//! (`NSAccessibilityAnnouncementRequestedNotification`);
+//! (`NSAccessibilityAnnouncementRequestedNotification`). An alert
+//! (`role="alert"`) is an assertive live region read whole, as a browser
+//! reads ARIA's: as it appears and when its content changes, once the
+//! batch is in ([`batch_applied`]), unless the app announced the same text
+//! in that batch;
 //! `AXPress` presses a view that takes presses, as Return does when it
 //! has the keyboard focus (`crate::input::accessibility_press`);
 //! `accessibilityActions` are not exposed.
@@ -46,7 +50,10 @@
 pub(crate) mod scroll_bar;
 pub(crate) mod table;
 
-use std::sync::Arc;
+use std::{
+    cell::{Cell, RefCell},
+    sync::Arc,
+};
 
 use nsh_core::{
     Accessibility, AccessibilityRole as Role, AttributedText, Checked, EventKind, EventMask,
@@ -101,6 +108,8 @@ pub(crate) struct Applied {
     columns: Vec<Retained<table::Column>>,
     /// A scroll area's scroll bar, created only when an AX client asks.
     scroll_bar: Option<Retained<scroll_bar::ScrollBar>>,
+    /// The active descendant last told of ([`relations_changed`]).
+    active: Option<nsh_core::NodeId>,
 }
 
 /// Which of its children VoiceOver reaches through a view.
@@ -569,9 +578,125 @@ struct Spec {
     grouped: bool,
 }
 
+/// The alerts to read once the batch being applied is in, and what was
+/// announced while it was applied.
+#[derive(Default)]
+struct Pending {
+    alerts: Vec<NshView>,
+    said: Vec<String>,
+}
+
+thread_local! {
+    static PENDING: RefCell<Pending> = RefCell::default();
+    /// Whether any view has been an alert: until one is, a changed text
+    /// does not look for one around it.
+    static ANY_ALERT: Cell<bool> = const { Cell::new(false) };
+}
+
 /// A batch is about to be applied. (AppKit takes roles at any time, so
 /// views get theirs with their props.)
-pub(crate) fn prepare(_batch: &MountBatch) {}
+pub(crate) fn prepare(_batch: &MountBatch) {
+    PENDING.with_borrow_mut(|p| *p = Pending::default());
+}
+
+/// The batch is in: reads the alerts that appeared or changed in it,
+/// whole, now that their content is there too. An alert the app announced
+/// itself in the batch (its text, `announceForAccessibility`) is not read
+/// again.
+pub(crate) fn batch_applied() {
+    let Pending { alerts, said } = PENDING.with_borrow_mut(std::mem::take);
+    let mut read: Vec<&NshView> = Vec::new();
+    for alert in &alerts {
+        if read.iter().any(|r| r.ns() == alert.ns()) || !is_shown(alert) {
+            continue;
+        }
+        read.push(alert);
+        let Some((text, live)) = alert_text(alert) else {
+            continue;
+        };
+        if worth_reading(&text, &said) {
+            announce(alert.ns(), &text, priority(live));
+        }
+    }
+}
+
+/// What an alert reads: its label (a text view's text), else the texts and
+/// labels of its content; and how urgently.
+fn alert_text(alert: &NshView) -> Option<(String, LiveRegion)> {
+    let (label, live) = {
+        let s = alert.try_state()?;
+        let label = s.access.spec.as_deref().and_then(|spec| spec.label.clone());
+        (label, live(&s.props.accessibility))
+    };
+    let text = label.or_else(|| {
+        let mut name = String::new();
+        gather_name(alert.ns(), &mut name);
+        Some(name)
+    })?;
+    Some((text, live))
+}
+
+/// Whether `text` is worth reading: not empty, nor what was already said
+/// in the batch.
+fn worth_reading(text: &str, said: &[String]) -> bool {
+    let text = text.trim();
+    !text.is_empty() && !said.iter().any(|s| s.trim() == text)
+}
+
+/// Whether `view` is in a window with nothing around it hidden from
+/// VoiceOver.
+fn is_shown(view: &NshView) -> bool {
+    if view.ns().window().is_none() {
+        return false;
+    }
+    let mut at = Some(view.clone());
+    while let Some(v) = at {
+        if v.try_state()
+            .is_some_and(|s| s.access.spec.as_deref().is_some_and(|spec| spec.hidden))
+        {
+            return false;
+        }
+        at = v.parent_view();
+    }
+    true
+}
+
+/// `view` or the nearest view around it that is an alert.
+fn alert_around(view: &NshView) -> Option<NshView> {
+    if !ANY_ALERT.get() {
+        return None;
+    }
+    let mut at = Some(view.clone());
+    while let Some(v) = at {
+        if v.try_state()
+            .is_some_and(|s| s.props.accessibility.role == Role::Alert)
+        {
+            return Some(v);
+        }
+        at = v.parent_view();
+    }
+    None
+}
+
+/// Reads the alert `alert` once the batch is in.
+fn read_when_applied(alert: NshView) {
+    PENDING.with_borrow_mut(|p| p.alerts.push(alert));
+}
+
+/// The live region an element is: its `accessibilityLiveRegion`, else an
+/// assertive one for an alert, as ARIA's `alert` implies.
+fn live(a: &Accessibility) -> LiveRegion {
+    match a.live_region {
+        LiveRegion::None if a.role == Role::Alert => LiveRegion::Assertive,
+        live => live,
+    }
+}
+
+/// Whether an element described by `old` and now by `new` appeared as an
+/// alert: added, shown again, or given the role.
+fn appears(old: Option<&Spec>, new: &Spec) -> bool {
+    new.role == Ax::Alert && !new.hidden && old.is_none_or(|o| o.role != Ax::Alert || o.hidden)
+}
 
 /// A view was created: it is no element until its props say so.
 pub(crate) fn created(view: &NshView) {
@@ -591,6 +716,96 @@ pub(crate) fn props_changed(view: &NshView) {
         view.state_mut().access.test_id = id;
     }
     update(view);
+    relations_changed(view);
+}
+
+/// The view `id` names in `view`'s surface.
+fn named(view: &NshView, id: Option<nsh_core::NodeId>) -> Option<NshView> {
+    let surface = view.surface()?;
+    let mounter = surface.mounter.try_borrow().ok()?;
+    mounter.views.get(&id?).cloned()
+}
+
+/// The view that is active inside `view` while it keeps the focus
+/// (`accessibilityActiveDescendant`): its `AXSelectedChildren`, as WebKit
+/// and Chromium answer for an ARIA active descendant.
+pub(crate) fn active_descendant(view: &NshView) -> Option<Retained<AnyObject>> {
+    let id = view.try_state()?.props.accessibility.active_descendant;
+    named(view, id)
+        .map(|v| Retained::into_super(Retained::into_super(Retained::into_super(v.ns().retain()))))
+}
+
+/// The view whose content `view` controls (`accessibilityControls`): its
+/// `AXLinkedUIElements`, as WebKit gives ARIA's `aria-controls`.
+pub(crate) fn controlled(view: &NshView) -> Option<Retained<AnyObject>> {
+    let id = view.try_state()?.props.accessibility.controls;
+    named(view, id)
+        .map(|v| Retained::into_super(Retained::into_super(Retained::into_super(v.ns().retain()))))
+}
+
+/// What a combo box's field answers ([`combobox_field`]).
+pub(crate) struct ComboboxField {
+    /// The input's label.
+    pub(crate) label: Option<Arc<str>>,
+    /// Its list is open.
+    pub(crate) expanded: bool,
+    /// Its active descendant.
+    pub(crate) active: Option<Retained<AnyObject>>,
+    /// The list it controls.
+    pub(crate) controls: Option<Retained<AnyObject>>,
+}
+
+/// An input that is a combo box (`role="combobox"`): its field, which
+/// keeps the keyboard focus, is the combo box VoiceOver is on, as WebKit's
+/// editable combo box is, and the input view is no element of its own
+/// ([`base_role`]).
+pub(crate) fn combobox_field(view: &NshView) -> Option<ComboboxField> {
+    let (label, expanded) = {
+        let s = view.try_state()?;
+        let a = &s.props.accessibility;
+        if s.kind != ViewKind::Input || a.role != Role::Combobox {
+            return None;
+        }
+        (a.label.clone(), a.state.expanded == Some(true))
+    };
+    Some(ComboboxField {
+        label,
+        expanded,
+        active: active_descendant(view),
+        controls: controlled(view),
+    })
+}
+
+/// The view's active descendant changed: VoiceOver, which stays on the
+/// focused element, hears of its selected children changing and reads the
+/// one now active (`NSAccessibilitySelectedChildrenChangedNotification`,
+/// as WebKit and Chromium post for a combo box's active descendant).
+fn relations_changed(view: &NshView) {
+    let active = view.state().props.accessibility.active_descendant;
+    if view.state().access.active == active {
+        return;
+    }
+    view.state_mut().access.active = active;
+    if active.is_none() {
+        return;
+    }
+    let element = crate::text_input::accessibility_element(view);
+    // A text field's notifications go out from its cell: AppKit passes on
+    // none posted on the field itself.
+    let cell = element
+        .downcast_ref::<objc2_app_kit::NSControl>()
+        .and_then(|f| f.cell());
+    let from: &AnyObject = match &cell {
+        Some(cell) => cell,
+        None => &element,
+    };
+    // SAFETY: a notification AppKit defines, on a live element.
+    unsafe {
+        objc2_app_kit::NSAccessibilityPostNotification(
+            from,
+            objc2_app_kit::NSAccessibilitySelectedChildrenChangedNotification,
+        )
+    };
 }
 
 /// The view's event listeners changed: views with press handlers are
@@ -623,7 +838,12 @@ pub(crate) fn text_changed(view: &NshView) {
             old => old.is_none(),
         }
     };
-    if update(view) && !first {
+    let changed = update(view);
+    // Inside an alert: the alert is read whole, a new text too (content
+    // added to an alert that was there).
+    if let Some(alert) = alert_around(view) {
+        read_when_applied(alert);
+    } else if changed && !first {
         announce_live(view);
     }
 }
@@ -670,6 +890,7 @@ pub(crate) fn focus(view: &NshView) {
 /// Has VoiceOver read `text` (`announce`, live
 /// regions).
 pub(crate) fn announce(element: &NSView, text: &str, priority: NSAccessibilityPriorityLevel) {
+    PENDING.with_borrow_mut(|p| p.said.push(text.to_owned()));
     let text = NSString::from_str(text);
     let priority = NSNumber::new_isize(priority.0);
     // SAFETY: immutable AppKit constants with values of their documented
@@ -715,16 +936,26 @@ fn update(view: &NshView) -> bool {
     };
     let written = apply(view.ns(), &spec, &view.state().access.ax);
     view.state_mut().access.ax = written;
+    let appeared = appears(old.as_deref(), &spec);
+    if spec.role == Ax::Alert {
+        ANY_ALERT.set(true);
+    }
     let label_changed = old.is_some_and(|o| o.label != spec.label);
     let is_text = view.state().text.is_some();
-    if label_changed
-        && live != LiveRegion::None
-        && !is_text
-        && let Some(label) = &spec.label
-    {
-        announce(view.ns(), label, priority(live));
-    }
+    let label = spec.label.clone();
     view.state_mut().access.spec = Some(Box::new(spec));
+    if appeared {
+        read_when_applied(view.clone());
+    } else if label_changed && !is_text {
+        // A label changed in an alert: the alert is read whole.
+        if let Some(alert) = alert_around(view) {
+            read_when_applied(alert);
+        } else if live != LiveRegion::None
+            && let Some(label) = &label
+        {
+            announce(view.ns(), label, priority(live));
+        }
+    }
     label_changed
 }
 
@@ -1113,6 +1344,8 @@ fn base_role(a: &Accessibility, kind: ViewKind, pressable: bool) -> Ax {
         Role::Summary => Ax::Status,
         Role::Alert => Ax::Alert,
         Role::Checkbox => Ax::CheckBox,
+        // An input's field is the combo box (`combobox_field`).
+        Role::Combobox if kind == ViewKind::Input => Ax::Generic,
         Role::Combobox => Ax::ComboBox,
         Role::Menu => Ax::Menu,
         Role::Menubar => Ax::MenuBar,
@@ -1193,6 +1426,39 @@ mod tests {
             role,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn an_alert_is_an_assertive_live_region_read_as_it_appears() {
+        // ARIA's `alert` is a live region of its own, an assertive one,
+        // unless the app says otherwise.
+        assert_eq!(live(&with_role(Role::Alert)), LiveRegion::Assertive);
+        assert_eq!(live(&with_role(Role::Group)), LiveRegion::None);
+        let polite = Accessibility {
+            role: Role::Alert,
+            live_region: LiveRegion::Polite,
+            ..Default::default()
+        };
+        assert_eq!(live(&polite), LiveRegion::Polite);
+        // It is read when it appears: added, shown again, or a view that
+        // becomes one; not again for any other change of its own.
+        let spec = |role, hidden| spec_for(&with_role(role), ViewKind::View, false, None, hidden);
+        let alert = spec(Role::Alert, false);
+        assert!(appears(None, &alert));
+        assert!(appears(Some(&spec(Role::Alert, true)), &alert));
+        assert!(appears(Some(&spec(Role::Group, false)), &alert));
+        assert!(!appears(Some(&alert), &alert));
+        assert!(!appears(None, &spec(Role::Alert, true)));
+        assert!(!appears(None, &spec(Role::Group, false)));
+    }
+
+    #[test]
+    fn an_alert_the_app_announced_in_the_same_batch_is_not_read_twice() {
+        let said = ["Saved".to_owned()];
+        assert!(!worth_reading("Saved", &said));
+        assert!(!worth_reading(" Saved\n", &said));
+        assert!(worth_reading("Could not save", &said));
+        assert!(!worth_reading("  ", &[]));
     }
 
     #[test]

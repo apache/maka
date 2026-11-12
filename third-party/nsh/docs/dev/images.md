@@ -89,8 +89,7 @@
   position; Windows, Linux and GPUI draw at the fitted rectangle; the web sets CSS's `object-position` on the `<img>`
   (and the tint mask's position).
 - **Known follow-ups** (phase 1 of `image-loading-design.md`): Windows scales with WIC after the BGRA conversion, so
-  a JPEG decodes at full size before it shrinks; the Windows and macOS surfaces carry no access policy
-  (`Access::default()`), so every redirect is allowed except `https` to `http`.
+  a JPEG decodes at full size before it shrinks.
 - **Disk cache** (`nsh_core::image::DiskCache`, `image/cache.rs`): the encoded bytes of every `http(s)://` image (views,
   canvases, `getSize` / `prefetch`) are kept on disk on every native backend, so an app reopened shows what it showed
   without a download, and offline. One implementation in the core; each loader keeps its own networking and routes a
@@ -105,6 +104,9 @@
   tenth of the time since `Last-Modified` (at most 7 days), less the response's age; stale at once with `no-cache`
   or no freshness. Stale copies are revalidated (`304` refreshes them by its headers over the stored ones, `4xx`
   drops them) and served when the request fails or the server answers `5xx`, unless `must-revalidate` / `no-cache`.
+  A download that ends at a redirect it did not follow drops the entry and serves nothing; one the app may not load
+  arrives as `Fetched::refused` from the core loader's ureq and macOS's `NSURLSession`, and as the unfollowed `3xx`
+  from iOS and Android.
   Keyed by URL alone (sources carry no request headers, so `Vary` other than `*` cannot differ). `asset:/` URIs are
   never kept (the dev server's change with the app). Each entry is one file named by a digest of its URL (URL, policy
   headers, body, CRC32 of them), written under a temporary name and renamed: readers on any thread, surface or

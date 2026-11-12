@@ -162,7 +162,7 @@ to that file. `C-h e` opens its log/error panel; closing it gives every row back
 - Asset names: `asset:/<path>` is a file's path in the app's directory, the bundle's asset root
   (`nsh_bundler::Bundle::asset_root`, `HotBundle::asset_root`; `bundle.rs` `app_dir`: the entry's directory when it
   holds an `nsh.json` or an `App.tsx`, else the nearest one up with an `nsh.json`, else the nearest one up with an
-  `App.tsx`, else the entry's), for every entry of the app: `tests/SubApp.tsx` and `.nsh/test/<file>.run.js` name
+  `App.tsx`, else the entry's), for every entry of the app: `tests/SubApp.tsx` and `.nsh/test/<path>.run.js` name
   `assets/dot.png` as `App.tsx` does. An import from outside it fails the build (`NshPlugin::ship`), as a package holds
   only the app's directory; so does a file that is inside by name but links out (checked on its real path), a
   pixel-density variant found beside an image too, while a link to elsewhere in the app keeps the name it has
@@ -343,7 +343,10 @@ report it:
 - `hover` (`headless/pointer.rs`): on a desktop environment the mouse comes over the match's middle: the views from it
   out that hovering matters to (`input::hoverable`: `hover:` styles or hover events) replace those hovered before
   (`Screen::set_hovered`), `input::hover_changes` says which hear `MouseLeave` and `MouseEnter` (with their `HOVERED`
-  state reported, `EngineControl::set_states`), and the hovered views hear `MouseMove` (no button down);
+  state reported, `EngineControl::set_states`), and the hovered views hear `MouseMove` (no button down); a view
+  removed or deleted leaves the hover, the focus and the keyboard focus with its subtree, its states cleared without
+  a `MouseLeave` or `Blur` (`Screen::taken_out`), as a removed DOM element: JS may keep a removed view alive
+  (a cycle through its ref) after its component is gone;
 - `right_click`, `choose_menu_item`, `close_menu` (`headless/menus.rs`): on a desktop environment the match, or the
   nearest view around it listening, hears `ContextMenu`; the menu the app then shows (`Menu.popup`,
   `DesktopCommand::PopupMenu`) is the model's (`Screen::menu`, read through `menu.rs`: its actions by label, a
@@ -365,7 +368,10 @@ report it:
   (`MenuItem::find_shortcut`, keeping `MenuAction::fires_while_editing` while an input has the focus) and the root
   hears `Menu`, as the platforms' menus do after the keymap; else, on macOS and the web, Tab / Shift+Tab move the keyboard focus between the stops
   (`Screen::tab_stops`: editable inputs and the views `ViewProps::focus_stop` takes, pressables not
-  `focusable={false}` and `focusable={true}` views that take no presses, in tree order, around), telling the
+  `focusable={false}` and `focusable={true}` views that take no presses, in tree order, around; only the newest
+  dialog's while one is shown over the focus' window, `Screen::focus_scope`, as the platforms keep Tab inside it; on the
+  desktops and the web a dialog presented takes the focus off the view under it and gives it back when it goes,
+  `Headless::modals_closed`), telling the
   views `Blur` / `Focus` and the view its `FOCUSED` state, and Return or Space presses the view it is on when it takes
   presses (a press of the pointer takes it off; on such a view they reach only the focus' own bindings in the keymap
   above, `Keymap::find_at`, and the application menu not at all), and on the web Shift+F10 raises `ContextMenu` with no pointer on
@@ -490,9 +496,11 @@ Only the engine of a test file serves it: an app's bundle cannot import it (the 
 `nsh_testing::run_file` runs one test file (`run.rs`):
 
 - It writes an entry for the file in `<app>/.nsh/test/` that imports it and then calls `run` of the internal set
-  `nsh/test/runner`, and builds it through `TestRun::compile` (`Entry::TestFile`: the app's sets plus
-  `nsh_testing::test_sets()`). The file's source map gets its sources relative to the current directory, so failures
-  name `App.test.tsx:12:5`.
+  `nsh/test/runner`, at the file's path in the app (`src/core/typing.test.ts` → `src/core/typing.test.ts.run.js`;
+  in a `TestRun::work_dir` outside the app, below the nearest directory holding both, or one named by a hash of the
+  file's directory: `run.rs` `entry_path`), so parallel runs of same-named files never share one; it builds it
+  through `TestRun::compile` (`Entry::TestFile`: the app's sets plus `nsh_testing::test_sets()`). The file's source
+  map gets its sources relative to the current directory, so failures name `App.test.tsx:12:5`.
 - The test file runs on an engine of its own (the VM). As it loads, `test`, `describe`, the hooks and the variants
   (`test.skip` / `only` / `todo`, `describe.skip` / `only`: modules named `test` and `describe`, whose functions are
   the functions' properties, `docs/dev/components.md`) declare a tree of `Suite`s in a thread-local of the VM's
@@ -617,8 +625,9 @@ makes their window point the agent's), so the tests run the same on any display.
 The host's side is `nsh_testing::agent` (feature `agent`: no QuickJS, no network; the dev hosts link it). Its
 `Model` keeps the headless driver's `Screen`, fed every batch the surface applied and every error the app reported,
 so selectors resolve the same everywhere; the `Agent` takes each step on a thread of its own: it resolves the
-selector on the model, scrolls the view into view when it is not (the innermost scroll view around it that hides it,
-a gesture at a time; on a touch screen the finger lands clear of the views inside that take a drag themselves,
+selector on the model, scrolls the view into view when it is not (the innermost scroll view around it, inside the modal it is in, that
+hides it and can still move it, a gesture at a time: one already at the end a gesture would move it towards,
+`Native::scroll_room`, is not dragged past it, where a pull to refresh starts or a page sheet closes; on a touch screen the finger lands clear of the views inside that take a drag themselves,
 `Scene::drag_takers`: responders and pans, whose app would answer, a moment later, whether the scroll view keeps
 the gesture; it lands at the scroll view's middle, and after a gesture that moved nothing (what is there scrolls by
 itself, a text area, or the gesture was undone) a quarter of the way from the edge the finger moves away from, where

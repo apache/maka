@@ -88,6 +88,7 @@ struct EnvSignals {
     locale: Memo<Locale>,
     locale_settings: Memo<LocaleSettings>,
     lifecycle: Memo<Lifecycle>,
+    wake_count: Memo<u32>,
     screen_color: Memo<bool>,
     shaders: Memo<bool>,
 }
@@ -118,6 +119,7 @@ impl EnvSignals {
                 locale: part!(locale),
                 locale_settings: part!(locale_settings),
                 lifecycle: part!(lifecycle),
+                wake_count: part!(wake_count),
                 screen_color: part!(screen_color),
                 shaders: part!(shaders),
             }
@@ -308,6 +310,16 @@ pub fn screen_reader() -> bool {
     env(|e| e.screen_reader)
 }
 
+/// The platform's screen readers follow the active descendant a focused
+/// element names ([`super::Interactive::accessibility_active_descendant`],
+/// [`crate::platform::Environment::reads_active_descendants`]); it does
+/// not change.
+pub fn reads_active_descendants() -> bool {
+    with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
+        .expect("the core sets the environment")
+        .with_untracked(|e| e.reads_active_descendants)
+}
+
 /// Whether the platform draws shader views ([`super::shader`] and the
 /// other shader elements; TS: `shadersAvailable()`), reading subscribes.
 /// `false` where the platform was built without a renderer, on a grid
@@ -372,6 +384,18 @@ pub fn locale_settings() -> LocaleSettings {
 /// so an effect pauses work in the background and resumes it after.
 pub fn lifecycle() -> Lifecycle {
     env(|e| e.lifecycle)
+}
+
+/// How many times the system woke from sleep while the app ran (TS:
+/// `wakeCount()`), 0 until the first wake. Reading it subscribes, so an
+/// effect that reads it runs again after each wake: a sleep may leave
+/// [`lifecycle`] as it was (a laptop's lid closed and opened with the app
+/// in front), while network connections and timers did not live through
+/// it, so the app checks or opens them again there. macOS, Windows and
+/// Linux count wakes; on iOS and Android a sleeping device takes the app
+/// to the background, which [`lifecycle`] reports.
+pub fn wake_count() -> u32 {
+    env(|e| e.wake_count)
 }
 
 /// The operating system (TS: `platform.os`); it does not change.

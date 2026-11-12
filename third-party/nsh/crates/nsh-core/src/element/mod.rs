@@ -139,7 +139,9 @@ pub use self::{
         MethodSpec, Methods, NoEvent, Param, PropDecode, PropKind, PropSpec, Props, Registry, Root,
         ScrollbarSource, ValueSpec, declarations,
     },
-    element_ref::{ComponentRef, ElementRef, EvaluateOptions, Evaluation, FollowTarget},
+    element_ref::{
+        ComponentRef, ElementRef, ElementTarget, EvaluateOptions, Evaluation, FollowTarget,
+    },
     engine_context::{EngineContext, EngineContextGuard, engine_context},
     env::Environment,
     events::{
@@ -213,11 +215,11 @@ pub use crate::{
     KeyframeAnimation, Keyframes, LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition,
     ListAlignment, ListScrollPosition, ListViewport, MacOsBackdrop, MacOsBackdropBlending,
     MacOsBackdropMaterial, MacOsBackdropState, Measurement, ModalAnimation, ModalPresentation,
-    MouseButton, MouseEvent, PanActivation, PasteBehavior, PasteEvent, PastedFile, PointerEvents,
-    PointerType, PressEvent, ResizeMode, ReturnKeyType, RevealOptions, ScreenAnimation,
-    ScrollAlignment, SnapAlignment, StatusBarConfig, StatusBarSetting, StatusBarStyle,
-    SubmitBehavior, TextShadow, TouchEvent, TransformKind, TransformOrigin, Viewability,
-    WheelDelta, WheelEvent,
+    MouseButton, MouseEvent, PanActivation, PasteBehavior, PasteEvent, PastedFile, PinchEvent,
+    PinchPhase, PointerEvents, PointerType, PressEvent, ResizeMode, ReturnKeyType, RevealOptions,
+    ScreenAnimation, ScrollAlignment, SnapAlignment, StatusBarConfig, StatusBarSetting,
+    StatusBarStyle, SubmitBehavior, TextShadow, TouchEvent, TransformKind, TransformOrigin,
+    Viewability, WheelDelta, WheelEvent,
     animation::{
         Curve, EaseMode, Easing, Extrapolate, Keyframe, KeyframeTiming, MotionChannel, MotionKind,
         MotionPreset, MotionSpec, Output as AnimationOutput, PlaybackDirection, StaggerFrom,

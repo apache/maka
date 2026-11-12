@@ -94,6 +94,12 @@ impl OpenState {
             .unwrap_or_else(|| self.own.get_untracked())
     }
 
+    /// Opened by the app that controls it, not in answer to the user's
+    /// request (`asked`): read as it opens.
+    pub(crate) fn opened_by_app(self) -> bool {
+        self.controlled.get_untracked() == Some(true) && self.asked.get() != Some(true)
+    }
+
     /// The user asks for it to be `open`: when that is a change, `report`
     /// runs (the popup emits `OpenChange`), then its own state follows when
     /// the app does not control it. Reported first: the lifecycle

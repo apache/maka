@@ -5,8 +5,8 @@ use std::{borrow::Cow, sync::Arc};
 
 use super::builder::Listener;
 use crate::{
-    Bounds, ContextMenuEvent, EventPayload, JsonValue, MouseEvent, PayloadValue, Point, Points,
-    PressEvent, Size, TouchEvent, WheelEvent,
+    Bounds, ContextMenuEvent, EventPayload, JsonValue, MouseEvent, PayloadValue, PinchEvent, Point,
+    Points, PressEvent, Size, TouchEvent, WheelEvent,
     geometry::{DevicePixels, Radians},
 };
 
@@ -400,6 +400,14 @@ pub(crate) fn unavailable(p: &EventPayload) -> Option<Cow<'_, str>> {
         .flatten()
 }
 
+/// An error's message when its `code` says the web view's web content
+/// process ended (`ERR_NSH_WEBVIEW_TERMINATED`).
+pub(crate) fn terminated(p: &EventPayload) -> Option<Cow<'_, str>> {
+    (string(p, "code") == Some(crate::element::codes::WEBVIEW_TERMINATED))
+        .then(|| message(p))
+        .flatten()
+}
+
 pub(crate) fn selection(p: &EventPayload) -> Option<Cow<'_, Selection>> {
     Some(Cow::Owned(Selection {
         start: number(p, "start") as u32,
@@ -620,6 +628,13 @@ pub(crate) fn mouse(p: &EventPayload) -> Option<Cow<'_, MouseEvent>> {
 pub(crate) fn context_menu(p: &EventPayload) -> Option<Cow<'_, ContextMenuEvent>> {
     match p {
         EventPayload::ContextMenu(e) => Some(Cow::Borrowed(e)),
+        _ => None,
+    }
+}
+
+pub(crate) fn touchpad_pinch(p: &EventPayload) -> Option<Cow<'_, PinchEvent>> {
+    match p {
+        EventPayload::Pinch(e) => Some(Cow::Borrowed(e)),
         _ => None,
     }
 }

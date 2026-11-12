@@ -81,7 +81,7 @@ view 用 flexbox 布局子元素，默认值为：`flexDirection: "column"`、`f
 
 ## 属性
 
-`View` 有一个自己的属性 `selectable`（Rust 中为 `.selectable(true)`）：视图中的文字作为一个选区一起选择（[文字选择](./text-selection.md)）。其余是[通用属性](./index.md#通用属性)：样式（`style`、`class`、`classList`；Rust 中为 `Styled` 方法）、`disabled`，按压属性（`onPress`、`onLongPress`、`onPressDown`、`onPressUp`、`delayLongPress`、`hitSlop`），状态样式（`activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle`、`checkedStyle`），`onMouseEnter` / `onMouseMove` / `onMouseLeave`、`onWheel`、`onMouseUp`、`onContextMenu`，`onFileDragEnter` / `onFileDragLeave` / `onFileDrop`，`focusable`、`onLayout`、`ref`、`nativeID`、`testID`，Web 上页面的标记（`web={{ element }}`），手势属性（`pan`、`pinch`、`rotation` 及其事件），触摸与响应者属性，无障碍属性，以及 `ios` / `android` / `desktop`。
+`View` 有一个自己的属性 `selectable`（Rust 中为 `.selectable(true)`）：视图中的文字作为一个选区一起选择（[文字选择](./text-selection.md)）。其余是[通用属性](./index.md#通用属性)：样式（`style`、`class`、`classList`；Rust 中为 `Styled` 方法）、`disabled`，按压属性（`onPress`、`onLongPress`、`onPressDown`、`onPressUp`、`delayLongPress`、`hitSlop`），状态样式（`activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle`、`checkedStyle`），`onMouseEnter` / `onMouseMove` / `onMouseLeave`、`onWheel`、`onPinch`、`onMouseUp`、`onContextMenu`，`onFileDragEnter` / `onFileDragLeave` / `onFileDrop`，`focusable`、`onLayout`、`ref`、`nativeID`、`testID`，Web 上页面的标记（`web={{ element }}`），手势属性（`pan`、`pinch`、`rotation` 及其事件），触摸与响应者属性，无障碍属性，以及 `ios` / `android` / `desktop`。
 
 ## 可选择的视图
 
@@ -152,6 +152,7 @@ view()
 | `onMouseEnter` / `onMouseLeave` | `.on_mouse_enter` / `.on_mouse_leave` | `MouseEvent` | 鼠标移到视图（或其内部的视图）上 / 离开视图或窗口（见[悬停](./index.md#悬停)）；`onMouseLeave` 的位置是鼠标最后所在之处。 |
 | `onMouseMove` | `.on_mouse_move` | `MouseEvent` | 鼠标在视图（或其内部的视图）上移动，无论是否按着按键；或鼠标停在那里、没有按键按下时按下或松开了修饰键：`position`、`pagePosition`（`Point`）、`modifiers` 和 `pressedButton`（`"left"`、`"right"`、`"middle"`、`"back"`、`"forward"` 或 `null`）；每帧最多一次。 |
 | `onWheel` | `.on_wheel` | `WheelEvent` | 鼠标滚轮或触控板在视图（或其内部的视图）上滚动：`position`、`pagePosition`、`delta`、`deltaMode`（`"lines"` 或 `"points"`）和 `modifiers`；比指针下方滚动视图更近的监听者接管滚轮（见[滚轮](./index.md#滚轮)）。 |
+| `onPinch` | `.on_pinch` | `PinchEvent` | 触控板在视图（或其内部的视图）上捏合：`position`、`pagePosition`、`delta`（相对上一次事件的缩放变化）、`phase`（`"start"`、`"move"`、`"end"`）和 `modifiers`；macOS、Linux、GPUI 后端和 Safari 支持，从捏合开始到结束（[触控板捏合](./index.md#滚轮)）。 |
 | `onMouseUp` | `.on_mouse_up` | `MouseEvent` | 鼠标按键在视图（或其内部的视图）上松开：`button`、`position`、`pagePosition` 和 `modifiers`；桌面平台、终端和 Web 支持，iOS 和 Android 不报告。视图外松开不会报告（没有指针捕获）。 |
 | `onContextMenu` | `.on_context_menu` | `ContextMenuEvent` | 在视图上请求了上下文菜单：辅助按钮、浏览器中的键盘，或 macOS 和 Windows 上的读屏软件（见[上下文菜单](./index.md#上下文菜单)）。 |
 | `onFileDragEnter` | `.on_file_drag_enter` | `{ uris: string[], mimeTypes: string[] }`（`FileDragEvent`） | 本地文件进入当前桌面拖放目标，附带文件列表及其类型。 |

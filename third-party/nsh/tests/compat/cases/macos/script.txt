@@ -17,6 +17,20 @@ expect Passed: 1 Focus: first
 key tab
 expect Passed: 2 Focus: second
 covers [nsh] keymap
+# mod-keymap-focus
+tap id:case-mod-keymap-focus
+# The focus on no control: Return is the binding's.
+key enter
+expect Allows: 1 Denies: 0 Sends: 0
+# On Deny, Return and Space press it; Mod+Return still fires its binding.
+key tab
+key enter
+expect Allows: 1 Denies: 1 Sends: 0
+key space
+expect Allows: 1 Denies: 2 Sends: 0
+key mod+enter
+expect Allows: 1 Denies: 2 Sends: 1
+covers [nsh] keymap
 # mod-standard-system
 tap id:case-mod-standard-system
 expect console.identity=true

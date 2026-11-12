@@ -1,5 +1,7 @@
 //! What runs as the app quits ([`super::desktop::on_app_quit`]; TS:
-//! `Application.on("quit", ...)`), as GPUI's `App::on_app_quit`.
+//! `Application.on("quit", ...)`), as GPUI's `App::on_app_quit`, and what
+//! hears the user ask to quit ([`super::desktop::on_quit_request`]; TS:
+//! `Application.on("quitRequest", ...)`).
 //!
 //! The listeners clean up: they cannot keep the app running. When the
 //! engine stops (the Quit item, `quit()`, the last window closing, the
@@ -7,6 +9,11 @@
 //! listener's future ([`crate::Core::start_quit`]) and the engine runs them
 //! for [`QUIT_TIMEOUT`] at most ([`crate::Core::quit_pending`]), then
 //! stops whatever is left.
+//!
+//! While a quit request listener is there, the core tells the platform
+//! (`DesktopCommand::SetQuitOnRequest(false)`): the user's Quit item and
+//! quit key no longer quit, the platform reports them on the root
+//! (`WindowEvent::QuitRequest`) and the app quits when it decides to.
 
 use std::{
     cell::{Cell, RefCell},
@@ -27,15 +34,32 @@ pub(crate) type QuitFuture = Pin<Box<dyn Future<Output = ()>>>;
 /// A quit listener.
 pub(crate) type QuitListener = Rc<dyn Fn() -> QuitFuture>;
 
+/// A quit request listener ([`super::desktop::on_quit_request`]).
+pub(crate) type QuitRequestListener = Rc<dyn Fn()>;
+
 /// The quit listeners, in the order they were added.
-#[derive(Default)]
-pub(crate) struct QuitListeners {
+pub(crate) type QuitListeners = Listeners<QuitListener>;
+
+/// The quit request listeners, in the order they were added.
+pub(crate) type QuitRequestListeners = Listeners<QuitRequestListener>;
+
+/// Listeners of the app's quitting, in the order they were added.
+pub(crate) struct Listeners<L> {
     next: u64,
-    list: Vec<(u64, QuitListener)>,
+    list: Vec<(u64, L)>,
 }
 
-impl QuitListeners {
-    pub(crate) fn add(&mut self, listener: QuitListener) -> u64 {
+impl<L> Default for Listeners<L> {
+    fn default() -> Self {
+        Self {
+            next: 0,
+            list: Vec::new(),
+        }
+    }
+}
+
+impl<L: Clone> Listeners<L> {
+    pub(crate) fn add(&mut self, listener: L) -> u64 {
         self.next += 1;
         self.list.push((self.next, listener));
         self.next
@@ -43,7 +67,7 @@ impl QuitListeners {
 
     /// Removes listener `id`; returns it so it is dropped outside the
     /// borrow (it may own what removes others).
-    fn remove(&mut self, id: u64) -> Option<QuitListener> {
+    fn remove(&mut self, id: u64) -> Option<L> {
         let i = self.list.iter().position(|(i, _)| *i == id)?;
         Some(self.list.remove(i).1)
     }
@@ -53,19 +77,22 @@ impl QuitListeners {
     }
 
     /// The listeners, oldest first.
-    pub(crate) fn all(&self) -> Vec<QuitListener> {
+    pub(crate) fn all(&self) -> Vec<L> {
         self.list.iter().map(|(_, l)| l.clone()).collect()
     }
 }
 
-/// A quit listener, removed when dropped (with the owner that added it).
-pub(crate) struct QuitSubscription {
-    listeners: std::rc::Weak<RefCell<QuitListeners>>,
+/// A listener, removed when dropped (with the owner that added it).
+pub(crate) struct Subscription<L: Clone> {
+    listeners: std::rc::Weak<RefCell<Listeners<L>>>,
     id: u64,
 }
 
-impl QuitSubscription {
-    pub(crate) fn new(listeners: &Rc<RefCell<QuitListeners>>, id: u64) -> Self {
+/// A quit listener's subscription.
+pub(crate) type QuitSubscription = Subscription<QuitListener>;
+
+impl<L: Clone> Subscription<L> {
+    pub(crate) fn new(listeners: &Rc<RefCell<Listeners<L>>>, id: u64) -> Self {
         Self {
             listeners: Rc::downgrade(listeners),
             id,
@@ -73,7 +100,7 @@ impl QuitSubscription {
     }
 }
 
-impl Drop for QuitSubscription {
+impl<L: Clone> Drop for Subscription<L> {
     fn drop(&mut self) {
         if let Some(listeners) = self.listeners.upgrade() {
             let removed = listeners.borrow_mut().remove(self.id);

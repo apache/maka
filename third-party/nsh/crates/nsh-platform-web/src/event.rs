@@ -55,6 +55,18 @@ pub(crate) fn payload(kind: EventKind, value: serde_json::Value) -> Option<Event
                 pressed_button,
             ))
         }
+        // `{ position, pagePosition, delta, phase, modifiers }`, as
+        // handlers get it.
+        EventKind::Pinch => {
+            let (position, page_position, modifiers) = pointer_at(&value);
+            EventPayload::Pinch(nsh_core::PinchEvent::new(
+                position,
+                page_position,
+                nsh_core::geometry::Percentage(num("delta")),
+                nsh_core::PinchPhase::from_name(&text("phase")).unwrap_or_default(),
+                modifiers,
+            ))
+        }
         // `{ position, pagePosition, delta, deltaMode, modifiers }`, as
         // handlers get it.
         EventKind::Wheel => {

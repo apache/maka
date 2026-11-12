@@ -436,3 +436,114 @@ fn geometry_registration_follows_real_component_disposal_and_remount() {
     assert_eq!(session.coords_at_pos(1), None);
     assert_eq!(session.selection_rect(), None);
 }
+
+#[derive(Clone, PartialEq, Props)]
+struct PaddedProps {
+    session: Option<EditorSession>,
+}
+
+#[component]
+fn Padded(props: PaddedProps) -> impl IntoElement {
+    let session = props.session.clone().expect("a session");
+    let sel = {
+        let session = session.clone();
+        move || {
+            let state = session.state();
+            let s = state.selection();
+            format!("Sel {}-{} {}", s.from(), s.to(), session.is_focused())
+        }
+    };
+    let shown = signal(sel());
+    let (on_change, on_select, on_focus, on_blur) = (sel.clone(), sel.clone(), sel.clone(), sel);
+    view()
+        .child(
+            view().test_id("editor").child(
+                rich_editor()
+                    .editor(session)
+                    .w(px(300.0))
+                    .min_h(px(140.0))
+                    .p(px(12.0))
+                    .border(px(2.0))
+                    .on_change(move |_: &_| shown.set(on_change()))
+                    .on_selection_change(move |_: &_| shown.set(on_select()))
+                    .on_focus(move |_: &_| shown.set(on_focus()))
+                    .on_blur(move |_: &_| shown.set(on_blur())),
+            ),
+        )
+        .child(text(move || shown.get()))
+        .child(text("Ready"))
+}
+
+#[test]
+fn a_padded_root_keeps_the_sink_in_the_viewport_and_fills_its_height() {
+    use nsh_core::ViewKind;
+
+    let session = session(paragraphs(&["ab"]));
+    let mounted = session.clone();
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        ..EngineConfig::new(Root::new::<Padded>(move || PaddedProps {
+            session: Some(mounted.clone()),
+        }))
+    };
+    config.environment.os = Os::Linux;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("text:Ready").unwrap();
+
+    let nodes = app.screen().layout_nodes();
+    let scroll = nodes
+        .iter()
+        .find(|n| n.kind == ViewKind::Scroll)
+        .expect("the editor's scroll view");
+    let sink = nodes
+        .iter()
+        .find(|n| n.kind == ViewKind::Input)
+        .expect("the editor's sink");
+    let content = nodes
+        .iter()
+        .find(|n| n.parent == scroll.id)
+        .expect("the editor's content box");
+
+    let inside = |outer: Bounds<Points>, inner: Bounds<Points>| {
+        let c = Point::new(
+            inner.origin.x + inner.size.width * 0.5,
+            inner.origin.y + inner.size.height * 0.5,
+        );
+        c.x >= outer.origin.x
+            && c.x <= outer.origin.x + outer.size.width
+            && c.y >= outer.origin.y
+            && c.y <= outer.origin.y + outer.size.height
+    };
+
+    // Border (2) + padding (12) on `root` insets the scroll viewport and
+    // the sink together, so pressing the sink's center (`nsh test` on a
+    // native host) hits `content` instead of the root's padding.
+    assert_eq!(scroll.bounds.origin, Point::new(px(14.0), px(14.0)));
+    assert_eq!(scroll.bounds.size, Size::new(px(272.0), px(112.0)));
+    assert_eq!(sink.bounds.origin.x, scroll.bounds.origin.x);
+    assert!(sink.bounds.origin.y >= scroll.bounds.origin.y);
+    assert_eq!(content.bounds, scroll.bounds);
+    assert!(inside(content.bounds, sink.bounds));
+
+    // Typing moves the sink right from the inset viewport's origin while
+    // keeping it inside `content`.
+    app.type_text("id:editor", "cd").unwrap();
+    see(&mut app, "Sel 3-3 true");
+    let nodes = app.screen().layout_nodes();
+    let moved_sink = nodes
+        .iter()
+        .find(|n| n.kind == ViewKind::Input)
+        .expect("the editor's sink");
+    assert!(moved_sink.bounds.origin.x > scroll.bounds.origin.x);
+    assert!(inside(content.bounds, moved_sink.bounds));
+
+    // Pressing in the lower blank area of a `minHeight` editor hits
+    // `content` and places the caret at the end of the document (`cdab`,
+    // 1..5).
+    keys(&mut app, &["home"]);
+    see(&mut app, "Sel 1-1 true");
+    app.press_at("text:cdab", Point::new(px(265.0), px(80.0)))
+        .unwrap();
+    see(&mut app, "Sel 5-5 true");
+}

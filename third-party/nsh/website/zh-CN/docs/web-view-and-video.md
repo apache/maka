@@ -86,7 +86,7 @@ mount(App);
 |---|---|---|
 | `onLoadStart` | `WebViewNavigation` | 页面开始加载。 |
 | `onLoad` | `WebViewNavigation` | 页面加载完成。 |
-| `onError` | `{ message, code? }` | 加载失败，或平台无法显示网页视图（`code` 为 `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"`，见下文）。 |
+| `onError` | `{ message, code? }` | 加载失败、平台无法显示网页视图（`code` 为 `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"`），或页面的进程结束（`code` 为 `"ERR_NSH_WEBVIEW_TERMINATED"`）；均见下文。 |
 | `onNavigationStateChange` | `WebViewNavigation` | URL、标题、加载状态或历史改变。 |
 | `onMessage` | `{ data: string }` | 页面发来消息（见下文）。 |
 
@@ -180,7 +180,7 @@ mount(Browser);
 
 ### 页面与应用之间的消息
 
-页面通过 `window.nsh.postMessage(string)` 向应用发消息，应用收到 `on_message`（`onMessage`）。应用通过 ref 的 `post_message`（`postMessage(string)`）向页面发消息，页面在 `window` 上收到 `message` 事件。消息是字符串；结构化数据请发送 JSON。
+页面通过 `window.nsh.postMessage(string)` 向应用发消息，应用收到 `on_message`（`onMessage`）。应用通过 ref 的 `post_message`（`postMessage(string)`）向页面发消息，页面在 `window` 上收到 `message` 事件。消息是字符串；结构化数据请发送 JSON。收到的消息要当作不可信的数据，检查后再处理：页面运行的任何脚本都能发消息，而在 Android 上，页面的每个 frame（包括 `iframe`）都有 `window.nsh`。
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -468,6 +468,28 @@ function Preview(props: { url: string }) {
         style={{ flex: 1 }}
       />
     </If>
+  );
+}
+```
+
+### 页面的进程结束时
+
+网页视图的页面运行在单独的进程里，这个进程可能在应用运行时结束：它崩溃了，或系统回收了它的内存。应用继续运行，网页视图不再显示页面；它的
+`onError` 触发，`code` 为 `"ERR_NSH_WEBVIEW_TERMINATED"`（Rust 中为 `.on_process_terminated`，参数为消息）。ref 的 `reload()`、
+`load()` 或新的 `src` / `html` 会重新显示页面（Android 会为此新建一个 WebView）。iOS、macOS、Linux 和 Android 会报告它。
+
+```tsx
+import { WebView, type WebViewRef } from "nsh";
+
+function Diagram(props: { html: string }) {
+  let web!: WebViewRef;
+  return (
+    <WebView
+      ref={web}
+      html={props.html}
+      onError={(e) => e.code === "ERR_NSH_WEBVIEW_TERMINATED" && web.reload()}
+      style={{ flex: 1 }}
+    />
   );
 }
 ```

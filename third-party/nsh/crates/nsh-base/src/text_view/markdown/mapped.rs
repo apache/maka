@@ -18,8 +18,9 @@
  */
 
 //! Byte provenance through lexical rewrites. Generated syntax has no address.
-use nsh_core::{TextSourceKind, TextSourceSegment};
 use std::ops::{Deref, Range};
+
+use nsh_core::{TextSourceKind, TextSourceSegment};
 
 #[derive(Clone, Debug)]
 struct Piece {

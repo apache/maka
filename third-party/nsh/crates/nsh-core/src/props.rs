@@ -269,6 +269,16 @@ pub struct Accessibility {
     /// `accessibilityLevel`: the level of a heading (1 the top), the depth
     /// of a tree item (1 at the top); `None` has none.
     pub level: Option<u32>,
+    /// `accessibilityActiveDescendant`: the view (its native id) that is
+    /// the active one inside this focused view, which keeps the keyboard
+    /// focus (ARIA's `aria-activedescendant`): a combo box's highlighted
+    /// option, a list's cursor row. Resolved by the core from the element
+    /// the app names; `None` when it names none or that element is gone.
+    pub active_descendant: Option<crate::NodeId>,
+    /// `accessibilityControls`: the view (its native id) whose content
+    /// this one controls (ARIA's `aria-controls`): a combo box's listbox,
+    /// a tab's panel. Resolved as [`Accessibility::active_descendant`].
+    pub controls: Option<crate::NodeId>,
 }
 
 impl Accessibility {
@@ -356,6 +366,16 @@ pub enum AccessibilityProp {
     /// top); others than whole numbers from 1 are none.
     #[prop(js = "accessibilityLevel", with = crate::js::host_values::accessibility_level, reset = AccessibilityProp::Level(None), ts = "number")]
     Level(Option<u32>),
+    /// `accessibilityActiveDescendant`: the element that is the active one
+    /// while this element keeps the keyboard focus (ARIA's
+    /// `aria-activedescendant`): a combo box's highlighted option, a
+    /// list's cursor row. Screen readers read it as it changes.
+    #[prop(js = "accessibilityActiveDescendant", with = crate::js::host_values::active_descendant, reset = AccessibilityProp::ActiveDescendant(None), ts = "ViewRef | null")]
+    ActiveDescendant(Option<crate::element::ElementTarget>),
+    /// `accessibilityControls`: the element whose content this one
+    /// controls (ARIA's `aria-controls`): a combo box's listbox.
+    #[prop(js = "accessibilityControls", with = crate::js::host_values::accessibility_controls, reset = AccessibilityProp::Controls(None), ts = "ViewRef | null")]
+    Controls(Option<crate::element::ElementTarget>),
 }
 
 /// Android's press ripple (`android={{ ripple }}`).

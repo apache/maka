@@ -64,6 +64,13 @@ test("an image's size is answered as a failed load", async () => {
   await app.waitFor("Size: not loaded");
 });
 
+test("an image the test fails reports the failure", async () => {
+  const app = await open("./App.tsx");
+  await app.waitFor("text:Avatar: picture");
+  await app.failImages("https://cdn.test/avatars/*");
+  await app.waitFor("text:Avatar: initials (failed to load https://cdn.test/avatars/ada.png)");
+});
+
 test("the test file's own Image.getSize reads a blob's size and fails other loads", async () => {
   // A PNG's signature and header: 3x2 pixels.
   const png = new Uint8Array([

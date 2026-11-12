@@ -8,6 +8,7 @@ mod commands;
 mod extensions;
 mod marks_clipboard_history;
 mod selection;
+mod sizing;
 mod structure;
 mod tiptap;
 mod touch;

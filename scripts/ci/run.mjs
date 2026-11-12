@@ -434,6 +434,12 @@ export function executor(
           '-p',
           'gallery-native',
         ]);
+      } else if (id === 'macos-nsh') {
+        await cargo([
+          'check',
+          ...suites[id].cargoArgs.filter((arg) => arg !== '--lib'),
+          '--all-targets',
+        ]);
       }
     } else if (id === 'bridge') {
       await node(['scripts/rust/check-cua-build.mjs']);
@@ -519,12 +525,49 @@ export function executor(
     } else if (id === 'bridge') {
       await run(join(target, 'ci/maka-bridge'), ['--version']);
       await nextest(id);
+    } else if (id === 'macos-nsh') {
+      await runSuites(['unit', 'menu', 'undo'], async (stage) => {
+        if (stage === 'unit')
+          await nextest(id, false, filter, ['--no-tests=fail', '-j', '1', ...extra]);
+        else if (stage === 'menu')
+          await cargo(
+            [
+              'test',
+              '--locked',
+              '--manifest-path',
+              manifests.nsh,
+              '-p',
+              'nsh-platform-macos',
+              '--features',
+              'terminal',
+              '--test',
+              'native',
+              '--',
+              '--ignored',
+            ],
+            { env: { ...suiteEnv(id), NSH_MENU_LABELS_CHECK_ONLY: '1' } },
+          );
+        else
+          await cargo(
+            [
+              'run',
+              '--locked',
+              '-p',
+              'nsh-cli',
+              '--',
+              'test',
+              'crates/nsh-platform-macos/tests/host/Undo.test.tsx',
+              '--target',
+              'macos',
+            ],
+            { cwd: join(root, 'third-party/nsh'), env: suiteEnv(id) },
+          );
+      });
     } else if (
       [
         'desktop',
         'pixels',
         'macos-desktop',
-        'macos-nsh',
         'macos-surface',
         'windows-desktop',
         'windows-skills',

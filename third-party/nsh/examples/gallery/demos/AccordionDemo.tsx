@@ -210,7 +210,7 @@ export function AccordionDemo() {
             <Heading title="Privacy" detail={`Profile visible to ${visibility().toLowerCase()}`} />
             <AccordionPanel reveal accessibilityLabel="Privacy">
               <Body start={ROW_BLEED}>
-                <RadioGroup>
+                <RadioGroup accessibilityLabel="Profile visibility">
                   <Choice label="Everyone" detail="Anyone with the app can find you" />
                   <Choice label="Contacts" detail="Only people in your address book" />
                   <Choice label="Nobody" detail="Hidden from search and suggestions" />

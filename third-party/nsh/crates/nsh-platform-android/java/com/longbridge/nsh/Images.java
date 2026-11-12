@@ -571,7 +571,12 @@ final class Images {
                     c.disconnect();
                     if (location == null || hops >= MAX_REDIRECTS) throw new java.io.IOException("redirect from " + url);
                     String next = redirects.next(url, location);
-                    if (next == null) throw new java.io.IOException("redirect to " + location + " is not granted");
+                    if (next == null) {
+                        // The disk cache's copy of the URL came through this
+                        // redirect too: it drops it (a 3xx ends the load).
+                        if (disk != null) disk.complete(uri, code, null, null);
+                        throw new java.io.IOException("redirect to " + location + " is not granted");
+                    }
                     url = next;
                 }
                 int status = c.getResponseCode();

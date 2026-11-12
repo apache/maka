@@ -78,6 +78,28 @@ fn Plans() -> impl IntoElement {
         .child(text(move || format!("after:{}", after.get())))
 }
 
+/// A named set: screen readers say the group's name as they enter it,
+/// and its radios stay elements of their own.
+#[component]
+fn NamedPlans() -> impl IntoElement {
+    radio_group()
+        .accessibility_label("Plan")
+        .child(radio().checked(true).child(text("Free")))
+        .child(radio().child(text("Plus")))
+}
+
+#[test]
+fn a_group_takes_the_name_the_app_gives_it() {
+    let app = start::<NamedPlans>();
+    let screen = app.screen();
+    assert_eq!(screen.count("role:radiogroup[Plan]"), Ok(1));
+    assert_eq!(screen.count("role:radiogroup[Plan] >> role:radio"), Ok(2));
+    // A group the app does not name is not called that.
+    let app = start::<Plans>();
+    assert_eq!(app.screen().count("role:radiogroup"), Ok(1));
+    assert_eq!(app.screen().count("role:radiogroup[Plan]"), Ok(0));
+}
+
 #[test]
 fn with_none_checked_tab_enters_at_the_first_radio_and_space_checks_it() {
     let mut app = start::<Plans>();

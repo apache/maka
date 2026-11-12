@@ -1104,7 +1104,15 @@ fn trusted_directory(path: Option<std::path::PathBuf>) -> Option<std::path::Path
 /// Native hosts choose these anchors before any application JavaScript runs
 /// (the VM's `fs/promises` and the core's media files read under them).
 fn bundle_system_paths(bundle: &Bundle) -> nsh_core::access::TrustedPaths {
-    let mut paths = bundle.system_paths.clone();
+    system_paths(bundle.system_paths.clone(), !bundle.policy.harden)
+}
+
+/// `paths` with the anchors checked and the home directory filled in; in
+/// `development`, the local `nsh run`'s source directory as the app's.
+fn system_paths(
+    mut paths: nsh_core::access::TrustedPaths,
+    development: bool,
+) -> nsh_core::access::TrustedPaths {
     paths.plugin_dir = trusted_directory(paths.plugin_dir);
     paths.home_dir = trusted_directory(paths.home_dir);
     if paths.home_dir.is_none() {
@@ -1117,7 +1125,7 @@ fn bundle_system_paths(bundle: &Bundle) -> nsh_core::access::TrustedPaths {
     // Local `nsh run` passes its canonical entry directory directly to the
     // native child process. Remote dev messages never contain this field.
     // A packaged/hardened bundle cannot inherit a development source anchor.
-    if paths.plugin_dir.is_none() && !bundle.policy.harden {
+    if paths.plugin_dir.is_none() && development {
         paths.plugin_dir = std::env::var_os("NSH_DEV_APP_DIR")
             .map(std::path::PathBuf::from)
             .and_then(|path| trusted_directory(Some(path)));
@@ -1257,6 +1265,7 @@ enum Message {
     Kept(Vec<NodeId>),
     ContentCulling(bool),
     InputScroll(NodeId, Point<Points>, Size<Points>, Size<Points>),
+    InputComposing(NodeId, Option<String>),
     Zoom(NodeId, f32),
     ComponentSize(NodeId, Size<Points>),
     AnimationsFinished(Vec<nsh_core::animation::Finished>),
@@ -1411,6 +1420,14 @@ impl EngineControl {
         let _ = self
             .tx
             .send(Message::InputScroll(id, offset, content, viewport));
+    }
+
+    /// Reports what input `id` shows while an input method composes in it
+    /// (its text with the composition at the caret), `None` once the
+    /// composition ends: the core measures the input with it, so it grows
+    /// as the composition wraps (`Core::input_composing`).
+    pub fn input_composing(&self, id: NodeId, shown: Option<String>) {
+        let _ = self.tx.send(Message::InputComposing(id, shown));
     }
 
     /// Reports the zoom scale of a zoomable scroll view (before the offset
@@ -3632,6 +3649,7 @@ fn ui_environment(env: &Environment, window: Size<Points>) -> nsh_core::element:
         font_scale: env.font_scale,
         reduce_motion: env.reduce_motion,
         screen_reader: env.screen_reader,
+        reads_active_descendants: env.reads_active_descendants,
         rtl: env.rtl,
         pixel_ratio: env.pixel_ratio,
         os: env.os,
@@ -3645,6 +3663,7 @@ fn ui_environment(env: &Environment, window: Size<Points>) -> nsh_core::element:
         native_focus_scopes: env.native_focus_scopes,
         host: env.host,
         lifecycle: env.lifecycle,
+        wake_count: env.wake_count,
         screen_color: env.screen_color,
         file_requests: env.file_requests,
         speech: env.speech,
@@ -3925,6 +3944,7 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
         Message::InputScroll(id, offset, content, viewport) => {
             state.core.set_input_scroll(id, offset, content, viewport);
         }
+        Message::InputComposing(id, shown) => state.core.input_composing(id, shown.as_deref()),
         Message::Zoom(id, scale) => state.core.set_zoom(id, scale),
         Message::ComponentSize(id, size) => state.core.set_component_size(id, size),
         Message::AnimationsFinished(mut finished) => {
@@ -4164,12 +4184,17 @@ fn release_spare_ops(ops: &mut Vec<Op>) {
     }
 }
 
-/// What `app` may reach: a JS app its policy's grant; native code is
-/// trusted, it reaches what the platform allows.
+/// What `app` may reach: a JS app its policy's grant, a Rust app what its
+/// root declares (`nsh.json` `capabilities`); either without a declaration
+/// what an app without one reaches.
 fn app_access(app: &App) -> Access {
     match app {
         App::Js(bundle) => bundle.policy.access(),
-        App::Rust(_) => Policy::default().access(),
+        App::Rust(root) => Policy {
+            declared: root.capabilities_ref().cloned(),
+            ..Policy::default()
+        }
+        .access(),
     }
 }
 
@@ -4187,7 +4212,17 @@ fn media_files(config: &EngineConfig, access: &Access) -> nsh_core::access::Medi
             &bundle_system_paths(bundle),
             nsh_core::access::native_files(config.environment.os),
         ),
-        _ => nsh_core::access::MediaFiles::default(),
+        App::Rust(root) if root.capabilities_ref().is_some() => nsh_core::access::MediaFiles::new(
+            access,
+            config
+                .data_dir
+                .as_ref()
+                .map(|root| root.join(app_dir_name(config.app.app_id())))
+                .as_deref(),
+            &system_paths(nsh_core::access::TrustedPaths::default(), false),
+            nsh_core::access::native_files(config.environment.os),
+        ),
+        App::Rust(_) => nsh_core::access::MediaFiles::default(),
     }
 }
 

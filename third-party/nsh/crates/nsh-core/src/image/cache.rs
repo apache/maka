@@ -25,6 +25,9 @@
 //! - When the request fails (no network) or the server answers `5xx`, a
 //!   stale entry is served anyway, unless it said `must-revalidate` or
 //!   `no-cache`.
+//! - A download that ends at a redirect it did not follow drops the entry
+//!   and serves nothing: one the app may not load ([`Fetched::refused`],
+//!   or the `3xx` a backend leaves unfollowed for it) led to the entry too.
 //!
 //! Entries are keyed by URL alone: image sources carry no request headers,
 //! and a loader sends the same ones for every image, so whatever a
@@ -194,6 +197,10 @@ pub struct Fetched {
     pub headers: CacheHeaders,
     /// The body (empty for a `304`).
     pub body: Vec<u8>,
+    /// Why the download ended at a redirect it did not follow, the app not
+    /// being allowed to load where it led ([`Fetched::refused`]); `None` for
+    /// a response the loader read to its end.
+    pub refusal: Option<String>,
 }
 
 impl Fetched {
@@ -203,6 +210,18 @@ impl Fetched {
             status,
             headers,
             body,
+            refusal: None,
+        }
+    }
+
+    /// A download that ended at a redirect (`status`) the app may not
+    /// follow, for `refusal`: the disk cache drops the copy it held for the
+    /// URL, which came through that redirect too, and serves nothing.
+    pub fn refused(status: u16, refusal: impl Into<String>) -> Self {
+        Self {
+            status,
+            refusal: Some(refusal.into()),
+            ..Self::default()
         }
     }
 }
@@ -406,6 +425,12 @@ impl DiskCache {
             Ok(response) => response,
             Err(error) => return self.stale(url).ok_or(error),
         };
+        // A redirect the app may not load: the copy held for `url` came
+        // through it too, so it is not served, now or offline later.
+        if let Some(refusal) = response.refusal {
+            self.remove(url);
+            return Err(refusal);
+        }
         match response.status {
             200 | 203 => {
                 let Fetched { headers, body, .. } = response;
@@ -430,7 +455,12 @@ impl DiskCache {
             // Shown, never stored (`206`, `204`, ...).
             200..=299 => Ok(response.body.into()),
             status @ 500..=599 => self.stale(url).ok_or_else(|| format!("HTTP {status}")),
-            status @ 300..=399 => Err(format!("redirect refused (HTTP {status})")),
+            // A redirect left unfollowed (how iOS and Android end at one
+            // the app may not load): as above.
+            status @ 300..=399 => {
+                self.remove(url);
+                Err(format!("redirect refused (HTTP {status})"))
+            }
             status => {
                 self.remove(url);
                 Err(format!("HTTP {status}"))

@@ -425,6 +425,18 @@ impl Mounter {
                 id,
                 command: Command::Desktop(command),
             } if surface.terminal_active.get().is_some() => {
+                if *id == ROOT_ID {
+                    match command.as_ref() {
+                        DesktopCommand::SetMenuLabels(labels) => {
+                            surface.chrome.labels.replace((**labels).clone());
+                        }
+                        DesktopCommand::SetQuitOnRequest(quit) => {
+                            crate::chrome::set_quit_on_request(surface, *quit);
+                        }
+                        DesktopCommand::Quit => surface.terminal_quit.set(true),
+                        _ => {}
+                    }
+                }
                 if *id != ROOT_ID && matches!(command.as_ref(), DesktopCommand::OpenWindow(_)) {
                     self.terminal_windows.insert(*id);
                     if let Some(view) = self.get(*id) {

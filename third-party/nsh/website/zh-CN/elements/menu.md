@@ -118,6 +118,8 @@ import { ContextMenu, MenuItem } from "nsh/base";
 
 键盘和读屏用户同样可以打开它。在浏览器和 Linux 上，触发元素获得焦点时按 Shift+F10 或菜单键即可打开。在 macOS 上，VoiceOver 的「显示菜单」操作（VO-Shift-M）可以打开它；在 Windows 上，读屏软件通过 UI Automation 的「显示上下文菜单」操作也可以打开它。这样打开时，菜单出现在触发元素下方、从它的起始边开始，键盘焦点落在第一个可用的条目上，与 WAI-ARIA 对上下文菜单的描述一致。给触发元素设置 `focusable`，键盘才能到达它。视图自己的 `onContextMenu` 可以通过 `pointerType` 区分这类打开方式：此时它为 `null`。
 
+由你控制 `open` 并自己把它设为 `true` 时（比如你自己的快捷键，或者获得焦点的列表要打开其中某一行的菜单），菜单也这样打开：出现在触发元素下方，键盘焦点落在第一个可用的条目上，关闭后焦点回到触发元素。
+
 <a id="checkable-items"></a>
 
 ## 可勾选的条目

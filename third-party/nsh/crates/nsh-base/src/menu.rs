@@ -31,6 +31,7 @@ use nsh_core::{
     element::{OrderWatch, Style, watch_order},
     geometry::Axis,
     keymap::When,
+    overlay::OverlayAnchor,
     prelude::*,
 };
 
@@ -1082,8 +1083,9 @@ impl Surface {
 #[derive(Clone)]
 enum At {
     Trigger(ElementRef),
-    /// At a point, about the element a closing gives the focus back to.
-    Pointer(Signal<Point<Points>>, ElementRef),
+    /// At a point, about the element a closing gives the focus back to;
+    /// below that element while there is no point (the app opened it).
+    Pointer(Signal<Option<Point<Points>>>, ElementRef),
 }
 
 /// What the user asked of a menu, which its items read: the item an
@@ -1261,9 +1263,14 @@ fn surface(
             }
             let popup = match &at {
                 At::Trigger(anchor) => overlay().anchor_content(anchor),
-                At::Pointer(point, _) => {
-                    let point = *point;
-                    overlay().anchor_point(move || point.get())
+                At::Pointer(point, anchor) => {
+                    let (point, anchor) = (*point, *anchor);
+                    overlay().anchor_to(move || match point.get() {
+                        Some(p) => OverlayAnchor::Point(p),
+                        None => anchor
+                            .node()
+                            .map_or(OverlayAnchor::None, OverlayAnchor::Content),
+                    })
                 }
             };
             let dismiss = dismiss.clone();
@@ -1527,7 +1534,10 @@ pub fn Menu(props: MenuProps, cx: Scope<MenuEvent>) -> impl IntoElement {
 #[derive(Debug, Clone, PartialEq, Props)]
 pub struct ContextMenuProps {
     /// Open (controlled): the app owns the value and changes it in
-    /// `onOpenChange`. Without it the menu keeps its own state.
+    /// `onOpenChange`. Without it the menu keeps its own state. Set true
+    /// by the app itself (a key of its own, a list with the focus asking
+    /// for its row's menu), it opens as from the keyboard: below the
+    /// trigger with the keyboard focus on its first enabled item.
     pub open: Prop<Option<bool>>,
     /// No menu: the secondary button and held fingers do nothing.
     #[prop(default)]
@@ -1581,6 +1591,8 @@ pub struct ContextMenuProps {
 /// VO-Shift-M on macOS, UI Automation's `ShowContextMenu` on Windows) open
 /// it below the trigger with the keyboard focus on its first enabled item,
 /// as WAI-ARIA has it, and closing it gives the focus back to the trigger.
+/// So does an opening by the app (`open` set true with no request from
+/// the trigger).
 /// Opened by the pointer with no item focused, Down or Home focus the
 /// first enabled item and Up or End the last, as `Menu`'s keys do.
 /// Its items are those of `Menu`, and so is how it
@@ -1602,8 +1614,21 @@ pub fn ContextMenu(props: ContextMenuProps, cx: Scope<MenuEvent>) -> impl IntoEl
         why.stamp(reason);
         open.request(next, || cx.emit(MenuEvent::OpenChange(next, reason)));
     });
-    let point = signal(Point::<Points>::default());
+    // Where the pointer asked for it; none when the app opened it.
+    let point = signal(None::<Point<Points>>);
     let anchor = element_ref();
+    // Opened by the app itself (a key of its own, a list with the focus
+    // asking for its row's menu) rather than by the trigger: below the
+    // trigger with the first enabled item focused, as from the keyboard.
+    let shown = stored(false);
+    effect(move || {
+        let now = open.get();
+        let before = shown.replace(now);
+        if now && !before && untracked(|| open.opened_by_app()) {
+            point.set(None);
+            keyed.replace(Some(Keyed::First));
+        }
+    });
     let parts = Surface {
         placement: Prop::from(Placement::Bottom),
         align: Prop::from(Align::Start),
@@ -1627,7 +1652,7 @@ pub fn ContextMenu(props: ContextMenuProps, cx: Scope<MenuEvent>) -> impl IntoEl
             trigger
                 .element_ref(&anchor)
                 .on_context_menu(move |e: &ContextMenuEvent| {
-                    point.set(e.page_position);
+                    point.set(Some(e.page_position));
                     // No pointer: the keyboard (Shift+F10, the Menu key) or
                     // an assistive technology, placed at the trigger by the
                     // platform.
@@ -1660,7 +1685,7 @@ pub fn ContextMenu(props: ContextMenuProps, cx: Scope<MenuEvent>) -> impl IntoEl
                                 // styles reset now.
                                 anchor.cancel_press();
                                 keyed.replace(None);
-                                point.set(page);
+                                point.set(Some(page));
                                 on_hold(true, OpenChangeReason::LongPress);
                             });
                             if let Some((old, _)) = hold.replace(Some((task, page))) {

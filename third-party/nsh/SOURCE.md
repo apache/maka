@@ -20,7 +20,7 @@
 # Native Shell (NSH)
 
 This directory contains NSH from [`longbridge/nsh`](https://github.com/longbridge/nsh),
-synchronized through revision `2452c93d450bfe0ee1e22da5248191ba0a391051`
+synchronized through revision `75e009e652ccb18c3dfbcc7e65a44b1f21da538c`
 (version 0.5.0). The original import came from `M4n5ter/nsh`, branch
 `tui/terminal-backend`, at `de176695240d550f2b303643b8019146c7989e7f`.
 
@@ -41,7 +41,9 @@ RichEditor's schema and node-view model, as upstream's structured editors do.
 Lists, reactive item publication, component event traversal, input modality and
 focus-visible behavior use upstream implementations. Immutable captured files
 provide indexed rows through the same list items memo and cell publication,
-without materializing a full JavaScript array. Asset builds use upstream
+without materializing a full JavaScript array. Cached cells distinguish their
+current row assignment from retained content, so accessibility follows only
+bound rows. Asset builds use upstream
 app roots and package-relative paths; built-in plugin builds declare the Maka
 repository as their shared root. Callers migrate with upstream rather than
 keeping aliases or older implementations.
@@ -70,6 +72,9 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
 - **Input ordering and scopes:** `inputAction`, `ScrollIntent`, scoped/fallback
   key bindings and focus-event fences preserve editor actions, IME, paste and
   reload ordering. Scoped lookups also enforce upstream window isolation.
+- **Native lifecycle:** terminal surfaces keep host ownership of windows and
+  event loops while honoring menu labels, quit requests and system session
+  termination. Stopping an engine revokes its input and frame receipts.
 
 ## Maintenance and verification
 

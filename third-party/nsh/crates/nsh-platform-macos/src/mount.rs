@@ -328,6 +328,7 @@ impl Mounter {
                 crate::file_drop::deleted(surface, *id);
                 if let Some(view) = self.views.remove(id) {
                     crate::text_input::removing(surface, &view);
+                    crate::text_input::deleted(&view);
                     crate::native::deleted(surface, &view);
                     crate::shader::deleted(surface, &view);
                     // A view whose parent the batch deletes too stays in it:
@@ -435,13 +436,13 @@ impl Mounter {
             } => {
                 if let Some(view) = self.get(*id) {
                     let old = view.state().text.as_ref().map(|t| t.text.clone());
-                    let same = crate::text::draws_the_same(view, text, layout, *content);
+                    let damage = crate::text::damage(view, text, layout, *content);
                     crate::text::set(view, text, layout, *content);
                     if let Some(old) = old {
                         crate::transition::text_changed(surface, view, &old, text);
                     }
-                    if !same {
-                        self.draw_when_shown(view, Damage::All);
+                    if damage != Damage::None {
+                        self.draw_when_shown(view, damage);
                     }
                     crate::access::text_changed(view);
                 }
@@ -609,6 +610,15 @@ impl Mounter {
                 id,
                 command: Command::Desktop(command),
             } if surface.terminal.get() => {
+                if *id == ROOT_ID {
+                    match command.as_ref() {
+                        DesktopCommand::SetMenuLabels(_) | DesktopCommand::SetQuitOnRequest(_) => {
+                            crate::chrome::command(surface, command);
+                        }
+                        DesktopCommand::Quit => surface.terminal_quit.set(true),
+                        _ => {}
+                    }
+                }
                 if *id != ROOT_ID && matches!(command.as_ref(), DesktopCommand::OpenWindow(_)) {
                     self.terminal_windows.insert(*id);
                     crate::navigation::release(surface, *id);

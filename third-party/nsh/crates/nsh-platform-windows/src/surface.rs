@@ -163,6 +163,7 @@ pub(crate) type ActivationHandler = Box<dyn Fn(bool) + Send>;
 /// One engine and its views.
 pub(crate) struct Surface {
     pub(crate) terminal_active: Cell<Option<bool>>,
+    pub(crate) terminal_quit: Cell<bool>,
     pub(crate) terminal_focus_generation: Cell<u64>,
     pub(crate) terminal_wake: RefCell<Option<Arc<dyn Fn() + Send + Sync>>>,
     key: u64,
@@ -319,6 +320,7 @@ impl Surface {
         let mounter = Mounter::new(root.clone());
         let surface = Rc::new(Surface {
             terminal_active: Cell::new(None),
+            terminal_quit: Cell::new(false),
             terminal_focus_generation: Cell::new(0),
             terminal_wake: RefCell::new(None),
             key,

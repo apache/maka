@@ -90,7 +90,7 @@ set (`flexDirection: "column"`, `flex-col`, `.flex_col()`). A view that sets no 
 `View` has one prop of its own, `selectable` (`.selectable(true)` in Rust): the texts inside the view select together, as one selection ([Text selection](./text-selection.md)). The rest are the [common props](./index.md#common-props): its styles (`style`, `class`,
 `classList`; the `Styled` methods in Rust), `disabled`, the press props (`onPress`, `onLongPress`, `onPressDown`,
 `onPressUp`, `delayLongPress`, `hitSlop`), the state styles (`activeStyle`, `hoverStyle`,
-`focusStyle`, `disabledStyle`, `checkedStyle`), `onMouseEnter` / `onMouseMove` / `onMouseLeave`, `onWheel`, `onMouseUp`, `onContextMenu`,
+`focusStyle`, `disabledStyle`, `checkedStyle`), `onMouseEnter` / `onMouseMove` / `onMouseLeave`, `onWheel`, `onPinch`, `onMouseUp`, `onContextMenu`,
 `onFileDragEnter` / `onFileDragLeave` / `onFileDrop`, `focusable`, `onLayout`, `ref`, `nativeID`, `testID`, the page's
 markup on the web (`web={{ element }}`), the
 gesture props (`pan`, `pinch`, `rotation` and their events), the touch and responder props, the accessibility props
@@ -170,6 +170,7 @@ view()
 | `onMouseEnter` / `onMouseLeave` | `.on_mouse_enter` / `.on_mouse_leave` | `MouseEvent` | The mouse came over the view (or a view inside it) / left it or the window ([hover](./index.md#hover)); `onMouseLeave`'s is where it was last. |
 | `onMouseMove` | `.on_mouse_move` | `MouseEvent` | The mouse moved over the view (or a view inside it), with or without a button down, or a modifier key was pressed or released while it rests there with none down: `position`, `pagePosition` (`Point`s), `modifiers` and `pressedButton` (`"left"`, `"right"`, `"middle"`, `"back"`, `"forward"` or `null`); at most once a frame. |
 | `onWheel` | `.on_wheel` | `WheelEvent` | A mouse wheel or touchpad scrolled over the view (or a view inside it): `position`, `pagePosition`, `delta`, `deltaMode` (`"lines"` or `"points"`) and `modifiers`; a listener nearer than the scroll views under the pointer takes the wheel ([wheel](./index.md#wheel)). |
+| `onPinch` | `.on_pinch` | `PinchEvent` | A touchpad pinched over the view (or a view inside it): `position`, `pagePosition`, `delta` (the change of scale since the last event), `phase` (`"start"`, `"move"`, `"end"`) and `modifiers`; macOS, Linux, the GPUI backend and Safari, from the start of a pinch to its end ([touchpad pinches](./index.md#wheel)). |
 | `onMouseUp` | `.on_mouse_up` | `MouseEvent` | A mouse button was released over the view (or a view inside it): `button`, `position`, `pagePosition` and `modifiers`; desktops, the terminal and the web, never iOS or Android. A release outside the view is not reported (no pointer capture). |
 | `onContextMenu` | `.on_context_menu` | `ContextMenuEvent` | A context menu was asked for over the view: the secondary button, the keyboard in the browser or a screen reader on macOS and Windows ([context menus](./index.md#context-menus)). |
 | `onFileDragEnter` | `.on_file_drag_enter` | `{ uris: string[], mimeTypes: string[] }` (`FileDragEvent`) | A local-file drag entered the active desktop destination with its offered file list and their types. |

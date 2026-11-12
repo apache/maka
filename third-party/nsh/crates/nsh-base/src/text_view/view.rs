@@ -14,7 +14,7 @@ use nsh_core::{
         Arg, CallCx, Instance, JsHost, JsIn, JsOwned, JsValue, Owner, PropError, Renderer, Ret,
         ScrollIntent, Style, StyleRefinement, TsTypes,
     },
-    geometry::{DefiniteLength, Length},
+    geometry::Length,
     keymap::Modifiers,
     prelude::*,
 };
@@ -2557,10 +2557,12 @@ impl Cx {
                         title.map(|t| SharedString::from(t.to_owned())),
                     )
                 });
-                let image = self.image(image, link, ImageFlow::Block, &format!("{key}.{i}"));
+                let width = signal(px(0.0));
+                let image = self.image(image, link, ImageFlow::Block(width), &format!("{key}.{i}"));
                 self.source(
                     text("")
                         .w_full()
+                        .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width))
                         .when(self.selectable, |t| t.select_text())
                         .child(image),
                     source.unwrap_or_default().to_vec(),
@@ -2604,32 +2606,40 @@ impl Cx {
                     image: image.clone(),
                     linked: is_link,
                     flow: match flow {
-                        ImageFlow::Block => TextViewImageFlow::Block,
+                        ImageFlow::Block(_) => TextViewImageFlow::Block,
                         ImageFlow::Inline(_) => TextViewImageFlow::Inline,
                     },
                     line_height: match flow {
                         ImageFlow::Inline(line) => line,
-                        ImageFlow::Block => self.line.get(),
+                        ImageFlow::Block(_) => self.line.get(),
                     },
                 },
             );
-            if is_link && matches!(flow, ImageFlow::Block) {
+            if let ImageFlow::Block(width) = flow {
                 return view()
-                    .role(role)
-                    .focusable(true)
-                    .element_ref(&target)
-                    .label(SharedString::from(image.alt.clone()))
-                    .on_press(press)
-                    .child(el)
+                    .w(move || width.get())
+                    .items_start()
+                    .when(is_link, |v| {
+                        v.role(role)
+                            .focusable(true)
+                            .element_ref(&target)
+                            .label(SharedString::from(image.alt.clone()))
+                            .on_press(press)
+                    })
+                    .child(el.w_full().when(!is_link, |el| {
+                        el.label(SharedString::from(image.alt.clone()))
+                    }))
                     .when_some(hint, |v, hint| v.child(hint.0))
                     .into_element();
             }
-            return el.into_element();
+            return el
+                .label(SharedString::from(image.alt.clone()))
+                .into_element();
         }
         // A terminal's block image reads as its alt text in brackets, as a
         // text browser shows one: a line of text, pressable as the image
         // (`block` leaves out a paragraph of images without alt text).
-        if is_terminal() && matches!(flow, ImageFlow::Block) {
+        if is_terminal() && matches!(flow, ImageFlow::Block(_)) {
             if image.alt.trim().is_empty() {
                 return view().into_element();
             }
@@ -2677,7 +2687,7 @@ impl Cx {
             // following (at its natural size when it asks for nothing). The
             // width is a box's around it, so the image's height follows
             // the width it ends up with, not the one it asked for.
-            ImageFlow::Block => {
+            ImageFlow::Block(available) => {
                 let ratio = match (width, height) {
                     (Some(ImageLength::Points(w)), Some(ImageLength::Points(h))) if h > px(0.0) => {
                         Some(w / h)
@@ -2686,7 +2696,8 @@ impl Cx {
                 };
                 let box_width = move || -> Length {
                     match (width, height) {
-                        (Some(w), _) => DefiniteLength::from(w).into(),
+                        (Some(ImageLength::Points(w)), _) => w.into(),
+                        (Some(ImageLength::Fraction(w)), _) => (available.get() * w.0).into(),
                         (None, Some(ImageLength::Points(h))) => {
                             (h * aspect().unwrap_or(1.0)).into()
                         }
@@ -2705,7 +2716,7 @@ impl Cx {
                     .when_some(hint, |el, hint| el.tooltip(hint));
                 return view()
                     .w(box_width)
-                    .max_w(relative(1.0))
+                    .max_w(move || available.get())
                     .child(self.part(el, Part::Image))
                     .into_element();
             }
@@ -2765,7 +2776,7 @@ impl IntoTooltip for LinkImageHint {
 #[derive(Debug, Clone, Copy)]
 enum ImageFlow {
     /// On its own: a block.
-    Block,
+    Block(Signal<Points>),
     /// In text whose lines are this tall.
     Inline(f32),
 }

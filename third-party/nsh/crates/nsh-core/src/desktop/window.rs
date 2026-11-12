@@ -1063,6 +1063,11 @@ pub enum WindowEvent {
         /// Which policy.
         cause: WindowCloseCause,
     },
+    /// The user asked to quit the app (its Quit item, the platform's quit
+    /// key) while the app listens to quit requests
+    /// ([`super::DesktopCommand::SetQuitOnRequest`]): the platform did not
+    /// quit. Reported on the root only.
+    QuitRequest,
 }
 
 /// The record the core keeps of one window's attributes: what it last sent

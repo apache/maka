@@ -160,6 +160,8 @@ The cache follows the server's HTTP caching headers:
   `Last-Modified`): an unchanged image (`304`) is used again without downloading it, a changed one replaces it.
 - When the request fails (no network) or the server has an error (`5xx`), the kept copy is shown, unless the response
   said `must-revalidate` or `no-cache`.
+- When a request for the image is redirected to an address the app's `network` capability does not allow, the image
+  fails and the kept copy is dropped.
 
 Each app has its own cache of 256 MiB; past that, the images used least recently are dropped first. Several views,
 surfaces and processes of one app share it safely. Embedding apps choose where it is and how large, or turn it off:

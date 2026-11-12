@@ -56,6 +56,14 @@ mount(App);
 
 `content` 部件是编辑器滚动视图中文档的盒子：它的内边距（`content: "px-6 py-5"`）就是文本周围的留白，滚动条贴着编辑器自己的边缘。拖动选择越过编辑器的上下边缘时，文档随之滚动，指针越远滚得越快。
 
+### 尺寸
+
+编辑器的尺寸如同 `height: auto` 的块：不设高度时，它的高度是文档按其宽度排版后的高度加上内边距，并随每次编辑增高或变矮。`maxHeight`（`max-h-*`）让它停在该高度，此后文档在其中滚动，并保持光标可见，与多行 `Input` 一样；`minHeight`（`min-h-*`）让它至少有该高度。设置高度或弹性尺寸（`h-*`、`flex-1`）时，它是一个固定的盒子，文档在其中滚动。聊天输入框就是设置了 `maxHeight`、不设高度的编辑器：
+
+```tsx
+<RichEditor editor={editor} class="max-h-40 px-3 py-2" />
+```
+
 ### 触摸选区
 
 在 iOS 和 Android 上，编辑器像平台自己的文本视图一样选择文本。长按选中手指下的词，之后移动手指按整词扩展选区；在空白处长按则放置光标。双击选中一个词，三击选中整段。触摸产生的选区两端各有一个手柄（`selectionHandle`，主题 `primary` 色的圆点），手指拖动手柄即可移动那一端。手指抬起时，系统编辑菜单在选区上方打开，提供剪切、拷贝、粘贴和全选；点按选区会再次打开它，点按光标则打开粘贴和全选。菜单只提供适用的操作：全部选中后不再提供全选，只读编辑器只提供拷贝和全选。每个操作都是编辑器的事务，因此工具栏的 `isActive` 跟随选区，`toggleMark` 作用于它，撤销可以撤回剪切或粘贴。点按、键盘、输入法和鼠标的选择方式不变。
@@ -278,6 +286,36 @@ editor.run(insertMention(editor.suggestion("mention")!.range, "u1", "Joan"));
 - `withMention(schema, { name?, char? })` 添加 Tiptap 的提及节点：带 `id`、`label` 和触发字符的行内原子节点，在文本中写作 `@label`，在 HTML 中写作 `<span data-type="mention">`。`insertMention(range, id, label?)` 用一个提及和一个空格替换建议的范围。
 
 弹出层属于应用：它读取建议的状态，放在 `coordsAtPos(range.from)` 处，并以自己的方式绘制条目。
+
+## 块编辑器
+
+Notion 式的编辑器由上面这些部分组成，文档周围的界面是应用自己的。画廊的 Block editor 演示（`examples/gallery/demos/BlockEditorDemo.tsx`）就是一个：`/` 块菜单、每个块上的手柄，以及选区上方的工具栏。
+
+```tsx
+import { Overlay } from "nsh";
+import { RichEditor, StarterKit, chain, command, createRichEditor, defineExtension, deleteRange, suggestion } from "nsh/base";
+
+// 扩展排在键位之前，所以回车会先选中菜单项，再轮到它拆分段落。
+const slash = defineExtension({
+  name: "slashCommand",
+  priority: 1000,
+  addProseMirrorPlugins: () => [suggestion({ key: "slash", char: "/", captureKeys: ["ArrowUp", "ArrowDown", "Enter"] })],
+});
+const editor = createRichEditor({ extensions: [StarterKit, slash] });
+
+// `editor.suggestion("slash")?.active` 时，菜单放进 `bubbleMenu`；选中一项就替换触发符和查询。
+const { range } = editor.suggestion("slash")!;
+editor.run(chain([deleteRange({ from: range.from, to: range.to }), command("toggleBulletList")]));
+
+// 手柄：指针下的块，以及它在页面上的位置，供锚定在那里的 `Overlay` 使用。
+const start = editor.posAtPageCoords(event.pagePosition);
+const rect = editor.pageNodeRect(start!);
+editor.dragBlock(start!, { x: e.pageX, y: e.pageY }); // 移动时 dragTo(point)，松开时 endDrag()
+```
+
+- `createRichEditor` 自己的 `plugins` 排在扩展和键位之后；键要先处理的插件（建议菜单的回车）写成 `priority` 较高的扩展。
+- `pageNodeRect(pos)` 和 `posAtPageCoords(point)` 用页面点作答，与 `Overlay` 的 `anchor` 和指针事件的坐标相同，所以手柄可以作为跟随块的浮层放在编辑器的边距里。
+- `dragBlock(pos, point)`、`dragTo(point)` 和 `endDrag()` 随指针移动一个块：落点线跟着指针，放下是一步撤销。点一下还要打开菜单的手柄，在指针移动之后才认领指针（`onMoveShouldSetResponder`），点按仍走 `onPress`；`Button` 自己处理按压，不会把拖动交给响应器。
 
 ## 表格
 

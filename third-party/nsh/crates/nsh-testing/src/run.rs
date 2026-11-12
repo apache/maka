@@ -376,7 +376,12 @@ fn compile_test_file(
         .map_or("test".into(), |n| n.to_string_lossy().into_owned());
     std::fs::create_dir_all(&run.work_dir)
         .map_err(|e| format!("{}: {e}", run.work_dir.display()))?;
-    let entry = run.work_dir.join(format!("{name}.run.js"));
+    // Canonical, as `file` is: their common directories are found.
+    let work_dir = dunce::canonicalize(&run.work_dir)
+        .map_err(|e| format!("{}: {e}", run.work_dir.display()))?;
+    let entry = entry_path(&work_dir, file);
+    let dir = entry.parent().unwrap_or(&work_dir);
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = serde_json::to_string(&file.to_string_lossy().replace('\\', "/"))
         .map_err(|e| e.to_string())?;
     // The test file's import is the second line, which `test_file_of`
@@ -394,12 +399,36 @@ fn compile_test_file(
     else {
         return Err(format!("{}: built as a Rust root", entry.display()));
     };
-    let map = map.map(|map| readable_sources(&map, &run.work_dir));
+    let map = map.map(|map| readable_sources(&map, dir));
     let bundle = match &map {
         Some(map) => bundle.with_source_map(map.clone()),
         None => *bundle,
     };
     Ok((bundle, map, asset_root))
+}
+
+/// Where the entry made for the test file `file` goes in `work_dir`: at
+/// the file's path below the nearest directory above `work_dir` that holds
+/// it (the app's for `<app>/.nsh/test`), so test files of one name in
+/// different directories never share an entry, which parallel runs of the
+/// app would write over each other's. With no such directory short of a
+/// filesystem root (`work_dir` elsewhere), in one named by a hash of the
+/// file's directory.
+fn entry_path(work_dir: &Path, file: &Path) -> PathBuf {
+    let relative = work_dir
+        .ancestors()
+        .filter(|dir| dir.parent().is_some())
+        .find_map(|dir| file.strip_prefix(dir).ok())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| {
+            let mut hasher = std::hash::DefaultHasher::new();
+            std::hash::Hash::hash(&file.parent(), &mut hasher);
+            let dir = format!("{:016x}", std::hash::Hasher::finish(&hasher));
+            Path::new(&dir).join(file.file_name().unwrap_or(std::ffi::OsStr::new("test")))
+        });
+    let mut name = work_dir.join(relative).into_os_string();
+    name.push(".run.js");
+    name.into()
 }
 
 /// The test file the entry `entry` made for it imports
@@ -1397,6 +1426,40 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&environment).unwrap(),
             serde_json::json!({ "idiom": "desktop" })
+        );
+    }
+
+    #[test]
+    fn test_files_of_one_name_get_entries_by_their_paths() {
+        let app = Path::new("/home/me/app");
+        let work_dir = app.join(".nsh/test");
+        let core = entry_path(&work_dir, &app.join("src/core/typing.test.ts"));
+        assert_eq!(core, work_dir.join("src/core/typing.test.ts.run.js"));
+        // The steps of `nsh test <entry>`, written in the work directory.
+        assert_eq!(
+            entry_path(&work_dir, &work_dir.join("App.tsx.steps.test.ts")),
+            work_dir.join("App.tsx.steps.test.ts.run.js")
+        );
+        // A work directory beside the app.
+        assert_eq!(
+            entry_path(Path::new("/home/me/work"), &app.join("App.test.tsx")),
+            Path::new("/home/me/work/app/App.test.tsx.run.js")
+        );
+        // Sharing only the root with the work directory: by the directory's
+        // hash.
+        let elsewhere = Path::new("/srv/work");
+        let core = entry_path(elsewhere, &app.join("src/core/typing.test.ts"));
+        let state = entry_path(elsewhere, &app.join("src/state/typing.test.ts"));
+        assert_ne!(core, state);
+        assert_eq!(core.parent().unwrap().parent(), Some(elsewhere));
+        assert!(
+            core.ends_with("typing.test.ts.run.js"),
+            "{}",
+            core.display()
+        );
+        assert_eq!(
+            core,
+            entry_path(elsewhere, &app.join("src/core/typing.test.ts"))
         );
     }
 

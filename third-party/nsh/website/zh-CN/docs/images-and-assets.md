@@ -154,6 +154,7 @@ image(move || user.with(|u| u.avatar_url.clone()))
 - 在新鲜期内直接使用，不发请求：新鲜期为 `max-age`，否则到 `Expires` 为止，否则为距 `Last-Modified` 时长的十分之一（最多一周）。
 - 过期后向服务器确认（用它的 `ETag` 发 `If-None-Match`，用它的 `Last-Modified` 发 `If-Modified-Since`）：未变的图片（`304`）无需下载即可再次使用，变了的则被替换。
 - 请求失败（没有网络）或服务器出错（`5xx`）时，显示保存的副本，除非响应声明了 `must-revalidate` 或 `no-cache`。
+- 图片的请求被重定向到应用的 `network` 能力不允许的地址时，图片加载失败，保存的副本也会被删除。
 
 每个应用有自己的缓存，大小为 256 MiB；超出后，最久未使用的图片先被删除。同一应用的多个视图、surface 和进程可以安全地共用它。嵌入应用可以选择它的位置和大小，或关闭它：
 

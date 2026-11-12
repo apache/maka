@@ -480,6 +480,10 @@ import { Image, View } from "nsh";
 />
 ```
 
+An image that stands on its own (a paragraph or a table cell of images) is laid out in a box as wide as the text:
+`w-full` fills that width, `max-w-full` keeps a wider image inside it, and an image of a fixed width keeps it, at the
+start of the line. An image in a line of text keeps the size it asks for.
+
 `Highlighted` and `MathView` (`highlighted` and `math_view` in Rust) stand for the app's own components (a
 highlighter, a formula renderer, or a component of its Rust crate). Without `renderMath` `TextView` typesets a formula itself (`math` and `mathBlock` parts) with KaTeX's TeX support and fonts, in the text's color, the same on every platform; TeX it cannot read shows as its source in monospace.
 

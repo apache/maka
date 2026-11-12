@@ -2,7 +2,8 @@
 // `RichEditor` view's bubble menu: the app's content shown next to the
 // selection while the app passes it, gone when it does not, with the
 // touch selection's handle parts' classes; and a table shown as a grid of
-// its cells, with the table parts' classes.
+// its cells, with the table parts' classes; and editors without a height,
+// as tall as their documents, one stopped by its `maxHeight`.
 import { Text, View, signal } from "nsh";
 import { RichEditor, StarterKit, TableKit, createRichEditor } from "nsh/base";
 
@@ -12,6 +13,12 @@ function App() {
   const tables = createRichEditor({
     extensions: [StarterKit, TableKit],
     content: "| CellA | CellB |\n| --- | --- |\n| CellC | CellD |\n",
+    format: "markdown",
+  });
+  const auto = createRichEditor({ extensions: [StarterKit], content: "AutoOne\n\nAutoTwo", format: "markdown" });
+  const capped = createRichEditor({
+    extensions: [StarterKit],
+    content: "CapOne\n\nCapTwo\n\nCapThree\n\nCapFour",
     format: "markdown",
   });
   return (
@@ -40,6 +47,8 @@ function App() {
         }}
         styles={{ selectedCell: { opacity: 0.5 } }}
       />
+      <RichEditor testID="rich-auto" editor={auto} />
+      <RichEditor testID="rich-capped" editor={capped} style={{ maxHeight: 40 }} />
     </View>
   );
 }

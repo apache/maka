@@ -389,6 +389,7 @@ impl<M: TextEngine> Core<M> {
         cx.deferred = false;
         if std::mem::take(&mut cx.estimated) {
             cx.cache = None;
+            cx.baseline = None;
             cx.min_content = None;
             self.layout.mark_dirty(layout);
             self.needs_layout = true;

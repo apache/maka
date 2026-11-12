@@ -173,8 +173,28 @@ impl WebHost {
             permission_request(&web, &shared),
             load_changed(&web, &shared),
             load_failed(&web, &shared),
-            web.connect_web_process_terminated(|_, reason| {
-                log::warn!(target: "js", "web view: the page's process ended ({reason:?})");
+            web.connect_web_process_terminated({
+                let shared = shared.clone();
+                move |_, reason| {
+                    log::warn!(target: "js", "web view: the page's process ended ({reason:?})");
+                    // The app keeps running; the page comes back on its next reload.
+                    shared.emit(EventKind::Error, || {
+                        EventPayload::Map(vec![
+                            (
+                                "message",
+                                PayloadValue::Str(format!(
+                                    "The web content process terminated ({reason:?})"
+                                )),
+                            ),
+                            (
+                                "code",
+                                PayloadValue::Str(
+                                    nsh_core::element::codes::WEBVIEW_TERMINATED.into(),
+                                ),
+                            ),
+                        ])
+                    });
+                }
             }),
         ];
         let pending: Rc<RefCell<Option<WebSource>>> = Rc::default();

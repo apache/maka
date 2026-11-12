@@ -701,6 +701,8 @@ impl IntoElement for Window {
                                 }
                             }
                             WindowEvent::Closed { cause } => close(*cause),
+                            // The root's ([`Core`](crate::Core) hears it).
+                            WindowEvent::QuitRequest => {}
                         }
                     }),
                 ));
@@ -933,9 +935,11 @@ impl super::Component for OpenedWindowsHost {
 /// its windows close and the engine stops as when the last window closes
 /// (an embedding app's close handling runs as it does for the Quit item),
 /// then the app's run ends, also when closing the window alone would leave
-/// it running (a window kept hidden for the Dock, a tray icon). As with the
-/// Quit item, the app cannot cancel it; a GPUI host that owns the window is
-/// asked first and quits when it is ready. For a menu item or a button of
+/// it running (a window kept hidden for the Dock, a tray icon). It quits
+/// whether or not the app listens to quit requests ([`on_quit_request`]):
+/// that is how an app that asks first quits once it is ready; a GPUI host
+/// that owns the window is asked first and quits when it is ready. For a
+/// menu item or a button of
 /// the app's own that quits, and for restarting after an update. A view
 /// embedded in another app leaves the app's lifecycle to that app. On
 /// platforms without desktop windows this has no effect.
@@ -948,8 +952,8 @@ pub use super::quit::QUIT_TIMEOUT;
 /// Runs `f` as the app quits, for its cleanup (TS: `Application.on("quit",
 /// …)`), as GPUI's `App::on_app_quit`: saving what it keeps, closing a
 /// connection. It cannot keep the app running; an app that asks first
-/// quits from a Quit of its own ([`quit`] from a menu item with the `mod+q`
-/// shortcut, after its confirmation). It runs when the app stops: its Quit
+/// listens to quit requests ([`on_quit_request`]). It runs when the app
+/// stops: its Quit
 /// item and [`quit`], its last window closing, the system ending it
 /// (logging out), a host app removing its view. The engine waits for the
 /// futures it returns [`QUIT_TIMEOUT`] at most, together, and while it
@@ -973,6 +977,44 @@ where
     });
     let subscription = add_quit_listener(listener);
     cleanup(move || drop(subscription));
+}
+
+/// Runs `f` each time the user asks to quit the app (TS:
+/// `Application.on("quitRequest", …)`), as AppKit's
+/// `applicationShouldTerminate:`: while one is registered, the app's Quit
+/// item and the platform's quit key (Command-Q, Ctrl+Q) no longer quit, and
+/// the app decides: it asks the user, saves, or waits for work to finish,
+/// then calls [`quit`]. Without one they quit as before. The system ending
+/// the app (logging out, shutting down) never asks: [`on_app_quit`] runs
+/// then. Standalone apps on macOS, Windows and Linux; a view embedded in
+/// another app leaves the app's lifecycle to that app. Removed with the
+/// current owner.
+///
+/// ```ignore
+/// on_quit_request(move || {
+///     if busy.get_untracked() {
+///         confirm_quit.set(true);
+///     } else {
+///         quit();
+///     }
+/// });
+/// ```
+pub fn on_quit_request(f: impl Fn() + 'static) {
+    let owner = Owner::current();
+    let listener: super::quit::QuitRequestListener = Rc::new(move || owner.run(&f));
+    let subscription = add_quit_request_listener(listener);
+    cleanup(move || drop(subscription));
+}
+
+/// Adds `listener` to what hears the user ask to quit, until the
+/// subscription drops (`Application.on("quitRequest")` keeps one per JS
+/// listener).
+pub(crate) fn add_quit_request_listener(
+    listener: super::quit::QuitRequestListener,
+) -> super::quit::Subscription<super::quit::QuitRequestListener> {
+    let requests = &super::ambient::executor().quit_requests;
+    let id = requests.borrow_mut().add(listener);
+    super::quit::Subscription::new(requests, id)
 }
 
 /// Adds `listener` to what runs as the app quits, until the subscription

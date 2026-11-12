@@ -438,3 +438,65 @@ test('a view listening to onWheel inside a scroll view takes the wheel', (t) => 
   assert.equal(sent.length, 1);
   assert.equal(el.scrollTop, 20);
 });
+
+test('one scroll stays on the view that took it, and a scroll going on is only observed', (t) => {
+  t.mock.method(performance, 'now', () => clock);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { p, el } = scroller();
+  const sent = [];
+  p.event = (id, name, payload) => sent.push([id, name, payload]);
+  p.point = (e) => [e.clientX, e.clientY];
+  const canvas = {
+    _id: 2, _kind: 'view', _events: new Set(['onWheel']), parentNode: el, isConnected: true,
+    getBoundingClientRect: () => ({ left: 0, top: 0 }),
+  };
+  p.views.set(2, canvas);
+  p.wheelTracked = new Set([2]);
+  const notch = (target, dy) => ({ deltaMode: 1, deltaX: 0, deltaY: dy, clientX: 0, clientY: 0, target, preventDefault() {} });
+  // A notch over the canvas: it takes it.
+  p.wheel(notch(canvas, 3));
+  assert.equal(sent.at(-1)[0], 2);
+  assert.equal(el.scrollTop, 0);
+  // The next one comes over the scroll view itself: still the canvas's.
+  clock += 50;
+  p.wheel(notch(el, 3));
+  assert.equal(sent.length, 2);
+  assert.equal(sent.at(-1)[0], 2);
+  assert.equal(el.scrollTop, 0, 'the scroll view did not take over');
+  // After a pause a touchpad scrolls the scroll view; when the canvas
+  // comes under the pointer while that scroll goes on, it only observes it.
+  el.isConnected = true;
+  clock += 300;
+  p.wheel(wheel(el, 20));
+  assert.equal(el.scrollTop, 20);
+  clock += 50;
+  p.wheel(wheel(canvas, 20));
+  assert.equal(sent.at(-1)[0], 2);
+  assert.equal(el.scrollTop, 40, 'the scroll view kept scrolling');
+});
+
+test('onPinch hears a Safari touchpad pinch from its start to its end', (t) => {
+  const { p, el } = scroller();
+  const sent = [];
+  p.event = (id, name, payload) => sent.push([id, name, payload]);
+  p.point = (e) => [e.clientX, e.clientY];
+  const canvas = {
+    _id: 2, _kind: 'view', _events: new Set(['onPinch']), parentNode: el, isConnected: true,
+    getBoundingClientRect: () => ({ left: 10, top: 20 }),
+  };
+  const other = { _id: 4, _kind: 'view', _events: new Set(), parentNode: el, isConnected: true };
+  p.views.set(2, canvas);
+  p.views.set(4, other);
+  let prevented = 0;
+  const gesture = (target, scale) => ({ target, scale, clientX: 15, clientY: 30, preventDefault() { prevented++; } });
+  assert.ok(p.pinchEvent(gesture(canvas, 1), 0), 'the canvas takes the pinch');
+  assert.ok(p.pinchEvent(gesture(other, 1.5), 1), 'it stays on the canvas');
+  assert.ok(p.pinchEvent(gesture(other, 1.2), 2));
+  assert.equal(prevented, 3);
+  assert.deepEqual(sent.map(([id, name, e]) => [id, name, e.phase, Math.round(e.delta * 100) / 100]), [
+    [2, 'onPinch', 'start', 0], [2, 'onPinch', 'move', 0.5], [2, 'onPinch', 'end', 0],
+  ]);
+  assert.deepEqual(sent[1][2].position, { x: 5, y: 10 });
+  // Over no listener the scroll view's own zoom handles it.
+  assert.ok(!p.pinchEvent(gesture(other, 1), 0));
+});

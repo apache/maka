@@ -106,7 +106,9 @@ export const richEditorClasses = {
   content: "gap-3 px-6 py-5",
   placeholder: "text-muted-foreground",
   listMarker: "text-muted-foreground",
-  taskCheckbox: "size-4 mr-2 mt-1 rounded border border-border checked:bg-primary checked:border-primary",
+  // A box that answers the pointer: its edge and fill step up on hover (a checked one softens), and it sinks while pressed.
+  taskCheckbox:
+    "size-4 mr-2 mt-1 rounded border border-border cursor-pointer transition duration-150 ease-out hover:border-foreground/40 hover:bg-foreground/5 active:scale-90 checked:bg-primary checked:border-primary checked:hover:bg-primary/80",
   nodes: {
     paragraph: "leading-relaxed",
     "heading[level=1]": "text-3xl font-bold tracking-tight",

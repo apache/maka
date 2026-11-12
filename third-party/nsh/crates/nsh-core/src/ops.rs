@@ -260,6 +260,7 @@ events! {
     ScrollIntent = "onScrollIntent": "The user requested scrolling before the offset changes (payload: `intent`: `\"start\"`, `\"end\"` or `\"scroll\"`; programmatic scrolling does not emit it).",
     EditAction = "onEditAction" as "": "An action was chosen from the edit menu a [`Command::OpenEditMenu`] opened on an input (payload: `action`, an [`EditAction`]'s name); Paste is the input's own paste (`onPaste`), never reported.",
     Wheel = "onWheel": "A mouse wheel or touchpad scrolled over the view (payload: [`EventPayload::Wheel`]): the nearest listener around the view under the pointer hears it; one nearer than any scroll view under the pointer takes the wheel, so nothing scrolls or zooms natively ([`crate::input::wheel_listener`]).",
+    Pinch = "onPinch": "A touchpad pinch over the view (payload: [`EventPayload::Pinch`]; macOS, Linux, GPUI, Safari): the nearest listener around the view under the pointer hears it; one nearer than any view that pinches natively takes it, so nothing zooms or pinches natively ([`crate::input::wheel_listener`]); a pinch stays on the view its start went to.",
 
     WebEvaluation = "onWebEvaluation" as "": "A native WebView evaluation reply (internal; payload: id and a JSON envelope string data).",
     MouseUp = "onMouseUp": "A mouse button was released over the view or a view inside it (payload: [`EventPayload::Mouse`], its `button` naming the released one, with where and the modifiers). The primary button's release also reports `onPressUp`.",
@@ -458,6 +459,80 @@ impl MouseEvent {
             pressed_button: None,
             button: Some(button),
         }
+    }
+}
+
+/// A touchpad pinch over a view ([`EventKind::Pinch`]), as GPUI's
+/// `PinchEvent`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[non_exhaustive]
+pub struct PinchEvent {
+    /// Position in the view, its transforms undone.
+    pub position: Point<Points>,
+    /// Position in the root view the view is in (the surface, or its
+    /// modal), as touches' `page`.
+    pub page_position: Point<Points>,
+    /// How much the scale changed since the last event, as a fraction
+    /// (0.1: 10 % bigger; negative: smaller), as GPUI's.
+    pub delta: crate::geometry::Percentage,
+    /// Where it is in the gesture.
+    pub phase: PinchPhase,
+    /// The modifier keys held.
+    pub modifiers: crate::keymap::Modifiers,
+}
+
+impl PinchEvent {
+    /// A pinch step of `delta` in `phase` at `position` in the view and
+    /// `page_position` in its root view, with `modifiers` held.
+    pub fn new(
+        position: Point<Points>,
+        page_position: Point<Points>,
+        delta: crate::geometry::Percentage,
+        phase: PinchPhase,
+        modifiers: crate::keymap::Modifiers,
+    ) -> Self {
+        Self {
+            position,
+            page_position,
+            delta,
+            phase,
+            modifiers,
+        }
+    }
+}
+
+/// Where a pinch is in its gesture ([`PinchEvent::phase`]), as a touch's
+/// [`TouchPhase`] (TS: `"start"`, `"move"`, `"end"`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PinchPhase {
+    /// The fingers began pinching.
+    Start,
+    /// The fingers moved.
+    #[default]
+    Move,
+    /// The fingers lifted, or the system cancelled the pinch.
+    End,
+}
+
+impl PinchPhase {
+    /// Its TS name.
+    pub fn name(self) -> &'static str {
+        match self {
+            PinchPhase::Start => "start",
+            PinchPhase::Move => "move",
+            PinchPhase::End => "end",
+        }
+    }
+
+    /// The phase named `name` (its TS name).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "start" => PinchPhase::Start,
+            "move" => PinchPhase::Move,
+            "end" => PinchPhase::End,
+            _ => return None,
+        })
     }
 }
 
@@ -952,6 +1027,8 @@ pub enum EventPayload {
     ContextMenu(ContextMenuEvent),
     /// A wheel over a view (`onWheel`).
     Wheel(WheelEvent),
+    /// A touchpad pinch over a view (`onPinch`).
+    Pinch(PinchEvent),
     /// Where the pointer was at a press (`onPress`, `onLongPress`,
     /// `onPressDown`, `onPressUp`), with the modifier keys and the click
     /// count, on backends that know it.

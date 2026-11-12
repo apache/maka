@@ -946,6 +946,34 @@ impl Mounter {
         }
     }
 
+    /// How far scroll view `id` can still scroll back towards its start
+    /// and on towards its end along its axis (`None`: it is no scroll
+    /// view).
+    #[cfg(feature = "dev")]
+    pub(crate) fn scroll_room(&self, id: NodeId, horizontal: bool) -> Option<(CGFloat, CGFloat)> {
+        let Native::Scroll(scroll) = &self.slot(id)?.native else {
+            return None;
+        };
+        let inset = scroll.adjustedContentInset();
+        let (offset, content, size) = (
+            scroll.contentOffset(),
+            scroll.contentSize(),
+            scroll.bounds().size,
+        );
+        let (start, end) = if horizontal {
+            (
+                offset.x + inset.left,
+                content.width + inset.right - size.width - offset.x,
+            )
+        } else {
+            (
+                offset.y + inset.top,
+                content.height + inset.bottom - size.height - offset.y,
+            )
+        };
+        Some((start.max(0.0), end.max(0.0)))
+    }
+
     /// The text input `id` holds (`None`: it is no input).
     #[cfg(feature = "dev")]
     pub(crate) fn input_text(&self, id: NodeId) -> Option<String> {

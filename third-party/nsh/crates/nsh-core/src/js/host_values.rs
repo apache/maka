@@ -10,7 +10,7 @@ use crate::{
     CellSlot, EdgeInsets, ImageScales, ImageSource, KeyboardTaps, ListContentStyle, MacOsBackdrop,
     MacOsBackdropBlending, MacOsBackdropMaterial, MacOsBackdropState, ModalProp, Prop,
     RevealOptions, ScrollAlignment, ScrollProp, StatusBarSetting, StatusBarStyle, Viewability,
-    element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes},
+    element::{ElementTarget, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes},
     geometry::{Bounds, Percentage, Points, point, size},
     mount::ModalConfig,
     ops::OverlayProp,
@@ -643,6 +643,26 @@ pub(crate) fn overlay_anchor<I: HostInput>(input: &I, _: &mut HostCx) -> Option<
         _ => bounds().map_or(OverlayAnchor::None, OverlayAnchor::Bounds),
     };
     Some(OverlayProp::Anchor(anchor))
+}
+
+/// `accessibilityActiveDescendant`: an element (a ref), or nothing.
+pub(crate) fn active_descendant<I: HostInput>(
+    input: &I,
+    _: &mut HostCx,
+) -> Option<AccessibilityProp> {
+    Some(AccessibilityProp::ActiveDescendant(
+        input.node().map(ElementTarget::of_node),
+    ))
+}
+
+/// `accessibilityControls`: an element (a ref), or nothing.
+pub(crate) fn accessibility_controls<I: HostInput>(
+    input: &I,
+    _: &mut HostCx,
+) -> Option<AccessibilityProp> {
+    Some(AccessibilityProp::Controls(
+        input.node().map(ElementTarget::of_node),
+    ))
 }
 
 /// `tooltip`: a string, an element (a node JS made), or nothing.

@@ -10,7 +10,8 @@
 //! the focus back to its trigger. A desktop menu, on a Mac. A context menu opened
 //! from the keyboard (Shift+F10 on its focused trigger, in the browser
 //! and on Linux) focuses its first enabled item, one opened by the secondary button
-//! none, until an arrow key.
+//! none, until an arrow key. One the app opens (`open` set true) goes below
+//! its trigger at its first enabled item, as from the keyboard.
 
 use std::{
     collections::HashMap,
@@ -955,4 +956,114 @@ fn a_secondary_click_or_a_press_outside_an_open_context_menu_closes_it() {
             .unwrap();
         app.app.wait_for("text:changes:ococ").unwrap();
     }
+}
+
+/// A document row (focusable, at (40, 100), 200 by 40) whose context menu
+/// the app opens itself: a button below it sets `open`, as an app does for
+/// a key of its own or for a list that has the focus while a row of it is
+/// the one asked about. Its items: New (disabled), Rename, Delete. The
+/// texts say where the popup was placed and the item chosen last.
+#[component]
+fn ShownMenu() -> impl IntoElement {
+    let open = signal(false);
+    let at = signal(String::from("none"));
+    let chose = signal("none");
+    let item = move |label: &'static str, disabled: bool| {
+        menu_item()
+            .accessibility_label(label)
+            .disabled(disabled)
+            .on_select(move || chose.set(label))
+            .child(text(label))
+    };
+    view()
+        .pt(px(100.0))
+        .pl(px(40.0))
+        .child(
+            context_menu()
+                .open(move || Some(open.get()))
+                .on_open_change(move |e: &MenuEvent| {
+                    if let MenuEvent::OpenChange(next, _) = e {
+                        open.set(*next);
+                    }
+                })
+                .on_position(move |e: &MenuEvent| {
+                    if let MenuEvent::Position(_, bounds, _) = e {
+                        at.set(format!("{} {}", bounds.origin.x.0, bounds.origin.y.0));
+                    }
+                })
+                .trigger(
+                    view()
+                        .test_id("row")
+                        .focusable(true)
+                        .w(px(200.0))
+                        .h(px(40.0))
+                        .child(text("Row")),
+                )
+                .child(item("New", true))
+                .child(item("Rename", false))
+                .child(item("Delete", false)),
+        )
+        .child(
+            view()
+                .test_id("show")
+                .focusable(true)
+                .w(px(200.0))
+                .h(px(40.0))
+                .on_press(move || open.set(true))
+                .child(text("Show")),
+        )
+        .child(text(move || format!("at:{}", at.get())))
+        .child(text(move || format!("chose:{}", chose.get())))
+}
+
+#[test]
+fn a_context_menu_the_app_opens_is_below_its_trigger_at_its_first_enabled_item() {
+    for os in [Os::MacOs, Os::Linux, Os::Windows, Os::Web] {
+        let mut app = start_on(Root::of::<ShownMenu>(), os);
+        app.app.press("id:show").unwrap();
+        app.app.wait_for("Rename").unwrap();
+        // The row's bottom-left corner, not the window's top-left one.
+        app.app
+            .wait_for("text:at:40 140")
+            .unwrap_or_else(|e| panic!("{os:?}: {e}"));
+        // Windows gives views no keyboard focus, the menu's items none.
+        if os == Os::Windows {
+            continue;
+        }
+        app.app.press_key("space").unwrap();
+        app.app
+            .wait_for("text:chose:Rename")
+            .unwrap_or_else(|e| panic!("{os:?}: {e}"));
+    }
+}
+
+#[test]
+fn escape_gives_the_focus_to_the_trigger_of_a_context_menu_the_app_opened() {
+    let mut app = start_on(Root::of::<ShownMenu>(), Os::Linux);
+    app.app.press("id:show").unwrap();
+    app.app.wait_for("Rename").unwrap();
+    app.app.press_key("escape").unwrap();
+    app.app
+        .wait_for_gone("Rename", std::time::Duration::from_secs(5))
+        .unwrap();
+    // The row has it: Shift+F10 opens its menu again.
+    app.app.press_key("shift+f10").unwrap();
+    app.app.wait_for("Rename").unwrap();
+}
+
+#[test]
+fn a_secondary_click_moves_a_context_menu_the_app_opened_to_the_pointer() {
+    let mut app = start_on(Root::of::<ShownMenu>(), Os::MacOs);
+    app.app.press("id:show").unwrap();
+    app.app.wait_for("text:at:40 140").unwrap();
+    right_click_at(&mut app, "row", row(), point(px(50.0), px(110.0)));
+    app.app.wait_for("text:at:50 110").unwrap();
+    assert!(app.app.shows("Rename"), "still open");
+    // Closed, then opened by the app again: at the row once more.
+    app.app.press_key("escape").unwrap();
+    app.app
+        .wait_for_gone("Rename", std::time::Duration::from_secs(5))
+        .unwrap();
+    app.app.press("id:show").unwrap();
+    app.app.wait_for("text:at:40 140").unwrap();
 }

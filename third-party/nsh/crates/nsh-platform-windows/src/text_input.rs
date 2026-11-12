@@ -1614,6 +1614,8 @@ fn report_composition(surface: &Surface, view: &NshView, input: &InputState) {
     let now = input.composed_text();
     if *input.composed.borrow() != now {
         input.composed.replace(now.clone());
+        let shown = now.as_ref().map(|_| input.text());
+        surface.control(|c| c.input_composing(view.id(), shown));
         send(surface, view, EventKind::CompositionChange, || {
             EventPayload::Map(vec![
                 ("composing", PayloadValue::Bool(now.is_some())),
@@ -2207,14 +2209,14 @@ pub(crate) fn context_menu(surface: &Rc<Surface>, view: &NshView) {
             }
         })
     };
-    let item = |role: Option<MenuRole>, label: &'static str, enabled: bool, action: Action| {
-        LocalItem::Item {
+    let delete = surface.chrome.labels.borrow().delete.clone();
+    let item =
+        |role: Option<MenuRole>, label: &str, enabled: bool, action: Action| LocalItem::Item {
             role,
-            label,
+            label: label.to_owned(),
             enabled,
             action,
-        }
-    };
+        };
     crate::chrome::popup_actions(
         surface,
         vec![
@@ -2248,7 +2250,7 @@ pub(crate) fn context_menu(surface: &Rc<Surface>, view: &NshView) {
             ),
             item(
                 None,
-                "Delete",
+                delete.as_deref().unwrap_or("Delete"),
                 editable && selected,
                 command(WM_CLEAR, 0, 0),
             ),

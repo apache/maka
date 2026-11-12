@@ -52,6 +52,8 @@ view()
 | `.accessibility_state(..)` | `accessibilityState` | `AccessibilityState` | Its state: disabled, selected, checked, busy, expanded, pressed, current, has popup. `selected` also applies the selected style, `checked` the checked style when true and the indeterminate style when `"mixed"`, `pressed` the pressed style when true. |
 | `.accessibility_level(..)` | `accessibilityLevel` | `number` | The level of a heading (1 the top), the depth of a tree item (1 at the top). |
 | `.accessibility_value(..)` | `accessibilityValue` | `{ min?, max?, now?, text? }` | The value of a range or textual element. |
+| `.accessibility_active_descendant(..)` | `accessibilityActiveDescendant` | `ViewRef \| null` | The item that is active inside the focused element: a combo box's highlighted option, a list's cursor row. |
+| `.accessibility_controls(..)` | `accessibilityControls` | `ViewRef \| null` | The element whose content this one controls: a combo box's list. |
 | | `accessibilityActions` | `{ name, label? }[]` | Actions offered to assistive technologies. |
 | `.on_accessibility_action(..)` | `onAccessibilityAction` | `(e: { actionName }) => void` | An action was performed (Rust: its name). |
 | `.accessibility_elements_hidden(..)` | `accessibilityElementsHidden` | `boolean` | Hides the view and its subtree from assistive technologies. |
@@ -136,6 +138,63 @@ view()
 ```
 
 The state is `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent>, has_popup, invalid }` in Rust and `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time", hasPopup?, invalid? }` in TSX. `pressed` makes a button a toggle button (ARIA's `aria-pressed`); `current` marks the current item of a set (ARIA's `aria-current`): a pagination's page, a wizard's step; `hasPopup` marks the trigger of a popup, a menu or a list (ARIA's `aria-haspopup`), whose `expanded` says whether it is open, where an `expanded` element without it is a disclosure that shows its content in place (`Popover`, `Menu`, `HoverCard`, `Select`, `Combobox` and `DatePicker` set it on their triggers); `invalid` marks content that does not pass the app's checks (ARIA's `aria-invalid`): a field whose text was rejected, a required select left empty. Screen readers read it with the element, and `aria-invalid:` classes style it. `disabled` is also implied by disabling the view (`.disabled(..)`, `disabled`). `accessibilityValue` with `min`, `max` and `now` is read as a percentage; with `text` it is read as given ("3 of 10", "Medium").
+
+### The active item of a focused element
+
+A control can keep the keyboard focus while the user moves through items inside it: a combo box's field stays focused as the arrow keys walk its list, a list moves a cursor row. `accessibilityActiveDescendant` names the item that is active now, and `accessibilityControls` names the element the control drives, so a screen reader reads each item as it becomes active while the focus stays where the user types. Both take a ref of the element named (a `ViewRef` in TSX, an `ElementRef` in Rust), which may be rendered later than the control, as a virtualized list's rows are; while the element named is not on screen, the relation names nothing.
+
+```rust tabs
+// A list that keeps the focus and moves a cursor row.
+let rows: Rc<Vec<ElementRef>> = Rc::new(results.iter().map(|_| element_ref()).collect());
+let named = rows.clone();
+view()
+    .role(AccessibilityRole::Listbox)
+    .label("Results")
+    .focusable(true)
+    .accessibility_active_descendant(move || named.get(cursor.get()).copied())
+    .children(results.iter().enumerate().map(|(i, result)| {
+        view()
+            .role(AccessibilityRole::Option)
+            .element_ref(&rows[i])
+            .accessibility_state(move || AccessibilityState {
+                selected: cursor.get() == i,
+                ..AccessibilityState::default()
+            })
+            .child(text(result.title.clone()))
+    }))
+```
+
+```tsx tabs
+// A list that keeps the focus and moves a cursor row.
+const cursor = signal(0);
+const rows = signal<ViewRef[]>([]);
+<View
+  role="listbox"
+  accessibilityLabel="Results"
+  focusable
+  accessibilityActiveDescendant={rows()[cursor()] ?? null}
+>
+  <Each of={results()}>
+    {(result, i) => (
+      <View
+        ref={(row) =>
+          rows.update((all) => {
+            const next = all.slice();
+            next[i()] = row;
+            return next;
+          })
+        }
+        role="option"
+        accessibilityState={{ selected: cursor() === i() }}
+      >
+        <Text>{result().title}</Text>
+      </View>
+    )}
+  </Each>
+</View>
+```
+
+On the web these are `aria-activedescendant` and `aria-controls`; on macOS VoiceOver reads the active item as the control's selected child. `Select`, `Combobox` and `Command` name their highlighted item and their list this way, and on the other platforms they read the highlighted item to the screen reader themselves.
 
 ## Actions
 
@@ -280,6 +339,8 @@ function Upload() {
 ```
 
 Announce changes the user would otherwise miss: a background save finishing, an error appearing away from the focus, a timer ending. On Android, `android={{ accessibilityLiveRegion: "polite" }}` on a view makes TalkBack announce its changes by itself.
+
+An alert (`.role(AccessibilityRole::Alert)`, `role="alert"`) is read by itself on macOS and the web: its label, or else the texts inside it, as it appears and again when its content changes, ahead of what the screen reader was saying. An error shown with the role needs no announcement of its own there; on macOS the same text announced in the same update is read once. On the other platforms, announce it as well.
 
 ## Text size
 

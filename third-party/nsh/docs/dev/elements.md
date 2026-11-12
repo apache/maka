@@ -140,11 +140,25 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   thread, before it scrolls, from the mounted event masks (`input::wheel_listener`): walking out from the view under
   the pointer, the first view that listens hears it; it takes the wheel (no native scroll, Ctrl + wheel zoom or pinch)
   when no scroll view (nor a multiline field on Windows / GPUI, nor a hosted widget scrolling itself on Linux / macOS)
-  is nearer or is the listener itself. A listening scroll view, or a listener around one, only observes. There is no
+  is nearer or is the listener itself. A listening scroll view, or a listener around one, only observes. One scroll
+  stays where it went, as a scroll view's does (`input::WheelLatch`, every backend's `wheel_event`): a view that took
+  it keeps the rest of it wherever the pointer goes, a trackpad gesture from its first move through the system's
+  momentum (macOS, GPUI), steps while they keep coming (`WHEEL_LATCH`; mouse notches along their axis, a touchpad's
+  whichever way they turn; Linux until the touchpad scroll stops); and a scroll a scroll view has started is not
+  taken over by a listener that comes under the pointer meanwhile, which only observes it. There is no
   `preventDefault`: events reach JS after the fact, so the rule is what is mounted, as with `onContextMenu`. Linux
   `scroll_event`, macOS `scroll_event` (momentum included; a gesture going on still ends), Windows `input::wheel`
   (`WM_MOUSEWHEEL` notches as lines of 16 points), GPUI `events.rs` (GPUI's `ScrollDelta` unit), the web `nsh.js`
   `wheelEvent` (`DOM_DELTA_PAGE` as points of the viewport's height). iOS, Android and the terminal raise none.
+- **`onPinch`** (any element; GPUI's `PinchEvent` / `on_pinch`): a touchpad pinched over a view.
+  `EventPayload::Pinch` / `PinchEvent { position, page_position, delta, phase, modifiers }`, `delta` the change of scale
+  since the last event (a `Percentage`, as GPUI's), `phase` a `PinchPhase` (`"start"`, `"move"`, `"end"`, as touches').
+  Decided as `onWheel` is (`input::wheel_listener`, with the views that pinch natively, `transforms`, in place of the
+  scroll views) and kept from the pinch's start to its end (`input::WheelLatch`, one per surface): macOS
+  `magnifyWithEvent:` (`input.rs` `pinch_event`), Linux GDK's touchpad pinch (its absolute scale turned into changes),
+  GPUI's `PinchEvent` (`touchpad_pinch`; its Linux deltas change the absolute scale), the web Safari's `gesturestart` /
+  `gesturechange` / `gestureend` (`nsh.js` `pinchEvent`). Windows and the other browsers report a touchpad pinch as
+  Ctrl + wheel, which `onWheel` hears, so they raise no `onPinch`.
 - **`onMouseUp`** (any element): a mouse button was released over it or a view inside it (the DOM's `mouseup`):
   `button` names it (`"left"`, `"right"`, `"middle"`, `"back"`, `"forward"`), with `position`, `pagePosition` and
   `modifiers` (`EventPayload::Mouse`, `MouseEvent`; Rust `.on_mouse_up`). The primary button's release also
@@ -325,7 +339,14 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   `UIA_LevelPropertyId`, `current` and `invalid` in `AriaProperties`, `invalid` also as `IsDataValidForForm` false;
   Linux GTK's roles, `Pressed` on buttons, `Level`, `Invalid` (AT-SPI's invalid entry); GPUI AccessKit's roles,
   `toggled`, `level`, `aria_current`, `invalid`; the web the ARIA attributes (`aria-invalid` on an input's field
-  too). Views without a label read their texts. The props go as one `MountItem::ViewProps`, except
+  too). `accessibilityActiveDescendant` and `accessibilityControls` (`aria-activedescendant`, `aria-controls`) name
+  another element by its ref: the item active inside a focused control, the element it controls. The core looks the
+  refs up each round into the native ids of `Accessibility::active_descendant` / `controls` (`core/relations.rs`),
+  so what is named may render later or go away; the web sets the ARIA attributes on the focused element (an input's
+  field), macOS answers them as `AXSelectedChildren` / `AXLinkedUIElements` and tells VoiceOver when the active item
+  changes (an input that is a combo box is its field's `AXComboBox`). `Environment::reads_active_descendants` says
+  the platform reads them; elsewhere `nsh-base`'s `Select`, `Combobox` and `Command` announce the highlighted item
+  themselves. Views without a label read their texts. The props go as one `MountItem::ViewProps`, except
   a label changing alone on mounted props (one that follows app state: a count, a price), which goes as
   `MountItem::AccessibilityLabel`. The `increment` / `decrement` actions make an element adjustable whatever its
   role: iOS adds the adjustable trait to the traits of its role (`native_view.rs` `traits`), so VoiceOver's swipe up /
@@ -395,7 +416,11 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   `inactive`, stopped `background`, through one `ActivityLifecycleCallbacks` per application, registered by the first
   view attached and kept, which remembers each activity's last state: a view attached again starts from it). The change reaches JS through the engine's thread, and iOS may suspend the
   process seconds after `didEnterBackground` (Android's `onStop` is looser): `background` is for pausing work, and
-  the user-facing docs say to save as changes are made. `padding-bottom: env(keyboard-inset-height)` pads a view by the keyboard's height, animated with the keyboard
+  the user-facing docs say to save as changes are made. `wake_count()` / `wakeCount()` (`Environment::wake_count`) counts
+  the system's wakes from sleep, which `lifecycle()` may not show (a lid closed and opened with the app in front):
+  the desktop backends add one to each surface's on the system's report (macOS `NSWorkspaceDidWakeNotification`,
+  Windows `WM_POWERBROADCAST` / `PBT_APMRESUMEAUTOMATIC`, Linux `logind`'s `PrepareForSleep(false)`); headless tests
+  wake with `app.wake()`. `padding-bottom: env(keyboard-inset-height)` pads a view by the keyboard's height, animated with the keyboard
   natively, for content outside scroll views (message bars). Inputs inside a scroll view are kept clear of the keyboard natively (bottom inset + scroll to the
   focused input), with no JS involved.
   Both move as one with the keyboard: `LayoutCurve::Keyboard` (`type: "keyboard"`) is the system keyboard's own curve,
@@ -606,4 +631,10 @@ navigation, explicit navigation commands, a reloading source, renderer loss and
 disposal; page-initiated same-document history updates keep them. Platforms that leave
 `web_evaluate` false reject with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, which
 `WebView.evaluateAvailable()` / `web_evaluate_available()` answers beforehand.
+
+When a web view's web content process ends, the platform keeps the app running and
+sends `onError` with `ERR_NSH_WEBVIEW_TERMINATED` (Rust `on_process_terminated`); the
+next `reload()`, `load()` or new source shows a page again. Android's `WebBox` handles
+`onRenderProcessGone` and makes a new WebView for it; the WebKit backends reload the
+same web view.
 

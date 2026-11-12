@@ -698,6 +698,189 @@ pub fn wheel_listener<V>(
     None
 }
 
+/// Where a wheel or touchpad event is in a scroll, for [`WheelLatch`].
+/// Plumbing of the backends, not an API for apps.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WheelStep {
+    /// A touchpad gesture began (macOS' `Began`, GPUI's `Started`): its
+    /// first event that moves decides where all of it goes.
+    Begin,
+    /// A touchpad gesture went on, or the system's momentum after it.
+    Continue,
+    /// The last event of a gesture (its momentum came to rest, a touchpad
+    /// scroll stopped).
+    End,
+    /// An event outside any gesture: a mouse wheel notch, or a touchpad
+    /// scroll where the platform reports no phases (Windows, the web), at
+    /// `time` (ms). Steps that keep coming stay where they went: a mouse
+    /// wheel's along one axis ([`latch_holds`]), a touchpad's (`precise`)
+    /// whichever way they turn, as a touchpad scroll stays on its scroll
+    /// view.
+    Discrete {
+        /// Mostly along the horizontal axis, as the scroll views take it
+        /// (Shift turning a mouse's vertical notches horizontal).
+        horizontal: bool,
+        /// From a touchpad or a high-resolution wheel.
+        precise: bool,
+        /// When, in ms.
+        time: f64,
+    },
+}
+
+/// One scroll of the wheel or the touchpad stays where it went, as a
+/// scroll view's does: a view that took it as `onWheel`
+/// ([`wheel_listener`]) keeps the rest of it wherever the pointer goes,
+/// and a scroll a scroll view has started is not taken over by a listener
+/// that comes under the pointer meanwhile (which then only observes). The
+/// backends keep one per surface and decide each event with it before
+/// their scroll views do. Plumbing of the backends, not an API for apps.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct WheelLatch<V> {
+    state: Option<Latched<V>>,
+}
+
+#[derive(Debug, Clone)]
+enum Latched<V> {
+    /// A gesture began and has not moved yet.
+    Undecided,
+    /// A gesture the scroll views have.
+    Declined,
+    /// A gesture a listener took.
+    Gesture(V),
+    /// Discrete steps a listener took, along `horizontal`, the last at
+    /// `last` (ms).
+    Steps {
+        view: V,
+        horizontal: bool,
+        last: f64,
+    },
+}
+
+impl<V> Default for WheelLatch<V> {
+    fn default() -> Self {
+        Self { state: None }
+    }
+}
+
+impl<V: Clone> WheelLatch<V> {
+    /// The view `step` goes to as `onWheel`, and whether it takes it
+    /// (nothing scrolls), as [`wheel_listener`] answers but for the scroll
+    /// it is part of: `find` is that answer where the pointer is now,
+    /// asked only when the scroll is not decided yet or a listener may
+    /// only observe it. A gesture goes where its first event that `moved`
+    /// found a taker; discrete steps stay on their taker while they keep
+    /// coming; while `scrolling` (a scroll view's scroll is going on:
+    /// notches latched to it, a touchpad gesture or its glide) a listener
+    /// only observes. `alive`: the view still shows and still listens (a
+    /// taker that stopped listening lets the rest of the scroll go).
+    pub fn route(
+        &mut self,
+        step: WheelStep,
+        moved: bool,
+        scrolling: bool,
+        alive: impl Fn(&V) -> bool,
+        find: impl FnOnce() -> Option<(V, bool)>,
+    ) -> Option<(V, bool)> {
+        let observe = |found: Option<(V, bool)>| found.map(|(view, _)| (view, false));
+        match (step, self.state.take()) {
+            (WheelStep::Begin, _) | (WheelStep::Continue, Some(Latched::Undecided)) => {
+                if !moved {
+                    self.state = Some(Latched::Undecided);
+                    return None;
+                }
+                let found = find();
+                self.state = Some(match &found {
+                    Some((view, true)) => Latched::Gesture(view.clone()),
+                    _ => Latched::Declined,
+                });
+                found
+            }
+            (WheelStep::Continue, Some(Latched::Gesture(view))) if alive(&view) => {
+                self.state = Some(Latched::Gesture(view.clone()));
+                Some((view, true))
+            }
+            (WheelStep::Continue, Some(Latched::Declined)) => {
+                self.state = Some(Latched::Declined);
+                observe(find())
+            }
+            // A gesture's events without its begin, or a listener gone.
+            (WheelStep::Continue, _) => observe(find()),
+            (WheelStep::End, Some(Latched::Gesture(view) | Latched::Steps { view, .. }))
+                if alive(&view) =>
+            {
+                Some((view, true))
+            }
+            (WheelStep::End, _) => observe(find()),
+            (
+                WheelStep::Discrete {
+                    horizontal,
+                    precise,
+                    time,
+                },
+                state,
+            ) => {
+                if !moved {
+                    // Nothing to scroll: as no event.
+                    self.state = state;
+                    return None;
+                }
+                if let Some(Latched::Steps {
+                    view,
+                    horizontal: h,
+                    last,
+                }) = state
+                    && latch_holds(if precise { horizontal } else { h }, last, horizontal, time)
+                    && alive(&view)
+                {
+                    self.state = Some(Latched::Steps {
+                        view: view.clone(),
+                        horizontal,
+                        last: time,
+                    });
+                    return Some((view, true));
+                }
+                let found = find();
+                if scrolling {
+                    return observe(found);
+                }
+                if let Some((view, true)) = &found {
+                    self.state = Some(Latched::Steps {
+                        view: view.clone(),
+                        horizontal,
+                        last: time,
+                    });
+                }
+                found
+            }
+        }
+    }
+
+    /// A gesture began ([`WheelStep::Begin`]) and has not ended, whoever
+    /// has it: its later events are [`WheelStep::Continue`]s (GPUI sends a
+    /// touchpad's events without phases as moves of no gesture).
+    pub fn in_gesture(&self) -> bool {
+        matches!(
+            self.state,
+            Some(Latched::Undecided | Latched::Declined | Latched::Gesture(_))
+        )
+    }
+
+    /// The view that took the scroll going on, if a listener did.
+    pub fn taker(&self) -> Option<&V> {
+        match &self.state {
+            Some(Latched::Gesture(view) | Latched::Steps { view, .. }) => Some(view),
+            _ => None,
+        }
+    }
+
+    /// Forgets the scroll (a new touch on the touchpad, the surface reset).
+    pub fn clear(&mut self) {
+        self.state = None;
+    }
+}
+
 // --- The keyboard -------------------------------------------------------------------
 
 /// The views under `root` (itself first) in Tab order: depth first, each
@@ -1176,6 +1359,102 @@ mod tests {
         assert_eq!(tab_stop(Some(2), 3, false, false), None);
         assert_eq!(tab_stop(Some(0), 3, true, false), None);
         assert_eq!(tab_stop(Some(1), 3, true, false), Some(0));
+    }
+
+    #[test]
+    fn a_gesture_stays_on_the_listener_its_first_move_found() {
+        let mut latch = WheelLatch::default();
+        let alive = |_: &u32| true;
+        let decided = || -> Option<(u32, bool)> { panic!("a taken gesture does not look again") };
+        // Fingers down, not moving yet: undecided, the scroll views see it.
+        assert_eq!(
+            latch.route(WheelStep::Begin, false, false, alive, decided),
+            None
+        );
+        // The first move finds a taker: it keeps the gesture and its
+        // momentum, wherever the pointer goes.
+        let first = latch.route(WheelStep::Continue, true, false, alive, || Some((7, true)));
+        assert_eq!(first, Some((7, true)));
+        assert_eq!(latch.taker(), Some(&7));
+        assert_eq!(
+            latch.route(WheelStep::Continue, true, false, alive, decided),
+            Some((7, true))
+        );
+        assert_eq!(
+            latch.route(WheelStep::End, false, false, alive, decided),
+            Some((7, true))
+        );
+        assert_eq!(latch.taker(), None);
+        // A gesture a scroll view has: a taker the pointer comes over only
+        // observes it.
+        let observer = latch.route(WheelStep::Begin, true, false, alive, || Some((1, false)));
+        assert_eq!(observer, Some((1, false)));
+        let passing = latch.route(WheelStep::Continue, true, false, alive, || Some((7, true)));
+        assert_eq!(passing, Some((7, false)));
+        // A taker that went away hears no more of its gesture.
+        latch.route(WheelStep::Begin, true, false, alive, || Some((7, true)));
+        let gone = latch.route(WheelStep::Continue, true, false, |_| false, || None);
+        assert_eq!(gone, None);
+    }
+
+    #[test]
+    fn notches_stay_on_their_taker_and_never_take_over_a_scroll() {
+        let mut latch = WheelLatch::default();
+        let alive = |_: &u32| true;
+        let notch = |time| WheelStep::Discrete {
+            horizontal: false,
+            precise: false,
+            time,
+        };
+        assert_eq!(
+            latch.route(notch(0.0), true, false, alive, || Some((7, true))),
+            Some((7, true))
+        );
+        // A step that moves nothing is no event, and keeps the latch.
+        assert_eq!(
+            latch.route(notch(10.0), false, false, alive, || Some((7, true))),
+            None
+        );
+        assert_eq!(latch.taker(), Some(&7));
+        // The taker scrolled away from under the pointer: still its.
+        assert_eq!(
+            latch.route(notch(50.0), true, false, alive, || None),
+            Some((7, true))
+        );
+        // After a pause the wheel goes where the pointer is.
+        let later = 50.0 + WHEEL_LATCH + 1.0;
+        assert_eq!(latch.route(notch(later), true, false, alive, || None), None);
+        // Notches latched to a scroll view: a taker under the pointer only
+        // observes them, and the scroll view keeps scrolling.
+        let scrolling = latch.route(notch(later + 10.0), true, true, alive, || Some((7, true)));
+        assert_eq!(scrolling, Some((7, false)));
+        // A notch along the other axis is another scroll; a touchpad's
+        // steps stay whichever way they turn.
+        latch.route(notch(1000.0), true, false, alive, || Some((7, true)));
+        let sideways = WheelStep::Discrete {
+            horizontal: true,
+            precise: false,
+            time: 1010.0,
+        };
+        assert_eq!(
+            latch.route(sideways, true, false, alive, || Some((8, true))),
+            Some((8, true))
+        );
+        let pad = WheelStep::Discrete {
+            horizontal: false,
+            precise: true,
+            time: 1020.0,
+        };
+        assert_eq!(
+            latch.route(pad, true, false, alive, || None),
+            Some((8, true))
+        );
+        // A touchpad scroll's stop ends its steps (Linux).
+        assert_eq!(
+            latch.route(WheelStep::End, false, false, alive, || None),
+            Some((8, true))
+        );
+        assert_eq!(latch.taker(), None);
     }
 
     #[test]

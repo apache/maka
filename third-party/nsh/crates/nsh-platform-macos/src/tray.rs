@@ -15,12 +15,12 @@
 //! - The menu's items are reported as the application menu's are
 //!   ([`crate::chrome::menu`]). The item goes with the app that set it.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, sync::Arc};
 
 use nsh_core::{
     EventKind, EventPayload, ImageSource, PayloadValue, ROOT_ID, ResizeMode,
     color::Rgba,
-    desktop::{Tray, TrayTitlePlacement, TrayTitleRun},
+    desktop::{MenuItem, Tray, TrayTitlePlacement, TrayTitleRun},
     geometry::{Bounds, Points, size},
     image::Want,
 };
@@ -46,6 +46,8 @@ const SIDE: Points = Points(18.0);
 struct Item {
     /// The surface whose app set it, which its reports go to.
     owner: u64,
+    /// The menu items, retained to relabel when the language changes.
+    menu_items: Arc<[MenuItem]>,
     status: Retained<NSStatusItem>,
     /// The button's target (it does not retain it).
     target: Retained<TrayTarget>,
@@ -111,6 +113,7 @@ pub(crate) fn set(surface: &Surface, tray: Option<&Tray>) {
             NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
         Item {
             owner: surface.key(),
+            menu_items: tray.menu.clone(),
             status,
             // SAFETY: NSObject's initializer.
             target: unsafe { msg_send![super(TrayTarget::alloc(mtm).set_ivars(())), init] },
@@ -122,6 +125,7 @@ pub(crate) fn set(surface: &Surface, tray: Option<&Tray>) {
         }
     });
     item.owner = surface.key();
+    item.menu_items = tray.menu.clone();
     item.menu = menu;
     item.menu_icons = loads;
     item.click = tray.click;
@@ -155,6 +159,24 @@ pub(crate) fn set(surface: &Surface, tray: Option<&Tray>) {
         item.icon_load = set_icon(surface, &item.status, tray.icon.as_ref());
     }
     ITEM.with(|i| *i.borrow_mut() = Some(item));
+}
+
+/// `surface`'s labels changed: the menu of its tray, if it set the tray,
+/// is made again with them.
+pub(crate) fn relabel(surface: &Surface) {
+    let Some(mut item) = ITEM.take() else { return };
+    if item.owner == surface.key() {
+        let mut loads = Vec::new();
+        item.menu = (!item.menu_items.is_empty())
+            .then(|| chrome::menu(surface, "", &item.menu_items, &mut loads));
+        item.menu_icons = loads;
+        item.status.setMenu(if item.click == 0 {
+            item.menu.as_deref()
+        } else {
+            None
+        });
+    }
+    ITEM.set(Some(item));
 }
 
 /// Shows `title` on the `position` side of the icon, in the menu bar's font, each run in its

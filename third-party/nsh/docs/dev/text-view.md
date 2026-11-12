@@ -77,7 +77,8 @@ colored with the theme's tokens; the app restyles each part over it.
   hint overlay of `nsh-base`'s `link_hint` (outside a terminal): its title over its destination below the pointer
   resting on it, on the desktops (`elements.md` "A link's hint"). One overlay per link: a document with many links has
   as many (shown natively only while one is up). HTML `<a href title>` and Markdown links (inline, reference,
-  autolinks) all become `Inline::Link`, where the hint is made; an image in a link carries the same hint (the link's
+  autolinks) all become `Inline::Link`, where the hint is made; a link holds no link (GFM): a bare URL in a link's
+  text (`[https://a.dev](https://b.dev)`) stays text of the outer link. An image in a link carries the same hint (the link's
   URL and title, `Cx::link`) as its tooltip, anchored to the image that takes the link's press (below it), or to the
   view around an app's `renderImage` element.
 
@@ -267,7 +268,9 @@ module, which has everything.
 - Rows are made again only when their value changes (`Each` with the position and kind as the key, the block as the
   value), and render functions only when their value changes.
 - A disclosure makes its content only while open.
-- Images default to their natural size (one `image_size` read each), at most the width of the text.
+- Images default to their natural size (one `image_size` read each), at most the width of the text. An app's
+  `renderImage` element on its own (a paragraph or a cell of images) sits in a view as wide as the text, so its own
+  `w-full` fills the text's width and its `max-w-full` holds it there; in a line of text it keeps the size it asks for.
 
 ## From gpui-kit
 

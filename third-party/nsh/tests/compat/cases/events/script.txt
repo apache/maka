@@ -318,3 +318,10 @@ expect Committed: 腾
 event id:compose onCompositionChange composing=false text=""
 expect Composition: ended []
 covers [events] onCompositionChange
+# events-pinch
+tap id:case-events-pinch
+expect Pinch: none
+# The canvas asks the platform for touchpad pinches over it. (The payload
+# takes steps once nsh-compat's `event` builds it.)
+listens id:canvas onPinch
+covers [events] onPinch

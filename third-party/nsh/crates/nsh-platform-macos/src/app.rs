@@ -16,14 +16,13 @@ use nsh_engine::{App, Bundle, ColorScheme, EngineConfig, Environment, Idiom, Lim
 use objc2::{
     MainThreadMarker, MainThreadOnly, class, define_class, msg_send,
     rc::Retained,
-    runtime::{AnyObject, ProtocolObject},
+    runtime::{AnyClass, AnyObject, ProtocolObject},
     sel,
 };
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationTerminateReply, NSAutoresizingMaskOptions, NSEvent, NSEventModifierFlags,
-    NSEventType, NSMenu, NSMenuItem, NSScreen, NSView, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask,
+    NSEventType, NSScreen, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL,
@@ -587,6 +586,7 @@ fn initial_environment() -> Environment {
         audio: true,
         web_input: true,
         web_evaluate: true,
+        reads_active_descendants: true,
         // wgpu, in builds with it, until it finds no GPU.
         shaders: nsh_engine::shader::LINKED,
         ..Environment::default()
@@ -760,12 +760,13 @@ define_class!(
     unsafe impl NSObjectProtocol for Delegate {}
 
     impl Delegate {
-        /// The quit Apple Event of a logout, restart, shutdown or the Dock.
-        /// AppKit's own handler asks `applicationShouldTerminate:`, whose
-        /// cancel would veto a logout; this one ends the loop and lets the
-        /// event succeed.
+        /// The Dock's Quit can be delegated to the app. System termination
+        /// must finish the host-owned loop without an application veto.
         #[unsafe(method(handleQuitEvent:withReplyEvent:))]
         fn handle_quit_event(&self, _event: &AnyObject, _reply: &AnyObject) {
+            if !system_quit() && ask_quit() {
+                return;
+            }
             finish_running(&NSApplication::sharedApplication(MainThreadMarker::from(self)));
         }
     }
@@ -821,6 +822,11 @@ define_class!(
 
         #[unsafe(method(applicationShouldTerminate:))]
         fn should_terminate(&self, app: &NSApplication) -> NSApplicationTerminateReply {
+            // The user asked while the app listens to quit requests: it
+            // decides, and quits with `quit()` ([`quit_app`]).
+            if !system_quit() && ask_quit() {
+                return NSApplicationTerminateReply::TerminateCancel;
+            }
             finish_running(app);
             // The caller owns process termination after run_app returns.
             NSApplicationTerminateReply::TerminateCancel
@@ -1010,6 +1016,46 @@ pub(crate) fn restart_app() {
     });
 }
 
+/// The standalone app's quit request goes to the app, when it listens
+/// ([`crate::chrome::ask_quit`]).
+fn ask_quit() -> bool {
+    let surface = RUNNING.with(|running| {
+        running
+            .borrow()
+            .as_ref()
+            .map(|running| running.view.surface().clone())
+    });
+    surface.is_some_and(|surface| crate::chrome::ask_quit(&surface))
+}
+
+/// Whether the quit AppKit asks about is the system's: logging out,
+/// restarting or shutting down send the app a quit Apple event with a
+/// reason (`keyAEQuitReason`); the Quit item, Command-Q and the Dock's
+/// Quit carry none.
+fn system_quit() -> bool {
+    /// `keyAEQuitReason`, `'why?'`.
+    const QUIT_REASON: u32 = u32::from_be_bytes(*b"why?");
+    let Some(class) = AnyClass::get(c"NSAppleEventManager") else {
+        return false;
+    };
+    // SAFETY: Foundation's shared Apple event manager and the event it
+    // handles now (nil outside one), on the main thread.
+    let event: Option<Retained<AnyObject>> = unsafe {
+        let manager: Option<Retained<AnyObject>> = msg_send![class, sharedAppleEventManager];
+        match manager {
+            Some(manager) => msg_send![&manager, currentAppleEvent],
+            None => None,
+        }
+    };
+    let Some(event) = event else {
+        return false;
+    };
+    // SAFETY: an `NSAppleEventDescriptor`'s attribute, nil when absent.
+    let reason: Option<Retained<AnyObject>> =
+        unsafe { msg_send![&event, attributeDescriptorForKeyword: QUIT_REASON] };
+    reason.is_some()
+}
+
 /// Ends the standalone event loop, returning process ownership to its caller.
 fn finish_running(app: &NSApplication) {
     let window = RUNNING.with(|running| {
@@ -1122,7 +1168,6 @@ fn run_window(
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     // A later run finds the app launched already.
     handle_quit_events(Some(&delegate));
-    app.setMainMenu(Some(&main_menu(mtm, &options.title)));
 
     // nsh.json `window`: known before the window is made, so its first
     // frame has it. A dev server's app comes later (its window options with it).
@@ -1189,6 +1234,7 @@ fn run_window(
     window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     crate::system::open_window(&window, options.appearance);
     let view = AppView::new(mtm, options.clone());
+    crate::chrome::show_standard_menu(view.surface());
     view.surface().standalone.set(true);
     // The standalone window's attributes own its live transparency state;
     // the surface-only flag remains for embedded AppViews.
@@ -1304,83 +1350,6 @@ fn center_on_display(window: &NSWindow, display: WindowDisplay) {
 fn secondary(frames: &[NSRect]) -> Option<usize> {
     let primary = frames.first()?;
     frames.iter().position(|f| f != primary)
-}
-
-/// The app menu (About, Hide, Quit), Edit (the text commands fields
-/// answer: undo, cut, copy, paste, select all) and Window (minimize, zoom,
-/// full screen, close).
-fn main_menu(mtm: MainThreadMarker, title: &str) -> Retained<NSMenu> {
-    let bar = NSMenu::new(mtm);
-    let item = |menu: &NSMenu, title: &str, action: Option<objc2::runtime::Sel>, key: &str| {
-        // SAFETY: the actions are AppKit's standard ones, sent down the
-        // responder chain.
-        let item = unsafe {
-            NSMenuItem::initWithTitle_action_keyEquivalent(
-                NSMenuItem::alloc(mtm),
-                &NSString::from_str(title),
-                action,
-                &NSString::from_str(key),
-            )
-        };
-        menu.addItem(&item);
-        item
-    };
-    let submenu = |name: &str| {
-        let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(name));
-        let holder = item(&bar, name, None, "");
-        holder.setSubmenu(Some(&menu));
-        menu
-    };
-    let app_menu = submenu(title);
-    item(
-        &app_menu,
-        &format!("About {title}"),
-        Some(sel!(orderFrontStandardAboutPanel:)),
-        "",
-    );
-    app_menu.addItem(&NSMenuItem::separatorItem(mtm));
-    item(&app_menu, &format!("Hide {title}"), Some(sel!(hide:)), "h");
-    let others = item(
-        &app_menu,
-        "Hide Others",
-        Some(sel!(hideOtherApplications:)),
-        "h",
-    );
-    others
-        .setKeyEquivalentModifierMask(NSEventModifierFlags::Command | NSEventModifierFlags::Option);
-    app_menu.addItem(&NSMenuItem::separatorItem(mtm));
-    item(
-        &app_menu,
-        &format!("Quit {title}"),
-        Some(sel!(terminate:)),
-        "q",
-    );
-
-    let edit = submenu("Edit");
-    item(&edit, "Undo", Some(sel!(undo:)), "z");
-    // An uppercase key equivalent is Shift with it.
-    item(&edit, "Redo", Some(sel!(redo:)), "Z");
-    edit.addItem(&NSMenuItem::separatorItem(mtm));
-    item(&edit, "Cut", Some(sel!(cut:)), "x");
-    item(&edit, "Copy", Some(sel!(copy:)), "c");
-    item(&edit, "Paste", Some(sel!(paste:)), "v");
-    item(&edit, "Select All", Some(sel!(selectAll:)), "a");
-
-    let window = submenu("Window");
-    item(&window, "Minimize", Some(sel!(performMiniaturize:)), "m");
-    item(&window, "Zoom", Some(sel!(performZoom:)), "");
-    let full = item(
-        &window,
-        "Enter Full Screen",
-        Some(sel!(toggleFullScreen:)),
-        "f",
-    );
-    full.setKeyEquivalentModifierMask(
-        NSEventModifierFlags::Command | NSEventModifierFlags::Control,
-    );
-    window.addItem(&NSMenuItem::separatorItem(mtm));
-    item(&window, "Close", Some(sel!(performClose:)), "w");
-    bar
 }
 
 #[cfg(test)]

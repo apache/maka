@@ -90,6 +90,7 @@ expect Picked: pending
 expect Files: not picked
 tap id:pick-files
 expect Files refused: rejected RangeError
+expect Size refused: rejected RangeError
 expect Files: pending
 covers [nsh] Picker
 # mod-speech
@@ -212,6 +213,7 @@ expect Font scale: 1
 expect Window: 390x844
 expect Scheme: light
 expect Lifecycle: active
+expect Wakes: 0
 expect Time zone: UTC
 expect Intl local time: its zone
 expect Languages: en-US
@@ -234,6 +236,7 @@ covers [nsh] setColorScheme
 covers [nsh] fontScale
 covers [nsh] windowSize
 covers [nsh] lifecycle
+covers [nsh] wakeCount
 covers [nsh] localeSettings
 # mod-host-channel
 tap id:case-mod-host-channel

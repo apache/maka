@@ -23,6 +23,7 @@ demo: guide-device
 | `locale()` | `locale()`（`nsh`） | 用户的区域设置，BCP 47 标签（`"en-US"`、`"zh-Hans-CN"`）：`Intl` 默认按它格式化。 |
 | `locale_settings()` | `localeSettings()`（`nsh`） | 用户的语言与地区设置：偏好语言、时区、12 小时制或 24 小时制、每周的第一天、度量单位和温度单位（[语言与地区设置](#语言与地区设置)）。 |
 | `lifecycle()` | `lifecycle()`（`nsh`） | 应用是否正在使用：`active`、`inactive`（可见但没有焦点）或 `background`（[在后台](#在后台)）。 |
+| `wake_count()` | `wakeCount()`（`nsh`） | 应用运行期间系统从睡眠中唤醒的次数（[睡眠之后](#睡眠之后)）。 |
 | `reduce_motion()`、`screen_reader()` | `reduceMotion()`、`screenReaderEnabled()`（`nsh`） | 见[无障碍](./accessibility.md)。 |
 
 ```rust tabs
@@ -365,7 +366,27 @@ effect(() => {
 });
 ```
 
-用 `background` 暂停工作，并在用户做出更改时就保存它：系统可能在应用进入后台几秒后就将其挂起，早于读取这一变化的副作用运行。显示在原生应用中的应用跟随该应用的状态；应用有多个窗口时（iPad、桌面），视图跟随它所在的窗口。在测试中，`nsh/test` 的 `app.setLifecycle("background")` 会把应用移到后台（[测试](./testing-and-trace.md#操作步骤)）。
+用 `background` 暂停工作，并在用户做出更改时就保存它：系统可能在应用进入后台几秒后就将其挂起，早于读取这一变化的副作用运行。显示在原生应用中的应用跟随该应用的状态；应用有多个窗口时（iPad、桌面），视图跟随它所在的窗口。在 Windows 上，用户注销、Windows 关机或重启、安装程序关闭应用时，应用会进入 `background`，它的处理函数在会话结束前运行；随后应用退出（[`Application.on("quit")`](../modules/nsh-desktop.md#退出)）。在测试中，`nsh/test` 的 `app.setLifecycle("background")` 会把应用移到后台（[测试](./testing-and-trace.md#操作步骤)）。
+
+## 睡眠之后
+
+`wake_count()`（TSX 中为 `wakeCount()`）统计应用运行期间系统从睡眠中唤醒的次数：启动时为 0，每次唤醒后加一。笔记本合上再打开、应用一直在前台时，应用始终是 `active`，但它持有的网络连接和设置的定时器并没有挺过这次睡眠。读取这个计数的 effect 会在每次唤醒后重新运行，应用就在这里检查连接或重新建立连接：
+
+```rust tabs
+effect(move || {
+    if wake_count() > 0 {
+        feed.reconnect();
+    }
+});
+```
+
+```tsx tabs
+effect(() => {
+  if (wakeCount() > 0) feed.reconnect();
+});
+```
+
+独立应用以及嵌入 AppKit、Win32 和 GTK 应用中的视图在 macOS、Windows 和 Linux 上统计唤醒（Linux 通过 systemd 的 `logind`）。在 iOS 和 Android 上，设备睡眠会把应用移到后台，由 `lifecycle()` 报告。在测试中，`nsh/test` 的 `app.wake()` 会唤醒系统（[测试](./testing-and-trace.md#操作步骤)）。
 
 ## 安全区域
 

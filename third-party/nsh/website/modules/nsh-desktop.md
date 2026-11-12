@@ -34,6 +34,8 @@ import {
 } from "nsh/desktop";
 ```
 
+In the AppKit and Win32 backends, the menus NSH builds and role items without an explicit label follow the language selected by `nsh/i18n`, including changes while the app runs. Built-in menu translations cover English, Japanese, Simplified Chinese and Traditional Chinese; other languages fall back to English. An item's own `label` always takes precedence.
+
 ## isAvailable
 
 ```ts
@@ -378,6 +380,7 @@ const Application: {
   on(event: "secondInstance", listener: (launch: { args: string[]; cwd: string }) => void): () => void;
   on(event: "openFiles", listener: (files: { paths: string[] }) => void): () => void;
   on(event: "quit", listener: () => void): () => void;
+  on(event: "quitRequest", listener: () => void): () => void;
 };
 ```
 
@@ -388,6 +391,7 @@ const Application: {
 | `on("secondInstance", listener)` | `next_second_instance()` | The app was launched again while it runs ([Single instance](#single-instance)). |
 | `on("openFiles", listener)` | `next_open_files()` | The system opened the app with files of the types it declares ([Opening files](#opening-files)). |
 | `on("quit", listener)` | `on_app_quit(f)` | The app is quitting: its cleanup runs ([Quitting](#quitting)). |
+| `on("quitRequest", listener)` | `on_quit_request(f)` | The user asked to quit; while it listens, the app decides when to quit ([Quitting](#quitting)). |
 
 `Application.quit()` is for a Quit of the app's own (a menu item with its own label, a button) and for restarting after an
 update. The app stops as when its last window closes, then its run ends, also when closing the window alone would
@@ -416,29 +420,31 @@ async function changeLanguage(language: string) {
 
 ### Quitting
 
-The app owns its Quit, as a GPUI app owns its `Quit` action. The application menu's `{ role: "quit" }` item and its key
-quit at once. An app that asks first (unsaved changes, a running upload) puts a Quit item of its own in the menu with
-the quit key, asks, then calls `quit()`:
+The app owns its Quit, as a GPUI app owns its `Quit` action. The application menu's `{ role: "quit" }` item and the
+platform's quit key (Cmd+Q, Ctrl+Q) quit at once while nothing listens to `quitRequest`. An app that asks first
+(unsaved changes, a running upload) listens to it with `Application.on("quitRequest", listener)` (Rust:
+`on_quit_request`), as AppKit's `applicationShouldTerminate:`: the Quit item, the quit key and the Dock's Quit then
+reach the listener and nothing quits; the app asks, then calls `quit()`, which always quits. Once the last listener
+stops, the Quit item and the key quit at once again. The system ending the app (the user logging out, the machine
+shutting down) never asks. It applies to standalone apps on macOS, Windows and Linux; a GPUI app that owns the window
+gets the request as `CloseRequest::Quit`.
 
 ```rust tabs
 use nsh_core::{
-    desktop::MenuItem,
-    element::desktop::{on_app_quit, quit, set_application_menu},
+    element::desktop::{on_app_quit, on_quit_request, quit},
     prelude::*,
 };
 
 #[component]
 fn Editor() -> impl IntoElement {
     let dirty = signal(false);
-    set_application_menu(vec![MenuItem::submenu("File", vec![
-        MenuItem::new("Quit").shortcut("mod+q").on_select(move || {
-            if dirty.get_untracked() {
-                ask_to_save(); // its Quit button calls `quit()`
-            } else {
-                quit();
-            }
-        }),
-    ])]);
+    on_quit_request(move || {
+        if dirty.get_untracked() {
+            ask_to_save(); // its Quit button calls `quit()`
+        } else {
+            quit();
+        }
+    });
     // Runs however the app quits; it cannot keep it running.
     on_app_quit(move || async move { save_session().await });
     editor()
@@ -446,15 +452,10 @@ fn Editor() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { Application, Menu } from "nsh/desktop";
+import { Application } from "nsh/desktop";
 
 function Editor() {
-  Menu.setApplicationMenu([
-    {
-      label: "File",
-      submenu: [{ label: "Quit", shortcut: "mod+q", onSelect: () => (dirty() ? askToSave() : Application.quit()) }],
-    },
-  ]);
+  Application.on("quitRequest", () => (dirty() ? askToSave() : Application.quit()));
   // Runs however the app quits; it cannot keep it running.
   Application.on("quit", async () => {
     await saveSession();

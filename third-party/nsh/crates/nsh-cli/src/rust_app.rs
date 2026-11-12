@@ -135,6 +135,11 @@ pub(crate) struct RustApp {
     /// Its crates ask for another version of nsh: they build from manifests
     /// in the workspace ([`write_retargeted`]), its own left as they are.
     retargeted: bool,
+    /// The command builds programs for this machine besides the describing
+    /// one (the headless runner, a host or runner of its desktop): they
+    /// share one build of what they have in common
+    /// ([`RustApp::unify_features`]).
+    unify: bool,
 }
 
 /// A crate of the app (`nsh.json` `"rust"`).
@@ -284,6 +289,173 @@ impl Nsh {
     }
 }
 
+/// Uses the hack, for Cargo's `unused_dependencies`.
+const HACK_USE: &str =
+    "\n// The features the app's programs share (`.nsh/rust/hack`).\nuse workspace_hack as _;\n";
+const HACK_LIB_RS: &str = "//! Only dependencies: the features the app's programs share (nsh's\n//! `RustApp::unify_features`).\n";
+
+/// This machine's target triple (`rustc -vV`).
+fn host_triple() -> Option<String> {
+    let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let output = Command::new(rustc).arg("-vV").output().ok()?;
+    let text = String::from_utf8(output.stdout).ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .map(str::to_owned)
+}
+
+/// The `[target.'<triple>'.dependencies]` and `build-dependencies` of the
+/// hack, from `cargo metadata`: every package the workspace member
+/// `describe` depends on, normally or to build (`hack` itself left out),
+/// with the features Cargo resolved for it; only what builds build scripts
+/// as build dependencies.
+fn hack_dependencies(
+    metadata: &serde_json::Value,
+    describe: &str,
+    hack: &str,
+    triple: &str,
+) -> String {
+    use std::collections::{BTreeMap, HashMap, HashSet};
+    let packages: HashMap<&str, &serde_json::Value> = metadata["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| Some((p["id"].as_str()?, p)))
+        .collect();
+    let nodes: HashMap<&str, &serde_json::Value> = metadata["resolve"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| Some((n["id"].as_str()?, n)))
+        .collect();
+    let members: HashSet<&str> = metadata["workspace_members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.as_str())
+        .collect();
+    let name = |id: &str| packages.get(id).and_then(|p| p["name"].as_str());
+    let Some(root) = members
+        .iter()
+        .copied()
+        .find(|id| name(id) == Some(describe))
+    else {
+        return String::new();
+    };
+    // (package, whether it builds for a build script)
+    let mut seen: HashSet<(&str, bool)> = HashSet::new();
+    let mut stack = vec![(root, false)];
+    while let Some((id, build)) = stack.pop() {
+        if !seen.insert((id, build)) {
+            continue;
+        }
+        let Some(node) = nodes.get(id) else { continue };
+        for dep in node["deps"].as_array().into_iter().flatten() {
+            let Some(pkg) = dep["pkg"].as_str() else {
+                continue;
+            };
+            if name(pkg) == Some(hack) {
+                continue;
+            }
+            for kind in dep["dep_kinds"].as_array().into_iter().flatten() {
+                match kind["kind"].as_str() {
+                    None => stack.push((pkg, build)),
+                    Some("build") => stack.push((pkg, true)),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut normal = BTreeMap::new();
+    let mut builds = BTreeMap::new();
+    let mut keys: HashMap<String, usize> = HashMap::new();
+    let mut key_of: HashMap<&str, String> = HashMap::new();
+    let mut seen: Vec<(&str, bool)> = seen.into_iter().collect();
+    seen.sort();
+    for &(id, build) in &seen {
+        if id == root {
+            continue;
+        }
+        let Some(package) = packages.get(id) else {
+            continue;
+        };
+        let Some(spec) = hack_spec(package, nodes.get(id).copied()) else {
+            continue;
+        };
+        let key = key_of
+            .entry(id)
+            .or_insert_with(|| {
+                let base = format!(
+                    "{}-{}",
+                    package["name"].as_str().unwrap_or_default(),
+                    package["version"].as_str().unwrap_or_default()
+                )
+                .replace(['.', '+'], "-");
+                let n = keys.entry(base.clone()).or_default();
+                *n += 1;
+                if *n == 1 { base } else { format!("{base}-{n}") }
+            })
+            .clone();
+        if build {
+            builds.insert(key, spec);
+        } else {
+            normal.insert(key, spec);
+        }
+    }
+    let table = |deps: &BTreeMap<String, String>| {
+        deps.iter()
+            .map(|(key, spec)| format!("{key} = {spec}\n"))
+            .collect::<String>()
+    };
+    format!(
+        "\n[target.{triple:?}.dependencies]\n{}\n[target.{triple:?}.build-dependencies]\n{}",
+        table(&normal),
+        table(&builds)
+    )
+}
+
+/// How the hack names `package` (`cargo metadata`), with the features its
+/// node resolved: a crates.io version, a path, or a Git source with the
+/// reference Cargo.lock has; `None` for other registries.
+fn hack_spec(package: &serde_json::Value, node: Option<&serde_json::Value>) -> Option<String> {
+    let name = package["name"].as_str()?;
+    let features: Vec<String> = node
+        .and_then(|n| n["features"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f.as_str())
+        .map(|f| format!("{f:?}"))
+        .collect();
+    let source = match package["source"].as_str() {
+        None => {
+            let dir = Path::new(package["manifest_path"].as_str()?).parent()?;
+            format!("path = {:?}", dir.to_string_lossy())
+        }
+        Some(
+            "registry+https://github.com/rust-lang/crates.io-index"
+            | "sparse+https://index.crates.io/",
+        ) => format!("version = \"{}\"", package["version"].as_str()?),
+        Some(git) => {
+            let url = git.strip_prefix("git+")?;
+            let url = url.split('#').next()?;
+            let (url, query) = url.split_once('?').unwrap_or((url, ""));
+            let mut spec = format!("git = {url:?}");
+            for pair in query.split('&').filter(|p| !p.is_empty()) {
+                let (key, value) = pair.split_once('=')?;
+                if !matches!(key, "branch" | "tag" | "rev") {
+                    return None;
+                }
+                spec.push_str(&format!(", {key} = {value:?}"));
+            }
+            spec
+        }
+    };
+    Some(format!(
+        "{{ package = {name:?}, {source}, default-features = false, features = [{}] }}",
+        features.join(", ")
+    ))
+}
+
 /// What a generated crate names of a platform crate's features: all but `js`
 /// and the standard JS modules, which a Rust app does not run.
 pub(crate) const RUST_APP_PLATFORM: &str = ", default-features = false, features = [\"shader\", \"editor\", \"emoji-picker\", \"highlight\", \"math\", \"plot\", \"rich-editor\", \"term\"]";
@@ -343,6 +515,9 @@ pub(crate) struct RootConfig {
     url_schemes: Vec<String>,
     /// `"window"` (JSON, checked): the main window's launch options.
     window: Option<String>,
+    /// `"capabilities"` (JSON, as this NSH reads it: what it does not know
+    /// left out): what the app may reach.
+    capabilities: Option<String>,
     /// The app's translations (`locales/`) as JSON, written to the
     /// workspace and compiled into the runners.
     translations: Option<PathBuf>,
@@ -357,7 +532,9 @@ pub(crate) fn is_root(entry: &Path) -> bool {
 }
 
 /// The `"rust"` crates of the app whose entry is `entry`, if it has any.
-pub(crate) fn of(entry: &Path) -> anyhow::Result<Option<RustApp>> {
+/// `unify`: the command builds programs for this machine besides the
+/// describing one ([`RustApp::unify_features`]).
+pub(crate) fn of(entry: &Path, unify: bool) -> anyhow::Result<Option<RustApp>> {
     let entry = dunce::canonicalize(entry)
         .with_context(|| format!("entry not found: {}", entry.display()))?;
     let dir = entry.parent().context("entry has no directory")?;
@@ -385,6 +562,7 @@ pub(crate) fn of(entry: &Path) -> anyhow::Result<Option<RustApp>> {
         watched,
         root,
         retargeted,
+        unify,
     };
     app.write_workspace()?;
     Ok(Some(app))
@@ -635,6 +813,21 @@ fn root_config(
             Some(v.to_string())
         }
     };
+    // Read as a TSX app's are (`nsh_bundler::capabilities`): what this NSH
+    // does not know is not granted.
+    let capabilities = match config.get("capabilities") {
+        None => None,
+        Some(v) => {
+            let (capabilities, dropped) = nsh_core::access::Capabilities::from_json_lenient(v)
+                .map_err(|e| anyhow::anyhow!("nsh.json: {e}"))?;
+            for what in dropped {
+                crate::ui::warn(format_args!(
+                    "nsh.json: {what}, not granted (one of a newer NSH, or a typo)"
+                ));
+            }
+            Some(capabilities.to_json().to_string())
+        }
+    };
     let translations = nsh_i18n::read_translations(dir).map_err(|e| anyhow::anyhow!(e))?;
     let translations = if translations.is_empty() {
         None
@@ -651,6 +844,7 @@ fn root_config(
         status_bar,
         url_schemes,
         window,
+        capabilities,
         translations,
     })
 }
@@ -1259,7 +1453,7 @@ impl RustApp {
             &format!("# Generated by nsh for the app's Rust crate (nsh.json \"rust\"): do not edit.\n\
              [workspace]
 resolver = \"3\"
-members = [\"describe\", \"test\", \"ios-host\", \"ios-app\", \"macos-host\", \"macos-app\", \"linux-host\", \"linux-app\", \"windows-host\", \"windows-app\", \"android\", \"web\"{rust}]
+members = [\"hack\", \"describe\", \"test\", \"ios-host\", \"ios-app\", \"macos-host\", \"macos-app\", \"linux-host\", \"linux-app\", \"windows-host\", \"windows-app\", \"android\", \"web\"{rust}]
 # GPUI's and the terminal's hosts are workspaces of their own, written when
 # they are built (`RustApp::gpui_workspace`, `RustApp::tui_workspace`): other
 # builds never resolve their crates.
@@ -1287,6 +1481,7 @@ panic = \"abort\"
                 write_retargeted(ws, &c.dir, &self.nsh)?;
             }
         }
+        self.write_hack_placeholder(ws)?;
         self.write_describe(ws)?;
         self.write_test(ws)?;
         for (dir, lib, what) in [
@@ -1336,7 +1531,133 @@ panic = \"abort\"
                 self.app_sets(android)
             ),
         )?;
+        self.unify_features(ws);
         Ok(())
+    }
+
+    /// The dependency on `<ws>/hack` ([`Self::unify_features`]).
+    fn hack_dependency(&self) -> String {
+        format!(
+            "workspace-hack = {{ package = {:?}, path = \"../hack\" }}",
+            self.bin("hack")
+        )
+    }
+
+    /// Writes `<ws>/hack` with no dependencies, unless it is there.
+    fn write_hack_placeholder(&self, ws: &Path) -> anyhow::Result<()> {
+        if ws.join("hack/Cargo.toml").is_file() {
+            return Ok(());
+        }
+        self.write_hack(ws, "", "")
+    }
+
+    fn write_hack(&self, ws: &Path, key: &str, dependencies: &str) -> anyhow::Result<()> {
+        write(&ws.join("hack/lib.rs"), HACK_LIB_RS)?;
+        write(
+            &ws.join("hack/Cargo.toml"),
+            &format!(
+                "# Generated by nsh (`RustApp::unify_features`): do not edit.\n# key: {key}\n\
+                 [package]\nname = {:?}\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n\
+                 [lib]\npath = \"lib.rs\"\n{dependencies}",
+                self.bin("hack"),
+            ),
+        )
+    }
+
+    /// Makes the describing program, the headless runner and this
+    /// machine's development host build one copy of what they share.
+    ///
+    /// The CLI builds each with its own `cargo build -p`, and Cargo
+    /// unifies features only within one invocation: each program resolved
+    /// `nsh-core`, `nsh-base`, their dependencies and the app's crates with
+    /// its own features, and built them once per program (#1684). `<ws>/hack`,
+    /// which the three depend on, names every package of the describing
+    /// program's dependency tree with the features Cargo unifies over the
+    /// workspace (`cargo metadata`), as cargo-hakari does, for this
+    /// machine's target only. Cargo's `resolver.feature-unification =
+    /// "workspace"` will replace it once it is stable.
+    ///
+    /// Best effort: when Cargo cannot say, the hack stays empty and each
+    /// program builds as before. It stays empty too when only the
+    /// describing program is built for this machine (`nsh build`, `nsh
+    /// check`, a package or a host for another target): it has nothing to
+    /// share, and the hack would give it the features of this machine's
+    /// hosts and runners, with the system libraries they need (WebKitGTK
+    /// for Linux's web views).
+    fn unify_features(&self, ws: &Path) {
+        if !self.unify {
+            let current = fs::read_to_string(ws.join("hack/Cargo.toml")).unwrap_or_default();
+            if current.lines().nth(1) != Some("# key: ") {
+                let _ = self.write_hack(ws, "", "");
+            }
+            return;
+        }
+        let Some(triple) = host_triple() else {
+            return;
+        };
+        let key = self.hack_key(ws, &triple);
+        let current = fs::read_to_string(ws.join("hack/Cargo.toml")).unwrap_or_default();
+        if current.lines().nth(1) == Some(&format!("# key: {key}")) {
+            return;
+        }
+        // From an empty hack, so a feature only the former hack asked for
+        // goes.
+        if self.write_hack(ws, "", "").is_err() {
+            return;
+        }
+        let metadata = Command::new(cargo())
+            .args(["metadata", "--format-version", "1", "--filter-platform"])
+            .arg(&triple)
+            .arg("--manifest-path")
+            .arg(ws.join("Cargo.toml"))
+            .stderr(std::process::Stdio::null())
+            .output();
+        let Ok(output) = metadata else { return };
+        if !output.status.success() {
+            return;
+        }
+        let Ok(metadata) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+            return;
+        };
+        let dependencies =
+            hack_dependencies(&metadata, &self.bin("describe"), &self.bin("hack"), &triple);
+        // Keyed after the hack is in Cargo.lock's terms: the key leaves out
+        // the hack's own entry.
+        let _ = self.write_hack(ws, &key, &dependencies);
+    }
+
+    /// What the hack depends on: the target, the workspace's manifests,
+    /// the app's crates' manifests and Cargo.lock without the hack's entry.
+    fn hack_key(&self, ws: &Path, triple: &str) -> String {
+        let mut hash = Sha256::new();
+        hash.update(triple);
+        hash.update(env!("CARGO_PKG_VERSION"));
+        let mut manifests = vec![ws.join("Cargo.toml")];
+        if let Ok(entries) = fs::read_dir(ws) {
+            let mut members: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.file_name().is_some_and(|n| n != "hack"))
+                .map(|p| p.join("Cargo.toml"))
+                .collect();
+            members.sort();
+            manifests.extend(members);
+        }
+        manifests.extend(self.crates.iter().map(|c| c.dir.join("Cargo.toml")));
+        for manifest in manifests {
+            if let Ok(text) = fs::read(&manifest) {
+                hash.update(manifest.to_string_lossy().as_bytes());
+                hash.update(&text);
+            }
+        }
+        let lock = fs::read_to_string(ws.join("Cargo.lock")).unwrap_or_default();
+        let hack = format!("name = {:?}\n", self.bin("hack"));
+        for entry in lock.split("[[package]]\n") {
+            if !entry.starts_with(&hack) {
+                hash.update(entry);
+            }
+        }
+        format!("{:x}", hash.finalize())
     }
 
     /// Writes the crate `<ws>/describe`: the program that describes the
@@ -1348,12 +1669,13 @@ panic = \"abort\"
             &ws.join("describe/Cargo.toml"),
             &format!(
                 "[package]\nname = {:?}\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n\
-                 [[bin]]\nname = {:?}\npath = \"main.rs\"\n\n[dependencies]\nnsh-core = {}\n{}\n",
+                 [[bin]]\nname = {:?}\npath = \"main.rs\"\n\n[dependencies]\nnsh-core = {}\n{}\n{}\n",
                 self.bin("describe"),
                 self.bin("describe"),
                 // The sets' declarations make `.nsh/types`.
                 self.nsh.dep("nsh-core", ", features = [\"declarations\"]"),
                 self.dependencies(),
+                self.hack_dependency(),
             ),
         )?;
         let calls: Vec<String> = self
@@ -1367,7 +1689,7 @@ panic = \"abort\"
                 "//! Describes the app's UI sets for `nsh`: one JSON document on standard\n\
                  //! output (nsh-core `ui::description`).\n\n\
                  fn main() {{\n    let sets = vec![{}];\n    \
-                 println!(\"{{}}\", nsh_core::element::description::Description::of(&sets).to_json());\n}}\n{}",
+                 println!(\"{{}}\", nsh_core::element::description::Description::of(&sets).to_json());\n}}\n{}{HACK_USE}",
                 calls.join(", "),
                 self.app_sets("")
             ),
@@ -1384,13 +1706,14 @@ panic = \"abort\"
             &format!(
                 "[package]\nname = {:?}\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n\
                  [[bin]]\nname = {:?}\npath = \"main.rs\"\n\n[dependencies]\n\
-                 nsh-core = {}\nnsh-testing = {}\nnsh-base = {}\n{}\n",
+                 nsh-core = {}\nnsh-testing = {}\nnsh-base = {}\n{}\n{}\n",
                 self.bin("test"),
                 self.bin("test"),
                 self.nsh.dep("nsh-core", ""),
                 self.nsh.dep("nsh-testing", ", features = [\"js\"]"),
                 self.nsh.dep("nsh-base", ""),
                 self.dependencies(),
+                self.hack_dependency(),
             ),
         )?;
         let (make_root, root_fn) = match &self.root {
@@ -1403,7 +1726,7 @@ panic = \"abort\"
                 "//! The app's headless runner (`nsh test`): its test files and the apps\n\
                  //! they open, with `nsh/base` and the app's Rust components.\n\n\
                  fn main() -> std::process::ExitCode {{\n    \
-                 nsh_testing::runner({}, {make_root})\n}}\n{}{root_fn}",
+                 nsh_testing::runner({}, {make_root})\n}}\n{}{root_fn}{HACK_USE}",
                 self.sets(),
                 self.app_sets(""),
             ),
@@ -1975,11 +2298,18 @@ opt-level = \"s\"
         } else {
             ("target_os = \"linux\"", "Linux", "nsh-platform-linux", exit)
         };
+        // The development hosts share the features of the describing
+        // program and the headless runner ([`Self::unify_features`]).
+        let (hack, hack_use) = if dir.ends_with("-host") && !dir.starts_with("gpui") {
+            (self.hack_dependency(), HACK_USE)
+        } else {
+            (String::new(), "")
+        };
         write(
             &ws.join(dir).join("Cargo.toml"),
             &format!(
                 "[package]\nname = {:?}\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n\
-                 [[bin]]\nname = {:?}\npath = \"main.rs\"\n\n[dependencies]\n{lib} = {}\nnsh-core = {}\nnsh-base = {}\n{app}\n\n\
+                 [[bin]]\nname = {:?}\npath = \"main.rs\"\n\n[dependencies]\n{lib} = {}\nnsh-core = {}\nnsh-base = {}\n{app}\n{hack}\n\
                  [target.'cfg({os})'.dependencies]\n{platform} = {}\n",
                 self.bin(dir),
                 self.bin(dir),
@@ -2020,7 +2350,7 @@ opt-level = \"s\"
             &ws.join(dir).join("main.rs"),
             &format!(
                 "//! The {name} {what} with `nsh/base` and the app's Rust components.\n{subsystem}\n\
-                 fn main(){exit} {{\n    #[cfg({os})]\n    {platform}::set_ui_sets({sets});{set_components}{set_root}\n    {lib}::main()\n}}\n{}{components_fn}{root_fn}",
+                 fn main(){exit} {{\n    #[cfg({os})]\n    {platform}::set_ui_sets({sets});{set_components}{set_root}\n    {lib}::main()\n}}\n{}{components_fn}{root_fn}{hack_use}",
                 self.app_sets(&cfg)
             ),
         )
@@ -2553,7 +2883,8 @@ fn set_fn(krate: &AppCrate) -> String {
 }
 
 /// `app_root()`, a Rust app's root (`nsh.json` `"root"`, `"theme"`,
-/// `"appearance"`, `"statusBar"`, `"id"`, `"schemes"`, `"window"`) in the crate the generated code links as `krate`, under
+/// `"appearance"`, `"statusBar"`, `"id"`, `"schemes"`, `"window"`,
+/// `"capabilities"`) in the crate the generated code links as `krate`, under
 /// `cfg`.
 fn root_fn(cfg: &str, krate: &str, root: &RootConfig) -> String {
     let mut make = format!(
@@ -2578,6 +2909,9 @@ fn root_fn(cfg: &str, krate: &str, root: &RootConfig) -> String {
     }
     if !root.url_schemes.is_empty() {
         make.push_str(&format!("\n        .url_schemes({:?})", root.url_schemes));
+    }
+    if let Some(capabilities) = &root.capabilities {
+        make.push_str(&format!("\n        .capabilities_json({capabilities:?})"));
     }
     if let Some(appearance) = &root.appearance {
         let variant = if appearance == "dark" {
@@ -2862,7 +3196,31 @@ mod tests {
             crates,
             root,
             retargeted: false,
+            unify: true,
         }
+    }
+
+    #[test]
+    fn describing_alone_builds_with_an_empty_hack() {
+        let dir = std::env::temp_dir().join(format!("nsh-rust-web-hack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let native = dir.join("native");
+        write_crate(&native, "app-native", "", "");
+        let mut app = app(&dir, &[("app-native", native)], None);
+        app.unify = false;
+        // A former session on this machine filled the hack.
+        let hack = dir.join(".nsh/rust/hack/Cargo.toml");
+        std::fs::create_dir_all(hack.parent().unwrap()).unwrap();
+        std::fs::write(
+            &hack,
+            "# Generated by nsh\n# key: abc\n[target.'x86_64-unknown-linux-gnu'.dependencies]\nwebkit6 = \"0.6\"\n",
+        )
+        .unwrap();
+        app.write_workspace().unwrap();
+        let written = std::fs::read_to_string(&hack).unwrap();
+        assert_eq!(written.lines().nth(1), Some("# key: "), "{written}");
+        assert!(!written.contains("dependencies"), "{written}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Writes the crate `package` in `dir` with `lib` as its `src/lib.rs`
@@ -2936,6 +3294,7 @@ mod tests {
                 status_bar: None,
                 url_schemes: Vec::new(),
                 window: None,
+                capabilities: None,
                 translations: None,
             };
             let app = app(&dir, &[(package, dir.join("native"))], Some(root));
@@ -3195,6 +3554,7 @@ mod tests {
                 window: Some(
                     r#"{"defaultSize":{"width":900,"height":600},"title":"Notes"}"#.into(),
                 ),
+                capabilities: None,
                 translations: None,
             },
         );
@@ -3214,6 +3574,48 @@ mod tests {
     }
 
     #[test]
+    fn a_rust_app_declares_its_capabilities() {
+        let dir = std::env::temp_dir().join(format!("nsh-rust-caps-{}", std::process::id()));
+        let ws = dir.join(".nsh/rust");
+        std::fs::create_dir_all(&ws).unwrap();
+        let config = |json: &str| serde_json::from_str::<serde_json::Value>(json).unwrap();
+        let root = super::root_config(&dir, &config(r#"{ "root": "App" }"#), &ws).unwrap();
+        assert_eq!(root.capabilities, None);
+        // What this NSH does not know is not granted; the rest is kept.
+        let root = super::root_config(
+            &dir,
+            &config(
+                r#"{ "root": "App", "capabilities": { "openUrl": { "schemes": ["https"] }, "bluetooth": true } }"#,
+            ),
+            &ws,
+        )
+        .unwrap();
+        let json = root.capabilities.clone().unwrap();
+        let read = nsh_core::access::Capabilities::from_json(&config(&json)).unwrap();
+        let expected = nsh_core::access::Capabilities::from_json(&config(
+            r#"{ "openUrl": { "schemes": ["https"] } }"#,
+        ))
+        .unwrap();
+        assert_eq!(read, expected);
+        let code = super::root_fn("", "app_native", &root);
+        assert!(
+            code.contains(&format!(".capabilities_json({json:?})")),
+            "{code}"
+        );
+        // A declaration that is no object grants nothing.
+        let root = super::root_config(
+            &dir,
+            &config(r#"{ "root": "App", "capabilities": 1 }"#),
+            &ws,
+        )
+        .unwrap();
+        let read = nsh_core::access::Capabilities::from_json(&config(&root.capabilities.unwrap()))
+            .unwrap();
+        assert_eq!(read, nsh_core::access::Capabilities::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_rust_app_gets_runners_without_js() {
         let dir = std::env::temp_dir().join(format!("nsh-rust-runners-{}", std::process::id()));
         let app = app(
@@ -3227,6 +3629,7 @@ mod tests {
                 status_bar: None,
                 url_schemes: Vec::new(),
                 window: None,
+                capabilities: None,
                 translations: None,
             }),
         );
@@ -3349,6 +3752,70 @@ mod tests {
         assert!(super::is_root(Path::new("/app/nsh.json")));
         assert!(!super::is_root(Path::new("/app/App.tsx")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_hack_names_what_describe_builds_with_its_resolved_features() {
+        let metadata = serde_json::json!({
+            "workspace_members": ["describe", "hack", "test"],
+            "packages": [
+                { "id": "describe", "name": "app-describe", "version": "0.0.0", "source": null, "manifest_path": "/ws/describe/Cargo.toml" },
+                { "id": "hack", "name": "app-hack", "version": "0.0.0", "source": null, "manifest_path": "/ws/hack/Cargo.toml" },
+                { "id": "test", "name": "app-test", "version": "0.0.0", "source": null, "manifest_path": "/ws/test/Cargo.toml" },
+                { "id": "core", "name": "nsh-core", "version": "0.5.0", "source": null, "manifest_path": "/nsh/crates/nsh-core/Cargo.toml" },
+                { "id": "sv1", "name": "smallvec", "version": "1.15.1", "source": "registry+https://github.com/rust-lang/crates.io-index", "manifest_path": "/r/Cargo.toml" },
+                { "id": "sv2", "name": "smallvec", "version": "2.0.0", "source": "sparse+https://index.crates.io/", "manifest_path": "/r/Cargo.toml" },
+                { "id": "git", "name": "taffy", "version": "0.9.0", "source": "git+https://github.com/x/taffy?branch=main#abc", "manifest_path": "/g/Cargo.toml" },
+                { "id": "cc", "name": "cc", "version": "1.2.0", "source": "registry+https://github.com/rust-lang/crates.io-index", "manifest_path": "/r/Cargo.toml" },
+                { "id": "other", "name": "private", "version": "1.0.0", "source": "registry+https://example.com/index", "manifest_path": "/r/Cargo.toml" },
+                { "id": "dev", "name": "pretty", "version": "1.0.0", "source": "registry+https://github.com/rust-lang/crates.io-index", "manifest_path": "/r/Cargo.toml" },
+                { "id": "only-test", "name": "wgpu", "version": "27.0.0", "source": "registry+https://github.com/rust-lang/crates.io-index", "manifest_path": "/r/Cargo.toml" }
+            ],
+            "resolve": { "nodes": [
+                { "id": "describe", "features": [], "deps": [
+                    { "pkg": "core", "dep_kinds": [{ "kind": null }] },
+                    { "pkg": "hack", "dep_kinds": [{ "kind": null }] },
+                    { "pkg": "dev", "dep_kinds": [{ "kind": "dev" }] }
+                ] },
+                { "id": "hack", "features": [], "deps": [{ "pkg": "only-test", "dep_kinds": [{ "kind": null }] }] },
+                { "id": "test", "features": [], "deps": [{ "pkg": "only-test", "dep_kinds": [{ "kind": null }] }] },
+                { "id": "core", "features": ["declarations", "shader", "svg"], "deps": [
+                    { "pkg": "sv1", "dep_kinds": [{ "kind": null }] },
+                    { "pkg": "sv2", "dep_kinds": [{ "kind": null }] },
+                    { "pkg": "git", "dep_kinds": [{ "kind": null }] },
+                    { "pkg": "other", "dep_kinds": [{ "kind": null }] },
+                    { "pkg": "cc", "dep_kinds": [{ "kind": "build" }] }
+                ] },
+                { "id": "sv1", "features": ["const_generics"], "deps": [] },
+                { "id": "sv2", "features": [], "deps": [] },
+                { "id": "git", "features": ["default"], "deps": [] },
+                { "id": "cc", "features": [], "deps": [] },
+                { "id": "other", "features": [], "deps": [] },
+                { "id": "dev", "features": [], "deps": [] },
+                { "id": "only-test", "features": [], "deps": [] }
+            ] }
+        });
+        let hack = super::hack_dependencies(
+            &metadata,
+            "app-describe",
+            "app-hack",
+            "x86_64-unknown-linux-gnu",
+        );
+        let (normal, build) = hack
+            .split_once("[target.\"x86_64-unknown-linux-gnu\".build-dependencies]")
+            .unwrap();
+        assert_eq!(
+            normal.trim(),
+            "[target.\"x86_64-unknown-linux-gnu\".dependencies]\n\
+             nsh-core-0-5-0 = { package = \"nsh-core\", path = \"/nsh/crates/nsh-core\", default-features = false, features = [\"declarations\", \"shader\", \"svg\"] }\n\
+             smallvec-1-15-1 = { package = \"smallvec\", version = \"1.15.1\", default-features = false, features = [\"const_generics\"] }\n\
+             smallvec-2-0-0 = { package = \"smallvec\", version = \"2.0.0\", default-features = false, features = [] }\n\
+             taffy-0-9-0 = { package = \"taffy\", git = \"https://github.com/x/taffy\", branch = \"main\", default-features = false, features = [\"default\"] }"
+        );
+        assert_eq!(
+            build.trim(),
+            "cc-1-2-0 = { package = \"cc\", version = \"1.2.0\", default-features = false, features = [] }"
+        );
     }
 
     #[test]
@@ -3911,6 +4378,7 @@ panic = \"abort\"
                 status_bar: None,
                 url_schemes: Vec::new(),
                 window: None,
+                capabilities: None,
                 translations: None,
             }),
         );

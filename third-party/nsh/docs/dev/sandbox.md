@@ -58,7 +58,9 @@ trusted: every limit and check is enforced in Rust, never in JS.
   may grant less (`NshAppView.grantCapabilities` / `NshView.setGrantedCapabilities`, the same JSON): a request must be
   allowed by both (`Access`). The declaration travels with the bundle (`capabilities.json` next to it, written by
   `nsh build` / `nsh package`; the dev protocol's `Bundle` message, so development enforces the same capabilities; a change
-  reloads instead of patching) into `Policy::declared`.
+  reloads instead of patching) into `Policy::declared`. A Rust root (`nsh.json` `"root"`) carries it compiled in
+  (`Root::capabilities`, set by `rust_app.rs`'s generated `app_root()`), so every host checks a Rust app as a TSX one;
+  without it the root reaches what an app without a declaration does.
 - Enforced in Rust: `fetch` in the engine (`access.rs`; refused requests never reach the network, and redirects are
   followed by the engine with `follow_redirects` off for the platform, so every hop is checked — hops are issued on the
   engine thread when a hop's head arrives; a streamed request body is not sent again, so a 307 / 308 then fails); remote images, placeholders, canvas images, `Image.getSize` / `prefetch`, video sources, web view

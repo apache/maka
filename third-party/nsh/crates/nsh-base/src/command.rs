@@ -47,7 +47,7 @@ use nsh_core::{
 };
 use rustc_hash::{FxHashMap, FxHasher};
 
-use crate::listbox::{self, Move, Typeahead, Via};
+use crate::listbox::{self, ActiveRow, Move, Typeahead, Via};
 
 /// How many signals the highlight is spread over for the rows to read
 /// ([`Palette::is_highlighted`]): more than the rows a list shows.
@@ -600,6 +600,11 @@ struct Palette {
     typeahead: Stored<Typeahead>,
     /// The item whose row takes the screen reader's focus once it shows.
     a11y: Signal<Option<usize>>,
+    /// The highlighted item's row: the search field's active descendant.
+    active_row: ActiveRow,
+    /// The listbox (the rows' scroll view), which the search field
+    /// controls.
+    listbox: ElementRef,
     cx: Scope<CommandEvent>,
 }
 
@@ -737,13 +742,17 @@ impl Palette {
     }
 
     /// Screen readers hear of item `item`: while the search field edits
-    /// (moving the focus would leave it), its label is announced; else its
-    /// row takes their focus.
+    /// (moving the focus would leave it), from the field's active
+    /// descendant where they follow it, else its label is announced;
+    /// without the field its row takes their focus.
     fn tell_screen_reader(self, item: usize) {
         if !untracked(screen_reader) {
             return;
         }
         if self.searchable.get_untracked() {
+            if reads_active_descendants() {
+                return;
+            }
             if let Some(label) = self
                 .items
                 .with_untracked(|items| items.get(item).map(|i| i.label.clone()))
@@ -895,6 +904,8 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
         pointer: stored(None),
         typeahead: stored(Typeahead::default()),
         a11y: signal(None),
+        active_row: ActiveRow::new(),
+        listbox: element_ref(),
         cx,
     };
     // Each change of the rows: a new query highlights its first enabled
@@ -1046,6 +1057,10 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
                     input()
                         .element_ref(&field)
                         .value(move || query_of(props.query, own_query))
+                        .accessibility_active_descendant(move || {
+                            palette.active_row.of(palette.highlight.get())
+                        })
+                        .accessibility_controls(Some(palette.listbox))
                         .placeholder(move || {
                             props
                                 .placeholder
@@ -1111,6 +1126,7 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
     .element_ref(&palette.list);
     let list = scroll()
         .role(AccessibilityRole::Listbox)
+        .element_ref(&palette.listbox)
         .optional_label(props.accessibility_label)
         .accessibility_state(move || AccessibilityState {
             busy: props.loading.get(),
@@ -1157,7 +1173,7 @@ fn row(p: Palette, parts: Parts, at: Position) -> AnyElement {
             .app_class(parts.separator_class)
             .inline_style(parts.separator_style)
             .into_element(),
-        _ => item_row(p, entry, parts),
+        _ => item_row(p, entry, parts, at),
     })
 }
 
@@ -1187,7 +1203,7 @@ fn header_row(entry: Memo<Option<Row>>, parts: Parts) -> AnyElement {
 }
 
 /// An item's row: the app's `renderItem`, else its label.
-fn item_row(p: Palette, entry: Memo<Option<Row>>, parts: Parts) -> AnyElement {
+fn item_row(p: Palette, entry: Memo<Option<Row>>, parts: Parts, at: Position) -> AnyElement {
     let index = computed(move || match entry.get() {
         Some(Row::Item(i)) => Some(i),
         _ => None,
@@ -1201,10 +1217,13 @@ fn item_row(p: Palette, entry: Memo<Option<Row>>, parts: Parts) -> AnyElement {
     let highlighted = computed(move || index.get().is_some_and(|i| p.is_highlighted(i)));
     let label = move || item.with(|i| i.as_ref().map(|i| i.label.clone()).unwrap_or_default());
     let me = element_ref();
+    p.active_row.follow(me, move || {
+        index.get().filter(|_| at.is_bound() && highlighted.get())
+    });
     // A key moved the highlight here: the screen reader's focus follows.
     effect(move || {
         let Some(i) = index.get() else { return };
-        if p.a11y.get() == Some(i) {
+        if at.is_bound() && p.a11y.get() == Some(i) {
             untracked(|| {
                 me.set_accessibility_focus();
                 p.a11y.set(None);

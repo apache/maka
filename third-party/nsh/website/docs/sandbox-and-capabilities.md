@@ -354,7 +354,10 @@ The declaration goes with the app wherever it goes:
 - `nsh build` and `nsh package` write it next to the bundle as `capabilities.json`;
 - `nsh publish` puts it in the [signed package](./signed-packages.md) header, covered by the signature;
 - `nsh dev` sends it with every build, so development enforces the same rules. Changing `capabilities` reloads the app
-  instead of hot-patching it.
+  instead of hot-patching it;
+- an app whose root is a Rust component (`"root"` in `nsh.json`) has it compiled in with the root, so every runner, the
+  web and `nsh test` included, checks the app's calls against it, as a TSX app's. Without `"capabilities"` it reaches
+  what any app without a declaration does.
 
 ## Grants: what a host app allows
 

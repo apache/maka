@@ -53,7 +53,7 @@ pub(crate) enum PackageTarget {
 impl PackageTarget {
     /// This machine's desktop target (`None` off macOS, Windows and
     /// Linux): where `--target gpui` points.
-    fn desktop() -> Option<PackageTarget> {
+    pub(crate) fn desktop() -> Option<PackageTarget> {
         if cfg!(target_os = "macos") {
             Some(PackageTarget::Macos)
         } else if cfg!(windows) {

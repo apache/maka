@@ -675,6 +675,14 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
             $t.element_ref(&anchor)
                 .role(AccessibilityRole::Combobox)
                 .optional_label(props.accessibility_label)
+                // While the list is open the trigger keeps the keyboard
+                // focus: the highlighted row is its active descendant.
+                .accessibility_active_descendant(
+                    move || {
+                        if open.get() { lb.active_row() } else { None }
+                    },
+                )
+                .accessibility_controls(move || open.get().then_some(lb.listbox))
                 .disabled(props.disabled)
                 .focusable(move || !props.disabled.get())
                 .accessibility_state(move || AccessibilityState {

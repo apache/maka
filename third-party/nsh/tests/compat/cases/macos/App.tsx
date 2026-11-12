@@ -6,6 +6,7 @@ import { type JSX, View, mount, signal } from "nsh";
 import BaseDock from "./base-dock";
 import ModAccessDenied from "./mod-access-denied";
 import ModKeymapPass from "./mod-keymap-pass";
+import ModKeymapFocus from "./mod-keymap-focus";
 import DesktopProps from "./desktop-props";
 import ModStandardSystem from "./mod-standard-system";
 import ModStandardFiles from "./mod-standard-files";
@@ -19,6 +20,7 @@ const cases: Record<string, () => JSX.Element> = {
   "mod-standard-files": ModStandardFiles,
   "mod-access-denied": ModAccessDenied,
   "mod-keymap-pass": ModKeymapPass,
+  "mod-keymap-focus": ModKeymapFocus,
   "web-send-input": WebSendInput,
   "material-composition": MaterialComposition,
 };

@@ -539,6 +539,7 @@ pub struct Root {
     appearance: Option<crate::platform::Appearance>,
     app_id: Option<String>,
     url_schemes: Vec<String>,
+    capabilities: Option<crate::access::Capabilities>,
     status_bar: Option<crate::StatusBarSetting>,
     main_window: Option<crate::desktop::MainWindowOptions>,
     translations: Option<crate::i18n::Translations>,
@@ -554,6 +555,7 @@ impl Root {
             appearance: None,
             app_id: None,
             url_schemes: Vec::new(),
+            capabilities: None,
             status_bar: None,
             main_window: None,
             translations: None,
@@ -608,6 +610,47 @@ impl Root {
     /// The schemes the app claims ([`Root::url_schemes`]).
     pub fn url_schemes_ref(&self) -> &[String] {
         &self.url_schemes
+    }
+
+    /// What the app declares it may reach (`nsh.json` `capabilities`, which
+    /// nsh's generated code sets): the engine checks the app's requests,
+    /// URLs it opens, media, web views, clipboard, picker and the rest
+    /// against them, as it does a TSX app's. Without a declaration the app
+    /// reaches what an app without `capabilities` does.
+    pub fn capabilities(mut self, capabilities: crate::access::Capabilities) -> Self {
+        self.capabilities = Some(capabilities);
+        self
+    }
+
+    /// [`Root::capabilities`] from `nsh.json`'s `capabilities` as JSON
+    /// text, which nsh's generated code compiles in (checked when it was
+    /// generated). Read as a package's are: what this runtime does not know
+    /// is not granted (logged), and a declaration it cannot read grants
+    /// nothing.
+    #[doc(hidden)]
+    pub fn capabilities_json(self, json: &str) -> Self {
+        let read = serde_json::from_str::<serde_json::Value>(json)
+            .map_err(|e| e.to_string())
+            .and_then(|v| crate::access::Capabilities::from_json_lenient(&v));
+        let capabilities = match read {
+            Ok((capabilities, dropped)) => {
+                for what in dropped {
+                    log::warn!("nsh.json: {what}, not granted");
+                }
+                capabilities
+            }
+            Err(e) => {
+                log::warn!("nsh.json: capabilities: {e}; nothing granted");
+                crate::access::Capabilities::default()
+            }
+        };
+        self.capabilities(capabilities)
+    }
+
+    /// What the app declares it may reach ([`Root::capabilities`]); `None`:
+    /// no declaration.
+    pub fn capabilities_ref(&self) -> Option<&crate::access::Capabilities> {
+        self.capabilities.as_ref()
     }
 
     /// Renders with design tokens `tokens` (`nsh-base`'s theme's; by
@@ -2243,5 +2286,31 @@ mod tests {
             message,
             "component `nsh_core::element::component::tests::Stepper` is registered twice, by two UI sets"
         );
+    }
+}
+
+#[cfg(test)]
+mod root_tests {
+    use super::Root;
+    use crate::{access::Capabilities, prelude::*};
+
+    #[component]
+    fn Empty() -> impl IntoElement {
+        view()
+    }
+
+    #[test]
+    fn a_root_reads_its_declared_capabilities_as_packages_are_read() {
+        assert_eq!(Root::of::<Empty>().capabilities_ref(), None);
+        // What this runtime does not know is not granted.
+        let root = Root::of::<Empty>().capabilities_json(r#"{"clipboard":true,"bluetooth":true}"#);
+        let expected = Capabilities {
+            clipboard: true,
+            ..Capabilities::default()
+        };
+        assert_eq!(root.capabilities_ref(), Some(&expected));
+        // A declaration it cannot read grants nothing.
+        let root = Root::of::<Empty>().capabilities_json("not json");
+        assert_eq!(root.capabilities_ref(), Some(&Capabilities::default()));
     }
 }

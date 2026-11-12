@@ -140,6 +140,10 @@ menu" action through UI Automation does. These openings place the menu below the
 its first enabled item, as WAI-ARIA describes for context menus. Make the trigger `focusable` so the keyboard reaches
 it. A view's own `onContextMenu` tells these openings apart by `pointerType`, which is `null` for them.
 
+When you control `open` and set it to `true` yourself, for a shortcut of your own or for a list that has the focus
+while one of its rows is the one asked about, the menu opens the same way: below the trigger, with the keyboard
+focus on its first enabled item, and closing it gives the focus back to the trigger.
+
 ## Checkable items
 
 `checked` makes an item checkable: a setting the menu shows ("Show sidebar") or, with `role="menuitemradio"`, one

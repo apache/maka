@@ -835,9 +835,11 @@ fn hi(l: isize) -> i32 {
 }
 
 /// Has the embedding app's root window tell `child`, an embedded surface's
-/// window, what the app's state follows: `WM_ACTIVATEAPP`, which only
-/// top-level windows get, and [`WM_NSH_ROOT`] when the root is shown,
-/// hidden, minimized or restored, which `child`'s own messages do not say.
+/// window, what the app's state follows: `WM_ACTIVATEAPP`,
+/// `WM_POWERBROADCAST` (the system woke) and the session's end
+/// (`WM_QUERYENDSESSION`, `WM_ENDSESSION`), which only top-level windows
+/// get, and [`WM_NSH_ROOT`] when the root is shown, hidden, minimized or
+/// restored, which `child`'s own messages do not say.
 /// Returns the root it observes (`None` when `child` has none, or the root
 /// is another thread's, which cannot be subclassed).
 fn observe_root(child: HWND) -> Option<HWND> {
@@ -879,11 +881,19 @@ unsafe extern "system" fn root_proc(
         let result = DefSubclassProc(hwnd, msg, wparam, lparam);
         let child = HWND(child as *mut _);
         match msg {
-            WM_ACTIVATEAPP => {
-                SendMessageW(child, WM_ACTIVATEAPP, Some(wparam), Some(lparam));
+            WM_ACTIVATEAPP | WM_POWERBROADCAST => {
+                SendMessageW(child, msg, Some(wparam), Some(lparam));
             }
             WM_WINDOWPOSCHANGED => {
                 SendMessageW(child, WM_NSH_ROOT, None, None);
+            }
+            // The session may end, unless the root refused it: the
+            // embedded app leaves too ([`crate::session`]).
+            WM_QUERYENDSESSION if result.0 != 0 => {
+                SendMessageW(child, msg, Some(wparam), Some(lparam));
+            }
+            WM_ENDSESSION => {
+                SendMessageW(child, msg, Some(wparam), Some(lparam));
             }
             WM_NCDESTROY => {
                 let _ = RemoveWindowSubclass(hwnd, Some(root_proc), id);
@@ -990,6 +1000,13 @@ fn handle(
     if data.top_level && msg == crate::tray::taskbar_created() {
         crate::tray::readd(hwnd);
         return None;
+    }
+    // The session ends (signing out, shutting down, the Restart Manager):
+    // the surface's window, or an embedded one's root ([`observe_root`]).
+    if data.window.is_none()
+        && let Some(result) = crate::session::message(surface, data.top_level, msg, wparam)
+    {
+        return Some(LRESULT(result));
     }
     match msg {
         WM_NSH_WAKE => surface.drain(),
@@ -1315,6 +1332,17 @@ fn handle(
         }
         // An embedded surface's: its root window's ([`observe_root`]).
         WM_NSH_ROOT => crate::system::lifecycle_changed(surface),
+        // The system woke from sleep (`wakeCount()`): top-level windows
+        // hear it, an embedded surface's from its root ([`observe_root`]);
+        // the app's other windows ([`crate::app_window`]) show the same
+        // surface, which counts it once, from its own window. Every resume
+        // sends `PBT_APMRESUMEAUTOMATIC`; one the user woke sends
+        // `PBT_APMRESUMESUSPEND` after it too, which is not counted.
+        WM_POWERBROADCAST
+            if data.window.is_none() && wparam.0 == PBT_APMRESUMEAUTOMATIC as usize =>
+        {
+            crate::system::woke(surface);
+        }
         WM_DESTROY => {
             surface.activation_changed(false);
             crate::window_close::destroyed(surface);
@@ -1842,7 +1870,7 @@ mod tests {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        if matches!(msg, WM_ACTIVATEAPP | WM_NSH_ROOT) {
+        if matches!(msg, WM_ACTIVATEAPP | WM_NSH_ROOT | WM_POWERBROADCAST) {
             HEARD.with(|h| {
                 h.borrow_mut()
                     .push((hwnd.0 as isize, msg, wparam.0, lparam.0))
@@ -1917,6 +1945,20 @@ mod tests {
             SendMessageW(root, WM_ACTIVATEAPP, Some(WPARAM(0)), Some(LPARAM(MARK)));
             let heard = HEARD.with(|h| h.take());
             assert_eq!(ours(&heard), [1, 0], "{heard:?}");
+            // The system woke from sleep.
+            SendMessageW(
+                root,
+                WM_POWERBROADCAST,
+                Some(WPARAM(PBT_APMRESUMEAUTOMATIC as usize)),
+                Some(LPARAM(0)),
+            );
+            let heard = HEARD.with(|h| h.take());
+            assert!(
+                heard.iter().any(|h| h.0 == id
+                    && h.1 == WM_POWERBROADCAST
+                    && h.2 == PBT_APMRESUMEAUTOMATIC as usize),
+                "{heard:?}"
+            );
             // Its position changed, as when it is minimized, hidden or
             // restored.
             resize(200, 150);

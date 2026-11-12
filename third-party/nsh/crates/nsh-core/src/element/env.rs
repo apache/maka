@@ -29,6 +29,9 @@ pub struct Environment {
     pub reduce_motion: bool,
     /// A screen reader runs.
     pub screen_reader: bool,
+    /// The platform's screen readers follow active descendants
+    /// ([`crate::platform::Environment::reads_active_descendants`]).
+    pub reads_active_descendants: bool,
     /// Right-to-left layout.
     pub rtl: bool,
     /// Device pixels per point.
@@ -63,6 +66,9 @@ pub struct Environment {
     /// Whether the app is in use: in the foreground, visible without the
     /// focus, or in the background.
     pub lifecycle: Lifecycle,
+    /// How many times the system woke from sleep while the surface ran
+    /// ([`crate::platform::Environment::wake_count`]).
+    pub wake_count: u32,
     /// The platform picks colors from the screen
     /// ([`crate::platform::Environment::screen_color`]).
     pub screen_color: bool,
@@ -116,6 +122,7 @@ impl Default for Environment {
             font_scale: 1.0,
             reduce_motion: false,
             screen_reader: false,
+            reads_active_descendants: false,
             rtl: false,
             pixel_ratio: 1.0,
             os: Os::default(),
@@ -129,6 +136,7 @@ impl Default for Environment {
             native_focus_scopes: false,
             host: false,
             lifecycle: Lifecycle::Active,
+            wake_count: 0,
             screen_color: false,
             file_requests: false,
             speech: false,

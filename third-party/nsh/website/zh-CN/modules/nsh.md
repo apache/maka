@@ -1033,6 +1033,28 @@ effect(() => {
 });
 ```
 
+### wakeCount
+
+```ts
+const wakeCount: Accessor<number>;
+```
+
+应用运行期间系统从睡眠中唤醒的次数：启动时为 0，每次唤醒后加一。睡眠可能让 `lifecycle()` 保持不变（笔记本合上再打开、应用一直在前台），但网络连接和定时器并没有挺过这次睡眠。响应式：读取它的 effect 会在每次唤醒后重新运行，应用就在这里检查连接或重新建立连接。macOS、Windows 和 Linux 统计唤醒；在 iOS 和 Android 上，设备睡眠会把应用移到后台，由 `lifecycle()` 报告。Rust：`wake_count() -> u32`。
+
+```rust tabs
+effect(move || {
+    if wake_count() > 0 {
+        feed.reconnect();
+    }
+});
+```
+
+```tsx tabs
+effect(() => {
+  if (wakeCount() > 0) feed.reconnect();
+});
+```
+
 ### setColorScheme
 
 ```ts
@@ -1714,10 +1736,15 @@ interface PickFilesOptions {
   multiple?: boolean; // 允许选择多个（false：一个）
   limit?: number; // multiple 时最多选几个（最多 100）
   filters?: { name: string; extensions: string[] }[]; // 提供的文件类型（不给：任意文件）
+  maxSize?: number; // 读入的最大文件，单位字节（不给时 512 MiB，也是上限）
 }
 
 interface PickedFile {
-  file: File; // 名称、类型、字节大小和内容，都保持原样
+  file: File | null; // 名称、类型、字节大小和内容，都保持原样；没读入时为 null
+  name: string;
+  type: string;
+  size: number; // 字节数，读没读都有
+  status: "read" | "tooLarge"; // "tooLarge"：超过 maxSize，内容没有读入
 }
 
 interface PickImagesOptions {
@@ -1738,6 +1765,8 @@ interface PickedImage {
 |---|---|
 | `await Picker.pickImages(options)` | `pick_images(request).await -> Vec<PickedFile>` |
 | `await Picker.pickFiles(options)` | `pick_files(request).await -> Vec<PickedFile>` |
+| `maxSize` | `FilePickRequest::new(multiple, limit).max_size(10 << 20)` |
+| `picked.status`、`.size` | `file.status`（`PickedStatus::TooLarge`）、`file.len` |
 | `multiple`、`limit` | `PickRequest::new(multiple, limit)`（`limit` 为 0 表示最多 100） |
 | `maxDimension` | `request.max_dimension = Some(DevicePixels(2048))` |
 | `quality` | `request.quality = Some(Percentage(0.8))` |
@@ -1860,8 +1889,13 @@ pickFiles(options?: PickFilesOptions): Promise<PickedFile[]>;
 const picked = await Picker.pickFiles({
   multiple: true,
   filters: [{ name: "文档", extensions: ["pdf", "md"] }],
+  maxSize: 10 * 1024 * 1024,
 });
-for (const { file } of picked) {
+for (const { file, name } of picked) {
+  if (!file) {
+    showError(`${name} 超过 10 MB`);
+    continue;
+  }
   const form = new FormData();
   form.append("document", file);
   await fetch("https://api.example.com/documents", { method: "POST", body: form });
@@ -1878,8 +1912,9 @@ for (const { file } of picked) {
 | Web | `<input type=file>` | 所有扩展名合为一组 |
 | GPUI | GPUI 的打开对话框，可选任意文件 | 不符合的文件在选择后被剔除 |
 
-所有平台都不需要权限。文件保持原样：不做转换，文件名不变。文件内容会全部读入内存，因此超过 512 MiB 的文件不会出现在
-结果中，并记录到日志。过滤器只决定选择器提供什么，并不保证结果：请检查拿到的文件。
+所有平台都不需要权限。文件保持原样：不做转换，文件名不变。文件内容会全部读入内存，最多读到 `maxSize`（不给时 512 MiB，
+给了也不超过它）：更大的文件不读入，只带回名称、类型和大小（`file` 为 null，`status` 为 `"tooLarge"`），应用可以据此提示
+用户。过滤器只决定选择器提供什么，并不保证结果：请检查拿到的文件。
 
 ### 嵌入 NSH 的应用
 

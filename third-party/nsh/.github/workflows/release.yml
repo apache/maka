@@ -19,6 +19,9 @@ name: Release
 #   revision). A night without new commits
 #   builds nothing. There is one `nightly` tag, moved to each build's commit,
 #   never a tag per night. Running it by hand with *nightly* publishes one now.
+#   Wednesday (Singapore time) is release day: the scheduled nightly skips it,
+#   and publishing a stable release rebuilds the nightly from the latest
+#   `main` instead, so `install.sh --nightly` is never older than stable.
 #
 # Pull requests and the merge queue never run it: its builds are CI's
 # longest and held the runners every queued pull request waited for.
@@ -41,6 +44,9 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Publishing a stable release refreshes the nightly (see above).
+  release:
+    types: [published]
   schedule:
     # 18:30 UTC, 02:30 in Singapore: after the day's merges.
     - cron: "30 18 * * *"
@@ -59,7 +65,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.tag || ((github.event_name == 'schedule' || inputs.nightly) && 'nightly') || github.ref_name }}
+  group: release-${{ inputs.tag || ((github.event_name == 'schedule' || github.event_name == 'release' || inputs.nightly) && 'nightly') || github.ref_name }}
   cancel-in-progress: false
 
 defaults:
@@ -68,8 +74,8 @@ defaults:
 
 env:
   CARGO_TERM_COLOR: always
-  TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
-  NIGHTLY: ${{ github.event_name == 'schedule' || inputs.nightly == true }}
+  TAG: ${{ inputs.tag || (github.event_name == 'push' && github.ref_type == 'tag' && github.ref_name) || '' }}
+  NIGHTLY: ${{ github.event_name == 'schedule' || (github.event_name == 'release' && !github.event.release.prerelease) || inputs.nightly == true }}
 
 jobs:
   # What to build: the tag, the latest main for the nightly (nothing when
@@ -77,6 +83,8 @@ jobs:
   plan:
     name: Plan
     runs-on: ubuntu-latest
+    # A published prerelease (the nightly itself) is not a stable release.
+    if: github.event_name != 'release' || !github.event.release.prerelease
     outputs:
       ref: ${{ steps.plan.outputs.ref }}
       build: ${{ steps.plan.outputs.build }}
@@ -95,6 +103,12 @@ jobs:
             ref="$TAG"
           elif [[ "$NIGHTLY" == true ]]; then
             ref=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+            # Release day: the stable release refreshes the nightly once it
+            # is published, so the 02:30 build would only be replaced.
+            if [[ "$GITHUB_EVENT_NAME" == schedule && "$(TZ=Asia/Singapore date +%u)" == 3 ]]; then
+              echo "Wednesday is release day; the stable release refreshes the nightly."
+              build=false
+            fi
             built=$(gh api "repos/$GH_REPO/commits/nightly" --jq .sha 2> /dev/null || true)
             if [[ "$ref" == "$built" && "$GITHUB_EVENT_NAME" == schedule ]]; then
               echo "The nightly already has main ($ref)."
@@ -362,7 +376,7 @@ jobs:
   release:
     name: Release
     needs: dist
-    if: inputs.tag != '' || github.ref_type == 'tag'
+    if: inputs.tag != '' || (github.event_name == 'push' && github.ref_type == 'tag')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -407,7 +421,7 @@ jobs:
   nightly:
     name: Nightly
     needs: [plan, dist]
-    if: needs.plan.outputs.build == 'true' && (github.event_name == 'schedule' || inputs.nightly == true)
+    if: needs.plan.outputs.build == 'true' && (github.event_name == 'schedule' || github.event_name == 'release' || inputs.nightly == true)
     runs-on: ubuntu-latest
     permissions:
       contents: write

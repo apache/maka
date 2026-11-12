@@ -131,6 +131,26 @@ fn wheels_reach_the_core_with_their_unit() {
 }
 
 #[test]
+fn pinches_reach_the_core_with_their_phase() {
+    let Some(EventPayload::Pinch(pinch)) = payload(
+        EventKind::Pinch,
+        json!({
+            "position": { "x": 1, "y": 2 },
+            "pagePosition": { "x": 11, "y": 12 },
+            "delta": 0.25,
+            "phase": "start",
+            "modifiers": { "control": false, "alt": false, "shift": true, "platform": false },
+        }),
+    ) else {
+        panic!("onPinch carries a pinch");
+    };
+    assert_eq!(pinch.delta.0, 0.25);
+    assert_eq!(pinch.phase, nsh_core::PinchPhase::Start);
+    assert_eq!(pinch.page_position.y.0, 12.0);
+    assert!(pinch.modifiers.shift);
+}
+
+#[test]
 fn a_release_reports_its_button_but_not_one_it_cannot_name() {
     use nsh_core::MouseButton;
 

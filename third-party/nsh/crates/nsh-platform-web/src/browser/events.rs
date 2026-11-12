@@ -126,6 +126,13 @@ pub(super) fn payload(host: &Bindings, payload: &EventPayload) -> Result<Value, 
                 },
             ),
         ])?,
+        EventPayload::Pinch(p) => object([
+            ("position", point(p.position)?),
+            ("pagePosition", point(p.page_position)?),
+            ("delta", number(p.delta.0)),
+            ("phase", Value::string(p.phase.name())?),
+            ("modifiers", modifiers(&p.modifiers)?),
+        ])?,
         EventPayload::Wheel(w) => {
             let (dx, dy) = w.delta.xy();
             object([

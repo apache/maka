@@ -1222,6 +1222,13 @@ impl Overlay {
         })
     }
 
+    /// Places it against `anchor`, which may change from one kind to
+    /// another while it is shown: a context menu opened below its trigger
+    /// and then, by a secondary click, at the pointer.
+    pub fn anchor_to(self, anchor: impl IntoReactive<OverlayAnchor>) -> Self {
+        self.bind_prop(anchor, |a| Prop::Overlay(OverlayProp::Anchor(a)))
+    }
+
     /// The side of the anchor it goes on (default below).
     pub fn placement(self, placement: impl IntoReactive<Placement>) -> Self {
         self.bind_prop(placement, |p| Prop::Overlay(OverlayProp::Placement(p)))
@@ -1570,6 +1577,19 @@ impl WebView {
             EventKind::Error,
             listener.into_listener(),
             events::unavailable,
+        )
+    }
+
+    /// The page's web content process ended: it crashed, or the system
+    /// reclaimed its memory (the message; TS: `onError` with `code`
+    /// `"ERR_NSH_WEBVIEW_TERMINATED"`). The app keeps running and the web
+    /// view shows no page until [`reload`](crate::element::ElementRef::reload),
+    /// [`load`](crate::element::ElementRef::load) or a new source. [`on_error`](Self::on_error) hears it too.
+    pub fn on_process_terminated<M>(self, listener: impl IntoListener<str, M>) -> Self {
+        self.listen(
+            EventKind::Error,
+            listener.into_listener(),
+            events::terminated,
         )
     }
 

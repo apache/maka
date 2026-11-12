@@ -987,7 +987,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     const chosen = () => PLANS.find((p) => p.name === plan())!;
     return (
       <Card icon="controls" title="Radio" subtitle="A plan picker: one of a small set, all in view">
-        <RadioGroup>
+        <RadioGroup accessibilityLabel="Plan">
           <Each of={PLANS}>
             {(p, i) => (
               <Radio
@@ -1028,7 +1028,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     const speed = signal("Standard");
     return (
       <Card title="Choice cards" subtitle="The whole card is the radio">
-        <RadioGroup style={{ flexDirection: "row", gap: 8 }}>
+        <RadioGroup accessibilityLabel="Delivery" style={{ flexDirection: "row", gap: 8 }}>
           <Each of={SPEEDS}>
             {(d) => (
               <Radio
@@ -1064,7 +1064,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
     const preview = settleOn(choice);
     return (
       <Card title="Sizes" subtitle="Three sizes, one locked; the preview follows">
-        <RadioGroup style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 20, rowGap: 6 }}>
+        <RadioGroup accessibilityLabel="Text size" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 20, rowGap: 6 }}>
           <Each of={TEXT_SIZES}>
             {(t) => (
               <Radio
@@ -2216,7 +2216,7 @@ export function Controls(props: { show: Control; firsts?: Control[] }) {
           />
         </View>
         <View style={settle(t)}>
-          <RadioGroup style={{ flexDirection: "row", flexWrap: "wrap", gap: terminal ? TERMINAL_GAP : 6, justifyContent: pointer ? "flex-start" : "space-between" }}>
+          <RadioGroup accessibilityLabel="Appointment time" style={{ flexDirection: "row", flexWrap: "wrap", gap: terminal ? TERMINAL_GAP : 6, justifyContent: pointer ? "flex-start" : "space-between" }}>
             <Each of={SLOTS}>
               {(s, i) => (
                 <Radio

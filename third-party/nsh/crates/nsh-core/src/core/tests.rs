@@ -2131,6 +2131,60 @@ fn spans_differing_only_in_colors_are_told_apart_from_other_changes() {
 }
 
 #[test]
+fn recolored_ranges_are_the_characters_drawn_otherwise() {
+    let style = ResolvedTextStyle::default();
+    let red = ResolvedTextStyle {
+        color: Color(0xff00_00ff),
+        ..style
+    };
+    let bold = ResolvedTextStyle {
+        font_weight: 700,
+        ..style
+    };
+    let text = |words: &[(&str, ResolvedTextStyle)]| {
+        let mut t = AttributedText::default();
+        for &(w, s) in words {
+            t.push(w, s);
+        }
+        t
+    };
+    let words = |styles: [ResolvedTextStyle; 5]| {
+        text(&[
+            ("one ", styles[0]),
+            ("two ", styles[1]),
+            ("three ", styles[2]),
+            ("four ", styles[3]),
+            ("five", styles[4]),
+        ])
+    };
+    // The ranges, written as pairs.
+    let ranges = |pairs: &[(u32, u32)]| Some(pairs.iter().map(|&(a, b)| a..b).collect::<Vec<_>>());
+    let plain = words([style; 5]);
+    // Nothing drawn otherwise, however the spans split.
+    assert_eq!(plain.recolored_ranges(&plain), ranges(&[]));
+    let same = text(&[("one two ", style), ("three four five", style)]);
+    assert_eq!(plain.recolored_ranges(&same), ranges(&[]));
+    // A word shown: its characters; neighbors join into one range.
+    let fading = words([style, style, style, red.hide(), red.hide()]);
+    assert_eq!(fading.recolored_ranges(&plain), ranges(&[(14, 23)]));
+    let started = words([style, style, style, red, red.hide()]);
+    assert_eq!(fading.recolored_ranges(&started), ranges(&[(14, 19)]));
+    // Apart: two ranges, either way round.
+    let apart = words([red, style, style, red, style]);
+    assert_eq!(plain.recolored_ranges(&apart), ranges(&[(0, 4), (14, 19)]));
+    assert_eq!(apart.recolored_ranges(&plain), ranges(&[(0, 4), (14, 19)]));
+    // Spans that start and end elsewhere in the two texts.
+    let halves = text(&[("one two th", red), ("ree four five", style)]);
+    assert_eq!(plain.recolored_ranges(&halves), ranges(&[(0, 10)]));
+    // Anything else changed: not a recoloring.
+    assert_eq!(
+        plain.recolored_ranges(&words([style, bold, style, style, style])),
+        None
+    );
+    assert_eq!(plain.recolored_ranges(&text(&[("one", style)])), None);
+}
+
+#[test]
 fn image_uses_natural_size_and_aspect_ratio() {
     let mut c = core();
     apply(
@@ -4365,6 +4419,38 @@ fn multiline_inputs_grow_with_their_text() {
 }
 
 #[test]
+fn multiline_inputs_grow_with_what_an_input_method_composes() {
+    let mut c = input_core();
+    c.apply(Op::SetProp {
+        id: 2,
+        prop: Prop::Multiline(true),
+    })
+    .unwrap();
+    c.commit();
+    // 30 characters at 8pt in 308pt: one line, as the placeholder.
+    c.input_changed(2, &"x".repeat(30), 1);
+    assert_eq!(c.commit().and_then(|b| frame_of(&b, 2)), None);
+    // Composing 20 more wraps the line: the input grows before it commits.
+    c.input_composing(2, Some(&"x".repeat(50)));
+    let batch = c.commit().unwrap();
+    assert_eq!(frame_of(&batch, 2).map(|f| f.size.height.0), Some(44.0));
+    // Its value is still what was committed.
+    let node = &c.nodes[c.key(2).unwrap() as usize];
+    assert_eq!(node.input.as_ref().unwrap().value, "x".repeat(30));
+    // Cancelled, it goes back to its value's height.
+    c.input_composing(2, None);
+    let batch = c.commit().unwrap();
+    assert_eq!(frame_of(&batch, 2).map(|f| f.size.height.0), Some(28.0));
+    // Committed, it keeps the height the composition gave it.
+    c.input_composing(2, Some(&"x".repeat(50)));
+    c.commit();
+    c.input_changed(2, &"x".repeat(50), 2);
+    c.input_composing(2, None);
+    let batch = c.commit();
+    assert_eq!(batch.and_then(|b| frame_of(&b, 2)), None);
+}
+
+#[test]
 fn multiline_inputs_measure_long_runs_in_pieces() {
     let mut c = input_core();
     c.apply(Op::SetProp {
@@ -4993,6 +5079,109 @@ fn native_id_reaches_the_platform() {
             |i| matches!(i, MountItem::ViewProps { id: 2, props } if props.native_id.is_none())
         )
     );
+}
+
+/// The relations of one view's last `ViewProps` in `batch`: its active
+/// descendant and what it controls.
+fn relations_in(batch: &MountBatch, id: NodeId) -> Option<(Option<NodeId>, Option<NodeId>)> {
+    batch.items.iter().rev().find_map(|i| match i {
+        MountItem::ViewProps { id: at, props } if *at == id => Some((
+            props.accessibility.active_descendant,
+            props.accessibility.controls,
+        )),
+        _ => None,
+    })
+}
+
+/// `accessibilityActiveDescendant` and `accessibilityControls` name other
+/// views: the platform gets their ids, as the views named change, come
+/// after the one naming them or go.
+#[test]
+fn accessibility_relations_name_other_views() {
+    use crate::element::ElementTarget;
+    let mut c = core();
+    let view = |id| Op::Create { id, tag: Tag::View };
+    let insert = |parent, child| Op::Insert {
+        parent,
+        child,
+        before: None,
+    };
+    let active = |target: Option<NodeId>| Op::SetProp {
+        id: 2,
+        prop: Prop::Accessibility(AccessibilityProp::ActiveDescendant(
+            target.map(ElementTarget::of_node),
+        )),
+    };
+    // A field naming its list and the list's first option.
+    apply(
+        &mut c,
+        vec![
+            view(2),
+            view(4),
+            view(6),
+            view(8),
+            insert(1, 2),
+            insert(1, 4),
+            insert(4, 6),
+            insert(4, 8),
+            active(Some(6)),
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Accessibility(AccessibilityProp::Controls(Some(
+                    ElementTarget::of_node(4),
+                ))),
+            },
+        ],
+    );
+    let batch = c.commit().unwrap();
+    assert_eq!(relations_in(&batch, 2), Some((Some(6), Some(4))));
+    // The highlight moves: only the field's props go again.
+    apply(&mut c, vec![active(Some(8))]);
+    let batch = c.commit().unwrap();
+    assert_eq!(relations_in(&batch, 2), Some((Some(8), Some(4))));
+    // Something else changes: the field's props do not go again.
+    apply(
+        &mut c,
+        vec![Op::SetProp {
+            id: 6,
+            prop: Prop::TestId(Some("first".into())),
+        }],
+    );
+    let batch = c.commit().unwrap();
+    assert_eq!(relations_in(&batch, 2), None);
+    // The option named goes: the field names none.
+    apply(
+        &mut c,
+        vec![
+            Op::Remove {
+                parent: 4,
+                child: 8,
+            },
+            Op::Release { id: 8 },
+        ],
+    );
+    let batch = c.commit().unwrap();
+    assert_eq!(relations_in(&batch, 2), Some((None, Some(4))));
+    // A view named before it is made is named once it is.
+    apply(&mut c, vec![active(Some(10))]);
+    assert_eq!(c.commit().and_then(|b| relations_in(&b, 2)), None);
+    apply(&mut c, vec![view(10), insert(4, 10)]);
+    let batch = c.commit().unwrap();
+    assert_eq!(relations_in(&batch, 2), Some((Some(10), Some(4))));
+    // Cleared.
+    apply(
+        &mut c,
+        vec![
+            active(None),
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Accessibility(AccessibilityProp::Controls(None)),
+            },
+        ],
+    );
+    let batch = c.commit().unwrap();
+    assert_eq!(relations_in(&batch, 2), Some((None, None)));
+    assert!(c.relators.is_empty());
 }
 
 #[test]
@@ -15620,6 +15809,55 @@ mod components {
         assert_eq!(unavailable_web_with(true), ["waiting"]);
     }
 
+    /// A web view that says when its page's process ended.
+    #[component]
+    fn TerminatedWeb() -> impl IntoElement {
+        let heard = signal(String::from("waiting"));
+        view().child(text(move || heard.get())).child(
+            web_view("https://example.com/")
+                .on_unavailable(move |_: &str| heard.set("unavailable".into()))
+                .on_process_terminated(move |message: &str| {
+                    heard.set(format!("terminated: {message}"))
+                }),
+        )
+    }
+
+    /// What [`TerminatedWeb`] shows after the platform reports `error`.
+    fn terminated_web_after(error: EventPayload) -> String {
+        let mut c = core();
+        c.mount_root(&crate::element::Root::new::<TerminatedWeb>(|| ()));
+        let batch = c.commit().unwrap();
+        let web = batch
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MountItem::Create { id, kind, .. } if *kind == ViewKind::WebView => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        c.component_event(web, EventKind::Error, &error);
+        texts(&c.commit().unwrap()).last().unwrap().clone()
+    }
+
+    #[test]
+    fn a_web_view_hears_when_its_page_process_ended() {
+        let error = |code: Option<&str>| {
+            let mut fields = vec![("message", PayloadValue::Str("gone".into()))];
+            if let Some(code) = code {
+                fields.push(("code", PayloadValue::Str(code.into())));
+            }
+            EventPayload::Map(fields)
+        };
+        assert_eq!(
+            terminated_web_after(error(Some(crate::element::codes::WEBVIEW_TERMINATED))),
+            "terminated: gone"
+        );
+        assert_eq!(
+            terminated_web_after(error(Some(crate::element::codes::UNAVAILABLE))),
+            "unavailable"
+        );
+    }
+
     /// Shows whether the platform draws shader views, and picks a branch
     /// by it as an app picks a shader or its own drawing.
     #[component]
@@ -18857,6 +19095,102 @@ mod views {
         assert_eq!(HEARD.with(|h| h.borrow().clone()), [vec![2, 0, 1]]);
     }
 
+    thread_local! {
+        static ACTIVE_ROW: Cell<Option<Signal<Option<usize>>>> = const { Cell::new(None) };
+        static ROWS: Cell<Option<Signal<Vec<u32>>>> = const { Cell::new(None) };
+    }
+
+    /// A field naming the row of a list that is active, by the rows'
+    /// refs, the rows rendered after it.
+    #[component]
+    fn ActiveRow() -> impl IntoElement {
+        let refs: Rc<Vec<crate::element::ElementRef>> =
+            Rc::new((0..3).map(|_| element_ref()).collect());
+        let list = element_ref();
+        let active = signal(Some(0usize));
+        let rows = signal(vec![0u32, 1, 2]);
+        ACTIVE_ROW.with(|a| a.set(Some(active)));
+        ROWS.with(|r| r.set(Some(rows)));
+        let named = refs.clone();
+        view()
+            .child(
+                view()
+                    .label("field")
+                    .accessibility_active_descendant(move || active.get().map(|i| named[i]))
+                    .accessibility_controls(Some(list)),
+            )
+            .child(view().label("list").element_ref(&list).child(each(
+                rows,
+                |n| *n,
+                move |item, _| {
+                    let n = item.get_untracked();
+                    view()
+                        .label(format!("row{n}"))
+                        .element_ref(&refs[n as usize])
+                },
+            )))
+    }
+
+    /// The ids of the views by their labels, as `batch` gives them.
+    fn ids_by_label(batch: &MountBatch) -> std::collections::HashMap<String, NodeId> {
+        batch
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                MountItem::ViewProps { id, props } => {
+                    Some((props.accessibility.label.as_deref()?.to_owned(), *id))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rust_refs_name_active_descendants() {
+        let mut c = core();
+        c.mount_root(&Root::new::<ActiveRow>(|| ()));
+        let batch = c.commit().unwrap();
+        let ids = ids_by_label(&batch);
+        let field = ids["field"];
+        assert_eq!(
+            super::relations_in(&batch, field),
+            Some((Some(ids["row0"]), Some(ids["list"]))),
+            "rows rendered after the field are named in the same batch"
+        );
+        let (active, rows) = (
+            ACTIVE_ROW.with(Cell::get).unwrap(),
+            ROWS.with(Cell::get).unwrap(),
+        );
+        {
+            let _entered = c.components.runtime.enter();
+            active.set(Some(2));
+        }
+        let batch = c.commit().unwrap();
+        assert_eq!(
+            super::relations_in(&batch, field),
+            Some((Some(ids["row2"]), Some(ids["list"])))
+        );
+        // The row named goes: the field names none, with no change of its
+        // own.
+        {
+            let _entered = c.components.runtime.enter();
+            rows.set(vec![0, 1]);
+        }
+        let batch = c.commit().unwrap();
+        assert_eq!(
+            super::relations_in(&batch, field),
+            Some((None, Some(ids["list"])))
+        );
+        {
+            let _entered = c.components.runtime.enter();
+            active.set(None);
+        }
+        assert_eq!(
+            c.commit().and_then(|b| super::relations_in(&b, field)),
+            None
+        );
+    }
+
     /// Made with `#[component]`: reads the appearance and a timer.
     #[component]
     fn Clock(_props: (), cx: Scope<NoEvent>) -> impl IntoElement {
@@ -18890,6 +19224,43 @@ mod views {
             "{:?}",
             texts(&batch)
         );
+    }
+
+    thread_local! {
+        static WAKE_RUNS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// Shows how many times the system woke; its effect counts its runs.
+    #[component]
+    fn Waker() -> impl IntoElement {
+        effect(move || {
+            wake_count();
+            WAKE_RUNS.with(|n| n.set(n.get() + 1));
+        });
+        text(move || format!("woke {}", wake_count()))
+    }
+
+    #[test]
+    fn an_effect_reading_the_wake_count_runs_again_on_each_wake_only() {
+        WAKE_RUNS.with(|n| n.set(0));
+        let mut c = core();
+        c.mount_root(&Root::new::<Waker>(|| ()));
+        assert_eq!(texts(&c.commit().unwrap()), ["woke 0"]);
+        assert_eq!(WAKE_RUNS.with(Cell::get), 1);
+        // Another part of the environment changes: the effect stays.
+        c.set_environment(crate::element::Environment {
+            dark: true,
+            ..Default::default()
+        });
+        c.commit();
+        assert_eq!(WAKE_RUNS.with(Cell::get), 1);
+        c.set_environment(crate::element::Environment {
+            dark: true,
+            wake_count: 1,
+            ..Default::default()
+        });
+        assert_eq!(texts(&c.commit().unwrap()), ["woke 1"]);
+        assert_eq!(WAKE_RUNS.with(Cell::get), 2);
     }
 
     thread_local! {
@@ -22563,7 +22934,7 @@ mod rust_windows {
         )
     }
 
-    fn desktop_commands(batch: &MountBatch) -> Vec<(NodeId, DesktopCommand)> {
+    fn window_commands(batch: &MountBatch) -> Vec<(NodeId, DesktopCommand)> {
         batch
             .items
             .iter()
@@ -22571,7 +22942,7 @@ mod rust_windows {
                 MountItem::Command {
                     id,
                     command: Command::Desktop(command),
-                } => Some((*id, (**command).clone())),
+                } if command.is_window_command() => Some((*id, (**command).clone())),
                 _ => None,
             })
             .collect()
@@ -22586,7 +22957,7 @@ mod rust_windows {
         });
         c.mount_root(&Root::of::<Windows>());
         let batch = c.commit().unwrap();
-        let commands = desktop_commands(&batch);
+        let commands = window_commands(&batch);
         let [(id, DesktopCommand::OpenWindow(open))] = &commands[..] else {
             panic!("one window opens: {commands:?}");
         };
@@ -22610,7 +22981,7 @@ mod rust_windows {
             TITLE.with(|t| t.borrow().unwrap().set("Layers".into()));
         }
         let batch = c.commit().unwrap();
-        let commands = desktop_commands(&batch);
+        let commands = window_commands(&batch);
         assert_eq!(
             commands,
             [(
@@ -22681,7 +23052,7 @@ mod rust_windows {
         };
         assert_eq!(doc.id(), "doc:1");
         let batch = c.commit().unwrap();
-        let commands = desktop_commands(&batch);
+        let commands = window_commands(&batch);
         let [(id, DesktopCommand::OpenWindow(open))] = &commands[..] else {
             panic!("one window opens: {commands:?}");
         };
@@ -22698,7 +23069,7 @@ mod rust_windows {
         assert!(again.as_ref() == Some(&doc));
         let batch = c.commit().unwrap();
         assert_eq!(
-            desktop_commands(&batch),
+            window_commands(&batch),
             [(*id, DesktopCommand::Request(WindowRequest::Focus))]
         );
         // Its ref closes it: the app hears it and the window's root goes.
@@ -22729,7 +23100,7 @@ mod rust_windows {
         }
         let batch = c.commit().unwrap();
         assert!(matches!(
-            &desktop_commands(&batch)[..],
+            &window_commands(&batch)[..],
             [(_, DesktopCommand::OpenWindow(_))]
         ));
     }
@@ -22762,10 +23133,10 @@ mod rust_windows {
             ..Default::default()
         });
         c.mount_root(&Root::of::<SetsOwnTitle>());
-        let mut commands = desktop_commands(&c.commit().unwrap());
+        let mut commands = window_commands(&c.commit().unwrap());
         // An effect may run in the next commit: collect both.
         if let Some(batch) = c.commit() {
-            commands.extend(desktop_commands(&batch));
+            commands.extend(window_commands(&batch));
         }
         // It opens with them (or gets them right after): what it ends up with.
         let mut id = None;
@@ -22788,13 +23159,13 @@ mod rust_windows {
         );
         assert_eq!(merged.resizable, Some(false), "{commands:?}");
         // Sent once: nothing more on the next commit.
-        assert!(c.commit().is_none_or(|b| desktop_commands(&b).is_empty()));
+        assert!(c.commit().is_none_or(|b| window_commands(&b).is_empty()));
     }
 
     fn opened_title(c: &mut Core<FakeEngine>) -> Option<String> {
         let mut title = None;
         while let Some(batch) = c.commit() {
-            for (_, command) in desktop_commands(&batch) {
+            for (_, command) in window_commands(&batch) {
                 match command {
                     DesktopCommand::OpenWindow(open) => title = open.options.attributes.title,
                     DesktopCommand::SetAttributes(a) if a.title.is_some() => title = a.title,
@@ -22871,7 +23242,7 @@ mod rust_windows {
         });
         c.mount_root(&Root::of::<WithNotes>());
         let batch = c.commit().unwrap();
-        let [(notes, DesktopCommand::OpenWindow(_))] = &desktop_commands(&batch)[..] else {
+        let [(notes, DesktopCommand::OpenWindow(_))] = &window_commands(&batch)[..] else {
             panic!("the declared window opens");
         };
         let notes = *notes;
@@ -22882,7 +23253,7 @@ mod rust_windows {
         }
         let batch = c.commit().unwrap();
         assert_eq!(
-            desktop_commands(&batch),
+            window_commands(&batch),
             [(notes, DesktopCommand::Request(WindowRequest::Focus))]
         );
         // Not granted by the capabilities: nothing opens, as `Window.open`
@@ -22901,7 +23272,7 @@ mod rust_windows {
             let _entered = c.components.runtime.enter();
             assert!(open_window(window().id("doc")).is_none());
         }
-        assert!(c.commit().is_none_or(|b| desktop_commands(&b).is_empty()));
+        assert!(c.commit().is_none_or(|b| window_commands(&b).is_empty()));
     }
 
     thread_local! {
@@ -22934,7 +23305,7 @@ mod rust_windows {
         });
         c.mount_root(&Root::of::<ClosePresses>());
         let batch = c.commit().unwrap();
-        let commands = desktop_commands(&batch);
+        let commands = window_commands(&batch);
         let [(notes, DesktopCommand::OpenWindow(_))] = &commands[..] else {
             panic!("one window opens: {commands:?}");
         };
@@ -22957,6 +23328,73 @@ mod rust_windows {
                 ("notes".to_owned(), CloseReason::Shortcut),
                 ("main".to_owned(), CloseReason::Shortcut),
             ]
+        );
+    }
+
+    /// The root's desktop commands that are not about a window.
+    fn app_commands(batch: &MountBatch) -> Vec<DesktopCommand> {
+        batch
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MountItem::Command {
+                    id: crate::ROOT_ID,
+                    command: Command::Desktop(command),
+                } if !command.is_window_command() => Some((**command).clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn quit_requests_go_to_the_app_while_it_listens() {
+        let mut c = core();
+        c.set_environment(crate::element::Environment {
+            os: crate::platform::Os::Linux,
+            ..Default::default()
+        });
+        c.mount_root(&Root::of::<Empty>());
+        let first = c.commit().unwrap();
+        assert_eq!(
+            app_commands(&first),
+            [],
+            "nothing listens: quitting as before"
+        );
+        let heard = Rc::new(std::cell::Cell::new(0));
+        let (owner, ()) = {
+            let _entered = c.components.runtime.enter();
+            let heard = heard.clone();
+            crate::element::create_root(move || {
+                crate::element::desktop::on_quit_request(move || heard.set(heard.get() + 1));
+            })
+        };
+        let batch = c.commit().unwrap();
+        assert_eq!(
+            app_commands(&batch),
+            [DesktopCommand::SetQuitOnRequest(false)],
+            "the platform leaves quitting to the app"
+        );
+        // The platform reports the user's request instead of quitting.
+        c.component_event(
+            crate::ROOT_ID,
+            EventKind::Window,
+            &EventPayload::Window(Box::new(WindowEvent::QuitRequest)),
+        );
+        let after = c.commit();
+        assert_eq!(heard.get(), 1);
+        assert!(
+            after.is_none_or(|b| app_commands(&b).is_empty()),
+            "the app decides when to quit"
+        );
+        {
+            let _entered = c.components.runtime.enter();
+            owner.dispose();
+        }
+        let batch = c.commit().unwrap();
+        assert_eq!(
+            app_commands(&batch),
+            [DesktopCommand::SetQuitOnRequest(true)],
+            "without a listener quit requests quit again"
         );
     }
 
@@ -22997,7 +23435,7 @@ mod rust_windows {
         c.set_viewport(size(px(800.0), px(600.0)));
         c.mount_root(&Root::of::<Fitted>());
         let batch = c.commit().unwrap();
-        let commands = desktop_commands(&batch);
+        let commands = window_commands(&batch);
         let fit = |w: Option<f32>, h: Option<f32>| {
             DesktopCommand::Request(WindowRequest::SetContentSize {
                 width: w.map(Points),
@@ -23025,7 +23463,7 @@ mod rust_windows {
         c.set_viewport(size(px(800.0), px(120.0)));
         if let Some(batch) = c.commit() {
             assert!(
-                !desktop_commands(&batch)
+                !window_commands(&batch)
                     .iter()
                     .any(|(_, c)| matches!(c, DesktopCommand::Request(_))),
                 "{:?}",
@@ -23109,7 +23547,7 @@ mod rust_windows {
         c.mount_root(&Root::of::<WindowKeys>());
         let batch = c.commit().unwrap();
         let host = root_host(&batch);
-        let windows: Vec<NodeId> = desktop_commands(&batch)
+        let windows: Vec<NodeId> = window_commands(&batch)
             .iter()
             .filter(|(_, c)| matches!(c, DesktopCommand::OpenWindow(_)))
             .map(|(id, _)| *id)
@@ -23212,7 +23650,7 @@ mod rust_windows {
         c.set_viewport(size(px(800.0), px(600.0)));
         c.mount_root(&Root::of::<Popups>());
         let batch = c.commit().unwrap();
-        let commands = desktop_commands(&batch);
+        let commands = window_commands(&batch);
         let Some((window, _)) = commands
             .iter()
             .find(|(_, c)| matches!(c, DesktopCommand::OpenWindow(_)))
@@ -23370,7 +23808,7 @@ mod rust_windows {
         c.set_viewport(size(px(1100.0), px(820.0)));
         c.mount_root(&Root::of::<Sized>());
         let batch = c.commit().unwrap();
-        let opened: Vec<(NodeId, String)> = desktop_commands(&batch)
+        let opened: Vec<(NodeId, String)> = window_commands(&batch)
             .into_iter()
             .filter_map(|(id, c)| match c {
                 DesktopCommand::OpenWindow(open) => Some((id, open.options.id.clone())),
@@ -23480,7 +23918,7 @@ mod rust_windows {
         });
         c.mount_root(&Root::of::<Windows>());
         let batch = c.commit().unwrap();
-        assert!(desktop_commands(&batch).is_empty());
+        assert!(window_commands(&batch).is_empty());
     }
 }
 
@@ -23610,6 +24048,54 @@ mod rust_menus {
             .icon("asset:/file.svg"),
         ]);
         view()
+    }
+
+    #[test]
+    fn menu_labels_follow_the_language_the_app_shows() {
+        use crate::platform::{Languages, Locale};
+        let labels_in = |batch: &MountBatch| {
+            batch.items.iter().filter_map(desktop).find_map(|command| {
+                if let DesktopCommand::SetMenuLabels(labels) = command {
+                    Some((**labels).clone())
+                } else {
+                    None
+                }
+            })
+        };
+        let mut first = core();
+        let mut env = crate::element::Environment {
+            os: Os::MacOs,
+            locale: Locale::parse("en").unwrap(),
+            ..Default::default()
+        };
+        env.locale_settings.languages = Languages::one(env.locale);
+        first.set_environment(env);
+        let labels = labels_in(&first.commit().unwrap()).unwrap();
+        assert_eq!(labels.label(MenuRole::Copy), "Copy");
+        env.locale = Locale::parse("ja-JP").unwrap();
+        env.locale_settings.languages = Languages::one(env.locale);
+        first.set_environment(env);
+        let labels = labels_in(&first.commit().unwrap()).unwrap();
+        assert_eq!(labels.label(MenuRole::Copy), "コピー");
+        assert_eq!(labels.label(MenuRole::Paste), "ペースト");
+        assert_eq!(labels.edit_menu.as_deref(), Some("編集"));
+
+        // With an English-only app dictionary, text falls back to English
+        // even when all of the user's preferred languages are Japanese.
+        first.set_translations(
+            crate::i18n::Translations::from_json(r#"{"en":{"hello":"Hello"}}"#).unwrap(),
+        );
+        let labels = labels_in(&first.commit().unwrap()).unwrap();
+        assert_eq!(labels.label(MenuRole::Copy), "Copy");
+        assert_eq!(labels.edit_menu.as_deref(), Some("Edit"));
+        // Mobile platforms use the system's own menus.
+        env.os = Os::Ios;
+        first.set_environment(env);
+        assert!(first.commit().as_ref().and_then(labels_in).is_none());
+        env.os = Os::MacOs;
+        env.idiom = crate::platform::Idiom::Terminal;
+        first.set_environment(env);
+        assert!(first.commit().as_ref().and_then(labels_in).is_none());
     }
 
     fn menu_event(c: &mut Core<FakeEngine>, fields: Vec<(&'static str, PayloadValue)>) -> bool {
@@ -24112,6 +24598,48 @@ fn context_menus_reach_rust_listeners_with_their_positions() {
     let delivered = c.commit().unwrap();
     assert!(delivered.items.iter().any(|item| matches!(item,
         MountItem::Text { text, .. } if text.text == "4 5 14 25")));
+}
+
+#[test]
+fn pinches_reach_rust_listeners_with_their_delta_and_phase() {
+    use crate::prelude::*;
+    #[component]
+    fn Canvas() -> impl IntoElement {
+        let at = signal(String::new());
+        view()
+            .on_pinch(move |e: &PinchEvent| {
+                at.set(format!(
+                    "{} {} {} {}",
+                    e.position.x.0,
+                    e.page_position.y.0,
+                    e.delta.0,
+                    e.phase.name()
+                ))
+            })
+            .child(text(move || at.get()))
+    }
+    let mut c = core();
+    c.mount_root(&crate::element::Root::of::<Canvas>());
+    let batch = c.commit().unwrap();
+    let host = batch
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MountItem::Events { id, events } if events.contains(EventKind::Pinch) => Some(*id),
+            _ => None,
+        })
+        .expect("the listening view mounts Pinch in its event mask");
+    let event = crate::PinchEvent::new(
+        point(px(4.0), px(5.0)),
+        point(px(14.0), px(25.0)),
+        crate::geometry::Percentage(0.5),
+        crate::PinchPhase::Move,
+        Default::default(),
+    );
+    assert!(c.component_event(host, EventKind::Pinch, &EventPayload::Pinch(event)));
+    let delivered = c.commit().unwrap();
+    assert!(delivered.items.iter().any(|item| matches!(item,
+        MountItem::Text { text, .. } if text.text == "4 25 0.5 move")));
 }
 
 #[test]
@@ -39464,4 +39992,271 @@ fn big_rows_bench() {
         }
     }
     eprintln!("total {total} views");
+}
+
+/// Texts whose first baseline is 0.95 of their largest font size below their
+/// top, in lines 1.25 of it tall, 10 points a character wide: a font with
+/// half-leading as CSS sets it.
+struct BaselineEngine;
+
+impl TextEngine for BaselineEngine {
+    /// Characters and the largest font size.
+    type Prepared = (usize, f32);
+
+    fn prepare(&self, text: &AttributedText) -> (usize, f32) {
+        let size = text
+            .spans
+            .iter()
+            .fold(0.0f32, |max, s| max.max(s.style.font_size.0));
+        (text.text.chars().count(), size)
+    }
+
+    fn measure(&self, &(chars, size): &(usize, f32), _: Option<Points>) -> Size<Points> {
+        size_pt(chars as f32 * 10.0, size * 1.25)
+    }
+
+    fn first_baseline(&self, &(_, size): &(usize, f32), _: Points) -> Option<Points> {
+        Some(Points(size * 0.95))
+    }
+
+    fn layout(&self, _: &(usize, f32), _: Size<Points>) -> TextLayout {
+        TextLayout(Arc::new(()))
+    }
+}
+
+#[test]
+fn a_row_aligned_by_baseline_lines_its_texts_up_by_their_first_baselines() {
+    let mut c = Core::new(BaselineEngine, size_pt(320.0, 480.0));
+    let insert = |parent, child| Op::Insert {
+        parent,
+        child,
+        before: None,
+    };
+    let text = |id, size: f32| {
+        [
+            Op::Create { id, tag: Tag::Text },
+            Op::SetStyle {
+                id,
+                style: style(&[("fontSize", StyleValue::Number(size))]),
+                patch: Default::default(),
+            },
+        ]
+    };
+    let mut ops = vec![
+        Op::Create {
+            id: 2,
+            tag: Tag::View,
+        },
+        class_op(2, "flex-row items-baseline"),
+    ];
+    ops.extend(text(3, 30.0));
+    ops.extend(text(5, 10.0));
+    ops.extend([
+        Op::CreateText {
+            id: 4,
+            text: "Chat".into(),
+        },
+        Op::CreateText {
+            id: 6,
+            text: "2 people".into(),
+        },
+        insert(3, 4),
+        insert(5, 6),
+        insert(2, 3),
+        insert(2, 5),
+        insert(ROOT_ID, 2),
+    ]);
+    for op in ops {
+        c.apply(op).unwrap();
+    }
+    let batch = c.commit().unwrap();
+    let top = |id| frame_of(&batch, id).map(|f| f.origin.y.0);
+    // The title's baseline is 28.5 below the row's top; the small text's,
+    // 9.5 below its own, so it starts 19 down. By their bottom edges (37.5
+    // and 12.5 tall) it would start 25 down, its baseline 6 under the title's.
+    assert_eq!(top(3), Some(0.0));
+    assert_eq!(top(5), Some(19.0));
+    // Aligned another way, the texts' layouts cached for baselines are not
+    // kept: by their bottom edges, then by baseline again.
+    c.apply(style_op(2, &[("alignItems", StyleValue::Str("flex-end"))]))
+        .unwrap();
+    let batch = c.commit().unwrap();
+    assert_eq!(frame_of(&batch, 5).map(|f| f.origin.y.0), Some(25.0));
+    c.apply(style_op(2, &[("alignItems", StyleValue::Str("baseline"))]))
+        .unwrap();
+    let batch = c.commit().unwrap();
+    assert_eq!(frame_of(&batch, 5).map(|f| f.origin.y.0), Some(19.0));
+}
+
+#[test]
+fn a_lowered_sibling_keeps_a_new_default_view_above_it() {
+    let mut c = core();
+    let z = |v: f32| style(&[("zIndex", StyleValue::Number(v))]);
+    let create = |id| Op::Create { id, tag: Tag::View };
+    let append = |child| Op::Insert {
+        parent: 1,
+        child,
+        before: None,
+    };
+    apply(
+        &mut c,
+        vec![create(2), create(3), create(4), append(2), append(3)],
+    );
+    let batch = c.commit().unwrap();
+    // A first fill: each goes on top, in order.
+    assert_eq!(insert_items(&batch), vec![(1, 2, None), (1, 3, None)]);
+    // In order, a new view goes below the next sibling.
+    apply(
+        &mut c,
+        vec![Op::Insert {
+            parent: 1,
+            child: 4,
+            before: Some(3),
+        }],
+    );
+    let batch = c.commit().unwrap();
+    assert_eq!(insert_items(&batch), vec![(1, 4, Some(3))]);
+    // 3 lowered below the others: 4, inserted again before it, now goes on
+    // top, not below 3.
+    apply(
+        &mut c,
+        vec![Op::SetStyle {
+            id: 3,
+            style: z(-1.0),
+            patch: StylePatch::default(),
+        }],
+    );
+    c.commit();
+    apply(
+        &mut c,
+        vec![
+            Op::Remove {
+                parent: 1,
+                child: 4,
+            },
+            Op::Insert {
+                parent: 1,
+                child: 4,
+                before: Some(3),
+            },
+        ],
+    );
+    let batch = c.commit().unwrap();
+    assert_eq!(insert_items(&batch), vec![(1, 4, None)]);
+}
+
+/// A component's first fill and later changes of its children.
+mod first_mount {
+    use std::{cell::Cell, time::Instant};
+
+    use super::*;
+    use crate::{element::Root, prelude::*};
+
+    thread_local! {
+        static COUNT: Cell<u32> = const { Cell::new(0) };
+        static STEP: Cell<f32> = const { Cell::new(1.0) };
+        static ITEMS: Cell<Option<Signal<Vec<u32>>>> = const { Cell::new(None) };
+    }
+
+    /// `COUNT` plain rows under one view, row `i` `2 + STEP * i` high.
+    #[component]
+    fn Rows() -> impl IntoElement {
+        let n = COUNT.with(Cell::get);
+        let step = STEP.with(Cell::get);
+        view().children((0..n).map(|i| view().h(px(2.0 + step * i as f32))))
+    }
+
+    /// The rows of `ITEMS`, by key.
+    #[component]
+    fn EachRows() -> impl IntoElement {
+        let items = signal(vec![0u32, 1, 2]);
+        ITEMS.with(|i| i.set(Some(items)));
+        view().child(each(
+            items,
+            |n| *n,
+            |item, _| view().h(px(2.0 + item.get_untracked() as f32)),
+        ))
+    }
+
+    /// The frames of the children of the root view's first child's first
+    /// child (the rows' parent), in tree order: (y, height).
+    fn row_frames(c: &Core<FakeEngine>) -> Vec<(f32, f32)> {
+        let mut k = c.root;
+        while c.nodes[k as usize].children.len() == 1 {
+            k = c.nodes[k as usize].children[0];
+        }
+        c.nodes[k as usize]
+            .children
+            .iter()
+            .map(|&k| {
+                let f = c.nodes[k as usize].frame;
+                (f.origin.y.0, f.size.height.0)
+            })
+            .collect()
+    }
+
+    fn mount_rows(n: u32) -> (Core<FakeEngine>, MountBatch) {
+        COUNT.with(|c| c.set(n));
+        let mut c = core();
+        c.mount_root(&Root::of::<Rows>());
+        let batch = c.commit().unwrap();
+        (c, batch)
+    }
+
+    #[test]
+    fn a_first_fill_appends_the_children_in_order() {
+        let (c, batch) = mount_rows(4);
+        assert_eq!(
+            row_frames(&c),
+            vec![(0.0, 2.0), (2.0, 3.0), (5.0, 4.0), (9.0, 5.0)]
+        );
+        // Each row appended in order, none placed before another.
+        let inserts = insert_items(&batch);
+        let last: Vec<_> = inserts[inserts.len() - 4..].to_vec();
+        assert!(
+            last.iter().all(|(_, _, before)| before.is_none()),
+            "{inserts:?}"
+        );
+        assert!(last.windows(2).all(|w| w[0].1 < w[1].1), "{inserts:?}");
+    }
+
+    #[test]
+    fn rows_added_and_reordered_after_the_first_fill_keep_their_order() {
+        let mut c = core();
+        c.mount_root(&Root::of::<EachRows>());
+        c.commit();
+        assert_eq!(row_frames(&c), vec![(0.0, 2.0), (2.0, 3.0), (5.0, 4.0)]);
+        let items = ITEMS.with(Cell::get).unwrap();
+        {
+            let _entered = c.components.runtime.enter();
+            items.set(vec![3, 2, 0, 4, 1]);
+        }
+        c.commit();
+        let heights: Vec<f32> = row_frames(&c).iter().map(|r| r.1).collect();
+        assert_eq!(heights, vec![5.0, 4.0, 2.0, 6.0, 3.0]);
+    }
+
+    /// The first mount of `n` views under one view (T-0930's plain rows),
+    /// the median of 5: `cargo test --release -p nsh-core --lib
+    /// first_mount_bench -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn first_mount_bench() {
+        // All 2 high, as T-0930's rows.
+        STEP.with(|s| s.set(0.0));
+        mount_rows(100);
+        for n in [100, 1_000, 8_600, 17_200] {
+            let mut runs: Vec<f64> = (0..5)
+                .map(|_| {
+                    let t = Instant::now();
+                    let made = mount_rows(n);
+                    let ms = t.elapsed().as_secs_f64() * 1e3;
+                    drop(made);
+                    ms
+                })
+                .collect();
+            runs.sort_by(f64::total_cmp);
+            println!("first mount n={n}: {:.1} ms", runs[2]);
+        }
+    }
 }

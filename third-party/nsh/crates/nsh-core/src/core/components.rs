@@ -68,7 +68,14 @@ type Rows = (u32, Option<Rc<[u64]>>);
 type CellRows = Rc<RefCell<CellRowMap>>;
 
 /// The index and owner of each part of a list's cells showing a row.
-type CellRowMap = FxHashMap<NodeId, (crate::element::Signal<usize>, crate::element::Owner)>;
+type CellRowMap = FxHashMap<NodeId, (CellPosition, crate::element::Owner)>;
+
+/// A recycled cell can keep its contents after the row it showed went.
+#[derive(Clone, Copy)]
+struct CellPosition {
+    index: crate::element::Signal<usize>,
+    bound: crate::element::Signal<bool>,
+}
 
 /// A component's own list.
 struct VirtualListState {
@@ -164,7 +171,7 @@ pub(super) struct Instance {
     cell_owner: Option<crate::element::Owner>,
     /// ... and the index its content reads (its [`Position`]): a cell
     /// that shows another row sets it instead of being built again.
-    row_index: Option<crate::element::Signal<usize>>,
+    cell_position: Option<CellPosition>,
     /// Lazy children a view passes: whether it places them, which what
     /// passes them reads.
     lazy_wanted: Option<crate::element::Signal<bool>>,
@@ -307,7 +314,7 @@ impl Instance {
             bound: FxHashMap::default(),
             js_kids: None,
             cell_owner: None,
-            row_index: None,
+            cell_position: None,
             lazy_wanted: None,
             children_owner: None,
             joined: false,
@@ -649,6 +656,10 @@ pub(super) struct Components {
     /// The language the app asked to show in (`Some(None)`: the user's
     /// again), for the engine ([`Core::take_locale_request`]).
     pub(super) locale_request: Option<Option<crate::platform::Locale>>,
+    /// The app listened to quit requests at the last commit: the platform
+    /// was told its quit requests go to the app
+    /// ([`crate::desktop::DesktopCommand::SetQuitOnRequest`]).
+    asks_quit: bool,
     /// Functions for the platform's main thread, for the engine
     /// ([`Core::take_main_thread_tasks`]).
     main_thread: Vec<crate::main_thread::MainThreadTask>,
@@ -762,6 +773,7 @@ impl Default for Components {
             url_opens: FxHashMap::default(),
             url_requests: Vec::new(),
             locale_request: None,
+            asks_quit: false,
             main_thread: Vec::new(),
             next_url_open: 0,
             screen_colors: FxHashMap::default(),
@@ -954,7 +966,42 @@ impl<M: TextEngine> Core<M> {
     /// read from now on.
     pub fn set_translations(&mut self, translations: crate::i18n::Translations) {
         let _entered = self.components.runtime.enter();
-        crate::element::global::<crate::i18n::Translations>().set(translations);
+        let stored = crate::element::global::<crate::i18n::Translations>();
+        let env = self.components.environment;
+        let before =
+            crate::i18n::text_locale(&stored.get(), env.locale, env.locale_settings.languages);
+        stored.set(translations);
+        if crate::i18n::text_locale(&stored.get(), env.locale, env.locale_settings.languages)
+            != before
+        {
+            self.localize_menus();
+        }
+    }
+
+    /// The menus NSH owns use the same language selection as the app's text.
+    fn localize_menus(&mut self) {
+        let _entered = self.components.runtime.enter();
+        if !matches!(
+            self.components.environment.os,
+            crate::platform::Os::MacOs | crate::platform::Os::Windows
+        ) || self.components.environment.idiom == crate::platform::Idiom::Terminal
+        {
+            return;
+        }
+        let translations = crate::element::global::<crate::i18n::Translations>().get();
+        let env = self.components.environment;
+        let locale =
+            crate::i18n::text_locale(&translations, env.locale, env.locale_settings.languages);
+        let labels = crate::desktop::MenuLabels::for_locale(
+            locale,
+            self.components.environment.os == crate::platform::Os::MacOs,
+        );
+        let _ = self.apply_op(crate::Op::Command {
+            id: crate::ROOT_ID,
+            command: crate::Command::Desktop(Box::new(
+                crate::desktop::DesktopCommand::SetMenuLabels(Box::new(labels)),
+            )),
+        });
     }
 
     /// The language the app asked to show in since the last call
@@ -1118,6 +1165,11 @@ impl<M: TextEngine> Core<M> {
     pub(super) fn apply_environment(&mut self, environment: Environment) {
         let _entered = self.components.runtime.enter();
         let changed = self.components.environment != environment;
+        let language_changed = self.components.environment.idiom != environment.idiom
+            || self.components.environment.os != environment.os
+            || self.components.environment.locale != environment.locale
+            || self.components.environment.locale_settings.languages
+                != environment.locale_settings.languages;
         self.keyboard_moved |=
             self.components.environment.keyboard_height != environment.keyboard_height;
         let ratio = self.components.environment.pixel_ratio;
@@ -1132,6 +1184,9 @@ impl<M: TextEngine> Core<M> {
         if changed {
             // What reads a part that changed runs again.
             self.components.runtime.set_environment(environment);
+        }
+        if language_changed {
+            self.localize_menus();
         }
         // A main window that keeps its placement saves it as it changes.
         if let Some(state) = environment.window_state {
@@ -1239,6 +1294,37 @@ impl<M: TextEngine> Core<M> {
         }
         self.apply_actions();
         self.quit_pending()
+    }
+
+    /// The user asked to quit while the app listens to quit requests:
+    /// each listener hears it, oldest first.
+    fn quit_requested(&mut self) {
+        let _entered = self.components.runtime.enter();
+        let listeners = self.components.executor.quit_requests.borrow().all();
+        for listener in listeners {
+            if let Err(message) = caught(|| listener()) {
+                log::error!(target: "js", "a quit request listener failed: {message}");
+            }
+        }
+        self.apply_actions();
+    }
+
+    /// Tells the platform whether its quit requests go to the app, when
+    /// that changed since the last call (a listener came or went): whether
+    /// it did.
+    pub(super) fn sync_quit_requests(&mut self) -> bool {
+        let asks = !self.components.executor.quit_requests.borrow().is_empty();
+        if asks == self.components.asks_quit {
+            return false;
+        }
+        self.components.asks_quit = asks;
+        let _ = self.apply_op(crate::Op::Command {
+            id: crate::ROOT_ID,
+            command: crate::Command::Desktop(Box::new(
+                crate::desktop::DesktopCommand::SetQuitOnRequest(!asks),
+            )),
+        });
+        true
     }
 
     /// Whether the work quit listeners started is still running.
@@ -1425,7 +1511,8 @@ impl<M: TextEngine> Core<M> {
                         .collect();
                     for cell in cells {
                         let binds = self.components.instances.get(&cell).is_some_and(|inst| {
-                            inst.row_index.is_some() && inst.cell_owner.is_some_and(|o| o.is_live())
+                            inst.cell_position.is_some()
+                                && inst.cell_owner.is_some_and(|o| o.is_live())
                         });
                         if !binds {
                             self.components.mark(cell);
@@ -1445,10 +1532,11 @@ impl<M: TextEngine> Core<M> {
                     && *current != index as usize
                 {
                     *current = index as usize;
-                    match inst.row_index {
+                    match inst.cell_position {
                         // A view's wrapper keeps its content.
                         Some(row) if inst.cell_owner.is_some_and(|o| o.is_live()) => {
-                            row.set(index as usize);
+                            row.index.set(index as usize);
+                            row.bound.set(true);
                         }
                         _ => self.components.mark(id),
                     }
@@ -2262,9 +2350,9 @@ impl<M: TextEngine> Core<M> {
                 // The wrapper is the placing component's.
                 let parent = self.list_component_owner(list);
                 let el = self.build_cell(parent, inst, build);
-                inst.row_index = made.take();
+                inst.cell_position = made.take();
                 if let (Some(list), Some(index), Some(owner)) =
-                    (list, inst.row_index, inst.cell_owner)
+                    (list, inst.cell_position, inst.cell_owner)
                     && let Some(state) = self.components.virtual_lists.get(&list)
                 {
                     state.rows.borrow_mut().insert(host, (index, owner));
@@ -2306,7 +2394,7 @@ impl<M: TextEngine> Core<M> {
                         if let Some(owner) = inst.cell_owner.take() {
                             owner.dispose();
                         }
-                        inst.row_index = None;
+                        inst.cell_position = None;
                         ElNode::empty_view()
                     }
                     Some((count, row, separator, rows, scope)) => {
@@ -2335,8 +2423,8 @@ impl<M: TextEngine> Core<M> {
                         // the cell's parent.
                         let parent = scope.unwrap_or_else(|| self.list_component_owner(Some(list)));
                         let el = self.build_cell(parent, inst, build);
-                        inst.row_index = made.take();
-                        if let (Some(index), Some(owner)) = (inst.row_index, inst.cell_owner) {
+                        inst.cell_position = made.take();
+                        if let (Some(index), Some(owner)) = (inst.cell_position, inst.cell_owner) {
                             rows.borrow_mut().insert(host, (index, owner));
                         }
                         match el {
@@ -3149,6 +3237,21 @@ impl<M: TextEngine> Core<M> {
             // its focus (Android: an input that gains a sibling would lose
             // the keyboard on each keystroke).
             let ids: Vec<NodeId> = wanted().copied().collect();
+            // A first fill appends them in order: no child to find its place
+            // among (from the end, each would scan the ones placed already).
+            let empty = self
+                .key(parent)
+                .is_ok_and(|k| self.nodes[k as usize].children.is_empty());
+            if empty {
+                for &child in &ids {
+                    let _ = self.apply_op(Op::Insert {
+                        parent,
+                        child,
+                        before: None,
+                    });
+                }
+                return out;
+            }
             self.place_before(parent, &ids, None);
         }
         out
@@ -4547,13 +4650,13 @@ impl<M: TextEngine> Core<M> {
             let Some(inst) = self.components.instances.get_mut(&part) else {
                 continue;
             };
-            let Some(signal) = inst.row_index else {
+            let Some(signal) = inst.cell_position else {
                 continue;
             };
             let live = inst.cell_owner.is_some_and(|o| o.is_live());
             if let Inner::VirtualRow { index, .. } | Inner::Row { index, .. } = &mut inst.inner {
                 *index = if live {
-                    signal.get_untracked()
+                    signal.index.get_untracked()
                 } else {
                     usize::MAX
                 };
@@ -4622,10 +4725,11 @@ impl<M: TextEngine> Core<M> {
                         }
                         // A view's cell keeps its content: what reads its
                         // position follows.
-                        if let Some(row) = inst.row_index
+                        if let Some(row) = inst.cell_position
                             && inst.cell_owner.is_some_and(|o| o.is_live())
                         {
-                            row.set(index);
+                            row.index.set(index);
+                            row.bound.set(true);
                             continue;
                         }
                     }
@@ -6124,6 +6228,10 @@ impl<M: TextEngine> Core<M> {
                         {
                             self.components.runtime.main_close_pressed(*reason);
                         }
+                        crate::desktop::WindowEvent::QuitRequest if id == crate::ROOT_ID => {
+                            self.quit_requested();
+                            return true;
+                        }
                         _ => {}
                     }
                 }
@@ -6754,9 +6862,9 @@ fn dispose_rows(rows: &std::rc::Weak<RefCell<CellRowMap>>) {
 
 /// Moves the live cells of a view's list as its rows moved (`splice`, now
 /// `count` rows): each keeps its row, at the row's new index. A cell whose
-/// row went keeps its index (the list frees it, and binds it to another row
-/// before showing it again) while that is a row; past the rows, its content
-/// is disposed, before its bindings could read there.
+/// row went stops reporting itself as bound, but keeps its content for
+/// recycling while its index is in range. Past the rows it is disposed
+/// before its bindings could read there.
 fn move_rows(cells: &CellRows, splice: Option<(u32, u32, u32)>, count: u32) {
     let parts: Vec<_> = cells
         .borrow()
@@ -6769,11 +6877,14 @@ fn move_rows(cells: &CellRows, splice: Option<(u32, u32, u32)>, count: u32) {
             gone.push(id);
             continue;
         }
-        let i = index.get_untracked();
+        let i = index.index.get_untracked();
         let to = match splice {
             Some((at, removed, inserted)) => {
                 let (at, removed, inserted) = (at as usize, removed as usize, inserted as usize);
-                if i < at || (at..at + removed).contains(&i) {
+                if (at..at + removed).contains(&i) {
+                    index.bound.set(false);
+                    i
+                } else if i < at {
                     i
                 } else {
                     i - removed + inserted
@@ -6782,7 +6893,7 @@ fn move_rows(cells: &CellRows, splice: Option<(u32, u32, u32)>, count: u32) {
             None => i,
         };
         if to < count as usize {
-            index.set(to);
+            index.index.set(to);
         } else {
             owner.dispose();
             gone.push(id);
@@ -6801,13 +6912,14 @@ fn row_position(
     index: usize,
     count: usize,
     count_signal: Option<crate::element::Signal<usize>>,
-    made: &std::cell::Cell<Option<crate::element::Signal<usize>>>,
+    made: &std::cell::Cell<Option<CellPosition>>,
 ) -> Position {
     match count_signal {
         Some(count) => {
             let index = crate::element::signal(index);
-            made.set(Some(index));
-            Position::of(index.node(), count.node())
+            let bound = crate::element::signal(true);
+            made.set(Some(CellPosition { index, bound }));
+            Position::bound(index.node(), count.node(), bound.node())
         }
         None => Position::fixed(index, count),
     }

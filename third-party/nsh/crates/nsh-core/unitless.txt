@@ -144,6 +144,7 @@ input::VELOCITY_WINDOW                                           # time (millise
 input::VelocityTracker::add(time)                                # time (milliseconds)
 input::VelocityTracker::velocity ->                              # a rate or a physical constant of an animation
 input::WHEEL_LATCH                                               # time (milliseconds)
+input::WheelStep::Discrete.time                                  # time (milliseconds)
 input::ZOOM_STEP                                                 # a scale factor
 input::latch_holds(last)                                         # time (milliseconds)
 input::latch_holds(time)                                         # time (milliseconds)

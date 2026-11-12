@@ -454,6 +454,7 @@ impl Rv {
             .retain(|id, _| *id == DOC || alive.contains(id));
         geo.frames
             .retain(|id, _| alive.contains(&(id & !(1 << 62))));
+        geo.insets.retain(|id, _| alive.contains(id));
         let mut old_texts = std::mem::take(&mut geo.texts);
         for (id, start) in texts {
             let mut entry = old_texts.remove(&id).unwrap_or_default();

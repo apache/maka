@@ -132,6 +132,20 @@ define_class!(
         #[unsafe(method(webViewWebContentProcessDidTerminate:))]
         fn process_terminated(&self, _web: &AnyObject) {
             self.ivars().evaluations.process_terminated();
+            // The app keeps running; the page comes back on its next reload.
+            self.send(
+                EventKind::Error,
+                EventPayload::Map(vec![
+                    (
+                        "message",
+                        PayloadValue::Str("The web content process terminated".into()),
+                    ),
+                    (
+                        "code",
+                        PayloadValue::Str(nsh_core::element::codes::WEBVIEW_TERMINATED.into()),
+                    ),
+                ]),
+            );
         }
 
         #[unsafe(method(webView:didFinishNavigation:))]

@@ -764,16 +764,20 @@ impl ListState {
     }
 
     /// Where the viewport starts in natural coordinates while a layout
-    /// measures its cells. An inverted list's `content_len` already holds
-    /// what this layout changed (a page spliced at its end, rows measured
-    /// above the viewport) before `anchor_end` moves the offset to match,
-    /// so it counts from the end it last anchored to, plus what the
-    /// measurements so far moved the visible rows by.
+    /// measures its cells, counting what the measurements so far moved the
+    /// visible rows by: the layout scrolls by that only once it measured
+    /// every cell, and a row above the viewport that earlier rows pushed
+    /// down is still above it. An inverted list's `content_len` already
+    /// holds what this layout changed (a page spliced at its end, rows
+    /// measured above the viewport) before `anchor_end` moves the offset to
+    /// match, so it counts from the end it last anchored to.
     fn measuring_natural_offset(&self) -> f32 {
         if self.inverted && !self.anchored_end.is_nan() {
             self.anchored_end - self.offset - self.measured_scroll
-        } else {
+        } else if self.inverted {
             self.natural_offset()
+        } else {
+            self.natural_offset() + self.measured_scroll
         }
     }
 
@@ -2255,6 +2259,24 @@ mod tests {
         assert_eq!(l.blocks().total, 100.0 * 50.0 + 30.0);
         // Item 30 is in view: no anchoring.
         assert_eq!(l.measured(30, 10.0), 0.0);
+    }
+
+    /// Rows above the viewport measured in one layout, in any order: each
+    /// is judged against where the viewport will be once the rows measured
+    /// before it moved it, so all of them keep the visible rows in place.
+    #[test]
+    fn rows_measured_above_the_viewport_together_all_anchor() {
+        for order in [[47, 48, 49], [49, 48, 47], [48, 49, 47]] {
+            let mut l = list(100, 50.0, 400.0);
+            l.offset = 2500.0;
+            // Item 50 starts the viewport.
+            assert_eq!(l.item_at(50), 2500.0);
+            let scroll: f32 = order.iter().map(|&i| l.measured(i, 200.0)).sum();
+            assert_eq!(scroll, 450.0, "{order:?}");
+            l.offset += scroll;
+            l.anchor_end(scroll);
+            assert_eq!(l.item_at(50) - l.natural_offset(), 0.0, "{order:?}");
+        }
     }
 
     #[test]

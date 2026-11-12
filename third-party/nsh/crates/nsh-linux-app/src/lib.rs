@@ -41,9 +41,9 @@ pub fn run_rust(root: nsh_platform_linux::Root) -> std::process::ExitCode {
     run(nsh_platform_linux::AppSource::Rust(root), options)
 }
 
-/// Installs the logger and reads the package: its `nsh` directory (next
-/// to the executable, or `NSH_APP_DIR`: `nsh run` of a Rust app) and the
-/// window's options.
+/// Installs the logger (unless the app has its own) and reads the
+/// package: its `nsh` directory (next to the executable, or
+/// `NSH_APP_DIR`: `nsh run` of a Rust app) and the window's options.
 #[cfg(target_os = "linux")]
 fn setup() -> Option<(std::path::PathBuf, nsh_platform_linux::AppOptions)> {
     use nsh_platform_linux::{AppOptions, Appearance, AssetBase, Limits};
@@ -65,8 +65,11 @@ fn setup() -> Option<(std::path::PathBuf, nsh_platform_linux::AppOptions)> {
     static DEVELOPMENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let development = std::env::var_os("NSH_APP_DIR");
     let _ = DEVELOPMENT.set(development.is_some());
-    let _ = log::set_logger(&LOGGER);
-    log::set_max_level(log::LevelFilter::Info);
+    // An app that installed its own logger (from its native module, which
+    // runs first) keeps it, and its level, as on macOS and iOS.
+    if log::set_logger(&LOGGER).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
 
     // The package directory holds the executable (a symlink to it, say in
     // ~/.local/bin, still finds it).

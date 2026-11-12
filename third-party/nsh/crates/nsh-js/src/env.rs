@@ -1,6 +1,7 @@
 //! The surface's environment: one signal per part
 //! (window, safe area, keyboard, color scheme, font scale, screen reader,
 //! reduced motion, pixel ratio, locale, locale settings, lifecycle, the
+//! wake count, the
 //! desktop window's state and the displays)
 //! written when the platform reports a
 //! change, read through read-only accessors; `nsh/device` (`platform`) and
@@ -52,9 +53,10 @@ enum Part {
     Displays,
     Fps,
     Shaders,
+    WakeCount,
 }
 
-const PARTS: usize = 16;
+const PARTS: usize = 17;
 
 /// The environment's part of a context's state.
 pub(crate) struct Env {
@@ -574,6 +576,9 @@ pub(crate) fn set_environment(cx: *mut JsContext, next: &Environment) -> Result<
     if changed(&|p| p.lifecycle == next.lifecycle) {
         writes.push((Part::Lifecycle, string(cx, next.lifecycle.name())));
     }
+    if changed(&|p| p.wake_count == next.wake_count) {
+        writes.push((Part::WakeCount, number(next.wake_count as f32)));
+    }
     if changed(&|p| p.shaders == next.shaders) {
         writes.push((Part::Shaders, boolean(next.shaders)));
     }
@@ -975,6 +980,14 @@ pub(crate) const DEVICE_EXPORTS: &[Item] = &[
         Ts::value(
             "Whether the app is in use (reactive): `\"active\"` in the foreground,\n`\"inactive\"` while visible without the focus (another app or window has\nit, or the system shows something over it), `\"background\"` while not\nvisible (in the background, minimized or hidden). An embedded app\nfollows the embedding app's.",
             "Accessor<\"active\" | \"inactive\" | \"background\">",
+        ),
+    ),
+    (
+        "wakeCount",
+        Export::Value(|cx| accessor(cx, Part::WakeCount)),
+        Ts::value(
+            "How many times the system woke from sleep while the app ran, 0 until\nthe first wake (reactive): an effect that reads it runs again after each\nwake. A sleep may leave `lifecycle()` as it was (a laptop's lid closed\nand opened with the app in front), while network connections and timers\ndid not live through it: check or open them again there. macOS, Windows\nand Linux count wakes; on iOS and Android a sleeping device takes the\napp to the background, which `lifecycle()` reports.",
+            "Accessor<number>",
         ),
     ),
     (

@@ -249,7 +249,7 @@ const at = signal<number | null>(null);
 
 ### 滚轮
 
-`onWheel` 在鼠标滚轮或触控板在视图上滚动时触发：macOS、Windows、Linux、GPUI 后端和 Web 都支持（DOM 的 `wheel`、GPUI 的 `ScrollWheelEvent`）。指针下方视图及其外层中，最近的监听者收到它。若该视图比指针下方所有滚动视图都更近，它就接管这次滚轮：系统不再滚动、缩放或捏合，因此页面里的画布可以在 Control + 滚轮时缩放、其他时候平移。监听的滚动视图，或包着滚动视图的外层视图，只是旁观：滚动视图照常滚动。JS 无法事后取消原生滚动（主线程不等待 JS），所以是否接管由挂载的内容决定，与 `onContextMenu` 相同。
+`onWheel` 在鼠标滚轮或触控板在视图上滚动时触发：macOS、Windows、Linux、GPUI 后端和 Web 都支持（DOM 的 `wheel`、GPUI 的 `ScrollWheelEvent`）。指针下方视图及其外层中，最近的监听者收到它。若该视图比指针下方所有滚动视图都更近，它就接管这次滚轮：系统不再滚动、缩放或捏合，因此页面里的画布可以在 Control + 滚轮时缩放、其他时候平移。监听的滚动视图，或包着滚动视图的外层视图，只是旁观：滚动视图照常滚动。一次滚动始终留在它去的地方，与滚动视图相同：接管了它的视图会收到这次滚动剩下的部分（触控板手势及其惯性、连续滚动的滚轮），即使指针离开了它；滚动视图已经开始的滚动，也不会被中途移到指针下的监听者抢走，那个监听者只是旁观。JS 无法事后取消原生滚动（主线程不等待 JS），所以是否接管由挂载的内容决定，与 `onContextMenu` 相同。
 
 | 属性 | Rust | 类型 | 说明 |
 |---|---|---|---|
@@ -286,6 +286,22 @@ const offset = signal({ x: 0, y: 0 });
     if (e.modifiers.control) zoom.update((z) => z * Math.min(2, Math.max(0.5, 1 - (e.delta.y * unit) / 200)));
     else offset.update((o) => ({ x: o.x - e.delta.x * unit, y: o.y - e.delta.y * unit }));
   }}
+/>
+```
+
+`onPinch` 在触控板于视图上捏合时触发，与 GPUI 的 `on_pinch` 相同：macOS、Linux、GPUI 后端和 Safari 都支持。Windows 和其他浏览器把触控板捏合报告为 Control + 滚轮，由 `onWheel` 收到，所以需要缩放的视图要同时监听两者。指针下方视图及其外层中，最近的监听者从捏合开始到结束一直收到它；若该视图比所有原生捏合的视图（`pinch` 值、`onPinchStart`）都更近，它就接管这次捏合，系统不再原生缩放。在捏合中途才开始监听的视图收到其余部分，没有开始事件。触摸屏上的手指捏合属于原生手势（`onPinchStart`，见[触摸与手势](../docs/touch-and-gestures.md)）。
+
+| 属性 | Rust | 类型 | 说明 |
+|---|---|---|---|
+| `onPinch` | `.on_pinch(..)` | `(e: PinchEvent) => void` | 触控板在视图或其内部的视图上捏合。 |
+
+`PinchEvent` 与 `MouseEvent` 一样带有 `position`、`pagePosition` 和 `modifiers`，以及 `delta`（相对上一次事件的缩放变化，0.1 即放大 10%，负数为缩小）和 `phase`：`"start"`、`"move"` 或 `"end"`，与触摸的阶段相同。Rust 中 `delta` 是 `Percentage`，`phase` 是 `PinchPhase`。
+
+```tsx
+<View
+  style={{ flex: 1 }}
+  onPinch={(e) => zoom.update((z) => z * (1 + e.delta))}
+  onWheel={(e) => e.modifiers.control && zoom.update((z) => z * (1 - (e.delta.y * (e.deltaMode === "lines" ? 16 : 1)) / 200))}
 />
 ```
 
@@ -497,6 +513,8 @@ stopPropagation() }`）；`…ShouldSetResponder` 回调还会收到 `gestureSta
 | `role` | `.role(AccessibilityRole::Button)` | `AccessibilityRole` | 元素是什么（`"button"`、`"header"`、`"link"`、`"switch"` 等）。 |
 | `accessibilityState` | `.accessibility_state(..)` | `{ disabled?, selected?, checked?, busy?, expanded?, pressed?, current? }` | 辅助技术报告的状态（`checked` 和 `pressed` 可以是 `"mixed"`；`current` 为 `true` 或 `"page"`、`"step"`、`"location"`、`"date"`、`"time"`）。 |
 | `accessibilityLevel` | `.accessibility_level(..)` | `number` | 标题的级别（1 为最高），树节点的深度（顶层为 1）。 |
+| `accessibilityActiveDescendant` | `.accessibility_active_descendant(..)` | `ViewRef \| null` | 获得焦点的元素里当前活动的那一项：组合框高亮的选项、列表的光标行（[无障碍](../docs/accessibility.md#获得焦点的元素里的活动项)）。 |
+| `accessibilityControls` | `.accessibility_controls(..)` | `ViewRef \| null` | 内容由这个元素控制的元素：组合框的列表。 |
 | `accessibilityValue` | `.accessibility_value(..)` | `{ min?, max?, now?, text? }` | 范围类或文本类元素的值。 |
 | `accessibilityElementsHidden` | | `boolean` | 对辅助技术隐藏该视图及其子树。 |
 | `importantForAccessibility` | | `"auto" \| "yes" \| "no" \| "no-hide-descendants"` | 是否暴露该视图。 |

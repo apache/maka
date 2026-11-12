@@ -189,6 +189,59 @@ test("an invalid view is aria-invalid, and so is the field of an input", () => {
   assert.equal(field.attrs.get("aria-invalid"), "true");
 });
 
+test("a combo box's field names its highlighted row and its list by DOM id", () => {
+  const { player } = fakePlayer();
+  player.classPrefix = "nsh-p1-";
+  const element = (extra = {}) => {
+    const attrs = new Map();
+    return {
+      attrs,
+      id: "",
+      setAttribute: (name, value) => attrs.set(name, value),
+      removeAttribute: (name) => attrs.delete(name),
+      ...extra,
+    };
+  };
+  const views = new Map();
+  player.view = (id) => views.get(id);
+  const field = element({ classList: { toggle() {} }, tagName: "INPUT" });
+  const el = element({ _field: field, _props: { role: "combobox", label: "Tags", expanded: true, hasPopup: true, activeDescendant: 6, controls: 4 } });
+  const list = element();
+  views.set(2, el);
+  views.set(4, list);
+  // The row named is made after the field's props: linked after the
+  // batch (`apply` ends with `linkRelations`).
+  player.updateAria(el);
+  player.linkRelations();
+  assert.equal(field.attrs.get("aria-controls"), "nsh-p1-v4");
+  assert.equal(list.id, "nsh-p1-v4");
+  assert.equal(field.attrs.has("aria-activedescendant"), false, "not made yet");
+  const row = element();
+  views.set(6, row);
+  player.linkRelations();
+  assert.equal(field.attrs.get("aria-activedescendant"), "nsh-p1-v6");
+  assert.equal(row.id, "nsh-p1-v6");
+  // The field is the combo box: the wrapper has no role of its own.
+  assert.equal(field.attrs.get("role"), "combobox");
+  assert.equal(field.attrs.get("aria-label"), "Tags");
+  assert.equal(field.attrs.get("aria-expanded"), "true");
+  assert.equal(field.attrs.get("aria-haspopup"), "listbox");
+  assert.equal(el.attrs.has("role"), false);
+  assert.equal(el.attrs.has("aria-activedescendant"), false);
+  // The highlight moves, then the list closes.
+  el._props = { ...el._props, activeDescendant: 8 };
+  views.set(8, element());
+  player.updateAria(el);
+  player.linkRelations();
+  assert.equal(field.attrs.get("aria-activedescendant"), "nsh-p1-v8");
+  el._props = { role: "combobox", expanded: false, hasPopup: true };
+  player.updateAria(el);
+  player.linkRelations();
+  assert.equal(field.attrs.has("aria-activedescendant"), false);
+  assert.equal(field.attrs.has("aria-controls"), false);
+  assert.equal(field.attrs.get("aria-expanded"), "false");
+});
+
 test("events sent before the app runs reach it in order once it starts, later ones at once", () => {
   const { player, sent } = fakePlayer();
   player.hostEvent("a", 1);

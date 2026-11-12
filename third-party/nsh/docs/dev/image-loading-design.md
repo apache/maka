@@ -215,8 +215,6 @@ Known follow-ups of phase 1:
 - Windows scales with WIC after the BGRA conversion, so a JPEG is decoded at
   full size before it shrinks (no decode-time scaling as libjpeg's or
   ImageIO's).
-- The Windows and macOS surfaces carry no access policy (`Access::default()`):
-  every redirect is allowed except HTTPS→HTTP.
 
 Each phase lands with tests for its contract (dedup, eviction order, leases
 pinning, budget accounting including variants, cancellation, bucket choice,

@@ -417,6 +417,8 @@ import { Image, View } from "nsh";
 />
 ```
 
+单独成段的图片（一段或一个表格单元格里只有图片）放在与正文同宽的框里：`w-full` 填满这个宽度，`max-w-full` 让更宽的图片收在其中，固定宽度的图片保持自己的宽度，靠行首排列。位于一行文字中的图片保持它要求的尺寸。
+
 `Highlighted` 和 `MathView`（Rust 中是 `highlighted` 和 `math_view`）代表应用自己的组件（高亮器、公式渲染器，或应用 Rust crate 中的组件）。没有 `renderMath` 时，`TextView` 自己排版公式（`math` 和 `mathBlock` 部件）：支持 KaTeX 的 TeX 语法并使用 KaTeX 字体，颜色跟随文本，在各平台上效果一致；无法解析的 TeX 以等宽字体显示其源码。
 
 <a id="markdown-extensions"></a>

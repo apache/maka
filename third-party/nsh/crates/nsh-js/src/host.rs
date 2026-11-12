@@ -1326,6 +1326,13 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
             obj.set("deltaMode", e.delta.mode_name())?;
             obj.set("modifiers", modifiers_object(cx, &e.modifiers)?)?;
         }
+        EventPayload::Pinch(e) => {
+            obj.set("position", point_object(cx, e.position)?)?;
+            obj.set("pagePosition", point_object(cx, e.page_position)?)?;
+            obj.set("delta", e.delta.0)?;
+            obj.set("phase", e.phase.name())?;
+            obj.set("modifiers", modifiers_object(cx, &e.modifiers)?)?;
+        }
         EventPayload::ContextMenu(e) => {
             obj.set("position", point_object(cx, e.position)?)?;
             obj.set("pagePosition", point_object(cx, e.page_position)?)?;
@@ -2537,6 +2544,28 @@ const report = (v) => text(String(v));
             assert_eq!(obj.get::<_, String>("button").unwrap(), "right");
             let pressed: Value = obj.get("pressedButton").unwrap();
             assert!(pressed.is_null());
+        });
+    }
+
+    #[test]
+    fn pinch_payload_is_as_declared() {
+        let host = Host::new().unwrap();
+        let event = nsh_core::PinchEvent::new(
+            point(px(1.0), px(2.0)),
+            point(px(11.0), px(22.0)),
+            nsh_core::geometry::Percentage(0.25),
+            nsh_core::PinchPhase::Start,
+            Default::default(),
+        );
+        host.cx.with(|cx| {
+            let value = payload_object(&cx, &EventPayload::Pinch(event)).unwrap();
+            let obj = value.as_object().unwrap();
+            assert_eq!(obj.get::<_, f64>("delta").unwrap(), 0.25);
+            assert_eq!(obj.get::<_, String>("phase").unwrap(), "start");
+            let page: rquickjs::Object = obj.get("pagePosition").unwrap();
+            assert_eq!(page.get::<_, f64>("y").unwrap(), 22.0);
+            let modifiers: rquickjs::Object = obj.get("modifiers").unwrap();
+            assert!(!modifiers.get::<_, bool>("shift").unwrap());
         });
     }
 

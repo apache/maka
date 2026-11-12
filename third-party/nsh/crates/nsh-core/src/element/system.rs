@@ -576,6 +576,10 @@ pub mod codes {
     /// the page navigated, the web view went away or its web content
     /// process ended.
     pub const WEBVIEW_ABORTED: &str = "ERR_NSH_WEBVIEW_ABORTED";
+    /// A web view's web content process ended (it crashed, or the system
+    /// reclaimed its memory): the web view shows no page until the app
+    /// reloads it or gives it a page (a web view's `onError`).
+    pub const WEBVIEW_TERMINATED: &str = "ERR_NSH_WEBVIEW_TERMINATED";
 }
 
 /// An I/O error as Node reports it: `Error` with the message and the

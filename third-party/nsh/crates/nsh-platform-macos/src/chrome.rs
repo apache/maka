@@ -49,8 +49,8 @@ use dispatch2::DispatchQueue;
 use nsh_core::{
     EventKind, EventPayload, ImageSource, NodeId, PayloadValue, ROOT_ID,
     desktop::{
-        DesktopCommand, Key, MenuAction, MenuItem, MenuRole, Shortcut, TitleBarOptions,
-        TitleBarStyle, WindowFrame, menu_icon,
+        DesktopCommand, Key, MenuAction, MenuItem, MenuLabels, MenuRole, Shortcut, TitleBarOptions,
+        TitleBarStyle, WindowEvent, WindowFrame, menu_icon,
     },
     geometry::{DevicePixels, Edges, Points, size},
 };
@@ -136,12 +136,22 @@ define_class!(
 /// A surface's chrome.
 #[derive(Default)]
 pub(crate) struct Chrome {
+    /// The standard menu this standalone surface owns; absent in embedded views.
+    standard_menu: RefCell<Option<Retained<NSMenu>>>,
     /// The target of its menu items (made with the first menu).
     target: RefCell<Option<Retained<MenuTarget>>>,
     /// The main menu it set (`setApplicationMenu`).
     menu: RefCell<Option<Retained<NSMenu>>>,
+    /// That menu's items, made again with new labels ([`relabel`]).
+    menu_items: RefCell<Option<Arc<[MenuItem]>>>,
+    /// The labels the core translates for this surface's language.
+    pub(crate) labels: RefCell<MenuLabels>,
     /// The loads of the icons of that menu, given up with it.
     menu_icons: RefCell<Vec<crate::image::Load>>,
+    /// The app listens to quit requests
+    /// (`DesktopCommand::SetQuitOnRequest(false)`): the Quit item and
+    /// Command-Q ask it ([`ask_quit`]).
+    asks_quit: Cell<bool>,
 }
 
 /// A window's title bar as the app set it (`titleBar`).
@@ -513,9 +523,11 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
         // with its window kept hidden; an embedding app keeps its own
         // lifecycle.
         DesktopCommand::Quit => crate::app::quit_app(),
+        DesktopCommand::SetQuitOnRequest(quit) => surface.chrome.asks_quit.set(!quit),
         // Quits as above, then the runner starts the app again.
         DesktopCommand::Restart => crate::app::restart_app(),
-        DesktopCommand::SetMenu(items) => set_menu(surface, items.as_deref()),
+        DesktopCommand::SetMenu(items) => set_menu(surface, items.clone()),
+        DesktopCommand::SetMenuLabels(labels) => relabel(surface, labels),
         // The menu bar is the system's.
         DesktopCommand::SetMenuBar(_) => {}
         DesktopCommand::PopupMenu { items, at } => {
@@ -548,6 +560,22 @@ pub(crate) fn command(surface: &Rc<Surface>, command: &DesktopCommand) {
             crate::global_shortcut::unregister(surface, *id)
         }
     }
+}
+
+/// The user asked to quit (the Quit item, Command-Q, the Dock): while the
+/// app listens to quit requests, it hears this one
+/// ([`WindowEvent::QuitRequest`]) and decides, and this is true; false when
+/// quitting goes on.
+pub(crate) fn ask_quit(surface: &Surface) -> bool {
+    if !surface.chrome.asks_quit.get() {
+        return false;
+    }
+    surface.event(
+        ROOT_ID,
+        EventKind::Window,
+        EventPayload::Window(Box::new(WindowEvent::QuitRequest)),
+    );
+    true
 }
 
 /// Moves and sizes the window: a field left out keeps its value.
@@ -787,20 +815,173 @@ fn role_action(role: MenuRole) -> Sel {
     }
 }
 
-/// An item's title: its label, else its role's (with the app's name where
-/// macOS writes it).
-fn title(action: &MenuAction) -> String {
+/// An item's title: its label, else its role's ([`role_title`]).
+fn title(action: &MenuAction, labels: &MenuLabels) -> String {
     if !action.label.is_empty() {
         return action.label.clone();
     }
-    match action.role {
-        Some(role @ (MenuRole::About | MenuRole::Hide | MenuRole::Quit)) => {
+    action
+        .role
+        .map(|role| role_title(role, labels))
+        .unwrap_or_default()
+}
+
+/// The title of a role-only item: NSH's
+/// translation in `labels`, else the English one, with the app's name
+/// where macOS writes it.
+fn role_title(role: MenuRole, labels: &MenuLabels) -> String {
+    if let Some(label) = labels.role(role) {
+        return label.replace("%{app}", &app_name());
+    }
+    match role {
+        MenuRole::About | MenuRole::Hide | MenuRole::Quit => {
             format!("{} {}", role.label(), app_name())
         }
-        Some(MenuRole::ToggleFullScreen) => "Enter Full Screen".to_owned(),
-        Some(role) => role.label().to_owned(),
-        None => String::new(),
+        MenuRole::ToggleFullScreen => "Enter Full Screen".to_owned(),
+        role => role.label().to_owned(),
     }
+}
+
+/// An item that is `role` alone: its title ([`role_title`]), its
+/// shortcut on a Mac and its standard action, as the standard menu bar's
+/// items are.
+pub(crate) fn role_item(
+    mtm: MainThreadMarker,
+    role: MenuRole,
+    labels: &MenuLabels,
+) -> Retained<NSMenuItem> {
+    let (key, modifiers) = role.shortcut(true).map_or_else(
+        || (String::new(), NSEventModifierFlags::empty()),
+        |shortcut| key_equivalent(&shortcut),
+    );
+    // SAFETY: the action is AppKit's standard one, sent down the responder
+    // chain.
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str(&role_title(role, labels)),
+            Some(role_action(role)),
+            &NSString::from_str(&key),
+        )
+    };
+    item.setKeyEquivalentModifierMask(modifiers);
+    item
+}
+
+/// The standard menu bar: the app menu (About, Hide, Quit), Edit (the
+/// text commands fields answer: undo, cut, copy, paste, select all) and
+/// Window (minimize, zoom, full screen, close), items of their roles
+/// ([`role_item`]) labelled in the app's selected language.
+fn standard_menu(mtm: MainThreadMarker, labels: &MenuLabels) -> Retained<NSMenu> {
+    let title = app_name();
+    let (edit, window) = (&labels.edit_menu, &labels.window_menu);
+    let bar = NSMenu::new(mtm);
+    let submenu = |name: &str| {
+        let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(name));
+        // SAFETY: an item without an action, holding the submenu.
+        let holder = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str(name),
+                None,
+                &NSString::new(),
+            )
+        };
+        holder.setSubmenu(Some(&menu));
+        bar.addItem(&holder);
+        menu
+    };
+    let fill = |menu: &NSMenu, roles: &[Option<MenuRole>]| {
+        for role in roles {
+            match role {
+                Some(role) => menu.addItem(&role_item(mtm, *role, labels)),
+                None => menu.addItem(&NSMenuItem::separatorItem(mtm)),
+            }
+        }
+    };
+    fill(
+        &submenu(&title),
+        &[
+            Some(MenuRole::About),
+            None,
+            Some(MenuRole::Hide),
+            Some(MenuRole::HideOthers),
+            None,
+            Some(MenuRole::Quit),
+        ],
+    );
+    fill(
+        &submenu(edit.as_deref().unwrap_or("Edit")),
+        &[
+            Some(MenuRole::Undo),
+            Some(MenuRole::Redo),
+            None,
+            Some(MenuRole::Cut),
+            Some(MenuRole::Copy),
+            Some(MenuRole::Paste),
+            Some(MenuRole::SelectAll),
+        ],
+    );
+    fill(
+        &submenu(window.as_deref().unwrap_or("Window")),
+        &[
+            Some(MenuRole::Minimize),
+            Some(MenuRole::Zoom),
+            Some(MenuRole::ToggleFullScreen),
+            None,
+            Some(MenuRole::Close),
+        ],
+    );
+    bar
+}
+
+/// Shows the standard menu bar ([`standard_menu`]) as the app's main menu:
+/// the standalone runner's, which [`relabel`] makes again.
+pub(crate) fn show_standard_menu(surface: &Surface) {
+    let menu = standard_menu(surface.mtm, &surface.chrome.labels.borrow());
+    NSApplication::sharedApplication(surface.mtm).setMainMenu(Some(&menu));
+    surface.chrome.standard_menu.replace(Some(menu));
+}
+
+/// The core translated new labels ([`DesktopCommand::SetMenuLabels`]): this
+/// surface's menus take them. The standard menu bar, which only
+/// [`crate::run_app`] shows (its app is the only one), is made again with
+/// them, shown or kept to come back (`setApplicationMenu(null)`); so are
+/// the app's own menu, shown again only if it still shows (another view's
+/// may have replaced it), and its tray's.
+fn relabel(surface: &Surface, labels: &MenuLabels) {
+    surface.chrome.labels.replace(labels.clone());
+    let mtm = surface.mtm;
+    let app = NSApplication::sharedApplication(mtm);
+    if let Some(old) = surface.chrome.standard_menu.take() {
+        let menu = standard_menu(mtm, labels);
+        if app.mainMenu().is_some_and(|m| m == old) {
+            app.setMainMenu(Some(&menu));
+        }
+        ORIGINAL_MENU.with_borrow_mut(|o| {
+            if let Some(original) = o
+                && original.as_ref().is_some_and(|m| *m == old)
+            {
+                *original = Some(menu.clone());
+            }
+        });
+        surface.chrome.standard_menu.replace(Some(menu));
+    }
+    let items = surface.chrome.menu_items.borrow().clone();
+    if let Some(items) = items {
+        let shown = {
+            let own = surface.chrome.menu.borrow();
+            app.mainMenu()
+                .is_some_and(|m| own.as_ref().is_some_and(|own| *own == m))
+        };
+        let (bar, loads) = menu_bar(surface, &items);
+        if shown {
+            app.setMainMenu(Some(&bar));
+        }
+        *surface.chrome.menu.borrow_mut() = Some(bar);
+        *surface.chrome.menu_icons.borrow_mut() = loads;
+    }
+    crate::tray::relabel(surface);
 }
 
 /// A shortcut as a key equivalent and its modifiers.
@@ -931,7 +1112,7 @@ pub(crate) fn menu(
                 let ns = unsafe {
                     NSMenuItem::initWithTitle_action_keyEquivalent(
                         NSMenuItem::alloc(mtm),
-                        &NSString::from_str(&self::title(action)),
+                        &NSString::from_str(&self::title(action, &surface.chrome.labels.borrow())),
                         selector,
                         &NSString::from_str(&key),
                     )
@@ -996,7 +1177,7 @@ fn holder(
 /// The application menu: the main menu, with a menu of the bar per
 /// top-level submenu (its top-level actions go to the first one). The bar's
 /// titles are text: an icon is for the items of a menu.
-fn set_menu(surface: &Surface, items: Option<&[MenuItem]>) {
+fn set_menu(surface: &Surface, items: Option<Arc<[MenuItem]>>) {
     let mtm = surface.mtm;
     let app = NSApplication::sharedApplication(mtm);
     ORIGINAL_MENU.with(|o| {
@@ -1005,13 +1186,22 @@ fn set_menu(surface: &Surface, items: Option<&[MenuItem]>) {
             *o = Some(app.mainMenu());
         }
     });
+    *surface.chrome.menu_items.borrow_mut() = items.clone();
     let Some(items) = items else {
         surface.chrome.menu.borrow_mut().take();
         surface.chrome.menu_icons.borrow_mut().clear();
         restore_menu(&app);
         return;
     };
-    let bar = NSMenu::new(mtm);
+    let (bar, loads) = menu_bar(surface, &items);
+    app.setMainMenu(Some(&bar));
+    *surface.chrome.menu.borrow_mut() = Some(bar);
+    *surface.chrome.menu_icons.borrow_mut() = loads;
+}
+
+/// The app's menu bar of `items`, and the loads of their icons.
+fn menu_bar(surface: &Surface, items: &[MenuItem]) -> (Retained<NSMenu>, Vec<crate::image::Load>) {
+    let bar = NSMenu::new(surface.mtm);
     let mut loads = Vec::new();
     for item in items {
         // A top-level item that is not a submenu gets one of its own.
@@ -1022,14 +1212,16 @@ fn set_menu(surface: &Surface, items: Option<&[MenuItem]>) {
                 items,
                 ..
             } => (label.clone(), *enabled, items.clone()),
-            MenuItem::Action(action) => (title(action), true, vec![item.clone()]),
+            MenuItem::Action(action) => (
+                title(action, &surface.chrome.labels.borrow()),
+                true,
+                vec![item.clone()],
+            ),
             MenuItem::Separator => continue,
         };
         bar.addItem(&holder(surface, &label, enabled, &sub_items, &mut loads));
     }
-    app.setMainMenu(Some(&bar));
-    *surface.chrome.menu.borrow_mut() = Some(bar);
-    *surface.chrome.menu_icons.borrow_mut() = loads;
+    (bar, loads)
 }
 
 /// Brings back the main menu the app replaced.
@@ -1156,6 +1348,38 @@ pub(crate) fn window_changed(surface: &Surface) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Items with a role and no label of their own read the translated labels,
+    /// as they are, and English for the roles it does not label, the app
+    /// menu's with the app's name.
+    #[test]
+    fn roles_read_the_translated_labels() {
+        set_app_name("Notes");
+        let english = MenuLabels::default();
+        assert_eq!(role_title(MenuRole::Quit, &english), "Quit Notes");
+        assert_eq!(
+            role_title(MenuRole::ToggleFullScreen, &english),
+            "Enter Full Screen"
+        );
+        let mut labels = MenuLabels::default();
+        labels.roles.insert(MenuRole::Quit, "Notes を終了".into());
+        labels.roles.insert(MenuRole::Copy, "コピー".into());
+        assert_eq!(role_title(MenuRole::Quit, &labels), "Notes を終了");
+        assert_eq!(role_title(MenuRole::Copy, &labels), "コピー");
+        assert_eq!(role_title(MenuRole::Paste, &labels), "Paste");
+        let action = MenuAction {
+            id: 0,
+            label: String::new(),
+            shortcut: None,
+            enabled: true,
+            checked: None,
+            role: Some(MenuRole::Copy),
+            when: nsh_core::keymap::When::Always,
+            icon: None,
+        };
+        assert_eq!(title(&action, &labels), "コピー");
+        assert_eq!(title(&action, &english), "Copy");
+    }
 
     #[test]
     fn window_buttons_go_where_the_app_put_them() {

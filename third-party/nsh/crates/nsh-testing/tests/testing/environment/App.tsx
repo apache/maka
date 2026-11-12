@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { reduceMotion } from "nsh";
-import { colorScheme, lifecycle, locale, localeSettings, platform, windowSize } from "nsh";
+import { colorScheme, lifecycle, locale, localeSettings, platform, wakeCount, windowSize } from "nsh";
 
 // Whether `Intl`'s local time is in the zone it names, read again when the
 // device's zone changes (a test's, which moves no local time): formatting in
@@ -42,6 +42,7 @@ function App() {
       <Text>{`OS: ${platform.os}`}</Text>
       <Text>{`Size: ${windowSize().width}x${windowSize().height}`}</Text>
       <Text>{`App: ${lifecycle()}`}</Text>
+      <Text>{`Wakes: ${wakeCount()}`}</Text>
       <Text>{`Zone: ${localeSettings().timeZone}`}</Text>
       <Text>{`Intl agrees: ${intlAgrees()}`}</Text>
       <Text>{`Languages: ${localeSettings().languages.join(",")}`}</Text>

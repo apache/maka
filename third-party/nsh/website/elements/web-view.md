@@ -80,7 +80,7 @@ A web view takes the props of a [view](./view.md) (it has no children) plus:
 |---|---|---|---|
 | `onLoadStart` | `.on_load_start` | `WebViewNavigation` | A page started loading. |
 | `onLoad` | `.on_load` | `WebViewNavigation` | A page finished loading. |
-| `onError` | `.on_error` | `{ message, code? }` (`&str`, the message) | Loading failed; `code` is `"ERR_ACCESS_DENIED"` for a page, `html` or `baseUrl` the app's capabilities do not grant, and `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` where the platform shows no web view (Rust: also `.on_unavailable`, the message). |
+| `onError` | `.on_error` | `{ message, code? }` (`&str`, the message) | Loading failed; `code` is `"ERR_ACCESS_DENIED"` for a page, `html` or `baseUrl` the app's capabilities do not grant, `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` where the platform shows no web view (Rust: also `.on_unavailable`, the message), and `"ERR_NSH_WEBVIEW_TERMINATED"` when the page's process ended, until `reload()`, `load()` or a new source (Rust: also `.on_process_terminated`). |
 | `onNavigationStateChange` | `.on_navigation_state_change` | `WebViewNavigation` | The URL, title, loading state or history changed. |
 | `onMessage` | `.on_message` | `{ data: string }` (`&str`) | The page called `window.nsh.postMessage(data)`. |
 | `onDownload` | | `WebViewDownload` | A download started, finished or failed (macOS). |

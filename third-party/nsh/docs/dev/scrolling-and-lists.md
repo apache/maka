@@ -46,6 +46,9 @@
   content around its top left and scrolls both ways itself (ScaleGestureDetector around the focal point, panning with any
   number of fingers, OverScroller flings, rubber bands past the edges and the zoom limits). Pinches start only after
   Android's minimum span (about 27 mm between the fingers). Zoom reports go to the core (`EngineControl::zoom`).
+  In a pager, as UIKit's nesting does: a `ZScroll` with content to pan keeps a scroll view around from intercepting
+  until its drag passes the slop, then keeps the drag if it has content that way and leaves it otherwise; panning into
+  an edge, it hands the rest of the drag to a scroll view around that can go on (the next or previous page).
 - **List** props: `each`, `estimatedItemSize`, `numColumns` (both may change while the list shows: the first visible item keeps its place, `ListState::visible_anchor`; a change of columns remembers it in `columns_anchor`, so resizing back and forth does not drift), `inverted` (chat: item 0 at the bottom, starts at the end and keeps its
   distance from the end as content changes; with `onLoadMoreAtStart`, only while at it, the visible rows when scrolled away), `maintainVisibleContentPosition` (`autoscrollToBottomThreshold`: a list
   that is not inverted follows its end while within that distance of it, `ListState::anchor_end`; scrolled up, growth

@@ -3564,7 +3564,7 @@ https://crates.io/api/v1/crates/zeroize/1.9.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zeroize_derive/1.5.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zune-core/0.5.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zune-jpeg/0.5.15/download :: LICENSE-APACHE
-https://github.com/longbridge/nsh#2452c93d450bfe0ee1e22da5248191ba0a391051 (adapted; third-party/nsh/crates/nsh-js) :: third_party/llrt-types/LICENSE
+https://github.com/longbridge/nsh#75e009e652ccb18c3dfbcc7e65a44b1f21da538c (adapted; third-party/nsh/crates/nsh-js) :: third_party/llrt-types/LICENSE
 https://raw.githubusercontent.com/google/flatbuffers/7e163021e59cca4f8e1e35a7c828b5c6b7915953/LICENSE
 
 Apache License
@@ -25305,7 +25305,7 @@ For these and/or other purposes and motivations, and without any expectation of 
 
 nsh-base@0.5.0 (Apache-2.0)
 
-https://github.com/longbridge/nsh#2452c93d450bfe0ee1e22da5248191ba0a391051 (adapted; third-party/nsh/crates/nsh-base) :: fonts/katex.LICENSE.txt
+https://github.com/longbridge/nsh#75e009e652ccb18c3dfbcc7e65a44b1f21da538c (adapted; third-party/nsh/crates/nsh-base) :: fonts/katex.LICENSE.txt
 
 The KaTeX fonts in katex.pack.zst (KaTeX_*.ttf of https://github.com/KaTeX/KaTeX,
 unmodified, packed in one zstd-compressed file):
@@ -25407,7 +25407,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 nsh-base@0.5.0 (Apache-2.0)
 
-https://github.com/longbridge/nsh#2452c93d450bfe0ee1e22da5248191ba0a391051 (adapted; third-party/nsh/crates/nsh-base) :: src/emoji_picker/emoji.LICENSE.txt
+https://github.com/longbridge/nsh#75e009e652ccb18c3dfbcc7e65a44b1f21da538c (adapted; third-party/nsh/crates/nsh-base) :: src/emoji_picker/emoji.LICENSE.txt
 
 emoji.tsv is generated from emojibase-data (https://github.com/milesj/emojibase),
 whose names and keywords come from the Unicode Common Locale Data Repository.
@@ -25495,7 +25495,7 @@ nsh-platform-tui@0.5.0 (Apache-2.0)
 nsh-platform-windows@0.5.0 (Apache-2.0)
 nsh-updater@0.5.0 (Apache-2.0)
 
-https://raw.githubusercontent.com/longbridge/nsh/2452c93d450bfe0ee1e22da5248191ba0a391051/LICENSE-APACHE
+https://raw.githubusercontent.com/longbridge/nsh/75e009e652ccb18c3dfbcc7e65a44b1f21da538c/LICENSE-APACHE
 
 Copyright 2026 Longbridge <https://longbridge.com>
 

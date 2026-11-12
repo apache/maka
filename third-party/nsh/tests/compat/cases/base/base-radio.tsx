@@ -1,7 +1,7 @@
 // A case of the API's test suite (docs/dev/compatibility.md): `Radio` and
 // `RadioGroup` of `nsh/base`, a set of options the user picks one of,
-// with no look of their own: the roles and states screen readers get
-// (`accessibilityLabel`), a press on an unchecked radio asking for `true`
+// with no look of their own: the roles, names and states screen readers
+// get (`accessibilityLabel` on a radio and on the group), a press on an unchecked radio asking for `true`
 // (`onChange`) while the app owns which one is checked (`checked`), a
 // checked radio that stays checked, `disabled`, the group as one stop of
 // the keyboard focus (only the checked radio is `focusable`), and the app's look of a
@@ -39,7 +39,7 @@ function App() {
   );
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
-      <RadioGroup testID="plans" class="gap-[4px]">
+      <RadioGroup testID="plans" accessibilityLabel="Plan" class="gap-[4px]">
         {option("basic", "Basic")}
         {option("pro", "Pro")}
         {option("team", "Team", true)}

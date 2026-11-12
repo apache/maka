@@ -470,16 +470,31 @@ impl MediaFiles {
         }
         let refused = || std::io::Error::new(std::io::ErrorKind::PermissionDenied, "not granted");
         let path = lexical(path);
-        let granted =
-            |roots: &[(PathBuf, PathBuf)]| roots.iter().any(|root| in_root(&path, root).is_some());
-        if !self.granted.as_deref().is_none_or(granted) {
-            return Some(Err(refused()));
-        }
-        // The innermost root holding it (a nested root may be reached
-        // through a link in its parent's).
-        let Some(((_, canonical), relative)) = self
+        if !self
             .declared
             .iter()
+            .any(|root| in_root(&path, root).is_some())
+        {
+            return Some(Err(refused()));
+        }
+        // Opened under the narrowest root that grants it: the host's grant
+        // when there is one (inside a declared root), so a link in it cannot
+        // reach the rest of a wider declared root.
+        let granted: Vec<&(PathBuf, PathBuf)> = match &self.granted {
+            Some(roots) => roots
+                .iter()
+                .filter(|(_, canonical)| {
+                    self.declared
+                        .iter()
+                        .any(|(_, declared)| inside(canonical, declared).is_some())
+                })
+                .collect(),
+            None => self.declared.iter().collect(),
+        };
+        // The innermost root holding it (a nested root may be reached
+        // through a link in its parent's).
+        let Some(((_, canonical), relative)) = granted
+            .into_iter()
             .filter_map(|root| Some((root, in_root(&path, root)?)))
             .max_by_key(|((_, canonical), _)| canonical.components().count())
         else {
@@ -3846,6 +3861,45 @@ mod tests {
         assert!(matches!(files.open(&base.join("secret.png")), Some(Err(_))));
         // No roots: the caller opens the path.
         assert!(MediaFiles::default().open(&path).is_none());
+        // A grant narrower than the declared root: a link in the grant
+        // to a file elsewhere in the declared root is refused (#1605).
+        std::fs::create_dir_all(base.join("allowed/sub")).unwrap();
+        std::fs::write(base.join("allowed/sub/ok.png"), b"ok").unwrap();
+        std::os::unix::fs::symlink(
+            base.join("allowed/a.png"),
+            base.join("allowed/sub/link.png"),
+        )
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"public").unwrap();
+        let narrowed = Access {
+            declared: access.declared.clone(),
+            granted: Some(
+                Capabilities::from_json(&serde_json::json!({
+                    "fs": { "read": [allowed.join("sub").to_str().unwrap()] }
+                }))
+                .unwrap(),
+            ),
+        };
+        let files = MediaFiles::new(&narrowed, None, &TrustedPaths::default(), true);
+        let mut text = String::new();
+        files
+            .open(&allowed.join("sub/ok.png"))
+            .unwrap()
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text, "ok");
+        assert!(matches!(
+            files.open(&allowed.join("sub/link.png")),
+            Some(Err(_))
+        ));
+        assert!(matches!(files.open(&path), Some(Err(_))));
+        // `file://localhost/` names the same local file, and is refused the same.
+        let localhost = format!("file://localhost{}", allowed.join("sub/link.png").display());
+        assert_eq!(narrowed.media_url(&localhost, None, Some(&files)), None);
+        let ok = format!("file://localhost{}", allowed.join("sub/ok.png").display());
+        assert!(narrowed.media_url(&ok, None, Some(&files)).is_some());
         let _ = std::fs::remove_dir_all(&base);
     }
 

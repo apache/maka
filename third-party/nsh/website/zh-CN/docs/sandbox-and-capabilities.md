@@ -323,7 +323,9 @@ fetch GET https://evil.example.org/x is not granted: add `evil.example.org` to c
 
 - `nsh build` 和 `nsh package` 把它作为 `capabilities.json` 写在 bundle 旁边；
 - `nsh publish` 把它放进[签名包](./signed-packages.md)的头部，受签名保护；
-- `nsh dev` 每次构建都会发送它，因此开发时执行的是同样的规则。修改 `capabilities` 会重新加载应用，而不是热更新。
+- `nsh dev` 每次构建都会发送它，因此开发时执行的是同样的规则。修改 `capabilities` 会重新加载应用，而不是热更新；
+- 以 Rust 组件为根的应用（`nsh.json` 的 `"root"`）把它和根一起编译进去，所以每个运行器（包括 Web 和 `nsh test`）都按它
+  检查应用的调用，和 TSX 应用一样。没有 `"capabilities"` 时，它能访问的和任何没有声明的应用相同。
 
 ## 授权：宿主应用允许什么
 

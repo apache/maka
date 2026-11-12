@@ -122,7 +122,10 @@ keeps its id while it is the same node, or the node at its index with its type),
 and reports `change` (the revision only: the document is read on demand, `docJson()`) and `selectionChange`.
 
 Rendering (`render.rs`): a scroll view of the content box, holding the selection's boxes, the blocks, the
-placeholder and the caret. A block is a view keyed by id whose classes and styles are its node's
+placeholder and the caret. The scroll view is `flex: 1 1 auto` in the root, so the root sizes as CSS's `height:
+auto`: without a height it is the content's height (the core lays the blocks' texts out in the same commit as the
+edit), a `max-height` shrinks the scroll view, which scrolls from then on, and a set height or flex size is filled
+as before. A block is a view keyed by id whose classes and styles are its node's
 part (`classes.nodes` / `styles.nodes` by type name, then `type[attr=value]`), node decorations' `class` and the
 `selectedNode` part. Containers hold their children's views; the children of a node whose spec's `extra.listMarker`
 is `"bullet"` or `"ordered"` (the starter's lists) carry a marker the view draws in the `listMarker` part, absolutely

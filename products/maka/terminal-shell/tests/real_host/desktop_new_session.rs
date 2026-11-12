@@ -630,7 +630,8 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
     let mut fixture = images_fixture().await;
     let (path, _) = image_file(&fixture);
     let workspace = fixture.directory.path().join("workspace");
-    std::fs::create_dir_all(workspace.join("other-project/workspace")).unwrap();
+    let nested_workspace = workspace.join("other-project").join("workspace");
+    std::fs::create_dir_all(&nested_workspace).unwrap();
     let desktop = Desktop::open(&fixture, &fixture.address).await;
     desktop.new_draft().await;
     desktop.attach(&path).await;
@@ -652,6 +653,9 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
     desktop.press("Focus message composer").await;
     desktop.expect_text("UNSENT_LOCAL_ONLY").await;
     desktop.press("Choose composer workspace").await;
+    desktop
+        .control(&format!("Use folder {}", nested_workspace.display()))
+        .await;
     desktop
         .control(&format!("Use folder {}", workspace.display()))
         .await;
@@ -2001,7 +2005,7 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
             .await;
         desktop.drop_paths(vec![directory.clone()], position);
         let expanded = desktop
-            .composer_height("the dropped directory did not wrap", |height| {
+            .composer_height(&format!("the dropped directory did not wrap; pending={}, blur={blur}, before={before:?}", pending_height.is_some()), |height| {
                 height > before
             })
             .await;

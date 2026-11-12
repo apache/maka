@@ -62,6 +62,16 @@ expect DeskCopy
 frame parent:parent:parent:text:DeskCopy 291 203 90 40
 covers [props] ContextMenu.offset
 covers [props] ContextMenu.margin
+# A context menu the app opens: below its trigger (200, 100, 120 × 30),
+# from its start, not at the window's corner.
+event text:DeskCopy onCancel
+absent DeskCopy
+tap text:ShowAppMenu
+expect ShownCopy
+frame parent:parent:parent:text:ShownCopy 200 130 90 40
+tap text:ShownCopy
+absent ShownCopy
+covers [props] ContextMenu.open
 # A tooltip after the pointer rested on its trigger for `delay`, gone when
 # the pointer leaves.
 event text:SlowTrigger onMouseEnter

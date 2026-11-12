@@ -459,6 +459,17 @@ impl Native for MacNative {
         self.on_key(move |surface, window| synth::type_text(surface, window, &text));
     }
 
+    fn focused(&self) -> Option<NodeId> {
+        self.on_key(|_, window| crate::text_input::test_focused(window))
+            .flatten()
+    }
+
+    fn compose(&self, text: &str) -> Result<(), String> {
+        let text = text.to_owned();
+        self.on_key(move |_, window| crate::text_input::test_compose(window, &text))
+            .unwrap_or_else(|| Err("the window is gone".into()))
+    }
+
     fn paste(&self, content: &nsh_core::PasteEvent) -> Result<(), String> {
         let content = content.clone();
         self.on_key(move |surface, window| {

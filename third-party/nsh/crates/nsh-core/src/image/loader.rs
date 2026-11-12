@@ -194,8 +194,10 @@ pub trait Transport: Send + Sync {
     /// GETs `get.url` (blocking, on a loader thread). Every status is a
     /// response (the disk cache decides what a `304` or a `5xx` means). It
     /// follows at most [`MAX_REDIRECTS`] redirects, each one [`redirect`]
-    /// grants; reads at most [`MAX_BYTES`]; gives up after [`TIMEOUT`];
-    /// stops soon after `get.cancelled` is set.
+    /// grants, and ends at one it refuses with [`super::Fetched::refused`]
+    /// (the disk cache then drops its copy of the URL); reads at most
+    /// [`MAX_BYTES`]; gives up after [`TIMEOUT`]; stops soon after
+    /// `get.cancelled` is set.
     fn get(&self, get: Get<'_>) -> Result<super::Fetched, String>;
 }
 
@@ -946,9 +948,10 @@ fn fetch(
     };
     match &context.disk {
         Some(cache) => cache.load(url, get),
-        None => get(&[]).and_then(|response| match response.status {
-            200..=299 => Ok(response.body.into()),
-            status => Err(format!("HTTP {status}")),
+        None => get(&[]).and_then(|response| match (response.refusal, response.status) {
+            (Some(refusal), _) => Err(refusal),
+            (None, 200..=299) => Ok(response.body.into()),
+            (None, status) => Err(format!("HTTP {status}")),
         }),
     }
 }
@@ -1057,12 +1060,14 @@ mod http {
         }
     }
 
-    /// GETs `url` with `headers`, following redirects one hop at a time.
+    /// GETs `url` with `headers`, following redirects one hop at a time:
+    /// the response that ends it, and why when that is a redirect the app
+    /// may not follow ([`redirect`]).
     fn get(
         url: &str,
         access: &Access,
         headers: &[(&'static str, String)],
-    ) -> Result<ureq::http::Response<ureq::Body>, String> {
+    ) -> Result<(ureq::http::Response<ureq::Body>, Option<String>), String> {
         let mut url = url.to_owned();
         for _ in 0..=MAX_REDIRECTS {
             let mut request = agent(&url).get(&url);
@@ -1072,14 +1077,17 @@ mod http {
             let response = request.call().map_err(|e| e.to_string())?;
             let status = response.status().as_u16();
             if !matches!(status, 301 | 302 | 303 | 307 | 308) {
-                return Ok(response);
+                return Ok((response, None));
             }
             let location = response
                 .headers()
                 .get("location")
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| format!("{url}: redirect without a Location"))?;
-            url = redirect(access, &url, location)?;
+            match redirect(access, &url, location) {
+                Ok(next) => url = next,
+                Err(refusal) => return Ok((response, Some(refusal))),
+            }
         }
         Err("too many redirects".to_owned())
     }
@@ -1094,8 +1102,11 @@ mod http {
         cancelled: &AtomicBool,
         progress: &mut dyn FnMut(u64, u64),
     ) -> Result<Fetched, String> {
-        let mut response = get(url, access, headers)?;
+        let (mut response, refusal) = get(url, access, headers)?;
         let status = response.status().as_u16();
+        if let Some(refusal) = refusal {
+            return Ok(Fetched::refused(status, refusal));
+        }
         let cache = CacheHeaders::from_lookup(|name| {
             let values: Vec<&str> = response
                 .headers()

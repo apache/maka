@@ -357,8 +357,7 @@ pub(super) fn delayed_image() {
 }
 
 pub(super) fn focus_fence_without_queued_text() {
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use std::{cell::RefCell, rc::Rc};
 
     let code = nsh_bundler::compile_module("Fence.tsx", APP, &[]).unwrap();
     let mut config = EngineConfig::new(App::Js(Bundle::source(code)));

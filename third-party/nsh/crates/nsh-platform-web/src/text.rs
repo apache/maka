@@ -757,6 +757,13 @@ impl TextEngine for WebTextEngine {
         Size::new(Points(width.ceil()), Points(height.ceil()))
     }
 
+    fn first_baseline(&self, prepared: &Prepared, width: Points) -> Option<Points> {
+        // `layout` puts the first line's baseline its tallest ascent (with
+        // half-leading) below the top.
+        let (_, lines) = self.break_lines(prepared, Some(width.0));
+        lines.first().map(|line| Points(line.above))
+    }
+
     fn layout(&self, prepared: &Prepared, size: Size<Points>) -> TextLayout {
         let (atoms, mut lines) = self.break_lines(prepared, Some(size.width.0));
         let mut truncated = false;

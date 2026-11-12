@@ -24,6 +24,14 @@
   edges at bidi boundaries and caches them with the layout. Linux selection drawing reuses its rectangle buffer.
   Test-id-only span updates remount the text metadata with its cached final layout (`LaidText`), retaining fitted
   font sizes. They preserve prepared state and measurement caches and raise no `onTextLayout`.
+- A text laid out gives Taffy its first line's baseline, below its top through its padding and border
+  (`TextEngine::first_baseline`: web, macOS; `measure_leaf`, cached per width in `TextContext::baseline`), so a flex row
+  with `items-baseline` lines its texts up by their baselines, as CSS does. An engine that does not report one gives
+  `None` and the text is aligned by its bottom edge, Taffy's fallback for a box without a baseline: texts of different
+  sizes in a row then sit off each other's baseline by the difference of what is below their baselines. Only a text
+  aligned by baseline is asked (`layout_tree::Aligned`, from its `align-self` or its container's `align-items`), and
+  only when it is laid out, not measured (Taffy's baseline pass lays its items out); a text measured by an estimate has
+  none.
 - A text engine whose lines take all that fits and whose `measure` reports the widest line's width says so
   (`TextEngine::breaks_lines_greedily`: macOS, Linux). The core then reuses a measurement for every maximum width from
   that width to the one measured (`measure_text`, `SameLines`), and measures a growing width a little ahead to cover
@@ -106,7 +114,8 @@
   are hidden keeps its typesetting, measurements and layout where the platform draws colors from the text it mounts
   (`TextEngine::draws_colors_from_text`: macOS, Windows, Linux and GPUI, which also read `hidden` there): only the new
   text is mounted with the layout, so a word fading in, or shown after waiting hidden, costs one draw, not a new layout
-  of its paragraph. The other backends typeset it again.
+  of its paragraph. macOS draws again only the lines of the characters drawn otherwise
+  (`AttributedText::recolored_ranges`, `text::damage`). The other backends typeset it again.
 - **Span backgrounds**: `backgroundColor` / `borderRadius` on a nested `<Text>` (its view style, which spans otherwise
   ignore) become `ResolvedTextStyle::background` (`TextBackground`: color, radius and the span's node, so neighboring
   spans that look the same stay apart), inherited by the spans inside it; the block's own background stays its view's.

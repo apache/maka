@@ -423,6 +423,60 @@ impl Query {
     }
 }
 
+/// The row of a list's highlighted item, while it is rendered: the active
+/// descendant of the field that keeps the keyboard focus (a select's
+/// trigger, a combo box's input, a search field), which names it so
+/// screen readers read it as the highlight moves (`Listbox`'s, and
+/// `Command`'s).
+#[derive(Clone, Copy)]
+pub(crate) struct ActiveRow(Signal<Option<(usize, ElementRef)>>);
+
+impl ActiveRow {
+    pub(crate) fn new() -> Self {
+        Self(signal(None))
+    }
+
+    /// The row of item `highlight`, the highlighted one (tracked).
+    pub(crate) fn of(self, highlight: Option<usize>) -> Option<ElementRef> {
+        let lit = highlight?;
+        self.0
+            .get()
+            .filter(|&(item, _)| item == lit)
+            .map(|(_, row)| row)
+    }
+
+    /// Row `row` is the active one while `lit` gives the item it shows,
+    /// highlighted (tracked); it gives that up as the highlight leaves it
+    /// (or the row shows another item), unless the row the highlight went
+    /// to took it already.
+    pub(crate) fn follow(self, row: ElementRef, lit: impl Fn() -> Option<usize> + 'static) {
+        effect(move || {
+            let lit = lit();
+            untracked(|| match lit {
+                Some(i) => {
+                    self.0.set(Some((i, row)));
+                }
+                None => {
+                    if self
+                        .0
+                        .with(|a| a.is_some_and(|(_, current)| current == row))
+                    {
+                        self.0.set(None);
+                    }
+                }
+            });
+        });
+        cleanup(move || {
+            if untracked(|| self.0.try_get())
+                .flatten()
+                .is_some_and(|(_, current)| current == row)
+            {
+                self.0.try_set(None);
+            }
+        });
+    }
+}
+
 /// The list's state: its rows for the query, the highlighted item, and
 /// what reveals it.
 #[derive(Clone, Copy)]
@@ -456,6 +510,11 @@ pub(crate) struct Listbox {
     typeahead: Stored<Typeahead>,
     /// The item whose row takes the screen reader's focus once it shows.
     pub(crate) a11y: Signal<Option<usize>>,
+    /// The highlighted item's row: what the focused field names as its
+    /// active descendant ([`Listbox::active_row`]).
+    active_row: ActiveRow,
+    /// The listbox (the rows' scroll view), which the field controls.
+    pub(crate) listbox: ElementRef,
 }
 
 /// The query now: the app's, else the field's (tracked).
@@ -510,6 +569,8 @@ impl Listbox {
             pointer: stored(None),
             typeahead: stored(Typeahead::default()),
             a11y: signal(None),
+            active_row: ActiveRow::new(),
+            listbox: element_ref(),
         };
         // Other items (or rows): the highlight follows its value while it
         // is shown and enabled, else goes to the first enabled item.
@@ -731,11 +792,19 @@ impl Listbox {
         }
     }
 
-    /// Screen readers hear of item `item`: its row takes their focus, or,
-    /// while a search field edits (moving the focus would leave it), its
-    /// title is announced.
+    /// The highlighted item's row while it is rendered (tracked): the
+    /// active descendant of the field that keeps the keyboard focus (the
+    /// trigger, the input, the search field).
+    pub(crate) fn active_row(self) -> Option<ElementRef> {
+        self.active_row.of(self.highlight.get())
+    }
+
+    /// Screen readers hear of item `item`: where they follow the field's
+    /// active descendant ([`Listbox::active_row`]), from that alone; else
+    /// its row takes their focus, or, while a search field edits (moving
+    /// the focus would leave it), its title is announced.
     fn tell_screen_reader(self, item: usize) {
-        if !untracked(screen_reader) {
+        if !untracked(screen_reader) || reads_active_descendants() {
             return;
         }
         if self.searchable.get_untracked() {
@@ -1015,6 +1084,8 @@ fn content(lb: Listbox, sheet: bool, parts: Parts, hooks: Hooks) -> Vec<AnyEleme
             let field = field.expect("a search field");
             input()
                 .value(move || lb.query())
+                .accessibility_active_descendant(move || lb.active_row())
+                .accessibility_controls(Some(lb.listbox))
                 .placeholder(move || {
                     field
                         .placeholder
@@ -1064,6 +1135,7 @@ fn content(lb: Listbox, sheet: bool, parts: Parts, hooks: Hooks) -> Vec<AnyEleme
     };
     let list = scroll()
         .role(AccessibilityRole::Listbox)
+        .element_ref(&lb.listbox)
         .flex_shrink(1.0)
         .min_h(px(0.0))
         .when(is_terminal(), |v| v.min_w(move || Length::from(widest())))
@@ -1109,7 +1181,7 @@ fn row(lb: Listbox, parts: Parts, hooks: Hooks, at: Position) -> AnyElement {
         if header.get() {
             header_row(entry, parts)
         } else {
-            item_row(lb, entry, parts, hooks.clone())
+            item_row(lb, entry, parts, hooks.clone(), at)
         }
     })
 }
@@ -1152,7 +1224,13 @@ fn header_row(entry: Memo<Option<Row>>, parts: Parts) -> AnyElement {
 }
 
 /// An item's row: the app's `renderItem`, else its title.
-fn item_row(lb: Listbox, entry: Memo<Option<Row>>, parts: Parts, hooks: Hooks) -> AnyElement {
+fn item_row(
+    lb: Listbox,
+    entry: Memo<Option<Row>>,
+    parts: Parts,
+    hooks: Hooks,
+    at: Position,
+) -> AnyElement {
     let index = computed(move || match entry.get() {
         Some(Row::Item(i)) => Some(i),
         _ => None,
@@ -1174,10 +1252,13 @@ fn item_row(lb: Listbox, entry: Memo<Option<Row>>, parts: Parts, hooks: Hooks) -
     let selected =
         computed(move || item.with(|i| i.as_ref().is_some_and(|i| is_selected(&i.value))));
     let me = element_ref();
+    lb.active_row.follow(me, move || {
+        index.get().filter(|_| at.is_bound() && highlighted.get())
+    });
     // A key moved the highlight here: the screen reader's focus follows.
     effect(move || {
         let Some(i) = index.get() else { return };
-        if lb.a11y.get() == Some(i) {
+        if at.is_bound() && lb.a11y.get() == Some(i) {
             untracked(|| {
                 me.set_accessibility_focus();
                 lb.a11y.set(None);

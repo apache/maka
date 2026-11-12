@@ -101,7 +101,6 @@ pub struct TerminalSurface {
     paused: Cell<bool>,
     active: Cell<bool>,
     closed: Cell<bool>,
-    quit: Cell<bool>,
     focus_generation: Cell<u64>,
     stamp: Cell<(u64, u64)>,
     fence: RefCell<Option<PendingFence>>,
@@ -141,7 +140,6 @@ impl TerminalSurface {
             paused: Cell::new(false),
             active: Cell::new(true),
             closed: Cell::new(false),
-            quit: Cell::new(false),
             stamp: Cell::new((0, 0)),
             fence: RefCell::new(None),
             focus_generation: Cell::new(0),
@@ -304,12 +302,17 @@ impl NativeSurface for TerminalSurface {
         unsafe {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
-                    self.quit.set(true);
+                    self.view.surface().terminal_quit.set(true);
                 } else {
                     let _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }
             }
+        }
+        if self.view.surface().hwnd().is_invalid() {
+            self.view.surface().terminal_quit.set(true);
+            self.shutdown();
+            return false;
         }
         self.view.surface().drain();
         if self.view.surface().wants_frames() {
@@ -473,13 +476,7 @@ impl NativeSurface for TerminalSurface {
         }
         crate::text_input::window_focus(self.view.surface(), active);
         self.view.surface().activation_changed(active);
-        let mut env = self.view.surface().environment.get();
-        env.lifecycle = if active {
-            nsh_core::platform::Lifecycle::Active
-        } else {
-            nsh_core::platform::Lifecycle::Inactive
-        };
-        self.view.surface().set_environment(env);
+        crate::system::lifecycle_changed(self.view.surface());
         self.sync_focus();
         Ok(())
     }
@@ -512,6 +509,7 @@ impl NativeSurface for TerminalSurface {
             *self.error.borrow_mut() = Some("cannot load a closed terminal surface".into());
             return;
         }
+        self.view.surface().terminal_quit.set(false);
         self.error.borrow_mut().take();
         self.admissions.borrow_mut().focus(None);
         self.frames.borrow_mut().revoke();
@@ -602,16 +600,19 @@ impl NativeSurface for TerminalSurface {
         self.clipboard.borrow_mut().pending.take()
     }
     fn frame_is_current(&self, token: &FrameToken) -> bool {
-        self.frames.borrow().is_current(token)
+        self.view.surface().running() && self.frames.borrow().is_current(token)
     }
     fn mark_presented(&self, token: FrameToken) -> Result<(), String> {
+        if !self.view.surface().running() {
+            return Err("terminal surface stopped".into());
+        }
         self.frames.borrow_mut().mark_presented(token)
     }
     fn take_error(&self) -> Option<String> {
         self.error.borrow_mut().take()
     }
     fn is_quit_requested(&self) -> bool {
-        self.quit.get() || self.view.surface().hwnd().is_invalid()
+        self.view.surface().terminal_quit.get() || self.view.surface().hwnd().is_invalid()
     }
     fn has_pending(&self) -> bool {
         if self.closed.get() {
@@ -639,9 +640,12 @@ impl NativeSurface for TerminalSurface {
         if let Some((_, done)) = fence {
             done(Err("terminal surface stopped".into()));
         }
-        // SAFETY: the hidden HWND and OLE apartment belong to this UI thread.
-        unsafe {
-            let _ = DestroyWindow(self.view.hwnd());
+        let hwnd = self.view.surface().hwnd();
+        if !hwnd.is_invalid() {
+            // SAFETY: the hidden HWND and OLE apartment belong to this UI thread.
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
         }
     }
 }
@@ -1075,7 +1079,201 @@ mod tests {
             copied.is_some()
         });
         assert_eq!(copied.as_deref(), Some("中"));
+        desktop(ROOT_ID, DesktopCommand::Quit);
+        assert!(terminal.is_quit_requested());
+        assert!(surface.running(), "the Host owns transport shutdown");
         terminal.shutdown();
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn session_end_preserves_the_hosts_loop_and_revokes_native_receipts() {
+        use std::{
+            cell::RefCell,
+            rc::Rc,
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+
+        use nsh_engine::{Bundle, EngineConfig};
+        use nsh_terminal::{DevicePixels, FrameToken, NativeSurface, size};
+        use windows::Win32::{
+            Foundation::WPARAM,
+            UI::WindowsAndMessaging::{
+                DispatchMessageW, IsWindow, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW,
+                SendMessageW, WM_ENDSESSION, WM_QUERYENDSESSION, WM_QUIT,
+            },
+        };
+        let code = nsh_bundler::compile_module("SessionEnd.tsx", r#"
+            import { View, lifecycle, mount } from "nsh";
+            import { Input } from "nsh/base";
+            mount(() => <View style={{flex: 1}}>
+                <View accessibilityLabel={lifecycle()} onPress={() => {}} style={{width: 120, height: 20}} />
+                <Input autoFocus defaultValue="session" style={{height: 40}} />
+            </View>);
+        "#, &[]).unwrap();
+        let mut config = EngineConfig::new(Bundle::source(code));
+        config.ui_sets = vec![nsh_base::registry()];
+        let frames = Rc::new(RefCell::new(None::<FrameToken>));
+        let captured = frames.clone();
+        let terminal = super::TerminalSurface::new(
+            config,
+            size(DevicePixels(320), DevicePixels(240)),
+            1.0,
+            Box::new(move |frame| {
+                let frame = frame.submit().unwrap().complete().unwrap();
+                captured.replace(Some(frame.token()));
+            }),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let until = |label: &str, ready: &mut dyn FnMut() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                terminal.pump_with_draw(true);
+                assert_eq!(terminal.take_error(), None);
+                if ready() {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "{label}");
+                std::thread::yield_now();
+            }
+        };
+        until("initial active input", &mut || {
+            !terminal.pressable_bounds("active").is_empty()
+                && terminal.text_input_target().is_some()
+                && frames.borrow().is_some()
+        });
+        let surface = terminal.view.surface();
+        let hwnd = surface.hwnd();
+        let send = |message, value| {
+            // SAFETY: only the test's live hidden window receives the session notification.
+            unsafe { SendMessageW(hwnd, message, Some(WPARAM(value)), None).0 }
+        };
+        assert_eq!(send(WM_QUERYENDSESSION, 0), 1);
+        terminal.set_active(true).unwrap();
+        until(
+            "session query backgrounds the app despite host activation",
+            &mut || !terminal.pressable_bounds("background").is_empty(),
+        );
+        assert_eq!(send(WM_ENDSESSION, 0), 0);
+        until(
+            "cancelled session end restores host activation",
+            &mut || !terminal.pressable_bounds("active").is_empty(),
+        );
+        let target = terminal.text_input_target().unwrap();
+        let token = frames.borrow().as_ref().unwrap().clone();
+        assert!(terminal.frame_is_current(&token));
+        assert_eq!(send(WM_QUERYENDSESSION, 0), 1);
+        assert_eq!(send(WM_ENDSESSION, 1), 0);
+        assert!(!surface.running());
+        assert!(
+            !terminal
+                .apply_composition(&target, "", "stale", None, true)
+                .unwrap()
+        );
+        assert!(terminal.text_input_target().is_none());
+        assert!(!terminal.frame_is_current(&token));
+        assert!(terminal.mark_presented(token).is_err());
+        // Dispatch the posted close ourselves so pump cannot consume and hide an unwanted WM_QUIT.
+        let mut message = MSG::default();
+        // SAFETY: this is the test window's owner thread and message queue.
+        unsafe {
+            assert!(
+                PeekMessageW(
+                    &mut message,
+                    Some(hwnd),
+                    crate::window::WM_NSH_CLOSE,
+                    crate::window::WM_NSH_CLOSE,
+                    PM_REMOVE
+                )
+                .as_bool()
+            );
+            assert_eq!(message.message, crate::window::WM_NSH_CLOSE);
+            DispatchMessageW(&message);
+            assert!(!IsWindow(Some(hwnd)).as_bool());
+            assert!(!PeekMessageW(&mut message, None, WM_QUIT, WM_QUIT, PM_NOREMOVE).as_bool());
+        }
+        assert!(!terminal.pump_with_draw(true));
+        assert!(terminal.is_quit_requested());
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn multiline_preedit_measures_without_a_composition_listener() {
+        use std::{
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+
+        use nsh_engine::{Bundle, EngineConfig};
+        use nsh_terminal::{DevicePixels, NativeSurface, size};
+        let code = nsh_bundler::compile_module("PreeditHeight.tsx", r#"
+            import { View, mount, signal } from "nsh";
+            import { Input } from "nsh/base";
+            mount(() => {
+                const edits = signal(0);
+                return <View style={{flex: 1}}>
+                    <View accessibilityLabel={`edits:${edits()}`} onPress={() => {}} style={{width: 120, height: 20}} />
+                    <Input multiline autoFocus defaultValue="seed" onChangeText={() => edits.update(n => n + 1)}
+                        style={{width: 120, minHeight: 28, maxHeight: 200}} />
+                </View>;
+            });
+        "#, &[]).unwrap();
+        let mut config = EngineConfig::new(Bundle::source(code));
+        config.ui_sets = vec![nsh_base::registry()];
+        let terminal = super::TerminalSurface::new(
+            config,
+            size(DevicePixels(320), DevicePixels(240)),
+            1.0,
+            Box::new(|frame| {
+                frame.submit().unwrap().complete().unwrap();
+            }),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let height = || {
+            crate::text_input::focused(terminal.view.surface())
+                .map(|view| view.visible_bounds().size.height.0)
+        };
+        let until = |label: &str, ready: &mut dyn FnMut() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                terminal.pump_with_draw(true);
+                assert_eq!(terminal.take_error(), None);
+                if ready() && !terminal.has_pending() {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "{label}; height={:?}", height());
+                std::thread::yield_now();
+            }
+        };
+        until("initial multiline input", &mut || {
+            height().is_some() && !terminal.pressable_bounds("edits:0").is_empty()
+        });
+        let before = height().unwrap();
+        terminal.set_selected_text_range(4..4).unwrap();
+        let target = terminal.text_input_target().unwrap();
+        assert!(
+            terminal
+                .apply_composition(&target, "", &"中".repeat(80), Some(0..0), true)
+                .unwrap()
+        );
+        until("preedit participates in auto height", &mut || {
+            height().is_some_and(|h| h > before)
+        });
+        assert_eq!(terminal.editor_text().as_deref(), Some("seed"));
+        assert!(!terminal.pressable_bounds("edits:0").is_empty());
+        assert!(
+            terminal
+                .apply_composition(&target, "", "", None, false)
+                .unwrap()
+        );
+        until("cancellation restores committed height", &mut || {
+            height() == Some(before)
+        });
+        assert_eq!(terminal.editor_text().as_deref(), Some("seed"));
+        assert!(!terminal.pressable_bounds("edits:0").is_empty());
     }
 
     #[test]

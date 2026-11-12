@@ -294,13 +294,31 @@ impl App {
 }
 
 fn start_on(props: HarnessProps, os: Os, idiom: Idiom, screen_reader: bool) -> App {
+    start_env(props, |env| {
+        env.os = os;
+        env.idiom = idiom;
+        env.screen_reader = screen_reader;
+    })
+}
+
+/// [`start_on`] a Mac whose screen reader runs and follows active
+/// descendants (`Environment::reads_active_descendants`).
+fn reading_active_descendants(props: HarnessProps) -> App {
+    start_env(props, |env| {
+        env.os = Os::MacOs;
+        env.idiom = Idiom::Desktop;
+        env.screen_reader = true;
+        env.reads_active_descendants = true;
+    })
+}
+
+/// The select in an environment `set` makes.
+fn start_env(props: HarnessProps, set: impl FnOnce(&mut nsh_core::platform::Environment)) -> App {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
         ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
     };
-    config.environment.os = os;
-    config.environment.idiom = idiom;
-    config.environment.screen_reader = screen_reader;
+    set(&mut config.environment);
     let mut app = Headless::start(config).expect("the engine starts");
     let seen = Arc::new(Mutex::new(Seen::default()));
     let into = seen.clone();
@@ -1133,6 +1151,85 @@ fn a_keys_highlight_takes_the_screen_readers_focus() {
             .any(|(id, c)| *id == row && *c == Command::AccessibilityFocus)
     })
     .unwrap();
+}
+
+/// Where screen readers follow active descendants, the trigger, which
+/// keeps the keyboard focus, names the highlighted row as its active
+/// descendant and the listbox as what it controls; nothing is announced
+/// and no row takes the screen reader's focus.
+#[test]
+fn the_trigger_names_the_highlighted_row_as_its_active_descendant() {
+    let mut app = reading_active_descendants(props(fruits()));
+    let trigger = app.screen().id("role:combobox").unwrap();
+    assert_eq!(app.screen().active_descendant("role:combobox"), Ok(None));
+    app.key("tab");
+    app.key("down");
+    app.see_row(">Apple");
+    let listbox = app.screen().id("role:listbox").unwrap();
+    let apple = app.screen().id("role:option[Apple]").unwrap();
+    app.wait_until("the trigger naming Apple", Duration::from_secs(5), |s| {
+        s.active_descendant("role:combobox") == Ok(Some(apple))
+    })
+    .unwrap();
+    assert_eq!(
+        app.screen().accessibility_controls("role:combobox"),
+        Ok(Some(listbox))
+    );
+    app.key("down");
+    app.see_row(">Blueberry");
+    let blueberry = app.screen().id("role:option[Blueberry]").unwrap();
+    app.wait_until(
+        "the trigger naming Blueberry",
+        Duration::from_secs(5),
+        |s| s.active_descendant("role:combobox") == Ok(Some(blueberry)),
+    )
+    .unwrap();
+    assert!(
+        !app.screen()
+            .commands()
+            .iter()
+            .any(|(_, c)| *c == Command::AccessibilityFocus || matches!(c, Command::Announce(_))),
+        "the relation alone tells the screen reader"
+    );
+    // Closed: it names nothing.
+    app.key("escape");
+    app.gone("role:listbox");
+    assert_eq!(app.screen().id("role:combobox"), Ok(trigger));
+    assert_eq!(app.screen().active_descendant("role:combobox"), Ok(None));
+    assert_eq!(
+        app.screen().accessibility_controls("role:combobox"),
+        Ok(None)
+    );
+}
+
+/// The search field, which takes the keyboard focus while it shows, names
+/// the highlighted row too.
+#[test]
+fn the_search_field_names_the_highlighted_row() {
+    let mut app = reading_active_descendants(HarnessProps {
+        searchable: true,
+        ..props(fruits())
+    });
+    app.open_list();
+    app.type_text("Search", "cel").unwrap();
+    app.see_row(">Celery");
+    let celery = app.screen().id("role:option[Celery]").unwrap();
+    let listbox = app.screen().id("role:listbox").unwrap();
+    app.wait_until("the field naming Celery", Duration::from_secs(5), |s| {
+        s.active_descendant("id:food-search") == Ok(Some(celery))
+    })
+    .unwrap();
+    assert_eq!(
+        app.screen().accessibility_controls("id:food-search"),
+        Ok(Some(listbox))
+    );
+    assert!(
+        !app.screen()
+            .commands()
+            .iter()
+            .any(|(_, c)| matches!(c, Command::Announce(_))),
+        "the relation alone tells the screen reader"
+    );
 }
 
 #[test]

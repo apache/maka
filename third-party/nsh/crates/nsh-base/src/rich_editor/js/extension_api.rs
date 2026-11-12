@@ -129,7 +129,7 @@ export interface RichExtensionConfig {
   /** Paste rules: `textRule` and `markRule` applied to pasted text. */
   addPasteRules?: (options: any) => {rule}[];
   /** Plugins: kernel plugins as data or `RichEditorPlugin`s. */
-  addProseMirrorPlugins?: (options: any) => {plugin}[];
+  addProseMirrorPlugins?: (options: any) => ({plugin})[];
   /** Attributes on other types: `[{ types: [\"paragraph\"], attributes: { name: { default: null } } }]`. */
   addGlobalAttributes?: (options: any) => { types: string[]; attributes: Record<string, unknown> }[];
   /** Its storage's first value. */

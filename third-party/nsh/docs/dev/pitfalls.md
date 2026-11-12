@@ -372,6 +372,10 @@ Things that were found the hard way. Read the section of the area you change bef
   copies the activity's bar appearance (light / dark icons).
 - **Android, nested scrolling**: scroll views enable nested scrolling, or an outer vertical ScrollView intercepts every vertical
   drag meant for an inner one.
+- **Android, a zoomed scroll view in a pager**: `HorizontalScrollView` intercepts a move past the touch slop before the
+  child sees it, with the same slop as `ZScroll`, so the pager took every horizontal drag of a zoomed image. `ZScroll`
+  asks its parents not to intercept from the down (`requestDisallowInterceptTouchEvent`) while it has content to pan and
+  gives that back when the drag has nothing to move or pushes past an edge a scroll view around can go on from.
 - **Android, safe area**: `NshView` reports only the parts of the system bars / keyboard that overlap it (like UIKit's
   `safeAreaInsets`), so embedded views below a toolbar get no top inset. Overlays use the same overlap (`topInset()`).
 - **Android, dev assets come over plain HTTP**, which apps block by default (API 28+): the dev host APK and `nsh-dev.aar` set

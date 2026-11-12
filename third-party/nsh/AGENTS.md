@@ -451,7 +451,9 @@ repository's `target/`; dependencies only it uses are declared in `crates/gpui/C
   - Mouse events are the DOM's and GPUI's: `onMouseEnter` / `onMouseMove` / `onMouseLeave`, each with a
     `MouseEvent { position, pagePosition, modifiers, pressedButton }`; `onMouseMove` fires with or without a button
     down. `onWheel` passes `WheelEvent { position, pagePosition, delta, deltaMode, modifiers }` (GPUI's
-    `ScrollWheelEvent`, the DOM's sign); a listener nearer than the scroll views under the pointer takes the wheel.
+    `ScrollWheelEvent`, the DOM's sign); a listener nearer than the scroll views under the pointer takes the wheel,
+    and one scroll stays where it went (`input::WheelLatch`). `onPinch` passes a touchpad pinch's
+    `PinchEvent { position, pagePosition, delta, phase, modifiers }` (GPUI's `on_pinch`), routed the same way.
     State styles keep CSS's names (`hover:`, `hoverStyle`).
   - Returns: an object, never a bare value that may need a second field (`AlertDialog.show` → `{ action }`,
     animations → `{ finished }`); yes / no questions (`hasText()`, `canUndo()`) return booleans.
@@ -583,6 +585,13 @@ Details and examples: "Commits and pull requests" in `CONTRIBUTING.md`.
   (`.github/pull_request_template.md`).
 - A PR review presents, in order: the PR's purpose (the problem and the scope of the changes), whether the requirement
   and approach are reasonable, then concrete findings, the validation performed and its limits.
+- **Scope comes first.** NSH stays a lightweight GUI framework, not an all-in-one platform. Fixes, performance,
+  refinements of existing behavior and options of an existing component that are common in its domain are welcome;
+  a new feature an app can build in Rust (its own crate, native components, platform APIs) or with existing APIs,
+  that one app needs, or that does not work the same on every platform is not accepted, and one that would need a new
+  section or page of the website's documentation opens a new direction, the hardest to accept (`CONTRIBUTING.md`
+  "Scope: what NSH accepts"). A PR adding a new feature without a maintainer's agreement on an issue is flagged before its
+  code is reviewed, and its review recommends closing it rather than polishing it.
 
 ## Performance rules (the project's first priority)
 

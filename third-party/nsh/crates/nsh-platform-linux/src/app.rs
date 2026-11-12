@@ -546,6 +546,22 @@ pub(crate) fn quit() -> bool {
     true
 }
 
+/// The user asked to quit the standalone app (Ctrl+Q, its Quit item): it
+/// quits as [`quit`] does, unless the app listens to quit requests and
+/// decides ([`crate::chrome::ask_quit`]). False for a view embedded in
+/// another app, with nothing done.
+pub(crate) fn request_quit(surface: &Surface) -> bool {
+    let standalone = STANDALONE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .is_some_and(|app| app.upgrade().is_some())
+    });
+    if !standalone {
+        return false;
+    }
+    crate::chrome::ask_quit(surface) || quit()
+}
+
 /// Closes `app`'s windows (closing the main one stops its engine), then
 /// ends its run.
 fn quit_application(app: &gtk::Application) {
@@ -752,7 +768,7 @@ pub fn run_app(source: AppSource, mut options: AppOptions) -> glib::ExitCode {
             #[cfg(not(feature = "dev"))]
             Err(_) => {}
         }
-        install_shortcuts(app, &window);
+        install_shortcuts(app, &window, &view.surface);
         *shown.borrow_mut() = Some((window.clone(), view.clone()));
         // The window keeps the view (and its engine) alive.
         unsafe_keep(&window, view);
@@ -796,10 +812,19 @@ fn prefer_gl_on_nvidia() {
 /// GNOME's window shortcuts: Ctrl+W closes the window, Ctrl+Q quits, F11
 /// toggles full screen. Accelerators also match the keys of the layout's
 /// Latin group, so they work under Cyrillic or Greek layouts too.
-fn install_shortcuts(app: &gtk::Application, window: &gtk::ApplicationWindow) {
+fn install_shortcuts(
+    app: &gtk::Application,
+    window: &gtk::ApplicationWindow,
+    surface: &Rc<Surface>,
+) {
     let quit = gtk::gio::SimpleAction::new("quit", None);
     let weak = app.downgrade();
+    let asked = Rc::downgrade(surface);
     quit.connect_activate(move |_, _| {
+        // The app may listen to quit requests and decide.
+        if asked.upgrade().is_some_and(|s| crate::chrome::ask_quit(&s)) {
+            return;
+        }
         if let Some(app) = weak.upgrade() {
             quit_application(&app);
         }
