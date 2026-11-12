@@ -77,9 +77,13 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
             environment,
             sandbox,
             size,
+            cwd,
             step_annotation_hook,
         } => {
-            let mut command = Command::new(executable, resource.join("workspace"));
+            let mut command = Command::new(
+                executable,
+                cwd.unwrap_or_else(|| resource.join("workspace")),
+            );
             command.env_clear().args(args);
             #[cfg(target_os = "macos")]
             {

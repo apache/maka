@@ -176,7 +176,7 @@ pub(super) async fn parse(
         NativeTask::ClaudeStream { .. } => {
             claude::replay(binding, admitted_steering_batches, input, stream, output).await
         }
-        NativeTask::Claude { .. } => Err(Error::Unknown),
+        NativeTask::Claude { .. } | NativeTask::ClaudePty { .. } => Err(Error::Unknown),
     }?;
     if matches!(outcome, Outcome::Completed { .. })
         && matches!(

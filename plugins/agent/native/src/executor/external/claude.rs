@@ -17,240 +17,19 @@
  * under the License.
  */
 
-//! The original CLI's stream-json stdout is the only business-terminal source.
+//! Interactive execution and replay of previously admitted stream-JSON tasks.
 use super::*;
 use maka_agent_facts::executor::Output;
-use runtime::Pipe;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one original private CLI owns its protocol and observation ports"
-)]
-pub(super) async fn execute(
-    config: &NativeCommand,
-    cwd: &str,
-    request: &Value,
-    journal: &mut journal::ProtocolSession,
-    output: Arc<dyn OutputSink>,
-    bridge: Arc<mcp::Bridge>,
-    cancellation: CancellationToken,
-    steering: &mut steering::Steering,
-    owner: maka_process::isolated::TaskOwner,
-) -> Result<Outcome, Error> {
-    let session = Uuid::new_v4().to_string();
-    let input = Uuid::new_v4().to_string();
-    let path = bridge.directory().join("mcp.json");
-    tokio::fs::write(
-        &path,
-        serde_json::to_vec(&bridge.claude()).expect("MCP configuration is JSON"),
-    )
-    .await
-    .map_err(|e| Error::Provider(format!("Claude MCP configuration failed: {e}")))?;
-    let mut command = runtime::command(config, cwd).await?;
-    command.args([
-        "--print",
-        "--input-format",
-        "stream-json",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--replay-user-messages",
-        "--dangerously-skip-permissions",
-        "--strict-mcp-config",
-        "--setting-sources",
-        "",
-        "--session-id",
-        &session,
-        "--mcp-config",
-    ]);
-    command.arg(&path);
-    if let Some(model) = request
-        .get("model")
-        .and_then(Value::as_str)
-        .filter(|model| *model != "default")
-    {
-        command.arg("--model").arg(model);
-    }
-    if let Some(effort) = request.get("effort").and_then(Value::as_str) {
-        command.arg("--effort").arg(effort);
-    }
-    if let Some(instructions) = request.get("instructions").and_then(Value::as_str) {
-        command.arg("--append-system-prompt").arg(instructions);
-    }
-    journal.opened(session.clone())?;
-    let observation = journal.observation();
-    runtime::task_pipe(
-        owner,
-        observation,
-        command,
-        runtime::Transport::JsonLines,
-        Some(bridge.clone()),
-        cancellation,
-        Protocol {
-            request,
-            session,
-            input,
-            journal,
-            output,
-            bridge,
-            steering,
-        },
-    )
-    .await
-}
+mod input;
+mod interactive;
+pub(super) use interactive::execute;
 
-struct Protocol<'a> {
-    request: &'a Value,
-    session: String,
-    input: String,
-    journal: &'a mut journal::ProtocolSession,
-    output: Arc<dyn OutputSink>,
-    bridge: Arc<mcp::Bridge>,
-    steering: &'a mut steering::Steering,
-}
-impl runtime::PipeProtocol for Protocol<'_> {
-    type Output = Outcome;
-    fn run<'io>(self, io: &'io mut Pipe) -> BoxFuture<'io, Result<Outcome, Error>>
-    where
-        Self: 'io,
-    {
-        Box::pin(async move {
-            let result = run(
-                io,
-                self.request,
-                &self.session,
-                &self.input,
-                self.journal,
-                self.output.as_ref(),
-                &self.bridge,
-                self.steering,
-            )
-            .await;
-            match result {
-                Err(Error::Invalid(_) | Error::Provider(_) | Error::Cancelled) => {
-                    Err(Error::Unknown)
-                }
-                result => result,
-            }
-        })
-    }
-}
-
-fn user_input(
-    request: &Value,
-    session: &str,
-    id: &str,
-) -> BoxFuture<'static, Result<Value, Error>> {
-    let text = runtime::string(request, "/message").map(str::to_owned);
-    let images = request
-        .get("images")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let session = session.to_owned();
-    let id = id.to_owned();
-    Box::pin(async move {
-        let text = text?;
-        let content = tokio::task::spawn_blocking(move || {
-        use base64::Engine as _;
-        if images.is_empty() { return Ok::<_, Error>(Value::String(text)); }
-        let mut blocks = vec![serde_json::json!({"type":"text","text":text})];
-        for image in images {
-            let path = runtime::string(&image, "/path")?;
-            let bytes = std::fs::read(path).map_err(|e| Error::Provider(format!("Claude private image read failed: {e}")))?;
-            let media = runtime::string(&image, "/mediaType")?;
-            blocks.push(serde_json::json!({"type":"image","source":{"type":"base64","media_type":media,"data":base64::engine::general_purpose::STANDARD.encode(bytes)}}));
-        }
-        Ok(Value::Array(blocks))
-    }).await.map_err(|e| Error::Provider(format!("Claude input encoding failed: {e}")))??;
-        Ok(
-            serde_json::json!({"type":"user","session_id":session,"uuid":id,"parent_tool_use_id":null,"message":{"role":"user","content":content}}),
-        )
-    })
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the original wire and canonical witnesses must remain together"
-)]
-async fn run(
-    io: &mut Pipe,
-    request: &Value,
-    session: &str,
-    input: &str,
-    journal: &journal::ProtocolSession,
-    output: &dyn OutputSink,
-    bridge: &mcp::Bridge,
-    steering: &mut steering::Steering,
-) -> Result<Outcome, Error> {
-    io.cancellation = CancellationToken::new();
-    let mut turn = StreamTurn::new(session.to_owned(), true);
-    turn.sent(input.to_owned());
-    bridge.admit()?;
-    let wire_input = io
-        .prepare_input(user_input(request, session, input))
-        .await?;
-    io.turn_started();
-    io.send(wire_input).await?;
-    let retired = io.retired.clone();
-    let stop = io.stop.clone();
-    let failed = bridge.failed.clone();
-    let mut stop_deadline = None;
-    let mut bound = false;
-    loop {
-        let row = tokio::select! {
-            biased;
-            () = retired.cancelled() => return Err(Error::ObservationRetired),
-            () = stop.cancelled(), if stop_deadline.is_none() => {
-                bridge.close_admission();
-                if !bound {
-                    return Err(Error::Unknown);
-                }
-                let id = Uuid::new_v4().to_string();
-                turn.control(id.clone());
-                io.control_message(serde_json::json!({"type":"control_request","request_id":id,"request":{"subtype":"interrupt"}})).await;
-                stop_deadline = Some(tokio::time::Instant::now() + runtime::INTERRUPT_TIMEOUT);
-                continue;
-            }
-            () = async { match stop_deadline { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => return Err(Error::Unknown),
-            () = failed.cancelled() => return Err(Error::Unknown),
-            row = io.next() => row?,
-            ready = steering.ready(), if stop_deadline.is_none() => {
-                ready?;
-                let next = match steering.take().await {
-                    Err(Error::Cancelled) => {
-                        journal.observation().control_allowed(&io.stop).await?;
-                        None
-                    }
-                    result => result?,
-                };
-                if let Some(next) = next {
-                    let id = Uuid::new_v4().to_string();
-                    let message = io.prepare_input(user_input(&next, session, &id)).await?;
-                    turn.sent(id);
-                    io.send(message).await?;
-                }
-                continue;
-            }
-        };
-        if !bound && turn.is_ack(&row, input) {
-            journal
-                .bind_task(NativeTask::ClaudeStream {
-                    session: session.to_owned(),
-                    input: input.to_owned(),
-                })
-                .await?;
-            bound = true;
-        }
-        if let Some(outcome) = turn.row(row, output).await? {
-            if !bound {
-                return Err(Error::Unknown);
-            }
-            journal.closed(outcome.clone()).await?;
-            return Ok(outcome);
-        }
-    }
+#[derive(Clone, Copy, PartialEq)]
+enum Start {
+    Interactive,
+    Submitted,
 }
 
 struct PendingInput {
@@ -296,13 +75,6 @@ impl StreamTurn {
     }
     fn control(&mut self, id: String) {
         self.controls.insert(id);
-    }
-    fn is_ack(&self, row: &Value, id: &str) -> bool {
-        row["type"] == "user"
-            && row["isReplay"] == true
-            && row["uuid"] == id
-            && row["session_id"] == self.session
-            && row["parent_tool_use_id"].is_null()
     }
     async fn end_message(&mut self, output: &dyn OutputSink) -> Result<(), Error> {
         if let Some(message) = self.message.take() {
