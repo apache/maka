@@ -76,10 +76,9 @@ struct Job {
     checkpoint: Option<records::Checkpoint>,
 }
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Completed {
+    // Older receipts can also contain a copy of the report.
     run: Run,
-    result: Option<Report>,
 }
 fn completed_key(fire: &str) -> String {
     format!(
@@ -793,20 +792,13 @@ impl Owner {
             session_id: Some(job.worker.clone()),
             run_id: job.execution.as_ref().map(|e| e.run_id),
         };
-        let completed = Completed {
-            run: run.clone(),
-            result: match &job.phase {
-                Phase::Investigating { result } => result.clone(),
-                Phase::Delivering { text, .. } => Some(Report::Report { text: text.clone() }),
-                Phase::Stopping => None,
-            },
-        };
-        let mut writes = self
-            .scheduler
-            .outcome_mutations(job, &completed.run.outcome, completed.result.clone())
-            .await?;
+        let mut writes = self.scheduler.outcome_mutations(job, &run.outcome).await?;
         writes.extend([
-            mutation(completed_key(&fire.id), None, &completed)?,
+            mutation(
+                completed_key(&fire.id),
+                None,
+                &Completed { run: run.clone() },
+            )?,
             Mutation {
                 key: ACTIVE.into(),
                 expected_revision: revision,

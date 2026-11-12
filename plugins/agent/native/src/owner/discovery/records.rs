@@ -358,9 +358,13 @@ impl scheduler::Scheduler {
         &self,
         job: &Job,
         outcome: &Outcome,
-        result: Option<Report>,
     ) -> Result<Vec<Mutation>, String> {
-        if matches!(job.phase, Phase::Stopping) || (result.is_none() && job.checkpoint.is_none()) {
+        let result = match &job.phase {
+            Phase::Investigating { result } => result.clone(),
+            Phase::Delivering { text, .. } => Some(Report::Report { text: text.clone() }),
+            Phase::Stopping => return Ok(vec![]),
+        };
+        if result.is_none() && job.checkpoint.is_none() {
             return Ok(vec![]);
         }
         self.memory_append(
