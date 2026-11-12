@@ -154,8 +154,17 @@ fn text_messages(request: &Value) -> String {
         .join("\n")
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn truncated_cell_image_terminates_the_run() -> TestResult<()> {
+#[test]
+fn truncated_cell_image_terminates_the_run() -> TestResult<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()?
+        .block_on(async { tokio::spawn(check_truncated_cell_image()).await? })
+}
+
+async fn check_truncated_cell_image() -> TestResult<()> {
     use base64::Engine as _;
 
     let mut rig = Rig::new()?;
