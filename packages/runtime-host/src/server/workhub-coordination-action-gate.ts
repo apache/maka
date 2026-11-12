@@ -567,13 +567,8 @@ export class WorkHubCoordinationActionGate {
       return this.#replace(intent, context);
     }
 
-    const candidates = await this.candidates();
-    if (!input.selectedTarget && candidates.candidateSetId !== input.candidateSetId) {
-      throw new WorkHubActionGateFailure(
-        'candidate_set_stale',
-        'WorkHub Session candidates changed; refresh before delegating',
-      );
-    }
+    const candidates = candidateSet(await this.#effects.listSessions(), false);
+
     const target = candidates.candidates.find((candidate) =>
       input.selectedTarget
         ? candidate.sessionId === input.selectedTarget.sessionId &&
@@ -592,23 +587,19 @@ export class WorkHubCoordinationActionGate {
       {
         ...delegationAssignment(input, fingerprint, target.sessionId, target.sessionName),
         ...this.#targetExecutionPreparation(input, target.sessionId, target.sessionName),
-        ...(input.selectedTarget
-          ? {
-              validateFreshTarget: async () => {
-                const fresh = (await this.candidates()).candidates.find(
-                  (candidate) =>
-                    candidate.sessionId === input.selectedTarget!.sessionId &&
-                    digest(candidate.workspace) === input.selectedTarget!.workspaceDigest,
-                );
-                if (!fresh)
-                  throw new WorkHubActionGateFailure(
-                    'candidate_set_stale',
-                    'The selected work changed before admission',
-                  );
-                this.#assertTarget(fresh);
-              },
-            }
-          : {}),
+        validateFreshTarget: async () => {
+          const fresh = candidateSet(await this.#effects.listSessions(), false).candidates.find(
+            (candidate) =>
+              candidate.sessionId === target.sessionId &&
+              digest(candidate.workspace) === digest(target.workspace),
+          );
+          if (!fresh)
+            throw new WorkHubActionGateFailure(
+              'candidate_set_stale',
+              'The selected work changed before admission',
+            );
+          this.#assertTarget(fresh);
+        },
       },
       context,
     );
@@ -1115,24 +1106,25 @@ export class WorkHubCoordinationActionGate {
 
 export function candidateSet(
   sessions: readonly WorkHubActionGateSession[],
+  bounded = true,
 ): WorkHubCoordinationCandidatesResult {
   const eligible = sessions
     .filter(isCandidateSession)
     .sort((left, right) => updatedAt(right) - updatedAt(left) || left.id.localeCompare(right.id))
-    .slice(0, WORKHUB_COORDINATION_CANDIDATE_MAX_ITEMS);
+    .slice(0, bounded ? WORKHUB_COORDINATION_CANDIDATE_MAX_ITEMS : undefined);
   const candidateSetId = digest(
-    eligible.map((session) => ({
-      id: session.id,
-      name: session.name,
-      workspace: workspaceProjection(session),
-      status: session.status,
-      updatedAt: updatedAt(session),
-    })),
+    [...eligible]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((session) => ({
+        id: session.id,
+        workspace: workspaceProjection(session),
+        state: candidateState(session.status),
+      })),
   );
   return {
     candidateSetId,
     candidates: eligible.map((session) => ({
-      candidateRef: candidateRef(candidateSetId, session.id),
+      candidateRef: candidateRef(digest(workspaceProjection(session)), session.id),
       sessionId: session.id,
       sessionName: session.name,
       workspace: workspaceProjection(session),
@@ -1152,8 +1144,10 @@ function isCandidateSession(session: WorkHubActionGateSession): boolean {
   );
 }
 
-function candidateRef(candidateSetId: string, sessionId: string): string {
-  return `whc_${hash(`${candidateSetId}\0${sessionId}`).slice(0, 48)}`;
+// Candidate identity follows the Session and workspace; titles and activity
+// timestamps may change while the coordinator is deciding what to do.
+function candidateRef(workspaceDigest: string, sessionId: string): string {
+  return `whc_${hash(`${workspaceDigest}\0${sessionId}`).slice(0, 48)}`;
 }
 
 function delegationAssignment(

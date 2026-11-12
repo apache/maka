@@ -21,8 +21,10 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import type { DatabaseSync } from 'node:sqlite';
+import { retireLegacyGoalEventWaits } from './legacy-goal-event-wait-migration.js';
 import {
   configureSqliteRuntimeDatabase,
+  configureSqliteRuntimeAutoVacuumForNewDatabase,
   configureSqliteRuntimeLockWait,
   migrateSqliteRuntimeDatabase,
   readUserVersion,
@@ -208,7 +210,8 @@ class OperationalStateDatabaseOwner {
     readonly databasePath: string,
     options: OperationalStateDatabaseOptions,
   ) {
-    if (options.schemaMigration === 'require_current' && !existsSync(databasePath)) {
+    const databaseExisted = existsSync(databasePath);
+    if (options.schemaMigration === 'require_current' && !databaseExisted) {
       throw new OperationalStateMigrationBlockedError(
         new Error('Operational state has not been initialized by its Runtime Host'),
         'requires_host_migration',
@@ -223,6 +226,9 @@ class OperationalStateDatabaseOwner {
     try {
       configureSqliteRuntimeLockWait(this.database);
       this.database.exec('PRAGMA foreign_keys = ON');
+      if (options.schemaMigration !== 'require_current') {
+        configureSqliteRuntimeAutoVacuumForNewDatabase(this.database);
+      }
       if (options.schemaMigration === 'require_current') {
         requireCurrentOperationalState(this.database);
       } else {
@@ -489,6 +495,7 @@ export function migrateOperationalStateDatabaseInternal(db: DatabaseSync, now: (
     migrateSqliteSessionMetadataDatabase(db, { transaction: 'caller' });
     migrateSqliteCoreExecutionDatabase(db);
     migrateSqliteWorkflowDatabase(db);
+    retireLegacyGoalEventWaits(db, now());
     insertMigratedScheduledTasks(db, legacyScheduledTasks);
     migrateSqliteUsageDatabase(db);
     migrateSqliteArtifactDatabase(db);

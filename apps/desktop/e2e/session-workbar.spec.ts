@@ -60,11 +60,11 @@ test('right workbar visibility belongs to each Session and survives reload', asy
   const first = await createSession(page, 'first workbar owner');
   const panel = page.locator('.maka-session-workbar[data-placement="right"]');
   await page.getByRole('button', { name: '展开任务工作栏' }).click();
+  // Trace remains available through the launcher when a narrow composer hides its usage shortcut.
   await page
     .getByRole('list', { name: '打开工具' })
-    .getByRole('button', { name: /变更.*查看当前 Git 工作区变化/ })
+    .getByRole('button', { name: /追踪.*检查任务调用、工具与耗时记录/ })
     .click();
-  await page.getByRole('button', { name: '打开用量追踪' }).click();
   await expect(page.locator(
     '.maka-session-workbar-panel[data-overlay][data-placement="right"] [data-maka-contract="session-inspector"]',
   )).toBeVisible();

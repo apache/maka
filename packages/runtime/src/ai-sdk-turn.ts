@@ -23,6 +23,7 @@
  * construction and cross-turn routing remain in AiSdkBackend.
  */
 
+import { isEventWaitSteeringInterruption } from './event-wait-tool.js';
 import type {
   AbortEvent,
   CompleteEvent,
@@ -62,7 +63,6 @@ import {
   type YieldAgentGraphToolResult,
 } from './stream-graph-supervisor-tools.js';
 import type {
-  ModelFinishReason,
   ModelMessage,
   ModelStepOutcome,
   ModelToolSet,
@@ -81,6 +81,7 @@ import {
   type CodeModeExecutionResult,
   DEFAULT_CODE_MODE_EXECUTION_POLICY,
   executeCodeCell,
+  CodeModeSteeringInterruption,
 } from './code-mode.js';
 import {
   StreamWatchdog,
@@ -143,6 +144,7 @@ import {
   type RuntimeEventModelReplayPlan,
   type RuntimeEventReplayFallbackGate,
 } from './model-history.js';
+import { changedRuntimeContexts } from './runtime-context.js';
 import type { ContextBudgetPolicy } from './context-budget.js';
 import {
   toolSchemaCharsForDiagnostics,
@@ -167,12 +169,11 @@ import {
   shouldAppendContextCompactedNote,
   shouldAppendContextCompactionFailedOpenNote,
 } from './context-budget.js';
-import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
-  historyCompactSourceDigest,
+  checkHistoryCompactCheckpointCurrency,
+  isHistoryCompactContentEvent,
   isProviderHistoryCompactCheckpoint,
-  matchHistoryCompactCheckpointPrefix,
   projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
@@ -425,28 +426,45 @@ function projectToolModePlan(
   execTool: MakaTool,
 ): ToolAvailabilityPlan {
   if (toolMode === 'direct') return plan;
+  const directTools = plan.providerTools.filter((tool) => tool.nesting === 'direct_only');
+  const directNames = new Set(directTools.map((tool) => tool.name));
+  const projectActive = (names: readonly string[]) => [
+    execTool.name,
+    ...names.filter((name) => directNames.has(name)),
+  ];
+  const projectBaseActive = plan.projectActiveTools;
   return {
     ...plan,
     providerTools: [
       execTool,
+      ...directTools,
       ...plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME),
     ],
-    activeTools: [execTool.name],
-    ...(plan.projectActiveTools
-      ? { projectActiveTools: () => ({ activeTools: [execTool.name] }) }
+    activeTools: projectActive(plan.activeTools),
+    ...(projectBaseActive
+      ? {
+          projectActiveTools: (options) => ({
+            activeTools: projectActive(projectBaseActive(options).activeTools),
+          }),
+        }
       : {}),
-    currentRepairToolNames: () => [execTool.name],
+    currentRepairToolNames: () => projectActive(plan.currentRepairToolNames()),
     diagnostics: () => undefined,
   };
 }
 
-function renderCodeModeCatalogPrompt(nested: ReadonlyMap<string, MakaTool>): string {
+function renderCodeModeCatalogPrompt(
+  nested: ReadonlyMap<string, MakaTool>,
+  directNames: readonly string[],
+): string {
   // The aggregate catalog can exceed the evidence codec's bound for one tool
   // description. Keep exec's schema fixed; requestSystemPrompt and its hash
   // carry this step's exact, refreshable nested surface instead.
   const catalog = requestCompositionToolSchemas([...nested.values()], [...nested.keys()]);
   return [
-    'Code Mode: exec is the only callable tool. Call the following tools from inside exec.',
+    directNames.length
+      ? `Code Mode: call the tools in the following catalog from inside exec. Call these control tools directly, never from exec: ${directNames.join(', ')}.`
+      : 'Code Mode: exec is the only callable tool. Call the following tools from inside exec.',
     'After tool_search, return its result and use the refreshed catalog in the next exec call.',
     JSON.stringify(catalog),
   ].join('\n');
@@ -618,8 +636,8 @@ export class AiSdkTurn {
   readonly abortController = new AbortController();
   readonly activeTools: Map<string, string>;
   aborted = false;
-  loopStopRequested = false;
-  loopStopReason: CompleteEvent['stopReason'] | undefined;
+  private stopRequested = false;
+  private turnYield: 'plan_handoff' | 'graph_yield' | 'permission_handoff' | undefined;
   private handoffPaused = false;
   watchdog: StreamWatchdog | null = null;
   runTrace: RunTrace | null = null;
@@ -664,14 +682,18 @@ export class AiSdkTurn {
   }
 
   requestStop(reason: 'user_stop' | 'redirect', mode: 'immediate' | 'after_step'): void {
+    this.stopRequested = true;
     if (mode === 'after_step') {
-      this.loopStopRequested = true;
       this.runTrace?.abortRequested(reason);
       return;
     }
     this.aborted = true;
     this.abortController.abort();
     this.runTrace?.abortRequested(reason);
+  }
+
+  private get loopStopReason(): CompleteEvent['stopReason'] | undefined {
+    return this.stopRequested ? 'user_stop' : this.turnYield;
   }
 
   async endAbortedTools(): Promise<void> {
@@ -829,6 +851,7 @@ export class AiSdkTurn {
         'Use tools.<name>(args), await dependent calls, and Promise.all for independent calls.',
         'The sandbox has no process, filesystem, network, timer, eval, import, or cross-cell state.',
         'Terminate by returning a JSON-serializable value. Failures return a structured diagnostic.',
+        'After a user-input interruption, toolCalls includes each interruptedResult with its input and result. Use the returned waitId as resumeWaitId to resume that exact wait.',
       ].join(' '),
       parameters: z.object({ code: z.string() }),
       executionSemantics: 'exclusive_step',
@@ -998,6 +1021,19 @@ export class AiSdkTurn {
     // fails the whole fallback closed (#972: incomplete usage is no usage).
     let completedStepUsage: NormalizedAiSdkUsage | undefined;
     let sawUnusableStepUsage = false;
+    const recordAccountedStepUsage = async (stepUsage: NormalizedAiSdkUsage): Promise<void> => {
+      completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
+      this.deps.session.cumulativeUsageCheckpoint = mergeNormalizedUsage(
+        this.deps.session.cumulativeUsageCheckpoint,
+        stepUsage,
+      );
+      await this.deps.backend.recordUsageCheckpoint?.({
+        ...this.deps.session.cumulativeUsageCheckpoint,
+        costUsd: this.deps.providerTelemetry.normalizedUsageCostUsd(
+          this.deps.session.cumulativeUsageCheckpoint,
+        ),
+      });
+    };
     // Input tokens from the last completed step — the actual prompt token count
     // of the final API request. Used to compute contextRemaining for the TUI
     // statusline ctx segment (#1067): contextRemaining = contextWindow - this.
@@ -1007,6 +1043,10 @@ export class AiSdkTurn {
     // Output tokens of the same step: with the input they are the baseline the
     // next request is judged from (everything the model produced is re-sent).
     let lastStepOutputTokens: number | undefined;
+    // When that step's request finished: the settlement anchor carries it as
+    // `completedAt` so readers can order the measurement against a compaction's
+    // apply-time boundary (#5547) even where no provider tracker is wired.
+    let lastStepRequestCompletedAt: number | undefined;
     let streamStatus: LlmCallRecord['status'] = 'success';
     let streamErrorClass: string | undefined;
     let runtimeSteps = 0;
@@ -1050,6 +1090,20 @@ export class AiSdkTurn {
       if (!contextCompactedNoteWritten && shouldAppendContextCompactedNote(contextBudget)) {
         contextCompactedNoteWritten = await this.recordSystemNote('context_compacted', turnId);
       }
+    };
+    // The apply-time boundary the usage reader orders measurements against:
+    // recorded when each compaction lands, so it exists mid-turn and a stop or
+    // stream error cannot erase it — unlike the settlement-time display note.
+    const recordCompactionApplied = async (): Promise<void> => {
+      // The consumer persists the hidden note and forwards the same boundary
+      // to live subscribers. Await its ack before dispatching the replacement
+      // prompt, so even a slow consumer observes the boundary before new usage.
+      await queue.pushAndWaitUntilConsumed({
+        type: 'context_compaction_applied',
+        id: this.deps.newId(),
+        turnId,
+        ts: this.deps.now(),
+      });
     };
     const trace = new RunTrace({
       sessionId: this.deps.backend.sessionId,
@@ -1165,6 +1219,7 @@ export class AiSdkTurn {
         : [...names];
     };
     const currentRepairToolNames = () => boundaryAwareToolNames(plan.currentRepairToolNames());
+    let missingPrerequisiteAttempts = 0;
     let resolvedSystemPrompt: ResolvedSystemPrompt = { sourceRevisions: [] };
     let systemPrompt: string | undefined;
 
@@ -1342,33 +1397,26 @@ export class AiSdkTurn {
           let replayEvents = rawProjectionEvents;
           let effectiveProjectionCheckpoint = projectionCheckpoint;
           if (projectionCheckpoint) {
-            const checkpointMatch = matchHistoryCompactCheckpointPrefix(
+            const currency = checkHistoryCompactCheckpointCurrency(
               projectionCheckpoint,
               rawProjectionEvents,
+              pruned.projectionSnapshot,
             );
-            if (checkpointMatch.reason) {
-              throw new Error(`durable checkpoint projection mismatch: ${checkpointMatch.reason}`);
+            if (currency.status === 'raw_mismatch') {
+              throw new Error(`durable checkpoint projection mismatch: ${currency.reason}`);
             }
             // Content-currency guard: the raw identity still matches, but a
             // transition committed after this fold (e.g. an active-turn prune
             // in this very send) changed the effective view the block was
             // built from. Replay without the stale block — the provider
             // decides fit and overflow recovery re-folds (#4845 review).
-            const pinnedEffectiveDigest = projectionCheckpoint.coverage.effectiveSourceDigest;
-            const coveredEffective = await this.deps.compaction.foldEffectiveModelHistory(
-              checkpointMatch.coveredRuntimeEvents,
-              pruned.projectionSnapshot,
-            );
-            if (
-              pinnedEffectiveDigest === undefined ||
-              historyCompactSourceDigest(coveredEffective) !== pinnedEffectiveDigest
-            ) {
+            if (currency.status === 'effective_history_changed') {
               effectiveProjectionCheckpoint = undefined;
             } else {
               replayEvents = projectHistoryCompactCheckpointReplay(
                 projectionCheckpoint,
-                checkpointMatch.coveredRuntimeEvents,
-                checkpointMatch.successorRuntimeEvents,
+                currency.match.coveredRuntimeEvents,
+                currency.match.successorRuntimeEvents,
               );
             }
             // The checkpoint was capacity-validated before it was persisted.
@@ -1416,6 +1464,28 @@ export class AiSdkTurn {
             ? currentTurnMessages
             : [...priorReplay.messages, ...currentTurnMessages];
         };
+        const appendRuntimeContexts = async (
+          history: ModelMessage[],
+          contexts: NonNullable<ResolvedSystemPrompt['contexts']>,
+        ): Promise<ModelMessage[]> => {
+          const additions = changedRuntimeContexts(contexts, history).map((context) => ({
+            context,
+            id: this.deps.newId(),
+          }));
+          for (const { context, id } of additions) {
+            queue.push({ type: 'runtime_context', id, turnId, ts: this.deps.now(), ...context });
+          }
+          if (additions.length === 0) return history;
+          // Persist before dispatch; retries reuse the same snapshot. Context
+          // removed by compaction is refreshed after that fold, not lost in it.
+          await queue.waitUntilConsumedThroughCurrent();
+          return [
+            ...history,
+            ...additions.map(({ context, id }) =>
+              this.deps.messageProjection.materializeRuntimeContext(context, id),
+            ),
+          ];
+        };
         // Tool Availability describes the provider-visible (active) subset. A
         // group loaded this turn expands that subset on later requests, so the
         // terminal trace is refined against the final active set below.
@@ -1445,6 +1515,7 @@ export class AiSdkTurn {
           queue,
           capacityProviderTools,
           onMidTurnDiagnosticPatch,
+          recordCompactionApplied,
           this,
           this.automaticMemoryCompactionSupported()
             ? () => this.automaticMemoryCompactionDecision()
@@ -1466,9 +1537,10 @@ export class AiSdkTurn {
 
         const completedProviderSteps: RequestProjectionContext['completedSteps'][number][] = [];
         let requestMessages: ModelMessage[] = messages;
+        let finishFeedback: string | undefined;
         let result: ModelStreamResult;
-        let providerOutcome: ModelStepOutcome;
-        let finishReason: ModelFinishReason = 'stop';
+        let providerOutcome: ModelStepOutcome | undefined;
+        let terminalStopReason: CompleteEvent['stopReason'] | undefined;
         let terminalProviderError: unknown;
         agentLoop: for (;;) {
           ({ plan, providerTools, modelTools, nestedTools } = snapshotStepTools());
@@ -1510,10 +1582,12 @@ export class AiSdkTurn {
           }
           const requestSystemPromptBase = joinPromptFragments([
             systemPrompt,
+            finishFeedback,
             finalChildSummaryStep ? CHILD_STEP_BUDGET_FINALIZATION_PROMPT : undefined,
             toolRuntime.hasSandboxBoundaryDenial() ? SANDBOX_BOUNDARY_DENIED_FOR_TURN : undefined,
             sandboxBoundaryFinalizationStep ? SANDBOX_BOUNDARY_FINALIZATION_PROMPT : undefined,
           ]);
+          finishFeedback = undefined;
           const codeModeCatalogPrompt =
             toolMode === 'code_mode'
               ? renderCodeModeCatalogPrompt(
@@ -1524,6 +1598,9 @@ export class AiSdkTurn {
                         ),
                       )
                     : nestedTools,
+                  boundaryAwareToolNames(plan.currentRepairToolNames()).filter(
+                    (name) => name !== codeModeExecTool.name,
+                  ),
                 )
               : undefined;
           const resolveDispatch = (active: readonly string[] | undefined): DispatchRequestShape => {
@@ -1540,9 +1617,6 @@ export class AiSdkTurn {
               activeTools,
             };
           };
-          const dynamicContextMessages: ModelMessage[] = (resolvedSystemPrompt.contexts ?? []).map(
-            ({ text }) => ({ role: 'user', content: text }),
-          );
           const shaped = requestProjection
             ? await requestProjection({
                 completedSteps: completedProviderSteps,
@@ -1575,9 +1649,13 @@ export class AiSdkTurn {
                 })
               : undefined;
           providerRequestTracker?.setStep(runtimeSteps, requestCompositionId);
-          let attemptMessages = projectedMessages;
+          let attemptMessages = await appendRuntimeContexts(
+            projectedMessages,
+            resolvedSystemPrompt.contexts ?? [],
+          );
           let overflowRecoveryMaxOutputTokens: number | undefined;
           let providerAttempt = 0;
+          let pendingRetryReason: ProviderRetryEvent['reason'] | undefined;
           const returnedToolCalls: ToolCallPart[] = [];
           const providerToolInputs = new Map<string, unknown>();
           let providerStepUsage: NormalizedUsage | undefined;
@@ -1599,8 +1677,7 @@ export class AiSdkTurn {
             const attemptHasNoObservableOutput = () =>
               !attemptSawVisibleContent && !attemptSawToolActivity && !attemptSawReplayBarrier;
             const attemptCanReplay = () => !attemptSawToolActivity && !attemptSawReplayBarrier;
-            // Request-only facts must survive history replacement and overflow recovery.
-            const dispatchMessages = [...attemptMessages, ...dynamicContextMessages];
+            const dispatchMessages = attemptMessages;
             this.memorySourceMessages = dispatchMessages;
             this.memorySourceEventMessagePositions =
               this.deps.messageProjection.memoryEventMessagePositions(dispatchMessages);
@@ -1626,9 +1703,28 @@ export class AiSdkTurn {
             // rebuilt in place by overflow recovery, and the boundary it folded
             // under must travel with that rebuild, not with the step.
             const historyCompactBoundary = requestHistoryCompactBoundary();
+            // Stop can arrive during handoff, retry backoff, or overflow recovery.
+            if (this.loopStopReason) {
+              terminalStopReason = this.loopStopReason;
+              break agentLoop;
+            }
+            if (pendingRetryReason) {
+              queue.push({
+                type: 'provider_retry',
+                id: this.deps.newId(),
+                turnId,
+                ts: this.deps.now(),
+                phase: 'started',
+                attempt: providerAttempt,
+                maxAttempts: MAX_PROVIDER_ATTEMPTS_PER_STEP,
+                reason: pendingRetryReason,
+              } satisfies ProviderRetryEvent);
+              pendingRetryReason = undefined;
+            }
             result = await this.deps.modelAdapter.startStream({
               model,
               messages: dispatchMessages,
+              historyMessageCount: attemptMessages.length,
               tools: modelTools,
               activeTools: activeToolsForRequest,
               onStreamActivity: () => requestWatchdog?.markActivity(),
@@ -1847,6 +1943,15 @@ export class AiSdkTurn {
             // must not be reported as the already-handled watchdog timeout.
             consumeWatchdogTimeout();
             providerOutcome = await result.outcome;
+            const meteredFailedRequest =
+              providerOutcome.kind === 'failed' &&
+              (providerOutcome.failure.kind === 'stream_truncated' ||
+                (providerOutcome.failure.kind === 'network' &&
+                  providerOutcome.failure.code === 'network_error'));
+            if (meteredFailedRequest) {
+              if (providerOutcome.usage) await recordAccountedStepUsage(providerOutcome.usage);
+              else sawUnusableStepUsage = true;
+            }
             if (providerOutcome.kind === 'completed') {
               // A compacted overflow retry only needs the conservative cap for
               // that one request. Once the provider accepts the request, the
@@ -1930,6 +2035,7 @@ export class AiSdkTurn {
               }
               lastStepInputTokens = stepUsage?.inputTokens;
               lastStepOutputTokens = stepUsage?.outputTokens;
+              lastStepRequestCompletedAt = this.deps.now();
               // A `finishReason: length` is deliberately not a trigger. The
               // reply may have been cut because the provider ran out of
               // window room, or because the provider's own output cap is
@@ -1937,19 +2043,7 @@ export class AiSdkTurn {
               // from outside, and an indistinguishable signal must not
               // drive an action; the cut reply is visible to the user
               // either way (#4559).
-              if (stepUsage) {
-                completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
-                this.deps.session.cumulativeUsageCheckpoint = mergeNormalizedUsage(
-                  this.deps.session.cumulativeUsageCheckpoint,
-                  stepUsage,
-                );
-                await this.deps.backend.recordUsageCheckpoint?.({
-                  ...this.deps.session.cumulativeUsageCheckpoint,
-                  costUsd: this.deps.providerTelemetry.normalizedUsageCostUsd(
-                    this.deps.session.cumulativeUsageCheckpoint,
-                  ),
-                });
-              }
+              if (stepUsage) await recordAccountedStepUsage(stepUsage);
               await flushStep();
               if (midTurnState) {
                 // Durability clock: step N's thinking/text completion events
@@ -1975,7 +2069,7 @@ export class AiSdkTurn {
                 )
               )
                 sawUnusableStepUsage = true;
-              if (this.loopStopRequested) {
+              if (this.loopStopReason) {
                 terminalProviderError = failure;
                 terminalProviderErrorReason =
                   lastCompletedStepHadToolResult && failure.kind === 'timeout'
@@ -2001,6 +2095,7 @@ export class AiSdkTurn {
                       activeTools: activeToolsForRequest,
                       queue,
                       onDiagnosticPatch: onMidTurnDiagnosticPatch,
+                      onCompactionApplied: recordCompactionApplied,
                       origin: this,
                       ...(this.automaticMemoryCompactionSupported()
                         ? {
@@ -2014,7 +2109,10 @@ export class AiSdkTurn {
                     })
                   : undefined;
               if (recovered) {
-                attemptMessages = recovered.messages;
+                attemptMessages = await appendRuntimeContexts(
+                  recovered.messages,
+                  resolvedSystemPrompt.contexts ?? [],
+                );
                 overflowRecoveryMaxOutputTokens = Math.min(
                   this.deps.modelAdapter.maxOutputTokens() ?? CONTEXT_RECOVERY_MAX_OUTPUT_TOKENS,
                   CONTEXT_RECOVERY_MAX_OUTPUT_TOKENS,
@@ -2082,7 +2180,7 @@ export class AiSdkTurn {
                 currentStepMessageId = this.deps.newId();
                 // The failed request did not return authoritative usage. Keep
                 // effectiveness recoverable, but fail final metering closed.
-                sawUnusableStepUsage = true;
+                if (!meteredFailedRequest || !providerOutcome.usage) sawUnusableStepUsage = true;
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
                 const maxAttempts = MAX_PROVIDER_ATTEMPTS_PER_STEP;
@@ -2100,16 +2198,7 @@ export class AiSdkTurn {
                   reason,
                 } satisfies ProviderRetryEvent);
                 await this.deps.providerRetrySleep(delayMs, turnAbortController.signal);
-                queue.push({
-                  type: 'provider_retry',
-                  id: this.deps.newId(),
-                  turnId,
-                  ts: this.deps.now(),
-                  phase: 'started',
-                  attempt: nextAttempt,
-                  maxAttempts,
-                  reason,
-                } satisfies ProviderRetryEvent);
+                pendingRetryReason = reason;
                 continue;
               }
               // Unrecoverable (not context-length, this step's attempt spent,
@@ -2138,9 +2227,10 @@ export class AiSdkTurn {
           const providerStepId = currentStepMessageId;
 
           if (providerOutcome.kind !== 'completed') throw providerOutcome.failure;
-          finishReason = providerOutcome.finishReason;
+          const finishReason = providerOutcome.finishReason;
           await queue.waitUntilConsumedThroughCurrent();
 
+          let toolRequestedFinish = false;
           if (returnedToolCalls.length > 0) {
             const continuationBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
             if (continuationBudgetRemains && !this.deps.backend.loadTurnRuntimeEvents) {
@@ -2217,6 +2307,14 @@ export class AiSdkTurn {
               if (outcome.status === 'rejected') throw outcome.reason;
               const settlement = outcome.value;
               const toolCall = returnedToolCalls[index];
+              const definition = toolCall && toolsByName.get(toolCall.toolName);
+              if (
+                returnedToolCalls.length === 1 &&
+                definition?.executionSemantics === 'exclusive_step' &&
+                definition.finishTurnOnSuccess &&
+                !settlement.providerError
+              )
+                toolRequestedFinish = true;
               if (isPlanToolResult(settlement.result)) {
                 this.handlePlanToolResult(settlement.result, queue);
               }
@@ -2234,9 +2332,7 @@ export class AiSdkTurn {
             await queue.waitUntilConsumedThroughCurrent();
 
             const continuationWillRun =
-              (maxSteps === undefined || runtimeSteps < maxSteps) &&
-              !this.loopStopRequested &&
-              !this.aborted;
+              (maxSteps === undefined || runtimeSteps < maxSteps) && !this.loopStopReason;
             if (continuationWillRun && providerOutcome.continuation === 'pending') {
               const persistedProjection = await loadDurableTurnProjection();
               const responseMessages = persistedOpenAiResponsesStepMessages(
@@ -2264,67 +2360,79 @@ export class AiSdkTurn {
               (toolRuntime.shouldFinalizeSandboxBoundary() ||
                 toolRuntime.hasSandboxBoundaryDenial()))
           ) {
-            this.loopStopReason = 'permission_handoff';
-            this.loopStopRequested = true;
+            this.turnYield = 'permission_handoff';
           }
-          const mayTakeAnotherStep = !stepLimitReached && !this.loopStopRequested && !this.aborted;
-          if (returnedToolCalls.length > 0 && mayTakeAnotherStep) {
+          let finishCandidateReason: CompleteEvent['stopReason'] | undefined =
+            returnedToolCalls.length > 0 && !toolRequestedFinish
+              ? undefined
+              : toolRequestedFinish
+                ? 'end_turn'
+                : this.deps.modelAdapter.mapFinishReason(finishReason);
+          // Enforce Host prerequisites locally: some providers reject required
+          // tool_choice in thinking mode. Never silently complete without the
+          // receipt; replay the draft and per-step reminder for bounded repair.
+          if (
+            returnedToolCalls.length === 0 &&
+            resolvedSystemPrompt.requireToolCall &&
+            !this.loopStopReason
+          ) {
             if (
-              (await input.handoffBoundary?.(
-                turnAbortController.signal,
-                maxSteps === undefined ? null : maxSteps - runtimeSteps,
-              )) === 'pause'
+              stepLimitReached ||
+              !this.deps.backend.loadTurnRuntimeEvents ||
+              ++missingPrerequisiteAttempts > 2
             ) {
-              this.handoffPaused = true;
-              break agentLoop;
+              throw new Error(
+                'Required turn prerequisite was not recorded; cannot complete this response.',
+              );
             }
-            if (this.aborted || this.loopStopRequested) break agentLoop;
-            currentStepMessageId = this.deps.newId();
-            continue agentLoop;
+            finishCandidateReason = undefined;
           }
-          // Continuing the turn needs the durable current-run reader, for the
-          // same reason the tool-call edge above demands it: the next request
-          // has to carry the assistant output this step just produced, and only
-          // the ledger projection has it. The no-reader fallback at the top of
-          // the loop appends steering alone, which would ask the model to
-          // redirect work it cannot see. Without a reader this edge is skipped
-          // rather than throwing — the turn still completes and the Host folds
-          // the message into the next Turn, which is today's behaviour.
-          if (mayTakeAnotherStep && this.deps.backend.loadTurnRuntimeEvents) {
-            // Last chance for a steer that landed after this turn's final
-            // tool-call boundary — including the only boundary a tool-free
-            // turn has, which precedes the model's first token. Without it the
-            // message is never pulled at all, and whether Steer works would
-            // depend on the model happening to call a tool afterwards (#3529).
-            // A step-limited turn deliberately skips this: its budget is spent,
-            // and the Host folds the message into the next Turn instead.
+          // The Host carries steering left unconsumed here into the next Turn.
+          if (
+            finishCandidateReason !== undefined &&
+            !toolRequestedFinish &&
+            !stepLimitReached &&
+            !this.loopStopReason &&
+            this.deps.backend.loadTurnRuntimeEvents
+          ) {
             const injectedBefore = this.injectedSteeringMessages.length;
             await this.drainSteeringInto(input, queue);
-            // Re-read the stop flags: the drain awaits a durable push, so an
-            // `after_step` stop or an abort can land while it is in flight, and
-            // `mayTakeAnotherStep` is stale by now. Stop wins — the message is
-            // already durable, so the Host folds it into the next Turn.
-            if (
-              this.injectedSteeringMessages.length > injectedBefore &&
-              !this.loopStopRequested &&
-              !this.aborted
-            ) {
-              await queue.waitUntilConsumedThroughCurrent();
-              if (
-                (await input.handoffBoundary?.(
-                  turnAbortController.signal,
-                  maxSteps === undefined ? null : maxSteps - runtimeSteps,
-                )) === 'pause'
-              ) {
-                this.handoffPaused = true;
-                break agentLoop;
-              }
-              if (this.aborted || this.loopStopRequested) break agentLoop;
-              currentStepMessageId = this.deps.newId();
-              continue agentLoop;
+            if (this.injectedSteeringMessages.length > injectedBefore)
+              finishCandidateReason = undefined;
+          }
+          // Finishing needs Host approval even when no continuation is possible.
+          if (finishCandidateReason === 'end_turn' && !this.loopStopReason) {
+            const finishDecision = await this.deps.backend.beforeTurnFinish?.({
+              sessionId: this.deps.backend.sessionId,
+              turnId,
+              signal: turnAbortController.signal,
+            });
+            if (finishDecision && !finishDecision.allow) {
+              finishFeedback = finishDecision.feedback;
+              finishCandidateReason = undefined;
+            } else if (toolRequestedFinish) {
+              this.deps.modelAdapter.clearContinuation(this.turnId);
             }
           }
-          break agentLoop;
+          terminalStopReason =
+            this.loopStopReason ??
+            finishCandidateReason ??
+            (stepLimitReached ? 'step_limit' : undefined);
+          if (terminalStopReason) break agentLoop;
+          if (!this.deps.backend.loadTurnRuntimeEvents) {
+            throw new Error('durable current-run reader is required for turn continuation');
+          }
+          await queue.waitUntilConsumedThroughCurrent();
+          if (
+            (await input.handoffBoundary?.(
+              turnAbortController.signal,
+              maxSteps === undefined ? null : maxSteps - runtimeSteps,
+            )) === 'pause'
+          ) {
+            this.handoffPaused = true;
+            break agentLoop;
+          }
+          currentStepMessageId = this.deps.newId();
         }
 
         // Refine Tool Availability against the final active set. Deferred
@@ -2344,7 +2452,7 @@ export class AiSdkTurn {
         // silently drop prior requests. An unusable sample in ANY request fails
         // the whole record closed (#972).
         try {
-          const attemptTotalUsage = providerOutcome.usage;
+          const attemptTotalUsage = providerOutcome?.usage;
           tokenUsage = sawUnusableStepUsage ? undefined : (completedStepUsage ?? attemptTotalUsage);
           if (tokenUsage) {
             tokenUsageCostUsd = this.deps.providerTelemetry.normalizedUsageCostUsd(tokenUsage);
@@ -2368,6 +2476,14 @@ export class AiSdkTurn {
             // are what the next request re-sends. No usable input count, no
             // anchor: the next turn then has no proactive fold until its first
             // accepted request.
+            const lastCompletedMainRequestAt =
+              providerRequestTracker?.latestCompletedMainRequestAt ?? lastStepRequestCompletedAt;
+            // This row lands after the compaction notes even when the
+            // anchored request completed BEFORE the compaction — the post-compaction
+            // retry never finished (#5547). The anchor is persisted whole as
+            // the durable fact it is; readers order it against the compaction's
+            // apply-time boundary via `completedAt` rather than trusting
+            // ledger position.
             const anchorInputTokens = finitePositive(lastStepInputTokens);
             const anchorOutputTokens =
               lastStepOutputTokens !== undefined && Number.isFinite(lastStepOutputTokens)
@@ -2405,6 +2521,9 @@ export class AiSdkTurn {
                 ? {
                     lastRequestAnchor: {
                       inputTokens: anchorInputTokens,
+                      ...(lastCompletedMainRequestAt !== undefined
+                        ? { completedAt: lastCompletedMainRequestAt }
+                        : {}),
                       ...(anchorOutputTokens !== undefined
                         ? { outputTokens: anchorOutputTokens }
                         : {}),
@@ -2439,11 +2558,8 @@ export class AiSdkTurn {
         // Usage above still belongs to this physical attempt. Its Runtime owner
         // seals the drained stream; no complete/abort event ends the logical Turn.
         if (this.handoffPaused) return;
-        const stopReason =
-          this.loopStopReason ??
-          (maxSteps !== undefined && finishReason === 'tool-calls'
-            ? 'step_limit'
-            : this.mapFinishReason(finishReason));
+        const stopReason = this.loopStopReason ?? terminalStopReason;
+        if (!stopReason) throw new Error('Turn ended without a terminal decision');
         trace.modelStreamCompleted(stopReason);
         const completeEvent = {
           type: 'complete',
@@ -2619,7 +2735,7 @@ export class AiSdkTurn {
         })),
         isFatalToolError: isRuntimeCommitBoundaryError,
         callTool: async (name, input, signal) => {
-          if (this.loopStopRequested)
+          if (this.loopStopReason)
             throw new Error('The turn has yielded; no further tools may run.');
           const tool = snapshot.get(name);
           if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
@@ -2640,6 +2756,8 @@ export class AiSdkTurn {
           if (settlement.providerError !== undefined) {
             throw new Error(settlement.providerError);
           }
+          if (isEventWaitSteeringInterruption(settlement.result))
+            throw new CodeModeSteeringInterruption(settlement.result);
           if (nestedOutputLimitExceeded) {
             throw new Error('Code Mode nested output byte limit exceeded');
           }
@@ -2682,8 +2800,7 @@ export class AiSdkTurn {
         revision: proposal.revision,
         storeVersion: result.storeVersion,
       });
-      this.loopStopReason = 'plan_handoff';
-      this.loopStopRequested = true;
+      this.turnYield = 'plan_handoff';
       return;
     }
 
@@ -2706,12 +2823,7 @@ export class AiSdkTurn {
       liveOperatorCount: result.liveOperatorCount,
       reason: result.reason,
     });
-    this.loopStopReason = 'graph_yield';
-    this.loopStopRequested = true;
-  }
-
-  private mapFinishReason(reason: ModelFinishReason): CompleteEvent['stopReason'] {
-    return this.deps.modelAdapter.mapFinishReason(reason);
+    this.turnYield = 'graph_yield';
   }
 
   private makeErrorEvent(turnId: string, err: unknown, reasonOverride?: string): ErrorEvent {

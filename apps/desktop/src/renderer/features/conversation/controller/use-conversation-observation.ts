@@ -34,6 +34,9 @@ export function useConversationObservation(options: {
   services: ConversationObservationServices;
   uiLocale: UiLocale;
   activeId: string | undefined;
+  initialTranscriptTurnId?: string;
+  /** Read display metadata alongside the transcript, before publishing a new Session. */
+  prepareDisplay?(sessionId: string): Promise<unknown> | undefined;
   observationAuthorityRevision: number;
   activeIdRef: Readonly<RefBox<string | undefined>>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
@@ -53,6 +56,7 @@ export function useConversationObservation(options: {
   toastApi: Pick<ToastApi, 'error'>;
 }) {
   const activeId = options.activeId;
+  const prepareDisplay = useEffectEvent((sessionId: string) => options.prepareDisplay?.(sessionId));
   const clearMessageLoadError = useEffectEvent(options.clearMessageLoadError);
   // Publication rechecks both the requested Session and the effect instance
   // after any reader input wait before handing over the displayed transcript.
@@ -125,12 +129,23 @@ export function useConversationObservation(options: {
     }));
     const controller = options.services.openTranscript(activeId, (error) => {
       if (!disposed) applyReadError(activeId, error);
-    });
+    }, options.initialTranscriptTurnId);
     const observation = { sessionId: activeId, controller };
     options.observationRef.current = observation;
     const transcript = controller.store;
-    const unsubscribeTranscript = transcript.subscribe(() =>
-      applyTranscript(activeId, controller, () => !disposed));
+    let displayReady = true;
+    const publish = () => {
+      if (displayReady && !disposed) applyTranscript(activeId, controller, () => !disposed);
+    };
+    const preparation = prepareDisplay(activeId);
+    if (preparation) {
+      displayReady = false;
+      void preparation.catch(() => undefined).then(() => {
+        displayReady = true;
+        if (!disposed && transcript.range().ready) publish();
+      });
+    }
+    const unsubscribeTranscript = transcript.subscribe(publish);
     // The range becomes readable only after its first accepted batch.
     // Opening a controller is not a publication/readiness signal.
     const subscribeSessionEvents = () => {

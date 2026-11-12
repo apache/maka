@@ -48,6 +48,42 @@ function verdict(input: BuildModelCatalogInput) {
   return { ok: entry?.canUseAsChatDefault === true };
 }
 
+test('MiniMax current catalog is Flash first while custom, saved and non-text models survive', () => {
+  for (const providerType of ['MiniMax', 'MiniMax-cn'] as const) {
+    for (const modelSource of ['fallback', 'fetched'] as const) {
+      const entries = buildModelCatalogEntries({
+        providerType,
+        modelSource,
+        models: [
+          { id: 'MiniMax-M2.7' },
+          { id: 'MiniMax-M3', contextWindow: 204800 },
+          { id: 'custom-text' },
+          { id: 'speech-02-hd', modalities: { input: ['text'], output: ['audio'] } },
+        ],
+        savedModelIds: ['MiniMax-M2.5'],
+      });
+      assert.deepEqual(
+        entries.map(({ id }) => id),
+        ['MiniMax-M3.1-Flash', 'MiniMax-M3', 'custom-text', 'speech-02-hd', 'MiniMax-M2.5'],
+      );
+      assert.equal(entries[0]?.contextWindow, 1_000_000);
+      assert.equal(entries[1]?.contextWindow, 1_000_000);
+      assert.deepEqual(entries[0]?.thinkingLevels, ['low', 'medium', 'high', 'xhigh', 'max']);
+      assert.deepEqual(entries[1]?.thinkingLevels, ['off', 'on']);
+    }
+    assert.equal(
+      buildModelCatalogEntries({ providerType, defaultModel: 'MiniMax-M2.7' })[0]?.id,
+      'MiniMax-M2.7',
+    );
+  }
+  assert.deepEqual(
+    buildModelCatalogEntries({ providerType: 'custom', models: [{ id: 'MiniMax-M2.7' }] }).map(
+      ({ id }) => id,
+    ),
+    ['MiniMax-M2.7'],
+  );
+});
+
 test('catalog transport preserves independent limits and their unmodified defaults', () => {
   const [entry] = buildModelCatalogEntries({
     providerType: 'custom',

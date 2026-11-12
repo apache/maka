@@ -1493,7 +1493,12 @@ export class AgentRun {
     if (origin?.kind === 'scheduled_task') {
       return { kind: 'scheduled_task', scheduledTaskId: origin.scheduledTaskId };
     }
-    if (origin?.kind === 'goal') return { kind: 'goal', goalId: origin.goalId };
+    if (origin?.kind === 'goal')
+      return {
+        kind: 'goal',
+        goalId: origin.goalId,
+        ...(origin.goalWaiting ? { goalWaiting: origin.goalWaiting } : {}),
+      };
     if (origin?.kind === 'agent_graph') {
       return {
         kind: 'agent_graph_supervisor_wake',

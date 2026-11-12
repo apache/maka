@@ -49,7 +49,7 @@ import { PasswordInput } from './password-input';
 import { SettingsExpandableRow } from './settings-expandable-row';
 import { SettingsActions, SettingsRow, SettingsSection } from './settings-section';
 import { providerDisplay } from './provider-display';
-import { CapabilityEditor, AddModelDialog, ModelParametersDialog } from '../features/connection-settings';
+import { CapabilityEditor, AddModelDialog, ModelParametersDialog, attachModelsSaveBarClearance } from '../features/connection-settings';
 import {
   RuntimeHostSettingsGenerationBoundary,
   useRuntimeHostSettingsErrorReporter,
@@ -62,6 +62,7 @@ import {
   providerPanelActionErrorMessage,
   type CredentialPresenceStatus,
 } from '../features/connection-settings';
+import { SettingsLeaveCheck } from '../application/contracts/settings-presentation/index.js';
 import {
   useConnectionDetail,
   type ConnectionDetailProps,
@@ -192,6 +193,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     savedBaseUrl,
     save,
     updateEnabledModels,
+    saveEnabledModels,
+    cancelEnabledModels,
+    hasEnabledModelChanges,
+    savingEnabledModels,
     addDeclaredModel,
     modelParameters,
     hasModelChanges,
@@ -425,17 +430,27 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         size="sm"
         value={enabled}
         isDisabled={allActionsBusy}
-        changeAction={() =>
-          updateEnabledModels(
-            enabled ? enabledModelIds.filter((existing) => existing !== id) : [...enabledModelIds, id],
-          )
-        }
+        onChange={() => updateEnabledModels(id)}
       />
     );
   }
 
   return (
     <VStack gap={8}>
+      <SettingsLeaveCheck onLeave={async () => {
+        if (savingEnabledModels) return false;
+        if (!hasEnabledModelChanges) return true;
+        const discard = await toast.confirm({
+          title: copy.discardModels,
+          description: copy.discardModelsHelp,
+          confirmLabel: copy.discardModelsConfirm,
+          cancelLabel: copy.cancel,
+          destructive: true,
+        });
+        if (!mounted.current || !discard) return false;
+        cancelEnabledModels();
+        return true;
+      }} />
       {retired && (
         <Banner status="error" role="alert" title={copy.providerRetired} description={copy.providerRetiredDetail} />
       )}
@@ -678,27 +693,46 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               label={copy.noModelsMatch}
               end={<Button variant="ghost" size="sm" label={copy.cancel} onClick={() => setModelFilter('')} />}
             />
-          ) : visibleModelRows.map(({ id, entry }) => {
-            const label = entry?.displayName?.trim() || id;
-            const rowLabel = entry?.isDefault ? (
-              <HStack gap={2} vAlign="center">
-                <span>{label}</span>
-                <Badge variant="neutral" label={providerCopy.panel.default} />
-              </HStack>
-            ) : label;
-            return (
-                <SettingsRow key={id} label={rowLabel} end={<>
-                  {/* Astryx tooltips resolve a portal on mount, causing a style recalculation per model row. */}
-                  <span title={copy.declareCapabilities}>
-                    <IconButton variant="ghost" size="sm" icon={<Icon icon="wrench" size="sm" />}
-                      label={copy.declareCapabilitiesAria(label)}
-                      isDisabled={allActionsBusy} onClick={() => openRow({ model: id })} />
-                  </span>
-                  {modelEnableSwitch(id, label)}
-                </>} />
+          ) : (
+            /* The rows get their own viewport so a large catalog stops
+               stretching the page: a provider with hundreds of models used to
+               push the filter above it out of view and bury the advanced
+               request settings below under the whole list. The filter, the
+               model count and the section actions stay outside this element,
+               so they hold still while the rows scroll.
 
-            );
-          })}
+               A second `.settingsRows` rather than a bare div: the row
+               styling in rows.css is written as `.settingsRows > …`, so the
+               rows keep their edge-to-edge track, their hover wash and the
+               460px container query inside the viewport too.
+
+               `max-height` only, so a short or filtered-down list is as tall
+               as its rows instead of reserving an empty box, and no
+               `overscroll-behavior`: a wheel that reaches the end of the list
+               should carry on down the page rather than stop dead. */
+            <div className="settingsRows providerModelRowsViewport">
+              {visibleModelRows.map(({ id, entry }) => {
+                const label = entry?.displayName?.trim() || id;
+                const rowLabel = entry?.isDefault ? (
+                  <HStack gap={2} vAlign="center">
+                    <span>{label}</span>
+                    <Badge variant="neutral" label={providerCopy.panel.default} />
+                  </HStack>
+                ) : label;
+                return (
+                  <SettingsRow key={id} label={rowLabel} end={<>
+                    {/* Astryx tooltips resolve a portal on mount, causing a style recalculation per model row. */}
+                    <span title={copy.declareCapabilities}>
+                      <IconButton variant="ghost" size="sm" icon={<Icon icon="wrench" size="sm" />}
+                        label={copy.declareCapabilitiesAria(label)}
+                        isDisabled={allActionsBusy} onClick={() => openRow({ model: id })} />
+                    </span>
+                    {modelEnableSwitch(id, label)}
+                  </>} />
+                );
+              })}
+            </div>
+          )}
         </SettingsSection>
       )}
       <ModelParametersDialog
@@ -836,6 +870,17 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           <Button variant="destructive" isDisabled={allActionsBusy} isLoading={deleting} onClick={() => void remove()} label={copy.delete} />
         </SettingsActions>
       </SettingsSection>
+      {!retired && (
+        <div ref={attachModelsSaveBarClearance} className="providerModelsSaveBar" role="group" aria-label={copy.modelSelection}>
+          <span role="status">{hasEnabledModelChanges ? copy.modelsUnsaved : copy.modelsSaved}</span>
+          <HStack gap={2}>
+            <Button variant="secondary" label={copy.cancel} isDisabled={!hasEnabledModelChanges || allActionsBusy}
+              onClick={cancelEnabledModels} />
+            <Button variant="primary" label={copy.save} isLoading={savingEnabledModels}
+              isDisabled={!hasEnabledModelChanges || allActionsBusy} onClick={() => void saveEnabledModels()} />
+          </HStack>
+        </div>
+      )}
     </VStack>
   );
 }

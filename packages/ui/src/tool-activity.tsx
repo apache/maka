@@ -78,6 +78,7 @@ import { cn } from './ui.js';
 import {
   describeLoadToolResult,
   formatToolIntent,
+  normalizeToolIntent,
   type LoadToolGroupKind,
 } from './tool-format.js';
 import {
@@ -98,7 +99,7 @@ import {
 import { getToolActivityCopy } from './tool-activity/copy.js';
 import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 import { RunningIndicator } from './running-indicator.js';
-import { MakaClientSlotOutlet } from './client-plugin-slots.js';
+import { MakaClientSlotOutlet, useMakaClientSlotOccupiedKeys } from './client-plugin-slots.js';
 
 /** Friendly card for tool-search and historical loader results. */
 function LoadToolResultPreview(props: {
@@ -347,6 +348,40 @@ function describeToolCall(
   return { decorations, body: { kind: 'none' } };
 }
 
+function toolCallHasDetail(
+  decision: DetailDecision,
+  target: string | undefined,
+  targetUsesIntent: boolean,
+): boolean {
+  if (decision.decorations.sandboxBlockedResult || decision.decorations.requiresBypass) return true;
+  const { body } = decision;
+  switch (body.kind) {
+    case 'none':
+      return false;
+    case 'quietText': {
+      const text = body.body.trim();
+      // Compare the uncapped body to the displayed (capped) target: a line cut
+      // by the row's cap still holds its tail only inside the detail panel.
+      return Boolean(body.title) || /[\r\n]/.test(text)
+        || (targetUsesIntent ? normalizeToolIntent(text) : firstToolTargetLine(text)) !== (target ?? '');
+    }
+    case 'argsOnly':
+      // Unlike a repeated invocation, full arguments can reveal information
+      // lost to the row's first-line/120-character cap.
+      return body.text.trim() !== target;
+    case 'result': {
+      const { result } = body;
+      if (result.kind === 'image' || result.kind === 'archived_tool_result') return false;
+      // A whitespace-only body would expand to an empty code block.
+      if (result.kind === 'text') return result.text.trim().length > 0;
+      if (result.kind === 'summary') return result.summarized.trim().length > 0;
+      return true;
+    }
+    default:
+      return true;
+  }
+}
+
 function ToolCallDetailBody(props: {
   body: DetailDecision['body'];
   actionIdentity: string;
@@ -469,8 +504,9 @@ export function ToolTrow({
   onSwitchToBypassAndRetry?(): void | Promise<void>;
 }) {
   const locale = useUiLocale();
+  const detailPluginKeys = useMakaClientSlotOccupiedKeys('conversation.tool.detail');
   if (items.length === 0) return null;
-  const segments = toolTrowSegments(items, locale, activityObserved, onSwitchToBypassAndRetry);
+  const segments = toolTrowSegments(items, locale, activityObserved, detailPluginKeys, onSwitchToBypassAndRetry);
 
   // ChatToolCalls owns expandable tool evidence. Linked child sessions are
   // navigation targets instead, so they render through Astryx's compact List:
@@ -517,6 +553,7 @@ function toolTrowSegments(
   items: ToolActivityItem[],
   locale: UiLocale,
   activityObserved: boolean,
+  detailPluginKeys: ReadonlySet<string>,
   onSwitchToBypassAndRetry?: () => void | Promise<void>,
 ): ToolTrowSegment[] {
   const segments: ToolTrowSegment[] = [];
@@ -535,6 +572,7 @@ function toolTrowSegments(
       item,
       locale,
       activityObserved,
+      detailPluginKeys.has(item.toolName),
       isComputerTool(item) && !computerActionLabelIncludesTarget(item)
         ? computerTarget
         : undefined,
@@ -614,9 +652,12 @@ function standardToolCall(
   item: ToolActivityItem,
   locale: UiLocale,
   activityObserved: boolean,
+  hasDetailPlugin: boolean,
   inferredTarget?: string,
   onSwitchToBypassAndRetry?: () => void | Promise<void>,
 ): ChatToolCallItem {
+  const target = collapsedToolTarget(item, locale, inferredTarget);
+  const decision = describeToolCall(item, locale, activityObserved);
   return {
     key: item.toolUseId,
     // The name is what a person reads to tell one call from the next, and for
@@ -625,14 +666,23 @@ function standardToolCall(
     // arguments says what happened instead.
     name: computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
     status: astryxToolStatus(item),
-    target: collapsedToolTarget(item, locale, inferredTarget),
+    target,
     duration: formatDuration(item.durationMs) ?? undefined,
     errorMessage: toolCallErrorMessage(item, locale),
     stats: item.progress && isInFlightToolStatus(toolActivityPresentationStatus(item))
       ? `${item.progress.current}/${item.progress.total}`
-      : outcomeWord(item, locale),
+      : item.result?.kind === 'archived_tool_result'
+        ? [
+            outcomeWord(item, locale),
+            getToolActivityCopy(locale).result.archivedStatus[item.result.status],
+          ]
+            .filter(Boolean)
+            .join(' · ')
+        : outcomeWord(item, locale),
     ...diffStats(itemDiffs(item)),
-    resultDetail: (
+    resultDetail: hasDetailPlugin || toolCallHasDetail(
+      decision, target, Boolean(item.intent),
+    ) ? (
       <ToolDetailReveal>
         <ToolCallDetail
           item={item}
@@ -653,7 +703,7 @@ function standardToolCall(
           }}
         />
       </ToolDetailReveal>
-    ),
+    ) : undefined,
   };
 }
 
@@ -674,7 +724,15 @@ function collapsedToolTarget(
   if (item.intent) return formatToolIntent(item.intent);
   const line = preferred ?? formatToolInvocationLine(item, locale);
   if (!line) return undefined;
-  const firstLine = line.split('\n')[0]!.trim();
+  return boundedToolTarget(line);
+}
+
+function firstToolTargetLine(line: string): string {
+  return line.split('\n')[0]!.trim();
+}
+
+function boundedToolTarget(line: string): string | undefined {
+  const firstLine = firstToolTargetLine(line);
   if (!firstLine) return undefined;
   return firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine;
 }

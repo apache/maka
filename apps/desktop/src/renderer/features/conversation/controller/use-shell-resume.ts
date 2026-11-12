@@ -68,6 +68,7 @@ export function useShellResume(options: {
   toastApi: ToastApi;
   shellCopy: ReturnType<typeof getShellCopy>['app'];
   uiLocale: UiLocale;
+  onFollowLatest(sessionId: string): boolean;
 }): {
   safeResumeAction: { pending: boolean; detail: string | undefined; onResume(): void } | undefined;
   composerResumeAction: { pending: boolean; onResume(): void } | undefined;
@@ -124,6 +125,7 @@ export function useShellResume(options: {
     if (!sessionId || resumePendingSessionId !== null) return;
     setResumePendingSessionId(sessionId);
     try {
+      options.onFollowLatest(sessionId);
       const result = await services.resume.start(sessionId);
       if (result.disposition === 'park') {
         tracker.settle(sessionId, false);

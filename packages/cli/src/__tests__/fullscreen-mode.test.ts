@@ -1,0 +1,853 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { describe, test } from 'node:test';
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import type { spawn as SpawnFn } from 'node:child_process';
+// Deep import (pi-tui does not re-export it): the layout frame is what
+// TuiAltScreen's doRender builds every frame, so rendering one here exercises
+// the exact composition path the fullscreen trial uses.
+import { renderLayoutFrame } from '@earendil-works/pi-tui/dist/layout.js';
+import {
+  Editor,
+  TuiAltScreen,
+  VStack,
+  type Component,
+  type Terminal,
+} from '@earendil-works/pi-tui';
+import { UI_LOCALES, type UiLocale } from '@maka/core/ui-locale';
+import { createMakaPiTranscriptState } from '../pi-transcript.js';
+import {
+  MakaActivityStripComponent,
+  MakaFullscreenChromeComponent,
+  MakaPendingQueueComponent,
+  MakaStatusLineComponent,
+  MakaTranscriptComponent,
+  MakaTranscriptDocumentComponent,
+  MakaTranscriptScrollView,
+} from '../pi-tui-layout.js';
+import {
+  isOpenableExternalUrl,
+  isNightlyPackageVersion,
+  openExternalUrl,
+  renderUnreadIndicator,
+  resolveTuiFullscreen,
+  UnreadOutputCounter,
+  type UnreadOutputFeed,
+  type TranscriptWindowSnapshot,
+} from '../fullscreen-mode.js';
+import { editorTheme, stripAnsi } from '../tui-ansi.js';
+import { MakaAutocompleteAboveEditorComponent } from '../tui-autocomplete-layout.js';
+import { FakeTerminal } from './tui-terminal-mock.js';
+
+function fakeTerminal(rows: number): Terminal {
+  return { rows, columns: 80 } as Terminal;
+}
+
+interface RecordingEditor extends Component {
+  readonly viewportRowsHistory: number[];
+  showingAutocomplete: boolean;
+  setViewportRows(rows: number): void;
+  isShowingAutocomplete(): boolean;
+  minimumViewportRows(): number;
+}
+
+function recordingEditor(lines: string[] = ['╭─╮', '│ │', '╰─╯']): RecordingEditor {
+  return {
+    showingAutocomplete: false,
+    viewportRowsHistory: [],
+    invalidate() {},
+    render(): string[] {
+      // Editor-shaped: with the autocomplete open the real above-editor
+      // component fills its whole viewport with suggestion rows above the
+      // editor frame, so the fake renders exactly the rows it was budgeted.
+      if (this.showingAutocomplete) {
+        const budgeted = this.viewportRowsHistory.at(-1) ?? lines.length;
+        return Array.from({ length: budgeted }, (_, index) =>
+          index < lines.length ? lines[index] : '│ autocomplete suggestion          │',
+        );
+      }
+      return [...lines];
+    },
+    setViewportRows(rows: number): void {
+      this.viewportRowsHistory.push(rows);
+    },
+    isShowingAutocomplete(): boolean {
+      return this.showingAutocomplete;
+    },
+    minimumViewportRows(): number {
+      return 4;
+    },
+  };
+}
+
+function makePendingQueue(
+  state: ReturnType<typeof createMakaPiTranscriptState>,
+): MakaPendingQueueComponent {
+  // The post-merge pending queue takes a UiLocale for localized copy; the
+  // branch's predates it and ignores the argument. Going through a variadic
+  // constructor view keeps this file compiling in both trees, and 'en' is the
+  // catalog these structural assertions see either way.
+  return new (
+    MakaPendingQueueComponent as unknown as new (
+      state: ReturnType<typeof createMakaPiTranscriptState>,
+      locale?: 'en' | 'zh',
+    ) => MakaPendingQueueComponent
+  )(state, 'en');
+}
+
+interface ViewportAwareComponentForChrome extends Component {
+  setViewportRows(rows: number): void;
+  minimumViewportRows(): number;
+}
+
+function snapshot(overrides: Partial<TranscriptWindowSnapshot> = {}): TranscriptWindowSnapshot {
+  return { followingEnd: true, documentLines: 10, ...overrides };
+}
+
+/** An in-memory UnreadOutputFeed, mirroring the runner's scroll-view wiring. */
+function memoryFeed(initial = 0): UnreadOutputFeed & { set(value: number): void } {
+  let value = initial;
+  return {
+    current: () => value,
+    present: (unreadLines) => {
+      value = unreadLines;
+    },
+    set: (next) => {
+      value = next;
+    },
+  };
+}
+
+describe('fullscreen TUI trial switch', () => {
+  test('an explicit setting wins over everything else', () => {
+    assert.equal(
+      resolveTuiFullscreen({
+        setting: false,
+        override: '1',
+        packageVersion: '0.2.0-dev.42.20260829',
+      }),
+      false,
+    );
+    assert.equal(
+      resolveTuiFullscreen({ setting: true, override: '0', packageVersion: '0.2.0' }),
+      true,
+    );
+  });
+
+  test('the environment override opts a release build in and a nightly out', () => {
+    assert.equal(resolveTuiFullscreen({ override: '1', packageVersion: '0.2.0' }), true);
+    assert.equal(resolveTuiFullscreen({ override: 'true', packageVersion: '0.2.0' }), true);
+    assert.equal(
+      resolveTuiFullscreen({ override: '0', packageVersion: '0.2.0-dev.42.20260829' }),
+      false,
+    );
+    assert.equal(
+      resolveTuiFullscreen({ override: 'false', packageVersion: '0.2.0-dev.42.20260829' }),
+      false,
+    );
+  });
+
+  test('a malformed override falls through to the channel default', () => {
+    assert.equal(resolveTuiFullscreen({ override: 'yes', packageVersion: '0.2.0' }), false);
+    assert.equal(
+      resolveTuiFullscreen({ override: 'yes', packageVersion: '0.2.0-dev.42.20260829' }),
+      true,
+    );
+    assert.equal(resolveTuiFullscreen({ override: '' }), false);
+  });
+
+  test('the default follows the build channel', () => {
+    assert.equal(resolveTuiFullscreen({}), false);
+    assert.equal(resolveTuiFullscreen({ packageVersion: '0.2.0' }), false);
+    assert.equal(resolveTuiFullscreen({ packageVersion: '0.2.0-dev.42.20260829' }), true);
+  });
+
+  test('nightly identity detection matches the Product Nightly version format', () => {
+    assert.equal(isNightlyPackageVersion('0.2.0-dev.1.20260101'), true);
+    assert.equal(isNightlyPackageVersion('0.2.0-dev.999.20261231'), true);
+    assert.equal(isNightlyPackageVersion('0.2.0'), false);
+    assert.equal(isNightlyPackageVersion('0.2.0-dev.0.20260101'), false);
+    assert.equal(isNightlyPackageVersion('0.2.0-dev.42.2026010'), false);
+    assert.equal(isNightlyPackageVersion(undefined), false);
+    assert.equal(isNightlyPackageVersion(''), false);
+  });
+});
+
+describe('unread output counter', () => {
+  test('stays at zero while following the end', () => {
+    const counter = new UnreadOutputCounter();
+    assert.equal(counter.update(snapshot({ documentLines: 10 })), 0);
+    assert.equal(counter.update(snapshot({ documentLines: 25 })), 0);
+  });
+
+  test('accumulates growth while the user is scrolled away', () => {
+    const counter = new UnreadOutputCounter();
+    assert.equal(counter.update(snapshot({ followingEnd: true, documentLines: 40 })), 0);
+    assert.equal(counter.update(snapshot({ followingEnd: false, documentLines: 40 })), 0);
+    assert.equal(counter.update(snapshot({ followingEnd: false, documentLines: 45 })), 5);
+    assert.equal(counter.update(snapshot({ followingEnd: false, documentLines: 52 })), 12);
+  });
+
+  test('returning to the bottom clears the count', () => {
+    const counter = new UnreadOutputCounter();
+    counter.update(snapshot({ followingEnd: true, documentLines: 40 }));
+    counter.update(snapshot({ followingEnd: false, documentLines: 40 }));
+    counter.update(snapshot({ followingEnd: false, documentLines: 50 }));
+    assert.equal(counter.update(snapshot({ followingEnd: true, documentLines: 50 })), 0);
+    // And new growth afterwards is counted from the new baseline.
+    assert.equal(counter.update(snapshot({ followingEnd: false, documentLines: 53 })), 3);
+  });
+
+  test('a shrinking document never manufactures unread lines', () => {
+    const counter = new UnreadOutputCounter();
+    counter.update(snapshot({ followingEnd: true, documentLines: 40 }));
+    counter.update(snapshot({ followingEnd: false, documentLines: 40 }));
+    assert.equal(counter.update(snapshot({ followingEnd: false, documentLines: 30 })), 0);
+    assert.equal(counter.update(snapshot({ followingEnd: false, documentLines: 45 })), 15);
+  });
+
+  test('the first frame away from the bottom has no baseline to count from', () => {
+    const counter = new UnreadOutputCounter();
+    assert.equal(counter.update(snapshot({ followingEnd: false, documentLines: 40 })), 0);
+  });
+});
+
+describe('unread indicator rendering', () => {
+  test('renders nothing while there is no unread output', () => {
+    assert.deepEqual(
+      renderUnreadIndicator(0, (text) => text, 'en'),
+      [],
+    );
+  });
+
+  test('renders a singular hint for one new line', () => {
+    assert.deepEqual(
+      renderUnreadIndicator(1, (text) => text, 'en'),
+      ['↓ 1 new line — End to jump to latest'],
+    );
+  });
+
+  test('renders a plural hint and the jump key for more', () => {
+    const [line] = renderUnreadIndicator(14, (text) => text, 'en');
+    assert.equal(line, '↓ 14 new lines — End to jump to latest');
+  });
+
+  test('follows the selected TUI locale instead of English (#4136 review P3)', () => {
+    const zhCN = renderUnreadIndicator(14, (text) => text, 'zh-CN').join('');
+    const zhTW = renderUnreadIndicator(14, (text) => text, 'zh-TW').join('');
+    assert.equal(zhCN, '↓ 14 行新输出 · 按 End 跳到最新');
+    assert.equal(zhTW, '↓ 14 行新輸出 · 按 End 跳到最新');
+    assert.doesNotMatch(zhCN, /new lines/, 'zh-CN must not see the English hint');
+    assert.doesNotMatch(zhTW, /new lines/, 'zh-TW must not see the English hint');
+  });
+
+  test('gives Chinese a single form whatever the count (#4136 review P3)', () => {
+    // zh-CN and zh-TW have one CLDR plural category, so the English
+    // line/lines split must not appear in either: 1 and 14 differ only in the
+    // numeral.
+    const one = renderUnreadIndicator(1, (text) => text, 'zh-CN').join('');
+    const many = renderUnreadIndicator(14, (text) => text, 'zh-CN').join('');
+    assert.equal(one.replace('1', '14'), many);
+    assert.doesNotMatch(many, /line/u, 'no English noun in the Chinese hint');
+  });
+
+  test('keeps the arrow glyph and the single-row output for English', () => {
+    for (const locale of UI_LOCALES) {
+      for (const count of [1, 14]) {
+        const lines = renderUnreadIndicator(count, (text) => text, locale);
+        assert.equal(lines.length, 1, `${locale}/${count}: one row`);
+        assert.ok(lines[0]!.startsWith('↓ '), `${locale}/${count}: the arrow glyph is unchanged`);
+        assert.doesNotMatch(lines[0] ?? '', /\n/u, `${locale}/${count}: stays a single row`);
+      }
+    }
+  });
+});
+
+describe('fullscreen chrome component', () => {
+  function buildChrome(
+    rows: number,
+    feed: UnreadOutputFeed,
+    metadataOverrides: Record<string, unknown> = {},
+    locale: UiLocale = 'en',
+  ) {
+    const state = createMakaPiTranscriptState();
+    const metadata = () => ({
+      title: 'Maka',
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      ...metadataOverrides,
+    });
+    const editor = recordingEditor();
+    const chrome = new MakaFullscreenChromeComponent(
+      state,
+      new MakaActivityStripComponent(metadata),
+      makePendingQueue(state),
+      editor,
+      new MakaStatusLineComponent(metadata),
+      fakeTerminal(rows),
+      feed,
+      (text) => text,
+      locale,
+    );
+    return { state, chrome, editor };
+  }
+
+  test('renders the unread indicator only while lines accumulated away from the bottom', () => {
+    const feed = memoryFeed();
+    const { chrome } = buildChrome(24, feed);
+    assert.deepEqual(
+      chrome.render(80).filter((line) => line.includes('new lines')),
+      [],
+    );
+    feed.set(10);
+    const lines = chrome.render(80);
+    assert.equal(
+      lines.some((line) => line.includes('↓ 10 new lines — End to jump to latest')),
+      true,
+    );
+  });
+
+  test('paints the localized unread hint through the chrome instead of English (#4136 review P3)', () => {
+    // The path a user sees: the chrome asks for the indicator, so the locale it
+    // carries has to reach the string rather than leaving it English on screen.
+    const feed = memoryFeed();
+    const { chrome } = buildChrome(24, feed, {}, 'zh-CN');
+    feed.set(10);
+    const lines = chrome.render(80).map((line) => stripAnsi(line));
+    assert.ok(
+      lines.some((line) => line.includes('↓ 10 行新输出 · 按 End 跳到最新')),
+      'the chrome renders the zh-CN catalog string',
+    );
+    assert.ok(
+      !lines.some((line) => /new lines/u.test(line)),
+      'no English hint reaches a zh-CN screen',
+    );
+  });
+
+  test('reserves a transcript row and the chrome rows when sizing the editor', () => {
+    const { chrome, editor } = buildChrome(24, memoryFeed());
+    chrome.render(80);
+    // Editor budget = rows − status (1) − transcript minimum (1). The editor
+    // renders 3 border/content rows, activity strip 0, pending 0, indicator 0 —
+    // so the transcript keeps its row and nothing overflows.
+    assert.equal(editor.viewportRowsHistory.at(-1), 22);
+  });
+
+  test('sizes the editor to its full budget when the autocomplete is open on a short terminal', () => {
+    const { chrome, editor } = buildChrome(8, memoryFeed());
+    editor.showingAutocomplete = true;
+    const lines = chrome.render(80);
+    // rows 8 − transcript 1 − status 1 = 6 available below the transcript;
+    // with the autocomplete open the queue trims first, so the editor gets
+    // all 6 rows and the editor-shaped fake fills them, leaving the reserved
+    // transcript row intact: 6 chrome rows + 1 status + 1 transcript = 8.
+    assert.equal(editor.viewportRowsHistory.at(-1), 6);
+    assert.equal(lines.length, 7);
+  });
+
+  test('keeps a blank separator between the transcript and a running activity strip', () => {
+    const feed = memoryFeed();
+    const { chrome } = buildChrome(24, feed, { turnElapsedMs: 5_000 });
+    const lines = chrome.render(80);
+    const stripIndex = lines.findIndex((line) => stripAnsi(line).startsWith('Working…'));
+    assert.ok(stripIndex >= 1, 'expected the activity strip in the chrome output');
+    assert.equal(lines[stripIndex - 1], '');
+  });
+});
+
+describe('fullscreen layout frame', () => {
+  const ROWS = 10;
+
+  interface FrameHarness {
+    state: ReturnType<typeof createMakaPiTranscriptState>;
+    scrollView: MakaTranscriptScrollView;
+    document: MakaTranscriptDocumentComponent;
+    chrome: MakaFullscreenChromeComponent;
+    /** The chrome's composer: carries the autocomplete state and row history. */
+    editor: RecordingEditor;
+    /** Renders one frame exactly the way TuiAltScreen.doRender does. */
+    render(): ReturnType<typeof renderLayoutFrame>;
+    /** Plain-text lines of a freshly rendered frame. */
+    plainLines(): string[];
+    /**
+     * Catch-up requests raised during the most recent frame render. Scroll
+     * gestures between frames also fire pi-tui's persisted request callback;
+     * only in-frame requests come from the unread convergence.
+     */
+    frameCatchUps: number;
+    addEntries(count: number): void;
+    documentLines(): number;
+  }
+
+  function build(rows: number = ROWS, locale: UiLocale = 'en'): FrameHarness {
+    const state = createMakaPiTranscriptState();
+    const metadata = () => ({
+      title: 'Maka',
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+    });
+    const transcript = new MakaTranscriptComponent(state, metadata);
+    const document = new MakaTranscriptDocumentComponent(transcript);
+    const scrollView = new MakaTranscriptScrollView(document, {
+      follow: 'end',
+      primary: true,
+      overscroll: 'chain',
+      scrollbar: 'hidden',
+    });
+    const editor = recordingEditor();
+    const chrome = new MakaFullscreenChromeComponent(
+      state,
+      new MakaActivityStripComponent(metadata),
+      makePendingQueue(state),
+      editor,
+      new MakaStatusLineComponent(metadata),
+      fakeTerminal(rows),
+      {
+        current: () => scrollView.computedUnread,
+        present: (unreadLines) => {
+          scrollView.presentedUnread = unreadLines;
+        },
+      },
+      (text) => text,
+      locale,
+    );
+    const root = new VStack([
+      { component: scrollView, basis: 0, grow: 1, minSize: 1 },
+      { component: chrome, basis: 'auto', shrink: 1, minSize: 1 },
+    ]);
+    const harness: FrameHarness = {
+      state,
+      scrollView,
+      document,
+      chrome,
+      editor,
+      frameCatchUps: 0,
+      render: () => {
+        // Count only requests raised inside this frame's layout walk — the
+        // unread convergence. Scroll gestures between frames also fire
+        // pi-tui's persisted request callback; those are not catch-ups.
+        let inFrame = 0;
+        const frame = renderLayoutFrame(root, 80, rows, () => {
+          inFrame += 1;
+        });
+        harness.frameCatchUps = inFrame;
+        return frame;
+      },
+      plainLines: () => harness.render().lines.map((line) => stripAnsi(line)),
+      addEntries: (count) => {
+        for (let index = 0; index < count; index += 1) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'info',
+            text: `HISTORY-ENTRY-${state.entries.length}-${'x'.repeat(40)}`,
+          });
+        }
+      },
+      documentLines: () => document.documentLines,
+    };
+    return harness;
+  }
+
+  /** A 3-option blocking question shaped like the production overlay. */
+  function fakeQuestion(): ViewportAwareComponentForChrome {
+    let viewportRows = 6;
+    return {
+      invalidate() {},
+      render(): string[] {
+        return [
+          'Choose an approach (1 of 3)',
+          '  Extend',
+          '  Separate',
+          '→ Other: type your answer',
+          '────────',
+        ].slice(0, Math.max(1, viewportRows));
+      },
+      setViewportRows(rows: number): void {
+        viewportRows = Math.max(this.minimumViewportRows(), Math.floor(rows));
+      },
+      minimumViewportRows(): number {
+        return 6;
+      },
+    };
+  }
+
+  test('a live unread banner never crowds out a question or the status line on a short screen (#4136 review P2)', () => {
+    // Exact review repro: user scrolled away, output accumulated (unread
+    // banner), then the Host asks a three-option question. At the repository's
+    // 8-row fullscreen boundary the banner + margin + clamped question emitted
+    // two rows more than the chrome's allocation and the status line clipped
+    // off the bottom; the banner yields before the question ever does.
+    const harness = build(8);
+    harness.addEntries(40);
+    harness.render();
+    harness.scrollView.scrollBy(-6);
+    harness.addEntries(5);
+    harness.render();
+    harness.render(); // converge the unread catch-up
+    assert.ok(harness.scrollView.computedUnread > 0, 'expected an unread count');
+    const question = fakeQuestion();
+    harness.chrome.setBlockingInteraction(question);
+    try {
+      const lines = harness.plainLines();
+      const joined = lines.join('\n');
+      assert.equal(lines.length, 8);
+      assert.ok(joined.includes('Choose an approach'), 'the question stays visible');
+      assert.ok(joined.includes('Other: type your answer'), 'the answer field stays usable');
+      assert.match(
+        lines.at(-1) ?? '',
+        /claude-sonnet-4-5/,
+        'the status line holds the last screen row',
+      );
+      // The unread banner is what yields: information after load-bearing chrome.
+      assert.ok(!joined.includes('new lines'), 'the unread banner yields to the question');
+    } finally {
+      harness.chrome.setBlockingInteraction(undefined);
+    }
+    // A slightly taller screen fits everything: the banner stays up.
+    const tall = build(10);
+    tall.addEntries(40);
+    tall.render();
+    tall.scrollView.scrollBy(-6);
+    tall.addEntries(5);
+    tall.render();
+    tall.render();
+    tall.chrome.setBlockingInteraction(question);
+    try {
+      const lines = tall.plainLines();
+      const joined = lines.join('\n');
+      assert.ok(joined.includes('new lines'), 'the banner survives with room to spare');
+      assert.match(lines.at(-1) ?? '', /claude-sonnet-4-5/);
+    } finally {
+      tall.chrome.setBlockingInteraction(undefined);
+    }
+  });
+
+  test('keeps the composer its minimum rows when a long pending queue competes on a short screen (#4136 review P2)', () => {
+    // Exact review repro: the 8-row fullscreen boundary, five queued
+    // steering/follow-up messages, autocomplete closed. The queue emits one row
+    // per message plus its hint row, so five items are six rows; with the
+    // editor's minimum viewport unreserved while the autocomplete was closed the
+    // queue claimed all six available rows, the composer was budgeted zero rows
+    // yet still rendered its own frame, and the chrome's VStack clipped the
+    // status line off the bottom of the screen.
+    const harness = build(8);
+    harness.state.steering = ['first', 'second', 'third', 'fourth', 'fifth'];
+    // The harness composer opens with the autocomplete closed.
+    const minimumEditorRows = harness.editor.minimumViewportRows();
+    const chromeLines = harness.chrome.render(80).map((line) => stripAnsi(line));
+    const queuedEditorRows = harness.editor.viewportRowsHistory.at(-1) ?? 0;
+
+    assert.ok(
+      queuedEditorRows >= minimumEditorRows,
+      `the composer was budgeted ${queuedEditorRows} rows, below its ${minimumEditorRows}-row minimum`,
+    );
+    // The queue trims first, so what it gives back keeps the chrome inside the
+    // rows left after the transcript's reserved row (FULLSCREEN_TRANSCRIPT_MIN_ROWS).
+    assert.ok(
+      chromeLines.length <= 8 - 1,
+      `chrome emitted ${chromeLines.length} rows into the 7 rows left below the reserved transcript row`,
+    );
+    // Five queued messages stay represented: trimmed to the rows the queue may
+    // take, with the hidden ones reported rather than dropped.
+    assert.match(chromeLines.join('\n'), /Steering: first/, 'the queue keeps its leading message');
+    assert.match(chromeLines.join('\n'), /… 5 more/, 'the trimmed queue reports what it hid');
+
+    const lines = harness.plainLines();
+    assert.equal(lines.length, 8);
+    assert.match(
+      lines.at(-1) ?? '',
+      /claude-sonnet-4-5/,
+      'the status line holds the last screen row',
+    );
+    assert.match(lines.at(-2) ?? '', /╰/, 'the composer stays fully drawn above the status line');
+  });
+
+  test('keeps the real multiline editor frame and status visible while optional chrome yields (#6082)', (t) => {
+    for (let rows = 8; rows <= 20; rows += 1) {
+      const terminal = new FakeTerminal(80, rows);
+      const tui = new TuiAltScreen(terminal);
+      t.after(() => tui.stop());
+      const editor = new Editor(tui, editorTheme());
+      editor.setText('draft one\ndraft two\ndraft three\ndraft four');
+      const composer = new MakaAutocompleteAboveEditorComponent(editor);
+      const expectedEditor = composer.render(80).map(stripAnsi);
+      assert.equal(composer.minimumViewportRows(), 6);
+      const state = createMakaPiTranscriptState();
+      const chrome = new MakaFullscreenChromeComponent(
+        state,
+        new MakaActivityStripComponent(() => ({
+          title: 'Maka',
+          cwd: '/repo',
+          model: 'model',
+          connectionSlug: 'provider',
+          permissionMode: 'ask',
+          turnElapsedMs: 1_000,
+        })),
+        makePendingQueue(state),
+        composer,
+        { invalidate() {}, render: () => ['STATUS-SENTINEL'] },
+        terminal,
+        memoryFeed(5),
+        (text) => text,
+        'en',
+      );
+      const root = new VStack([
+        {
+          component: { invalidate() {}, render: () => ['TRANSCRIPT-SENTINEL'] },
+          basis: 0,
+          grow: 1,
+          minSize: 1,
+        },
+        { component: chrome, basis: 'auto', shrink: 1, minSize: 1 },
+      ]);
+      const lines = renderLayoutFrame(root, 80, rows, () => {}).lines.map(stripAnsi);
+      if (rows === 8) t.diagnostic(`8-row production frame:\n${lines.join('\n')}`);
+      assert.equal(lines.length, rows);
+      assert.equal(lines[0]?.trim(), 'TRANSCRIPT-SENTINEL', `${rows} rows reserves the transcript`);
+      assert.equal(
+        lines.at(-1)?.trim(),
+        'STATUS-SENTINEL',
+        `${rows} rows keeps the status visible`,
+      );
+      assert.deepEqual(
+        lines.slice(-7, -1).map((line) => line.trimEnd()),
+        expectedEditor.map((line) => line.trimEnd()),
+        `${rows} rows keeps both borders and all four draft lines`,
+      );
+      assert.ok(chrome.render(80).length <= rows - 1, `${rows} rows fits the actual chrome output`);
+    }
+  });
+
+  test('keeps the composer anchored at the bottom of the viewport', () => {
+    const harness = build();
+    harness.addEntries(6);
+    const lines = harness.plainLines();
+    assert.equal(lines.length, ROWS);
+    assert.match(lines.at(-1) ?? '', /claude-sonnet-4-5/);
+    // The editor's bottom border sits directly above the status line — the
+    // composer is anchored to the screen bottom regardless of transcript size.
+    assert.match(lines.at(-2) ?? '', /╰/);
+  });
+
+  test('follows the newest output while at the bottom', () => {
+    const harness = build();
+    harness.addEntries(30);
+    harness.render();
+    const firstFrameDocument = harness.documentLines();
+    harness.addEntries(3);
+    harness.render();
+    assert.ok(harness.documentLines() > firstFrameDocument);
+    assert.equal(harness.scrollView.isFollowingEnd, true);
+    // The transcript window above the chrome shows the newest entry.
+    const lines = harness.plainLines();
+    assert.match(lines.join('\n'), /HISTORY-ENTRY-32/);
+  });
+
+  test('preserves the reading position when content grows while scrolled away', () => {
+    const harness = build();
+    harness.addEntries(40);
+    harness.render();
+    harness.scrollView.scrollBy(-6);
+    harness.render();
+    const scrollTop = harness.scrollView.scrollTop;
+    const topLineBefore = harness.plainLines()[0];
+    harness.addEntries(5);
+    harness.render();
+    assert.equal(harness.scrollView.scrollTop, scrollTop);
+    assert.equal(harness.scrollView.isFollowingEnd, false);
+    assert.equal(harness.plainLines()[0], topLineBefore);
+    assert.ok(scrollTop > 0);
+  });
+
+  test('counts lines appended while scrolled away, settling on the catch-up frame', () => {
+    const harness = build();
+    harness.addEntries(40);
+    harness.plainLines();
+    harness.scrollView.scrollBy(-6);
+    harness.plainLines();
+    const baseline = harness.documentLines();
+    harness.addEntries(5);
+    // First frame after growth: the chrome was measured before the scroll view
+    // laid out, so it still renders the previous count — and the scroll view
+    // schedules the catch-up frame.
+    assert.doesNotMatch(harness.plainLines().join('\n'), /new lines — End to jump to latest/);
+    assert.equal(harness.frameCatchUps, 1);
+    const expected = harness.documentLines() - baseline;
+    // Catch-up frame: the indicator appears with the exact appended-line count.
+    assert.match(
+      harness.plainLines().join('\n'),
+      new RegExp(`↓ ${expected} new lines — End to jump to latest`),
+    );
+    assert.equal(harness.frameCatchUps, 0, 'a settled count must not request further frames');
+  });
+
+  test('jumping back to the bottom clears the indicator on the catch-up frame', () => {
+    const harness = build();
+    harness.addEntries(40);
+    harness.plainLines();
+    harness.scrollView.scrollBy(-6);
+    harness.addEntries(5);
+    harness.plainLines();
+    harness.plainLines();
+    assert.match(harness.plainLines().join('\n'), /new lines — End to jump to latest/);
+    // The End-key path: scroll view returns to follow-end…
+    harness.scrollView.scrollToEnd();
+    // …the still-rendered count lags one frame…
+    assert.match(harness.plainLines().join('\n'), /new lines — End to jump to latest/);
+    assert.equal(harness.frameCatchUps, 1);
+    // …and the catch-up frame clears it.
+    assert.doesNotMatch(harness.plainLines().join('\n'), /new lines — End to jump to latest/);
+    assert.equal(harness.frameCatchUps, 0);
+  });
+});
+
+describe('external URL opener hardening', () => {
+  interface RecordedSpawn {
+    command: string;
+    args: readonly string[];
+    /** Live error-listener count on the returned child. */
+    errorListeners(): number;
+  }
+
+  function recordingSpawn(): { calls: RecordedSpawn[]; spawn: typeof SpawnFn } {
+    const calls: RecordedSpawn[] = [];
+    const spawn = ((command: string, args: readonly string[], _options?: SpawnOptions) => {
+      let errorListeners = 0;
+      calls.push({ command, args, errorListeners: () => errorListeners });
+      return {
+        on(event: string, listener: () => void) {
+          if (event === 'error') errorListeners += 1;
+          return listener;
+        },
+        unref() {},
+      } as unknown as ChildProcess;
+    }) as unknown as typeof SpawnFn;
+    return { calls, spawn };
+  }
+
+  test('opens web and mail targets with the platform opener', () => {
+    assert.equal(isOpenableExternalUrl('https://apache.org'), true);
+    assert.equal(isOpenableExternalUrl('http://localhost:8080/?x=1'), true);
+    assert.equal(isOpenableExternalUrl('mailto:someone@example.com'), true);
+    // `URL` normalizes the scheme to lowercase, so a hostile casing cannot
+    // smuggle a scheme past the allowlist either.
+    assert.equal(isOpenableExternalUrl('HTTPS://APACHE.ORG'), true);
+  });
+
+  test('rejects every non-allowlisted scheme without spawning an opener', () => {
+    const rejected = [
+      'file:///C:/Windows/System32/calc.exe',
+      'javascript:alert(1)',
+      'ftp://example.com/pub',
+      'calc://payload',
+      'ms-msdt:id',
+      '\\\\server\\share\\payload',
+      'not a url',
+      '',
+      'https://example.com trailing text',
+    ];
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      for (const url of rejected) {
+        const { calls, spawn } = recordingSpawn();
+        openExternalUrl(url, platform, spawn);
+        assert.deepEqual(calls, [], `expected no opener for ${JSON.stringify(url)} on ${platform}`);
+      }
+    }
+    assert.equal(isOpenableExternalUrl('file:///etc/passwd'), false);
+  });
+
+  test('never routes a URL through cmd.exe, whatever metacharacters it carries', () => {
+    const hostile = [
+      'https://example.com/?x=1&calc.exe',
+      'https://example.com/?x=1|calc.exe',
+      'https://example.com/?x=%PATH%',
+      'https://example.com/?q="quoted"&x=1',
+    ];
+    for (const url of hostile) {
+      const { calls, spawn } = recordingSpawn();
+      openExternalUrl(url, 'win32', spawn);
+      assert.deepEqual(
+        calls.map((call) => call.command),
+        ['rundll32'],
+        `expected the shell-free rundll32 opener for ${JSON.stringify(url)}`,
+      );
+      assert.deepEqual(calls[0]?.args, ['url.dll,FileProtocolHandler', url]);
+    }
+  });
+
+  test('passes macOS and Linux targets as plain argv elements', () => {
+    const { calls, spawn } = recordingSpawn();
+    openExternalUrl('https://apache.org?x=1&y=2', 'darwin', spawn);
+    openExternalUrl('https://apache.org?x=1&y=2', 'linux', spawn);
+    assert.deepEqual(
+      { command: calls[0]?.command, args: calls[0]?.args },
+      { command: 'open', args: ['https://apache.org?x=1&y=2'] },
+    );
+    assert.deepEqual(
+      { command: calls[1]?.command, args: calls[1]?.args },
+      { command: 'xdg-open', args: ['https://apache.org?x=1&y=2'] },
+    );
+  });
+
+  test('keeps the spawned child and swallows its asynchronous error event', () => {
+    // spawn reports a missing binary via the child's 'error' event, not a
+    // synchronous throw; with no listener attached Node re-emits it as an
+    // uncaughtException, which the TUI treats as fatal and begins teardown.
+    // The opener must attach exactly one listener so a dead link degrades to
+    // "nothing opened" on every platform shape.
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      const { calls, spawn } = recordingSpawn();
+      openExternalUrl('https://apache.org', platform, spawn);
+      assert.equal(calls.length, 1, `expected one spawn on ${platform}`);
+      assert.equal(calls[0]?.errorListeners(), 1, `expected the error listener on ${platform}`);
+    }
+  });
+
+  test('a missing opener binary fires the async error and the session survives it', async () => {
+    // Real child process, no mocks: the opener is redirected to an absolute
+    // path that cannot exist, so libuv reports ENOENT asynchronously —
+    // exactly the path that surfaced as an uncaughtException before the fix.
+    // (CI images legitimately ship the real openers — the ubuntu runner has
+    // xdg-utils — so the opener name itself must not be relied on to be
+    // missing.) Observing the error through an extra listener proves the
+    // event fired; this test completing at all proves it was swallowed
+    // instead of ending the process.
+    let child: ChildProcess | undefined;
+    const recorder = ((command: string, args: readonly string[], options?: SpawnOptions) => {
+      child = spawn(`/definitely/not/a/real/opener-${command}`, args, options ?? {});
+      return child;
+    }) as unknown as typeof SpawnFn;
+    openExternalUrl('https://apache.org', 'linux', recorder);
+    assert.ok(child, 'expected the opener to spawn');
+    const error = await Promise.race([
+      new Promise<NodeJS.ErrnoException>((resolve) => child!.once('error', resolve)),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(() => reject(new Error('spawn error never fired')), 5_000);
+        timer.unref();
+      }),
+    ]);
+    assert.equal(error.code, 'ENOENT');
+  });
+});

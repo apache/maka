@@ -25,6 +25,7 @@ import {
   type OperationInput,
   type OperationKey,
   type OperationOutput,
+  type ArtifactChangedFrame,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
   type SubscriptionOpenInput,
@@ -128,6 +129,7 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
   readonly #connectionCatalogListeners = new Set<(revision: number) => void>();
   readonly #projectListeners = new Set<(revision: number) => void>();
   readonly #sessionListeners = new Set<(frame: SessionCatalogChangedFrame) => void>();
+  readonly #artifactListeners = new Set<(frame: ArtifactChangedFrame) => void>();
   readonly #scheduledTaskListeners = new Set<(frame: ScheduledTaskChangedFrame) => void>();
   readonly #lifecycle: RuntimeHostReconnectLifecycle<RuntimeHostConnection>;
   #connectionAvailability: RuntimeHostConnectionAvailability;
@@ -246,6 +248,11 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
     return () => this.#configurationListeners.delete(listener);
   }
 
+  subscribeArtifactChanges(listener: (frame: ArtifactChangedFrame) => void): () => void {
+    this.#artifactListeners.add(listener);
+    return () => this.#artifactListeners.delete(listener);
+  }
+
   subscribeConnectionAvailability(
     listener: (availability: RuntimeHostConnectionAvailability) => void,
   ): () => void {
@@ -358,6 +365,9 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
     this.#listenerDisposers = [
       connection.subscribeConfigurationChanges((revision: number) => {
         notify(this.#configurationListeners, revision);
+      }),
+      connection.subscribeArtifactChanges((frame: ArtifactChangedFrame) => {
+        notify(this.#artifactListeners, frame);
       }),
       connection.subscribeConnectionCatalogChanges((revision: number) => {
         notify(this.#connectionCatalogListeners, revision);

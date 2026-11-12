@@ -89,7 +89,7 @@ export function RuntimeHostOnboardingDialog(props: {
     (targetKind === 'wsl'
       ? distribution.trim().length > 0
       : destination.trim().length > 0 && validOptionalPort(sshPort)) &&
-    projectDirectoryRootsValid(projectDirectoryRoots);
+    projectDirectoryRootsValid(projectDirectoryRoots, targetKind === 'wsl' ? 'posix' : undefined);
 
   async function start(): Promise<void> {
     const roots = projectDirectoryRoots.length === 0

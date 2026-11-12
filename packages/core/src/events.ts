@@ -679,12 +679,14 @@ export type SessionEvent =
   | PlanSubmittedEvent
   | TokenUsageEvent
   | SteeringMessageEvent
+  | RuntimeContextEvent
   | MessageAdmissionEvent
   | QueueUpdateEvent
   | ProviderRetryEvent
   | ErrorEvent
   | CompleteEvent
   | AbortEvent
+  | ContextCompactionAppliedEvent
   | ContextCompactionStartedEvent;
 
 export interface TextDeltaEvent extends BaseEvent {
@@ -872,6 +874,8 @@ export interface ToolResultEvent extends BaseEvent, ToolActivityIdentity {
   /** The transport omitted durable result content; consumers must not treat the placeholder as authoritative. */
   contentOmitted?: true;
   isError: boolean;
+  /** Explicit call outcome; absent on legacy and non-migrated tools. */
+  outcome?: import('./tool-result-status.js').ToolCallOutcome;
   content: ToolResultContent;
   durationMs?: number;
 }
@@ -1290,6 +1294,13 @@ export interface SteeringMessageEvent extends BaseEvent {
   submittedContentDigest?: `sha256:${string}`;
 }
 
+/** Internal model context, persisted in order but not rendered as a chat message. */
+export interface RuntimeContextEvent extends BaseEvent {
+  type: 'runtime_context';
+  name: string;
+  text: string;
+}
+
 /**
  * Transient Host projection fact: a submitted message now belongs to this
  * Turn. It is emitted by the session projector, not by a backend or durable
@@ -1394,6 +1405,7 @@ export interface CompleteEvent extends BaseEvent {
     | 'error'
     | 'plan_handoff'
     | 'graph_yield'
+    | 'event_wait'
     | 'permission_handoff'
     | 'step_limit'
     | 'max_tokens';
@@ -1432,6 +1444,15 @@ export interface AbortEvent extends BaseEvent {
  */
 export interface ContextCompactionStartedEvent extends BaseEvent {
   type: 'context_compaction_started';
+}
+
+/**
+ * A persisted compaction has taken over the request projection. Its timestamp
+ * invalidates older context measurements while the turn is still running.
+ * The runtime maps this event to a hidden system note before publishing it.
+ */
+export interface ContextCompactionAppliedEvent extends BaseEvent {
+  type: 'context_compaction_applied';
 }
 
 // ============================================================================

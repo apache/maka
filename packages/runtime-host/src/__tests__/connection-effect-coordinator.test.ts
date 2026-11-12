@@ -1666,7 +1666,7 @@ test('OAuth connection effects resolve the canonical access token instead of sen
         }),
       runModelDiscovery: async (_connection, secret) => {
         receivedDiscoverySecret = secret;
-        return { ok: true, models: [{ id: 'gpt-5.6-terra' }] };
+        return { ok: true, models: [{ id: 'gpt-5.6-terra', codexCompactionHash: '3000' }] };
       },
       runConnectionTest: async (_connection, secret) => {
         receivedTestSecret = secret;
@@ -1684,6 +1684,29 @@ test('OAuth connection effects resolve the canonical access token instead of sen
     );
 
     assert.equal(discovery.ok, true);
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    const fetched = catalog.connections.find(
+      (item) => item.connectionId === connection.connectionId,
+    );
+    assert.ok(fetched?.modelsFetchedAt);
+    const target = await resolveExecutionTarget(
+      {
+        llmConnectionId: connection.connectionId,
+        llmConnectionSlug: connection.slug,
+        model: 'gpt-5',
+      },
+      stores,
+      new HostOAuthExecutionAuthority(stores),
+      () => {
+        throw new Error('not used');
+      },
+    );
+    assert.equal(target.connection.codexCompactionMetadataFetchedAt, fetched.modelsFetchedAt);
+    assert.equal(
+      target.connection.models?.find((model) => model.id === 'gpt-5.6-terra')?.codexCompactionHash,
+      '3000',
+    );
+
     assert.equal(tested.ok, true);
     assert.equal(receivedDiscoverySecret, accessToken);
     assert.equal(receivedTestSecret, accessToken);

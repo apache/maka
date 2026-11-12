@@ -100,6 +100,12 @@ export async function main(argv = process.argv) {
   const source = refresh
     ? await refreshSnapshot(snapshotPath, refreshInputPath, { acceptUpstreamRemovals })
     : await loadSnapshot(snapshotPath);
+  // Keep the source snapshot intact; official direct-API facts override its
+  // lagging text catalog in both offline generation and refresh/check output.
+  source.projection = {
+    ...source.projection,
+    metadata: projection.withMiniMaxTextCatalog(source.projection.metadata),
+  };
   const {
     metadata: generated,
     pricing: generatedPricing,

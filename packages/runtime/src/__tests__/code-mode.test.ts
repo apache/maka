@@ -26,6 +26,7 @@ import {
   DEFAULT_CODE_MODE_EXECUTION_POLICY,
   type ExecuteCodeCellInput,
   executeCodeCell,
+  CodeModeSteeringInterruption,
 } from '../code-mode.js';
 
 function execute(code: string, input: Partial<Omit<ExecuteCodeCellInput, 'code'>> = {}) {
@@ -36,6 +37,103 @@ function execute(code: string, input: Partial<Omit<ExecuteCodeCellInput, 'code'>
     ...input,
   });
 }
+
+test('steering interrupts the cell after a settled tool without aborting its ordinary sibling', async () => {
+  const interruptedResult = {
+    kind: 'event_wait_result' as const,
+    waitId: 'early-wait',
+    outcome: 'interrupted' as const,
+    observedAt: 1,
+    deadlineAt: 30_000,
+    evidenceRefs: [],
+    reason: 'user_input',
+  };
+  let waitsEntered = 0;
+  let allWaitsEntered!: () => void;
+  const waitsReady = new Promise<void>((resolve) => {
+    allWaitsEntered = resolve;
+  });
+  let releaseSibling!: () => void;
+  let enteredSibling!: () => void;
+  const siblingEntered = new Promise<void>((resolve) => {
+    enteredSibling = resolve;
+  });
+  const siblingDone = new Promise<void>((resolve) => {
+    releaseSibling = resolve;
+  });
+  let boundaryReached!: () => void;
+  const boundary = new Promise<void>((resolve) => {
+    boundaryReached = resolve;
+  });
+  let siblingSignal: AbortSignal | undefined;
+  const calls: string[] = [];
+  let completed = false;
+  const running = execute(
+    `
+    try {
+      await Promise.all([
+        tools.ordinary({}), tools.wait({ id: 'early' }), tools.wait({ id: 'late' })
+      ]);
+    } catch {}
+    await tools.after({});
+  `,
+    {
+      tools: ['ordinary', 'wait', 'after'].map((name) => ({ name })),
+      signal: AbortSignal.timeout(5_000),
+      callTool: async (name, toolInput, signal) => {
+        calls.push(name);
+        if (name === 'ordinary') {
+          siblingSignal = signal;
+          enteredSibling();
+          await siblingDone;
+          return 'ordinary finished';
+        }
+        if (++waitsEntered === 2) allWaitsEntered();
+        await waitsReady;
+        await siblingEntered;
+        if ((toolInput as { id: string }).id === 'late') {
+          await siblingDone;
+          throw new CodeModeSteeringInterruption({
+            ...interruptedResult,
+            waitId: 'late-wait',
+            deadlineAt: null,
+          });
+        }
+        boundaryReached();
+        throw new CodeModeSteeringInterruption(interruptedResult);
+      },
+    },
+  ).then((result) => {
+    completed = true;
+    return result;
+  });
+  await boundary;
+  // Yield through the error handler's microtask without releasing the real tool.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(siblingSignal?.aborted, false);
+  assert.equal(completed, false, 'cell must drain its already-started host operation');
+  releaseSibling();
+  const result = await running;
+  assert.deepEqual([...calls].sort(), ['ordinary', 'wait', 'wait']);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.error.kind, 'interrupted');
+  assert.deepEqual(result.toolCalls, [
+    { index: 1, name: 'ordinary' },
+    {
+      index: 2,
+      name: 'wait',
+      interruptedResult: { input: { id: 'early' }, result: interruptedResult },
+    },
+    {
+      index: 3,
+      name: 'wait',
+      interruptedResult: {
+        input: { id: 'late' },
+        result: { ...interruptedResult, waitId: 'late-wait', deadlineAt: null },
+      },
+    },
+  ]);
+});
 
 test('excludes host waiting from the execution budget and preserves dependent Promise.race progress', async () => {
   let releaseSlow!: (value: string) => void;

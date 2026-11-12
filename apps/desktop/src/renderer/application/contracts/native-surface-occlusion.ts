@@ -21,6 +21,7 @@
 export function isNativeSurfaceOccluded(rect: DOMRect, document: Document): boolean {
   return Array.from(document.querySelectorAll(':popover-open:not(:empty), dialog[open]')).some((overlay) => {
     if (overlay.matches(':modal')) return true;
+    if (overlay.hasAttribute('data-workhub-preview-pending') && overlay.querySelector('.maka-sidebar-hover-card')) return false;
     const bounds = overlay.getBoundingClientRect();
     return bounds.width > 0 && bounds.height > 0 && bounds.left < rect.right && bounds.right > rect.left && bounds.top < rect.bottom && bounds.bottom > rect.top;
   });

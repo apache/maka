@@ -22,6 +22,11 @@ import { Buffer } from 'node:buffer';
 import type { ExecutionLogCoverage } from '@maka/core/execution-log-coverage';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { nonEmpty, sha256 } from './context-budget-helpers.js';
+import { estimateRuntimeEventChars } from './model-history.js';
+import {
+  reduceEffectiveModelProjections,
+  type LoadedModelProjectionTransitions,
+} from './model-projection-transition-ledger.js';
 import type { ModelMessage } from './model-protocol.js';
 import { stableStringify } from './request-shape.js';
 import {
@@ -129,6 +134,8 @@ export interface OpenAiCodexRemoteCompactState {
   kind: 'openai_codex_remote_v2';
   connectionId: string;
   modelId: string;
+  /** Compatibility identity captured when this checkpoint was produced. */
+  codexCompactionHash?: string;
   itemId: string;
   encryptedContent: string;
 }
@@ -406,31 +413,68 @@ export function isTextHistoryCompactCheckpoint(
   return checkpoint.version === 2;
 }
 
+/** Bound the age of provider compatibility claims, including long-lived backends. */
+export const CODEX_COMPACTION_METADATA_MAX_AGE_MS = 5 * 60 * 1000;
+
+type CompactionModelConnection = {
+  providerType: string;
+  models?: readonly { id: string; codexCompactionHash?: string }[];
+  codexCompactionMetadataFetchedAt?: number;
+};
+
+export function freshCodexCompactionHash(
+  connection: CompactionModelConnection,
+  modelId: string,
+  now: number = Date.now(),
+): string | undefined {
+  const fetchedAt = connection.codexCompactionMetadataFetchedAt;
+  if (
+    connection.providerType !== 'openai-codex' ||
+    fetchedAt === undefined ||
+    !Number.isSafeInteger(fetchedAt) ||
+    fetchedAt < 0 ||
+    !Number.isFinite(now) ||
+    fetchedAt > now ||
+    now - fetchedAt >= CODEX_COMPACTION_METADATA_MAX_AGE_MS
+  )
+    return undefined;
+  return connection.models?.find((model) => model.id === modelId)?.codexCompactionHash;
+}
+
 export function canReplayHistoryCompactCheckpointForModel(
   checkpoint: HistoryCompactCheckpoint,
-  connection: { providerType: string },
+  connection: CompactionModelConnection,
   connectionId: string | undefined,
   modelId: string,
 ): boolean {
   if (!isProviderHistoryCompactCheckpoint(checkpoint)) return true;
+  const state = checkpoint.providerState;
+  if (
+    connection.providerType !== 'openai-codex' ||
+    connectionId === undefined ||
+    state.connectionId !== connectionId
+  )
+    return false;
+  const targetHash = freshCodexCompactionHash(connection, modelId);
+  // Legacy checkpoints remain usable on their original model. Never infer a
+  // legacy checkpoint's original hash from today's mutable model catalog.
+  if (state.modelId === modelId && (!state.codexCompactionHash || !targetHash)) return true;
   return (
-    connection.providerType === 'openai-codex' &&
-    connectionId !== undefined &&
-    checkpoint.providerState.connectionId === connectionId &&
-    checkpoint.providerState.modelId === modelId
+    nonEmpty(state.codexCompactionHash) &&
+    nonEmpty(targetHash) &&
+    state.codexCompactionHash === targetHash
   );
 }
 
 /** Whether this model's configured compactor can roll forward from this checkpoint value. */
 export function canContinueHistoryCompactCheckpointForModel(
   checkpoint: HistoryCompactCheckpoint,
-  connection: { providerType: string },
+  connection: CompactionModelConnection,
   connectionId: string | undefined,
   modelId: string,
 ): boolean {
-  if (isTextHistoryCompactCheckpoint(checkpoint)) {
-    return connection.providerType !== 'openai-codex';
-  }
+  // Portable text is ordinary model context for both replay and compaction.
+  // Only opaque provider state needs a matching route.
   return canReplayHistoryCompactCheckpointForModel(checkpoint, connection, connectionId, modelId);
 }
 
@@ -570,6 +614,36 @@ export function matchHistoryCompactCheckpointPrefix(
   checkpoint: HistoryCompactCheckpoint,
   events: readonly RuntimeEvent[],
 ): HistoryCompactCheckpointPrefixMatch {
+  const match = matchHistoryCompactCheckpointPrefixExactly(checkpoint, events);
+  if (
+    match.reason === undefined ||
+    match.reason === 'invalid_checkpoint' ||
+    checkpoint.source?.policyVersion !== 'maka.compactable_runtime_event_projection.v3'
+  )
+    return match;
+
+  // v3 checkpoints written before #6263 did not count encrypted-only thinking.
+  // Locate that sealed boundary by identity, then verify the historical source
+  // exactly. Never trim the successor tail using the historical event count.
+  const throughIndex = events.findIndex(
+    (event) => event.id === checkpoint.coverage.through.runtimeEventId,
+  );
+  if (throughIndex < 0) return match;
+  const prefix = events.slice(0, throughIndex + 1);
+  const historical = prefix.filter(
+    (event) => event.content?.kind !== 'thinking' || event.content.text.length > 0,
+  );
+  if (historical.length === prefix.length) return match;
+  const historicalMatch = matchHistoryCompactCheckpointPrefixExactly(checkpoint, historical);
+  return historicalMatch.reason === undefined
+    ? { ...historicalMatch, successorRuntimeEvents: events.slice(throughIndex + 1) }
+    : match;
+}
+
+function matchHistoryCompactCheckpointPrefixExactly(
+  checkpoint: HistoryCompactCheckpoint,
+  events: readonly RuntimeEvent[],
+): HistoryCompactCheckpointPrefixMatch {
   if (!validateHistoryCompactCheckpointShape(checkpoint)) {
     return {
       coveredEventCount: 0,
@@ -648,6 +722,61 @@ export function matchHistoryCompactCheckpointPrefix(
     coveredRuntimeEvents,
     successorRuntimeEvents,
   };
+}
+
+/**
+ * The two-layer currency decision every checkpoint consumer shares (#5930): a
+ * checkpoint replays only when its RAW identity still matches the current
+ * RuntimeEvent prefix AND the EFFECTIVE, transition-folded view of the covered
+ * span still matches the digest pinned at creation. `raw_mismatch` carries the
+ * raw-match failure; `effective_history_changed` covers every way the folded
+ * view can drift — missing pin, too few surviving content events, a covered
+ * through-event the effective prefix never reaches, or a digest difference.
+ * Callers keep their own policy for each outcome; this function only decides.
+ */
+export type HistoryCompactCheckpointCurrency =
+  | {
+      status: 'current';
+      match: Extract<HistoryCompactCheckpointPrefixMatch, { reason?: undefined }>;
+    }
+  | {
+      status: 'raw_mismatch';
+      reason: 'invalid_checkpoint' | 'coverage_miss' | 'source_hash_mismatch';
+    }
+  | { status: 'effective_history_changed' };
+
+/**
+ * Judges a checkpoint against `events` under `projectionSnapshot` — the SAME
+ * loaded transition view the caller used to build the request being judged.
+ * The function never loads transitions: a checkpoint is only current for the
+ * snapshot it is checked with, and a record committed after that snapshot
+ * belongs to the next request's decision.
+ */
+export function checkHistoryCompactCheckpointCurrency(
+  checkpoint: HistoryCompactCheckpoint,
+  events: readonly RuntimeEvent[],
+  projectionSnapshot: LoadedModelProjectionTransitions,
+): HistoryCompactCheckpointCurrency {
+  const match = matchHistoryCompactCheckpointPrefix(checkpoint, events);
+  if (match.reason !== undefined) {
+    return { status: 'raw_mismatch', reason: match.reason };
+  }
+  const effectiveCovered = reduceEffectiveModelProjections(
+    match.coveredRuntimeEvents,
+    projectionSnapshot.transitions,
+    projectionSnapshot.unreadableTargets,
+  ).events.filter(isHistoryCompactContentEvent);
+  const pinned = checkpoint.coverage.effectiveSourceDigest;
+  if (
+    pinned === undefined ||
+    effectiveCovered.length < checkpoint.coverage.eventCount ||
+    effectiveCovered[checkpoint.coverage.eventCount - 1]?.id !==
+      checkpoint.coverage.through.runtimeEventId ||
+    historyCompactSourceDigest(effectiveCovered.slice(0, checkpoint.coverage.eventCount)) !== pinned
+  ) {
+    return { status: 'effective_history_changed' };
+  }
+  return { status: 'current', match };
 }
 
 /**
@@ -799,6 +928,21 @@ function effectiveDigestEvent(event: RuntimeEvent): unknown {
   return { ...event, content: { ...identity, result } };
 }
 
+/** True when the event carries model-visible content the compact projection counts. */
+export function isHistoryCompactContentEvent(event: RuntimeEvent): boolean {
+  if (event.modelVisibility === 'hidden') return false;
+  // A Responses reasoning item can carry only encrypted content. Text sizing
+  // does not decide whether that payload exists; route admission still runs
+  // when the compacted history is materialized for the selected model.
+  if (event.content?.kind === 'thinking') {
+    const openai = event.content.providerOptions?.openai as
+      | { itemId?: unknown; reasoningEncryptedContent?: unknown }
+      | undefined;
+    if (nonEmpty(openai?.itemId) && nonEmpty(openai?.reasoningEncryptedContent)) return true;
+  }
+  return estimateRuntimeEventChars(event) > 0;
+}
+
 function validHistoryCompactProviderState(value: unknown): value is HistoryCompactProviderState {
   if (!value || typeof value !== 'object') return false;
   const state = value as Partial<HistoryCompactProviderState>;
@@ -806,6 +950,11 @@ function validHistoryCompactProviderState(value: unknown): value is HistoryCompa
     state.kind === 'openai_codex_remote_v2' &&
     nonEmpty(state.connectionId) &&
     nonEmpty(state.modelId) &&
+    (state.codexCompactionHash === undefined ||
+      (nonEmpty(state.codexCompactionHash) &&
+        state.codexCompactionHash.length <= 128 &&
+        state.codexCompactionHash.trim() === state.codexCompactionHash &&
+        !/[\u0000-\u001f\u007f]/.test(state.codexCompactionHash))) &&
     nonEmpty(state.itemId) &&
     nonEmpty(state.encryptedContent)
   );

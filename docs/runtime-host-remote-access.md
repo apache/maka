@@ -274,3 +274,15 @@ Remote Clients never auto-upgrade or restart the Host, downgrade the transport, 
   Desktop management uses the separately authenticated SSH operator channel. The Host may still
   drain itself after an indeterminate durable commit; a managed service supervisor restarts it.
 - Revoke a credential on the Host with `maka runtime-host access revoke --root /srv/maka --credential <credentialId>`.
+
+## WSL Node upgrades
+
+Desktop's on-demand WSL Host records the Node executable used during setup. If that file has been
+deleted, Desktop repeats the WSL login-shell bootstrap to find the current Node, then updates the
+existing deployment's Node path and operator binding. The exact Host package, deployment identity,
+listeners, and credentials are retained. No runtime copy is installed.
+
+This recovery is limited to a missing Node file in WSL. An existing but unusable Node, permission
+errors, or Host startup/readiness failures do not select another Node. Recovery also refuses to
+interrupt a Host that still owns the State Root; allow that Host to exit before retrying. The login
+shell must provide a supported Node and npm, as it does during initial setup.

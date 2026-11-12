@@ -230,7 +230,7 @@ if (!process.versions.electron) {
       webPreferences: {
         preload: join(root, 'preload.cjs'),
         contextIsolation: true,
-        sandbox: false,
+        sandbox: true,
       },
     });
     try {

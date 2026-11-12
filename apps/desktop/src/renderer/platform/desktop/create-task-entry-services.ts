@@ -39,15 +39,18 @@ export function createDesktopTaskEntryServices(
       async archiveProject(host, projectId) {
         await bridge.projects.archive(projectId, host);
       },
-      async restoreProject(host, projectId) {
-        await bridge.projects.restore(projectId, host);
-      },
     },
     sessions: {
       async relocateWorkspace(sessionId, projectId) {
         const result = await bridge.sessions.moveToProject(sessionId, projectId);
         return result.ok
           ? { ok: true as const }
+          : { ok: false as const, reason: result.code };
+      },
+      async relocateToDedicatedDirectory(sessionId) {
+        const result = await bridge.sessions.moveToDedicatedDirectory(sessionId);
+        return result.ok
+          ? { ok: true as const, directory: result.session.cwd }
           : { ok: false as const, reason: result.code };
       },
     },

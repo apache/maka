@@ -73,8 +73,7 @@ To rebuild, check out upstream `vercel-labs/run` tag `run@2.1.4`
 package and regenerate with `node node_modules/patch-package/index.js run`.
 Copy the patched package manifest as well, and pass `--exclude '^$'` when
 regenerating so patch-package includes that manifest change.
-The large generated hunk is the inline Worker with unchanged embedded WASM;
-`run-2.1.4-notices.md` retains its embedded dependency notices.
+Before committing the regenerated patch, replace the unchanged Base64 WASM payload in both inline Worker diff lines with `__MAKA_RUN_WASM_BASE64__`. `scripts/apply-dependency-patches.mjs` restores that payload from the installed `run@2.1.4` package into a temporary patch directory during postinstall. Run `npm run check:asf-source` to verify the source-only patch and installation; the source verifier rejects embedded WASM. `run-2.1.4-notices.md` retains its embedded dependency notices.
 
 Remove both patches and the run override when published versions support the
 same execution budget semantics. Regression coverage lives in
@@ -115,7 +114,7 @@ that product code can configure.
 
 Delete the patch when upstream shares immutable paste strings across undo snapshots.
 
-## `zod@4.6.5`
+## `zod@4.6.7`
 
 Recursive schemas retain their last parse context and bucket in schema closures,
 keeping the input and output graphs alive for the schema's lifetime. Containers
@@ -130,7 +129,7 @@ Before upgrading Zod, re-verify allocation handoff, reentrant parsing, and cycle
 identity against the new memoizer and container implementations.
 The Runtime `zod-recursive-contract.test.ts` suite covers both shipped entry points.
 
-## `@modelcontextprotocol/client@2.2.0`
+## `@modelcontextprotocol/client@2.3.0`
 
 Pending transport sends retain settled request arguments and results through
 error observers, even after response, abort, timeout, or connection close.

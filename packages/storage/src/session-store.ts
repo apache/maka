@@ -54,6 +54,7 @@ import {
   type ArchiveRetentionCandidateCount,
   type ArchiveRetentionCandidateQuery,
   type ArchiveRetentionCandidateRow,
+  isSessionNotFoundError,
 } from './session-store-contract.js';
 export {
   isSafeSessionId,
@@ -200,28 +201,65 @@ class SqliteSessionStore implements SessionAuthorityStore {
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
     externalOrigin: SessionExternalOrigin,
-    options: { readonly onCommitStarted?: () => void } = {},
+    options: {
+      readonly onCommitStarted?: () => void;
+      readonly discardPreparedMessages?: (sessionId: string) => Promise<void>;
+      readonly prepareMessages?: (
+        sessionId: string,
+        messages: readonly StoredMessage[],
+      ) => Promise<readonly StoredMessage[]>;
+    } = {},
   ): Promise<SessionHeader> {
     await this.ensureReady();
     assertNoConversationCopyMetadata(input);
     if (input.subagentSpawn) {
       throw new Error('Subagent spawn metadata requires createSubagent()');
     }
-    const canonicalMessages = messages.map((message) =>
-      decodeCanonicalMessage(JSON.parse(JSON.stringify(message)) as unknown),
-    );
     const header: SessionHeader = {
       ...buildSessionHeader(this.workspaceRoot, input),
       externalOrigin,
       transcriptLedgerVersion: 0,
     };
-    const catalogProjection = projectSessionCatalogMessages(canonicalMessages);
-    options.onCommitStarted?.();
-    const outcome = await this.metadata.importSession(header, canonicalMessages, catalogProjection);
-    if (outcome !== 'imported') {
-      throw new Error(`Generated Session id already exists: ${header.id}`);
+    let commitStarted = false;
+    try {
+      const preparedMessages = options.prepareMessages
+        ? await options.prepareMessages(header.id, messages)
+        : messages;
+      const canonicalMessages = preparedMessages.map((message) =>
+        decodeCanonicalMessage(JSON.parse(JSON.stringify(message)) as unknown),
+      );
+      const catalogProjection = projectSessionCatalogMessages(canonicalMessages);
+      options.onCommitStarted?.();
+      commitStarted = true;
+      const outcome = await this.metadata.importSession(
+        header,
+        canonicalMessages,
+        catalogProjection,
+      );
+      if (outcome !== 'imported') {
+        throw new Error(`Generated Session id already exists: ${header.id}`);
+      }
+      return (await this.metadata.read(header.id)).header;
+    } catch (error) {
+      let uncommitted = !commitStarted;
+      if (commitStarted) {
+        try {
+          await this.metadata.read(header.id);
+        } catch (readError) {
+          // An uncertain commit must retain its bytes for recovery. Only an
+          // authoritative absence makes the prepared artifacts safe to discard.
+          uncommitted = isSessionNotFoundError(readError);
+        }
+      }
+      if (uncommitted) {
+        try {
+          await options.discardPreparedMessages?.(header.id);
+        } catch {
+          // Best-effort cleanup must not replace the original import failure.
+        }
+      }
+      throw error;
     }
-    return (await this.metadata.read(header.id)).header;
   }
 
   async lookupExternalSessionImports(

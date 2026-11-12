@@ -200,6 +200,7 @@ function deriveTurnPresentationEntry(input: {
   const { turn, lineageEntry, pendingForTurn, uiLocale } = input;
   const footerActions = deriveTurnFooterActions({
     status: turn.status,
+    turnId: turn.turnId,
     allowBranch: input.allowBranch,
     locale: uiLocale,
     hasContent: finalAssistantReplyText(turn).trim().length > 0,

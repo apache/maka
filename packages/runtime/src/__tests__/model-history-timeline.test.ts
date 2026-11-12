@@ -266,3 +266,32 @@ function event(
     partial: false,
   };
 }
+
+test('card contents remain model-visible on replay rather than just their introduction', () => {
+  const message = event({
+    id: 'card',
+    role: 'model',
+    author: 'agent',
+    content: {
+      kind: 'text',
+      text: '给你两个选项。',
+      card: {
+        type: 'offer',
+        title: '报销材料',
+        items: [
+          {
+            title: '整理材料',
+            facts: [{ label: '缺少', value: '酒店发票' }],
+            actions: [
+              { kind: 'reply', label: '帮我整理', value: '请整理这次出差报销，先核对酒店发票。' },
+            ],
+          },
+        ],
+      },
+    },
+  });
+  const replay = buildRuntimeEventModelReplayPlan([message]);
+  const text = JSON.stringify(replay.items);
+  assert.match(text, /酒店发票/);
+  assert.match(text, /请整理这次出差报销/);
+});

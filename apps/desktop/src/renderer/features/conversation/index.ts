@@ -20,8 +20,9 @@
 export { resolveTaskReadinessModelTarget } from './model/task-readiness-notice.js';
 export type { AppShellSessionUiStateController } from './model/session-ui-state.js';
 export type { SessionUiReads } from './model/session-ui-reads.js';
-export type { ConversationHostChange, ConversationServices } from './ports.js';
+export type { ConversationHostChange, ConversationCheckinPort, ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
+export { CheckinDefaultModelHint, CheckinEnableSwitch } from './ui/checkin-setting.js';
 
 
 export type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
@@ -80,3 +81,4 @@ export { TaskReadinessProvider, TaskReadinessNoticeConsumer } from './ui/task-re
 export { createComposerSubmissionCommands } from './controller/composer-submission-commands.js';
 export { ComposerSubmissionServicesProvider, type ComposerSubmissionServices } from './submission-services.js';
 export { ComposerSubmissionProvider } from './ui/composer-submission-provider.js';
+export { CheckinHome } from './ui/checkin-home.js';

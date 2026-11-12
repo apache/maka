@@ -40,16 +40,11 @@ const quietLogger = {
   error() {},
 };
 
-export function wecomTextFrameToEvent(
-  frame: WsFrame<TextMessage>,
-  receivedAt: number,
-  allowedUserIds?: ReadonlyArray<string>,
-) {
+export function wecomTextFrameToEvent(frame: WsFrame<TextMessage>, receivedAt: number) {
   const body = frame.body;
   if (!body || body.msgtype !== 'text' || typeof body.text?.content !== 'string') return null;
   const userId = body.from?.userid;
   if (typeof userId !== 'string' || !userId) return null;
-  if (allowedUserIds?.length && !allowedUserIds.includes(userId)) return null;
   const isGroup = body.chattype === 'group';
   const chatId = isGroup ? body.chatid : userId;
   if (typeof chatId !== 'string' || !chatId) return null;
@@ -199,12 +194,11 @@ export class WeComBotBridge extends BaseBotAdapter implements SendCapable {
   private wire(client: WSClient, botId: string): void {
     client.on('message.text', (frame) => {
       const receivedAt = Date.now();
-      const event = wecomTextFrameToEvent(frame, receivedAt, this.settings.allowedUserIds);
+      const event = wecomTextFrameToEvent(frame, receivedAt);
       if (!event || this.client !== client) return;
-      this.lastEventAt = receivedAt;
+      if (!this.emitIncomingMessage(event)) return;
       this.readiness = 'operational';
       this.reason = undefined;
-      this.emitIncomingMessage(event);
       this.emitStatusChange();
     });
     client.on('authenticated', () => {

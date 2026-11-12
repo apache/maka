@@ -19,7 +19,7 @@
 
 import { useId, useState, type ReactNode } from 'react';
 import type { ModelApiProtocol, ProviderType } from '@maka/core/llm-connections';
-import { supportsCustomFastServiceTier, modelLimitsConflict, type ModelOverride } from '@maka/core/model-thinking';
+import { supportsCustomFastServiceTier, modelLimitsConflict, resolveModelLimits, type ModelOverride } from '@maka/core/model-thinking';
 import { CapabilityEditor } from './provider-capability-editor.js';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
@@ -50,10 +50,28 @@ export function AddModelDialog(props: {
     (input) => input.trim() !== '' && parseContextWindowInput(input) === null,
   );
   const [submitAttempted, setSubmitAttempted] = useState(false);
-  const limitsConflict = modelLimitsConflict({ contextWindow: contextWindow ?? undefined, inputLimit: profile.inputLimit });
   const [isSaving, setSaving] = useState(false);
 
   const trimmedId = id.trim();
+  const limits = resolveModelLimits(props.providerType, { id: trimmedId }, {
+    ...profile,
+    ...(contextWindow === null ? {} : { contextWindow }),
+  });
+  const limitsConflict = modelLimitsConflict(limits);
+  const capacities = [limits.contextWindow, limits.inputLimit].filter(
+    (value): value is number => typeof value === 'number' && value > 0,
+  );
+  // The add form proposes an explicit value. An edited or cleared field stays
+  // the user's choice; empty saved overrides still disable proactive compaction.
+  const suggestedThreshold = capacities.length > 0
+    ? Math.max(1, Math.floor(Math.min(...capacities) * 0.9))
+    : undefined;
+  const draftProfile: ModelOverride = {
+    ...profile,
+    compactionThreshold: numericInputs.compactionThreshold === undefined
+      ? suggestedThreshold
+      : profile.compactionThreshold,
+  };
   const showsFastMode = supportsCustomFastServiceTier(
     {
       providerType: props.providerType,
@@ -90,7 +108,7 @@ export function AddModelDialog(props: {
     if (idError || contextWindowError || numericInvalid || limitsConflict || isSaving) return;
     setSaving(true);
     try {
-      const { serviceTier, ...parameters } = profile;
+      const { serviceTier, ...parameters } = draftProfile;
       if (
         await props.onSubmit(trimmedId, {
           ...parameters,
@@ -115,11 +133,13 @@ export function AddModelDialog(props: {
       onSubmit={submit}
     >
       <CapabilityEditor
-        copy={copy}
+        copy={{ ...copy, compactionThresholdHelp: copy.addModelCompactionThresholdHelp }}
         modelId={trimmedId}
         customDefaultApiProtocol={props.defaultApiProtocol}
         providerType={props.providerType}
-        declared={profile}
+        declared={draftProfile}
+        defaultContextWindow={limits.contextWindow}
+        defaultInputLimit={limits.inputLimit}
         limitsConflict={limitsConflict}
         onChange={(patch) => setProfile((current) => ({ ...current, ...patch }))}
         contextWindowInput={contextWindowInput}

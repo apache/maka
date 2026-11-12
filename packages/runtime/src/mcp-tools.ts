@@ -31,7 +31,7 @@ import type { PermissionMode, ToolCategory } from '@maka/core/permission';
 import { REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH } from '@maka/core/run-composition';
 import { truncateUtf16Safe } from '@maka/core/text-sanitize';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
-import type { ToolRecoveryMode } from '@maka/core/runtime-event';
+import type { ToolOutcomeRecoveryMode } from '@maka/core/runtime-event';
 import type { ToolResultContentPart, ToolResultOutput } from './model-protocol.js';
 import type { MakaTool } from './tool-runtime.js';
 
@@ -91,10 +91,14 @@ export interface McpToolInvocationContext {
 }
 
 export interface BuildMcpToolsOptions {
+  /** Only a trusted adapter with a validated result envelope installs this reader. */
+  resultOutcome?: (
+    output: McpCallResult,
+  ) => import('@maka/core/tool-result-status').ToolCallOutcome;
   callTimeoutMs?: number;
   categoryHint?: ToolCategory;
   hostAdmission?: MakaTool['hostAdmission'];
-  recoveryMode?: ToolRecoveryMode;
+  recoveryMode?: ToolOutcomeRecoveryMode;
   executionLocation?: 'host' | 'remote';
   activityKindForDescriptor?: (descriptor: McpToolDescriptor) => ToolActivityKind | undefined;
 }
@@ -144,6 +148,7 @@ export function buildMcpToolsWithIdentities(
         // The MCP server remains the sole authority for the complete JSON
         // Schema. Runtime only carries the declaration to the AI SDK.
         parameters: jsonSchema(inputSchema),
+        ...(options.resultOutcome ? { resultOutcome: options.resultOutcome } : {}),
         ...(provider.prepareTool
           ? {
               prepareExecution: async (args: unknown, context) => {

@@ -33,7 +33,15 @@
  * projection, or ledger logic lives here. Those arrive in later nodes.
  */
 
+import { isAssistantCard, type AssistantCard } from './assistant-card.js';
+
+import {
+  decodeGoalEventProvenance,
+  type LegacyEventWaitProvenance,
+  type GoalWaitingProvenance,
+} from './event-wait-delivery.js';
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
+import { isToolCallOutcome } from './tool-result-status.js';
 import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
 
 import {
@@ -178,6 +186,9 @@ export function isTerminalRuntimeEventStatus(value: unknown): boolean {
 // ============================================================================
 
 export interface RuntimeEventTextContent extends MessageContent {
+  /** Model-authored collapsed preview, independent of the full text. */
+  summary?: string;
+  card?: AssistantCard;
   kind: 'text';
   /** Failed response fragment retained for display, never for model replay. */
   interrupted?: true;
@@ -193,6 +204,8 @@ export interface RuntimeEventTextContent extends MessageContent {
    * current prompt or any historical user message verbatim).
    */
   steering?: true;
+  /** Host metadata replayed in place, never a user message or instruction. */
+  runtimeContextName?: string;
 }
 
 export interface RuntimeEventThinkingContent {
@@ -222,6 +235,7 @@ export interface RuntimeEventFunctionResponseContent {
   name: string;
   result: unknown;
   isError?: boolean;
+  outcome?: import('./tool-result-status.js').ToolCallOutcome;
   providerExecuted?: boolean;
   /** Raw provider result retained for provider-native replay; never rendered directly. */
   providerOutput?: unknown;
@@ -309,7 +323,13 @@ export type RuntimeInvocationRootAuthority =
   | { kind: 'user' }
   | { kind: 'context_compact' }
   | { kind: 'scheduled_task'; scheduledTaskId: string }
-  | { kind: 'goal'; goalId: string }
+  | {
+      kind: 'goal';
+      goalId: string;
+      goalWaiting?: GoalWaitingProvenance;
+      /** PR3/PR4 historical provenance; not a new execution authority. */
+      eventWait?: LegacyEventWaitProvenance;
+    }
   | { kind: 'agent_graph_supervisor_wake'; wakeId: string; attemptId: string }
   | { kind: 'legacy_automation'; legacyAutomationId: string };
 
@@ -631,7 +651,10 @@ export interface RuntimeEventRefs {
   sourceRuntimeEventHighWater?: number;
 }
 
-/** Tool-owned contract for deciding what a later recovery phase may do. */
+/** Current tools only choose how to report an unknown result; neither mode retries an effect. */
+export type ToolOutcomeRecoveryMode = 'never_auto_retry' | 'outcome_unknown';
+
+/** Persisted dispatch metadata, including legacy modes; never authorizes recovery by itself. */
 export type ToolRecoveryMode =
   | 'replay_safe'
   | 'idempotent'
@@ -731,6 +754,8 @@ const RUNTIME_EVENT_SHAPE = defineObjectShape<RuntimeEvent>()(
 const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   ['kind', 'text'],
   [
+    'summary',
+    'card',
     'displayText',
     'interrupted',
     'origin',
@@ -739,6 +764,7 @@ const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
     'quotes',
     'inlineReferences',
     'steering',
+    'runtimeContextName',
     'providerOptions',
   ],
 );
@@ -752,7 +778,7 @@ const FUNCTION_CALL_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionCallCo
 );
 const FUNCTION_RESPONSE_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionResponseContent>()(
   ['kind', 'id', 'name', 'result'],
-  ['isError', 'providerExecuted', 'providerOutput', 'modelProjection'],
+  ['isError', 'outcome', 'providerExecuted', 'providerOutput', 'modelProjection'],
 );
 const ERROR_CONTENT_SHAPE = defineObjectShape<RuntimeEventErrorContent>()(
   ['kind', 'message'],
@@ -851,7 +877,7 @@ const INVOCATION_ROOT_SHAPES = {
   >()(['kind', 'scheduledTaskId'], []),
   goal: defineObjectShape<Extract<RuntimeInvocationRootAuthority, { kind: 'goal' }>>()(
     ['kind', 'goalId'],
-    [],
+    ['goalWaiting', 'eventWait'],
   ),
   agent_graph_supervisor_wake: defineObjectShape<
     Extract<RuntimeInvocationRootAuthority, { kind: 'agent_graph_supervisor_wake' }>
@@ -1036,10 +1062,16 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
       content: {
         kind: 'text',
         ...normalizeMessageContent(value.content as unknown as MessageContent),
+        ...(value.content.interrupted === true ? { interrupted: true as const } : {}),
+        ...(value.content.summary !== undefined ? { summary: value.content.summary } : {}),
+        ...(value.content.card !== undefined ? { card: value.content.card } : {}),
         ...(value.content.origin !== undefined
           ? { origin: decodeTurnOrigin(value.content.origin) }
           : {}),
         ...(value.content.steering === true ? { steering: true as const } : {}),
+        ...(value.content.runtimeContextName !== undefined
+          ? { runtimeContextName: value.content.runtimeContextName }
+          : {}),
       },
     } as unknown as RuntimeEvent;
   }
@@ -1066,8 +1098,13 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
     case 'text':
       if (
         !hasExactShape(value, TEXT_CONTENT_SHAPE) ||
+        (value.summary !== undefined && typeof value.summary !== 'string') ||
+        (value.card !== undefined && !isAssistantCard(value.card)) ||
         (value.origin !== undefined && !isTurnOrigin(value.origin)) ||
         (value.steering !== undefined && value.steering !== true) ||
+        (value.runtimeContextName !== undefined &&
+          (typeof value.runtimeContextName !== 'string' ||
+            value.runtimeContextName.length === 0)) ||
         (value.interrupted !== undefined && value.interrupted !== true) ||
         (value.providerOptions !== undefined && !isRecord(value.providerOptions))
       ) {
@@ -1108,6 +1145,9 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         typeof value.name === 'string' &&
         Object.hasOwn(value, 'result') &&
         (value.isError === undefined || typeof value.isError === 'boolean') &&
+        (value.outcome === undefined ||
+          (isToolCallOutcome(value.outcome) &&
+            (value.outcome !== 'success') === (value.isError === true))) &&
         (value.providerExecuted === undefined || typeof value.providerExecuted === 'boolean') &&
         (value.modelProjection === undefined ||
           decodesDurableToolResultProjection(value.modelProjection))
@@ -1225,7 +1265,11 @@ function isRuntimeInvocationRootAuthority(value: unknown): value is RuntimeInvoc
         isNonEmptyString(value.scheduledTaskId)
       );
     case 'goal':
-      return hasExactShape(value, INVOCATION_ROOT_SHAPES.goal) && isNonEmptyString(value.goalId);
+      return (
+        hasExactShape(value, INVOCATION_ROOT_SHAPES.goal) &&
+        isNonEmptyString(value.goalId) &&
+        isGoalEventProvenance(value)
+      );
     case 'agent_graph_supervisor_wake':
       return (
         hasExactShape(value, INVOCATION_ROOT_SHAPES.agent_graph_supervisor_wake) &&
@@ -1629,4 +1673,13 @@ let __runtimeEventSeq = 0;
 export function createRuntimeEventId(prefix = 'rt-event'): string {
   __runtimeEventSeq += 1;
   return `${prefix}_${Date.now().toString(36)}_${__runtimeEventSeq.toString(36)}`;
+}
+
+function isGoalEventProvenance(value: { goalWaiting?: unknown; eventWait?: unknown }): boolean {
+  try {
+    decodeGoalEventProvenance(value);
+    return true;
+  } catch {
+    return false;
+  }
 }

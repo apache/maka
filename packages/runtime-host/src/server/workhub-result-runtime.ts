@@ -26,7 +26,6 @@ import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { isSessionNotFoundError, type ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import type { RootTurnCoordinator } from './root-turn-coordinator.js';
 import type { HostMessageCoordinator } from './message-coordinator.js';
-import type { HostInteractionCoordinator } from './interaction-coordinator.js';
 import type { SessionAdmissionGate, SessionAdmissionLease } from './session-admission-gate.js';
 import { projectSessionInteractions } from './interaction-projection.js';
 import {
@@ -38,7 +37,6 @@ export function createWorkHubResultRuntime(options: {
   stores: ExecutionStoresWriter<'interactive'>;
   executions: RootTurnCoordinator;
   messages: HostMessageCoordinator;
-  interactions: HostInteractionCoordinator;
   admission: SessionAdmissionGate;
   readTurnResult(sessionId: string, turnId: string): Promise<string>;
   acquireResidency(): { release(): void };
@@ -136,7 +134,7 @@ export function createWorkHubResultRuntime(options: {
               .join(','),
           status: 'waiting_for_user',
           result:
-            'The delegated task needs user input. Questions may be presented in WorkHub with WorkHubResult; approvals must be handled at the original task.',
+            'The delegated task needs user input. This existing execution is waiting for an interaction in the original task. Handle it there before sending another instruction.',
           details: requests.map((p) => ({ interactionId: p.interactionId, request: p.request })),
           sharedTurn,
         };
@@ -190,23 +188,20 @@ export function createWorkHubResultRuntime(options: {
     acquireResidency: options.acquireResidency,
     onError: options.onError,
   });
-  const relayWatchers = new Map<string, Set<() => void>>();
   function notify(sessionId: string): void {
     coordinator.notify(sessionId);
-    for (const wake of relayWatchers.get(sessionId) ?? []) wake();
   }
   const parameters = z
     .object({
       actionId: z.string().min(1),
-      operation: z.enum(['read', 'ask_question']).default('read'),
-      interactionId: z.string().optional(),
+      operation: z.literal('read').default('read'),
       offset: z.number().int().nonnegative().default(0),
     })
     .strict();
   const tool: MakaTool<z.infer<typeof parameters>> = {
     name: 'WorkHubResult',
     description:
-      'Read a delegated task result in pages, or present its exact pending question to the user here and forward their actual answer. Use actionId from a Host result notification. Never use this tool to approve permissions. The read operation returns Unicode character offsets.',
+      'Read a delegated task result in pages. For missing information, ask in WorkHub and send the answer to the target as a subsequent instruction. Use actionId from a Host result notification. Never use this tool to approve permissions. The read operation returns Unicode character offsets.',
     parameters,
     categoryHint: 'read',
     recoveryMode: 'never_auto_retry',
@@ -241,103 +236,6 @@ export function createWorkHubResultRuntime(options: {
           nextOffset: end < chars.length ? end : null,
         };
       }
-      if (!input.interactionId || !ctx.askUserQuestion)
-        throw new Error('A pending question and interactive WorkHub are required');
-      const request = await admission.run(assignment.targetSessionId, async () =>
-        (await pending(assignment.targetSessionId)).find(
-          (p) => p.interactionId === input.interactionId && p.turnId === observation.turnId,
-        ),
-      );
-      if (!request || request.request.kind !== 'question')
-        throw new Error('Only pending user questions can be relayed');
-      const relayState: { closed: boolean; status: 'question_settled_in_target' | 'obsolete' } = {
-        closed: false,
-        status: 'obsolete',
-      };
-      let checking = false;
-      const checkOriginal = () => {
-        if (checking || relayState.closed) return;
-        checking = true;
-        void admission
-          .run(assignment.targetSessionId, async () => ({
-            active: await isActive(assignment),
-            questionPending: (await pending(assignment.targetSessionId)).some(
-              (item) => item.interactionId === request.interactionId,
-            ),
-          }))
-          .then(async ({ active, questionPending }) => {
-            if (active && questionPending) return;
-            relayState.status = active ? 'question_settled_in_target' : 'obsolete';
-            relayState.closed = true;
-            if (!(await options.interactions.closeRelayedQuestion(ctx.turnId, ctx.toolCallId)))
-              relayState.closed = false;
-          })
-          .catch((error) => {
-            relayState.closed = false;
-            try {
-              options.onError(error);
-            } catch {
-              // The relay watcher must not leave an unhandled timer rejection.
-            }
-          })
-          .finally(() => {
-            checking = false;
-          });
-      };
-      let watchers = relayWatchers.get(assignment.targetSessionId);
-      if (!watchers) {
-        watchers = new Set();
-        relayWatchers.set(assignment.targetSessionId, watchers);
-      }
-      watchers.add(checkOriginal);
-      const timer = setInterval(checkOriginal, 5000);
-      timer.unref();
-      let answer: Awaited<ReturnType<NonNullable<typeof ctx.askUserQuestion>>>;
-      try {
-        answer = await ctx.askUserQuestion(
-          request.request.questions.map((q) => ({
-            question: q.question,
-            options: q.options.map((o) => ({ ...o })),
-          })),
-        );
-      } catch (error) {
-        if (relayState.closed)
-          return {
-            status: relayState.status,
-            targetSessionId: assignment.targetSessionId,
-            message:
-              relayState.status === 'question_settled_in_target'
-                ? 'The original task question has settled. Wait for the automatic task result; do not ask again.'
-                : 'The delegated task is no longer active.',
-          };
-        throw error;
-      } finally {
-        clearInterval(timer);
-        watchers.delete(checkOriginal);
-        if (watchers.size === 0) relayWatchers.delete(assignment.targetSessionId);
-      }
-      ctx.abortSignal.throwIfAborted();
-      // Recheck the original delegation after the human responds. A late answer
-      // must not revive a cancelled/replaced task or answer another interaction.
-      const outcome = await admission.runMany(
-        [WORKHUB_COORDINATION_SESSION_ID, assignment.targetSessionId],
-        async (lease) => {
-          const current = await inspectLocked(assignment, lease);
-          if (!current || current.turnId !== request.turnId) return undefined;
-          return options.interactions.answerDelegatedQuestion(
-            {
-              sessionId: assignment.targetSessionId,
-              interactionId: request.interactionId,
-              answer: { kind: 'question', answers: answer.answers.map((a) => a.answer) },
-            },
-            lease,
-          );
-        },
-      );
-      if (!outcome) return { status: 'obsolete' };
-      if (!outcome.ok) throw new Error(outcome.error.message);
-      notify(assignment.targetSessionId);
-      return { status: outcome.result.status, targetSessionId: assignment.targetSessionId };
     },
   };
   // Exposed for the archive guard: the receipt read needs the same observation

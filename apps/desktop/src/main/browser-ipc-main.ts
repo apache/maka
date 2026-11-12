@@ -99,7 +99,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const owner = ownerForSession(sessionId);
     if (!owner || !browserParentForRenderer(owner)) return false;
     const ref = parseDesktopSessionResourceKey(sessionId);
-    return isWorkHubCoordinationSessionId(ref.sessionId) && deps.isHostActive(ref);
+    return deps.isHostActive(ref);
   };
   const revokeHiddenActions = (): void => {
     for (const sessionId of views.sessionIds()) views.get(sessionId)?.refreshRendering();

@@ -154,7 +154,7 @@ export interface TraceToolStep {
   toolName: string;
   toolCallId?: string;
   operationId?: string;
-  status: 'completed' | 'failed' | 'in_flight';
+  status: 'completed' | 'failed' | 'interrupted' | 'in_flight';
   /**
    * What the dispatch declared it would be safe to do on resume. Present on
    * normal executions too — it is a policy, not evidence that anything was
@@ -538,7 +538,10 @@ function isToolStep(value: Record<string, unknown>): boolean {
     isOptionalNonnegativeNumber(value.endedAt) &&
     isOptionalNonnegativeNumber(value.durationMs) &&
     [value.toolCallId, value.operationId, value.recoveryPolicy].every(isOptionalString) &&
-    (value.status === 'completed' || value.status === 'failed' || value.status === 'in_flight') &&
+    (value.status === 'completed' ||
+      value.status === 'failed' ||
+      value.status === 'interrupted' ||
+      value.status === 'in_flight') &&
     (value.recovered === undefined || isToolRecovery(value.recovered))
   );
 }

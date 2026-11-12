@@ -870,7 +870,7 @@ export function applyMakaSessionEventToTranscript(
       }
       if (tool) {
         if (tool.suppressed) unsuppressToolAtTail(state, tool);
-        tool.callStatus = toolResultActivityStatus(event.isError, event.content);
+        tool.callStatus = toolResultActivityStatus(event.isError, event.content, event.outcome);
         if (shellRun) {
           if (tool.toolName === 'Bash') {
             applyShellRunResult(tool, shellRun);
@@ -898,7 +898,7 @@ export function applyMakaSessionEventToTranscript(
           ...(!event.contentOmitted ? { result: event.content } : {}),
           resultVersion: event.contentOmitted ? 0 : 1,
           durationMs: event.durationMs,
-          callStatus: toolResultActivityStatus(event.isError, event.content),
+          callStatus: toolResultActivityStatus(event.isError, event.content, event.outcome),
           expanded: state.expandAllTools,
         });
       }
@@ -1067,14 +1067,22 @@ function storedMessagesToTranscriptEntries(
   messages: readonly StoredMessage[],
 ): MakaPiTranscriptEntry[] {
   const entries: MakaPiTranscriptEntry[] = [];
-  const resultsByToolUseId = new Map(
-    messages
-      .filter(
-        (message): message is Extract<StoredMessage, { type: 'tool_result' }> =>
-          message.type === 'tool_result',
-      )
-      .map((message) => [message.toolUseId, message]),
-  );
+  const latestCallsByUseId = new Map<string, Extract<StoredMessage, { type: 'tool_call' }>>();
+  const resultsByCall = new Map<
+    Extract<StoredMessage, { type: 'tool_call' }>,
+    Extract<StoredMessage, { type: 'tool_result' }>
+  >();
+  // Append order bounds an opaque ID's ownership: a result belongs to the latest
+  // preceding call, and a later call with that ID starts a new interval.
+  for (const message of messages) {
+    if (message.type === 'tool_call') {
+      latestCallsByUseId.set(message.id, message);
+      continue;
+    }
+    if (message.type !== 'tool_result') continue;
+    const call = latestCallsByUseId.get(message.toolUseId);
+    if (call) resultsByCall.set(call, message);
+  }
   const turnStatusById = new Map(
     deriveTurnRecords(messages).map((turn) => [turn.turnId, turn.status]),
   );
@@ -1112,7 +1120,7 @@ function storedMessagesToTranscriptEntries(
         entries.push(
           storedToolToTranscriptEntry(
             message,
-            resultsByToolUseId.get(message.id),
+            resultsByCall.get(message),
             turnStatusById.get(message.turnId),
           ),
         );
@@ -1149,7 +1157,7 @@ function storedToolToTranscriptEntry(
     resultVersion: result ? 1 : 0,
     ...(result?.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
     callStatus: result
-      ? toolResultActivityStatus(result.isError, result.content)
+      ? toolResultActivityStatus(result.isError, result.content, result.outcome)
       : unfinishedToolActivityStatus(turnStatus),
     expanded: false,
   };

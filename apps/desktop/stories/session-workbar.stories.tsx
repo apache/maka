@@ -888,6 +888,8 @@ function bridge(options: {
   popupMenu?: WorkbarServices['popupMenu'];
   /** Make `browser.navigate` reject, so a valid address surfaces the navigation-failed toast. */
   browserNavigateFails?: boolean;
+  /** Make `browser.reload` reject, so the toolbar shows the action-failed toast. */
+  browserReloadFails?: boolean;
   /** The git-review read result the 变更 panel receives (empty / source error / truncated / edge diffs). */
   review?: GitReviewReadResult;
   /** Make `review.read` reject, so the panel shows its load-error banner. */
@@ -984,7 +986,9 @@ function bridge(options: {
       },
       back: async () => undefined,
       forward: async () => undefined,
-      reload: async () => undefined,
+      reload: async () => {
+        if (options.browserReloadFails) throw new Error('reload failed');
+      },
       stop: async () => undefined,
       close: async () => undefined,
       getState: async () => browserState,
@@ -1843,6 +1847,18 @@ export const BrowserNavigationFailed: Story = {
   },
 };
 
+// Real path: session → Browser → reload; a rejected Desktop action leaves the
+// page visible and reports a localized failure through the existing toast.
+export const BrowserToolbarActionFailed: Story = {
+  decorators: [bridge({ browserState: LOADED_BROWSER_STATE, browserReloadFails: true })],
+  render: () => <Workbar tab="browser" />,
+  play: async ({ canvasElement }) => {
+    const reload = await within(canvasElement).findByRole('button', { name: '刷新页面' });
+    await userEvent.click(reload);
+    await within(document.body).findByText('浏览器操作失败');
+  },
+};
+
 // Real path: 任务工作栏 → 文件, on a session whose agent wrote artifacts. The
 // count in the tab is the pane's own filtered total, reported upward.
 // The pane's empty state renders the same EmptyState as TraceEmpty below, so it
@@ -2414,7 +2430,7 @@ export const SideChatAtColumnFloor: Story = {
 
     // Written here rather than in the fixture: the fixture's default model is
     // shared by every other story.
-    const label = companion.querySelector<HTMLElement>('.maka-composer-model-chip-text');
+    const label = companion.querySelector<HTMLElement>('.maka-composer-model-label');
     if (!label) throw new Error('side chat model chip is missing');
     label.textContent = 'Nemotron 3 Ultra Long Context Model';
 

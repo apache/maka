@@ -84,4 +84,24 @@ describe('AppShell form interaction response', () => {
     assert.equal(interactions['session-1']?.[0]?.requestId, 'form-1');
     assert.equal(errors, 1);
   });
+
+  it('propagates a late user-question failure after switching sessions', async () => {
+    const deps = createActionsDeps();
+    deps.activeIdRef.current = 'session-1';
+    const actions = createChatActions({
+      ...deps,
+      services: {
+        ...deps.services,
+        respondToUserQuestion: async () => {
+          deps.activeIdRef.current = 'session-2';
+          throw new Error('Host unavailable');
+        },
+      },
+    });
+
+    await assert.rejects(
+      actions.respondToUserQuestion({ requestId: 'question-1' } as never),
+      /Host unavailable/,
+    );
+  });
 });

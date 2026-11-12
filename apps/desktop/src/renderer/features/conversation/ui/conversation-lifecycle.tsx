@@ -107,6 +107,12 @@ export function ConversationLifecycle(props: {
   useConversationObservation({
     services: services.observation, uiLocale, toastApi,
     activeId: requested?.localState !== 'pending' ? requested?.id : undefined,
+    prepareDisplay: sessionId => requested?.executorId && !requested.shared &&
+      !services.sessions.readCachedExecutorState?.(sessionId)
+        ? services.sessions.getExecutorState?.(sessionId) : undefined,
+    initialTranscriptTurnId: props.searchTarget?.sessionId === requestedId
+      ? props.searchTarget?.turnId
+      : requestedId ? ui.transcriptReadingAnchorBySessionRef.current[requestedId]?.turnId : undefined,
     observationAuthorityRevision: authority.current.generation,
     activeIdRef, transcriptRangeRef, observationRef: workspace.observationRef,
     handleEvent: handlers.handleEvent,

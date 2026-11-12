@@ -27,8 +27,10 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use crate::acl_ledger::{
-        LEDGER_VERSION, LaunchFailure, Ledger, LedgerRoot, collect_roots, recover_stale,
-        with_acl_grants, write_ledger,
+        LEDGER_VERSION, LaunchFailure, Ledger, LedgerRoot, collect_roots,
+        partition_non_following_read_root_with_limit,
+        partition_non_following_read_root_with_limits, recover_stale, with_acl_grants,
+        write_ledger,
     };
     use crate::protocol::{LaunchRequest, NetworkMode};
 
@@ -338,6 +340,7 @@ mod tests {
             network: NetworkMode::Restricted,
             environment: BTreeMap::new(),
             timeout_ms: None,
+            non_following_read_root: None,
         }
     }
 
@@ -413,6 +416,182 @@ mod tests {
         .expect("exact root skips tree scan");
         assert_eq!(roots.len(), 1);
         assert!(!roots[0].read_recursive);
+    }
+
+    #[test]
+    fn clean_non_following_tree_compresses_to_one_recursive_root() {
+        let fixture = Fixture::new("non-following-clean");
+        let root = fixture.target_str();
+        let mut request = launch_request(vec![root.clone()], Vec::new(), Vec::new(), Vec::new());
+        request.non_following_read_root = Some(root.clone());
+
+        let roots = collect_roots(&request).expect("clean tree admits");
+
+        assert_eq!(roots.len(), 1);
+        assert!(roots[0].path.eq_ignore_ascii_case(&root));
+        assert!(roots[0].read_recursive);
+    }
+
+    #[test]
+    fn non_following_read_root_prunes_nested_reparse_points() {
+        let fixture = Fixture::new("non-following-junction");
+        let base = fixture.target.parent().expect("fixture base");
+        let outside = base.join("outside");
+        let junction_parent = fixture.target.join("node_modules").join("@scope");
+        let junction = junction_parent.join("dependency");
+        fs::create_dir_all(&outside).expect("create outside target");
+        fs::write(outside.join("secret.ts"), "secret").expect("seed outside target");
+        fs::create_dir_all(&junction_parent).expect("create junction parent");
+        create_junction(&junction, &outside);
+        let target = fixture.target_str();
+        let raw_request = launch_request(vec![target.clone()], Vec::new(), Vec::new(), Vec::new());
+        let raw_error =
+            collect_roots(&raw_request).expect_err("raw recursive root must stay strict");
+        assert!(
+            raw_error.contains("reparse point"),
+            "unexpected raw error: {raw_error}"
+        );
+        let mut request = raw_request;
+        request.non_following_read_root = Some(target.clone());
+
+        let roots = collect_roots(&request).expect("partition non-following read root");
+
+        let project = roots
+            .iter()
+            .find(|root| root.path.eq_ignore_ascii_case(&target))
+            .expect("project exact root");
+        assert!(project.read);
+        assert!(!project.read_recursive);
+        let child = fixture.target.join("child").to_string_lossy().into_owned();
+        assert!(
+            roots
+                .iter()
+                .any(|root| root.path.eq_ignore_ascii_case(&child) && root.read_recursive)
+        );
+        for exact_directory in [fixture.target.join("node_modules"), junction_parent] {
+            let exact_directory = exact_directory.to_string_lossy();
+            assert!(roots.iter().any(|root| {
+                root.path.eq_ignore_ascii_case(&exact_directory) && !root.read_recursive
+            }));
+        }
+        let junction = junction.to_string_lossy();
+        let outside = outside.to_string_lossy();
+        assert!(!roots.iter().any(|root| {
+            root.path.eq_ignore_ascii_case(&junction) || root.path.eq_ignore_ascii_case(&outside)
+        }));
+    }
+
+    #[test]
+    fn non_following_root_itself_still_fails_closed() {
+        let fixture = Fixture::new("non-following-root-junction");
+        let base = fixture.target.parent().expect("fixture base");
+        let junction = base.join("root-junction");
+        create_junction(&junction, &fixture.target);
+        let root = junction.to_string_lossy().into_owned();
+        let mut request = launch_request(vec![root.clone()], Vec::new(), Vec::new(), Vec::new());
+        request.non_following_read_root = Some(root);
+
+        let error = collect_roots(&request).expect_err("reparse root must fail closed");
+
+        assert!(error.contains("reparse point"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn non_following_read_root_still_rejects_multi_link_files() {
+        let fixture = Fixture::new("non-following-hardlink");
+        let outside = fixture
+            .target
+            .parent()
+            .expect("fixture base")
+            .join("outside-hardlink.txt");
+        fs::write(&outside, "outside payload").expect("seed outside file");
+        fs::hard_link(&outside, fixture.target.join("child").join("linked.txt"))
+            .expect("create hard link into tree");
+        let root = fixture.target_str();
+        let mut request = launch_request(vec![root.clone()], Vec::new(), Vec::new(), Vec::new());
+        request.non_following_read_root = Some(root);
+
+        let error = collect_roots(&request).expect_err("multi-link file must fail closed");
+
+        assert!(error.contains("multi-link"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn non_following_read_root_bounds_physical_grant_expansion() {
+        let fixture = Fixture::new("non-following-limit");
+        let base = fixture.target.parent().expect("fixture base");
+        let outside = base.join("limit-outside");
+        fs::create_dir_all(&outside).expect("create outside target");
+        for name in ["safe-a", "safe-b"] {
+            fs::create_dir_all(fixture.target.join(name)).expect("create safe directory");
+        }
+        create_junction(&fixture.target.join("junction"), &outside);
+
+        let error = partition_non_following_read_root_with_limit(&fixture.target, 2)
+            .expect_err("expanded grant plan must be bounded");
+
+        assert!(
+            error.contains("safe limit of 2"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn non_following_read_root_bounds_scan_work_before_planning_finishes() {
+        let fixture = Fixture::new("non-following-scan-limit");
+
+        let roots = partition_non_following_read_root_with_limits(&fixture.target, 4_096, 2, 256)
+            .expect("an exact scan-entry budget must admit the clean fixture");
+        assert_eq!(roots.len(), 1);
+
+        let error = partition_non_following_read_root_with_limits(&fixture.target, 4_096, 1, 256)
+            .expect_err("filesystem scan work must be bounded independently of final grants");
+
+        assert!(
+            error.contains("safe scan limit of 1 filesystem entries"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn non_following_read_root_enforces_zero_grant_limit() {
+        let fixture = Fixture::new("non-following-zero-grants");
+
+        let error = partition_non_following_read_root_with_limit(&fixture.target, 0)
+            .expect_err("even one clean recursive root must respect the grant limit");
+
+        assert!(
+            error.contains("safe limit of 0"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn non_following_read_root_bounds_directory_depth() {
+        let fixture = Fixture::new("non-following-depth-limit");
+        fs::create_dir_all(fixture.target.join("nested")).expect("create nested directory");
+
+        let error = partition_non_following_read_root_with_limits(&fixture.target, 4_096, 100, 0)
+            .expect_err("nested directories must respect the independent depth limit");
+
+        assert!(
+            error.contains("safe nested-directory limit of 0 below the root"),
+            "unexpected error: {error}"
+        );
+    }
+
+    fn create_junction(path: &Path, target: &Path) {
+        let output = Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(path)
+            .arg(target)
+            .output()
+            .expect("run mklink");
+        assert!(
+            output.status.success(),
+            "mklink /J failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn shared_ledger_dir() -> PathBuf {

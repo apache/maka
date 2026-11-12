@@ -45,6 +45,33 @@ type PersistedToolInvocationRecord = Parameters<
 //   - 5 models (glm / claude / gpt families) → 模型统计
 //   - 6 tools with 2 failures → 工具统计 (exercises the error column)
 //   - a dozen activity rows mixing model + tool + success/error → 活动记录
+//
+// The handcrafted turns are padded to exactly 409 activity rows — the
+// unpaginated mount the #4677 tab-entry measurement weighs. Activity rows are
+// model rows plus tool rows, so the pad is 394 zero-tool turns (one token_usage
+// each, shared 132/131/131 across the three sessions): 394 + 5 handcrafted
+// model turns = 399 model rows, plus the 10 handcrafted tool rows = 409.
+// Synthetic turns reuse the handcrafted generators and stay on the fixed clock
+// minus a minutes offset, so every table stays deterministic.
+
+/**
+ * One synthetic turn contributes exactly one activity row (its token_usage),
+ * so the pad's arithmetic stays checkable: share out the turns across the
+ * three seeded sessions, models follow their session's connection.
+ */
+function syntheticUsageTurns(count: number, offset: number, model: string): UsageTurnSpec[] {
+  return Array.from({ length: count }, (_, index) => ({
+    turnId: `usage-synthetic-${String(offset + index).padStart(3, '0')}`,
+    minutesAgo: 60 + offset + index,
+    model,
+    usage: {
+      input: 1200 + ((offset + index) % 13) * 320,
+      output: 180 + ((offset + index) % 7) * 90,
+      costUsd: 0.0021,
+    },
+    tools: [],
+  }));
+}
 
 interface UsageTurnSpec {
   turnId: string;
@@ -173,6 +200,7 @@ export function usageStatsSessions(
             { id: 'usage-glm-2-write', toolName: 'Write', displayName: '写入文件', durationMs: 1_460, isError: true },
           ],
         }),
+        ...syntheticUsageTurns(132, 0, 'glm-5.1').flatMap((spec) => usageTurnMessages(now, spec)),
       ],
     },
     {
@@ -203,6 +231,7 @@ export function usageStatsSessions(
             { id: 'usage-claude-2-bash', toolName: 'Bash', displayName: '构建 renderer', durationMs: 5_200 },
           ],
         }),
+        ...syntheticUsageTurns(131, 132, 'claude-sonnet-4.5').flatMap((spec) => usageTurnMessages(now, spec)),
       ],
     },
     {
@@ -224,6 +253,7 @@ export function usageStatsSessions(
             { id: 'usage-gpt-1-grep', toolName: 'Grep', displayName: '扫描目录', durationMs: 720, isError: true },
           ],
         }),
+        ...syntheticUsageTurns(131, 263, 'gpt-5.1-mini').flatMap((spec) => usageTurnMessages(now, spec)),
       ],
     },
   ];

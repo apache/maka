@@ -24,7 +24,9 @@ import {
   createComposerStagingCommands,
   createComposerSubmissionCommands,
   type ComposerSubmissionServices,
+  type ConversationServices,
 } from '../../renderer/features/conversation/index.js';
+import { ComposerStagingFixture } from './composer-staging-fixture.js';
 
 type ProviderProps = Parameters<typeof ComposerSubmissionProvider<{ sessionId: string | undefined }>>[0];
 
@@ -89,19 +91,25 @@ export function stubNewTaskSubmission(
 /** Mounts the Composer submission owner the way AppShell does, over inert ports. */
 export function withComposerSubmission(children: ReactNode, options: {
   services?: ComposerSubmissionServices;
+  conversationServices?: ConversationServices;
   props?: Partial<ProviderProps>;
 } = {}) {
+  const staging = options.props?.staging ?? createComposerStagingCommands();
   return createElement(ComposerSubmissionServicesProvider, {
     services: options.services ?? stubSubmissionServices(),
+    children: createElement(ComposerStagingFixture, {
+      draftKey: 'staging', commands: staging, conversationServices: options.conversationServices,
     children: createElement(ComposerSubmissionProvider<{ sessionId: string | undefined }>, {
       commands: createComposerSubmissionCommands(),
-      staging: createComposerStagingCommands(),
+      staging,
       shell: stubSubmissionShell(),
       newTask: stubNewTaskSubmission(),
       sharedSessionActive: false,
       ownerSessionId: undefined,
+      recoveryEnabled: true,
       ...options.props,
       children,
+    }),
     }),
   });
 }

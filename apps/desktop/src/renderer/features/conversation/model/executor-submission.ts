@@ -17,12 +17,12 @@
  * under the License.
  */
 
-import type { ExecutorCatalogEntry, ExecutorSelection } from '@maka/core/executor-catalog';
+import { canExecuteExistingConversation, type ExecutorCatalogEntry, type ExecutorSelection } from '@maka/core/executor-catalog';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { NewChatModel } from './shell-chat-model-selection.js';
 import type { SessionSummary } from '@maka/core/session';
 
@@ -47,7 +47,7 @@ export interface ExecutorSubmission {
     Partial<Pick<ExecutorCatalogEntry, 'models' | 'modes'>>;
 }
 
-const SUBMISSION_COPY = {
+const SUBMISSION_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<{ attachments: string; unavailable: string; invalid: string }>()({
   en: {
     attachments: 'Remove unsupported attachments or select Maka. Your draft is preserved.',
     unavailable: 'Check External Agents settings or start a new task.',
@@ -63,17 +63,28 @@ const SUBMISSION_COPY = {
     unavailable: '請檢查外部 Agent 設定，或建立新任務。',
     invalid: '所選 Agent 設定已失效，請重新選擇。',
   },
-} satisfies UiCatalog<{ attachments: string; unavailable: string; invalid: string }>;
+}));
+
+/** Local delivery may queue behind another client's restore; Host admission remains authoritative. */
+export function canSubmitToExecutor(readiness: ExecutorCatalogEntry['readiness'] | undefined, existingConversation: boolean): boolean {
+  return existingConversation
+    ? canExecuteExistingConversation(readiness) || readiness === 'restoring'
+    : readiness === 'ready';
+}
 
 export function executorSubmissionError(
   input: ExecutorSubmission,
   attachments: number,
   locale: UiLocale,
+  existingConversation = false,
 ): string | undefined {
   if (!input.executorSelection) return;
   const entry = input.executorEntry;
-  if (!entry || entry.readiness !== 'ready') return SUBMISSION_COPY[locale].unavailable;
+  if (!entry || !canSubmitToExecutor(entry.readiness, existingConversation))
+    return SUBMISSION_COPY[locale].unavailable;
   if (attachments && !entry.supportsAttachments) return SUBMISSION_COPY[locale].attachments;
+  // Disconnected catalogs can be empty. Execution validates the saved configuration after restoration.
+  if (entry.readiness !== 'ready') return;
   const { model, mode } = input.executorSelection.configuration;
   if ((model && entry.models && !entry.models.some(candidate => candidate.id === model)) ||
     (mode && !entry.modes?.some(candidate => candidate.id === mode)))
@@ -104,8 +115,9 @@ export function newTaskConfiguration(
 export function canSubmitExecutor(
   input: ExecutorSubmission & { uiLocale: UiLocale; toastApi: { error(message: string): void } },
   attachments: number,
+  existingConversation = false,
 ): boolean {
-  const error = executorSubmissionError(input, attachments, input.uiLocale);
+  const error = executorSubmissionError(input, attachments, input.uiLocale, existingConversation);
   if (error) input.toastApi.error(error);
   return !error;
 }

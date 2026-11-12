@@ -243,6 +243,7 @@ export interface WorkHubCoordinationSelectAndDelegateInput {
   readonly candidateSetId: string;
   readonly candidateRefs: readonly string[];
   readonly delegationText: string;
+  readonly create?: WorkHubCoordinationCreateContext;
 }
 
 export type WorkHubCoordinationSelectAndDelegateResult =
@@ -432,13 +433,12 @@ export function decodeWorkHubCoordinationCandidatesResult(
 export function decodeWorkHubCoordinationSelectAndDelegateInput(
   value: unknown,
 ): WorkHubCoordinationSelectAndDelegateInput {
-  const input = requireExactRecord(value, 'WorkHub selection input', [
-    'turnId',
-    'actionId',
-    'candidateSetId',
-    'candidateRefs',
-    'delegationText',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'WorkHub selection input',
+    ['turnId', 'actionId', 'candidateSetId', 'candidateRefs', 'delegationText'],
+    ['create'],
+  );
   if (
     !Array.isArray(input.candidateRefs) ||
     input.candidateRefs.length < 1 ||
@@ -452,6 +452,9 @@ export function decodeWorkHubCoordinationSelectAndDelegateInput(
   if (new Set(candidateRefs).size !== candidateRefs.length)
     throw invalidProtocolFrame('Duplicate WorkHub selection candidates');
   return {
+    ...(input.create !== undefined
+      ? { create: decodeWorkHubCoordinationCreateContext(input.create) }
+      : {}),
     turnId: requireEntityId(input.turnId, 'WorkHub Coordination Turn id'),
     actionId: requireEntityId(input.actionId, 'WorkHub action id'),
     candidateSetId: requireUtf8String(input.candidateSetId, 'WorkHub candidate set', 256),

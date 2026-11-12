@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { decodeEventWaitConditionSpec, type EventWaitConditionSpec } from './event-wait.js';
 import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
 
 export const GOAL_STATUSES = [
@@ -119,12 +120,30 @@ export interface GoalCurrentExecution {
   readonly controlLease: GoalControlLease;
 }
 
+export interface GoalWaitingObservation extends EventWaitConditionSpec {
+  readonly waitId: string;
+  readonly sourceRunId: string;
+  readonly completionEventId: string;
+}
+
+export interface GoalWaitingContinuation {
+  readonly waitId: string;
+  readonly sourceTurnId: string;
+  readonly execution: GoalExecutionRef;
+  readonly userMessageId: string;
+  readonly resultDigest: `sha256:${string}`;
+}
+
 /** Durable continuation outbox entry for the next Goal-owned Turn. */
 export interface GoalPendingContinuation {
   readonly checkpoint: GoalCheckpoint;
   readonly controlLease: GoalControlLease;
   readonly prompt: string;
   readonly triggeringTurnId?: string;
+  readonly observation?: GoalWaitingObservation;
+  /** Raw natural-wait intent, before Host source bindings/baselines are durable. */
+  readonly observationPreparation?: 'pending';
+  readonly goalWaiting?: GoalWaitingContinuation;
 }
 
 export interface GoalAuthorityRecord {
@@ -133,6 +152,8 @@ export interface GoalAuthorityRecord {
   readonly controlLease: GoalControlLease;
   readonly currentExecution: GoalCurrentExecution | null;
   readonly pendingContinuation: GoalPendingContinuation | null;
+  /** One-time PR3/PR4 retirement accounting; never permits continuation. */
+  readonly legacyEventWaitSettlement?: GoalExecutionRef;
 }
 
 const GOAL_STATE_SHAPE = defineObjectShape<GoalState>()(
@@ -168,14 +189,14 @@ const GOAL_CURRENT_EXECUTION_SHAPE = defineObjectShape<GoalCurrentExecution>()(
 );
 const GOAL_PENDING_CONTINUATION_SHAPE = defineObjectShape<GoalPendingContinuation>()(
   ['checkpoint', 'controlLease', 'prompt'],
-  ['triggeringTurnId'],
+  ['triggeringTurnId', 'observation', 'observationPreparation', 'goalWaiting'],
 );
 const GOAL_AUTHORITY_RECORD_SHAPE = defineObjectShape<GoalAuthorityRecord>()(
   ['schemaVersion', 'goal', 'controlLease', 'currentExecution', 'pendingContinuation'],
-  [],
+  ['legacyEventWaitSettlement'],
 );
 const GOAL_AUTHORITY_RECORD_V1_SHAPE = defineObjectShape<
-  Omit<GoalAuthorityRecord, 'pendingContinuation'>
+  Omit<GoalAuthorityRecord, 'pendingContinuation' | 'legacyEventWaitSettlement'>
 >()(['schemaVersion', 'goal', 'controlLease', 'currentExecution'], []);
 const GOAL_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -198,6 +219,19 @@ export function decodeGoalAuthorityRecord(value: unknown): GoalAuthorityRecord {
     value.pendingContinuation === undefined || value.pendingContinuation === null
       ? null
       : decodeGoalPendingContinuation(value.pendingContinuation, goal, controlLease);
+  const legacyEventWaitSettlement =
+    value.legacyEventWaitSettlement === undefined
+      ? undefined
+      : decodeGoalExecutionRef(value.legacyEventWaitSettlement);
+  if (
+    legacyEventWaitSettlement &&
+    (goal.status !== 'paused' ||
+      pendingContinuation ||
+      !currentExecution ||
+      legacyEventWaitSettlement.sessionId !== goal.sessionId ||
+      legacyEventWaitSettlement.turnId !== currentExecution.execution.turnId)
+  )
+    throw new TypeError('Invalid retired Goal wait settlement');
   if (currentExecution && pendingContinuation) {
     throw new TypeError('Goal authority cannot have current and pending execution together');
   }
@@ -210,6 +244,7 @@ export function decodeGoalAuthorityRecord(value: unknown): GoalAuthorityRecord {
     controlLease,
     currentExecution,
     pendingContinuation,
+    ...(legacyEventWaitSettlement ? { legacyEventWaitSettlement } : {}),
   });
 }
 
@@ -235,11 +270,84 @@ function decodeGoalPendingContinuation(
   ) {
     throw new TypeError('Goal pending continuation does not match Goal authority');
   }
+  if (
+    (value.observation !== undefined || value.goalWaiting !== undefined) &&
+    !isGoalId(value.triggeringTurnId)
+  )
+    throw new TypeError('Goal observation requires a natural source Turn');
+  const observation =
+    value.observation === undefined ? undefined : decodeGoalWaitingObservation(value.observation);
+  const goalWaiting =
+    value.goalWaiting === undefined
+      ? undefined
+      : decodeGoalWaitingContinuation(value.goalWaiting, goal);
+  if (
+    value.observationPreparation !== undefined &&
+    (value.observationPreparation !== 'pending' || !observation || goalWaiting)
+  )
+    throw new TypeError('Invalid Goal observation preparation');
+  if (
+    goalWaiting &&
+    (!observation ||
+      observation.waitId !== goalWaiting.waitId ||
+      goalWaiting.sourceTurnId !== value.triggeringTurnId)
+  )
+    throw new TypeError('Goal observation result does not match its continuation');
   return Object.freeze({
     checkpoint,
     controlLease,
     prompt: value.prompt,
     ...(value.triggeringTurnId !== undefined ? { triggeringTurnId: value.triggeringTurnId } : {}),
+    ...(observation ? { observation } : {}),
+    ...(value.observationPreparation === 'pending'
+      ? { observationPreparation: 'pending' as const }
+      : {}),
+    ...(goalWaiting ? { goalWaiting } : {}),
+  });
+}
+
+function decodeGoalWaitingObservation(value: unknown): GoalWaitingObservation {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join() !==
+      'completionEventId,condition,deadlineAt,resource,sourceRunId,waitId' ||
+    !isGoalId(value.waitId) ||
+    !isGoalId(value.sourceRunId) ||
+    !isGoalId(value.completionEventId)
+  )
+    throw new TypeError('Invalid Goal waiting observation');
+  return Object.freeze({
+    ...decodeEventWaitConditionSpec({
+      resource: value.resource,
+      condition: value.condition,
+      deadlineAt: value.deadlineAt,
+    }),
+    waitId: value.waitId,
+    sourceRunId: value.sourceRunId,
+    completionEventId: value.completionEventId,
+  });
+}
+
+function decodeGoalWaitingContinuation(value: unknown, goal: GoalState): GoalWaitingContinuation {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join() !==
+      'execution,resultDigest,sourceTurnId,userMessageId,waitId' ||
+    !isGoalId(value.waitId) ||
+    !isGoalId(value.sourceTurnId) ||
+    !isGoalId(value.userMessageId) ||
+    typeof value.resultDigest !== 'string' ||
+    !/^sha256:[a-f0-9]{64}$/.test(value.resultDigest)
+  )
+    throw new TypeError('Invalid Goal waiting continuation');
+  const execution = decodeGoalExecutionRef(value.execution);
+  if (execution.sessionId !== goal.sessionId) throw new TypeError('Goal waiting Session mismatch');
+  return Object.freeze({
+    execution,
+    waitId: value.waitId,
+    sourceTurnId: value.sourceTurnId,
+    userMessageId: value.userMessageId,
+    resultDigest: value.resultDigest as `sha256:${string}`,
   });
 }
 

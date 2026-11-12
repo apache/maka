@@ -19,10 +19,11 @@
 
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
-import { build, resolveConfig } from 'vite';
+import { build, normalizePath, resolveConfig } from 'vite';
 
 // Exercise the actual Desktop resolution graph: isolated Slot unit tests cannot
 // detect two React Context instances created by source/dist entry-point mixing.
@@ -66,7 +67,9 @@ test('renderer build emits KaTeX fonts as CSP-compatible files', async () => {
   try {
     const entry = join(root, 'entry.js');
     const outDir = join(root, 'out');
-    await writeFile(entry, "import 'katex/dist/katex.min.css';\n");
+    const uiRequire = createRequire(join(desktop, '../../packages/ui/package.json'));
+    const katexCss = normalizePath(uiRequire.resolve('katex/dist/katex.min.css'));
+    await writeFile(entry, `import ${JSON.stringify(katexCss)};\n`);
     const config = await resolveConfig({ configFile: join(desktop, 'vite.config.ts') }, 'build');
     await build({
       configFile: false,

@@ -33,6 +33,7 @@ import {
 import {
   migrateSqliteContextOffloadDatabase,
   SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION,
+  validateSqliteContextOffloadSchema,
 } from './sqlite-context-offload-schema.js';
 import {
   CONTEXT_OFFLOAD_DATABASE_NAME,
@@ -248,6 +249,7 @@ export async function validateContextSnapshot(
         SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION
       )
         throw new Error('Unsupported context snapshot schema');
+      validateSqliteContextOffloadSchema(context);
       if (
         context.prepare('PRAGMA integrity_check').get()?.integrity_check !== 'ok' ||
         context.prepare('PRAGMA foreign_key_check').get()
