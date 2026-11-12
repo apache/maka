@@ -101,7 +101,35 @@ function suitePackage(suite, key, packages, members) {
     : suite.packages.includes(pkg.name);
 }
 
-export function createPlan({ root, changes = null, metadata = {}, revision, baseline = null }) {
+export function createPlan({
+  root,
+  changes = null,
+  metadata = {},
+  revision,
+  baseline = null,
+  worker = null,
+}) {
+  if (worker !== null) {
+    const target = workers.find((entry) => entry.id === worker);
+    if (!target) throw new Error(`Unknown CI worker: ${worker}`);
+    const reason = `manual worker validation: ${worker}`;
+    return {
+      revision,
+      baseline,
+      full: false,
+      reasons: [reason],
+      suites: Object.fromEntries(
+        target.suites.map((id) => [
+          id,
+          {
+            filter: suites[id].filter ?? 'all()',
+            reason,
+          },
+        ]),
+      ),
+      workers: [target],
+    };
+  }
   const selected = {};
   const fullReasons =
     changes === null ? ['full validation requested'] : changes.filter(sharedInput);
