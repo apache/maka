@@ -68,7 +68,7 @@ impl Scheduler {
     pub fn tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
         let mut tools = vec![ToolRegistration {
             definition: ToolDefinition { provider: None, name: "ScheduledTask".into(),
-                description: "Manage this conversation's scheduled tasks. Create saves a paused proposal requiring user approval of its exact execution in Scheduled tasks; model calls cannot grant background access. Session and agent_run use this conversation's workspace and model. The Bot may propose discovery: a fresh read-only investigation, silent unless it reports a finding. Times are Unix milliseconds; timezone is an IANA name. List returns tasks and revisions. Resume requires existing user approval.".into(),
+                description: "Manage this conversation's scheduled tasks. Create saves a paused proposal requiring user approval of its exact execution in Scheduled tasks; model calls cannot grant background access. Session and agent_run use this conversation's workspace and model. The Bot may propose discovery: a fresh investigation using approved Session permissions, silent unless it reports a finding. Times are Unix milliseconds; timezone is an IANA name. List returns tasks and revisions. Resume requires existing user approval.".into(),
                 input_schema: serde_json::to_value(schemars::schema_for!(ToolRequest<Input>)).expect("task tool schema"),
                 output_schema: None, freeform: None },
             nesting: ToolNesting::Nestable, semantics: ToolSemantics::ExclusiveStep,
@@ -76,6 +76,7 @@ impl Scheduler {
         }];
         tools.push(self.discovery_tool());
         tools.push(self.discovery_memory_tool());
+        tools.push(self.discovery_context_tool());
         tools
     }
 }
@@ -85,6 +86,7 @@ impl ToolPreparer for Scheduler {
             "ScheduledTask".into(),
             super::super::discovery::COMPLETE.into(),
             super::super::discovery::MEMORY.into(),
+            super::super::discovery::CONTEXT.into(),
         ]
     }
     fn prepare(
@@ -100,6 +102,9 @@ impl ToolPreparer for Scheduler {
         }
         if name == super::super::discovery::MEMORY {
             return self.prepare_discovery_memory(input, context, cancellation);
+        }
+        if name == super::super::discovery::CONTEXT {
+            return self.prepare_discovery_context(input, context, cancellation);
         }
         Box::pin(async move {
             if name != "ScheduledTask" || owner.is_none() {

@@ -29211,7 +29211,7 @@ export const contracts: {
                   },
                   {
                     description:
-                      'Read-only investigation in a fresh worker. The target is the current Bot.',
+                      'Investigation in a fresh worker using approved Session permissions. The target is the current Bot.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -29979,7 +29979,7 @@ export const contracts: {
                   },
                   {
                     description:
-                      'Read-only investigation in a fresh worker. The target is the current Bot.',
+                      'Investigation in a fresh worker using approved Session permissions. The target is the current Bot.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -37629,7 +37629,7 @@ export const contracts: {
                   },
                   {
                     description:
-                      'Read-only investigation in a fresh worker. The target is the current Bot.',
+                      'Investigation in a fresh worker using approved Session permissions. The target is the current Bot.',
                     type: 'object',
                     properties: {
                       kind: {

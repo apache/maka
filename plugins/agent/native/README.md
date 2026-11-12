@@ -118,7 +118,7 @@ The default composition enables `recaps`. The Session recap command reads cached
 
 The default composition enables `goals`. `/goal` or the composer’s + menu opens its panel; `/goal <objective>` starts immediately. Goals continue through the existing Session queue without an iteration limit. `CreateGoal`, `GetGoal` and `GoalStatus` work in Direct and Code Mode; the current objective, progress and budget accompany model requests, including after compaction. A model-created Goal owns its creating turn. Pause stops current work; Resume continues with the selected model and settings; Cancel targets only that Goal. Transient execution failures remain recoverable. Token budgets are optional scheduling thresholds checked between turns; missing usage is reported as incomplete rather than stopping work, and users can adjust budgets. Reads expose current usage, remaining budget and active elapsed time; completed usage stays frozen after cleanup. Goal iterations retain their original admitted Run and Host receipt identities across restart. Recovery reconciles that Run’s effects and physical cleanup; a later iteration is a new policy-authorized submission, not a physical handoff or request replay. Archived Sessions and changed execution prerequisites require user action before further execution.
 
-## Read-only discovery
+## Proactive discovery
 
 With `bot` and `scheduledTasks` enabled, the current Bot can propose a `ScheduledTask`
 with `effect: "discovery"`. As with other model-created schedules, this is a paused
@@ -129,10 +129,11 @@ target. Existing `once`, `interval` and `cron` timing, `trigger_now`, `pause` an
 An empty `intentBody` starts broad exploration of accessible material. A
 non-empty direction focuses the investigation on that topic.
 
-Each fire creates a fresh ordinary worker Session. It inherits the approved workspace
-and model but uses read-only permissions without permission requests. Its tools are
-the composition's Files read/image/glob/grep operations, Recall when enabled, `DiscoveryMemory`, and
-`DiscoveryComplete`; the coordinator's tools, MCP and shell access are not inherited.
+Each fire creates a fresh worker Session using the approved workspace, model and
+permissions. It uses the ordinary Session tool catalog and permission checks, including
+configured Shell, web and MCP tools. `DiscoveryMemory` and `DiscoveryComplete` are available
+to the worker. Previously approved read-only plans retain their original tools until
+the next user approval.
 The worker must call `DiscoveryComplete` with either
 `{"kind":"no_report","note":"What was checked"}` or
 `{"kind":"report","text":"Findings and source references"}`. This records the

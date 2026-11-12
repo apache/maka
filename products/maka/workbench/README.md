@@ -121,7 +121,7 @@ Expand **Details** for installation, authentication and model diagnostics. Nativ
 
 ## Proactive discovery
 
-Open **Proactive discovery** in the current Bot header to approve a periodic, read-only investigation. The panel shows the Bot workspace and selected model before approval; you can edit the direction and interval, pause or resume, or check once. It shows the active investigation and recent outcome, with links to the original worker conversation. Changing the source boundary requires fresh approval through the existing Scheduler.
+Open **Proactive discovery** in the current Bot header to approve a periodic investigation. The panel shows the Bot workspace, Session permissions and selected model before approval. You can edit the direction and interval, pause or resume, or check once. It shows the active investigation and recent outcome, with links to the original worker conversation. Changing the source boundary requires fresh approval through the existing Scheduler.
 
 Leave the direction blank for broad exploration, or enter a topic to focus each check.
 

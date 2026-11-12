@@ -621,10 +621,48 @@ async fn oversized_glob_result_compacts_and_resumes_the_original_run() -> TestRe
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_is_silent_read_only_and_retains_bounded_progress_after_reopen() {
+async fn discovery_uses_approved_session_tools_and_retains_progress_after_reopen() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
     f.setting("toolDiscovery", json!(true)).await;
+    let mut sessions = Vec::new();
+    for (directory, title, message) in [
+        (
+            "workspace",
+            "In-scope project discussion",
+            "Venue access requires a badge.",
+        ),
+        (
+            "other-workspace",
+            "Unrelated workspace discussion",
+            "Foreign workspace material.",
+        ),
+    ] {
+        let created = f
+            .query(
+                "create",
+                json!({
+                    "title": title, "automaticTitle": false, "labels": [],
+                    "workspace": {"kind":"directory", "path":f.rig.directory.path().join(directory)}
+                }),
+            )
+            .await;
+        let session = created["session"]["id"].as_str().unwrap();
+        f.query(
+            "send",
+            json!({
+                "sessionId": session, "message": message,
+                "backend": f.model, "delivery":"queue"
+            }),
+        )
+        .await;
+        let (mut socket, _) = next(&listener).await;
+        finish_text(&mut socket, "Fixture acknowledged.").await;
+        tokio::time::timeout(Duration::from_secs(45), f.quiescent(session))
+            .await
+            .unwrap();
+        sessions.push(session.to_owned());
+    }
     let task = f
         .create_scheduled(
             "Continuity",
@@ -635,7 +673,10 @@ async fn discovery_is_silent_read_only_and_retains_bounded_progress_after_reopen
     assert_eq!(f.detail(&task).await["task"]["intent"]["body"], "");
     f.change(&task, "trigger_now").await;
     let (mut socket, body) = next(&listener).await;
-    assert!(body.to_string().contains("read-only broad exploration"));
+    assert!(body.to_string().contains("authorized broad exploration"));
+    let prompt = body.to_string();
+    assert!(prompt.contains("+00:00") && prompt.contains("Workspace:"));
+    assert!(!prompt.contains("In-scope project discussion") && !prompt.contains("workspaceFiles"));
     let names: Vec<_> = body["tools"]
         .as_array()
         .unwrap()
@@ -643,27 +684,73 @@ async fn discovery_is_silent_read_only_and_retains_bounded_progress_after_reopen
         .map(|t| t["function"]["name"].as_str().unwrap())
         .collect();
     assert!(
-        names.contains(&"DiscoveryComplete") && names.contains(&"DiscoveryMemory"),
+        [
+            "DiscoveryComplete",
+            "DiscoveryMemory",
+            "DiscoveryContext",
+            "tool_search",
+        ]
+        .iter()
+        .all(|name| names.contains(name)),
         "{names:?}"
     );
-    assert!(!names.iter().any(|n| {
-        [
-            "SendUser",
-            "sleep",
-            "ScheduledTask",
-            "Bash",
-            "tool_search",
-            "SessionCreate",
-        ]
-        .contains(n)
-    }));
+    assert!(!names.iter().any(|n| ["SendUser", "sleep"].contains(n)));
+    tool(
+        &mut socket,
+        "tool_search",
+        json!({"query":"RecallMaterial","limit":1}),
+    )
+    .await;
+    let (mut socket, body) = next(&listener).await;
+    assert_eq!(output(&body)["activated"], json!(["RecallMaterial"]));
+    tool(&mut socket, "DiscoveryContext", json!({"action":"list"})).await;
+    let (mut socket, body) = next(&listener).await;
+    let list = output(&body);
+    let listed = list["sessions"].as_array().unwrap();
+    assert!(
+        listed.iter().any(|s| s["session_id"] == sessions[0]),
+        "{list}"
+    );
+    assert!(
+        listed.iter().all(|s| s["session_id"] != sessions[1]),
+        "{list}"
+    );
+    tool(
+        &mut socket,
+        "DiscoveryContext",
+        json!({"action":"history","session_id":sessions[0]}),
+    )
+    .await;
+    let (mut socket, body) = next(&listener).await;
+    let history = output(&body);
+    assert!(
+        history["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["text"] == "Venue access requires a badge."),
+        "{history}"
+    );
+    tool(
+        &mut socket,
+        "DiscoveryContext",
+        json!({"action":"history","session_id":sessions[1]}),
+    )
+    .await;
+    let (mut socket, body) = next(&listener).await;
+    assert!(
+        output(&body)
+            .to_string()
+            .contains("discovery_history_unavailable")
+    );
     let(mut socket,r)=memory(&listener,&mut socket,json!({"action":"checkpoint","note":{"text":"checked README; next inspect changelog","references":["README.md"]}})).await;
     assert_eq!(r["staged"], true);
     let note = "No actionable change. ".repeat(150);
+    let observation = json!({"text":"Badge pickup is a lead for later investigations.","references":["README.md"]});
     tool(
         &mut socket,
         "DiscoveryComplete",
-        json!({"kind":"no_report","note":note}),
+        json!({"kind":"no_report","note":note,"notes":[observation]}),
     )
     .await;
     let done = f.settled(&task, 1).await;
@@ -673,17 +760,21 @@ async fn discovery_is_silent_read_only_and_retains_bounded_progress_after_reopen
         .unwrap()
         .to_owned();
     let config = f.owner().session(&worker).await.unwrap().configuration;
-    assert_eq!(config.permissions, crate::owner::discovery::permissions());
+    let source = f.owner().session(&f.bot).await.unwrap().configuration;
+    assert_eq!(config.permissions, source.permissions);
     assert_eq!(config.parent_session_id.as_deref(), Some(f.bot.as_str()));
     assert_eq!(f.outbox().await, json!([]));
     f.reopen().await;
     f.change(&task, "trigger_now").await;
     let (mut socket, body) = next(&listener).await;
-    assert!(body.to_string().contains("read-only broad exploration"));
-    assert!(body.to_string().contains("Discovery continuation"));
+    assert!(body.to_string().contains("authorized broad exploration"));
     assert!(!body.to_string().contains(&note));
     let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
     assert_eq!(page["records"][0]["content"]["result"]["note"], note);
+    assert_eq!(
+        page["records"][0]["content"]["result"]["notes"],
+        json!([observation])
+    );
     assert_eq!(
         page["records"][0]["content"]["checkpoint"]["references"],
         json!(["README.md"])
@@ -697,6 +788,75 @@ async fn discovery_is_silent_read_only_and_retains_bounded_progress_after_reopen
     let done = f.settled(&task, 2).await;
     assert_ne!(done["task"]["runs"][0]["sessionId"], worker);
     assert_eq!(f.outbox().await, json!([]));
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn existing_discovery_approval_keeps_its_tool_scope_until_renewed() {
+    use maka_plugin_core::storage::{Data, Mutation, Store as _};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    f.setting("toolDiscovery", json!(true)).await;
+    let task = f.create("Existing plan").await;
+    {
+        let owner = f.owner();
+        let storage = &owner.scheduler.storage;
+        let key = format!("task:{task}");
+        let record = storage.read(key.clone()).await.unwrap().unwrap();
+        let mut plan = record.data.value().unwrap().clone();
+        assert_eq!(
+            plan["authorization"]
+                .as_object_mut()
+                .unwrap()
+                .remove("session_tools"),
+            Some(json!(true))
+        );
+        storage
+            .batch(vec![Mutation {
+                key,
+                expected_revision: Some(record.revision),
+                data: Data::Present(plan),
+            }])
+            .await
+            .unwrap();
+    }
+    f.change(&task, "trigger_now").await;
+    let (mut socket, body) = next(&listener).await;
+    assert!(!body.to_string().contains("\"tool_search\""));
+    tool(
+        &mut socket,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"existing scope"}),
+    )
+    .await;
+    let done = f.settled(&task, 1).await;
+    let worker = done["task"]["runs"][0]["sessionId"].as_str().unwrap();
+    assert_eq!(
+        f.owner()
+            .session(worker)
+            .await
+            .unwrap()
+            .configuration
+            .permissions,
+        crate::owner::discovery::permissions()
+    );
+
+    f.change(&task, "pause").await;
+    f.change(&task, "resume").await;
+    f.change(&task, "trigger_now").await;
+    let (mut socket, body) = next(&listener).await;
+    assert!(body.to_string().contains("\"tool_search\""));
+    tool(
+        &mut socket,
+        "DiscoveryComplete",
+        json!({"kind":"no_report","note":"renewed scope"}),
+    )
+    .await;
+    assert_eq!(
+        f.settled(&task, 2).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
     f.close().await;
 }
 
@@ -859,6 +1019,15 @@ async fn discovery_recovery_delivers_an_authorized_notification_once() {
         .unwrap();
     let source: maka_agent_facts::message::RootSourceMessage =
         serde_json::from_slice(&bytes).unwrap();
+    let handoff_time = source
+        .message
+        .content
+        .text
+        .lines()
+        .find_map(|line| line.strip_prefix("Current time: "))
+        .and_then(|line| line.split_once(". Judge").map(|(time, _)| time))
+        .expect("the queued discovery report includes its handoff time");
+    assert!(handoff_time.ends_with("+00:00"));
     let Some(maka_agent_facts::message::MessageOrigin::BotWorker {
         session_id: worker_id,
     }) = source.message.origin
@@ -879,6 +1048,7 @@ async fn discovery_recovery_delivers_an_authorized_notification_once() {
         body.to_string().contains("authorized-recovery-finding"),
         "{body}"
     );
+    assert!(body.to_string().contains(handoff_time));
     quiet(&f, &listener, &mut bot).await;
     assert_eq!(
         f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
@@ -923,14 +1093,20 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
     let task = f.create("Notification receipt").await;
     f.change(&task, "trigger_now").await;
     let (mut socket, _) = next(&listener).await;
+    let observation =
+        json!({"text":"Evidence remains useful after notification.","references":["source.md"]});
     tool(
         &mut socket,
         "DiscoveryComplete",
-        json!({"kind":"report","text":"A useful finding"}),
+        json!({"kind":"report","text":"A useful finding","notes":[observation]}),
     )
     .await;
     let (mut socket, _) = next(&listener).await;
     let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
+    assert_eq!(
+        page["records"][0]["content"]["result"]["notes"],
+        json!([observation])
+    );
     let record = page["records"][0]["id"].clone();
     let input = json!({"messageId":"notification-uncertain","messages":[{"text":"A useful finding"}],"discovery":{"record":record,"reason":"verified"}});
     tool(&mut socket, "SendUser", input.clone()).await;
@@ -965,6 +1141,15 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
     assert_eq!(page["records"].as_array().unwrap().len(), 2, "{page}");
     assert_eq!(page["records"][0]["content"]["kind"], "notified");
     assert_eq!(f.outbox().await, original);
+    let (mut socket, sent_source) = memory(
+        &listener,
+        &mut socket,
+        json!({"action":"notification_source","record":page["records"][0]["id"]}),
+    )
+    .await;
+    assert_eq!(sent_source["text"], publication["text"]);
+    assert_eq!(sent_source["at"], publication["at"]);
+    assert_eq!(sent_source["next_index"], Value::Null);
     quiet(&f, &listener, &mut socket).await;
     let quote = json!({"text":"Do not repeat this finding", "label":"Proactive discovery",
         "sourceMessageId":format!("bot/{}",publication["sequence"]),"sourceTurnId":publication["turnId"],
@@ -1498,7 +1683,7 @@ async fn discovery_search_continues_past_an_empty_bounded_page() {
 async fn discovery_tools_are_not_offered_to_an_ordinary_session() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
-    let created=f.query("create",json!({"title":"Ordinary control","automaticTitle":false,"labels":[],"tools":["DiscoveryComplete","DiscoveryMemory"],"workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}})).await;
+    let created=f.query("create",json!({"title":"Ordinary control","automaticTitle":false,"labels":[],"tools":["DiscoveryComplete","DiscoveryMemory","DiscoveryContext"],"workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}})).await;
     let session = created["session"]["id"].as_str().unwrap();
     f.query(
         "send",
@@ -1513,7 +1698,9 @@ async fn discovery_tools_are_not_offered_to_an_ordinary_session() {
         .map(|t| t["function"]["name"].as_str().unwrap())
         .collect();
     assert!(
-        !names.contains(&"DiscoveryComplete") && !names.contains(&"DiscoveryMemory"),
+        ["DiscoveryComplete", "DiscoveryMemory", "DiscoveryContext"]
+            .iter()
+            .all(|name| !names.contains(name)),
         "{names:?}"
     );
     finish_text(&mut socket, "Ordinary answer").await;
@@ -1649,7 +1836,7 @@ async fn discovery_one_shot_timer_runs_without_a_manual_trigger() {
     let (mut socket, request) = next(&listener).await;
     let request = request.to_string();
     assert!(request.contains("Look for a changed release date."));
-    assert!(!request.contains("read-only broad exploration"));
+    assert!(!request.contains("authorized broad exploration"));
     tool(
         &mut socket,
         "DiscoveryComplete",

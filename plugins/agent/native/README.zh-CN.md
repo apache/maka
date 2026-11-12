@@ -116,7 +116,7 @@ Maka 默认组合启用 `automaticTitles`。通过 `automaticTitle: true` 创建
 
 默认组合启用 `goals`。`/goal` 或输入框加号菜单打开目标面板；`/goal 目标内容` 直接开始。目标复用现有会话队列自动续跑，不设迭代上限。`CreateGoal`、`GetGoal` 和 `GoalStatus` 可从 Direct 和 Code Mode 调用；每次模型请求都携带当前目标、进度和预算，压缩后仍可读取。模型创建的目标将当前轮作为第一轮。暂停停止当前工作，继续使用所选模型与设置，取消只作用于此目标。临时执行失败允许恢复。Token 预算为可选的跨轮调度阈值；缺失计量如实显示为用量不完整，不会因此停工，用户可以调整预算。读取提供实时用量、剩余预算和累计执行时间；完成并清理后，用量不再随普通聊天增长。重启保留目标迭代原有的已接纳 Run 与 Host 回执身份；恢复对账该 Run 的效果及物理清理，后续迭代仍须由领域策略授权新提交，不是物理执行交接或原请求重放。归档会话或执行前提变更时，需要用户处理后继续。
 
-## 只读主动发现
+## 主动发现
 
 启用 `bot` 和 `scheduledTasks` 后，当前 Bot 可通过 `ScheduledTask` 提议
 `effect: "discovery"`。与其他模型创建的定时任务一样，提议保持暂停，直到用户通过
@@ -125,10 +125,10 @@ Maka 默认组合启用 `automaticTitles`。通过 `automaticTitle: true` 创建
 `resume` 控制；默认不会启用任何调查。
 留空 `intentBody` 时，worker 从可访问的材料中自主寻找值得关注的方向；填写后围绕该方向做专题调查。
 
-每次触发新建一个普通 worker Session，沿用已批准的工作区和模型，权限收窄为只读，
-禁止申请额外权限。工具仅包括当前组合中的 Files 读取、图片读取、glob、grep，已启用的
-Recall、`DiscoveryMemory` 和 `DiscoveryComplete`；不继承协调工具、MCP 或 shell 能力。worker 必须调用
-`DiscoveryComplete`，提交 `{"kind":"no_report","note":"检查了什么"}` 或
+每次触发新建一个普通 worker Session，使用已批准的工作区、模型和权限。
+工具及权限检查沿用普通会话，包括已配置的 Shell、网页工具和 MCP。
+调查会话还可调用 `DiscoveryMemory` 和 `DiscoveryComplete`。此前批准的只读计划在重新批准前
+保留原工具范围。worker 必须调用 `DiscoveryComplete`，提交 `{"kind":"no_report","note":"检查了什么"}` 或
 `{"kind":"report","text":"发现及来源"}`。调用持久记录结果并结束本轮；只输出普通文本
 属于未完整提交调查结果。
 

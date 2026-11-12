@@ -51,7 +51,7 @@ const accessChoices: AgentWorkspaceAccess[] = [
   'workspace_write',
   'danger_full_access',
 ];
-const accessLabel = (access: AgentWorkspaceAccess) =>
+export const accessLabel = (access: AgentWorkspaceAccess) =>
   ({
     read_only: tr('Read only'),
     workspace_write: tr('Workspace write'),

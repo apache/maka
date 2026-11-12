@@ -231,8 +231,9 @@ impl Owner {
             .map(|definition| definition.name.as_str())
             .collect();
         let catalog = live_tools.excluding(&excluded);
-        let always_visible: Vec<_> = [bot::SEND_USER, bot::SLEEP, discovery::MEMORY]
+        let always_visible: Vec<_> = [bot::SEND_USER, bot::SLEEP]
             .into_iter()
+            .chain(discovery::VISIBLE_TOOLS.iter().copied())
             .filter(|name| catalog.contains(name))
             .collect();
         catalog

@@ -30,6 +30,7 @@ import { createText, errorText, UiError, renderText, message } from './text';
 import { discoveryInput, discoveryTasks, type DiscoveryApproval } from './discoveryCore';
 import { Icon } from './Icon';
 import { SettingsField } from './SettingsField';
+import { accessLabel } from './SessionPermissionsSelect';
 import {
   C,
   bodyTextStyle,
@@ -408,6 +409,10 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
               <View style={{ gap: 6 }}>
                 <Text style={{ ...captionTextStyle, color: C.secondary }}>
                   {tr('Discovery workspace')}: {snapshot()!.target.workspace.path}
+                </Text>
+                <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                  {tr('Discovery permissions')}:{' '}
+                  {accessLabel(snapshot()!.target.permissions.access)}
                 </Text>
                 <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
                   <Text style={{ ...captionTextStyle, color: C.secondary, flexShrink: 1 }}>
