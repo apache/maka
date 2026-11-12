@@ -78,6 +78,28 @@ fn Plans() -> impl IntoElement {
         .child(text(move || format!("after:{}", after.get())))
 }
 
+/// A named set: screen readers say the group's name as they enter it,
+/// and its radios stay elements of their own.
+#[component]
+fn NamedPlans() -> impl IntoElement {
+    radio_group()
+        .accessibility_label("Plan")
+        .child(radio().checked(true).child(text("Free")))
+        .child(radio().child(text("Plus")))
+}
+
+#[test]
+fn a_group_takes_the_name_the_app_gives_it() {
+    let app = start::<NamedPlans>();
+    let screen = app.screen();
+    assert_eq!(screen.count("role:radiogroup[Plan]"), Ok(1));
+    assert_eq!(screen.count("role:radiogroup[Plan] >> role:radio"), Ok(2));
+    // A group the app does not name is not called that.
+    let app = start::<Plans>();
+    assert_eq!(app.screen().count("role:radiogroup"), Ok(1));
+    assert_eq!(app.screen().count("role:radiogroup[Plan]"), Ok(0));
+}
+
 #[test]
 fn with_none_checked_tab_enters_at_the_first_radio_and_space_checks_it() {
     let mut app = start::<Plans>();
@@ -184,6 +206,37 @@ fn the_radios_are_in_the_order_of_the_tree_wherever_they_render() {
     let mut app = start::<BoxedPlans>();
     // The first radio of the tree, though Team and Enterprise rendered
     // first.
+    app.press_key("tab").unwrap();
+    app.press_key("space").unwrap();
+    app.wait_for("text:plan:Free").unwrap();
+    for name in ["Plus", "Team", "Enterprise", "Free"] {
+        app.press_key("down").unwrap();
+        app.wait_for(&format!("text:plan:{name}")).unwrap();
+    }
+}
+
+/// The plans, each radio inside a view of the app's (a row with a note).
+#[component]
+fn WrappedPlans() -> impl IntoElement {
+    let plan = signal(None::<usize>);
+    let option = move |i: usize| {
+        view().flex_row().child(
+            radio()
+                .checked(move || plan.get() == Some(i))
+                .on_change(move |_: &bool| plan.set(Some(i)))
+                .child(text(PLANS[i])),
+        )
+    };
+    view()
+        .child(radio_group().children((0..4).map(option)))
+        .child(text(move || {
+            format!("plan:{}", plan.get().map_or("none", |i| PLANS[i]))
+        }))
+}
+
+#[test]
+fn radios_inside_views_of_the_group_are_its_radios() {
+    let mut app = start::<WrappedPlans>();
     app.press_key("tab").unwrap();
     app.press_key("space").unwrap();
     app.wait_for("text:plan:Free").unwrap();

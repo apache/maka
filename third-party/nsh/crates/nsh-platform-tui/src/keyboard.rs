@@ -898,6 +898,19 @@ impl Keyboard {
         tree.get(self.focused?)?.field.as_ref()?.cursor()
     }
 
+    pub(crate) fn has_focused_control(&self, tree: &Mounter) -> bool {
+        self.focused
+            .is_some_and(|id| match (tree.spans.get(&id), tree.get(id)) {
+                (Some(span), _) => has_press(span.events),
+                (None, Some(view)) => {
+                    view.kind != ViewKind::Input
+                        && !view.props.accessibility.state.disabled
+                        && has_press(view.events)
+                }
+                (None, None) => false,
+            })
+    }
+
     pub(crate) fn shortcut(
         &self,
         tree: &Mounter,
@@ -933,13 +946,28 @@ impl Keyboard {
             .focused
             .and_then(|id| tree.get(id))
             .is_some_and(|v| v.kind == ViewKind::Input);
+        let focused_control = self.has_focused_control(tree);
         let active = self.focused.or(self.scope_node);
         let within = |ancestor| active.is_some_and(|node| contains(tree, ancestor, node));
         let find = |s: Keystroke| {
             if fallback {
-                tree.keymap.find_fallback_with(s, editing, repeat, within)
+                tree.keymap.find_fallback_at_with(
+                    nsh_core::ROOT_ID,
+                    s,
+                    editing,
+                    focused_control,
+                    repeat,
+                    within,
+                )
             } else {
-                tree.keymap.find_with(s, editing, repeat, within)
+                tree.keymap.find_at_with(
+                    nsh_core::ROOT_ID,
+                    s,
+                    editing,
+                    focused_control,
+                    repeat,
+                    within,
+                )
             }
         };
         let mut found = find(stroke);

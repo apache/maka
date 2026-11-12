@@ -6,22 +6,37 @@
 //!   its argument. Written at startup by the release runner ([`start`]) when
 //!   the command differs from what is there: the app may have moved. The
 //!   development host registers nothing.
-//! - Launch: an argument that is a URL of one of the app's schemes is sent to
-//!   the root surface once it exists ([`attach`]); the core keeps it until JS
-//!   listens.
+//! - Launch: an argument that is a URL of one of the app's schemes goes to
+//!   the root surface before its app loads ([`launch`]), whose engine applies
+//!   it before the app's code first runs; the core keeps it until JS listens.
 //! - One instance: the first instance of an app with schemes owns a named
 //!   mutex keyed by the app id and marks its top-level window with a property
 //!   ([`attach`]). A later launch with a URL finds that window, lets it take
 //!   the foreground, hands it the URL in a `WM_COPYDATA` and exits; the
-//!   running instance restores its window, brings it to the front and sends
-//!   the URL. A launch without a URL opens another window, as before.
+//!   running instance shows its window (restored, or shown when hidden),
+//!   brings it to the front and sends the URL. A launch without a URL opens
+//!   another window, as before.
+//! - Files (nsh.json `fileTypes`): `HKCU\Software\Classes\<app id>.<n>` is a
+//!   ProgID per file type whose `shell\open\command` runs the executable with
+//!   the file, listed under each extension's `OpenWithProgids`, so the app
+//!   shows in Open With; written at startup as the schemes are. An argument
+//!   that is an existing file of those types goes to the app as a `file://`
+//!   URL, as a link does, and a later launch forwards it the same way.
+//! - Single instance (nsh.json `singleInstance`): the same mutex, made with
+//!   or without schemes. A later launch, with a URL or not, hands the
+//!   running instance its arguments and working directory
+//!   ([`nsh_core::single_instance::SecondInstance`], JSON in a
+//!   `WM_COPYDATA`) and exits before it opens a window; the running instance
+//!   shows its window as for a URL, reports the launch
+//!   (`EventKind::SecondInstance`) and sends the URLs among the arguments.
 
 use std::{
     cell::RefCell,
     rc::{Rc, Weak},
 };
 
-use nsh_core::{EventKind, EventPayload, PayloadValue, ROOT_ID};
+use nsh_core::{EventKind, EventPayload, PayloadValue, ROOT_ID, file_type::FileType};
+use nsh_engine::EngineControl;
 use windows::{
     Win32::{
         Foundation::{
@@ -35,7 +50,7 @@ use windows::{
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
                 AllowSetForegroundWindow, EnumWindows, GA_ROOT, GetAncestor, GetPropW,
-                GetWindowThreadProcessId, IsIconic, SMTO_ABORTIFHUNG, SW_RESTORE,
+                GetWindowThreadProcessId, IsIconic, IsWindowVisible, SMTO_ABORTIFHUNG, SW_RESTORE,
                 SendMessageTimeoutW, SetForegroundWindow, SetPropW, ShowWindow, WM_COPYDATA,
                 WM_NCDESTROY,
             },
@@ -55,6 +70,8 @@ unsafe extern "system" {
 
 /// `COPYDATASTRUCT::dwData` of a forwarded URL ("NSHL").
 const COPY_LINK: usize = 0x4E53_484C;
+/// `COPYDATASTRUCT::dwData` of a forwarded launch ("NSHI"): UTF-8 JSON.
+const COPY_INSTANCE: usize = 0x4E53_4849;
 /// The subclass id of the window that hears forwarded URLs.
 const SUBCLASS: usize = 0x4E53_484C;
 /// How long a second launch looks for the first one's window, which may still
@@ -63,12 +80,16 @@ const WAIT_STEPS: u32 = 50;
 const WAIT_STEP_MS: u64 = 100;
 
 thread_local! {
-    /// The URL the process was started with, until the root surface exists.
-    static LAUNCH: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// The URLs the process was started with, until the root surface exists.
+    static LAUNCH: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// The property that marks this app's window ([`property`]).
     static PROPERTY: RefCell<Option<HSTRING>> = const { RefCell::new(None) };
     /// The surface forwarded URLs go to.
     static SURFACE: RefCell<Option<Weak<Surface>>> = const { RefCell::new(None) };
+    /// The app's schemes, which a forwarded launch's URLs are of.
+    static SCHEMES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// The file types the app opens, which a forwarded launch's files are of.
+    static FILE_TYPES: RefCell<Vec<FileType>> = const { RefCell::new(Vec::new()) };
 }
 
 /// What [`start`] decided.
@@ -79,21 +100,38 @@ pub(crate) enum Start {
     Forwarded,
 }
 
-/// Registers `schemes` for the app `id` named `name`, reads the launch URL
-/// and, when an instance of the app already runs, forwards the URL to it. On
-/// the UI thread, before the window opens. Does nothing without schemes.
-pub(crate) fn start(id: &str, name: &str, schemes: &[String]) -> Start {
-    if schemes.is_empty() {
+/// Registers `schemes` and `file_types` for the app `id` named `name`,
+/// reads the launch's URLs and files and, when an instance of the app
+/// already runs, forwards them to it, or with `single_instance` the whole
+/// launch. On the UI thread, before the window opens. Does nothing without
+/// schemes, file types or `single_instance`.
+pub(crate) fn start(
+    id: &str,
+    name: &str,
+    schemes: &[String],
+    file_types: &[FileType],
+    single_instance: bool,
+) -> Start {
+    if schemes.is_empty() && file_types.is_empty() && !single_instance {
         return Start::Run;
     }
+    SCHEMES.with(|s| *s.borrow_mut() = schemes.to_vec());
+    FILE_TYPES.with(|t| *t.borrow_mut() = file_types.to_vec());
     if !cfg!(feature = "dev") {
         for scheme in schemes {
             if let Err(err) = register(scheme, name) {
                 log::warn!("links: cannot register the scheme {scheme}: {err}");
             }
         }
+        if let Err(err) = register_file_types(id, file_types) {
+            log::warn!("links: cannot register the app's file types: {err}");
+        }
     }
-    let url = std::env::args().nth(1).filter(|arg| matches(arg, schemes));
+    let cwd = std::env::current_dir().ok();
+    let urls: Vec<String> = std::env::args()
+        .skip(1)
+        .filter_map(|arg| launch_url(&arg, cwd.as_deref(), schemes, file_types))
+        .collect();
     let property = property(id);
     PROPERTY.with(|p| *p.borrow_mut() = Some(property.clone()));
     let mutex = HSTRING::from(format!("Local\\nsh-app-{}", sanitize(id)));
@@ -104,18 +142,64 @@ pub(crate) fn start(id: &str, name: &str, schemes: &[String]) -> Start {
         let handle = CreateMutexW(std::ptr::null(), BOOL(0), PCWSTR(mutex.as_ptr()));
         handle.is_invalid() || GetLastError() != ERROR_ALREADY_EXISTS
     };
-    if !first && let Some(url) = &url {
-        if forward(&property, url) {
+    if !first && single_instance {
+        let launch = nsh_core::single_instance::SecondInstance::current();
+        let data = launch.to_json().to_string().into_bytes();
+        if forward(&property, COPY_INSTANCE, &data) {
+            return Start::Forwarded;
+        }
+        log::warn!("single instance: the running instance did not answer; opening another");
+    } else if !first && !urls.is_empty() {
+        let all = urls.iter().all(|url| {
+            let data: Vec<u8> = url.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            forward(&property, COPY_LINK, &data)
+        });
+        if all {
             return Start::Forwarded;
         }
         log::warn!("links: the running instance did not answer; opening another");
     }
-    LAUNCH.with(|l| *l.borrow_mut() = url);
+    LAUNCH.with(|l| *l.borrow_mut() = urls);
     Start::Run
 }
 
-/// Marks `surface`'s top-level window as the app's, hears URLs forwarded to
-/// it and sends the launch URL. After the app is loaded.
+/// The URL `arg` hands the app: a URL of one of `schemes`, or the
+/// `file://` URL of an existing file of one of `file_types` (relative to
+/// `cwd`).
+fn launch_url(
+    arg: &str,
+    cwd: Option<&std::path::Path>,
+    schemes: &[String],
+    file_types: &[FileType],
+) -> Option<String> {
+    if matches(arg, schemes) {
+        return Some(arg.to_owned());
+    }
+    if file_types.is_empty() || arg.starts_with('-') {
+        return None;
+    }
+    let path = std::path::Path::new(arg);
+    let path = match cwd {
+        Some(cwd) if path.is_relative() => cwd.join(path),
+        _ => path.to_path_buf(),
+    };
+    if !path.is_file() || !file_types.iter().any(|t| t.matches(&path)) {
+        return None;
+    }
+    url::Url::from_file_path(&path).ok().map(String::from)
+}
+
+/// Hands the URL the process was started with to `surface`, whose engine
+/// applies it as it starts. Before the app is loaded.
+pub(crate) fn launch(surface: &Surface) {
+    let urls = LAUNCH.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    if !urls.is_empty() {
+        surface.set_launch_links(urls);
+    }
+}
+
+/// Marks `surface`'s top-level window as the app's and hears URLs forwarded
+/// to it. After the app is loaded.
 pub(crate) fn attach(surface: &Rc<Surface>) {
     let Some(property) = PROPERTY.with(|p| p.borrow().clone()) else {
         return;
@@ -128,16 +212,18 @@ pub(crate) fn attach(surface: &Rc<Surface>) {
         let _ = SetPropW(window, &property, Some(HANDLE(std::ptr::dangling_mut())));
         let _ = SetWindowSubclass(window, Some(link_proc), SUBCLASS, 0);
     }
-    if let Some(url) = LAUNCH.with(|l| l.borrow_mut().take()) {
-        send(surface, url);
-    }
 }
 
 fn send(surface: &Surface, url: String) {
-    surface.event(
+    surface.control(|control| dispatch(control, url));
+}
+
+/// Reports `url` as a link the system opened the app with.
+pub(crate) fn dispatch(control: &EngineControl, url: String) {
+    control.dispatch_event(
         ROOT_ID,
         EventKind::UrlScheme,
-        EventPayload::Map(vec![("url", PayloadValue::Str(url))]),
+        EventPayload::Map(vec![(nsh_core::url_scheme::URL, PayloadValue::Str(url))]),
     );
 }
 
@@ -161,8 +247,22 @@ unsafe extern "system" fn link_proc(
                 let units = unsafe {
                     std::slice::from_raw_parts(data.lpData as *const u16, data.cbData as usize / 2)
                 };
-                received(hwnd, String::from_utf16_lossy(units));
+                let url = String::from_utf16_lossy(units);
+                received(hwnd, |surface| send(surface, url));
                 return LRESULT(1);
+            }
+            if data.dwData == COPY_INSTANCE && !data.lpData.is_null() {
+                // SAFETY: `cbData` bytes at `lpData`, as `forward` sends them.
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(data.lpData as *const u8, data.cbData as usize)
+                };
+                let launch = serde_json::from_slice(bytes)
+                    .ok()
+                    .and_then(|json| nsh_core::single_instance::SecondInstance::from_json(&json));
+                if let Some(launch) = launch {
+                    received(hwnd, |surface| relaunched(surface, launch));
+                    return LRESULT(1);
+                }
             }
         }
         WM_NCDESTROY => {
@@ -177,32 +277,72 @@ unsafe extern "system" fn link_proc(
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
-/// A URL from a later launch: brings the window to the front and sends it.
-fn received(window: HWND, url: String) {
-    // SAFETY: plain calls on the app's window; the sender allowed this
-    // process to take the foreground.
-    unsafe {
-        if IsIconic(window).as_bool() {
-            let _ = ShowWindow(window, SW_RESTORE);
-        }
-        let _ = SetForegroundWindow(window);
-    }
-    let surface = SURFACE.with(|s| s.borrow().as_ref().and_then(Weak::upgrade));
-    match surface {
-        Some(surface) => send(&surface, url),
-        None => log::warn!("links: a URL arrived without a window to take it"),
+/// A later launch of a single-instance app: reports it, then sends the URLs
+/// of the app's schemes and the files of its types among its arguments.
+fn relaunched(surface: &Surface, launch: nsh_core::single_instance::SecondInstance) {
+    let cwd = (!launch.cwd.is_empty()).then(|| std::path::PathBuf::from(&launch.cwd));
+    let urls: Vec<String> = SCHEMES.with(|schemes| {
+        FILE_TYPES.with(|types| {
+            let (schemes, types) = (schemes.borrow(), types.borrow());
+            launch
+                .args
+                .iter()
+                .filter_map(|arg| launch_url(arg, cwd.as_deref(), &schemes, &types))
+                .collect()
+        })
+    });
+    let payload = launch.to_payload();
+    surface.control(|control| {
+        control.dispatch_event(ROOT_ID, EventKind::SecondInstance, payload);
+    });
+    for url in urls {
+        send(surface, url);
     }
 }
 
-/// Sends `url` to the window marked with `property`, waiting for it while
-/// the running instance may still be opening it. `true` when it took it.
-fn forward(property: &HSTRING, url: &str) -> bool {
+/// A URL or a launch from a later launch: shows the window, brings it to the
+/// front and hands `deliver` the surface. A hidden window shows as the app's
+/// `focus()` shows it (one hidden since launch, nsh.json
+/// `window.defaultVisible: false`, drawn before DWM composites it), as a
+/// link shows it on macOS and Linux.
+fn received(window: HWND, deliver: impl FnOnce(&Surface)) {
+    let surface = SURFACE.with(|s| s.borrow().as_ref().and_then(Weak::upgrade));
+    // SAFETY: plain queries on the app's window.
+    let (iconic, visible) = unsafe {
+        (
+            IsIconic(window).as_bool(),
+            IsWindowVisible(window).as_bool(),
+        )
+    };
+    if iconic {
+        // SAFETY: a plain call on the app's window.
+        let _ = unsafe { ShowWindow(window, SW_RESTORE) };
+    } else if !visible {
+        match &surface {
+            Some(surface) if surface.main_unshown.get() => {
+                crate::app::show_main(surface, window);
+            }
+            _ => crate::window::show(window),
+        }
+    }
+    // SAFETY: a plain call on the app's window; the sender allowed this
+    // process to take the foreground.
+    let _ = unsafe { SetForegroundWindow(window) };
+    match surface {
+        Some(surface) => deliver(&surface),
+        None => log::warn!("links: a launch arrived without a window to take it"),
+    }
+}
+
+/// Sends `data` of the `kind` to the window marked with `property`, waiting
+/// for it while the running instance may still be opening it. `true` when
+/// it took it.
+fn forward(property: &HSTRING, kind: usize, data: &[u8]) -> bool {
     for step in 0..WAIT_STEPS {
         if let Some(window) = find(property) {
-            let data: Vec<u16> = url.encode_utf16().collect();
             let copy = COPYDATASTRUCT {
-                dwData: COPY_LINK,
-                cbData: (data.len() * 2) as u32,
+                dwData: kind,
+                cbData: data.len() as u32,
                 lpData: data.as_ptr() as *mut _,
             };
             let mut result = 0usize;
@@ -307,6 +447,42 @@ fn register(scheme: &str, name: &str) -> Result<()> {
     set_value(&command_key, None, &command)
 }
 
+/// Registers each of `file_types` as a ProgID of the app `id`
+/// (`<id>.<n>`), opened by this executable, and lists it under its
+/// extensions' `OpenWithProgids`; the ProgID is written again when its
+/// command is not this executable's.
+fn register_file_types(id: &str, file_types: &[FileType]) -> Result<()> {
+    if file_types.is_empty() {
+        return Ok(());
+    }
+    let exe = std::env::current_exe().map_err(|_| windows::core::Error::from_thread())?;
+    let command = format!("\"{}\" \"%1\"", exe.display());
+    for (n, file_type) in file_types.iter().enumerate() {
+        let prog_id = format!("{}.{}", sanitize(id), n + 1);
+        let key = format!("Software\\Classes\\{prog_id}");
+        let command_key = format!("{key}\\shell\\open\\command");
+        // Cheap and idempotent: an extension added since is listed too.
+        for extension in &file_type.extensions {
+            set_value(
+                &format!("Software\\Classes\\.{extension}\\OpenWithProgids"),
+                Some(&prog_id),
+                "",
+            )?;
+        }
+        if read_value(&command_key).as_deref() == Some(command.as_str()) {
+            continue;
+        }
+        set_value(&key, None, &file_type.name)?;
+        set_value(
+            &format!("{key}\\DefaultIcon"),
+            None,
+            &format!("{},0", exe.display()),
+        )?;
+        set_value(&command_key, None, &command)?;
+    }
+    Ok(())
+}
+
 /// The default string value of `key` under `HKEY_CURRENT_USER`.
 fn read_value(key: &str) -> Option<String> {
     let key = HSTRING::from(key);
@@ -375,6 +551,26 @@ mod tests {
         assert!(!matches("other://x", &schemes));
         assert!(!matches("-ToastActivated", &schemes));
         assert!(!matches("C:\\path", &schemes));
+    }
+
+    #[test]
+    fn files_of_the_apps_types_are_file_urls() {
+        let dir = std::env::temp_dir().join(format!("nsh-links-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("clip.mp4"), b"").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"").unwrap();
+        let types = nsh_core::file_type::file_types_from_json(
+            &serde_json::json!([{ "name": "Video", "extensions": ["mp4"] }]),
+        );
+        let url = launch_url("clip.mp4", Some(&dir), &[], &types).unwrap();
+        assert!(
+            url.starts_with("file:///") && url.ends_with("/clip.mp4"),
+            "{url}"
+        );
+        assert_eq!(launch_url("notes.txt", Some(&dir), &[], &types), None);
+        assert_eq!(launch_url("missing.mp4", Some(&dir), &[], &types), None);
+        assert_eq!(launch_url("clip.mp4", Some(&dir), &[], &[]), None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

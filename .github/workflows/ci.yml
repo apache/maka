@@ -238,7 +238,10 @@ jobs:
         run: node scripts/ci.mjs prepare '${{ matrix.id }}'
       - name: Verify selected suites
         id: verify
+        if: ${{ !cancelled() && (steps.compile.outcome == 'success' || steps.compile.outcome == 'failure') }}
         shell: bash
+        env:
+          MAKA_UI_ARTIFACT_DIR: ${{ runner.temp }}/maka-ui-artifacts
         run: |
           set -o pipefail
           node scripts/ci.mjs verify '${{ matrix.id }}' 2>&1 | tee "$RUNNER_TEMP/maka-suite-verify.log"
@@ -246,7 +249,9 @@ jobs:
         if: ${{ failure() && steps.verify.outcome == 'failure' }}
         with:
           name: ${{ matrix.id }}-failure-log-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/maka-suite-verify.log
+          path: |
+            ${{ runner.temp }}/maka-suite-verify.log
+            ${{ runner.temp }}/maka-ui-artifacts
           if-no-files-found: error
       - uses: ./.github/actions/ci-cache
         if: ${{ !cancelled() && matrix.compile && steps.compile.outcome == 'success' }}

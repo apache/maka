@@ -67,6 +67,19 @@ pub trait SelectionTexts {
     /// Text `i`'s content (attachments are U+FFFC, left out of copies).
     fn content(&self, i: usize) -> &str;
 
+    /// The UTF-16 range `range` of text `i` as a copy gives it. By default
+    /// its content's characters without attachments' placeholders; a
+    /// backend that has the texts' runs gives
+    /// [`crate::AttributedText::copied_text`], which also leaves hidden
+    /// runs out (`visibility: "hidden"` on a span).
+    fn copied(&self, i: usize, range: Range<u32>) -> String {
+        let content = self.content(i);
+        content[byte_offset(content, range.start)..byte_offset(content, range.end)]
+            .chars()
+            .filter(|&c| c != OBJECT_REPLACEMENT)
+            .collect()
+    }
+
     /// Text `i`'s content box.
     fn frame(&self, i: usize) -> Bounds<Points>;
 
@@ -92,6 +105,15 @@ pub trait SelectionTexts {
     fn continues(&self, i: usize) -> bool {
         let _ = i;
         false
+    }
+
+    /// The box around what the characters `range` of text `i` cover, in
+    /// the coordinates of the content boxes ([`Self::frame`]): what
+    /// [`SelectionModel::selected_bounds`] unites. `None` by default: the
+    /// platform's text engine places characters, the model does not.
+    fn range_bounds(&self, i: usize, range: Range<u32>) -> Option<Bounds<Points>> {
+        let _ = (i, range);
+        None
     }
 }
 
@@ -351,7 +373,8 @@ impl SelectionModel {
     }
 
     /// The selected text, as a copy gives it: each text's selected part,
-    /// attachments left out, a text that continues the one before it
+    /// attachments and hidden runs left out ([`SelectionTexts::copied`]),
+    /// a text that continues the one before it
     /// ([`SelectionTexts::continues`]) joined to it with nothing between,
     /// other texts on one row (their frames overlap vertically) joined by a
     /// tab, the others by a line break; an empty text inside the selection
@@ -380,11 +403,20 @@ impl SelectionModel {
                 out.push(if same_row { '\t' } else { '\n' });
             }
             previous = Some((i, frame));
-            let content = texts.content(i);
-            let part = &content[byte_offset(content, range.start)..byte_offset(content, range.end)];
-            out.extend(part.chars().filter(|&c| c != OBJECT_REPLACEMENT));
+            out.push_str(&texts.copied(i, range));
         }
         out
+    }
+
+    /// The box around what is selected in `texts`, in their coordinates:
+    /// each text's part of the selection ([`SelectionTexts::range_bounds`])
+    /// united. `None` while nothing is selected, or where the texts cannot
+    /// place their characters.
+    pub fn selected_bounds(&self, texts: &impl SelectionTexts) -> Option<Bounds<Points>> {
+        self.ranges(texts)
+            .into_iter()
+            .filter_map(|(i, range)| texts.range_bounds(i, range))
+            .reduce(|a, b| a.union(&b))
     }
 
     /// Where the selection starts in the copy of all of `texts` (what
@@ -878,6 +910,27 @@ mod tests {
                 .sum();
             before + within
         }
+
+        // ASCII only: a character is a UTF-16 unit.
+        fn range_bounds(&self, i: usize, range: Range<u32>) -> Option<Bounds<Points>> {
+            let (text, frame) = &self.0[i];
+            let place = |offset: u32| {
+                let before = &text[..offset as usize];
+                let line = before.matches('\n').count();
+                let column = before.len() - before.rfind('\n').map_or(0, |n| n + 1);
+                (line as f32, column as f32)
+            };
+            let ((l0, c0), (l1, c1)) = (place(range.start), place(range.end));
+            let (left, width) = if l0 == l1 {
+                (c0 * 8.0, (c1 - c0) * 8.0)
+            } else {
+                (0.0, frame.size.width.0)
+            };
+            Some(bounds(
+                point(frame.left() + px(left), frame.top() + px(l0 * 20.0)),
+                size(px(width), px((l1 - l0 + 1.0) * 20.0)),
+            ))
+        }
     }
 
     /// Three texts in a column: one line, two lines, one line, with gaps.
@@ -933,6 +986,27 @@ mod tests {
         assert_eq!(
             model.ranges(&texts),
             vec![(0, 2..11), (1, 0..21), (2, 0..3)]
+        );
+    }
+
+    /// The selected part of each text, united: on one line, then across
+    /// the texts of the column; nothing for nothing selected.
+    #[test]
+    fn the_selected_bounds_unite_each_texts_part() {
+        let texts = column();
+        let mut model = SelectionModel::new();
+        assert_eq!(model.selected_bounds(&texts), None);
+        model.press(&texts, at(16.0, 5.0), 1, false);
+        assert_eq!(model.selected_bounds(&texts), None);
+        model.drag(&texts, at(40.0, 5.0));
+        assert_eq!(
+            model.selected_bounds(&texts),
+            Some(bounds(point(px(16.0), px(0.0)), size(px(24.0), px(20.0))))
+        );
+        model.drag(&texts, at(24.0, 105.0));
+        assert_eq!(
+            model.selected_bounds(&texts),
+            Some(bounds(point(px(0.0), px(0.0)), size(px(200.0), px(120.0))))
         );
     }
 

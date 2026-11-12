@@ -16,17 +16,17 @@ test("marks press any number at once; the alignment keeps exactly one", async ()
   expect(app.count("role:toolbar")).toBe(3);
   await app.press("label:Italic");
   await app.waitFor("Italic: on");
-  await app.waitFor("2 of 4 · left");
+  await app.waitFor("2 marks, left aligned");
   await app.press("label:Bold");
   await app.waitFor("Bold: off");
-  await app.waitFor("1 of 4 · left");
+  await app.waitFor("1 mark, left aligned");
   await app.press("label:Align center");
   await app.waitFor("Align: center");
-  await app.waitFor("1 of 4 · center");
+  await app.waitFor("1 mark, centered");
   // The pressed alignment stays pressed.
   await app.press("label:Align center");
   await app.waitFor("Align: center (stays)");
-  await app.waitFor("1 of 4 · center");
+  await app.waitFor("1 mark, centered");
 });
 
 test("the view switcher shows one view, and a favorite star counts its press", async () => {

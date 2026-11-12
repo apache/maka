@@ -47,14 +47,14 @@
 use std::{cell::RefCell, f64::consts::TAU, rc::Rc, sync::Arc};
 
 use nsh_core::{
-    Color, Corners, Points,
+    Bounds, Color, Corners, Points,
     animation::AnimationValue,
     canvas::{
         CanvasFont, CanvasGradient, CanvasOp, CanvasTextAlign, CanvasTextBaseline, Composite,
-        Drawing, FillRule, GradientShape, LineCap, LineJoin, Num, Paint, PathOp, arc_sweep,
-        fit_radii,
+        Damage, DamageScan, Drawing, FillRule, GradientShape, LineCap, LineJoin, Num, Paint,
+        PathOp, arc_sweep, fit_radii,
     },
-    geometry::{Percentage, Radians, size},
+    geometry::{Percentage, Radians, point, size},
 };
 use rustc_hash::FxHashMap;
 use windows::{
@@ -118,6 +118,13 @@ use crate::{
 
 /// Layouts kept per canvas before the cache is emptied.
 const MAX_LAYOUTS: usize = 256;
+
+#[cfg(test)]
+thread_local! {
+    /// Whether paints that cannot change pixels are elided. The pixel
+    /// equivalence tests record each list with the shortcut on and off.
+    static SKIP_PAINTS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
 /// Wedges per turn of a conic gradient (plus one per stop).
 const CONIC_WEDGES: usize = 64;
 /// How closely curves are flattened where Direct2D needs it (widened
@@ -136,6 +143,19 @@ pub(crate) struct CanvasState {
     images: FxHashMap<Arc<str>, Option<Arc<Frame>>>,
     /// What was recorded (made while drawing, which only sees the state).
     cache: RefCell<Cache>,
+    /// Where the operations reading changed slots paint ([`DamageScan`]):
+    /// only that is drawn again.
+    scan: DamageScan,
+    /// The slots whose values changed in the last write (scratch space).
+    changed: Vec<u16>,
+    /// What a changed slot can repaint in `drawing` ([`DamageIndex`]).
+    index: Option<DamageIndex>,
+    /// The drawing serial [`set_args`] last saw, and the serial `set`
+    /// gives each new drawing: an index is made only once a drawing
+    /// survives a frame, since a scene that records every frame (a drag)
+    /// would only pay for an index it cannot reuse.
+    seen: Option<u64>,
+    serial: u64,
 }
 
 /// A canvas' recording and the device resources it draws with.
@@ -227,6 +247,10 @@ pub(crate) fn set(surface: &Rc<Surface>, view: &NshView, drawing: Arc<Drawing>) 
         }
         c.cache.get_mut().text.trim();
         c.drawing = Some(drawing);
+        // A new drawing, a new index.
+        c.index = None;
+        c.seen = None;
+        c.serial = c.serial.wrapping_add(1);
         c.stale();
     }
     let id = view.id();
@@ -261,24 +285,586 @@ pub(crate) fn set(surface: &Rc<Surface>, view: &NshView, drawing: Arc<Drawing>) 
     view.changed();
 }
 
-/// Animated value slot `k` changed: draws again if the value did.
-pub(crate) fn set_arg(view: &NshView, k: u16, value: AnimationValue) {
-    {
-        let mut state = view.state_mut();
-        let Some(c) = state.canvas.as_mut() else {
-            return;
-        };
-        let k = k as usize;
-        if c.args.len() <= k {
-            c.args.resize(k + 1, None);
+/// Animated value slots changed (`(slot, value)`, every bound slot on each
+/// frame): what has to be drawn again. Only the operations reading a slot
+/// whose value changed are drawn again, where they were and where they are
+/// now ([`DamageScan`]).
+pub(crate) fn set_args(view: &NshView, values: &[(u16, AnimationValue)]) -> Damage {
+    let mut state = view.state_mut();
+    let frame = state.frame;
+    let Some(canvas) = state.canvas.as_mut() else {
+        return Damage::None;
+    };
+    canvas.changed.clear();
+    for &(k, value) in values {
+        let i = k as usize;
+        if canvas.args.get(i).copied().flatten() != Some(value) {
+            canvas.changed.push(k);
         }
-        if c.args[k] == Some(value) {
-            return;
-        }
-        c.args[k] = Some(value);
-        c.stale_tail();
     }
-    view.changed();
+    // The index is only reused while the drawing is: a scene that records
+    // every frame (a dragged card) keeps the full scans, which it would
+    // have to run anyway.
+    let serial = canvas.serial;
+    let stable = canvas.seen == Some(serial);
+    canvas.seen = Some(serial);
+    if canvas.changed.is_empty() {
+        return Damage::None;
+    }
+    // The tail recorded the values it covered: record it again.
+    canvas.stale_tail();
+    let before = if stable && !legacy_set_args() {
+        match canvas.indexed_damage() {
+            Some(damage) => Before::Indexed(damage),
+            // The drawing uses a slot in something the index cannot
+            // bound: keep the conservative full scans.
+            None => Before::Full(scan(canvas)),
+        }
+    } else {
+        Before::Full(scan(canvas))
+    };
+    for &(k, value) in values {
+        let i = k as usize;
+        if canvas.args.len() <= i {
+            canvas.args.resize(i + 1, None);
+        }
+        canvas.args[i] = Some(value);
+    }
+    let after = match before {
+        Before::Full(before) => {
+            if before == Damage::All {
+                return Damage::All;
+            }
+            scan(canvas)
+        }
+        Before::Indexed(before) => {
+            if before == Damage::All {
+                return Damage::All;
+            }
+            // The index only takes slots that cannot move, resize or
+            // re-ink geometry: the area is the same at the new values.
+            before
+        }
+    };
+    let before = match before {
+        Before::Full(damage) | Before::Indexed(damage) => damage,
+    };
+    match before.union(after) {
+        Damage::Rect(rect) => {
+            let rect = within(rect, frame.size.width.0, frame.size.height.0);
+            if rect.size.width.0 > 0.0 && rect.size.height.0 > 0.0 {
+                Damage::Rect(rect)
+            } else {
+                Damage::None
+            }
+        }
+        other => other,
+    }
+}
+
+/// Where the damage of a write came from.
+enum Before {
+    /// The full scans, which run again after the values are written.
+    Full(Damage),
+    /// The slot index, whose areas cannot change with a slot's value.
+    Indexed(Damage),
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether [`set_args`] keeps the original full scans, for the
+    /// differential test against the index.
+    static LEGACY_SET_ARGS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn legacy_set_args() -> bool {
+    #[cfg(test)]
+    {
+        LEGACY_SET_ARGS.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+impl CanvasState {
+    /// The area the slots [`set_args`] changed paint, from the drawing's
+    /// dependency index; `None` when the drawing keeps the full scans.
+    fn indexed_damage(&mut self) -> Option<Damage> {
+        let CanvasState {
+            drawing,
+            args,
+            scan,
+            changed,
+            index,
+            ..
+        } = self;
+        let drawing = drawing.as_ref()?;
+        let index = index.get_or_insert_with(|| DamageIndex::new(&drawing.ops));
+        index.damage(scan, &drawing.ops, args, changed)
+    }
+}
+
+/// The area `state`'s operations reading a changed slot paint, with the
+/// values in its slots now.
+fn scan(state: &mut CanvasState) -> Damage {
+    let CanvasState {
+        drawing,
+        args,
+        scan,
+        changed,
+        ..
+    } = state;
+    let Some(drawing) = drawing.as_ref() else {
+        return Damage::None;
+    };
+    if drawing.ops.is_empty() {
+        return Damage::None;
+    }
+    let is_changed = |s: u16| changed.contains(&s);
+    scan.damage(&drawing.ops, |s| slot_number(args, s), is_changed)
+}
+
+/// The number in slot `s` (0 while unset).
+fn slot_number(args: &[Option<AnimationValue>], s: u16) -> f32 {
+    args.get(s as usize)
+        .copied()
+        .flatten()
+        .map_or(0.0, AnimationValue::number)
+}
+
+/// Above these, the per-slot metadata of a drawing costs more than the
+/// full scans it saves (`docs/dev/performance.md`): the index is not kept.
+const MAX_INDEXED_SLOTS: u16 = 4096;
+const MAX_INDEXED_PAINTS: usize = 8192;
+
+/// Animated slots, dense by slot: bit `s % 128` of word `s / 128` is slot
+/// `s`.
+#[derive(Clone, Default, PartialEq, Eq)]
+struct SlotMask {
+    words: Vec<u128>,
+}
+
+impl SlotMask {
+    fn set(&mut self, slot: u16) {
+        let i = slot as usize;
+        let word = i / 128;
+        if self.words.len() <= word {
+            self.words.resize(word + 1, 0);
+        }
+        self.words[word] |= 1 << (i % 128);
+    }
+
+    fn clear(&mut self) {
+        self.words.clear();
+    }
+
+    /// The union (or the assignment for `set_transform`).
+    fn or(&mut self, other: &SlotMask) {
+        if self.words.len() < other.words.len() {
+            self.words.resize(other.words.len(), 0);
+        }
+        for (a, b) in self.words.iter_mut().zip(&other.words) {
+            *a |= b;
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.words.iter().all(|w| *w == 0)
+    }
+
+    fn intersects(&self, other: &SlotMask) -> bool {
+        self.words.iter().zip(&other.words).any(|(a, b)| a & b != 0)
+    }
+
+    fn contains(&self, slot: u16) -> bool {
+        let i = slot as usize;
+        self.words
+            .get(i / 128)
+            .is_some_and(|w| w & (1 << (i % 128)) != 0)
+    }
+
+    fn max_slot(&self) -> Option<u16> {
+        let word = self.words.iter().rposition(|w| *w != 0)?;
+        let bit = 127 - self.words[word].leading_zeros() as usize;
+        Some((word * 128 + bit) as u16)
+    }
+
+    fn set_num(&mut self, n: Num) {
+        self.clear();
+        self.or_num(n);
+    }
+
+    fn or_num(&mut self, n: Num) {
+        if let Num::Slot(s) = n {
+            self.set(s);
+        }
+    }
+
+    fn set_nums<const N: usize>(&mut self, nums: [Num; N]) {
+        self.clear();
+        self.or_nums(nums);
+    }
+
+    fn or_nums<const N: usize>(&mut self, nums: [Num; N]) {
+        for n in nums {
+            self.or_num(n);
+        }
+    }
+
+    fn set_paint(&mut self, paint: &Paint) {
+        self.clear();
+        if let Paint::Slot(s) = paint {
+            self.set(*s);
+        }
+    }
+
+    fn set_path(&mut self, ops: &[PathOp]) {
+        self.clear();
+        for op in ops {
+            self.or_path(op);
+        }
+    }
+
+    fn from_path(ops: &[PathOp]) -> SlotMask {
+        let mut mask = SlotMask::default();
+        mask.set_path(ops);
+        mask
+    }
+
+    fn or_path(&mut self, op: &PathOp) {
+        match op {
+            PathOp::MoveTo(x, y) | PathOp::LineTo(x, y) => {
+                self.or_num(*x);
+                self.or_num(*y);
+            }
+            PathOp::QuadTo(v) => self.or_nums(*v),
+            PathOp::CubicTo(v) => self.or_nums(*v),
+            PathOp::Arc {
+                x,
+                y,
+                radius,
+                start,
+                end,
+                ..
+            } => self.or_nums([*x, *y, *radius, *start, *end]),
+            PathOp::Ellipse {
+                geometry,
+                start,
+                end,
+                ..
+            } => {
+                self.or_nums(*geometry);
+                self.or_num(*start);
+                self.or_num(*end);
+            }
+            PathOp::ArcTo(v) => self.or_nums(*v),
+            PathOp::Rect(v) => self.or_nums(*v),
+            PathOp::RoundRect(v, radii) => {
+                self.or_nums(*v);
+                self.or_nums(*radii);
+            }
+            PathOp::Close => {}
+        }
+    }
+
+    fn from_slots(slots: impl IntoIterator<Item = u16>) -> SlotMask {
+        let mut mask = SlotMask::default();
+        for slot in slots {
+            mask.set(slot);
+        }
+        mask
+    }
+}
+
+/// The scan state that reads animated values, which `save` / `restore`
+/// keep (`nsh-core`'s [`DamageScan`] state, as slots).
+#[derive(Clone, Default)]
+struct Deps {
+    ctm: SlotMask,
+    alpha: SlotMask,
+    fill: SlotMask,
+    stroke: SlotMask,
+    width: SlotMask,
+    dash: SlotMask,
+}
+
+/// A paint that can paint differently when a slot in `mask` changes.
+struct ScanEntry {
+    /// Its index in the drawing.
+    op: u32,
+    /// The slots whose values can change its pixels: its own operands,
+    /// the current path and the transform it was built under, or the
+    /// state it paints with.
+    mask: SlotMask,
+}
+
+/// What a drawing's animated slots can repaint: [`DamageScan`] reads the
+/// state the drawing's operations leave behind, so the index replaying it
+/// once to find the operations a slot can reach is the only place that
+/// walk happens.
+struct DamageIndex {
+    /// The painting operations a slot can repaint, in drawing order.
+    entries: Vec<ScanEntry>,
+    /// The slots any entry reads.
+    candidates: SlotMask,
+    /// The area each candidate slot paints, computed on first use (it
+    /// does not change with the slot's value in an indexed drawing).
+    damages: Vec<Damage>,
+    /// `damages` holds a value for the slot.
+    known: Vec<bool>,
+    /// The drawing has no slot-driven geometry, clipping, `clearRect` or
+    /// other composite operation; without that, the full scans stay.
+    supported: bool,
+}
+
+impl DamageIndex {
+    /// Classifies `ops`; unsupported drawings keep the full scans.
+    fn new(ops: &[CanvasOp]) -> DamageIndex {
+        let mut deps = Deps::default();
+        let mut stack: Vec<Deps> = Vec::new();
+        let mut path = SlotMask::default();
+        let mut entries = Vec::new();
+        let mut supported = true;
+        for (index, op) in ops.iter().enumerate() {
+            let entry = |mask: SlotMask, entries: &mut Vec<ScanEntry>| {
+                if !mask.is_empty() {
+                    entries.push(ScanEntry {
+                        op: index as u32,
+                        mask,
+                    });
+                }
+            };
+            match op {
+                CanvasOp::Save => stack.push(deps.clone()),
+                CanvasOp::Restore => {
+                    if let Some(saved) = stack.pop() {
+                        deps = saved;
+                    }
+                }
+                // A slot here moves the paint's geometry, which the cached
+                // areas cannot follow.
+                CanvasOp::Translate(x, y) => {
+                    deps.ctm.or_nums([*x, *y]);
+                    supported &= !has_slot([*x, *y]);
+                }
+                CanvasOp::Scale(x, y) => {
+                    deps.ctm.or_nums([*x, *y]);
+                    supported &= !has_slot([*x, *y]);
+                }
+                CanvasOp::Rotate(a) => {
+                    deps.ctm.or_num(*a);
+                    supported &= !has_slot([*a]);
+                }
+                CanvasOp::Transform(v) => {
+                    deps.ctm.or_nums(*v);
+                    supported &= !has_slot(*v);
+                }
+                CanvasOp::SetTransform(v) => {
+                    deps.ctm.set_nums(*v);
+                    supported &= !has_slot(*v);
+                }
+                CanvasOp::BeginPath => path.clear(),
+                CanvasOp::Path(p) => {
+                    path.or(&deps.ctm);
+                    path.or_path(p);
+                    supported &= !path_op_has_slot(p);
+                }
+                CanvasOp::Fill(p, _) => {
+                    let mut mask = shape_deps(p.as_deref(), &path, &deps);
+                    mask.or(&deps.alpha);
+                    mask.or(&deps.fill);
+                    supported &= !p.as_deref().is_some_and(has_slot_path);
+                    entry(mask, &mut entries);
+                }
+                CanvasOp::Stroke(p) => {
+                    let mut mask = shape_deps(p.as_deref(), &path, &deps);
+                    mask.or(&deps.alpha);
+                    mask.or(&deps.stroke);
+                    mask.or(&deps.width);
+                    mask.or(&deps.dash);
+                    supported &= !p.as_deref().is_some_and(has_slot_path);
+                    entry(mask, &mut entries);
+                }
+                CanvasOp::Clip(p, _) => {
+                    // A changed clip changes what it hides everywhere:
+                    // the core cannot bound it.
+                    if !shape_deps(p.as_deref(), &path, &deps).is_empty() {
+                        supported = false;
+                    }
+                }
+                CanvasOp::FillRect(r) => {
+                    let mut mask = SlotMask::default();
+                    mask.or_nums(*r);
+                    mask.or(&deps.ctm);
+                    mask.or(&deps.alpha);
+                    mask.or(&deps.fill);
+                    supported &= !has_slot(*r);
+                    entry(mask, &mut entries);
+                }
+                CanvasOp::StrokeRect(r) => {
+                    let mut mask = SlotMask::default();
+                    mask.or_nums(*r);
+                    mask.or(&deps.ctm);
+                    mask.or(&deps.alpha);
+                    mask.or(&deps.stroke);
+                    mask.or(&deps.width);
+                    mask.or(&deps.dash);
+                    supported &= !has_slot(*r);
+                    entry(mask, &mut entries);
+                }
+                // `clearRect` and non-source-over composites change the
+                // destination outside the shape: full scans.
+                CanvasOp::ClearRect(_) => supported = false,
+                CanvasOp::FillStyle(p) => deps.fill.set_paint(p),
+                CanvasOp::StrokeStyle(p) => deps.stroke.set_paint(p),
+                CanvasOp::LineWidth(w) => {
+                    deps.width.set_num(*w);
+                    supported &= !has_slot([*w]);
+                }
+                CanvasOp::LineCap(_) | CanvasOp::LineJoin(_) | CanvasOp::MiterLimit(_) => {}
+                CanvasOp::LineDash(_) => {}
+                CanvasOp::LineDashOffset(o) => deps.dash.set_num(*o),
+                CanvasOp::GlobalAlpha(a) => deps.alpha.set_num(*a),
+                CanvasOp::Composite(c) => supported &= *c == Composite::SourceOver,
+                CanvasOp::ShadowColor(_)
+                | CanvasOp::ShadowBlur(_)
+                | CanvasOp::ShadowOffset(_)
+                | CanvasOp::Font(_)
+                | CanvasOp::FontVariantNumeric(_)
+                | CanvasOp::TextAlign(_)
+                | CanvasOp::TextBaseline(_) => {}
+                CanvasOp::FillText { x, y, .. } | CanvasOp::StrokeText { x, y, .. } => {
+                    let mut mask = SlotMask::default();
+                    mask.or_nums([*x, *y]);
+                    mask.or(&deps.ctm);
+                    mask.or(&deps.alpha);
+                    if matches!(op, CanvasOp::FillText { .. }) {
+                        mask.or(&deps.fill);
+                    } else {
+                        mask.or(&deps.stroke);
+                        mask.or(&deps.width);
+                        mask.or(&deps.dash);
+                    }
+                    supported &= !has_slot([*x, *y]);
+                    entry(mask, &mut entries);
+                }
+                CanvasOp::DrawImage { dest, .. } => {
+                    let mut mask = SlotMask::default();
+                    mask.or_nums(*dest);
+                    mask.or(&deps.ctm);
+                    mask.or(&deps.alpha);
+                    supported &= !has_slot(*dest);
+                    entry(mask, &mut entries);
+                }
+            }
+        }
+        let mut candidates = SlotMask::default();
+        for entry in &entries {
+            candidates.or(&entry.mask);
+        }
+        if entries.len() > MAX_INDEXED_PAINTS
+            || candidates
+                .max_slot()
+                .is_some_and(|slot| slot >= MAX_INDEXED_SLOTS)
+        {
+            supported = false;
+        }
+        DamageIndex {
+            entries,
+            candidates,
+            damages: Vec::new(),
+            known: Vec::new(),
+            supported,
+        }
+    }
+
+    /// The area the changed slots paint, or `None` when the drawing keeps
+    /// the full scans. An unchanged slot that no operation reads returns
+    /// [`Damage::None`] without a scan.
+    fn damage(
+        &mut self,
+        scan: &mut DamageScan,
+        ops: &[CanvasOp],
+        args: &[Option<AnimationValue>],
+        changed: &[u16],
+    ) -> Option<Damage> {
+        if !self.supported {
+            return None;
+        }
+        let changed_mask = SlotMask::from_slots(changed.iter().copied());
+        let mut paints = false;
+        for entry in &self.entries {
+            debug_assert!((entry.op as usize) < ops.len());
+            paints |= entry.mask.intersects(&changed_mask);
+        }
+        if !paints {
+            return Some(Damage::None);
+        }
+        let mut area = Damage::None;
+        for &slot in changed {
+            if !self.candidates.contains(slot) {
+                continue;
+            }
+            let i = slot as usize;
+            if self.known.len() <= i {
+                self.known.resize(i + 1, false);
+                self.damages.resize(i + 1, Damage::None);
+            }
+            if !self.known[i] {
+                // This is the only scan of the prefix: `nsh-core`'s
+                // scanner, so the bounds, `AA` inflation and `Damage::All`
+                // fallback are exactly the full scan's.
+                self.damages[i] = scan.damage(ops, |s| slot_number(args, s), |s| s == slot);
+                self.known[i] = true;
+            }
+            area = area.union(self.damages[i]);
+        }
+        Some(area)
+    }
+}
+
+/// Whether any of `nums` reads an animated slot.
+fn has_slot<const N: usize>(nums: [Num; N]) -> bool {
+    nums.iter().any(|n| matches!(n, Num::Slot(_)))
+}
+
+fn path_op_has_slot(op: &PathOp) -> bool {
+    let mut mask = SlotMask::default();
+    mask.or_path(op);
+    !mask.is_empty()
+}
+
+fn has_slot_path(ops: &[PathOp]) -> bool {
+    !SlotMask::from_path(ops).is_empty()
+}
+
+/// The slots a `fill` / `stroke` / `clip` over `path` (the current path
+/// when `None`) depends on: its own operands and the transform active when
+/// it is painted; the current path is sticky from when it was built.
+fn shape_deps(path: Option<&[PathOp]>, current: &SlotMask, deps: &Deps) -> SlotMask {
+    let mut mask = deps.ctm.clone();
+    match path {
+        Some(ops) => mask.or(&SlotMask::from_path(ops)),
+        None => mask.or(current),
+    }
+    mask
+}
+
+/// `rect` within a canvas `w` × `h` points large (it paints inside it).
+fn within(rect: Bounds<Points>, w: f32, h: f32) -> Bounds<Points> {
+    let x0 = rect.origin.x.0.max(0.0);
+    let y0 = rect.origin.y.0.max(0.0);
+    let x1 = (rect.origin.x.0 + rect.size.width.0).min(w);
+    let y1 = (rect.origin.y.0 + rect.size.height.0).min(h);
+    if x1 <= x0 || y1 <= y0 {
+        return Bounds::default();
+    }
+    Bounds {
+        origin: point(Points(x0), Points(y0)),
+        size: size(Points(x1 - x0), Points(y1 - y0)),
+    }
 }
 
 /// Draws a canvas: records it first if needed.
@@ -507,6 +1093,84 @@ impl Default for State {
             baseline: CanvasTextBaseline::Alphabetic,
             singular: false,
         }
+    }
+}
+
+/// Whether the current shadow is visible (`blur > 0 || offset != 0`, with
+/// a color that has alpha).
+fn casts_shadow(state: &State) -> bool {
+    let (color, blur, ox, oy) = state.shadow;
+    !color.is_transparent() && (blur > 0.0 || ox != 0.0 || oy != 0.0)
+}
+
+/// Whether `state` and `paint` paint no pixel at all, so the recording can
+/// skip the paint before building its geometry, laying out its text or
+/// looking up its bitmap.
+///
+/// `paint` is the foreground of a shape, rect or text; `None` is an image,
+/// whose own pixels supply its color. Only `source-over` paints are
+/// considered: the other composites still change the destination outside
+/// the shape. A shadow keeps a transparent foreground visible, and
+/// `globalAlpha` multiplies the shadow's alpha, so it hides even a
+/// configured, opaque shadow.
+///
+/// This reads the animated values as they are now, once per recording; it
+/// never caches the decision on the operation list.
+fn paints_nothing(state: &State, args: &[Option<AnimationValue>], paint: Option<&Paint>) -> bool {
+    #[cfg(test)]
+    if !SKIP_PAINTS.with(std::cell::Cell::get) {
+        return false;
+    }
+    if state.composite != Composite::SourceOver {
+        return false;
+    }
+    if state.alpha == 0.0 {
+        return true;
+    }
+    let Some(paint) = paint else {
+        // An image's pixels are its color; the alpha above is the only
+        // state-wide attenuation.
+        return false;
+    };
+    if casts_shadow(state) {
+        // A transparent foreground still shows its shadow.
+        return false;
+    }
+    match paint {
+        Paint::Color(c) => c.is_transparent(),
+        // `Paint::Slot` is an animated color; an unset slot resolves
+        // transparent, as `color` does.
+        Paint::Slot(s) => match args.get(*s as usize).copied().flatten() {
+            Some(AnimationValue::Color(c)) => Color(c).is_transparent(),
+            _ => true,
+        },
+        Paint::Gradient(g) => match g.shape {
+            // `brush` draws nothing for no stops, a zero-length linear
+            // gradient, or a radial gradient it cannot draw as one ellipse.
+            GradientShape::Linear { start, end } => {
+                g.stops.is_empty() || (start.x.0 == end.x.0 && start.y.0 == end.y.0)
+            }
+            GradientShape::Radial {
+                start,
+                start_radius,
+                end,
+                end_radius,
+            } => {
+                g.stops.is_empty()
+                    || radial([
+                        start.x.0,
+                        start.y.0,
+                        start_radius.0,
+                        end.x.0,
+                        end.y.0,
+                        end_radius.0,
+                    ])
+                    .is_none()
+            }
+            // A conic gradient paints wedges even when one stop is
+            // transparent; only no stops paint nothing.
+            GradientShape::Conic { .. } => g.stops.is_empty(),
+        },
     }
 }
 
@@ -943,6 +1607,10 @@ impl<'a> Replay<'a> {
         let Some(to_user) = self.state.transform.invert() else {
             return Ok(());
         };
+        // Before the geometry is built.
+        if self.paints_nothing(Some(self.paint(mode))) {
+            return Ok(());
+        }
         let rule = match mode {
             Mode::Fill(rule) => rule,
             Mode::Stroke => FillRule::NonZero,
@@ -954,6 +1622,10 @@ impl<'a> Replay<'a> {
     /// `fillRect` / `strokeRect` (the current path stays).
     fn rect(&mut self, r: &[Num; 4], mode: Mode) -> windows::core::Result<()> {
         if self.state.singular {
+            return Ok(());
+        }
+        // Before the rectangle geometry is made.
+        if self.paints_nothing(Some(self.paint(mode))) {
             return Ok(());
         }
         let geometry = self.rect_geometry(r)?;
@@ -1108,8 +1780,13 @@ impl<'a> Replay<'a> {
     }
 
     fn casts_shadow(&self) -> bool {
-        let (color, blur, ox, oy) = self.state.shadow;
-        !color.is_transparent() && (blur > 0.0 || ox != 0.0 || oy != 0.0)
+        casts_shadow(&self.state)
+    }
+
+    /// Whether this paint cannot change a pixel, so its geometry, layout
+    /// or bitmap need not be made ([`paints_nothing`]).
+    fn paints_nothing(&self, paint: Option<&Paint>) -> bool {
+        paints_nothing(&self.state, self.args, paint)
     }
 
     /// Draws the shadow of what `draw` paints.
@@ -1572,6 +2249,10 @@ impl<'a> Replay<'a> {
         if text.is_empty() || self.state.singular {
             return Ok(());
         }
+        // Before DirectWrite lays the text out and builds its glyphs.
+        if self.paints_nothing(Some(self.paint(mode))) {
+            return Ok(());
+        }
         let Some(entry) = self.text.layout(text, &self.state.font) else {
             return Ok(());
         };
@@ -1654,6 +2335,11 @@ impl<'a> Replay<'a> {
         dest: &[Num; 4],
     ) -> windows::core::Result<()> {
         if self.state.singular {
+            return Ok(());
+        }
+        // Before the bitmap is looked up; the image's own pixels are its
+        // color, so a transparent foreground does not hide it.
+        if self.paints_nothing(None) {
             return Ok(());
         }
         let Some(bitmap) = self.bitmap(uri) else {
@@ -2477,6 +3163,30 @@ impl IDWriteTextRenderer_Impl for Outliner_Impl {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_damage_area_stays_within_the_canvas() {
+        let area = Bounds {
+            origin: point(Points(-10.0), Points(-5.0)),
+            size: size(Points(120.0), Points(80.0)),
+        };
+        assert_eq!(
+            within(area, 100.0, 60.0),
+            Bounds {
+                origin: point(Points(0.0), Points(0.0)),
+                size: size(Points(100.0), Points(60.0)),
+            }
+        );
+        // What the canvas cannot show paints nothing.
+        let outside = Bounds {
+            origin: point(Points(150.0), Points(10.0)),
+            size: size(Points(10.0), Points(10.0)),
+        };
+        assert_eq!(
+            within(outside, 100.0, 60.0).size,
+            size(Points(0.0), Points(0.0))
+        );
+    }
+
     fn gradient(stops: &[(f32, u32)]) -> CanvasGradient {
         stops.iter().fold(
             CanvasGradient::conic(
@@ -2571,6 +3281,355 @@ mod tests {
         }
     }
 
+    /// Records `ops` with `args` on a transparent bitmap.
+    fn recorded(gfx: &Gfx, ops: &[CanvasOp], args: &[Option<AnimationValue>]) -> Vec<u8> {
+        let images = FxHashMap::default();
+        let mut text = TextCache::default();
+        let list = record(gfx, ops, 0, args, &images, &mut text).unwrap();
+        pixels(gfx, &[&list])
+    }
+
+    fn alpha_at(data: &[u8], x: usize, y: usize) -> u8 {
+        data[(y * 100 + x) * 4 + 3]
+    }
+
+    /// Paints that cannot change a pixel (zero global alpha, a transparent
+    /// color or animated color) record exactly what their omission paints,
+    /// and the same recorded list paints again once the values are visible.
+    #[test]
+    fn invisible_source_over_paints_are_omitted() {
+        let c = Num::Const;
+        // `alphas[1]` (slot 0) is zero and the animated color (slot 1) is
+        // transparent while recording; the static zero alpha and the
+        // transparent color stay invisible at every value.
+        let ops = vec![
+            CanvasOp::GlobalAlpha(c(0.0)),
+            CanvasOp::FillStyle(Paint::Color(Color(0x00ff00ff))),
+            CanvasOp::FillRect([c(2.0), c(2.0), c(20.0), c(20.0)]),
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::Rect([c(30.0), c(2.0), c(20.0), c(20.0)])),
+            CanvasOp::Stroke(None),
+            CanvasOp::Fill(None, FillRule::NonZero),
+            CanvasOp::GlobalAlpha(c(1.0)),
+            CanvasOp::FillStyle(Paint::Color(Color::TRANSPARENT)),
+            CanvasOp::FillRect([c(2.0), c(30.0), c(20.0), c(20.0)]),
+            CanvasOp::FillStyle(Paint::Slot(1)),
+            CanvasOp::FillRect([c(30.0), c(30.0), c(20.0), c(20.0)]),
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::FillRect([c(60.0), c(2.0), c(20.0), c(20.0)]),
+        ];
+        // The same state and current path, with the four paints that show
+        // nothing removed.
+        let omitted = vec![
+            CanvasOp::GlobalAlpha(c(0.0)),
+            CanvasOp::FillStyle(Paint::Color(Color(0x00ff00ff))),
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::Rect([c(30.0), c(2.0), c(20.0), c(20.0)])),
+            CanvasOp::GlobalAlpha(c(1.0)),
+            CanvasOp::FillStyle(Paint::Color(Color::TRANSPARENT)),
+            CanvasOp::FillStyle(Paint::Slot(1)),
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::FillRect([c(60.0), c(2.0), c(20.0), c(20.0)]),
+        ];
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let hidden = [
+            Some(AnimationValue::Number(0.0)),
+            Some(AnimationValue::Color(0x00000000)),
+        ];
+        let elided = recorded(&gfx, &ops, &hidden);
+        assert_eq!(elided, recorded(&gfx, &omitted, &hidden));
+        // The shortcut itself changes no pixel.
+        let control = {
+            SKIP_PAINTS.with(|skip| skip.set(false));
+            let pixels = recorded(&gfx, &ops, &hidden);
+            SKIP_PAINTS.with(|skip| skip.set(true));
+            pixels
+        };
+        assert_eq!(elided, control);
+        // A visible control paints, and none of the invisible paints do.
+        assert!(alpha_at(&elided, 70, 12) > 0);
+        for (x, y) in [(12, 12), (40, 12), (12, 40), (40, 40)] {
+            assert_eq!(alpha_at(&elided, x, y), 0, "({x}, {y})");
+        }
+        // Re-recording the same operations with visible values paints the
+        // paints the zero values hid.
+        let visible = [
+            Some(AnimationValue::Number(1.0)),
+            Some(AnimationValue::Color(0x00ff00ff)),
+        ];
+        let shown = recorded(&gfx, &ops, &visible);
+        assert!(alpha_at(&shown, 40, 12) > 0, "the animated alpha");
+        assert!(alpha_at(&shown, 40, 40) > 0, "the animated color");
+        // The constant zero alpha and the transparent color stay hidden.
+        assert_eq!(alpha_at(&shown, 12, 12), 0);
+        assert_eq!(alpha_at(&shown, 12, 40), 0);
+    }
+
+    /// The shortcut keeps a shadow of a transparent foreground and never
+    /// stands in for `clearRect`; a visible paint over an empty current
+    /// path still paints nothing.
+    #[test]
+    fn clear_rect_and_shadows_keep_their_effects() {
+        let c = Num::Const;
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        // A transparent foreground with a configured shadow is never
+        // skipped. Direct2D's shadow effect takes the drawn shape's alpha,
+        // which is zero here, so the pixels are empty either way: the test
+        // holds the conservative decision and byte equality.
+        let shadowed = vec![
+            CanvasOp::GlobalAlpha(c(1.0)),
+            CanvasOp::FillStyle(Paint::Color(Color::TRANSPARENT)),
+            CanvasOp::ShadowColor(Color(0xff0000ff)),
+            CanvasOp::ShadowBlur(Points(2.0)),
+            CanvasOp::ShadowOffset(point(Points(10.0), Points(0.0))),
+            CanvasOp::FillRect([c(10.0), c(10.0), c(20.0), c(20.0)]),
+        ];
+        let state = State {
+            fill: Paint::Color(Color::TRANSPARENT),
+            shadow: (Color(0xff0000ff), 2.0, 10.0, 0.0),
+            ..State::default()
+        };
+        assert!(!paints_nothing(&state, &[], Some(&state.fill)));
+        let control = {
+            SKIP_PAINTS.with(|skip| skip.set(false));
+            let pixels = recorded(&gfx, &shadowed, &[]);
+            SKIP_PAINTS.with(|skip| skip.set(true));
+            pixels
+        };
+        assert_eq!(recorded(&gfx, &shadowed, &[]), control);
+        // A foreground that does paint keeps its shadow.
+        let translucent = vec![
+            CanvasOp::GlobalAlpha(c(1.0)),
+            CanvasOp::FillStyle(Paint::Color(Color(0x00ff0080))),
+            CanvasOp::ShadowColor(Color(0xff0000ff)),
+            CanvasOp::ShadowBlur(Points(2.0)),
+            CanvasOp::ShadowOffset(point(Points(10.0), Points(0.0))),
+            CanvasOp::FillRect([c(10.0), c(10.0), c(20.0), c(20.0)]),
+        ];
+        let shadow = recorded(&gfx, &translucent, &[]);
+        assert!(alpha_at(&shadow, 12, 20) > 0, "the foreground");
+        assert!(alpha_at(&shadow, 35, 20) > 0, "the shadow");
+        // `clearRect` erases what was painted, whatever the paint state.
+        let erased = vec![
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::FillRect([c(10.0), c(10.0), c(40.0), c(20.0)]),
+            CanvasOp::ClearRect([c(20.0), c(10.0), c(10.0), c(20.0)]),
+        ];
+        let erased = recorded(&gfx, &erased, &[]);
+        assert!(alpha_at(&erased, 15, 20) > 0);
+        assert_eq!(alpha_at(&erased, 25, 20), 0);
+        // An empty current path is a no-op, not an error.
+        let empty = vec![
+            CanvasOp::FillStyle(Paint::Color(Color(0x00ff00ff))),
+            CanvasOp::Fill(None, FillRule::NonZero),
+            CanvasOp::Stroke(None),
+        ];
+        assert!(recorded(&gfx, &empty, &[]).iter().all(|b| *b == 0));
+    }
+
+    /// Zero-alpha text is skipped before DirectWrite lays it out, and a
+    /// later nonzero value lays it out and draws the same glyphs.
+    #[test]
+    fn text_op_zero_alpha_skips_layout() {
+        let c = Num::Const;
+        let text = "glyphs";
+        let ops = vec![
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+            CanvasOp::FillText {
+                text: text.into(),
+                x: c(10.0),
+                y: c(30.0),
+                max_width: None,
+            },
+        ];
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let hidden = [Some(AnimationValue::Number(0.0))];
+        let mut cache = TextCache::default();
+        let images = FxHashMap::default();
+        let list = record(&gfx, &ops, 0, &hidden, &images, &mut cache).unwrap();
+        assert!(cache.layouts.is_empty(), "skipped before the layout");
+        assert!(pixels(&gfx, &[&list]).iter().all(|b| *b == 0));
+        // The same drawing with the text operation omitted paints the
+        // same pixels.
+        let omitted = vec![
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+        ];
+        assert_eq!(pixels(&gfx, &[&list]), recorded(&gfx, &omitted, &hidden));
+        // A nonzero alpha lays the text out and draws the same glyphs it
+        // does without the animated alpha.
+        let shown = [Some(AnimationValue::Number(1.0))];
+        let mut cache = TextCache::default();
+        let list = record(&gfx, &ops, 0, &shown, &images, &mut cache).unwrap();
+        assert_eq!(cache.layouts.len(), 1);
+        let shown = pixels(&gfx, &[&list]);
+        assert!(shown.iter().any(|b| *b != 0), "the glyphs");
+        let control = vec![
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::GlobalAlpha(c(1.0)),
+            CanvasOp::FillText {
+                text: text.into(),
+                x: c(10.0),
+                y: c(30.0),
+                max_width: None,
+            },
+        ];
+        assert_eq!(shown, recorded(&gfx, &control, &[]));
+    }
+
+    /// A conic gradient's transparent stop does not make the paint a
+    /// transparent solid: its wedges still paint toward the opaque stops,
+    /// byte for byte as without the shortcut. Only a gradient with no stops
+    /// paints nothing.
+    #[test]
+    fn conic_gradient_stroke_is_painted_even_under_animated_color_slots() {
+        let c = Num::Const;
+        // Around (50, 30): transparent at 0, red at half a turn (the
+        // rectangle's left edge), green at a full turn.
+        let conic = [(0.0, 0x00000000), (0.5, 0xff0000ff), (1.0, 0x00ff00ff)]
+            .iter()
+            .fold(
+                CanvasGradient::conic(Radians(0.0), point(Points(50.0), Points(30.0))),
+                |g, (o, c)| g.add_color_stop(Percentage(*o), Color(*c)),
+            );
+        let ops = vec![
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+            CanvasOp::StrokeStyle(Paint::Gradient(Arc::new(conic.clone()))),
+            CanvasOp::LineWidth(c(8.0)),
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::Rect([c(20.0), c(10.0), c(60.0), c(40.0)])),
+            CanvasOp::Stroke(None),
+        ];
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let args = [Some(AnimationValue::Number(1.0))];
+        let elided = recorded(&gfx, &ops, &args);
+        let control = {
+            SKIP_PAINTS.with(|skip| skip.set(false));
+            let pixels = recorded(&gfx, &ops, &args);
+            SKIP_PAINTS.with(|skip| skip.set(true));
+            pixels
+        };
+        assert_eq!(elided, control);
+        // The stop at half a turn (the rectangle's left edge) is opaque.
+        assert!(alpha_at(&control, 20, 30) > 0);
+        // No stops: `brush` paints nothing either way.
+        let empty = CanvasGradient::conic(Radians(0.0), point(Points(50.0), Points(30.0)));
+        let ops = vec![
+            CanvasOp::StrokeStyle(Paint::Gradient(Arc::new(empty))),
+            CanvasOp::LineWidth(c(8.0)),
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::Rect([c(20.0), c(10.0), c(60.0), c(40.0)])),
+            CanvasOp::Stroke(None),
+        ];
+        assert!(recorded(&gfx, &ops, &args).iter().all(|b| *b == 0));
+    }
+
+    /// An image at zero global alpha is skipped on the alpha alone; at a
+    /// nonzero alpha a transparent foreground fill/stroke does not hide it
+    /// (the bitmap's own pixels are its color).
+    #[test]
+    fn image_with_zero_alpha_is_skipped() {
+        // Even a configured, opaque shadow paints nothing at alpha 0
+        // (`shadow` multiplies its color by the state's alpha).
+        let state = State {
+            alpha: 0.0,
+            shadow: (Color(0xff0000ff), 4.0, 10.0, 0.0),
+            fill: Paint::Color(Color::TRANSPARENT),
+            ..State::default()
+        };
+        assert!(paints_nothing(&state, &[], None));
+    }
+
+    #[test]
+    fn image_with_transparent_fill_is_not() {
+        let state = State {
+            alpha: 1.0,
+            fill: Paint::Color(Color::TRANSPARENT),
+            stroke: Paint::Color(Color::TRANSPARENT),
+            shadow: (Color(0xff0000ff), 4.0, 10.0, 0.0),
+            ..State::default()
+        };
+        assert!(!paints_nothing(&state, &[], None));
+    }
+
+    /// A configured shadow is invisible at zero global alpha: `shadow`
+    /// multiplies the shadow color's alpha by the state's.
+    #[test]
+    fn shadows_with_zero_global_alpha_make_no_pixels() {
+        let c = Num::Const;
+        let state = State {
+            alpha: 0.0,
+            shadow: (Color(0xff0000ff), 4.0, 10.0, 0.0),
+            fill: Paint::Color(Color(0x00ff00ff)),
+            ..State::default()
+        };
+        assert!(paints_nothing(&state, &[], Some(&state.fill)));
+        // The same drawing at nonzero alpha keeps its shadow: the shortcut
+        // must not skip an opaque or transparent foreground that casts one.
+        let state = State {
+            alpha: 1.0,
+            fill: Paint::Color(Color::TRANSPARENT),
+            ..state
+        };
+        assert!(!paints_nothing(&state, &[], Some(&state.fill)));
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let ops = vec![
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+            CanvasOp::FillStyle(Paint::Color(Color(0x00ff00ff))),
+            CanvasOp::ShadowColor(Color(0xff0000ff)),
+            CanvasOp::ShadowBlur(Points(2.0)),
+            CanvasOp::ShadowOffset(point(Points(10.0), Points(0.0))),
+            CanvasOp::FillRect([c(10.0), c(10.0), c(20.0), c(20.0)]),
+        ];
+        let hidden = [Some(AnimationValue::Number(0.0))];
+        assert!(recorded(&gfx, &ops, &hidden).iter().all(|b| *b == 0));
+        let visible = [Some(AnimationValue::Number(1.0))];
+        let shown = recorded(&gfx, &ops, &visible);
+        assert!(alpha_at(&shown, 35, 20) > 0, "the shadow");
+        assert!(alpha_at(&shown, 15, 20) > 0, "the fill");
+    }
+
+    /// The decision is made while recording: one recorded list paints at
+    /// zero alpha and again at nonzero alpha.
+    #[test]
+    fn reappearance_after_alpha_becomes_nonzero() {
+        let c = Num::Const;
+        let ops = vec![
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::FillRect([c(10.0), c(10.0), c(40.0), c(20.0)]),
+        ];
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        assert!(
+            recorded(&gfx, &ops, &[Some(AnimationValue::Number(0.0))])
+                .iter()
+                .all(|b| *b == 0)
+        );
+        let shown = recorded(&gfx, &ops, &[Some(AnimationValue::Number(1.0))]);
+        assert!(alpha_at(&shown, 30, 20) > 0);
+    }
+
     #[test]
     fn a_split_drawing_draws_what_the_whole_one_does() {
         let c = Num::Const;
@@ -2637,6 +3696,70 @@ mod tests {
                 px(&alone, 40, 25)[3]
             );
         }
+        // A tail with a transparent stroke and a later stroke that changes,
+        // inside a clip the head pushes and the tail restores: the two
+        // lists paint what the whole drawing does at every value.
+        let ops = vec![
+            CanvasOp::Save,
+            CanvasOp::Translate(c(10.0), c(5.0)),
+            CanvasOp::Path(PathOp::Rect([c(0.0), c(0.0), c(40.0), c(30.0)])),
+            CanvasOp::Clip(None, FillRule::NonZero),
+            CanvasOp::FillStyle(Paint::Color(Color(0x0000ffff))),
+            CanvasOp::FillRect([c(0.0), c(0.0), c(20.0), c(20.0)]),
+            // The tail starts at the animated alpha.
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::Rect([c(0.0), c(0.0), c(30.0), c(30.0)])),
+            CanvasOp::Stroke(None),
+            CanvasOp::GlobalAlpha(c(1.0)),
+            CanvasOp::StrokeStyle(Paint::Slot(1)),
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::Rect([c(5.0), c(5.0), c(20.0), c(20.0)])),
+            CanvasOp::Stroke(None),
+            CanvasOp::Restore,
+        ];
+        let drawing = Drawing {
+            ops: ops.clone(),
+            ..Drawing::default()
+        };
+        let at = split(&drawing);
+        assert_eq!(at, 6);
+        let pixels_at = |data: &[u8], x: usize, y: usize| data[(y * 100 + x) * 4..][..4].to_vec();
+        for (alpha, color) in [(0.0, 0x00000000), (0.5, 0xff0000ff), (1.0, 0x0000ffff)] {
+            let args = [
+                Some(AnimationValue::Number(alpha)),
+                Some(AnimationValue::Color(color)),
+            ];
+            let whole = record(&gfx, &ops, 0, &args, &images, &mut text).unwrap();
+            let head = record(&gfx, &ops[..at], 0, &args, &images, &mut text).unwrap();
+            let tail = record(&gfx, &ops, at, &args, &images, &mut text).unwrap();
+            assert_eq!(
+                pixels(&gfx, &[&head, &tail]),
+                pixels(&gfx, &[&whole]),
+                "alpha {alpha}, color {color:#010x}"
+            );
+        }
+        // At zero the transparent stroke paints nothing; the later stroke
+        // paints once its color is visible.
+        let zero = [
+            Some(AnimationValue::Number(0.0)),
+            Some(AnimationValue::Color(0x00000000)),
+        ];
+        let whole = record(&gfx, &ops, 0, &zero, &images, &mut text).unwrap();
+        let data = pixels(&gfx, &[&whole]);
+        // The transparent stroke's right edge, outside the head's fill.
+        assert_eq!(pixels_at(&data, 40, 20), [0, 0, 0, 0]);
+        // The later stroke is invisible, so the head's blue fill stays.
+        assert_eq!(pixels_at(&data, 15, 20), [255, 0, 0, 255]);
+        let visible = [
+            Some(AnimationValue::Number(1.0)),
+            Some(AnimationValue::Color(0xff0000ff)),
+        ];
+        let whole = record(&gfx, &ops, 0, &visible, &images, &mut text).unwrap();
+        let data = pixels(&gfx, &[&whole]);
+        assert!(pixels_at(&data, 40, 20)[3] > 0);
+        // The red stroke now covers the blue fill's edge.
+        assert_ne!(pixels_at(&data, 15, 20), [255, 0, 0, 255]);
     }
 
     #[test]
@@ -2857,6 +3980,441 @@ mod tests {
         let steps = conic_steps(&gradient(&[(0.0, 0), (0.3, 0), (1.0, 0)]));
         assert_eq!(steps.len(), CONIC_WEDGES + 2);
         assert!(steps.contains(&0.3));
+    }
+
+    /// The full scan, as [`set_args`] ran it before the index.
+    fn full_damage(ops: &[CanvasOp], args: &[Option<AnimationValue>], changed: &[u16]) -> Damage {
+        DamageScan::default().damage(ops, |s| slot_number(args, s), |s| changed.contains(&s))
+    }
+
+    /// The index's area, or `None` when the drawing keeps the full scans.
+    fn indexed_damage(
+        index: &mut DamageIndex,
+        ops: &[CanvasOp],
+        args: &[Option<AnimationValue>],
+        changed: &[u16],
+    ) -> Option<Damage> {
+        let mut scan = DamageScan::default();
+        index.damage(&mut scan, ops, args, changed)
+    }
+
+    fn slot_args(values: &[(u16, AnimationValue)]) -> Vec<Option<AnimationValue>> {
+        let len = values
+            .iter()
+            .map(|(slot, _)| *slot as usize + 1)
+            .max()
+            .unwrap_or(0);
+        let mut args = vec![None; len];
+        for &(slot, value) in values {
+            args[slot as usize] = Some(value);
+        }
+        args
+    }
+
+    /// A 48-piece trail: every piece strokes a constant line with its own
+    /// animated alpha, with static strokes before and after it.
+    fn trail() -> Vec<CanvasOp> {
+        let c = Num::Const;
+        let mut ops = vec![
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::LineWidth(c(2.0)),
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::MoveTo(c(0.0), c(2.0))),
+            CanvasOp::Path(PathOp::LineTo(c(80.0), c(2.0))),
+            CanvasOp::Stroke(None),
+        ];
+        for i in 0..48u16 {
+            let y = 4.0 + f32::from(i);
+            ops.push(CanvasOp::GlobalAlpha(Num::Slot(i)));
+            ops.push(CanvasOp::BeginPath);
+            ops.push(CanvasOp::Path(PathOp::MoveTo(c(0.0), c(y))));
+            ops.push(CanvasOp::Path(PathOp::LineTo(c(40.0), c(y))));
+            ops.push(CanvasOp::Stroke(None));
+        }
+        ops.push(CanvasOp::GlobalAlpha(c(1.0)));
+        ops.push(CanvasOp::BeginPath);
+        ops.push(CanvasOp::Path(PathOp::MoveTo(c(0.0), c(56.0))));
+        ops.push(CanvasOp::Path(PathOp::LineTo(c(80.0), c(56.0))));
+        ops.push(CanvasOp::Stroke(None));
+        ops
+    }
+
+    fn trail_args(values: &[(u16, f32)]) -> Vec<Option<AnimationValue>> {
+        let values: Vec<_> = values
+            .iter()
+            .map(|&(slot, value)| (slot, AnimationValue::Number(value)))
+            .collect();
+        slot_args(&values)
+    }
+
+    /// Every indexed case matches the original full scan exactly, and the
+    /// cases the index cannot bound keep the full scans.
+    #[test]
+    fn candidate_damage_matches_full_scans() {
+        let c = Num::Const;
+        // The trail: only the changed trail slots paint; a trailing static
+        // stroke never does; an alpha of zero still has its conservative
+        // area; a slot no operation reads is `None` without painting.
+        let ops = trail();
+        let mut index = DamageIndex::new(&ops);
+        assert!(index.supported);
+        assert_eq!(index.entries.len(), 48);
+        let args = trail_args(&[(10, 0.5), (11, 0.5), (12, 0.5), (13, 0.5), (14, 0.5)]);
+        for changed in [vec![10], vec![10, 11, 12, 13, 14], vec![47], vec![10, 60]] {
+            let indexed = indexed_damage(&mut index, &ops, &args, &changed).unwrap();
+            assert_eq!(indexed, full_damage(&ops, &args, &changed), "{changed:?}");
+            assert!(matches!(indexed, Damage::Rect(_)), "{changed:?}");
+        }
+        // No changed slot at all.
+        assert_eq!(
+            indexed_damage(&mut index, &ops, &args, &[]),
+            Some(Damage::None)
+        );
+        // A slot nothing reads paints nothing, without a scan.
+        assert_eq!(
+            indexed_damage(&mut index, &ops, &args, &[60]),
+            Some(Damage::None)
+        );
+        // An alpha of zero keeps its conservative damaged area.
+        let zero = trail_args(&[(10, 0.0)]);
+        let indexed = indexed_damage(&mut index, &ops, &zero, &[10]).unwrap();
+        assert!(matches!(indexed, Damage::Rect(_)), "{indexed:?}");
+        assert_eq!(indexed, full_damage(&ops, &zero, &[10]));
+        // An unset slot scans as zero and is still damaged.
+        let unset = trail_args(&[]);
+        let indexed = indexed_damage(&mut index, &ops, &unset, &[10]).unwrap();
+        assert!(matches!(indexed, Damage::Rect(_)), "{indexed:?}");
+        assert_eq!(indexed, full_damage(&ops, &unset, &[10]));
+        // Non-finite values of an alpha-only slot cannot move anything.
+        let nan = trail_args(&[(10, f32::NAN)]);
+        let indexed = indexed_damage(&mut index, &ops, &nan, &[10]).unwrap();
+        assert_eq!(indexed, full_damage(&ops, &nan, &[10]));
+
+        // A color slot repaints its constant geometry.
+        let ops = vec![
+            CanvasOp::FillStyle(Paint::Slot(0)),
+            CanvasOp::FillRect([c(10.0), c(10.0), c(20.0), c(20.0)]),
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::FillRect([c(40.0), c(10.0), c(20.0), c(20.0)]),
+        ];
+        let mut index = DamageIndex::new(&ops);
+        assert!(index.supported);
+        let args = slot_args(&[(0, AnimationValue::Color(0xff0000ff))]);
+        assert_eq!(
+            indexed_damage(&mut index, &ops, &args, &[0]).unwrap(),
+            full_damage(&ops, &args, &[0])
+        );
+
+        // Save / restore carries the dependence and leaves the static
+        // paint after it alone.
+        let ops = vec![
+            CanvasOp::Save,
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::FillRect([c(10.0), c(10.0), c(20.0), c(20.0)]),
+            CanvasOp::Restore,
+            CanvasOp::FillRect([c(40.0), c(10.0), c(20.0), c(20.0)]),
+        ];
+        let mut index = DamageIndex::new(&ops);
+        assert!(index.supported);
+        let args = slot_args(&[(0, AnimationValue::Number(0.5))]);
+        assert_eq!(
+            indexed_damage(&mut index, &ops, &args, &[0]).unwrap(),
+            full_damage(&ops, &args, &[0])
+        );
+
+        // A static `Path2D` painted with an animated color.
+        let path: Arc<[PathOp]> = vec![PathOp::Rect([c(5.0), c(5.0), c(20.0), c(20.0)])].into();
+        let ops = vec![
+            CanvasOp::FillStyle(Paint::Slot(0)),
+            CanvasOp::Fill(Some(path), FillRule::NonZero),
+        ];
+        let mut index = DamageIndex::new(&ops);
+        assert!(index.supported);
+        let args = slot_args(&[(0, AnimationValue::Color(0xff0000ff))]);
+        assert_eq!(
+            indexed_damage(&mut index, &ops, &args, &[0]).unwrap(),
+            full_damage(&ops, &args, &[0])
+        );
+
+        // A dash offset is a state-only dependence: the same rectangle.
+        let ops = vec![
+            CanvasOp::LineDashOffset(Num::Slot(0)),
+            CanvasOp::LineWidth(c(4.0)),
+            CanvasOp::StrokeStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::StrokeRect([c(10.0), c(10.0), c(20.0), c(10.0)]),
+        ];
+        let mut index = DamageIndex::new(&ops);
+        assert!(index.supported);
+        let args = slot_args(&[(0, AnimationValue::Number(3.0))]);
+        assert_eq!(
+            indexed_damage(&mut index, &ops, &args, &[0]).unwrap(),
+            full_damage(&ops, &args, &[0])
+        );
+
+        // Slot-driven geometry keeps the full scans: a dependent path with
+        // a static transform, a constant path after a slot-driven
+        // translate, a slot-driven line width, a slot-driven `Path2D`, a
+        // changed clip, a changed `clearRect`, and a non-source-over
+        // composite.
+        let dependent_path = vec![
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::MoveTo(Num::Slot(0), c(0.0))),
+            CanvasOp::Path(PathOp::LineTo(c(10.0), c(10.0))),
+            CanvasOp::LineWidth(c(2.0)),
+            CanvasOp::Stroke(None),
+        ];
+        let translated = vec![
+            CanvasOp::Translate(Num::Slot(0), c(0.0)),
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::Rect([c(0.0), c(0.0), c(10.0), c(10.0)])),
+            CanvasOp::Fill(None, FillRule::NonZero),
+        ];
+        let wide = vec![
+            CanvasOp::LineWidth(Num::Slot(0)),
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::MoveTo(c(0.0), c(0.0))),
+            CanvasOp::Path(PathOp::LineTo(c(10.0), c(10.0))),
+            CanvasOp::Stroke(None),
+        ];
+        let animated_path: Arc<[PathOp]> =
+            vec![PathOp::Rect([Num::Slot(0), c(0.0), c(10.0), c(10.0)])].into();
+        let supplied_path = vec![CanvasOp::Fill(Some(animated_path), FillRule::NonZero)];
+        let clip = vec![
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::Rect([Num::Slot(0), c(0.0), c(10.0), c(10.0)])),
+            CanvasOp::Clip(None, FillRule::NonZero),
+        ];
+        let cleared = vec![CanvasOp::ClearRect([
+            Num::Slot(0),
+            c(0.0),
+            c(10.0),
+            c(10.0),
+        ])];
+        let composed = vec![
+            CanvasOp::Composite(Composite::Multiply),
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+            CanvasOp::FillRect([c(0.0), c(0.0), c(10.0), c(10.0)]),
+        ];
+        let args = slot_args(&[(0, AnimationValue::Number(5.0))]);
+        for (name, ops) in [
+            ("dependent path", dependent_path),
+            ("translated path", translated.clone()),
+            ("line width", wide),
+            ("supplied path", supplied_path),
+            ("clip", clip),
+            ("clearRect", cleared),
+            ("composite", composed),
+        ] {
+            let mut index = DamageIndex::new(&ops);
+            assert!(!index.supported, "{name}");
+            assert!(
+                indexed_damage(&mut index, &ops, &args, &[0]).is_none(),
+                "{name}"
+            );
+            // The fallback full scan still reports the conservative area.
+            let full = full_damage(&ops, &args, &[0]);
+            assert_ne!(full, Damage::None, "{name}");
+        }
+        // A non-finite slot in geometry falls back and stays `All`.
+        let ops = translated;
+        let args = slot_args(&[(0, AnimationValue::Number(f32::INFINITY))]);
+        let index = DamageIndex::new(&ops);
+        assert!(!index.supported);
+        assert_eq!(full_damage(&ops, &args, &[0]), Damage::All);
+
+        // One trail alone, and trail strokes alternating with 48 static
+        // strokes that follow: the index's area is the full scan's.
+        let mut only_trail = Vec::new();
+        for i in 0..48u16 {
+            let y = 2.0 + f32::from(i);
+            only_trail.push(CanvasOp::GlobalAlpha(Num::Slot(i)));
+            only_trail.push(CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))));
+            only_trail.push(CanvasOp::FillRect([c(0.0), c(y), c(20.0), c(1.0)]));
+        }
+        let mut index = DamageIndex::new(&only_trail);
+        assert!(index.supported);
+        let args = trail_args(&[(7, 0.5), (8, 0.5)]);
+        assert_eq!(
+            indexed_damage(&mut index, &only_trail, &args, &[7, 8]).unwrap(),
+            full_damage(&only_trail, &args, &[7, 8])
+        );
+        let mut alternating = Vec::new();
+        for i in 0..48u16 {
+            let y = 2.0 + f32::from(i);
+            alternating.push(CanvasOp::GlobalAlpha(Num::Slot(i)));
+            alternating.push(CanvasOp::FillRect([c(0.0), c(y), c(20.0), c(1.0)]));
+            alternating.push(CanvasOp::GlobalAlpha(c(1.0)));
+            alternating.push(CanvasOp::FillRect([c(30.0), c(y), c(20.0), c(1.0)]));
+        }
+        let mut index = DamageIndex::new(&alternating);
+        assert!(index.supported);
+        let args = trail_args(&[(3, 0.5), (4, 0.25)]);
+        assert_eq!(
+            indexed_damage(&mut index, &alternating, &args, &[3, 4]).unwrap(),
+            full_damage(&alternating, &args, &[3, 4])
+        );
+    }
+
+    /// A canvas view with `ops` and the given starting slot values.
+    fn canvas_view(ops: Vec<CanvasOp>, args: &[(u16, AnimationValue)]) -> NshView {
+        let view = NshView::new(2, nsh_core::ViewKind::Canvas);
+        {
+            let mut state = view.state_mut();
+            state.frame = Bounds {
+                origin: point(Points(0.0), Points(0.0)),
+                size: size(Points(100.0), Points(60.0)),
+            };
+            let mut canvas = CanvasState {
+                drawing: Some(Arc::new(Drawing {
+                    ops,
+                    ..Drawing::default()
+                })),
+                ..CanvasState::default()
+            };
+            for &(slot, value) in args {
+                let i = slot as usize;
+                if canvas.args.len() <= i {
+                    canvas.args.resize(i + 1, None);
+                }
+                canvas.args[i] = Some(value);
+            }
+            state.canvas = Some(canvas);
+        }
+        view
+    }
+
+    /// Runs the production [`set_args`] on a fresh view; `legacy` selects
+    /// the original full scans, `false` the candidate index once the
+    /// drawing has outlived a frame. Returns the damage and, in the index
+    /// arm, whether the drawing's index supports the shortcut.
+    fn write_damage(
+        ops: &[CanvasOp],
+        args: &[(u16, AnimationValue)],
+        values: &[(u16, AnimationValue)],
+        legacy: bool,
+    ) -> (Damage, Option<bool>) {
+        let view = canvas_view(ops.to_vec(), args);
+        // The drawing survives a frame before its index is made.
+        assert_eq!(set_args(&view, &[]), Damage::None);
+        LEGACY_SET_ARGS.with(|flag| flag.set(legacy));
+        let damage = set_args(&view, values);
+        LEGACY_SET_ARGS.with(|flag| flag.set(false));
+        let supported = view
+            .state()
+            .canvas
+            .as_ref()
+            .and_then(|canvas| canvas.index.as_ref())
+            .map(|index| index.supported);
+        (damage, supported)
+    }
+
+    /// The PRODUCTION `set_args` agrees with the original full scans, both
+    /// before and after the values are written: the indexed arm and the
+    /// `LEGACY_SET_ARGS` arm must return exactly the same `Damage`.
+    ///
+    /// The control is the explicit legacy flag, not the default path, so
+    /// the first build of this test already compared two different
+    /// implementations. To re-prove it failing-first, make the indexed
+    /// arm return its rectangle without `within`'s frame clamp (the
+    /// outside-the-frame case then fails) or return `Damage::Rect` where
+    /// the legacy arm returns `Damage::None` (the slot-read-by-no-paint
+    /// case then fails).
+    #[test]
+    fn set_args_matches_full_scans_on_the_production_wrapper() {
+        let c = Num::Const;
+        let args = [(0u16, AnimationValue::Number(0.5))];
+        let values = [(0u16, AnimationValue::Number(1.0))];
+
+        // An animated alpha over constant geometry, inside the frame: the
+        // rectangle passes through `within` unchanged.
+        let inside = vec![
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::FillRect([c(10.0), c(10.0), c(20.0), c(20.0)]),
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+            CanvasOp::FillRect([c(40.0), c(10.0), c(20.0), c(20.0)]),
+        ];
+        let (indexed, supported) = write_damage(&inside, &args, &values, false);
+        let (legacy, _) = write_damage(&inside, &args, &values, true);
+        assert_eq!(indexed, legacy);
+        assert_eq!(supported, Some(true));
+        assert!(matches!(indexed, Damage::Rect(_)), "{indexed:?}");
+        // Nothing changed: `Damage::None` before any scan.
+        let view = canvas_view(inside.clone(), &args);
+        assert_eq!(set_args(&view, &args), Damage::None);
+
+        // A change wholly outside the frame collapses to `Damage::None`.
+        let outside = vec![
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::FillRect([c(200.0), c(200.0), c(20.0), c(20.0)]),
+        ];
+        let (indexed, supported) = write_damage(&outside, &args, &values, false);
+        let (legacy, _) = write_damage(&outside, &args, &values, true);
+        assert_eq!(indexed, Damage::None);
+        assert_eq!(indexed, legacy);
+        assert_eq!(supported, Some(true));
+
+        // A partly outside change keeps the clamped rectangle.
+        let partial = vec![
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::FillRect([c(80.0), c(10.0), c(20.0), c(20.0)]),
+        ];
+        let (indexed, _) = write_damage(&partial, &args, &values, false);
+        let (legacy, _) = write_damage(&partial, &args, &values, true);
+        assert_eq!(indexed, legacy);
+        let Damage::Rect(rect) = indexed else {
+            panic!("{indexed:?}");
+        };
+        assert!(rect.origin.x.0 + rect.size.width.0 <= 100.0);
+
+        // An animated slot that no paint reads is `Damage::None`.
+        let unread = vec![
+            CanvasOp::FillStyle(Paint::Color(Color(0xff0000ff))),
+            CanvasOp::FillRect([c(10.0), c(10.0), c(20.0), c(20.0)]),
+            CanvasOp::GlobalAlpha(Num::Slot(0)),
+        ];
+        let (indexed, supported) = write_damage(&unread, &args, &values, false);
+        let (legacy, _) = write_damage(&unread, &args, &values, true);
+        assert_eq!(indexed, Damage::None);
+        assert_eq!(indexed, legacy);
+        assert_eq!(supported, Some(true));
+
+        // Repeated writes on one drawing reuse the cached areas and still
+        // agree with the full scans at every value, including zero.
+        let sequence = [
+            [(0u16, AnimationValue::Number(0.25))],
+            [(0u16, AnimationValue::Number(0.5))],
+            [(0u16, AnimationValue::Number(0.0))],
+            [(0u16, AnimationValue::Number(1.0))],
+        ];
+        let damages = |legacy: bool| {
+            let view = canvas_view(inside.clone(), &args);
+            assert_eq!(set_args(&view, &[]), Damage::None);
+            LEGACY_SET_ARGS.with(|flag| flag.set(legacy));
+            let damages: Vec<_> = sequence
+                .iter()
+                .map(|values| set_args(&view, values))
+                .collect();
+            LEGACY_SET_ARGS.with(|flag| flag.set(false));
+            damages
+        };
+        let indexed = damages(false);
+        assert_eq!(indexed, damages(true));
+        assert!(indexed.iter().all(|d| matches!(d, Damage::Rect(_))));
+
+        // A changed clip cannot be bounded: both arms return `Damage::All`.
+        let clip = vec![
+            CanvasOp::BeginPath,
+            CanvasOp::Path(PathOp::Rect([Num::Slot(0), c(0.0), c(10.0), c(10.0)])),
+            CanvasOp::Clip(None, FillRule::NonZero),
+        ];
+        let (indexed, supported) = write_damage(&clip, &args, &values, false);
+        let (legacy, _) = write_damage(&clip, &args, &values, true);
+        assert_eq!(indexed, Damage::All);
+        assert_eq!(indexed, legacy);
+        assert_eq!(supported, Some(false));
     }
 
     #[test]

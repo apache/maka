@@ -1,7 +1,7 @@
 import { type JSX, platform, signal, Text, View } from "nsh";
 import { Tree, type TreeItem, type TreeRef } from "nsh/base";
 import type { IconName } from "../icons";
-import { Button as GalleryButton, Caption, Card, colors, DemoPage, desktop, mono, terminal, TreeRow, treeItemClass, Toggle as Switch } from "../ui";
+import { Button as GalleryButton, Caption, Card, colors, DemoPage, desktop, terminal, TreeRow, treeItemClass, treeRowHeight, LastEvent, LabeledToggle } from "../ui";
 
 // `nsh/base`'s `Tree` owns which items are expanded, which one is selected,
 // the keyboard (one Tab stop: the arrows move the selection, Right and Left
@@ -12,11 +12,18 @@ import { Button as GalleryButton, Caption, Card, colors, DemoPage, desktop, mono
 
 const pointer = platform.idiom === "desktop";
 /**
- * A tree's well: in a terminal as wide as the card's content, so its band keeps a column inside the card's line, as
- * the card's other wells do, and its rows' text a column inside the band.
+ * A tree's well: a quiet fill without a border of its own, so the card holds one box (stronger in dark, where the
+ * muted fill is all but the card's color); in a terminal a box as wide as
+ * the card's content, so its band keeps a column inside the card's line, as the card's other wells do, and its rows'
+ * text a column inside the band.
  */
-const well = (size: string) => `${size} rounded-xl border border-border bg-card${terminal ? " w-full" : ""}`;
+const well = terminal ? "rounded-xl border border-border bg-card w-full" : "rounded-lg bg-muted/40 dark:bg-muted/70";
 const wellList = terminal ? "px-2" : "p-1.5";
+/**
+ * A well as tall as its first `rows` rows and the list's padding, so nothing is left blank below the last one; more
+ * rows scroll. The terminal keeps its height of whole rows (`terminalHeight`).
+ */
+const tall = (rows: number, terminalHeight: number) => ({ height: terminal ? terminalHeight : rows * treeRowHeight + 12 });
 
 /** A card's actions: in its header beside the title in a wide window, the
  * first row of its content otherwise, so a narrow card's subtitle keeps
@@ -129,7 +136,7 @@ export function TreeDemo() {
     return (
       <Card
         title="Files"
-        subtitle={`A project explorer: folders open with their chevron, a file opens with ${pointer ? "a double click or Return" : "a double tap"}, a build folder kept out of reach`}
+        subtitle={`${pointer ? "A double click" : "A double tap"} opens a file`}
         right={desktop() ? actions() : undefined}
       >
         {desktop() ? null : actions()}
@@ -140,7 +147,8 @@ export function TreeDemo() {
           selected={selected()}
           reveal
           accessibilityLabel="Project files"
-          class={well("h-80")}
+          class={well}
+          style={tall(pointer ? 10 : 8, 320)}
           listClass={wellList}
           itemClass={treeItemClass}
           onExpandedChange={({ expanded: next }) => expanded.set(next)}
@@ -170,15 +178,15 @@ export function TreeDemo() {
   function Settings() {
     const section = signal("notifications");
     return (
-      <Card title="Settings" subtitle="A sidebar of sections, the tree's own state: it starts with Privacy open">
+      <Card title="Settings" subtitle="Sections in a sidebar; Privacy starts open">
         <View style={{ flexDirection: desktop() ? "row" : "column", gap: 12 }}>
           <Tree
             items={sidebar}
             defaultExpanded={["privacy"]}
             defaultSelected="notifications"
             accessibilityLabel="Settings"
-            class="rounded-xl border border-border bg-card"
-            style={{ height: desktop() ? 280 : 300, width: desktop() ? 210 : undefined }}
+            class={well}
+            style={{ ...tall(8, desktop() ? 280 : 300), width: desktop() ? 210 : undefined }}
             listClass={wellList}
             itemClass={treeItemClass}
             onSelectedChange={({ selected: next }) => {
@@ -211,7 +219,7 @@ export function TreeDemo() {
     return (
       <Card
         title="10 100 items"
-        subtitle="Only the rows in view are made; a collapsed folder's 100 files never are"
+        subtitle="Only the rows in view are made"
         right={desktop() ? actions() : undefined}
       >
         {desktop() ? null : actions()}
@@ -221,7 +229,8 @@ export function TreeDemo() {
           expanded={expanded()}
           selected={selected()}
           accessibilityLabel="Logs"
-          class={well("h-72")}
+          class={well}
+          style={tall(pointer ? 10 : 7, 288)}
           listClass={wellList}
           itemClass={treeItemClass}
           onExpandedChange={({ expanded: next }) => expanded.set(next)}
@@ -241,8 +250,8 @@ export function TreeDemo() {
     return (
       <Card
         title="Read-only"
-        subtitle="A shared outline the app locks: no presses, no keys, no Tab stop"
-        right={<Switch value={locked()} onChange={(v) => locked.set(v)} label="Lock" />}
+        subtitle="An outline to read, not to change"
+        right={<LabeledToggle label="Lock" value={locked()} onChange={(v) => locked.set(v)} />}
       >
         <Tree
           items={[
@@ -260,7 +269,8 @@ export function TreeDemo() {
           defaultSelected="q4/goals"
           disabled={locked()}
           accessibilityLabel="Outline"
-          class={well("h-40")}
+          class={well}
+          style={tall(5, 160)}
           listClass={wellList}
           itemClass={treeItemClass}
           onSelectedChange={({ selected: next }) => last.set(`Outline ${next}`)}
@@ -274,7 +284,7 @@ export function TreeDemo() {
   function Last() {
     return (
       <Card title="Last event">
-        <Text style={{ fontSize: 13, color: colors.text, fontFamily: mono }}>{last()}</Text>
+        <LastEvent value={last()} hint="Choose an item" />
       </Card>
     );
   }

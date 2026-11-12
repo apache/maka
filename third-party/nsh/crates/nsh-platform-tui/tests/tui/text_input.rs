@@ -67,6 +67,17 @@ fn field(
     Terminal<TestBackend>,
     crossbeam_channel::Receiver<()>,
 ) {
+    field_with_height(props, 48)
+}
+
+fn field_with_height(
+    props: &str,
+    height: u32,
+) -> (
+    nsh_platform_tui::AppView,
+    Terminal<TestBackend>,
+    crossbeam_channel::Receiver<()>,
+) {
     let code = nsh_bundler::compile_module(
         "App.tsx",
         &format!(
@@ -76,7 +87,7 @@ fn field(
         const value = signal(""), changes = signal(0), selection = signal("0-0");
         const submitted = signal("no"), pressed = signal("none");
         mount(() => <View>
-            <Input {props} style={{{{ width: 160, height: 48, placeholderColor: "#123456" }}}}
+            <Input {props} style={{{{ width: 160, height: {height}, placeholderColor: "#123456" }}}}
                 onChange={{({{ value: v }}) => {{ value.set(v); changes.set(changes()+1); }}}}
                 onSelectionChange={{(e) => selection.set(`${{e.start}}-${{e.end}}`)}}
                 onKeyPress={{(e) => pressed.set(e.key)}} onSubmit={{() => submitted.set("yes")}} />
@@ -319,7 +330,7 @@ fn input_content_padding_and_embedding_origin_position_the_real_cursor() {
 
 #[test]
 fn multiline_wrapping_keeps_the_caret_visible_and_shift_up_selects_a_visual_line() {
-    let (mut view, mut terminal, rx) = field("multiline");
+    let (mut view, mut terminal, rx) = field_with_height("multiline", 16);
     // 160pt is 20 columns: 19 for the text and the column the layout keeps
     // after it, where the caret of a full line stays.
     view.handle(Input::Paste("abcdefghijklmnopqrs".into()));
@@ -327,8 +338,9 @@ fn multiline_wrapping_keeps_the_caret_visible_and_shift_up_selects_a_visual_line
     terminal.backend_mut().assert_cursor_position((19, 0));
     view.handle(Input::Paste("t".into()));
     draw_until(&mut view, &mut terminal, &rx, "changes:2");
-    // The 20th character wraps; the field is one row, scrolled to the caret.
-    terminal.backend_mut().assert_cursor_position((1, 0));
+    // The 20th character wraps; the field grows to a second row and shows
+    // both, the caret on the second.
+    terminal.backend_mut().assert_cursor_position((1, 1));
     view.handle(modified("Up", false, false, true));
     draw_until(&mut view, &mut terminal, &rx, "sel:1-20");
     view.handle(key("X"));
@@ -607,4 +619,36 @@ fn a_field_s_clear_and_mask_marks_take_a_press_on_the_blank_cells_beside_them() 
     // The blank Cells either side of `×` clear the field.
     press_cell(&mut view, clear + 1, y);
     draw_until(&mut view, &mut terminal, &rx, "value: shown:false");
+}
+
+#[test]
+fn a_field_that_grows_with_its_wrapped_text_shows_its_first_row_again() {
+    // The field's height follows its content size, which arrives a frame
+    // after the text wrapped: the frame between scrolls the one-row field to
+    // the caret's row, and the grown field must not keep that scroll.
+    let code = nsh_bundler::compile_module(
+        "App.tsx",
+        r##"
+        import { mount, signal, View, Text } from "nsh";
+        import { Input } from "nsh/base";
+        const height = signal(16), changes = signal(0);
+        mount(() => <View>
+            <Input multiline style={{ width: 160, height: height() }}
+                onChange={() => changes.set(changes() + 1)}
+                onContentSizeChange={({ size }) => height.set(size.height)} />
+            <Text>changes:{changes()} height:{height()}</Text>
+        </View>);
+    "##,
+        &[],
+    )
+    .unwrap();
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    view.load(Bundle::source(code)).unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "changes:0");
+    view.handle(key("Tab"));
+    view.handle(Input::Paste("abcdefghijklmnopqrstuvw".into()));
+    draw_until(&mut view, &mut terminal, &rx, "changes:1 height:32");
+    draw_until(&mut view, &mut terminal, &rx, "abcdefghijklmnopqrs");
+    terminal.backend_mut().assert_cursor_position((4, 1));
 }

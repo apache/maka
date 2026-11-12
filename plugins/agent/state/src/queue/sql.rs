@@ -45,6 +45,9 @@ pub(crate) enum Event {
     CallerStopped {
         caller: RunId,
     },
+    SteeringReleased {
+        run: RunId,
+    },
     Consumed {
         cut: Consume,
         run: RunId,
@@ -630,6 +633,9 @@ fn project(
         Event::CallerStopped { caller } => {
             retract_completions(c, session, *caller)?;
         }
+        Event::SteeringReleased { run } => {
+            move_steering_to_followup(c, session, *run)?;
+        }
         Event::Consumed { cut, run, target } => {
             for request in &cut.requests {
                 pending(c, session, request)?;
@@ -638,6 +644,70 @@ fn project(
         }
     }
     Ok(())
+}
+fn move_steering_to_followup(
+    c: &Connection,
+    session: &str,
+    run: RunId,
+) -> Result<usize, StoreError> {
+    Ok(c.execute(
+        "UPDATE agent_queue_items
+         SET lane='followup', target_run=NULL, entry_json=json_set(entry_json,'$.placement',json(?3))
+         WHERE session=?1 AND target_run=?2 AND state='pending' AND lane='steering'",
+        params![session, run.to_string(), serde_json::to_string(&Placement::Followup)?],
+    )?)
+}
+
+pub(crate) fn release_steering(
+    c: &Connection,
+    session: &str,
+    run: RunId,
+    at: UnixMillis,
+) -> Result<(), StoreError> {
+    if move_steering_to_followup(c, session, run)? == 0 {
+        return Ok(());
+    }
+    let next = cas(c, session, revision(c, session)?)?;
+    record(
+        c,
+        session,
+        next,
+        FactId::new(),
+        at,
+        &Event::SteeringReleased { run },
+    )
+}
+
+pub(super) fn recover_stopped_goal_steering(
+    c: &Connection,
+    owner: &RunOwner,
+    at: UnixMillis,
+) -> Result<BTreeSet<String>, StoreError> {
+    let rows = c
+        .prepare_cached(
+            "SELECT DISTINCT q.session,q.target_run
+         FROM agent_queue_items q
+         JOIN agent_runs r ON r.run=q.target_run AND r.session=q.session AND r.owner=q.owner
+         JOIN agent_facts f ON f.run=r.run AND f.id=r.stop_request
+         JOIN contents b ON b.id=f.body_content_id
+         WHERE q.owner=?1 AND q.state='pending' AND q.lane='steering'
+           AND json_extract(b.payload,'$.fact.diagnostic')=?2",
+        )?
+        .query_map(
+            params![serde_json::to_string(owner)?, GOAL_CONTROL_STOP],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut sessions = BTreeSet::new();
+    for (session, run) in rows {
+        let run = RunId::try_from(
+            uuid::Uuid::parse_str(&run).map_err(|_| invalid("invalid stopped steering Run"))?,
+        )
+        .map_err(invalid)?;
+        release_steering(c, &session, run, at)?;
+        sessions.insert(session);
+    }
+    Ok(sessions)
 }
 fn retract_completions(c: &Connection, session: &str, caller: RunId) -> Result<usize, StoreError> {
     Ok(c.execute(

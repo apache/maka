@@ -309,6 +309,77 @@ fn returned() -> OperationOutcome {
     }
 }
 
+#[tokio::test]
+async fn learning_a_nested_tool_preserves_the_code_mode_definitions() {
+    use crate::{ToolHandler, ToolNesting, ToolRegistration, availability::LoadedTools};
+
+    struct Lookup;
+    impl ToolExecutor for Lookup {
+        fn names(&self) -> Vec<String> {
+            vec!["Lookup".into()]
+        }
+        fn invoke(&self, _: String, _: Value, _: CancellationToken) -> ToolFuture {
+            Box::pin(async { Ok(json!({"found":true})) })
+        }
+    }
+
+    let fixture = Fixture::new().await;
+    let catalog = ToolCatalog::new([ToolRegistration {
+        definition: ToolDefinition {
+            name: "Lookup".into(),
+            description: "Look up a record by key.".into(),
+            input_schema: json!({"type":"object"}),
+            provider: None,
+            freeform: None,
+            output_schema: None,
+        },
+        handler: ToolHandler::Immediate(Arc::new(Lookup)),
+        semantics: ToolSemantics::Parallel,
+        nesting: ToolNesting::Nestable,
+    }])
+    .unwrap()
+    .with_discovery();
+    let loaded = LoadedTools::new(
+        fixture
+            .port
+            .store
+            .reader(SESSION.into(), tokio::runtime::Handle::current()),
+    );
+    let available = Availability::new(catalog, loaded);
+    let initial = fixture.cells.definitions(&available);
+    assert_eq!(
+        available.snapshot().await.unwrap().names(),
+        Vec::<String>::new()
+    );
+
+    let cell = fixture
+        .child(&child_reply(returned(), OperationCleanup::Confirmed))
+        .await;
+    let result = CellContent::json(&CellObservation::Completed {
+        cell_id: cell,
+        content: vec![],
+        result: json!({"found":true}),
+    })
+    .unwrap();
+    fixture
+        .append(
+            vec![CellEvent::Completed {
+                cell,
+                result: result.reference.clone(),
+                publication: SessionPublication {
+                    values: BTreeMap::new(),
+                    loaded_tools: Some(BTreeSet::from(["Lookup".into()])),
+                },
+            }],
+            vec![result],
+        )
+        .await;
+
+    assert_eq!(available.snapshot().await.unwrap().names(), ["Lookup"]);
+    assert_eq!(fixture.cells.definitions(&available), initial);
+    fixture.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn child_failure_observes_original_interruption_without_promoting_child_receipt() {
     let fixture = Fixture::new().await;

@@ -20,9 +20,12 @@
 // Windows' default installation uses account_home rather than an isolated HOME.
 #![cfg(unix)]
 
-// Cooperative Stop and a clean process restart, not crash/Unknown recovery.
 #[path = "support/host.rs"]
 mod host;
+#[path = "support/portable.rs"]
+mod portable;
+#[path = "support/restore_crash.rs"]
+mod restore_crash;
 use futures_util::FutureExt;
 use host::{Host, Sandbox};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::UnsyncBoxBody};
@@ -195,9 +198,13 @@ fn response(body: String, content_type: &str) -> Response<Body> {
         .unwrap()
 }
 fn sse(delta: Value, finish: &str) -> String {
+    sse_with_input_usage(delta, finish, 100)
+}
+
+fn sse_with_input_usage(delta: Value, finish: &str, input_tokens: u64) -> String {
     let first = json!({"id":"mainline","object":"chat.completion.chunk","choices":[{"index":0,"delta":delta,"finish_reason":null}]});
     let last = json!({"id":"mainline","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":finish}],
-        "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}});
+        "usage":{"prompt_tokens":input_tokens,"completion_tokens":10,"total_tokens":input_tokens + 10}});
     format!("data: {first}\n\ndata: {last}\n\ndata: [DONE]\n\n")
 }
 
@@ -410,14 +417,28 @@ async fn identities(sandbox: &Sandbox, session: &str, run: &Value) -> Vec<Value>
                 ))
             .then(|| {
                 json!({"id":record["id"],"run":record["run"],"kind":fact["kind"],
-                "step":fact.get("step"),"attempt":fact.get("attempt"),"tool":fact.get("tool"),"cleanup":fact.get("cleanup")})
+                "step":fact.get("step"),"attempt":fact.get("attempt"),"tool":fact.get("tool"),"cleanup":fact.get("cleanup"),"outcome":fact.get("outcome")})
             })
         })
         .collect()
 }
 
+enum Restart {
+    Clean,
+    DuringCheckpointRestore,
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect() {
+    exercise_reopen(Restart::Clean).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_crash_after_workspace_copy_preserves_binding_and_allows_explicit_restore() {
+    exercise_reopen(Restart::DuringCheckpointRestore).await;
+}
+
+async fn exercise_reopen(restart: Restart) {
     let sandbox = Sandbox::new().await.unwrap();
     let mut hosts = Vec::new();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(180), async {
@@ -432,7 +453,7 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
         let stop_wire = CancellationToken::new();
         let mut server = tokio::spawn(wire(listener, nonce.clone(), shell_command, stopped.clone(), events, stop_wire.clone()));
         hosts.push(Host::spawn(&sandbox).unwrap());
-        let (mut client, _) = hosts.last_mut().unwrap().ready().await.unwrap();
+        let (mut client, address) = hosts.last_mut().unwrap().ready().await.unwrap();
         let first_epoch = client.epoch();
         let source = client.source().clone();
         let publication = serde_json::to_value(client.publication().await.unwrap()).unwrap();
@@ -459,7 +480,8 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
         }), Attachments::new()).await;
         assert_eq!(created["kind"], "created");
         let session = created["session"]["id"].as_str().unwrap();
-        let sent = call(&client, "agent", "send", json!({"sessionId":session,"message":format!("Use Shell for the one fsynced effect {nonce}."),"delivery":"queue"}), Attachments::new()).await;
+        let attachment = portable::upload(&client, session).await;
+        let sent = call(&client, "agent", "send", json!({"sessionId":session,"message":format!("Use Shell for the one fsynced effect {nonce}."),"attachments":[attachment],"delivery":"queue"}), Attachments::new()).await;
         assert_eq!(sent["kind"], "queued");
         let target = json!({"kind":"message","messageId":sent["messageId"]});
         eprintln!("mainline stage: waiting for the actual Shell result");
@@ -512,7 +534,26 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
             }
         }
         let checkpoint = publish_workspace_checkpoint(&client, session, Value::Null).await;
-        hosts.last_mut().unwrap().quit(&mut client).await.unwrap();
+        let recipient = Sandbox::new().await.unwrap();
+        let archive = recipient.home.join("session.tar.gz");
+        let restore_parent = tempfile::tempdir_in(&sandbox.home).unwrap();
+        let restore = json!({
+            "checkpoint":{"sessionId":session,"revision":checkpoint["revision"]},
+            "parent":restore_parent.path(), "backend":{"kind":"model","connectionId":connection,"modelId":"gpt-4.1","thinkingLevel":null},
+            "permissions":{"access":"workspace_write","requestPermissions":true},
+            "acceptExternalWritersRisk":true,
+        });
+        let interrupted = match restart {
+            Restart::Clean => {
+                portable::export(&sandbox, session, &checkpoint, &archive).await;
+                hosts[0].quit(&mut client).await.unwrap();
+                None
+            }
+            Restart::DuringCheckpointRestore => {
+                tokio::fs::write(workspace.join("effects.log"), "later local edit").await.unwrap();
+                Some(restore_crash::interrupt(&sandbox, &mut hosts[0], &client, &address, &restore, &nonce).await)
+            }
+        };
         eprintln!("mainline stage: original Host exited; inspect canonical identities");
         let original = identities(&sandbox, session, &run).await;
         assert!(original.iter().filter(|fact| fact["kind"] == "model_attempt_prepared").count() >= 2);
@@ -531,7 +572,7 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
         assert_eq!(original.iter().filter(|fact| fact["kind"] == "tool_result_accepted").count(), 1);
         stopped.store(true, Ordering::SeqCst);
         hosts.push(Host::spawn(&sandbox).unwrap());
-        let (mut client, _) = hosts.last_mut().unwrap().ready().await.unwrap();
+        let (mut client, address) = hosts.last_mut().unwrap().ready().await.unwrap();
         assert_ne!(client.epoch(), first_epoch);
         assert_eq!(client.source(), &source);
         assert_eq!(serde_json::to_value(client.publication().await.unwrap()).unwrap(), publication);
@@ -543,15 +584,17 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
             "sessionId":session,"messageId":queued_message,"expectedRevision":queue["revision"],
         }), Attachments::new()).await;
         assert_eq!(delivery, json!({"kind":"missing","reason":"cancelled"}));
-        assert_eq!(tokio::fs::read_to_string(workspace.join("effects.log")).await.unwrap(), format!("{nonce}\n"));
-        // Restoring changes only the selected workspace, never the immutable original Run.
-        tokio::fs::write(workspace.join("effects.log"), "later local edit").await.unwrap();
-        let restored = call(&client, "agent", "restoreSessionCheckpoint", json!({
-            "checkpoint":{"sessionId":session,"revision":checkpoint["revision"]},
-            "parent":sandbox.home, "backend":{"kind":"model","connectionId":connection,"modelId":"gpt-4.1","thinkingLevel":null},
-            "permissions":{"access":"workspace_write","requestPermissions":true},
-            "acceptExternalWritersRisk":true,
-        }), Attachments::new()).await;
+        if let Some(attempt) = &interrupted {
+            attempt.check_recovery(&sandbox, &client, &address, &restore).await;
+            assert_eq!(tokio::fs::read_to_string(attempt.path.join("effects.log")).await.unwrap(), format!("{nonce}\n"));
+        } else {
+            assert_eq!(tokio::fs::read_to_string(workspace.join("effects.log")).await.unwrap(), format!("{nonce}\n"));
+            tokio::fs::write(workspace.join("effects.log"), "later local edit").await.unwrap();
+        }
+        let restored = call(&client, "agent", "restoreSessionCheckpoint", restore.clone(), Attachments::new()).await;
+        if let Some(interrupted) = &interrupted {
+            assert_ne!(restored["path"].as_str().unwrap(), interrupted.path.to_str().unwrap());
+        }
         assert_eq!(restored["sessionId"], session);
         assert_eq!(restored["head"], checkpoint);
         let restored_path = std::path::PathBuf::from(restored["path"].as_str().unwrap());
@@ -570,11 +613,31 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
             json!({"kind":"message","messageId":followup["messageId"]}), Some("completed")).await;
         assert_ne!(finished["execution"]["runId"], run);
         assert_eq!(finished["answer"]["text"], "Checkpoint follow-up completed.");
-        let successor = publish_workspace_checkpoint(&client, session, checkpoint["revision"].clone()).await;
+        let fork_archive = recipient.home.join("fork.tar.gz");
+        let successor = match restart {
+            Restart::Clean => {
+                let successor = portable::advance_during_export(&client, &sandbox, session, &checkpoint).await;
+                portable::check_stale(&sandbox, session, &checkpoint).await;
+                portable::export_fork(&client, &sandbox, session, &fork_archive).await;
+                successor
+            }
+            Restart::DuringCheckpointRestore => {
+                restore_crash::check_stale(&sandbox, &client, &address, &restore).await;
+                let successor = publish_workspace_checkpoint(&client, session, checkpoint["revision"].clone()).await;
+                assert_eq!(call(&client, "agent", "historyCheckpointHead", json!({"sessionId":session}), Attachments::new()).await, successor);
+                successor
+            }
+        };
         assert_ne!(successor["revision"], checkpoint["revision"]);
         assert_eq!(tokio::fs::read_to_string(restored_path.join("effects.log")).await.unwrap(), format!("{nonce}\n"));
         hosts.last_mut().unwrap().quit(&mut client).await.unwrap();
         assert_eq!(identities(&sandbox, session, &run).await, original);
+        if matches!(restart, Restart::Clean) {
+            tokio::fs::rename(&sandbox.root, sandbox.directory.path().join("offline-source")).await.unwrap();
+            tokio::fs::rename(workspace, sandbox.directory.path().join("offline-project")).await.unwrap();
+            portable::check(&recipient, &archive, session, &checkpoint, &nonce).await;
+            portable::check_fork(&recipient, &fork_archive, session).await;
+        }
         stop_wire.cancel();
         server.await.unwrap();
     })).catch_unwind().await;
@@ -591,12 +654,13 @@ async fn cooperative_stop_then_clean_process_reopen_preserves_completed_effect()
     }
     match result {
         Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
-        Ok(Err(error)) => panic!(
-            "bounded cooperative Stop and clean process reopen: {error}; cleanup={cleanup:?}"
-        ),
+        Ok(Err(error)) => panic!("bounded Host checkpoint restart: {error}; cleanup={cleanup:?}"),
         Err(panic) => std::panic::resume_unwind(panic),
     }
 }
 
 #[path = "mainline_reopen/steering.rs"]
 mod steering;
+
+#[path = "mainline_reopen/background_compaction.rs"]
+mod background_compaction;

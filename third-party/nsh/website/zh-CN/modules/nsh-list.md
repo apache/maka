@@ -68,6 +68,7 @@ mount(App);
 | `separator` | `ListSlot` | | 渲染在条目之间（单列）。 |
 | `keyExtractor` | `(item: T, index: number) => string` | `item.key`、`item.id` 或索引 | 条目在可见性 token 中的 key。 |
 | `initialScrollIndex` | `number` | | 在第一帧之前滚动到该条目。 |
+| `initialScrollAtEnd` | `boolean` | `false` | 首帧前滚动到末尾，测量行高时保持末尾位置；短内容从顶部排列。优先于 `initialScrollIndex`。 |
 | `contentStyle` | `ListContentStyle` | | 内容的内边距和间距：`padding`、`paddingHorizontal`、`paddingVertical`、`paddingTop`、`paddingRight`、`paddingBottom`、`paddingLeft`、`gap`、`rowGap`、`columnGap`（数字）。 |
 | `contentClass` | `string` | | 以类名（`p-*`、`gap-*`）给出的内容内边距和间距；`contentStyle` 优先。 |
 | `style` | `StyleProp<ViewStyle>` | | 列表自身的样式（需要给它尺寸：`flex: 1` 或高度）。 |
@@ -209,7 +210,7 @@ const refresh = async () => {
 
 ```ts
 type ListItemsProps<T> = Pick<ListProps<T>,
-  "each" | "children" | "keyExtractor" | "stickyHeaderIndices" | "initialScrollIndex"
+  "each" | "children" | "keyExtractor" | "stickyHeaderIndices" | "initialScrollIndex" | "initialScrollAtEnd"
   | "onViewableItemsChange" | "viewabilityConfig" | "refreshing" | "onRefresh"
   | "onLoadMore" | "loadMoreThreshold"
   | "header" | "footer" | "empty">;

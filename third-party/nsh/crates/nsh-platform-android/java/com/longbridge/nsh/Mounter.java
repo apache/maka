@@ -9,6 +9,8 @@ import android.graphics.Rect;
 import android.text.Layout;
 import android.util.SparseArray;
 import android.util.SparseLongArray;
+import android.os.Build;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.animation.AccelerateInterpolator;
@@ -104,8 +106,10 @@ final class Mounter {
 
     /** One part of a layout animation (`encode.rs` `layout_transition`). */
     private static final class Transition {
-        int curve; // 0 linear, 1 ease in, 2 ease out, 3 ease in-out, 4 spring, 5 the keyboard's
+        int curve; // 0 linear, 1 ease in, 2 ease out, 3 ease in-out, 4 fitted spring, 5 the keyboard's, 6 spring
         float damping;
+        /** A spring's progress (6), sampled evenly over the time it settles in (the duration), ending at 1. */
+        float[] samples;
         int property; // 0 opacity, 1 scale
         long duration, delay;
 
@@ -119,6 +123,16 @@ final class Mounter {
                     // React Native's spring interpolator.
                     float d = damping;
                     return t -> (float) (1 + Math.pow(2, -10 * t) * Math.sin((t - d / 4) * Math.PI * 2 / d));
+                }
+                case 6: {
+                    float[] p = samples;
+                    int last = p.length - 1;
+                    return t -> {
+                        if (t >= 1) return 1;
+                        float x = Math.max(t, 0) * last;
+                        int i = (int) x;
+                        return p[i] + (p[i + 1] - p[i]) * (x - i);
+                    };
                 }
                 default: return new AccelerateDecelerateInterpolator();
             }
@@ -230,6 +244,11 @@ final class Mounter {
     /** Whether the running app's web views may navigate to {@code url} (its capabilities). */
     boolean allowsWebview(String url) {
         return Native.allowsWebview(handle(), url);
+    }
+
+    /** Whether the running app's web pages may capture {@code kind} (its {@code webview.media}). */
+    boolean allowsWebMedia(String kind) {
+        return Native.allowsWebMedia(handle(), kind);
     }
 
     long handle() {
@@ -638,6 +657,10 @@ final class Mounter {
         Transition t = new Transition();
         t.curve = b.getInt();
         t.damping = b.getFloat();
+        if (t.curve == 6) {
+            t.samples = new float[b.getInt()];
+            for (int i = 0; i < t.samples.length; i++) t.samples[i] = b.getFloat();
+        }
         t.property = b.getInt();
         t.duration = (long) b.getFloat();
         t.delay = (long) b.getFloat();
@@ -687,7 +710,7 @@ final class Mounter {
                 v = modal.root;
                 break;
             }
-            case 12: v = new WebBox(context, this, id); break;
+            case 12: v = WebBox.make(context, this, id); break;
             case 13: v = new VideoBox(context, this, host, id); break;
             case 14: v = new CanvasBox(context, this, id); break;
             case 15: v = new ComponentBox(context, this, id); break;
@@ -719,7 +742,52 @@ final class Mounter {
         for (int i = 0; i < views.size(); i++) {
             View v = views.valueAt(i);
             if (v instanceof ComponentBox) ((ComponentBox) v).destroy();
+            if (v instanceof WebBox) ((WebBox) v).destroy();
+            if (v instanceof ScrollBox) {
+                ((ScrollBox) v).unmounted = true;
+                unkeyScroll((ScrollBox) v);
+            }
         }
+    }
+
+    // Scroll views the host watches (`NshView.watchScroll`), by `nativeID`.
+    private final java.util.Map<String, NshView.ScrollWatcher> scrollWatchers = new java.util.HashMap<>();
+    private final java.util.Map<String, ScrollBox> keyedScrolls = new java.util.HashMap<>();
+
+    void watchScroll(String key, NshView.ScrollWatcher watcher) {
+        if (watcher == null) {
+            scrollWatchers.remove(key);
+            return;
+        }
+        scrollWatchers.put(key, watcher);
+        ScrollBox box = keyedScrolls.get(key);
+        if (box != null) watcher.onAttached(new NshScrollHandle(box, key));
+    }
+
+    /** A scroll view's props were applied, with {@code key} its {@code nativeID} (null: none). */
+    private void keyScroll(ScrollBox box, String key) {
+        if (java.util.Objects.equals(box.hostKey, key)) return;
+        unkeyScroll(box);
+        if (key == null) return;
+        // Another scroll view of the same id makes way: the newest is watched.
+        ScrollBox previous = keyedScrolls.get(key);
+        if (previous != null) unkeyScroll(previous);
+        box.hostKey = key;
+        keyedScrolls.put(key, box);
+        NshView.ScrollWatcher watcher = scrollWatchers.get(key);
+        if (watcher != null) watcher.onAttached(new NshScrollHandle(box, key));
+    }
+
+    /** The scroll view is gone or lost its key: its handle goes dead and its watcher hears it. */
+    private void unkeyScroll(ScrollBox box) {
+        String key = box.hostKey;
+        if (key == null) return;
+        box.hostKey = null;
+        box.hostListeners.clear();
+        if (keyedScrolls.get(key) != box) return;
+        keyedScrolls.remove(key);
+        NshView.ScrollWatcher watcher = scrollWatchers.get(key);
+        if (watcher != null) watcher.onDetached();
     }
 
     /** The app's sounds and players (one per engine), made at its first audio command. UI thread. */
@@ -905,6 +973,10 @@ final class Mounter {
         if (v instanceof WebBox) ((WebBox) v).destroy();
         if (v instanceof VideoBox) ((VideoBox) v).destroy();
         if (v instanceof ComponentBox) ((ComponentBox) v).destroy();
+        if (v instanceof ScrollBox) {
+            ((ScrollBox) v).unmounted = true;
+            unkeyScroll((ScrollBox) v);
+        }
         if (v == focused) focused = null;
         views.remove(id);
         headerItems.remove(id);
@@ -1555,6 +1627,7 @@ final class Mounter {
             a.actionLabels[i] = string(objects, b.getInt());
         }
         a.testId = string(objects, b.getInt());
+        String nativeId = string(objects, b.getInt());
         float longPressDelay = b.getFloat();
         int ripple = b.getInt();
         Integer rippleColor = null;
@@ -1594,6 +1667,7 @@ final class Mounter {
         if (v instanceof TextBox) ((TextBox) v).a11y = a;
         a11y.put(id, a);
         a.apply(v);
+        if (v instanceof ScrollBox) keyScroll((ScrollBox) v, nativeId);
     }
 
     private static String string(Object[] objects, int index) {
@@ -1601,26 +1675,21 @@ final class Mounter {
     }
 
     /** Applies `[animating, (view, prop, value)*]` from the animator. */
-    /** A canvas's drawing; loads the images it draws (bitmaps: an SVG is an image that failed to load). */
+    /** A canvas's drawing; loads the images it draws (an SVG as its rasterized bitmap). */
     private void drawing(CanvasBox canvas, int[] code, Object[] objects) {
         for (String uri : canvas.setDrawing(code, objects)) {
             if (canvas.images.containsKey(uri)) continue;
             // At their natural size: the drawing may scale them anyway.
             Images.Image cached = images.request(uri, 0, 0, (image, error) -> {
-                if (image != null && !image.vector) {
+                if (image != null) {
                     canvas.images.put(uri, image);
                     canvas.invalidate();
                 } else {
-                    android.util.Log.w("nsh", "canvas image failed: " + (image != null ? notABitmap(uri) : error));
+                    android.util.Log.w("nsh", "canvas image failed: " + error);
                 }
             });
-            if (cached != null && cached.vector) android.util.Log.w("nsh", "canvas image failed: " + notABitmap(uri));
-            else if (cached != null) canvas.images.put(uri, cached);
+            if (cached != null) canvas.images.put(uri, cached);
         }
-    }
-
-    private static String notABitmap(String uri) {
-        return uri + " is an SVG image: canvases draw bitmaps (PNG, JPEG, ...)";
     }
 
     /** Canvas animated value slot `n` arrives as property `CANVAS_ARG + n` (`animation.rs`). */
@@ -2088,6 +2157,43 @@ final class Mounter {
         if (f.getRootView() == host.getRootView()) host.requestFocus();
     }
 
+    /**
+     * `Haptics` of `nsh/mobile`: the haptic feedback constant closest to
+     * `haptic` (`nsh_core::Haptic`, in the order `encode.rs` writes), which
+     * the view plays when the user's touch feedback setting allows it.
+     * API levels: {@link HapticFeedbackConstants#CONFIRM} /
+     * {@link HapticFeedbackConstants#REJECT} from 30 (else
+     * {@link HapticFeedbackConstants#VIRTUAL_KEY} /
+     * {@link HapticFeedbackConstants#LONG_PRESS});
+     * {@link HapticFeedbackConstants#SEGMENT_TICK} from 34 (else
+     * {@link HapticFeedbackConstants#CLOCK_TICK} for selection).
+     */
+    private static void haptic(View view, int haptic) {
+        boolean api30 = Build.VERSION.SDK_INT >= 30;
+        int feedback;
+        switch (haptic) {
+            case 0: // selection
+                feedback = Build.VERSION.SDK_INT >= 34
+                        ? HapticFeedbackConstants.SEGMENT_TICK
+                        : HapticFeedbackConstants.CLOCK_TICK;
+                break;
+            case 1: feedback = HapticFeedbackConstants.KEYBOARD_TAP; break; // light
+            case 2: feedback = HapticFeedbackConstants.VIRTUAL_KEY; break; // medium
+            case 3: feedback = HapticFeedbackConstants.LONG_PRESS; break; // heavy
+            case 4: feedback = HapticFeedbackConstants.CLOCK_TICK; break; // soft
+            case 5: feedback = HapticFeedbackConstants.CONTEXT_CLICK; break; // rigid
+            case 6: // success
+                feedback = api30 ? HapticFeedbackConstants.CONFIRM : HapticFeedbackConstants.VIRTUAL_KEY;
+                break;
+            case 7: feedback = HapticFeedbackConstants.LONG_PRESS; break; // warning: no constant of its own
+            case 8: // error
+                feedback = api30 ? HapticFeedbackConstants.REJECT : HapticFeedbackConstants.LONG_PRESS;
+                break;
+            default: return;
+        }
+        view.performHapticFeedback(feedback);
+    }
+
     private void command(ByteBuffer b, Object[] objects) {
         int id = b.getInt(), kind = b.getInt();
         View v = views.get(id);
@@ -2176,8 +2282,11 @@ final class Mounter {
                 boolean block = b.getInt() != 0;
                 clearJsResponder();
                 if (block && v != null) {
-                    // Scroll views around the responder stop taking its touches.
+                    // Scroll views around the responder stop taking its touches, and the presses around it
+                    // end: a handle held past the long press delay is no long press of the text around it.
                     for (ViewParent p = v.getParent(); p != null; p = p.getParent()) {
+                        if (p instanceof Box) ((Box) p).cancelPress();
+                        else if (p instanceof TextBox && ((TextBox) p).press != null) ((TextBox) p).press.cancel();
                         if (p instanceof ScrollBox) {
                             ((ScrollBox) p).jsBlocked = true;
                             blockedScrolls.add((ScrollBox) p);
@@ -2193,6 +2302,29 @@ final class Mounter {
                 if (v instanceof InputBox) ((InputBox) v).select(start, end);
                 break;
             }
+            case 49: {
+                float x = b.getFloat(), y = b.getFloat(), w = b.getFloat(), h = b.getFloat();
+                int actions = b.getInt();
+                if (v instanceof InputBox) ((InputBox) v).openEditMenu(x, y, w, h, actions);
+                break;
+            }
+            case 51: {
+                int request = b.getInt();
+                String generation = (String) objects[b.getInt()];
+                String start = (String) objects[b.getInt()];
+                String poll = (String) objects[b.getInt()];
+                String cleanup = (String) objects[b.getInt()];
+                if (v instanceof WebBox) ((WebBox) v).evaluate(request, generation, start, poll, cleanup);
+                break;
+            }
+            case 52: {
+                int request = b.getInt();
+                if (v instanceof WebBox) ((WebBox) v).cancelEvaluation(request);
+                break;
+            }
+            case 50:
+                if (v instanceof InputBox) ((InputBox) v).closeEditMenu();
+                break;
             case 21: {
                 String name = string(objects, b.getInt());
                 String json = string(objects, b.getInt());
@@ -2304,6 +2436,10 @@ final class Mounter {
             case 17: {
                 String text = (String) objects[b.getInt()];
                 (v != null ? v : host).announceForAccessibility(text);
+                break;
+            }
+            case 48: {
+                haptic(host, b.getInt());
                 break;
             }
             case 18: {

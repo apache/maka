@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use nsh_base::{accordion, accordion_header, accordion_item, accordion_panel, accordion_trigger};
 use nsh_core::{
-    AccessibilityRole, LayoutCurve, MountItem, NodeId, Size, element::Root, platform::Os,
+    AccessibilityRole, LayoutCurve, MountItem, NodeId, Size,
+    element::{Root, Spring},
+    platform::Os,
     prelude::*,
 };
 use nsh_engine::EngineConfig;
@@ -153,7 +155,7 @@ fn start(props: HarnessProps, reduce_motion: bool) -> App {
 fn reveals(items: &[MountItem]) -> bool {
     items.iter().any(|i| {
         matches!(i, MountItem::LayoutAnimation(a)
-            if a.update.is_some_and(|u| u.curve == LayoutCurve::Spring { damping: 1.0 }))
+            if a.update.is_some_and(|u| u.curve == LayoutCurve::Spring(Spring::new(180.0))))
     })
 }
 

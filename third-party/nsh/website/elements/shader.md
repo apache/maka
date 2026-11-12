@@ -347,6 +347,33 @@ stays responsive while the GPU works. On the web, NSH translates the shader to G
 Shaders draw at most once per display frame, and only when what they show changes: a shader with fixed uniforms draws
 once, one that reads `nsh.time` every frame, and one with animated uniforms while they move.
 
+### Whether shaders draw
+
+`shadersAvailable()` from `nsh` (Rust `shaders_available()`) tells whether the platform draws shaders, and is
+reactive. It is `true` on the platforms above and in headless tests, and `false` in a terminal and in apps built with
+the `shader` feature turned off. It starts `true` and turns `false` for good when the first shader mounts on a machine
+whose GPU NSH cannot open (a browser without WebGL 2). An app that wants a picture either way shows its shader while it
+holds and its own drawing, a canvas or an image, otherwise:
+
+```rust tabs
+fn backdrop(program: Shader) -> impl IntoElement {
+    when(shaders_available, move || shader().source(program.clone()).size_full())
+        .otherwise(|| canvas(paint_backdrop).size_full())
+}
+```
+
+```tsx tabs
+function Backdrop() {
+  return (
+    <If when={shadersAvailable()} else={<Canvas draw={drawBackdrop} style={{ flex: 1 }} />}>
+      <Shader source={BACKDROP} style={{ flex: 1 }} />
+    </If>
+  );
+}
+```
+
+Whether a source compiles is a separate answer: `Shader::compile` returns its errors (see [Errors](#errors)).
+
 ## Rust
 
 `shader()` (from `nsh_core::element`) makes a shader view; `.source(program)` gives it a compiled `Shader`

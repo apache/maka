@@ -86,6 +86,10 @@ pub fn merge_provider_options(target: &mut Option<Value>, next: Option<Value>) {
     }
 }
 
+pub fn responses_message_phase(options: &Value) -> Option<&str> {
+    options["openai"]["messagePhase"].as_str()
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModelUsage {
     pub input_tokens: Option<u64>,
@@ -93,6 +97,24 @@ pub struct ModelUsage {
     pub cache_read_tokens: Option<u64>,
     pub cache_write_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
+}
+
+/// Reported cache reads and their share of total prompt input.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PromptCacheUsage {
+    pub input_tokens: u64,
+    pub read_tokens: u64,
+}
+
+impl PromptCacheUsage {
+    pub fn new(input_tokens: u64, read_tokens: u64) -> Option<Self> {
+        (input_tokens > 0 && input_tokens <= 9_007_199_254_740_991 && read_tokens <= input_tokens)
+            .then_some(Self {
+                input_tokens,
+                read_tokens,
+            })
+    }
 }
 
 /// Auxiliary Host generation, not an assistant step in the parent conversation.

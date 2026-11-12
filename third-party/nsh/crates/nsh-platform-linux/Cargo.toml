@@ -3,6 +3,7 @@ name = "nsh-platform-linux"
 description = "Linux backend (GTK 4): native widget mounting, Pango text engine, input, standalone app."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -12,12 +13,12 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["js", "shader", "editor", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
+default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
 # JS apps (bundles, signed packages); without it, the library only runs a
 # Rust app and links no QuickJS.
 js = ["nsh-engine/js-core"]
 # Development support: dev server client, log forwarding, error overlay.
-dev = ["js", "shader", "editor", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "dep:nsh-dev", "dep:nsh-testing"]
+dev = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "dep:nsh-dev", "dep:nsh-testing"]
 # Web views with WebKitGTK 6.0 (`libwebkitgtk-6.0-dev` to build,
 # `libwebkitgtk-6.0-4` to run); without it a web view shows a placeholder.
 webview = ["dep:webkit6"]
@@ -39,6 +40,8 @@ highlight = ["nsh-base/highlight"]
 # `TextView`'s formulas typeset natively (RaTeX and the KaTeX fonts). Without
 # it a formula shows as its TeX, or as the app's `renderMath`.
 math = ["nsh-base/math"]
+# `EmojiPicker`, with Unicode's emoji and their English names (about 440 kB).
+emoji-picker = ["nsh-base/emoji-picker"]
 # The standard JS module `zlib`: deflate, gzip, brotli and zstd.
 zlib = ["js", "nsh-engine/zlib"]
 # The standard JS module `crypto` and the globals of Web Crypto.

@@ -8,8 +8,10 @@ mod commands;
 mod extensions;
 mod marks_clipboard_history;
 mod selection;
+mod sizing;
 mod structure;
 mod tiptap;
+mod touch;
 mod typing;
 mod view_features;
 
@@ -139,6 +141,11 @@ fn start(doc: Value) -> Headless {
 /// [`start`] on `os`; in a browser, on an Apple platform or not
 /// (`apple_keyboard`).
 fn start_on(doc: Value, os: Os, apple_keyboard: bool) -> Headless {
+    start_with(doc, os, apple_keyboard, Idiom::Desktop)
+}
+
+/// [`start_on`] in `idiom` (a phone: touch selection).
+fn start_with(doc: Value, os: Os, apple_keyboard: bool, idiom: Idiom) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
         // Made in the engine, so its keymaps are the platform's the engine
@@ -149,7 +156,7 @@ fn start_on(doc: Value, os: Os, apple_keyboard: bool) -> Headless {
     };
     config.environment.os = os;
     config.environment.apple_keyboard = apple_keyboard;
-    config.environment.idiom = Idiom::Desktop;
+    config.environment.idiom = idiom;
     let mut app = Headless::start(config).expect("the engine starts");
     app.wait_for("text:Ready").unwrap();
     app
@@ -279,6 +286,96 @@ fn a_press_places_the_caret() {
     app.press_at("text:first", Point::new(px(1.0), px(1.0)))
         .unwrap();
     see(&mut app, "Sel 1-1");
+}
+
+/// A paragraph with a link mark that has a title.
+fn linked_doc() -> Value {
+    json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+        {"type": "text", "text": "go "},
+        {"type": "text", "text": "the site", "marks": [{"type": "link", "attrs": {
+            "href": "https://example.com/site", "title": "The site"
+        }}]},
+        {"type": "text", "text": " now"}
+    ]}]})
+}
+
+/// The built-in link mark shows where it goes while the pointer rests on
+/// it, as `TextView`'s links do, and stays the editor's text: a press on
+/// it places the caret, typing in it goes into the link.
+#[test]
+fn a_link_marks_hint_shows_its_destination_and_leaves_editing_alone() {
+    let mut app = start(linked_doc());
+    // A link of its text once its hint watches it (the frame after).
+    app.wait_until("link hover listener", Duration::from_secs(5), |screen| {
+        screen.layout_nodes().iter().any(|node| {
+            node.text.as_ref().is_some_and(|text| {
+                text.text
+                    .links
+                    .iter()
+                    .any(|link| link.events.contains(EventKind::MouseEnter))
+            })
+        })
+    })
+    .unwrap();
+    app.wait_for("text:the site").unwrap();
+    app.hover("text:the site").unwrap();
+    app.wait(Duration::from_millis(600)).unwrap();
+    // The head and the rest of the URL, under the mark's title.
+    see(&mut app, "https://example.com");
+    assert!(app.shows("/site"), "the path, after the host");
+    assert!(app.shows("The site"), "the title, above the URL");
+    // A press on the link is the editor's: the caret goes before its
+    // first character (no link plugin here opens it).
+    // Headless span bounds are the paragraph's bounds, and its approximate
+    // TextLine fills that width. Place the pointer after "go " in that line.
+    let paragraph = app
+        .screen()
+        .layout_nodes()
+        .into_iter()
+        .find_map(|node| node.text.filter(|text| text.text.text == "go the site now"))
+        .unwrap();
+    let advance = paragraph.content.size.width.0 / paragraph.text.text.chars().count() as f32;
+    app.press_at(
+        "text:go the site now",
+        Point::new(px(3.0 * advance + 1.0), px(1.0)),
+    )
+    .unwrap();
+    see(&mut app, "Sel 4-4");
+    see(&mut app, &doc("go the site now"));
+    // Typing inside the link goes into it.
+    keys(&mut app, &["right", "right"]);
+    app.type_text("id:editor", "x").unwrap();
+    see(&mut app, &doc("go thxe site now"));
+    see(
+        &mut app,
+        r#"Tree doc(paragraph("go ", link("thxe site"), " now"))"#,
+    );
+}
+
+/// The same document on a phone: no hint (a touch screen's long press is
+/// the platform's).
+#[test]
+fn a_link_mark_shows_no_hint_on_a_phone() {
+    let mut config = EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        ..EngineConfig::new(Root::new::<Harness>(|| HarnessProps {
+            session: Some(session(linked_doc())),
+        }))
+    };
+    config.environment.os = Os::Ios;
+    config.environment.idiom = Idiom::Phone;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("text:Ready").unwrap();
+    see(&mut app, &doc("go the site now"));
+    // No hint watches the mark there, so it is no link of its text: the
+    // pointer is over the paragraph.
+    assert!(
+        app.hover("text:go the site now").is_err(),
+        "a phone has no mouse"
+    );
+    app.wait(Duration::from_millis(600)).unwrap();
+    // `shows` compares texts as written (no selector).
+    assert!(!app.shows("https://example.com"));
 }
 
 #[test]

@@ -83,7 +83,7 @@ const surfaces = [
   { name: 'Windows', views: 'Win32, Direct2D', text: 'DirectWrite', input: '', needs: 'Windows 10 1809+', cmd: 'windows' },
   { name: 'Web', views: 'HTML, CSS', text: '', input: '<input>, <textarea>', needs: '', cmd: 'web' },
   { name: 'iOS', views: 'UIKit', text: 'CoreText', input: 'UITextView', needs: 'iOS 15+', cmd: 'ios' },
-  { name: 'Android', views: '', text: 'StaticLayout', input: 'EditText', needs: 'API 28+', cmd: 'android' },
+  { name: 'Android', views: '', text: 'StaticLayout', input: 'EditText', needs: 'API 26+', cmd: 'android' },
   { name: 'TUI', views: 'ratatui', text: '', input: '', needs: 'macOS, Windows, Linux', cmd: 'tui' },
   { name: 'GPUI', views: 'GPUI', text: '', input: '', needs: '', cmd: 'gpui' },
 ].map((s) => ({ ...s, ...(copy.surfaces as Record<string, Partial<typeof s>>)[s.name] }));
@@ -444,6 +444,7 @@ perf commit: <b>10 ops, 7 mount items</b>, 24 nodes</code></pre>
           </article>
         ))}
       </div>
+      <p class="note">{copy.kitNote[0]}<a href={zh ? 'https://gpui-kit.com/zh-CN' : 'https://gpui-kit.com'}>{copy.kitNote[1]}</a>{copy.kitNote[2]}</p>
     </div>
   </section>
 

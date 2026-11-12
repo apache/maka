@@ -40,10 +40,11 @@ requestAnimationFrame ──────────────┘             
 Published apps behave as desktop apps in desktop browsers and as phone apps in phone browsers:
 
 - **Wheels and touchpads** scroll the innermost scroll view along their axis that can still move (a vertical wheel scrolls a horizontal list when nothing vertical can), and stay on it until the scroll ends; wheel notches glide, paging and snapping views move one page per scroll. Ctrl + wheel and touchpad pinches pinch views with native pinch values instead of zooming the page. Dragging with the mouse does not scroll, as on the desktop platforms: mouse drags go to pans, the responder system and text selection. Scroll views report `onScrollDragStart` / `onScrollDragEnd`, `onMomentumStart` / `End` and `onScrollEnd` as on the desktop platforms.
-- **Keyboard**: Tab and Shift+Tab move between pressables and inputs (the app's `focus:` styles show the keyboard focus); Return presses the focused pressable, Space presses it when released; arrows, Page Up / Page Down, Space, Home and End scroll the scroll view around the focus or under the mouse; Escape leaves a field, closes the dialog, then goes back. `keymap` shortcuts work in the browser, matched on the spot (`mod` is Command in Safari and Chrome on a Mac, Control elsewhere).
-- **Going back**: Escape, Alt+Left (Cmd+[ on a Mac) and the mouse's back button close the newest dialog or pop the innermost shown stack (a stack in a tab that is not selected keeps its pages), as the Android back button does; `popOnBack` and `onBackPress` work as there. When the app is the whole page, every page pushed on a shown stack and every open dialog is a browser history entry, so the browser's back button goes back in the app.
+- **Keyboard**: Tab and Shift+Tab move between pressables and inputs (the app's `focus-visible:` styles show the keyboard focus); Return presses the focused pressable, Space presses it when released; arrows, Page Up / Page Down, Space, Home and End scroll the scroll view around the focus or under the mouse; Escape leaves a field, closes the dialog, then goes back. `keymap` shortcuts work in the browser, matched on the spot (`mod` is Command in Safari and Chrome on a Mac, Control elsewhere).
+- **Going back**: Escape, Alt+Left (Cmd+[ on a Mac) and the mouse's back button close the newest dialog or pop the innermost shown stack (a stack in a tab that is not selected keeps its pages), as the Android back button does; `popOnBack` and `onBackPress` work as there. When the app is the whole page, every page pushed on a shown stack and every open dialog is a browser history entry, so the browser's back button goes back in the app. `nsh.json` `web.history` decides it for the packaged page and the dev server's: `false` keeps the browser's history to the page's own entries, `true` adds the app's in an iframe too.
+- **Addresses**: when the app is the whole page, [`UrlScheme.setUrl(url)`](../modules/nsh.md#urlscheme) sets the address of the current history entry, resolved against the page's address (and its `<base href>`), and `UrlScheme.url()` reads it. The browser's back button goes back in the app: the stack's pages go back and the address becomes the entry's. An address the user types (a `#fragment`) is an entry of the app's at the pages shown, and a back or forward to an entry of the same pages tells the app the entry's address with [`UrlScheme.on("change")`](../modules/nsh.md#urlschemeonchange). `setUrl(url, { history: "push" })` makes such an entry for an address of the app's own, a tab or a filter.
 - **Touch**: only scroll views pan; the page itself never scrolls, zooms or pulls to refresh under the app, and taps have no delay. In an iframe, swipes the app does not take scroll the embedding page. Drags on views with native pans, pinches and the responder system are the app's.
-- **Accessibility**: `role`, `accessibilityLabel`, `accessibilityHint`, `accessibilityState`, `accessibilityValue`, `accessibilityLiveRegion` and `accessibilityElementsHidden` become ARIA; `announce` speaks through a live region and `setAccessibilityFocus` moves the focus. Views under a dialog or alert are inert.
+- **Accessibility**: `role`, `accessibilityLabel`, `accessibilityHint`, `accessibilityDescription`, `accessibilityState`, `accessibilityValue`, `accessibilityLiveRegion` and `accessibilityElementsHidden` become ARIA; `announce` speaks through a live region and `setAccessibilityFocus` moves the focus. Views under a dialog or alert are inert.
 - **Selection and menus**: in desktop browsers text is selectable by default, as on a web page, except inside interactive elements (views with press or touch handlers: buttons, pressable rows, tabs) and text with `userSelect: "none"` or `select-none`; dragging the mouse over it selects it, Ctrl/Cmd+C copies it line by line and Ctrl/Cmd+A selects all of the text the selection is in. In phone and tablet browsers only text with `userSelect: "text"` is selectable, as in native apps. The browser's context menu appears only in selectable text and inputs.
 
 
@@ -318,7 +319,7 @@ await player.runModule(new URL("./bundle.js", location.href).href);
 
 `assets` (a map from `asset:/` paths to URLs) replaces `assetBase`, `readAsset(uri)` returns the bytes of an asset the engine needs at once (a font) or `null`, `data` maps the files the runtime fetches when it first needs them to their URLs (`syntaxes`: `nsh-syntaxes.<digest>.bin`; by default `nsh-<name>.bin` next to `nsh.js`), and `glue` is the URL of the wasm-bindgen glue of a runtime whose crates call [browser APIs from Rust](#browser-apis-from-rust) (`nsh-bindgen.<digest>.js`), which the player loads with the runtime; `player.runModule(url, { capabilities, appId })` runs the app under the capabilities it declares (its `capabilities.json`) and keeps its storage under its `nsh.json` id (without one, under the page's path). Relative URLs, in these options and the app's images alike, resolve against the page's URL as the player is made (`player.baseURL`), so they still load after the page moves the address to another directory. The page `nsh package --target web` writes uses all of them.
 
-`runModule(url, { chunks })` also takes where the chunks of a [split bundle](#split-bundles) are.
+`runModule(url, { chunks })` also takes where the chunks of a [split bundle](#split-bundles) are, and `runModule(url, { params })` the app's `host.params`: a JSON object the page already has for the app, such as the data of its first screen. The page `nsh package --target web` writes passes the JSON of a `<script type="application/json" id="nsh-params">` element when the page has one, so a server that serves the page can hand the app its data with it and the app shows it without asking for it again.
 
 `player.runSource(code, { name, sourceMap, capabilities, appId })` runs an ES module given as source text, with the same options. With `nsh-playground.wasm`, `player.compileAndRun(tsx, name, options)` compiles TSX first, runs it with `runSource`'s options and resolves to the compile error, or `null`; `player.compile(tsx)` returns `{ code }` or `{ error }`.
 
@@ -348,7 +349,7 @@ cooperation; without it, presentation remains within that document and the playe
 
 ## The host's functions
 
-On the web the page is the app's host: it answers [`host`](../modules/nsh.md#host)'s `host.call(name, args)` and sends the events `host.on` listens to. `createPlayer`'s `host` is an object whose `call(name, args)` returns the result, or a promise of it; a throw or a rejection rejects the app's call with the error's message. `player.hostEvent(event, payload)` sends an event with a JSON payload (a payload that is not JSON throws). With a `host`, `host.available()` is `true`.
+On the web the page is the app's host: it answers [`host`](../modules/nsh.md#host)'s `host.call(name, args)`, takes its `host.post(name, args)` and sends the events `host.on` listens to. `createPlayer`'s `host` is an object whose `call(name, args)` returns the result, or a promise of it; a throw or a rejection rejects the app's call with the error's message. Its optional `post(name, args)` takes the app's posts; without one, a post goes to `call`. A post has no answer: its result, a throw or a rejection stays with the page. `player.hostEvent(event, payload)` sends an event with a JSON payload (a payload that is not JSON throws). With a `host`, `host.available()` is `true`.
 
 ```js
 const player = await createPlayer(container, {
@@ -357,6 +358,9 @@ const player = await createPlayer(container, {
     async call(name, args) {
       if (name === "user.info") return { name: "Ada" };
       throw new Error(`no host function ${name}`);
+    },
+    post(name, args) {
+      if (name === "analytics") navigator.sendBeacon("/analytics", JSON.stringify(args));
     },
   },
 });
@@ -466,6 +470,55 @@ The [gallery](/gallery) loads each demo this way: `lazy` (in `examples/gallery/u
 
 ```tsx
 const Stocks = lazy(() => import("./demos/Stocks").then((m) => m.Stocks));
+```
+
+## Search engines
+
+A site published with `nsh package --target web` is a site search engines index and link previews read: its views
+carry the document's structure, each page of a stack has a URL of its own, and each page sets the document's title
+and description. The app stays one app: the same code draws the same screens on the phones and the desktops.
+
+### Headings, paragraphs and links
+
+On the web each view is drawn as the HTML element its props say it is
+([the page's markup](../elements/index.md#the-pages-markup)): a `role="header"` is a heading of its
+`accessibilityLevel`, a [`Link`](../elements/link.md) with an `href` is a link, and `web={{ element }}` names the
+rest. The element keeps the view's layout, styles and events, so the page looks and behaves as before, and its markup
+reads as a document:
+
+```tsx
+<View web={{ element: "article" }}>
+  <Text role="header" accessibilityLevel={1}>{note.title}</Text>
+  <Text web={{ element: "time" }}>{note.date}</Text>
+  <Each of={note.body}>{(paragraph) => <Text web={{ element: "p" }}>{paragraph()}</Text>}</Each>
+  <Link href="/" openWith="app" onOpen={() => nav.pop()}>
+    <Text>All notes</Text>
+  </Link>
+</View>
+```
+
+A press on a link is the app's `onOpen`, so the app navigates as it always does; a crawler follows the `href`, a
+click with a modifier key or the middle button opens it in a new tab, and a right click shows the browser's menu for
+links (open in a new tab, copy the link) unless the app shows its own with `onContextMenu`.
+
+### Titles and descriptions
+
+[`nsh/web`](../modules/nsh-web.md)'s `Head` sets the page's `<head>` while it is mounted: the title, the description,
+the canonical URL, the language, more `<meta>`s (Open Graph, Twitter cards, `robots`) and structured data. A head in
+each page describes the page that shows; the one mounted last wins for what it sets:
+
+```tsx
+import { Head } from "nsh/web";
+
+<NavPage title={note.title} header={<SiteHeader />}>
+  <Head
+    title={`${note.title} · Market Notes`}
+    description={note.summary}
+    canonical={`/notes/${note.slug}`}
+    jsonLd={{ "@context": "https://schema.org", "@type": "Article", headline: note.title }}
+  />
+  …
+</NavPage>
 ```
 
 ## Limits

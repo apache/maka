@@ -30,9 +30,10 @@ class HomebrewFormulaTest(unittest.TestCase):
         self.assertIn("depends_on arch: :x86_64", formula)
         self.assertIn('libexec.install Dir["*"]', formula)
         self.assertIn('bin.install_symlink libexec/"bin/nsh"', formula)
-        self.assertIn('"package", "hello", "--target", "web"', formula)
-        self.assertIn('glob("nsh.*.wasm")', formula)
-        self.assertIn('glob("nsh.*.js")', formula)
+        # The test needs no component: brew test runs offline.
+        self.assertIn('"build", "hello", "-o", testpath/"out", "--release"', formula)
+        self.assertIn("nsh component list", formula)
+        self.assertNotIn('"--target"', formula)
 
     def test_rejects_unpublished_and_prerelease_versions(self):
         for change in ({"isDraft": True}, {"isPrerelease": True},

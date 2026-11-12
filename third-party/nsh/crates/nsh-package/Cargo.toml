@@ -3,6 +3,7 @@ name = "nsh-package"
 description = "Signed app packages (.nshpkg), two-level signing keys, revocation lists and the trust store."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true

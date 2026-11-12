@@ -14,9 +14,11 @@ use crate::term;
 /// ABIs built by default: phones' 64-bit and 32-bit processes, and the
 /// emulators of x86-64 hosts.
 pub(crate) const ABIS: [&str; 3] = ["arm64-v8a", "armeabi-v7a", "x86_64"];
-/// Minimum Android API level (Android 9): hardware-accelerated shadow
-/// layers and the `Typeface` weight API.
-pub(crate) const MIN_SDK: u32 = 28;
+/// Minimum Android API level (Android 8.0). Android 8.x gets what API 28
+/// added another way: weights from Roboto's named families, text measured
+/// without `PrecomputedText`, shadows drawn in software
+/// (docs/dev/pitfalls.md, "Android 8").
+pub(crate) const MIN_SDK: u32 = 26;
 /// The SDK platform compiled against.
 pub(crate) const COMPILE_SDK: u32 = 35;
 

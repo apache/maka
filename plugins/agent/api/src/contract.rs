@@ -926,6 +926,10 @@ pub enum DeliveryFact {
         step_id: maka_agent_facts::durable::StepId,
         attempt_id: maka_agent_facts::durable::ModelAttemptId,
     },
+    ExecutorTextChanged {
+        message_id: String,
+        thinking: bool,
+    },
     /// Canonical transcript facts changed; clients query bounded history.
     TranscriptChanged,
     StepEnded {
@@ -975,6 +979,8 @@ pub enum DeliveryFact {
     ExecutorToolStart {
         tool_use_id: String,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<maka_agent_facts::display::Text>,
     },
     ExecutorToolProgress {
         tool_use_id: String,
@@ -1223,6 +1229,8 @@ pub struct PreviewPart {
 pub enum PreviewField {
     Text {
         text_kind: ContentKind,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        final_answer: bool,
     },
     ToolInput {
         tool_use_id: String,
@@ -1382,9 +1390,12 @@ pub struct HistoryChunk {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_references: bool,
     /// Part of the successfully completed native Turn's final output at `through`.
-    /// Includes all body parts and source citations; never a Thinking field.
+    /// Includes body text and source citations; never a Thinking field.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub final_output: bool,
+    /// The provider identified this text as final before the Turn completed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub final_answer: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<maka_agent_ports::session::history::HistoryModel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1483,6 +1494,57 @@ pub struct HistoryPromptRead {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentHistoryRequestsRead")]
+pub struct HistoryRequestsRead {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
+    pub through: u64,
+    /// Any original row in the Run being inspected.
+    pub position: RowPosition,
+    #[serde(default)]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub after: Option<u64>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentHistoryRequests")]
+pub struct HistoryRequests {
+    pub requests: Vec<HistoryRequest>,
+    pub next: Option<u64>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentHistoryRequest")]
+pub struct HistoryRequest {
+    pub order: HistoryOrder,
+    pub step_id: maka_agent_facts::durable::StepId,
+    pub attempt_id: maka_agent_facts::durable::ModelAttemptId,
+    pub model_id: String,
+    pub purpose: maka_agent_facts::context::ModelPurpose,
+    pub started_at: Option<u64>,
+    pub first_token_at: Option<u64>,
+    pub finished: Option<HistoryRequestFinished>,
+    pub estimated_input_tokens: u64,
+    pub context_window: Option<u64>,
+    pub input_limit: Option<u64>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentHistoryRequestFinished")]
+pub struct HistoryRequestFinished {
+    pub at: u64,
+    pub outcome: maka_agent_facts::accounting::Outcome,
+    pub usage: maka_agent_facts::model::ModelUsage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistorySearch")]
 pub struct HistorySearch {
     #[schemars(length(min = 1))]
@@ -1576,6 +1638,7 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
                     model_part: chunk.model_part,
                     has_references: chunk.has_references,
                     final_output: chunk.final_output,
+                    final_answer: chunk.final_answer,
                     model: chunk.model,
                     origin: chunk.origin,
                     compaction: chunk.compaction,
@@ -1969,6 +2032,10 @@ pub fn contract() -> Contract {
                     method::<HistoryPromptRead, Option<HistoryPrompt>>(MethodMode::Query),
                 ),
                 (
+                    "historyRequests".into(),
+                    method::<HistoryRequestsRead, HistoryRequests>(MethodMode::Query),
+                ),
+                (
                     "search".into(),
                     method::<HistorySearch, HistorySearchPage>(MethodMode::Query),
                 ),
@@ -2079,6 +2146,7 @@ pub fn contract() -> Contract {
                 ("models".into(), method::<ModelsRead, ModelsPage>(MethodMode::Query)),
                 ("model".into(), method::<ModelRead, ModelResult>(MethodMode::Query)),
                 ("externalAgents".into(),method::<crate::external::ExternalAgentsRead, crate::external::ExternalAgents>(MethodMode::Query)),
+                ("externalUsageLimits".into(),method::<crate::external::ExternalUsageLimitsRead, crate::external::ExternalUsageLimits>(MethodMode::Query)),
                 (
                     "executorSetup".into(),
                     Method {

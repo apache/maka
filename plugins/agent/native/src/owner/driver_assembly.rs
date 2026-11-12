@@ -192,15 +192,6 @@ impl Owner {
             live.tools = live
                 .tools
                 .with_always_visible(super::goal::tools::NAMES)
-                .and_then(|tools| {
-                    tools.with_request_binding(
-                        super::goal::tools::NAMES
-                            .iter()
-                            .map(|name| (*name).into())
-                            .collect(),
-                        self.goals.clone(),
-                    )
-                })
                 .map_err(|error| RunError::InvalidInput(error.to_string()))?;
         }
         let live_tools = mcp
@@ -248,7 +239,6 @@ impl Owner {
         diagnostic: String,
     ) -> Result<DriverExit, RunError> {
         let engine = Engine::new(state.clone());
-        let mut notices = state.subscribe()?;
         loop {
             match engine
                 .current_authority_unavailable(
@@ -259,18 +249,9 @@ impl Owner {
                 )
                 .await
             {
-                Err(RunError::PublicationUncertain { publication, .. }) => loop {
-                    notices.borrow_and_update();
-                    match publication.reconcile(&state).await {
-                        Ok(_) => break,
-                        Err(error) => {
-                            tracing::error!(%error, "Original preflight publication remains unresolved");
-                            if notices.changed().await.is_err() {
-                                std::future::pending::<()>().await;
-                            }
-                        }
-                    }
-                },
+                Err(RunError::PublicationUncertain { publication, .. }) => {
+                    publication.reconcile(&state).await?;
+                }
                 result => return result,
             }
         }
@@ -319,7 +300,6 @@ impl Owner {
                 let writer = self.store.data_writer_for_work(access.custody().as_ref(), &view.spec.session_id)?;
                 let state = self.durable.with_data_writer(writer)?;
                 publication_store = state.clone();
-                let current_configuration = access.observation_configuration().await?;
                 preflight_stage = Some(AuthorityStage::InputCodec);
                 let (basis, selection) = self.restored_data(&view).await.map_err(|failure| { preflight_stage = Some(failure.stage); failure.cause })?;
                 preflight_stage = Some(AuthorityStage::ToolBindings);
@@ -363,9 +343,6 @@ impl Owner {
                     }
                     (None, Some(accepted)) => {
                         let mut backend = self.executors.restore(accepted).map_err(RunError::InvalidInput)?;
-                        if view.external.is_none() {
-                            backend.validate_current_access(current_configuration.permissions.access).map_err(RunError::InvalidInput)?;
-                        }
                         let effects = driver_external_effects::NativeExternalEffects::new(self.clone(), access.clone(), claim.clone(), cleanup.clone(), workers.clone())?;
                         original_external_effects = Some(effects.clone());
                         backend.bind_host_tools(crate::executor::external::HostTools { catalog: self.external_catalog(catalog.clone()), resource_reads: self.resource_reads.clone(), effects: Arc::new(effects) });
@@ -430,17 +407,13 @@ impl Owner {
                     let driven = engine.drive(claim.clone(), driver.clone(), cancellation.clone()).await;
                     match driven {
                         Err(RunError::PublicationUncertain { publication, .. }) => {
-                            loop {
-                                changes.borrow_and_update();
-                                match publication.reconcile(&state).await {
-                                    Ok(_) => break,
-                                    Err(error) => {
-                                        tracing::error!(run = %view.run, %error, "Original canonical publication remains unresolved");
-                                        if changes.changed().await.is_err() { std::future::pending::<()>().await; }
-                                    }
-                                }
+                            if let Err(source) = publication.reconcile(&state).await {
+                                break match source.underlying() {
+                                    maka_event_log::StoreError::EventConflict
+                                    | maka_event_log::StoreError::InvalidTransition(_) => Err(source.into()),
+                                    _ => Err(RunError::PublicationUncertain { publication, source }),
+                                };
                             }
-                            drop(publication);
                         }
                         Ok(exit @ (DriverExit::Waiting { due_at, .. } | DriverExit::Blocked { due_at, .. })) => {
                             let resources_live = driver.has_live_resources();
@@ -509,7 +482,10 @@ impl Owner {
                 }
                 let cleaned = driver.finish().await;
                 cleanup_confirmed = cleaned.is_ok();
-                cleaned?;
+                // Preserve an uncertain original batch alongside its cleanup state.
+                if !matches!(&driven, Err(RunError::PublicationUncertain { .. })) {
+                    cleaned?;
+                }
                 driven
             }
             .await;
@@ -523,8 +499,8 @@ impl Owner {
             // Constructors before NativeDriver only assemble ports; none dispatch Run-owned work.
             // A pending canonical batch still owns its original payload independently of that proof.
             if original_driver.is_none() && !matches!(&result, Err(RunError::PublicationUncertain { .. })) { cleanup_confirmed = true; }
-            if !cleanup_confirmed {
-                let pending = match &result { Err(RunError::PublicationUncertain { publication, .. }) => Some(publication.as_ref().clone()), _ => None };
+            let pending = match &result { Err(RunError::PublicationUncertain { publication, .. }) => Some(publication.as_ref().clone()), _ => None };
+            if !cleanup_confirmed || pending.is_some() {
                 let _historical_failure = effects.seal();
                 self.retain_original_scope(
                     view.spec.session_id.clone(),

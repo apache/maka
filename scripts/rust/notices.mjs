@@ -88,18 +88,31 @@ async function upstreamIdentity(pkg, directory, provenance) {
   return { repository, revision };
 }
 
-/** Resolve one Cargo package using the same installed-file and upstream rules. */
+/** Resolve a Cargo dependency; untracked additions to a vendor tree belong to Maka. */
 export async function cargoLicenseRecord(root, pkg, supplements, provenance) {
   const directory = dirname(pkg.manifest_path);
   let source = pkg.source;
   if (!source && !provenance) {
     const vendored = localPath(root, directory).split('/').slice(0, 2).join('/');
     provenance = JSON.parse(await readFile(join(root, vendored, 'upstream.json'), 'utf8'));
+    if ('file_sources' in provenance) {
+      const manifest = localPath(join(root, vendored), pkg.manifest_path);
+      if (!Object.hasOwn(provenance.files, manifest)) return;
+      const origin = provenance.file_sources[manifest];
+      if (!origin) throw new Error('Missing pinned file source for ' + manifest);
+      provenance = origin;
+    }
     source = `${provenance.repository}#${provenance.revision} (adapted; ${localPath(root, directory)})`;
   }
   if (!source) source = `${provenance.repository}#${provenance.revision}`;
   const files = await localLicenses(directory, pkg.license_file);
   const local = files.filter(({ content }) => content.trim().length >= 80);
+  const packageLicense = local.some(
+    ({ path }) =>
+      !path.includes('/') ||
+      /^licen[cs]es?\//i.test(path) ||
+      (pkg.license_file && resolve(directory, path) === resolve(directory, pkg.license_file)),
+  );
   const references = files.some(
     ({ content }) => content.trim().length < 80 && content.includes('../'),
   );
@@ -117,7 +130,8 @@ export async function cargoLicenseRecord(root, pkg, supplements, provenance) {
     texts = await supplementTexts(root, supplements[pkg.name + '@' + pkg.version]);
   else {
     texts = [];
-    if (!local.length || references) upstream = await upstreamIdentity(pkg, directory, provenance);
+    if (!packageLicense || references)
+      upstream = await upstreamIdentity(pkg, directory, provenance);
   }
   const archive =
     pkg.source === 'registry+https://github.com/rust-lang/crates.io-index'
@@ -227,7 +241,8 @@ async function components(
   for (const pkg of [...packages.values()].sort((a, b) =>
     (a.name + a.version).localeCompare(b.name + b.version),
   )) {
-    add(await cargoLicenseRecord(root, pkg, supplements));
+    const record = await cargoLicenseRecord(root, pkg, supplements);
+    if (record) add(record);
   }
   const bundled = new Set();
   // Ajv standalone validators embed compiler-generated code without importing it.

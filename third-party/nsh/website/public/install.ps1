@@ -18,11 +18,11 @@ $dir = if ($env:NSH_INSTALL_DIR) { $env:NSH_INSTALL_DIR } else { Join-Path $env:
 $version = if ($env:NSH_VERSION) { $env:NSH_VERSION } else { 'latest' }
 
 $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
-if ($arch -ne 'AMD64') {
-    throw "nsh: no prebuilt NSH for Windows $arch; see https://nsh.dev/docs/installation"
+$asset = switch ($arch) {
+    'AMD64' { 'nsh-windows-x86_64.zip' }
+    'ARM64' { 'nsh-windows-arm64.zip' }
+    default { throw "nsh: no prebuilt NSH for Windows $arch; see https://nsh.dev/docs/installation" }
 }
-
-$asset = 'nsh-windows-x86_64.zip'
 $url = if ($version -eq 'latest') {
     "https://github.com/$repository/releases/latest/download/$asset"
 } else {

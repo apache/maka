@@ -1109,7 +1109,7 @@ const PRESETS: [(&str, LayoutAnimation); 3] = [
     (
         "Spring",
         LayoutAnimation::all(LayoutTransition::new(
-            LayoutCurve::Spring { damping: 0.7 },
+            LayoutCurve::FittedSpring { damping_ratio: 0.7 },
             420.0,
         )),
     ),

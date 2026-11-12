@@ -4,26 +4,28 @@ import { platform as __platform, windowSize as __windowSize } from "nsh";
 import { Segmented as GallerySegmented } from "./segmented";
 import { ui, tint } from "./palette";
 import { radius } from "./theme";
-import { insetSurface } from "./look/surface";
+import { controlSize, insetSurface } from "./look/surface";
 import { inputLook, type FieldLookOptions } from "./look/field";
 import { buttonLabel, buttonLook, type ButtonKind, type ButtonLookOptions } from "./look/button";
 export { ui, tint } from "./palette";
-export { buttonGlyph, buttonLabel, buttonLook, buttonSizes, iconButtonGlyph, iconButtonLook, type ButtonKind, type ButtonLookOptions, type ButtonSize, type IconButtonLookOptions } from "./look/button";
+export { buttonGlyph, buttonLabel, buttonLook, buttonSizes, ghostOutdent, iconButtonGlyph, iconButtonLook, type ButtonKind, type ButtonLookOptions, type ButtonSize, type IconButtonLookOptions } from "./look/button";
 export { switchHitSlop, switchLook, type SwitchLook, type SwitchSize } from "./look/switch";
 export { toggleGlyph, toggleLabel, toggleLook, toggleSizes, toolbarRule, toolbarTrack, type ToggleDimensions, type ToggleLookOptions, type ToggleSize, type ToolbarTrackOptions } from "./look/tool";
-export { menuHighlight, menuItemGlyph, menuItemLabel, menuItemLook, menuItemNote, menuItemSize, menuPressed, menuSeparator, menuSheet, MenuLabel, MenuPanel, SubmenuBack, SubmenuRow, type MenuItemDimensions, type MenuItemLookOptions, type MenuItemTextOptions } from "./look/menu";
+export { menuHighlight, menuItemGlyph, menuItemLabel, menuItemLook, menuItemNote, menuItemSize, menuPressed, menuSeparator, menuPopup, MenuLabel, SubmenuBack, SubmenuRow, type MenuItemDimensions, type MenuItemLookOptions, type MenuPopupOptions, type MenuItemTextOptions } from "./look/menu";
 export { backdrop, dialogCard, dialogText, dialogTitle, popoverLook, sheetGrabber, sheetPanel, toastActionLabel, toastActionLook, toastCloseLook, toastLook, toastText, toastTitle, tooltipLook, tooltipNote, tooltipText, type PopoverLookOptions, type SheetSide, type TooltipLookOptions } from "./look/overlay";
 export { pressSink } from "./look/press";
 export { controlSize, density, insetSurface, listRow, plainRow, RowDivider, RowLabel, sectionSurface, type ListRowLook, type ListRowOptions, type PlainRowOptions, type SectionSurfaceOptions } from "./look/surface";
 export { CheckboxMark, checkboxLook, choiceTileLook, MARK_WEIGHT, RadioRing, type CheckboxLook, type CheckboxMarkKind, type ChoiceOptions, type ChoiceTileLook, type ChoiceTileOptions } from "./look/choice";
 export { segmentedLook, TabTitle, tabsLook, underlineTabsLook, type SegmentedLookOptions, type SegmentedSize, type TabLook, type TabState } from "./look/tabs";
 export { fieldLook, fieldSize, fieldText, inputLook, numberInputClasses, numberInputSteps, numberInputText, NumberStep, otpCellLook, otpCells, timeFieldClass, type FieldLookOptions, type FieldTextOptions, type OtpCellOptions } from "./look/field";
-export { calendarLook, CalendarItem, Chevron, clearButtonLook, ComboToggle, comboboxLook, datePickerLook, ListboxEmpty, listboxFooter, ListboxHeader, listboxPopup, listboxProps, listboxSearch, OptionRow, optionClass, Picker, pickerLook, TimeSegment, type ClearButtonOptions, type ComboboxLookOptions, type DatePickerLookOptions, type ListboxPopupOptions, type PickerLookOptions } from "./look/listbox";
+export { calendarLook, CalendarItem, Chevron, clearButtonLook, ComboToggle, comboboxLook, datePickerLook, DateTrigger, ListboxEmpty, listboxFooter, ListboxHeader, listboxPopup, listboxProps, listboxSearch, OptionRow, optionClass, Picker, pickerLook, TimeSegment, type ClearButtonOptions, type ComboboxLookOptions, type CalendarItemProps, type DatePickerLookOptions, type ListboxPopupOptions, type PickerLookOptions, type PickerProps } from "./look/listbox";
 export { progressFill, progressGlide, progressLook, progressRail, progressRemaining, progressSweep, type ProgressLookOptions, type ProgressSweep } from "./look/meter";
 export { DisclosureChevron, disclosurePanel, disclosureTriggerLook, type DisclosurePanelOptions, type DisclosureTriggerOptions } from "./look/disclosure";
 export { carouselArrowLook, CarouselDot, carouselDotItemLook, carouselPaginationLook, carouselSizes, linkColor, linkLook, linkSize, LinkText, paginationArrows, paginationItemClass, type CarouselArrowOptions, type LinkState } from "./look/nav";
 export { categoryColors, plotAxisText, plotBaseline, plotCrossLine, plotDotClass, plotGrid, plotHoverDot, plotReference, plotTooltip, plotTooltipTitle, plotWash, seriesColor, seriesColors } from "./look/plot";
-export { DiffHunkActions, dockClasses, DockDragPreview, DockTab, dockTabCloseClass, resizableHandle, resizableHandleLook, richEditorClasses, textViewCaretClass, textViewLinkClasses } from "./look/workspace";
+export { DiffHunkActions, diffHunkTone, diffViewStyles, dockClasses, DockDragPreview, DockTab, dockTabCloseClass, resizableHandle, resizableHandleLook, richEditorClasses, textViewCaretClass, textViewLinkClasses } from "./look/workspace";
+export { colorAreaLook, colorChecker, ColorCopy, ColorDropper, ColorFields, colorFormats, ColorPanel, ColorPopover, colorSliderLook, ColorSwatches, ColorTrigger, type ColorFieldsProps, type ColorPanelProps, type ColorPopoverProps } from "./look/color";
+export { formatColor, inkOn } from "./color-format";
 export { photoUrl, type PhotoName } from "./photos";
 export { scrollbarTheme } from "./scrollbar-theme";
 
@@ -32,9 +34,10 @@ export { scrollbarTheme } from "./scrollbar-theme";
  * off a disabled control. */
 export const hoverFill = () => ({ backgroundColor: tint(ui().text, 0.05) });
 
-/** The keyboard focus (`focusStyle`), one for every control: the edge
- * turns the theme's `ring` and a 3-point halo of it lies around the view,
- * outside its edge (`focusRing(offset)` moves the halo further out). */
+/** The keyboard focus (`focusVisibleStyle`: not after a click or a tap),
+ * one for every control: the edge turns the theme's `ring` and a 3-point
+ * halo of it lies around the view, outside its edge (`focusRing(offset)`
+ * moves the halo further out). */
 export { focusRing } from "./theme";
 
 /** A pointer and a keyboard: desktop density and copy ("Click", "Tab to it
@@ -49,11 +52,12 @@ export const wide = () => __windowSize().width >= 700;
  * under it: in the site's Desktop frame the subject keeps the whole width. */
 const sideBySide = () => __windowSize().width >= 900;
 
-/** Heights and type of the idiom (Design Guides, "Density tiers"): compact
- * with a pointer, 44-point targets on a touch screen. */
-export const size = desktop
-  ? { control: 32, controlSm: 28, row: 40, rowSm: 32, label: 14, detail: 12 }
-  : { control: 44, controlSm: 44, row: 52, rowSm: 44, label: 15, detail: 12 };
+/** Heights and type of the idiom (Design Guides, "Density tiers"): a row,
+ * its label's and its detail's type are the controls' (`controlSize`: rows
+ * of 40 points with a pointer, a finger's 44 on a touch screen); `rowSm` a
+ * compact row (a table's, a command's), 32 points with a pointer, 44 on a
+ * touch screen. */
+export const size = { row: controlSize.row, rowSm: desktop ? 32 : controlSize.row, label: controlSize.label, detail: controlSize.detail };
 
 /** Options of `button` and `buttonText` (the same object for both). */
 export interface ButtonOptions {
@@ -65,7 +69,7 @@ export interface ButtonOptions {
    * in `toggleLook`, not a button. */
   on?: boolean | (() => boolean);
   /** Disabled (pass the same value to the element's `disabled`): no hover
-   * and no press feedback; dimmed to 40%. */
+   * and no press feedback; dimmed to 50%. */
   disabled?: boolean | (() => boolean);
   /** Where it sits in a column of a desktop layout (`alignSelf`): buttons
    * are as wide as their labels there, so the default is `flex-start`;

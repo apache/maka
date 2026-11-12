@@ -7,11 +7,23 @@ function same(a, b, depth) {
   return keys.length === Object.keys(b).length && keys.every(key => same(a[key], b[key], depth - 1));
 }
 
+/** `appInfo()`'s object from the build's JSON, its fields typed as
+ * nsh-js's `AppInfo` reads them. */
+function readAppInfo(json) {
+  let info = {};
+  try { info = JSON.parse(json) ?? {}; } catch {}
+  const text = value => typeof value === "string" ? value : null;
+  return {
+    id: text(info.id), name: text(info.name), version: text(info.version),
+    build: Number.isFinite(info.build) ? info.build : null, development: info.development === true,
+  };
+}
+
 export function createEnvironment(reactive, invoke, dom) {
   const initial = { window: { width: 0, height: 0 }, safeArea: { top: 0, right: 0, bottom: 0, left: 0 },
     titleBar: { height: 0, left: 0, right: 0 }, keyboard: { height: 0, duration: 0.25 },
     colorScheme: "light", fontScale: 1, pixelRatio: 1, locale: "en-US", reduceMotion: false, screenReader: false, host: false,
-    lifecycle: "active",
+    lifecycle: "active", shaders: true, wakeCount: 0,
     localeSettings: { languages: ["en-US"], timeZone: "UTC", hourCycle: "h12", firstDayOfWeek: 7,
       measurementSystem: "us", temperatureUnit: "fahrenheit" } };
   const fields = Object.fromEntries(Object.entries(initial).map(([name, value]) => [name, reactive.signal(value)]));
@@ -35,12 +47,19 @@ export function createEnvironment(reactive, invoke, dom) {
     windowSize: () => fields.window(), colorScheme: () => fields.colorScheme(), setColorScheme,
     fontScale: () => fields.fontScale(), pixelRatio: () => fields.pixelRatio(), locale: () => fields.locale(),
     localeSettings: () => fields.localeSettings(), lifecycle: () => fields.lifecycle(), platform,
+    shadersAvailable: () => fields.shaders(),
+    // The engine's count; a page has no system sleep to hear, so it stays 0.
+    wakeCount: () => fields.wakeCount(),
     // A browser page has no performance monitor (its developer tools measure it).
     fpsEnabled: () => false,
   };
   const accessibility = { reduceMotion: () => fields.reduceMotion(), screenReaderEnabled: () => fields.screenReader() };
+  // nsh-js's `appInfo` (`env.rs`): what the build wrote, handed over by
+  // `setup` before the app's modules run.
+  let appInfo = readAppInfo("{}");
   const api = {
     ...device, ...accessibility,
+    appInfo: () => appInfo,
     safeArea: () => fields.safeArea(), safeAreaInsets: () => insets(), keyboardFrame: () => fields.keyboard(),
     screenReader: () => fields.screenReader(),
     token(name) { tokens(); return invoke(402, [name, fields.colorScheme() === "dark"]); },
@@ -76,11 +95,12 @@ export function createEnvironment(reactive, invoke, dom) {
         fields.locale.set(tag);
       });
     },
-    setup(tailwind, theme, scheme, statusBar) {
+    setup(tailwind, theme, scheme, statusBar, app) {
       if (typeof tailwind === "string") dom.rootProp("tailwindTheme", tailwind);
       if (typeof theme === "string") { dom.rootProp("uiTheme", theme); invoke(403, [theme]); tokens.update(value => value + 1); }
       if (["light", "dark", "system"].includes(scheme)) setColorScheme(scheme);
       if (typeof statusBar === "string") invoke(405, [statusBar]);
+      if (typeof app === "string") appInfo = readAppInfo(app);
     },
   };
 }

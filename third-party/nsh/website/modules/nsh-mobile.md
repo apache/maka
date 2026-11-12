@@ -1,12 +1,13 @@
 ---
 title: nsh/mobile
-description: "What iOS and Android have: TabBar, the system's tab bar, InputAccessoryView on iOS, BackHandler on Android, and isAvailable."
+description: "What iOS and Android have: TabBar, the system's tab bar, Haptics, InputAccessoryView on iOS, BackHandler on Android, and isAvailable."
 order: 12.2
 ---
 
 # nsh/mobile
 
-`nsh/mobile` holds the capabilities specific to iOS and Android: the system's tab bar, `TabBar`, on both;
+`nsh/mobile` holds the capabilities specific to iOS and Android: the system's tab bar, `TabBar`, and
+[`Haptics`](#haptics), the device's haptic feedback, on both;
 [`InputAccessoryView`](#inputaccessoryview), a bar over the keyboard, on iOS; and [`BackHandler`](#backhandler), the
 back button, on Android. Rust code uses `nsh_core::mobile` and `nsh_core::prelude`; TSX imports `nsh/mobile`. The
 module can be imported on every platform, so one bundle runs everywhere: on the other platforms its components take no
@@ -18,7 +19,7 @@ use nsh_core::mobile::{TabBarItem, tab_bar};
 ```
 
 ```tsx tabs
-import { BackHandler, InputAccessoryView, isAvailable, TabBar } from "nsh/mobile";
+import { BackHandler, Haptics, InputAccessoryView, isAvailable, TabBar } from "nsh/mobile";
 import type { TabBarItem, TabBarProps } from "nsh/mobile";
 ```
 
@@ -295,5 +296,62 @@ function Editor() {
 
 > [!NOTE]
 > The listener runs after the system has delivered the press: the main thread never waits for the app's code. While at least one listener is registered, NSH takes back presses that dialogs leave, and goes back in the top stack or exits the app itself when no listener returns `true`.
+
+## Haptics
+
+On iOS and Android; elsewhere its calls return at once.
+
+```ts
+const Haptics: {
+  selection(): void;
+  impact(style?: "light" | "medium" | "heavy" | "soft" | "rigid"): void;
+  notification(kind?: "success" | "warning" | "error"): void;
+};
+```
+
+The device plays a haptic under the user's finger: a selection that changed, an element that collided, a task that ended. On iOS it is a feedback generator's (`UISelectionFeedbackGenerator`, `UIImpactFeedbackGenerator`, `UINotificationFeedbackGenerator`); on Android, the view's haptic feedback. Nothing plays on a device without haptics, nor when the user turned them off (Android's touch feedback setting, iOS's system haptics).
+
+| Member | Rust | Description |
+|---|---|---|
+| `selection()` | `haptic(Haptic::Selection)` | A selection changed: a picker's value, a segment, a slider's step. |
+| `impact(style)` | `haptic(Haptic::Impact(HapticImpact::Medium))`, ... | An element collided; `style` is its weight, `"medium"` by default. |
+| `notification(kind)` | `haptic(Haptic::Notification(HapticNotification::Success))`, ... | A task succeeded, produced a warning or failed; `"success"` by default. |
+
+A name it does not know throws a `TypeError`. Android has no constant for every haptic: it plays the closest one (`CONFIRM` and `REJECT` for success and error, from Android 11; a long press for a warning and, before Android 11, for an error).
+
+```rust tabs
+use nsh_core::prelude::*;
+
+fn save_button() -> impl IntoElement {
+    view().child(text("Save")).on_press(|_| {
+        spawn(async {
+            let saved = save().await;
+            haptic(if saved.is_ok() {
+                Haptic::Notification(HapticNotification::Success)
+            } else {
+                Haptic::Notification(HapticNotification::Error)
+            });
+        });
+    })
+}
+```
+
+```tsx tabs
+import { Text, View } from "nsh";
+import { Haptics } from "nsh/mobile";
+
+function SaveButton() {
+  return (
+    <View
+      onPress={async () => {
+        const saved = await save();
+        Haptics.notification(saved ? "success" : "error");
+      }}
+    >
+      <Text>Save</Text>
+    </View>
+  );
+}
+```
 
 The status bar is set by the `statusBar` of [pages and dialogs](./nsh-base.md#status-bar) from `nsh/base`, on iOS and Android alike.

@@ -736,8 +736,8 @@ test("a listener whose owner went runs unowned, as QuickJS runs it", { skip: !pa
 test("host events preserve order, owner cleanup and platform calls", { skip: !path }, async () => {
   const { createHost } = await import("./host.js");
   const { api, invoke, dom, close } = await fixture();
-  const calls = [], heard = [];
-  const channel = createHost(invoke, api, dom, { host: () => true }, () => true, { call: async (...args) => { calls.push(args); return 42; } });
+  const calls = [], heard = [], posts = [];
+  const channel = createHost(invoke, api, dom, { host: () => true }, () => true, { call: async (...args) => { calls.push(args); return 42; }, post: (...args) => posts.push(args) });
   assert.equal(channel.host.available(), true);
   channel.event("ready", 1);
   let dispose;
@@ -746,6 +746,10 @@ test("host events preserve order, owner cleanup and platform calls", { skip: !pa
   channel.event("ready", 2); assert.deepEqual(heard, [1, 2]);
   assert.equal(await channel.host.call("example", { a: 1 }, { timeout: 0 }), 42);
   assert.deepEqual(calls, [["example", { a: 1 }, { timeout: 0 }]]);
+  channel.host.post("note", { b: 2 });
+  assert.deepEqual(posts, [["note", { b: 2 }]]);
+  // Without the page's host, posts go nowhere.
+  createHost(invoke, api, dom, { host: () => false }, () => true, { post: () => assert.fail("posted without a host") }).host.post("note");
   dispose(); channel.event("ready", 3); assert.deepEqual(heard, [1, 2]);
   const top = [];
   channel.host.on("top", value => top.push(value));
@@ -809,7 +813,7 @@ test("native mouse payloads preserve positions, modifiers and nullable pressed b
   try {
     assert.deepEqual(f.mouseEvents(), [null, "left", "right", "middle", "back", "forward"].map(pressedButton => ({
       position: { x: 3, y: 4 }, pagePosition: { x: 30, y: 40 },
-      modifiers: { control: false, alt: false, shift: true, platform: false }, pressedButton,
+      modifiers: { control: false, alt: false, shift: true, platform: false }, pressedButton, button: null,
     })));
   } finally { f.close(); }
 });
@@ -819,9 +823,10 @@ test("native file drops preserve URIs and optional page position", { skip: !path
   const f = await fixture();
   try {
     const uris = ["file:///tmp/hello.txt", "file:///tmp/world.txt"];
+    const mimeTypes = ["text/plain", "text/plain"];
     assert.deepEqual(f.fileDropEvents(), [
-      { uris },
-      { uris, pagePosition: { x: 30, y: 40 } },
+      { uris, mimeTypes },
+      { uris, mimeTypes, pagePosition: { x: 30, y: 40 } },
     ]);
   } finally { f.close(); }
 });

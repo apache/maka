@@ -64,10 +64,8 @@ impl Repository {
         let metadata = match fs::symlink_metadata(&entry) {
             Ok(m) => m,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                for ancestor in root.ancestors().skip(1) {
-                    if ancestor.join(".git").symlink_metadata().is_ok() {
-                        return Err(failure("git_unsupported"));
-                    }
+                if crate::workspace::git::has_repository(&root)? {
+                    return Err(failure("git_unsupported"));
                 }
                 return Ok(None);
             }
@@ -75,6 +73,9 @@ impl Repository {
         };
         if metadata.file_type().is_symlink() {
             return Err(failure("git_unsupported"));
+        }
+        if crate::workspace::git::is_empty_metadata_directory(&entry)? {
+            return Ok(None);
         }
         let git_dir = if metadata.is_dir() {
             entry.clone()

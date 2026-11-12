@@ -57,3 +57,39 @@ test("a closed page's link takes no press until the app opens it", async () => {
   await app.press("id:footer-careers");
   await app.waitFor("onOpen /careers");
 });
+
+test("resting the pointer on a link shows where it goes, its host whole", async () => {
+  // A desktop: the pointer rests on links there.
+  const desk = await open("../App.tsx", { platform: "macos", width: 1200, height: 1700, clock: {} });
+  await desk.press("role:button[Link]");
+  await desk.waitFor("Where it goes");
+  await desk.hover("id:where-short");
+  await desk.wait(600);
+  // One line of two parts: the scheme and host, then the rest. A URL is
+  // written with `text:`: its `https:` would be read as a selector prefix.
+  await desk.waitFor("text:https://nsh.dev");
+  // A Link's title above its URL, in the same bubble.
+  await desk.hover("id:where-titled");
+  await desk.wait(600);
+  await desk.waitFor("text:Link reference");
+  expect(desk.shows("text:https://nsh.dev")).toBe(true);
+  expect(desk.texts()).toContain("/docs/elements/link");
+  // A look-alike host shows as the punycode it is.
+  await desk.hover("id:where-idn");
+  await desk.wait(600);
+  expect(desk.texts().some((t) => t.startsWith("https://xn--") && t.endsWith(".com"))).toBe(true);
+  expect(desk.texts()).toContain("/account/sign-in");
+  expect(desk.shows("text:Link reference")).toBe(false);
+  // A long address keeps its host and its end, its middle cut.
+  await desk.hover("id:where-long");
+  await desk.wait(600);
+  await desk.waitFor("text:https://docs.example.com");
+  expect(desk.texts().some((t) => t.startsWith("/guides/") && t.includes("…") && t.endsWith("#verify"))).toBe(true);
+  // A Markdown link's title above its URL.
+  await desk.hover("the changelog");
+  await desk.wait(600);
+  await desk.waitFor("What changed in this release");
+  expect(desk.shows("text:https://nsh.dev")).toBe(true);
+  expect(desk.texts()).toContain("/changelog");
+  expect(desk.openedUrls()).toEqual([]);
+});

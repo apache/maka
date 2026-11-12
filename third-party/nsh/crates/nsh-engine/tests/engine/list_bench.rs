@@ -34,6 +34,7 @@ fn bench_gallery_scroll() {
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     let bytecode =

@@ -251,21 +251,26 @@ fn source_failure(
             "source failure snapshot has no original model source admission",
         ));
     }
-    let raw:String=c.query_row("SELECT entry_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_metrics_attempt WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.attempt')=? AND fact_kind='model_attempt_prepared' AND sequence<? ORDER BY sequence LIMIT 1",params![snapshot.to_string(),run.to_string(),attempt.to_string(),bind_u64(*sequence)?],|r|r.get(0))?;
+    let raw:String=c.query_row("SELECT entry_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_metrics_attempt WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.attempt')=? AND fact_kind IN ('model_attempt_prepared','proactive_summary_prepared') AND sequence<? ORDER BY sequence LIMIT 1",params![snapshot.to_string(),run.to_string(),attempt.to_string(),bind_u64(*sequence)?],|r|r.get(0))?;
     let (_, prepared) = original_fact(c, snapshot, *run, &raw)?;
-    if !matches!(prepared.fact,Fact::ModelAttemptPrepared{attempt:actual,step:actual_step} if actual==*attempt && actual_step==step)
+    if !matches!(prepared.fact,Fact::ModelAttemptPrepared{attempt:actual,step:actual_step} | Fact::ProactiveSummaryPrepared{attempt:actual,step:actual_step,..} if actual==*attempt && actual_step==step)
     {
         return Err(invalid(
             "source failure snapshot has another original prepared attempt/Step",
         ));
     }
-    let raw:String=c.query_row("SELECT entry_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_step WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.step')=? AND fact_kind='step_prepared' AND sequence<? ORDER BY sequence LIMIT 1",params![snapshot.to_string(),run.to_string(),step.to_string(),bind_u64(*sequence)?],|r|r.get(0))?;
+    let raw:String=c.query_row("SELECT entry_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_step WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.step')=? AND fact_kind IN ('step_prepared','proactive_summary_prepared') AND sequence<? ORDER BY sequence LIMIT 1",params![snapshot.to_string(),run.to_string(),step.to_string(),bind_u64(*sequence)?],|r|r.get(0))?;
     let (_, prepared) = original_fact(c, snapshot, *run, &raw)?;
-    let Fact::StepPrepared {
+    let (Fact::StepPrepared {
         step: actual,
         request,
         ..
-    } = prepared.fact
+    }
+    | Fact::ProactiveSummaryPrepared {
+        step: actual,
+        request,
+        ..
+    }) = prepared.fact
     else {
         return Err(invalid("source failure snapshot lost its original request"));
     };

@@ -127,7 +127,8 @@ const ratio = signal(16 / 9);
 
 ## 能力声明
 
-应用声明了[能力](../docs/sandbox-and-capabilities.md)时，视频源从 `network` 允许的主机加载；指向其他主机的视频源显示为空视图，并触发 `onError`，其 `code` 为 `"ERR_ACCESS_DENIED"`。
+应用声明了[能力](../docs/sandbox-and-capabilities.md)时，视频源从 `network` 允许的主机加载；指向其他主机的视频源显示为空视图，并触发 `onError`，其 `code` 为 `"ERR_ACCESS_DENIED"`。本地文件（绝对路径或
+`file:` URL）只有在 `fs.read` 包含它时才能在桌面上播放，在移动端和 Web 上不会播放；相对路径只在 Web 上作为页面的路径播放。
 
 ## 平台说明
 

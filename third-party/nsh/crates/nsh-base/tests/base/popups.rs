@@ -3,9 +3,14 @@
 //! closed, it stays with its ending look for as long as its transitions
 //! then run, and `onClose` comes after; opened again on its way out it is
 //! taken back; with reduced motion, or no ending look, it goes at once and
-//! nothing more is sent. A tooltip's `delay` of `Infinity` never ends and
-//! one of `NaN` is none; the keyboard focus shows a tooltip in every idiom
-//! until it leaves or Escape is pressed. On a manual clock: time moves only as the test
+//! nothing more is sent. On its way out it takes no keys: the focus is the
+//! trigger's again as a menu or popover closes, so Return during its exit
+//! chooses nothing in it and opens it again, its keys working as before. A tooltip's `delay` of `Infinity` never ends and
+//! one of `NaN` is none; the focus the keyboard moves to its trigger shows
+//! a tooltip in every idiom until it leaves or Escape is pressed, while a
+//! press or a tap that gives the trigger the focus leaves it to the
+//! pointer. Escape or a choice closes a menu
+//! whose `open` the app controls every time, also when the app opened it itself. On a manual clock: time moves only as the test
 //! says.
 
 use std::{
@@ -14,7 +19,9 @@ use std::{
     time::Duration,
 };
 
-use nsh_base::{MenuEvent, PopoverEvent, TooltipEvent, menu, menu_item, popover, submenu, tooltip};
+use nsh_base::{
+    MenuEvent, PopoverEvent, TooltipEvent, button, menu, menu_item, popover, submenu, tooltip,
+};
 use nsh_core::{
     MountItem, NodeId, Size,
     element::{Root, input},
@@ -358,6 +365,231 @@ fn a_desktop_menu_and_its_submenu_go_with_their_exit() {
     app.app.wait_for("Closed: true").unwrap();
 }
 
+/// A desktop menu fading for 120 ms on its way out, with the items chosen
+/// on screen in order.
+#[component]
+fn KeyMenuScreen() -> impl IntoElement {
+    let chose = signal(Vec::<&'static str>::new());
+    let item = move |label: &'static str| {
+        menu_item()
+            .accessibility_label(label)
+            .on_select(move || chose.update(|c| c.push(label)))
+            .child(text(label))
+    };
+    view()
+        .pt(px(100.0))
+        .pl(px(40.0))
+        .child(
+            menu()
+                .popup_class("transition-opacity duration-120")
+                .popup_ending_class("opacity-0")
+                .trigger(
+                    view()
+                        .test_id("file")
+                        .w(px(80.0))
+                        .h(px(30.0))
+                        .child(text("File")),
+                )
+                .child(item("Open"))
+                .child(item("Save")),
+        )
+        .child(text(move || {
+            chose.with(|c| format!("chose:[{}]", c.join(",")))
+        }))
+}
+
+/// The menu opened from the keyboard on its focused trigger (the focus
+/// on Open), past its entrance.
+fn key_menu_app() -> App {
+    let mut app = start(Root::of::<KeyMenuScreen>(), false);
+    app.app.press_key("tab").unwrap();
+    app.app.press_key("enter").unwrap();
+    app.app.run_for(Duration::from_millis(50)).unwrap();
+    app.app.wait_for("Save").unwrap();
+    app
+}
+
+#[test]
+fn a_menu_on_its_way_out_does_not_choose_again() {
+    let mut app = key_menu_app();
+    app.app.press_key("down").unwrap();
+    app.app.press_key("enter").unwrap();
+    app.app.wait_for("text:chose:[Save]").unwrap();
+    app.app.run_for(Duration::from_millis(16)).unwrap();
+    assert!(app.app.shows("Save"), "kept while it goes");
+    app.app.press_key("enter").unwrap();
+    app.app.run_for(Duration::from_millis(300)).unwrap();
+    assert!(
+        app.app.shows("chose:[Save]"),
+        "chosen once, not again by the key while it goes"
+    );
+}
+
+#[test]
+fn a_menu_closed_with_escape_takes_no_return_on_its_way_out() {
+    let mut app = key_menu_app();
+    app.app.press_key("down").unwrap();
+    app.app.press_key("escape").unwrap();
+    app.app.run_for(Duration::from_millis(16)).unwrap();
+    assert!(app.app.shows("Save"), "kept while it goes");
+    app.app.press_key("enter").unwrap();
+    app.app.run_for(Duration::from_millis(300)).unwrap();
+    assert!(app.app.shows("chose:[]"), "nothing chosen");
+}
+
+#[test]
+fn a_menu_opened_again_on_its_way_out_takes_its_keys_again() {
+    let mut app = key_menu_app();
+    app.app.press_key("down").unwrap();
+    app.app.press_key("escape").unwrap();
+    app.app.run_for(Duration::from_millis(16)).unwrap();
+    // Return on the trigger, which has the focus again, takes it back,
+    // focused on its first item as an opening from the keyboard is.
+    app.app.press_key("enter").unwrap();
+    app.app.run_for(Duration::from_millis(300)).unwrap();
+    assert!(app.app.shows("Save"), "taken back");
+    assert!(app.app.shows("chose:[]"), "nothing chosen yet");
+    app.app.press_key("down").unwrap();
+    app.app.press_key("enter").unwrap();
+    app.app.wait_for("text:chose:[Save]").unwrap();
+}
+
+/// A menu whose `open` the app controls, its trigger a view around a
+/// button that flips `open` itself, with another button beside it; the
+/// reports of `onOpenChange` on screen (`o` open, `c` closed).
+#[component]
+fn FlippedMenuScreen() -> impl IntoElement {
+    let open = signal(false);
+    let changes = signal(String::new());
+    view()
+        .pt(px(100.0))
+        .pl(px(40.0))
+        .child(
+            menu()
+                .open(move || Some(open.get()))
+                .on_open_change(move |e: &MenuEvent| {
+                    if let MenuEvent::OpenChange(next, _) = e {
+                        changes.update(|c| c.push(if *next { 'o' } else { 'c' }));
+                        open.set(*next);
+                    }
+                })
+                .trigger(
+                    view().focusable(false).child(
+                        button()
+                            .on_press(move || open.set(!open.get_untracked()))
+                            .child(
+                                view()
+                                    .test_id("trigger")
+                                    .w(px(80.0))
+                                    .h(px(30.0))
+                                    .child(text("View")),
+                            ),
+                    ),
+                )
+                .child(
+                    menu_item()
+                        .accessibility_label("About")
+                        .child(view().test_id("about").child(text("About"))),
+                ),
+        )
+        .child(
+            button().on_press(|| {}).child(
+                view()
+                    .test_id("other")
+                    .w(px(80.0))
+                    .h(px(30.0))
+                    .child(text("Other")),
+            ),
+        )
+        .child(text(move || format!("changes:{}", changes.get())))
+}
+
+/// Opens [`FlippedMenuScreen`]'s menu with its button and closes it with
+/// `close`, three times, pressing the other button in between.
+fn flipped_menu_closes(how: &str, close: impl Fn(&mut Headless)) {
+    let mut app = start(Root::of::<FlippedMenuScreen>(), false);
+    for round in 0..3 {
+        app.app.press("id:trigger").unwrap();
+        app.app.run_for(Duration::from_millis(300)).unwrap();
+        assert!(app.app.shows("About"), "round {round}: open");
+        close(&mut app.app);
+        app.app.run_for(Duration::from_millis(300)).unwrap();
+        assert!(
+            !app.app.shows("About"),
+            "round {round}: closed by {how} ({})",
+            app.app
+                .screen()
+                .texts()
+                .into_iter()
+                .find(|t| t.starts_with("changes:"))
+                .unwrap_or_default()
+        );
+        app.app.press("id:other").unwrap();
+        app.app.run_for(Duration::from_millis(50)).unwrap();
+    }
+}
+
+#[test]
+fn escape_closes_a_controlled_menu_the_app_opened_itself_each_time() {
+    flipped_menu_closes("Escape", |app| app.press_key("escape").unwrap());
+}
+
+#[test]
+fn choosing_an_item_closes_a_controlled_menu_the_app_opened_itself_each_time() {
+    flipped_menu_closes("a choice", |app| app.press("id:about").unwrap());
+}
+
+/// A popover fading for 120 ms on its way out, with a button inside whose
+/// presses are counted.
+#[component]
+fn KeyPopoverScreen() -> impl IntoElement {
+    let applied = signal(0u32);
+    view()
+        .pt(px(100.0))
+        .pl(px(40.0))
+        .child(
+            popover()
+                .popup_class("transition-opacity duration-120")
+                .popup_ending_class("opacity-0")
+                .trigger(
+                    view()
+                        .test_id("trigger")
+                        .w(px(100.0))
+                        .h(px(30.0))
+                        .child(text("Details")),
+                )
+                .child(
+                    view()
+                        .test_id("apply")
+                        .h(px(30.0))
+                        .on_press(move || applied.update(|n| *n += 1))
+                        .child(text("Apply")),
+                ),
+        )
+        .child(text(move || format!("applied:{}", applied.get())))
+}
+
+#[test]
+fn a_popover_closed_with_escape_takes_no_return_on_its_way_out() {
+    let mut app = start(Root::of::<KeyPopoverScreen>(), false);
+    app.app.press_key("tab").unwrap();
+    app.app.press_key("enter").unwrap();
+    app.app.run_for(Duration::from_millis(50)).unwrap();
+    app.app.wait_for("Apply").unwrap();
+    app.app.press_key("tab").unwrap();
+    app.app.press_key("enter").unwrap();
+    app.app.wait_for("text:applied:1").unwrap();
+    app.app.press_key("escape").unwrap();
+    app.app.run_for(Duration::from_millis(16)).unwrap();
+    assert!(app.app.shows("Apply"), "kept while it goes");
+    app.app.press_key("enter").unwrap();
+    app.app.run_for(Duration::from_millis(300)).unwrap();
+    assert!(
+        app.app.shows("applied:1"),
+        "not pressed again while it goes"
+    );
+}
+
 #[derive(Clone, PartialEq, Props)]
 struct TooltipProps {}
 
@@ -462,16 +694,19 @@ fn a_tooltip_shows_once_the_pointer_rested_for_its_delay() {
 #[derive(Clone, PartialEq, Props)]
 struct FocusProps {
     /// The trigger is a text field the app focuses and blurs with two
-    /// buttons (a phone's headless driver moves no focus with Tab), not a
-    /// view Tab stops at.
+    /// buttons, and focuses with F5 too (a phone's headless driver moves no
+    /// focus with Tab), not a view Tab stops at.
     fields: bool,
 }
 
 /// Two stops, the first with a tooltip whose open changes are written
-/// down with their reasons.
+/// down with their reasons, and how often it took the focus (`Focused:
+/// …`). A press on the first view gives it the focus, as AppKit gives a
+/// clicked stop the focus.
 #[component]
 fn FocusScreen(props: FocusProps) -> impl IntoElement {
     let changes = signal(Vec::<String>::new());
+    let focused = signal(0u32);
     let tip = move || {
         tooltip()
             .on_open_change(move |e: &TooltipEvent| {
@@ -484,12 +719,16 @@ fn FocusScreen(props: FocusProps) -> impl IntoElement {
     };
     let field = element_ref();
     let (trigger, next) = if props.fields {
+        // A shortcut that focuses the field: the app's `focus()` after a
+        // key, a move of the keyboard's.
+        on_key("f5", move |_| field.focus());
         (
             input()
                 .element_ref(&field)
                 .test_id("trigger")
                 .w(px(80.0))
                 .h(px(30.0))
+                .on_focus(move || focused.update(|n| *n += 1))
                 .tooltip(tip())
                 .into_element(),
             view()
@@ -509,12 +748,16 @@ fn FocusScreen(props: FocusProps) -> impl IntoElement {
                 .into_element(),
         )
     } else {
+        let own = element_ref();
         (
             view()
+                .element_ref(&own)
                 .test_id("trigger")
                 .w(px(80.0))
                 .h(px(30.0))
                 .focusable(true)
+                .on_press(move || own.focus())
+                .on_focus(move || focused.update(|n| *n += 1))
                 .tooltip(tip())
                 .child(text("Trigger"))
                 .into_element(),
@@ -533,10 +776,11 @@ fn FocusScreen(props: FocusProps) -> impl IntoElement {
         .child(text(move || {
             format!("Changes: {}", changes.get().join(" "))
         }))
+        .child(text(move || format!("Focused: {}", focused.get())))
 }
 
-/// A tooltip shows for the keyboard focus on its trigger at once (Tab),
-/// hides when the focus leaves and on Escape, in `idiom`.
+/// A tooltip shows for the focus the keyboard moves to its trigger at once
+/// (Tab), hides when the focus leaves and on Escape, in `idiom`.
 fn the_focus_shows_a_tooltip_in(os: Os, idiom: Idiom) {
     let root = Root::new::<FocusScreen>(|| FocusProps { fields: false });
     let mut app = start_on(root, false, os, idiom).app;
@@ -568,19 +812,55 @@ fn the_keyboard_focus_shows_a_tooltip_on_a_desktop() {
     the_focus_shows_a_tooltip_in(Os::MacOs, Idiom::Desktop);
 }
 
+/// A click that gives the trigger the focus shows no tooltip for that
+/// focus: the press hides what the pointer showed, nothing is left once
+/// the pointer goes, and the keyboard moving the focus there shows it.
 #[test]
-fn the_focus_shows_a_tooltip_on_a_phone() {
+fn a_click_that_focuses_the_trigger_leaves_its_tooltip_to_the_pointer() {
+    let root = Root::new::<FocusScreen>(|| FocusProps { fields: false });
+    let mut app = start(root, false).app;
+    app.hover("id:trigger").unwrap();
+    app.run_for(Duration::from_millis(600)).unwrap();
+    assert!(app.shows("Tip"), "the pointer rested on it");
+    app.press("id:trigger").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    app.wait_for("Focused: 1").unwrap();
+    assert!(!app.shows("Tip"), "the press hid it, its focus shows none");
+    app.hover("id:next").unwrap();
+    app.run_for(Duration::from_millis(600)).unwrap();
+    assert!(!app.shows("Tip"), "nothing is left once the pointer went");
+    assert!(app.shows("Changes: true:Hover false:Hover"));
+    // Tab on and Shift+Tab back: the keyboard's focus shows it at once.
+    app.press_key("tab").unwrap();
+    app.press_key("shift+tab").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(app.shows("Tip"), "shown at once for the keyboard's focus");
+    app.wait_for("Changes: true:Hover false:Hover true:Focus")
+        .unwrap();
+}
+
+#[test]
+fn the_keyboard_focus_shows_a_tooltip_on_a_phone() {
     let root = Root::new::<FocusScreen>(|| FocusProps { fields: true });
     let mut app = start_on(root, false, Os::Ios, Idiom::Phone).app;
+    // A tap focusing the field (the app's `focus()` after it) shows none.
     app.press("id:focus").unwrap();
     app.run_for(Duration::from_millis(20)).unwrap();
-    assert!(app.shows("Tip"), "shown at once for the focus");
+    app.wait_for("Focused: 1").unwrap();
+    assert!(!app.shows("Tip"), "a tap's focus shows no tooltip");
+    assert!(app.shows("Changes:"), "nothing asked");
+    app.press("id:blur").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    // A hardware keyboard's shortcut focusing it: shown at once.
+    app.press_key("f5").unwrap();
+    app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(app.shows("Tip"), "shown at once for the keyboard's focus");
     app.wait_for("Changes: true:Focus").unwrap();
     app.press("id:blur").unwrap();
     app.run_for(Duration::from_millis(20)).unwrap();
     assert!(!app.shows("Tip"), "hidden with the focus gone");
     app.wait_for("Changes: true:Focus false:Focus").unwrap();
-    app.press("id:focus").unwrap();
+    app.press_key("f5").unwrap();
     app.run_for(Duration::from_millis(20)).unwrap();
     assert!(app.shows("Tip"), "shown again");
     app.press_key("escape").unwrap();

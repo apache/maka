@@ -72,6 +72,9 @@ fn bind<A: Copy + 'static>(
                 KeyOptions {
                     when,
                     repeat,
+                    // The control's own: Return and Space reach them while
+                    // it has the focus.
+                    for_focus: true,
                     ..Default::default()
                 },
                 move |_| run(action),

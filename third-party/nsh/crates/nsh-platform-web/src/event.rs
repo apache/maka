@@ -11,7 +11,10 @@ use nsh_core::{
 };
 
 /// `value`, the JSON payload of a `kind` event, as the core takes it.
-pub(crate) fn payload(kind: EventKind, value: serde_json::Value) -> EventPayload {
+/// `None` when the payload names something this build does not know, such as
+/// a mouse button's name it cannot report: the event is dropped rather than
+/// reported as another one.
+pub(crate) fn payload(kind: EventKind, value: serde_json::Value) -> Option<EventPayload> {
     let num = |k: &str| value.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
     let text = |k: &str| {
         value
@@ -20,7 +23,7 @@ pub(crate) fn payload(kind: EventKind, value: serde_json::Value) -> EventPayload
             .unwrap_or_default()
             .to_owned()
     };
-    match kind {
+    let payload = match kind {
         EventKind::ScrollEnd
         | EventKind::ScrollDragStart
         | EventKind::ScrollDragEnd
@@ -50,6 +53,61 @@ pub(crate) fn payload(kind: EventKind, value: serde_json::Value) -> EventPayload
                 page_position,
                 modifiers,
                 pressed_button,
+            ))
+        }
+        // `{ position, pagePosition, delta, phase, modifiers }`, as
+        // handlers get it.
+        EventKind::Pinch => {
+            let (position, page_position, modifiers) = pointer_at(&value);
+            EventPayload::Pinch(nsh_core::PinchEvent::new(
+                position,
+                page_position,
+                nsh_core::geometry::Percentage(num("delta")),
+                nsh_core::PinchPhase::from_name(&text("phase")).unwrap_or_default(),
+                modifiers,
+            ))
+        }
+        // `{ position, pagePosition, delta, deltaMode, modifiers }`, as
+        // handlers get it.
+        EventKind::Wheel => {
+            let (position, page_position, modifiers) = pointer_at(&value);
+            let d = |c: &str| {
+                value
+                    .get("delta")
+                    .and_then(|p| p.get(c))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as f32
+            };
+            let (dx, dy) = (d("x"), d("y"));
+            let delta = if value.get("deltaMode").and_then(|v| v.as_str()) == Some("lines") {
+                nsh_core::WheelDelta::Lines(point(dx, dy))
+            } else {
+                nsh_core::WheelDelta::Points(point(Points(dx), Points(dy)))
+            };
+            EventPayload::Wheel(nsh_core::WheelEvent::new(
+                position,
+                page_position,
+                delta,
+                modifiers,
+            ))
+        }
+        // `{ position, pagePosition, modifiers, button }`, as handlers get
+        // it.
+        EventKind::MouseUp => {
+            let (position, page_position, modifiers) = pointer_at(&value);
+            EventPayload::Mouse(nsh_core::MouseEvent::released(
+                position,
+                page_position,
+                modifiers,
+                // A keyboard or scripted release names no button; the
+                // primary one is the release that `onPressUp` pairs with. A
+                // name this build does not know is no release to report: the
+                // `?` drops the event instead of reading it as the primary
+                // button.
+                match value.get("button").and_then(|v| v.as_str()) {
+                    None => nsh_core::MouseButton::Left,
+                    Some(name) => mouse_button(name)?,
+                },
             ))
         }
         EventKind::ContextMenu
@@ -128,7 +186,8 @@ pub(crate) fn payload(kind: EventKind, value: serde_json::Value) -> EventPayload
             ),
             _ => EventPayload::None,
         },
-    }
+    };
+    Some(payload)
 }
 
 /// `name` as the static payload key the core takes: each distinct key is

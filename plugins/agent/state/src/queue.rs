@@ -19,7 +19,7 @@
 
 //! Session-owned requests exist before Run admission. Only the native owner
 //! chooses delivery policy; these statements preserve its decisions and evidence.
-use crate::{ContentBlob, Head};
+use crate::{Change, ContentBlob, Head};
 use maka_agent_facts::durable::*;
 use maka_event_log::{
     StoreError,
@@ -33,9 +33,11 @@ use std::{collections::BTreeSet, sync::Arc};
 
 mod sql;
 pub(crate) use sql::{
-    DeliveryTarget, Event, consume, consume_external_steering, consume_steering,
+    DeliveryTarget, Event, consume, consume_external_steering, consume_steering, release_steering,
     retract_interactive, stop_completions,
 };
+
+pub const GOAL_CONTROL_STOP: &str = "goal_control";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -145,6 +147,19 @@ pub struct ReadyEntry {
     pub entry: QueueEntry,
 }
 
+pub enum Followup {
+    Queued(RunId),
+    Interrupt { run: RunId, stop: FactId },
+}
+
+impl Followup {
+    fn original(&self) -> RunId {
+        match *self {
+            Self::Queued(run) | Self::Interrupt { run, .. } => run,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct QueueStore {
     data: DataWriter,
@@ -165,7 +180,7 @@ impl QueueStore {
             session,
             command,
             contents,
-            admission_fence: None,
+            followup: None,
             work_fence: None,
         })
     }
@@ -176,13 +191,13 @@ impl QueueStore {
         session: String,
         command: QueueCommand,
         contents: Vec<ContentBlob>,
-        original: RunId,
+        followup: Followup,
     ) -> maka_event_log::root_store::DataChange {
         self.data.prepare(Write {
             session,
             command,
             contents,
-            admission_fence: Some(original),
+            followup: Some(followup),
             work_fence: None,
         })
     }
@@ -199,7 +214,7 @@ impl QueueStore {
             session,
             command,
             contents,
-            admission_fence: None,
+            followup: None,
             work_fence: Some(Arc::new(fence)),
         })
     }
@@ -208,7 +223,7 @@ impl QueueStore {
         session: String,
         command: QueueCommand,
         contents: Vec<ContentBlob>,
-        original: Option<RunId>,
+        followup: Option<Followup>,
         fence: Option<SessionWorkFence>,
         extra: S,
     ) -> maka_event_log::root_store::DataChange {
@@ -217,7 +232,7 @@ impl QueueStore {
                 session,
                 command,
                 contents,
-                admission_fence: original,
+                followup,
                 work_fence: fence.map(Arc::new),
             },
             extra,
@@ -234,7 +249,7 @@ impl QueueStore {
                 session,
                 command,
                 contents,
-                admission_fence: None,
+                followup: None,
                 work_fence: None,
             })
             .await
@@ -286,15 +301,55 @@ impl QueueStore {
     pub async fn steering(&self, session: String, run: RunId) -> Result<Queue, StoreError> {
         self.data.query(Steering(session, run)).await
     }
+    pub async fn has_pending_steering(
+        &self,
+        session: String,
+        run: RunId,
+    ) -> Result<bool, StoreError> {
+        self.data.query(HasPendingSteering(session, run)).await
+    }
     pub async fn rebuild(&self, session: String) -> Result<QueueCommit, StoreError> {
         self.data.write(Rebuild(session)).await
+    }
+    pub async fn recover_stopped_goal_steering(
+        &self,
+        owner: RunOwner,
+        at: UnixMillis,
+    ) -> Result<(), StoreError> {
+        self.data
+            .write(RecoverStoppedGoalSteering { owner, at })
+            .await
+    }
+}
+struct RecoverStoppedGoalSteering {
+    owner: RunOwner,
+    at: UnixMillis,
+}
+impl Statement for RecoverStoppedGoalSteering {
+    type Value = ();
+    type Output = ();
+    fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+        let sessions = sql::recover_stopped_goal_steering(c, &self.owner, self.at)?;
+        Ok(Prepared {
+            value: (),
+            changed: !sessions.is_empty(),
+            notification: if sessions.is_empty() {
+                Notification::NONE
+            } else {
+                Notification::METADATA.with_sessions(sessions)
+            },
+        })
+    }
+    fn committed(_: ()) {}
+    fn isolated_rejection(error: &StoreError) -> bool {
+        Write::isolated_rejection(error)
     }
 }
 struct Write {
     session: String,
     command: QueueCommand,
     contents: Vec<ContentBlob>,
-    admission_fence: Option<RunId>,
+    followup: Option<Followup>,
     work_fence: Option<Arc<SessionWorkFence>>,
 }
 impl Statement for Write {
@@ -304,13 +359,29 @@ impl Statement for Write {
         vec![Arc::new((self.contents.clone(), self.work_fence.clone()))]
     }
     fn execute(self, c: &Connection) -> Result<Prepared<Self::Value>, StoreError> {
+        let at = self.command.at;
         let (value, changed) = sql::write(
             c,
             &self.session,
             self.command,
             self.contents,
-            self.admission_fence,
+            self.followup.as_ref().map(Followup::original),
         )?;
+        if changed && let Some(Followup::Interrupt { run, stop }) = self.followup {
+            // The queue entry and Stop share the same Root receipt transaction.
+            crate::store::StopRun {
+                run,
+                change: Change {
+                    id: stop,
+                    at,
+                    fact: Fact::StopRequested {
+                        diagnostic: "steering_interrupt".into(),
+                    },
+                },
+                retract_pending: false,
+            }
+            .execute(c)?;
+        }
         Ok(Prepared {
             value,
             changed,
@@ -364,6 +435,20 @@ impl Query for Steering {
     type Output = Queue;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::read(c, &self.0, Some(self.1))
+    }
+}
+struct HasPendingSteering(String, RunId);
+impl Query for HasPendingSteering {
+    type Output = bool;
+    fn execute(self, c: &Connection) -> Result<bool, StoreError> {
+        c.prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM agent_queue_items
+             WHERE session=? AND target_run=? AND state='pending' AND lane='steering')",
+        )?
+        .query_row(rusqlite::params![self.0, self.1.to_string()], |row| {
+            row.get(0)
+        })
+        .map_err(Into::into)
     }
 }
 struct ReadEntry(String, RequestId);

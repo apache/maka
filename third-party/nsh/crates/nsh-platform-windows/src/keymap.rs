@@ -66,11 +66,17 @@ fn key_in_phase(surface: &Rc<Surface>, event: &KeyEvent, fallback: bool) -> bool
         return false;
     }
     let editing = crate::text_input::focused(surface).is_some();
+    let control = crate::input::focused_control(surface).is_some();
     let path = surface.focus_path();
+    let window = surface.input_root().id();
     let found = if fallback {
-        table.find_fallback_with(keystroke, editing, event.repeat, |id| path.contains(&id))
+        table.find_fallback_at_with(window, keystroke, editing, control, event.repeat, |id| {
+            path.contains(&id)
+        })
     } else {
-        table.find_with(keystroke, editing, event.repeat, |id| path.contains(&id))
+        table.find_at_with(window, keystroke, editing, control, event.repeat, |id| {
+            path.contains(&id)
+        })
     };
     if let Some(id) = found.fired() {
         surface.event(
@@ -131,7 +137,49 @@ fn key_of(vk: u16) -> Option<Key> {
 
 #[cfg(test)]
 mod tests {
-    use nsh_core::keymap::Key;
+    use nsh_core::keymap::{Key, KeyBinding, When};
+
+    use super::*;
+    use crate::{input, view::NshView};
+
+    #[test]
+    fn focused_controls_keep_activation_keys_unless_the_binding_is_theirs() {
+        let surface = Surface::new(Default::default());
+        let button = NshView::new(2, nsh_core::ViewKind::View);
+        button.state_mut().events.set(EventKind::Press, true);
+        button.insert_before(&surface.root, None);
+        crate::text_input::focus_view(&surface, &button);
+
+        for fallback in [false, true] {
+            for vk in [0x0D, 0x20] {
+                let event = KeyEvent {
+                    vk,
+                    down: true,
+                    repeat: false,
+                    modifiers: input::Modifiers::default(),
+                };
+                for (for_focus, within, window, expected) in [
+                    (false, Some(button.id()), Some(ROOT_ID), false),
+                    (true, Some(button.id()), Some(ROOT_ID), true),
+                    (true, Some(99), Some(ROOT_ID), false),
+                    (true, Some(button.id()), Some(99), false),
+                ] {
+                    let mut binding =
+                        KeyBinding::new(1, keystroke(&event).unwrap(), When::Always, false);
+                    binding.for_focus = for_focus;
+                    binding.fallback = fallback;
+                    binding.within = within;
+                    binding.window = window;
+                    set(&surface, Arc::new(Keymap::new(vec![binding])));
+                    assert_eq!(
+                        key_in_phase(&surface, &event, fallback),
+                        expected,
+                        "vk={vk} fallback={fallback} for_focus={for_focus} within={within:?} window={window:?}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn virtual_keys() {

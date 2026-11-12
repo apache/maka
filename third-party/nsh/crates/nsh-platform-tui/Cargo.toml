@@ -3,6 +3,7 @@ name = "nsh-platform-tui"
 description = "Native Shell surfaces embedded in a terminal grid."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -23,7 +24,7 @@ nsh-testing = { workspace = true, optional = true, features = ["agent"] }
 serde_json = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 nsh-core = { workspace = true, features = ["loader", "svg"] }
-nsh-base = { workspace = true, features = ["editor", "highlight", "plot", "rich-editor", "term"] }
+nsh-base = { workspace = true, features = ["editor", "emoji-picker", "highlight", "plot", "rich-editor", "term"] }
 nsh-engine = { workspace = true, features = ["net"] }
 icy_sixel.workspace = true
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }

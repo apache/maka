@@ -43,6 +43,9 @@ pub(crate) struct Output {
     pub(crate) enabled: Cell<bool>,
     pub(crate) bytes: Cell<Option<u64>>,
     pub(crate) cells: Cell<Option<u64>>,
+    /// The linked Cells of the frame last drawn, which the backend wraps
+    /// in their hyperlinks (`crate::link`).
+    pub(crate) links: std::cell::RefCell<crate::link::Links>,
 }
 
 pub(crate) struct Monitor {
@@ -130,7 +133,7 @@ impl Monitor {
                 output(|s| s.bytes),
                 output(|s| s.cells)
             );
-            log::info!(target: "nsh::perf", "{}", self.line);
+            log::info!(target: nsh_engine::perf::LOG_TARGET, "{}", self.line);
             // One final idle update, then no timer until app work resumes.
             self.refresh = (!recent.is_empty()).then_some(now + REFRESH);
         }

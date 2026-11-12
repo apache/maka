@@ -539,6 +539,40 @@ fn the_items_follow_the_app_reordering_them() {
     press_focused(&mut app, "A");
 }
 
+/// A toolbar of three buttons, each inside views of the app's (one inside
+/// two).
+#[component]
+fn Wrapped() -> impl IntoElement {
+    let pressed = signal(SharedString::from("none"));
+    let item = move |name: &'static str| {
+        button()
+            .accessibility_label(name)
+            .on_press(move || pressed.set(name.into()))
+            .child(text(name))
+    };
+    view()
+        .child(
+            toolbar()
+                .child(view().child(item("A")))
+                .child(view().child(view().child(item("B"))))
+                .child(view().flex_row().child(item("C"))),
+        )
+        .child(text(move || format!("pressed:{}", pressed.get())))
+}
+
+#[test]
+fn items_inside_views_of_the_toolbar_are_its_items() {
+    let mut app = start::<Wrapped>();
+    app.press_key("tab").unwrap();
+    press_focused(&mut app, "A");
+    app.press_key("right").unwrap();
+    press_focused(&mut app, "B");
+    app.press_key("right").unwrap();
+    press_focused(&mut app, "C");
+    app.press_key("right").unwrap();
+    press_focused(&mut app, "A");
+}
+
 #[derive(Clone, PartialEq, Props)]
 struct ManyProps {
     count: usize,

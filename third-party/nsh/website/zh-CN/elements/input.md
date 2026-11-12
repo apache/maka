@@ -70,7 +70,7 @@ function NameField() {
 | `placeholder` | `.placeholder(..)` | `string` | | 输入框为空时显示的提示。 |
 | `multiline` | `.multiline(..)` | `boolean` | `false` | 多行；回车插入换行（`submitBehavior` 另有设置时除外）。 |
 | `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | 多行输入框的滚动条：平台的滚动指示器，应用设置主题后则是内置滚动条（见 [Scrollbar](./scrollbar.md#built-in-bars)）；对象是它自己的主题，`false` 表示不显示。 |
-| `maxLength` | `.max_length(..)` | `number` | | 用户最多能输入的字符数。 |
+| `maxLength` | `.max_length(..)` | `number` | | 用户最多能输入的字符数。超出的粘贴只插入放得下的部分，与浏览器一致。 |
 | `readonly` | `.readonly(..)` | `boolean` | `false` | 用户可以选择和复制文本，但不能修改。 |
 | `masked` | `.masked(..)` | `boolean` | `false` | 隐藏文本（密码）。 |
 | `allowFontScaling` | | `boolean` | `true` | 跟随系统文字大小。 |
@@ -186,6 +186,7 @@ const height = signal(40);
 | `focus()` | `focus()` | 让输入框获得焦点并弹出键盘。 |
 | `blur()` | `blur()` | 让它失去焦点。 |
 | `setSelection(start, end?)` | `set_selection(start, end)` | 选中 `start..end`（UTF-16 单位）；两者相等时为光标。 |
+| `insertText(text)` | `insert_text(text)` | 以用户编辑的方式用 `text` 替换选区：遵守 `maxLength` 与单行规则，由 `onChange` 报告，并且是输入框撤销历史中的一步。目前只在 Linux、Web 和无头测试中生效，其它平台不做任何事并打印警告。 |
 
 按回车把焦点移到下一个输入框：
 

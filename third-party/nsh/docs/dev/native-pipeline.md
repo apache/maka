@@ -8,8 +8,10 @@ NSH's that NSH does not have (`nsh/list`: the bundler refuses it, naming NSH's m
 native module does not export, as the names `nsh-js` serves say (`native_module_exports`), when the code uses it as a
 value (types need no `type` keyword), with the place in the source and the closest export's name. Since those imports
 stay in the output, the bundle also says what the app uses of each native module (`Bundle::native_use`, `natives.rs`):
-the exports it imports by name across every chunk, every export for a namespace import, `export * from` or an
-`import()` of one, and whether it may use the globals of `crypto` (`nsh_core::js::CRYPTO_GLOBALS`: `crypto`,
+the exports it imports by name across every chunk, the members it reads off a namespace import by names it spells
+(`base.EmojiPicker`, `base["Tabs"]`; resolved through Oxc's scopes, so a shadowing binding is another
+variable), every export for a namespace used any other way (passed on, destructured, read by a computed key, a
+member written or deleted, a call that passes the namespace as `this`, a direct `eval`), `export * from` or an `import()` of one, and whether it may use the globals of `crypto` (`nsh_core::js::CRYPTO_GLOBALS`: `crypto`,
 `Crypto`, `SubtleCrypto`, `CryptoKey`): it spells one of their names (a variable, a member, a key it destructures, a
 string), reads a computed member of `globalThis`, or destructures it with a computed key or a rest element. The global
 object under another name, read by a name made at run time (`const g = globalThis; g[name]`), is beyond it.
@@ -105,7 +107,10 @@ module:
   lines dropped, the rest joined with a space; whitespace on one line is kept (`{a} {b}` keeps its space).
 - The app's expressions keep their spans, so the source map points at the app.
 - The entry's prologue gives the renderer the app's themes (`setup`: the Tailwind theme and the components' `uiTheme`,
-  the appearance and the status bar's default, `nsh.json` `"statusBar"`, before anything renders). A font import
+  the appearance and the status bar's default, `nsh.json` `"statusBar"`, before anything renders). Before any other
+  import, the entry imports `virtual:nsh-app`, whose `setup(null, null, null, null, app)` hands over what `appInfo()`
+  reports (`nsh.json`'s id, name, version and build, the package's `--version` and `--build`, and whether the build is
+  a development one), so a module reads it at its top level; a runtime that predates the fifth argument ignores it. A font import
   (`import Inter from "./Inter.ttf"`) compiles to `nsh:rt`'s `font(uri, family)`: its family, registered by the host
   before the first frame.
 
@@ -135,7 +140,7 @@ module:
 - `List` (`nsh`) is the renderer's (`list.rs`; its tags compile to a component call of `nsh:rt`'s `list`, the
   same function). The core asks for rows (`Host::bind_list`), bound natively (`list::bind`); a recycled cell gets a
   new index and its item accessor follows; header, footer, empty and separator cells, viewability tokens (with
-  `minimumViewTime`), `initialScrollIndex`. Rust components with rows (an `Items` prop) get a list of the app's data as
+  `minimumViewTime`), `initialScrollIndex` and `initialScrollAtEnd`. Rust components with rows (an `Items` prop) get a list of the app's data as
   their items slot.
 - Nodes have the methods of the refs (`dom::NODE_METHODS`, declared per element by `declarations::REFS`: `ViewRef`'s
   `focus`, `blur`, `measure`; `InputRef`'s `setSelection`, `ScrollRef`'s and `ListRef`'s scrolling, `WebViewRef`'s,

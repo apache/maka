@@ -57,10 +57,11 @@ frame.src = "https://apps.example.com/player.html"; // 播放器设置 dialogs: 
 发布出去的应用，在桌面浏览器里表现得像桌面应用，在手机浏览器里表现得像手机应用：
 
 - **滚轮和触控板**滚动沿其方向、还能继续滚动的最内层滚动视图（没有可滚动的纵向视图时，纵向滚轮也会滚动横向列表），并且直到这次滚动结束都停留在这个视图上；滚轮的每一格平滑滑动，分页和吸附的视图每次滚动移动一页。Ctrl + 滚轮和触控板捏合会捏合带原生捏合值的视图，而不是缩放页面。和桌面平台一样，用鼠标拖动不会滚动：鼠标拖动交给拖拽手势、响应者系统和文字选择。滚动视图像桌面平台一样上报 `onScrollDragStart` / `onScrollDragEnd`、`onMomentumStart` / `End` 和 `onScrollEnd`。
-- **键盘**：Tab 和 Shift+Tab 在可按压的视图和输入框之间移动（应用的 `focus:` 样式标出键盘焦点）；回车按下获得焦点的视图，空格在松开时按下；方向键、Page Up / Page Down、空格、Home 和 End 滚动焦点所在或鼠标下方的滚动视图；Escape 先离开输入框、关闭对话框，再返回。`keymap` 的快捷键在浏览器里同样有效，当场匹配（Mac 上的 Safari 和 Chrome 里 `mod` 是 Command，其他地方是 Control）。
-- **返回**：Escape、Alt+左方向键（Mac 上是 Cmd+[）和鼠标的后退键会关闭最上层的对话框或弹出当前显示的最内层的栈（未选中的 tab 里的栈保留它的页面），和 Android 返回键一样；`popOnBack` 和 `onBackPress` 也照常生效。应用占据整个页面时，正在显示的栈里压入的每个页面和打开的每个对话框都是一条浏览器历史记录，浏览器的后退按钮会在应用内返回。
+- **键盘**：Tab 和 Shift+Tab 在可按压的视图和输入框之间移动（应用的 `focus-visible:` 样式标出键盘焦点）；回车按下获得焦点的视图，空格在松开时按下；方向键、Page Up / Page Down、空格、Home 和 End 滚动焦点所在或鼠标下方的滚动视图；Escape 先离开输入框、关闭对话框，再返回。`keymap` 的快捷键在浏览器里同样有效，当场匹配（Mac 上的 Safari 和 Chrome 里 `mod` 是 Command，其他地方是 Control）。
+- **返回**：Escape、Alt+左方向键（Mac 上是 Cmd+[）和鼠标的后退键会关闭最上层的对话框或弹出当前显示的最内层的栈（未选中的 tab 里的栈保留它的页面），和 Android 返回键一样；`popOnBack` 和 `onBackPress` 也照常生效。应用占据整个页面时，正在显示的栈里压入的每个页面和打开的每个对话框都是一条浏览器历史记录，浏览器的后退按钮会在应用内返回。`nsh.json` 的 `web.history` 为打包的页面和开发服务器的页面决定这一点：`false` 让浏览器历史只保留页面自己的记录，`true` 在 iframe 里也加入应用的记录。
+- **地址**：应用占据整个页面时，[`UrlScheme.setUrl(url)`](../modules/nsh.md#urlscheme) 设置当前历史记录的地址，相对于页面地址（以及它的 `<base href>`）解析，`UrlScheme.url()` 读取它。浏览器的后退按钮在应用内后退：栈的页面返回，地址变为那条记录的地址。用户输入的地址（`#fragment`）是应用在当前页面上的一条记录，后退或前进到页面相同的记录时，[`UrlScheme.on("change")`](../modules/nsh.md#urlschemeonchange) 把那条记录的地址告诉应用。`setUrl(url, { history: "push" })` 为应用自己的地址（标签页、筛选）新建这样一条记录。
 - **触摸**：只有滚动视图可以平移；应用下面的页面本身不会滚动、缩放或下拉刷新，点按没有延迟。嵌在 iframe 里时，应用不处理的滑动会滚动外层页面。在带原生平移、捏合的视图和响应者系统上的拖动都交给应用处理。
-- **无障碍**：`role`、`accessibilityLabel`、`accessibilityHint`、`accessibilityState`、`accessibilityValue`、`accessibilityLiveRegion` 和 `accessibilityElementsHidden` 会转成 ARIA；`announce` 通过实时区域朗读，`setAccessibilityFocus` 移动焦点。对话框或提示框下面的视图不可交互。
+- **无障碍**：`role`、`accessibilityLabel`、`accessibilityHint`、`accessibilityDescription`、`accessibilityState`、`accessibilityValue`、`accessibilityLiveRegion` 和 `accessibilityElementsHidden` 会转成 ARIA；`announce` 通过实时区域朗读，`setAccessibilityFocus` 移动焦点。对话框或提示框下面的视图不可交互。
 - **选择和菜单**：在桌面浏览器中，文字默认可以选择，和网页一样，但交互元素里的文字（带按压或触摸处理的视图：按钮、可按压的列表行、标签栏）以及设置了 `userSelect: "none"` 或 `select-none` 的文字除外；在上面拖动鼠标会选择文字，Ctrl/Cmd+C 按行复制，Ctrl/Cmd+A 全选选区所在的这段文字。在手机和平板浏览器中，只有设置了 `userSelect: "text"` 的文字可以选择，和原生应用一样。浏览器的右键菜单只在可选文字和输入框里出现。
 
 
@@ -288,7 +289,7 @@ await player.runModule(new URL("./bundle.js", location.href).href);
 
 `assets`（从 `asset:/` 路径到 URL 的映射）可代替 `assetBase`，`readAsset(uri)` 返回引擎需要立即读取的资源（字体）的字节，或 `null`，`data` 把运行时第一次需要时才下载的文件映射到 URL（`syntaxes`：`nsh-syntaxes.<digest>.bin`；默认是 `nsh.js` 旁边的 `nsh-<name>.bin`），`glue` 是 crate [在 Rust 中调用浏览器 API](#在-rust-中使用浏览器-api) 的运行时的 wasm-bindgen 胶水代码的 URL（`nsh-bindgen.<digest>.js`），播放器会随运行时一起加载它；`player.runModule(url, { capabilities, appId })` 在应用声明的能力（它的 `capabilities.json`）下运行应用，并把它的存储保存在 `nsh.json` 的 id 之下（没有 id 时保存在页面路径之下）。这些选项和应用图片里的相对 URL 都相对于创建播放器时页面的 URL（`player.baseURL`）解析，所以页面把地址改到其他目录后，它们仍能加载。`nsh package --target web` 写出的页面都用到了。
 
-`runModule(url, { chunks })` 还可以指定[拆分 bundle](#拆分-bundle) 的 chunk 所在位置。
+`runModule(url, { chunks })` 还可以指定[拆分 bundle](#拆分-bundle) 的 chunk 所在位置；`runModule(url, { params })` 指定应用的 `host.params`：页面已经为应用准备好的 JSON 对象，比如首屏的数据。`nsh package --target web` 写出的页面里如果有 `<script type="application/json" id="nsh-params">`，就把它的 JSON 传给应用，这样提供页面的服务器可以随页面把数据交给应用，应用直接显示，不必再请求一次。
 
 `player.runSource(code, { name, sourceMap, capabilities, appId })` 运行以源码文本给出的 ES 模块，选项相同。使用 `nsh-playground.wasm` 时，`player.compileAndRun(tsx, name, options)` 会先编译 TSX，再用 `runSource` 的选项运行，结果是编译错误或 `null`；`player.compile(tsx)` 返回 `{ code }` 或 `{ error }`。
 
@@ -298,7 +299,7 @@ Dialog、Sheet 和 AlertDialog 默认覆盖容器。设置 `dialogs: "viewport"`
 
 ## 宿主的函数
 
-在 Web 上，页面就是应用的宿主：它应答 [`host`](../modules/nsh.md#host) 的 `host.call(name, args)`，并发送 `host.on` 监听的事件。`createPlayer` 的 `host` 是一个对象，它的 `call(name, args)` 返回结果或结果的 Promise；抛出异常或 Promise 被拒绝时，应用的调用以错误消息被拒绝。`player.hostEvent(event, payload)` 发送一个带 JSON 数据的事件（数据不是 JSON 时抛出异常）。传入 `host` 后，`host.available()` 为 `true`。
+在 Web 上，页面就是应用的宿主：它应答 [`host`](../modules/nsh.md#host) 的 `host.call(name, args)`，接收它的 `host.post(name, args)`，并发送 `host.on` 监听的事件。`createPlayer` 的 `host` 是一个对象，它的 `call(name, args)` 返回结果或结果的 Promise；抛出异常或 Promise 被拒绝时，应用的调用以错误消息被拒绝。它可选的 `post(name, args)` 接收应用的投递；没有 `post` 时，投递交给 `call`。投递没有回答：它的结果、抛出的异常或被拒绝的 Promise 都留在页面里。`player.hostEvent(event, payload)` 发送一个带 JSON 数据的事件（数据不是 JSON 时抛出异常）。传入 `host` 后，`host.available()` 为 `true`。
 
 ```js
 const player = await createPlayer(container, {
@@ -307,6 +308,9 @@ const player = await createPlayer(container, {
     async call(name, args) {
       if (name === "user.info") return { name: "Ada" };
       throw new Error(`no host function ${name}`);
+    },
+    post(name, args) {
+      if (name === "analytics") navigator.sendBeacon("/analytics", JSON.stringify(args));
     },
   },
 });
@@ -415,6 +419,45 @@ await player.runModule(entry, {
 
 ```tsx
 const Stocks = lazy(() => import("./demos/Stocks").then((m) => m.Stocks));
+```
+
+## 搜索引擎
+
+用 `nsh package --target web` 发布的站点可以被搜索引擎收录，也能生成链接预览：视图带有文档结构，栈中的每个页面都有自己的 URL，每个页面设置文档的标题和描述。应用仍是同一个应用：同样的代码在手机和桌面上绘制同样的界面。
+
+### 标题、段落和链接
+
+在 Web 上，每个视图都绘制成它的属性所表明的 HTML 元素（[页面的标记](../elements/index.md#页面的标记)）：`role="header"` 是对应 `accessibilityLevel` 级别的标题，带 `href` 的 [`Link`](../elements/link.md) 是链接，其余元素用 `web={{ element }}` 指定。元素保留视图的布局、样式和事件，因此页面的外观和行为不变，而它的标记读起来就是一篇文档：
+
+```tsx
+<View web={{ element: "article" }}>
+  <Text role="header" accessibilityLevel={1}>{note.title}</Text>
+  <Text web={{ element: "time" }}>{note.date}</Text>
+  <Each of={note.body}>{(paragraph) => <Text web={{ element: "p" }}>{paragraph()}</Text>}</Each>
+  <Link href="/" openWith="app" onOpen={() => nav.pop()}>
+    <Text>All notes</Text>
+  </Link>
+</View>
+```
+
+按压链接触发的是应用的 `onOpen`，应用照常导航；爬虫跟随 `href`，按住修饰键点击或用鼠标中键点击时在新标签页中打开它；右键点击显示浏览器的链接菜单（在新标签页中打开、复制链接），除非应用用 `onContextMenu` 显示自己的菜单。
+
+### 标题和描述
+
+[`nsh/web`](../modules/nsh-web.md) 的 `Head` 在挂载期间设置页面的 `<head>`：标题、描述、规范 URL、语言、更多 `<meta>`（Open Graph、Twitter 卡片、`robots`）以及结构化数据。每个页面放一个 head，描述正在显示的页面；最后挂载的 head 设置的内容生效：
+
+```tsx
+import { Head } from "nsh/web";
+
+<NavPage title={note.title} header={<SiteHeader />}>
+  <Head
+    title={`${note.title} · Market Notes`}
+    description={note.summary}
+    canonical={`/notes/${note.slug}`}
+    jsonLd={{ "@context": "https://schema.org", "@type": "Article", headline: note.title }}
+  />
+  …
+</NavPage>
 ```
 
 ## 限制

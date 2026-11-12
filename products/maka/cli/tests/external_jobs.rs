@@ -31,7 +31,7 @@ use maka_plugin_core::deployment::DeploymentRef;
 use maka_plugin_core::operation::{
     OperationCleanup, OperationOutcome, OperationReply, OperationResult, Receipt, RecoveryRef,
 };
-use maka_process::isolated::{self, Descriptor, EvidenceInterest, EvidenceWatch, SnapshotProof};
+use maka_process::isolated::{self, Descriptor, EvidenceInterest, EvidenceWatch};
 use serde_json::{Value, json};
 use std::{
     future::Future,
@@ -78,7 +78,7 @@ struct Controller {
 }
 impl Controller {
     async fn open() -> Result<Self> {
-        let namespace = tokio::task::spawn_blocking(isolated::protected_namespace)
+        let namespace = tokio::task::spawn_blocking(maka_sandbox::native_task_namespace)
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
@@ -174,14 +174,8 @@ impl Controller {
             .into_iter()
             .find(|e| e["kind"] == "hello" && e["pid"] == pid)
             .ok_or("original provider hello missing")?;
-        let cwd = PathBuf::from(hello["cwd"].as_str().ok_or("private cwd missing")?);
-        if cwd.file_name().and_then(|n| n.to_str()) != Some("workspace") {
-            return Err("not an original private workspace".into());
-        }
-        let resource = cwd
-            .parent()
-            .ok_or("private resource missing")?
-            .to_path_buf();
+        let tmp = PathBuf::from(hello["tmp"].as_str().ok_or("task tmp missing")?);
+        let resource = tmp.parent().ok_or("task resource missing")?.to_path_buf();
         if resource.parent() != Some(self.namespace.as_path()) {
             return Err("provider did not enter the actual private namespace".into());
         }
@@ -189,7 +183,7 @@ impl Controller {
             resource_ref: resource,
         })
     }
-    fn assert_submissions(&self, jobs: usize) {
+    fn assert_submissions(&self, jobs: usize, resumes: usize) {
         let events = self.events();
         assert!(!events.iter().any(|e| e["kind"] == "failure"), "{events:?}");
         assert_eq!(
@@ -197,18 +191,25 @@ impl Controller {
             jobs,
             "no replacement process: {events:?}"
         );
-        for method in ["thread/start", "turn/start"] {
+        for (method, count) in [
+            ("thread/start", jobs - resumes),
+            ("thread/resume", resumes),
+            ("turn/start", jobs),
+        ] {
             assert_eq!(
                 events
                     .iter()
                     .filter(|e| e["kind"] == "method" && e["method"] == method)
                     .count(),
-                jobs,
+                count,
                 "{events:?}"
             );
         }
-        assert!(!events.iter().any(|e| e["kind"] == "method"
-            && matches!(e["method"].as_str(), Some("thread/resume" | "turn/steer"))));
+        assert!(
+            !events
+                .iter()
+                .any(|e| e["kind"] == "method" && e["method"] == "turn/steer")
+        );
         assert_eq!(
             events.iter().filter(|e| e["kind"] == "host_call").count(),
             1,
@@ -260,7 +261,6 @@ async fn control_connection(
 }
 
 struct Transcript {
-    snapshot: SnapshotProof,
     input: Vec<Value>,
     output: Vec<Value>,
 }
@@ -288,9 +288,9 @@ async fn sealed(descriptor: Descriptor) -> Result<Transcript> {
                 .map(|line| serde_json::from_str(line).map_err(|e| e.to_string()))
                 .collect()
         }
-        assert_eq!(
-            evidence.snapshot.resource_ref(),
-            descriptor.resource_ref.as_path()
+        assert!(
+            evidence.snapshot.is_none(),
+            "built-in CLI must not stage a workspace snapshot"
         );
         assert!(matches!(
             evidence.receipt,
@@ -300,7 +300,6 @@ async fn sealed(descriptor: Descriptor) -> Result<Transcript> {
             }
         ));
         Ok(Transcript {
-            snapshot: evidence.snapshot,
             input: frames(evidence.stdin)?,
             output: frames(evidence.stdout)?,
         })
@@ -664,15 +663,27 @@ async fn launch(
         .as_str()
         .ok_or("session id missing")?
         .to_owned();
+    let access = if effect {
+        "danger_full_access"
+    } else {
+        "read_only"
+    };
     let changed = mutate(client,"agent","metadata",json!({
         "sessionId":id,"expectedRevision":session["revision"],"title":session["title"],"labels":[],
-        "permissions":{"settings":{"access":"danger_full_access","requestPermissions":true},"revokeGrants":false}
+        "permissions":{"settings":{"access":access,"requestPermissions":true},"revokeGrants":false}
     })).await?;
     assert_eq!(changed["kind"], "committed", "{changed}");
-    assert_eq!(
-        changed["session"]["permissions"]["access"],
-        "danger_full_access"
-    );
+    assert_eq!(changed["session"]["permissions"]["access"], access);
+    let run = send_native(client, &id, label, title, effect).await?;
+    Ok((id, run))
+}
+async fn send_native(
+    client: &Client,
+    id: &str,
+    label: &str,
+    title: &str,
+    effect: bool,
+) -> Result<Value> {
     let message = format!(
         "MAKA_EXTERNAL_CASE {}",
         json!({"label":label,"session":id,"title":title,"effect":effect})
@@ -697,7 +708,7 @@ async fn launch(
         .await?;
         match work["kind"].as_str() {
             Some("pending") => {}
-            Some("delivered") => return Ok((id, work["execution"]["runId"].clone())),
+            Some("delivered") => return Ok(work["execution"]["runId"].clone()),
             _ => return Err(format!("original admission unavailable: {work}")),
         }
     }
@@ -1008,9 +1019,10 @@ async fn run_case(crash: bool) {
                 assert_eq!(after["execution"]["runId"],run);
                 assert_eq!(after["prefix"],before["prefix"]);
                 phase("reopen did not duplicate the Host mutation", unique_effect(&recovery,&title,&effect["session"],&session)).await?;
-                rig.controller.assert_submissions(1);
+                rig.controller.assert_submissions(1,0);
                 let again = phase("same sealed source, never a new generation",rig.transcript(pid)).await?;
-                assert_eq!(again.snapshot,transcript.snapshot);
+                assert_eq!(again.input,transcript.input);
+                assert_eq!(again.output,transcript.output);
                 phase("close recovery reader",recovery.close()).await?;
                 rig.clients.pop();
                 phase("new Host actual quit/wait",rig.hosts[1].quit(&mut reopened)).await?;
@@ -1037,7 +1049,14 @@ async fn run_case(crash: bool) {
                 let hellos = rig.controller.events();
                 let hello_a = hellos.iter().find(|e| e["kind"] == "hello" && e["pid"] == pid).unwrap();
                 let hello_b = hellos.iter().find(|e| e["kind"] == "hello" && e["pid"] == pid_b).unwrap();
-                assert_ne!(hello_a["home"],hello_b["home"]);
+                let home = rig.sandbox.home.canonicalize().map_err(|error| error.to_string())?;
+                let workspace = rig.sandbox.workspace.canonicalize().map_err(|error| error.to_string())?;
+                for hello in [hello_a, hello_b] {
+                    assert_eq!(Path::new(hello["home"].as_str().unwrap()).canonicalize().unwrap(), home);
+                    assert_eq!(Path::new(hello["cwd"].as_str().unwrap()), workspace);
+                }
+                let expected = rig.sandbox.workspace.join("direct-write-B");
+                assert_eq!(tokio::fs::read_to_string(expected).await.map_err(|error| error.to_string())?, "B");
                 for target in [pid,pid_b] {
                     rig.controller.send(target,json!({"action":"challenge","nonce":"before-stop"}))?;
                 }
@@ -1071,7 +1090,7 @@ async fn run_case(crash: bool) {
                 check_transcript(&b,&ready_b,Some("completed"));
                 phase("B independent physical readiness",readiness(&sdk,&session_b,&run_b)).await?;
                 phase("actual side effect remains unique",unique_effect(&sdk,&title,&effect["session"],&session)).await?;
-                rig.controller.assert_submissions(2);
+                rig.controller.assert_submissions(2,0);
                 phase("close original SDK reader",sdk.close()).await?;
                 rig.clients.pop();
                 phase("Host quit/wait",rig.hosts[0].quit(&mut anchor)).await?;
@@ -1083,6 +1102,35 @@ async fn run_case(crash: bool) {
                 confirmed_task(&a_facts,&a_bound["task"]); confirmed_task(&b_facts,&b_bound["task"]);
                 confirmed_effect(&a_facts,&a_bound["task"],&effect,&title,&session);
                 assert!(!b_facts.iter().any(|f| f["kind"] == "external_effect"));
+                let (mut reopened, continuation) = phase("reopen Host before the next native turn",rig.start()).await?;
+                assert_ne!(anchor.epoch(),reopened.epoch());
+                let resumed_run = phase("send a new turn on the same Maka session",
+                    send_native(&continuation,&session_b,"D",&title,false)).await?;
+                let resumed = phase("native provider accepted resumed turn",rig.controller.event("D","ready")).await?;
+                assert_eq!(resumed["thread"],ready_b["thread"]);
+                assert_ne!(resumed["turn"],ready_b["turn"]);
+                let resumed_pid = resumed["pid"].as_u64().unwrap();
+                rig.controller.send(resumed_pid,json!({"action":"complete"}))?;
+                phase("resumed native turn completes",terminal_state(&continuation,&session_b,&resumed_run,"completed")).await?;
+                let resumed_wire = phase("read resumed native wire",rig.transcript(resumed_pid)).await?;
+                assert!(b.input.iter().any(|row| row["method"] == "thread/inject_items"
+                    && row["params"]["items"][0]["role"] == "user"
+                    && row["params"]["items"][0]["content"][0]["text"].as_str().unwrap().contains("<maka_system_instructions>")));
+                assert!(resumed_wire.input.iter().any(|row| row["method"] == "thread/resume"
+                    && row["params"]["threadId"] == ready_b["thread"]));
+                assert!(!resumed_wire.input.iter().any(|row| matches!(row["method"].as_str(), Some("thread/start" | "thread/inject_items"))));
+                let input = resumed_wire.input.iter().find(|row| row["method"] == "turn/start").unwrap();
+                assert!(input["params"]["input"][0]["text"].as_str().unwrap().starts_with("MAKA_EXTERNAL_CASE "));
+                let history = query(&continuation,"agent","history",json!({"sessionId":session_b,"position":{"kind":"start"},"includeThinking":false})).await?;
+                let chunks = history["chunks"].as_array().ok_or("resumed history unavailable")?;
+                for expected in [10,5] {
+                    assert!(chunks.iter().any(|chunk| chunk["timing"]["executorUsage"]["totalTokens"] == expected),
+                        "missing per-turn usage {expected}: {history}");
+                }
+                rig.controller.assert_submissions(3,1);
+                phase("close resumed SDK reader",continuation.close()).await?;
+                rig.clients.pop();
+                phase("reopened Host quit/wait",rig.hosts[1].quit(&mut reopened)).await?;
             }
             Ok::<_,String>(())
         }).await.map_err(|_| "overall external-job case deadline".to_owned())?

@@ -124,8 +124,9 @@ enum Event {
 
 struct Shared {
     /// Directory whose media files are served at `/assets/` (the app's
-    /// source directory; [`asset_in_root`] says which of its files).
-    assets_root: Option<std::path::PathBuf>,
+    /// directory, the build's asset root; [`asset_in_root`] says which of
+    /// its files).
+    assets_root: Mutex<Option<std::path::PathBuf>>,
     /// Files served at `/assets/<path>` by name: the app's imported assets
     /// and the files the UI sets' crates ship, by path.
     files: Mutex<std::collections::HashMap<String, std::path::PathBuf>>,
@@ -210,7 +211,7 @@ impl DevServer {
             .enable_all()
             .build()?;
         let shared = Arc::new(Shared {
-            assets_root: assets_root.and_then(|p| dunce::canonicalize(p).ok()),
+            assets_root: Mutex::new(assets_root.and_then(|p| dunce::canonicalize(p).ok())),
             files: Mutex::default(),
             web: Mutex::default(),
             install: Mutex::default(),
@@ -250,6 +251,15 @@ impl DevServer {
             next_version: Mutex::new(0),
             _runtime: runtime,
         })
+    }
+
+    /// Serves the media files of `root` in place of those of the assets
+    /// root [`DevServer::start`] was given: the directory a build named its
+    /// assets from (`nsh_bundler::Bundle::asset_root`), which the server
+    /// learns once it built.
+    pub fn set_assets_root(&self, root: Option<std::path::PathBuf>) {
+        *self.shared.assets_root.lock().expect("assets root lock") =
+            root.and_then(|p| dunce::canonicalize(p).ok());
     }
 
     /// Serves each `(path, file)` at `/assets/<path>` (`asset:/<path>` on
@@ -471,10 +481,11 @@ async fn asset(
     let file = match named {
         Some(file) => file,
         None => {
-            let Some(root) = &shared.assets_root else {
+            let root = shared.assets_root.lock().expect("assets root lock").clone();
+            let Some(root) = root else {
                 return StatusCode::NOT_FOUND.into_response();
             };
-            match asset_in_root(root, &path) {
+            match asset_in_root(&root, &path) {
                 Some(file) => file,
                 None => return StatusCode::NOT_FOUND.into_response(),
             }

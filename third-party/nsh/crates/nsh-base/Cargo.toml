@@ -3,6 +3,7 @@ name = "nsh-base"
 description = "Behavior and infrastructure foundations of NSH apps' UI (`nsh/base`), unstyled: navigation, safe areas, dialogs, the keyboard and the status bar."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -22,6 +23,10 @@ term = ["dep:vte"]
 plot = []
 # Built-in syntax highlighting of `TextView`'s code blocks (syntect).
 highlight = ["dep:syntect", "dep:two-face"]
+# `EmojiPicker`, with Unicode's emoji and their English names embedded (about
+# 440 kB of code and data in a release runner); without it `nsh/base` has no
+# `EmojiPicker`.
+emoji-picker = []
 # `TextView`'s formulas typeset natively (RaTeX), with the KaTeX fonts
 # embedded (about 230 kB); without it a formula shows as its TeX, or as the
 # app's `renderMath`.
@@ -57,6 +62,11 @@ ttf-parser = { workspace = true, optional = true }
 # The local time zone (`Local`): the web runtime asks the page instead.
 chrono = { workspace = true, features = ["clock"] }
 two-face = { workspace = true, optional = true }
+# Oniguruma's regexes where C builds: they compile about 20 times faster
+# than fancy-regex's (TSX's grammar: 15 ms against 280 ms), which an
+# editor's first lines wait for. syntect takes onig when both are on; the
+# web runtime keeps fancy-regex.
+syntect = { workspace = true, optional = true, features = ["regex-onig"] }
 
 [dev-dependencies]
 # The declarations tests read the specs' text (nsh-core `declarations`).

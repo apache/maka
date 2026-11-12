@@ -104,6 +104,8 @@ UI 入口使用 NSH 编译器构建为独立 ES 模块，图片等资源保留�
 maka application build-ui --entry ui/index.tsx --output ui-build
 ```
 
+导入资源的路径相对 NSH app 目录（`nsh.json` 或 `App.tsx` 所在目录）。共享资源在该目录之外时，传入 `--asset-root /path/to/source-root`；所有导入资源都必须位于这个根目录内。
+
 输出的 `manifest.json` 描述 `bundle.js`、资源文件与源文件依赖；包构建器将它们放到 `application.ui.module` 及对应的包内资源路径。
 
 默认产品选择普通 UI 包 `maka.workbench`，实例为 `workbench-ui`，在 `host.json` 中声明 `ui: { path: ["workbench-ui"], id: "root" }`。其导入绑定到产品实际选择的 Agent、设置等服务。包构建器通过所有 UI 包共用的编译器，将 `app/App.tsx` 编译为声明的 `app/App.js` 入口。

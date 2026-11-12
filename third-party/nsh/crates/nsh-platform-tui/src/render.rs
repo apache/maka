@@ -135,6 +135,8 @@ pub(crate) fn draw(
     let mut text_cells = std::mem::take(&mut tree.text_cells);
     text_cells.clear();
     text_cells.resize(buffer.content.len(), false);
+    let mut links = std::mem::take(&mut tree.links);
+    links.clear();
     let mut painter = Painter {
         buffer,
         tree,
@@ -147,6 +149,8 @@ pub(crate) fn draw(
         bands,
         screen: clip,
         text_cells,
+        links,
+        link: None,
         focus: Focus::None,
         popup: false,
         pane: None,
@@ -195,6 +199,7 @@ pub(crate) fn draw(
     }
     painter.tree.scroll_bars = painter.bars;
     painter.tree.text_cells = std::mem::take(&mut painter.text_cells);
+    painter.tree.links = std::mem::take(&mut painter.links);
     painter.tree.spans = std::mem::take(&mut painter.spans);
     if painter.tree.menus.is_open() {
         painter.hits.clear();
@@ -287,6 +292,11 @@ struct Painter<'a> {
     screen: Rect,
     /// Which Cells of the buffer hold text drawn this frame.
     text_cells: Vec<bool>,
+    /// The Cells drawn this frame that hold a linked glyph.
+    links: crate::link::Painted,
+    /// The opening sequence of the hyperlink of the innermost view with an
+    /// `href` around the view being drawn (`crate::link`).
+    link: Option<std::sync::Arc<str>>,
     /// Where the focus is in the subtree being marked.
     focus: Focus,
     /// A popup (an anchored overlay's box) is drawn: only boxes inside an
@@ -331,9 +341,36 @@ impl Edges {
 
 impl Painter<'_> {
     /// Draws view `id`, whose parent's content starts at `origin` (points
-    /// from the area's top left), inside the `clip` Cells.
+    /// from the area's top left), inside the `clip` Cells; the text inside
+    /// a view with an `href` (a `Link`'s) is linked to it.
     #[allow(clippy::too_many_arguments)]
     fn view(
+        &mut self,
+        id: NodeId,
+        origin: Point<Points>,
+        clip: Rect,
+        opacity: f32,
+        ground: Ground,
+        layer: Layer,
+        pointer: bool,
+        press: Option<(NodeId, Point<Points>)>,
+    ) {
+        let open = self
+            .tree
+            .get(id)
+            .and_then(|view| view.props.href.as_deref())
+            .and_then(|href| crate::link::open(id, href));
+        let outer = match open {
+            Some(open) => self.link.replace(open),
+            None => self.link.clone(),
+        };
+        self.view_content(id, origin, clip, opacity, ground, layer, pointer, press);
+        self.link = outer;
+    }
+
+    /// Draws view `id` as [`Self::view`] does, within the link around it.
+    #[allow(clippy::too_many_arguments)]
+    fn view_content(
         &mut self,
         id: NodeId,
         origin: Point<Points>,
@@ -1029,7 +1066,12 @@ impl Painter<'_> {
                 };
                 let rule = rule_axis(layout, view, ground, layer.handle || layer.rule)
                     .filter(|_| !layer.track);
-                text(self.buffer, &mut self.text_cells, place, view, ground);
+                let cells = TextCells {
+                    text: &mut self.text_cells,
+                    links: &mut self.links,
+                    link: self.link.as_ref(),
+                };
+                text(self.buffer, cells, place, view, ground);
                 if let Some(down) = rule {
                     let drawn = text_bounds.clipped(visible);
                     let glyph = if down { "│" } else { "─" };
@@ -1867,15 +1909,30 @@ struct TextPlace<'a> {
     focused: Option<std::ops::Range<u32>>,
 }
 
+/// What the text painter records of the Cells it draws.
+struct TextCells<'a> {
+    /// Which Cells hold text.
+    text: &'a mut [bool],
+    /// Which hold a linked glyph.
+    links: &'a mut crate::link::Painted,
+    /// The opening sequence of the link around the text, if any.
+    link: Option<&'a std::sync::Arc<str>>,
+}
+
 /// Draws a text view's rows, as laid out, inside the place's `visible`,
 /// colors read on `ground`.
 fn text(
     buffer: &mut Buffer,
-    text_cells: &mut [bool],
+    cells: TextCells<'_>,
     place: TextPlace<'_>,
     view: &NshView,
     ground: Ground,
 ) {
+    let TextCells {
+        text: text_cells,
+        links,
+        link,
+    } = cells;
     let TextPlace {
         layout,
         bounds,
@@ -2022,7 +2079,18 @@ fn text(
                 }
             }
             for (offset, cx) in (start..end).enumerate() {
-                text_cells[buffer.index_of(cx as u16, y)] = true;
+                let at = buffer.index_of(cx as u16, y);
+                text_cells[at] = true;
+                // The Cell that holds the glyph carries its link; text
+                // drawn over a linked Cell takes it away.
+                match link {
+                    Some(open) if offset == 0 => {
+                        links.insert(at, (open.clone(), glyph.text.clone()));
+                    }
+                    _ => {
+                        links.remove(&at);
+                    }
+                }
                 let cell = &mut buffer[(cx as u16, y)];
                 cell.set_symbol(if offset == 0 { &glyph.text } else { " " });
                 // A glyph in the color of the band it lands on (a trigger's

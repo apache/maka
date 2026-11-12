@@ -17,7 +17,7 @@ use crate::{
     audio::{AudioError, AudioEvent, PlayerSettings, check_rate, check_volume},
     element::{
         AudioFailure, CallCx, Callback, Cleanup, JsError, JsHost, JsIn, JsObject, JsOwned, JsValue,
-        Later, PropEnum, PropError, Ret, Stop, System, TsTypes, class, codes,
+        Later, PropEnum, PropError, Ret, SoundSource, Stop, System, TsTypes, class, codes,
     },
 };
 
@@ -28,11 +28,7 @@ use crate::{
 fn thrown(failure: AudioFailure, src: &str) -> JsError {
     match failure.error {
         AudioError::NotAllowed => {
-            let permission = if failure.message.contains("network") {
-                "network"
-            } else {
-                "audio"
-            };
+            let permission = permission_of(&failure);
             JsError::access_denied(failure.message, permission, src)
         }
         AudioError::QuotaExceeded => {
@@ -40,6 +36,24 @@ fn thrown(failure: AudioFailure, src: &str) -> JsError {
         }
         AudioError::Unavailable => JsError::Error(failure.message).with_code(codes::UNAVAILABLE),
         error => JsError::Error(failure.message).with_code(error.as_str()),
+    }
+}
+
+/// The capability a refusal names: the one the core recorded, or, for a
+/// player's, the one its message ends with (the core words it without the
+/// app's text, [`crate::core::SOURCE_NOT_GRANTED`]); else as before.
+fn permission_of(failure: &AudioFailure) -> &'static str {
+    if let Some(permission) = failure.permission {
+        return permission;
+    }
+    match failure
+        .message
+        .strip_prefix(crate::core::SOURCE_NOT_GRANTED)
+    {
+        Some("fs") => "fs",
+        Some(_) => "network",
+        None if failure.message.contains("network") => "network",
+        None => "audio",
     }
 }
 
@@ -73,6 +87,30 @@ fn rate(value: Option<f64>) -> Result<f32, JsError> {
     value.map_or(Ok(1.0), |v| check_rate(v as f32).map_err(JsError::Range))
 }
 
+/// A sound's source from JS: a URL or path, or a sound file's bytes.
+impl JsValue for SoundSource {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "string | Uint8Array".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        if let Some(src) = value.as_string() {
+            return Ok(Self::Url(src));
+        }
+        value
+            .as_bytes()
+            .map(Self::from)
+            .ok_or_else(|| value.expected("a string or a Uint8Array"))
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        match self {
+            Self::Url(src) => src.to_js(host),
+            Self::Bytes(bytes) => bytes.to_vec().to_js(host),
+        }
+    }
+}
+
 /// A short sound decoded into memory, played any number of times,
 /// overlapping: feedback, alerts, notices. Load it ahead with
 /// `Sound.load`, then `play()` starts at once. Sounds are at most 5 s
@@ -93,17 +131,24 @@ impl Sound {
         Later::new(async { Ok::<_, JsError>(crate::element::audio_available().await) })
     }
 
-    /// Loads the sound at `src` (a bundled asset's path, `file:`, `data:`,
-    /// or an `http(s)` URL `network` grants) and decodes it into memory.
-    /// Loading a source loaded already shares it. Rejects with
+    /// Loads a sound and decodes it into memory: from `src`, a bundled
+    /// asset's path, `file:`, `data:`, or an `http(s)` URL `network`
+    /// grants, or the encoded bytes of a sound file (a `Uint8Array`: one the
+    /// app made or downloaded), whose format is read from them. Loading a
+    /// source (or bytes) loaded already shares it. Rejects with
     /// `ERR_ACCESS_DENIED` when the `audio` capability (or `network`, for a
     /// remote source) is not granted, `ERR_NSH_QUOTA_EXCEEDED` past a
     /// limit (8 MB encoded, 5 s long, 64 sounds, 16 MB decoded in all),
     /// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where nothing plays sound, and
     /// an `Error` with `code` `"network"`, `"decode"` or `"not-supported"`
     /// when it cannot be read or decoded.
-    pub(crate) fn load(src: String, sys: System, cx: CallCx<'_>) -> Later<Sound> {
-        let checked = granted(&sys, &src);
+    pub(crate) fn load(src: SoundSource, sys: System, cx: CallCx<'_>) -> Later<Sound> {
+        // What a denial names: the source, or nothing for bytes.
+        let resource = match &src {
+            SoundSource::Url(src) => src.clone(),
+            _ => String::new(),
+        };
+        let checked = granted(&sys, &resource);
         let slot: Rc<RefCell<Option<crate::element::Sound>>> = Rc::default();
         // What loaded it goes: the sound goes with it.
         let cleanup = cx.on_cleanup({
@@ -116,7 +161,7 @@ impl Sound {
         });
         Later::new(async move {
             checked?;
-            match crate::element::load_sound(&src).await {
+            match crate::element::load_sound(src).await {
                 Ok(sound) => {
                     *slot.borrow_mut() = Some(sound);
                     // Kept: the owner frees it.
@@ -125,7 +170,7 @@ impl Sound {
                 }
                 Err(failure) => {
                     cleanup.release();
-                    Err(thrown(failure, &src))
+                    Err(thrown(failure, &resource))
                 }
             }
         })
@@ -499,6 +544,7 @@ async fn run(state: Rc<State>, cleanup: Cleanup) {
                         AudioFailure {
                             error,
                             message: message.clone(),
+                            permission: None,
                         },
                         &state.src,
                     )));
@@ -735,5 +781,43 @@ impl AudioPlayer {
     #[getter]
     pub(crate) fn state(&self) -> AudioPlayerState {
         self.state.state()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AudioError, AudioFailure, permission_of};
+
+    /// A refusal names the capability that would grant it, never one read
+    /// from the app's text in its message.
+    #[test]
+    fn refusals_name_the_capability_that_grants_them() {
+        let refused = |capability, message: &str| AudioFailure::refused(capability, message);
+        assert_eq!(
+            permission_of(&refused(
+                "network",
+                "`https://x/capabilities.fs` is not granted"
+            )),
+            "network"
+        );
+        assert_eq!(
+            permission_of(&refused("fs", "`/a/network.wav` is not granted")),
+            "fs"
+        );
+        assert_eq!(
+            permission_of(&refused("audio", "sound is not granted")),
+            "audio"
+        );
+        // A player's, as the core words it.
+        let player = |message: &str| AudioFailure {
+            error: AudioError::NotAllowed,
+            message: message.into(),
+            permission: None,
+        };
+        for (capability, expected) in [("fs", "fs"), ("network", "network")] {
+            let message = format!("{}{capability}", crate::core::SOURCE_NOT_GRANTED);
+            assert_eq!(permission_of(&player(&message)), expected);
+        }
+        assert_eq!(permission_of(&player("sound is not granted")), "audio");
     }
 }

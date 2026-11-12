@@ -15,7 +15,8 @@ or TSX it loads, including signed packages it downloads, under limits and capabi
 
 - **Xcode** on a Mac, with an iOS simulator runtime (`xcodebuild -downloadPlatform iOS` installs one). See
   [Installation](./installation.md#ios-and-mac-catalyst).
-- Apps need **iOS 15.0** or later, on iPhone and iPad.
+- Apps need **iOS 15.0** or later, or the later version an app names
+  ([Minimum system version](./packaging.md#minimum-system-version)), on iPhone and iPad.
 
 ## Running an app
 
@@ -46,6 +47,11 @@ From a Rust app's directory, the app is the iOS runner built with your crate; a 
 
 `--target ios` writes a signed `.ipa` for devices, TestFlight or the App Store. Signing identities, provisioning
 profiles and icons: [Packaging](./packaging.md#ios-devices).
+
+The app logs its warnings, its errors and its `console.log` and `console.info` lines to the unified log, with its id
+as the subsystem: Console shows a connected iPhone's, and
+`xcrun simctl spawn booted log stream --predicate 'subsystem == "com.example.notes"'` the simulator's
+([A packaged app's logs](./dev-server-and-debugging.md#a-packaged-apps-logs)).
 
 ## Embedding in an iOS app
 
@@ -148,7 +154,7 @@ nsh build App.tsx --release --out MyApp/nsh
 | `bundle.js` | The same app as JS source. |
 | `bundle.js.map` | Its source map (stack traces point at your `.tsx` files). |
 | `capabilities.json` | The [capabilities](./sandbox-and-capabilities.md) the app declares, when `nsh.json` has any. |
-| `assets/` | Images and fonts the app imports, at their paths relative to the entry. |
+| `assets/` | Images and fonts the app imports, at their paths in the app's directory. |
 
 ## Show the app
 
@@ -214,6 +220,7 @@ The complete sample, a UIKit app that shows an NSH app below its own native head
 | `loadPackage(at:trust:) async throws -> NshPackage.Info` | Verifies the package at a URL off the main thread, then runs it. Throws why it was refused; the running app stays. |
 | `connectDevServer(_ url: URL) throws` | Development: loads from a `nsh dev` server and reloads on every change. Throws with `NativeShell.xcframework`, which has no development support. |
 | `register(component:_:)` | Registers a [native component](./native-components.md). |
+| `watchScroll(_ nativeID: String, _ watcher: NshScrollWatcher?)` | Follows and drives the app's `<Scroll>` with that `nativeID` from the main thread, in the frame of the scroll ([Following a scroll view](#following-a-scroll-view)); `nil` stops watching. |
 | `params: [String: Any]` | The launch parameters of the apps loaded from now on: the app reads them at start as `host.params` ([`host`](../modules/nsh.md#host)). |
 | `send(_ name: String, _ data: Any? = nil)` | Sends an event to the app (`host.on(name, …)`); kept until it listens, or for the next app while none runs. |
 | `handle(_ name: String, _ handler:)` | Handles the app's calls (`host.call`) and posts (`host.post`) of `name` on the main thread: `{ data, reply in … }`, or an `async throws` function `{ data in … }` whose result answers the call. |
@@ -272,6 +279,46 @@ Handlers run on the main thread; a call waits for its answer in the app without 
 released unanswered fails the call, and a call of a name with no handler fails at once. Events of names the app does
 not listen to yet are kept until it does, and events sent while no app runs (before `loadBundle`, during a reload) go
 to the next one, so a notification tapped while the app starts still reaches it.
+## Following a scroll view
+
+Native UI of the host sometimes moves with the app's content in every frame: a sheet under the page that the end of
+the content pulls up, a header that collapses with it. Forwarding `onScroll` through JS to the host is a frame late,
+so the host watches the app's `<Scroll>` by its `nativeID` instead and gets an `NshScrollHandle` to it. Everything runs
+on the main thread, in the frame of the scroll, without JS. The API is the same on Android, in each platform's units.
+
+Give the `<Scroll>` a `nativeID` (it names the view for native code; `testID` stays for tests):
+
+```tsx
+<Scroll nativeID="page">…</Scroll>
+```
+
+```swift
+final class Sheet: NshScrollWatcher {
+    func onAttached(_ handle: NshScrollHandle) {      // at once when it is there; again after a reload
+        handle.onScroll { [weak self] scrollX, scrollY, dx, dy in self?.follow(handle) }
+        handle.onContentSizeChange { [weak self] contentWidth, contentHeight in self?.follow(handle) }
+    }
+
+    func onDetached() { reset() }                      // deleted, nativeID changed or the app stopped
+}
+
+app.watchScroll("page", sheet)
+```
+
+| `NshScrollHandle` | |
+|---|---|
+| `scrollX`, `scrollY` | The offset from the start of the content (insets not counted), in points. |
+| `contentWidth`, `contentHeight` | The content's size (at least the viewport's), in points. |
+| `viewportWidth`, `viewportHeight` | The visible size, inside the insets, in points. |
+| `contentView` | The view the app's content is laid out in: the positions of the app's views inside are relative to it. |
+| `scrollBy(dx:dy:animated:)` | Scrolls at once or with UIKit's animation, clamped to the content, as the user's scroll would: the app's `onScroll` hears it. |
+| `stopScrolling()` | Ends a fling or an animated scroll where it is; nothing at rest. |
+| `onScroll(_:)`, `onContentSizeChange(_:)` | `(scrollX, scrollY, dx, dy)` on every offset change; `(contentWidth, contentHeight)` when the content gets larger or smaller without a scroll. Each returns a function that stops it. |
+| `isAlive` | Whether the scroll view is still there with that `nativeID`; once it is not, reads give 0 and the rest does nothing. |
+
+With several scroll views of the same `nativeID`, the newest one is watched. The view keeps the watcher until it is
+replaced or removed (`nil`). Desktop and web apps are not embedded, so they have no such API.
+
 ## Theme overrides
 
 One app embedded in several branded host apps takes each host's brand: the host gives the tokens its brand changes,
@@ -413,6 +460,10 @@ updates the app in place, logs appear in the `nsh dev` terminal, and errors show
 - **Safe area.** Apps use `safe_area()` in Rust, and `env(safe-area-inset-*)` in padding or
   `safeAreaInsets()` from [`nsh`](../modules/nsh.md#safe-area-and-keyboard) in TSX, as usual. An `NshAppView` placed below your own header gets the insets that apply to it, not the window's.
 - **Mac Catalyst.** The same framework works in Catalyst apps.
+- **Logs.** The apps' warnings, errors and `console.log` and `console.info` lines go to the unified log, under your
+  app's bundle identifier, with the line's target as the category (`js` for `console.*`): Xcode's console shows them
+  while Xcode runs the app, and so do Console and `log stream`
+  ([A packaged app's logs](./dev-server-and-debugging.md#a-packaged-apps-logs)).
 
 ## See also
 

@@ -138,6 +138,17 @@ export interface NavStackProps<R> {
   class?: string;
   /** Renders a route; return a `<NavPage>` for header options. */
   children: (route: R, index: Accessor<number>) => JSX.Element;
+  /** The routes changed: pushed, popped, replaced or set by the app, or a
+   * page the user went back from (a back button, a swipe, the browser's
+   * back). After the change is rendered; not for the routes the stack
+   * starts with. */
+  onChange?: (event: NavStackChangeEvent<R>) => void;
+}
+
+/** What a `<NavStack>`'s `onChange` gets. */
+export interface NavStackChangeEvent<R> {
+  /** The routes now, bottom to top. */
+  routes: readonly R[];
 }
 
 /** The color of the status bar's content. */
@@ -208,6 +219,15 @@ export interface DialogProps extends DialogHostProps {
   open?: boolean;
   /** How it comes in and goes (default `"slide"`). */
   animation?: "slide" | "fade" | "none";
+  /** What screen readers call it as the focus enters it: its title. */
+  accessibilityLabel?: string;
+  /** What screen readers read after its name: its message (an alert
+   * dialog's "This can't be undone."). */
+  accessibilityDescription?: string;
+  /** What it is for screen readers (default `"dialog"`): `"alertdialog"`
+   * for one that asks the user to confirm something or tells them
+   * something urgent. */
+  role?: "dialog" | "alertdialog";
   /** It finished appearing. */
   onOpen?: () => void;
   /** It went away: the user closed it, or the app removed it. */
@@ -468,7 +488,9 @@ unsafe extern "C" fn stack(
         Err(e) => return e,
     };
     let result = (|| -> Result<(), JsValue> {
-        dom::spread_except(cx, node, props, &["state", "children"])?;
+        dom::spread_except(cx, node, props, &["state", "children", "onChange"])?;
+        let change = native(cx, stack_change, 1, &mut [props]);
+        reactive::user_effect(cx, change);
         let navigator = get(cx, props, c"state");
         let entries = get(cx, navigator, ENTRIES);
         free(cx, navigator);
@@ -493,6 +515,64 @@ unsafe extern "C" fn stack(
             e
         }
     }
+}
+
+/// The stack's `onChange({ routes })`: an effect reading its routes, which
+/// calls the app after each change (not for the routes it starts with).
+unsafe extern "C" fn stack_change(
+    cx: *mut JsContext,
+    _this: JsValue,
+    argc: c_int,
+    argv: *mut JsValue,
+    _magic: c_int,
+    data: *mut JsValue,
+) -> JsValue {
+    // SAFETY: one data value (the stack's props).
+    let props = unsafe { *data };
+    // SAFETY: an inline tag check of the last run's value.
+    let first = unsafe { qjs::JS_IsUndefined(arg(argc, argv, 0)) };
+    let navigator = get(cx, props, c"state");
+    let read = get(cx, navigator, c"routes");
+    free(cx, navigator);
+    // SAFETY: the state's accessor, tracked.
+    let routes = unsafe { qjs::JS_Call(cx, read, UNDEFINED, 0, ptr::null_mut()) };
+    free(cx, read);
+    // SAFETY: an inline tag check.
+    if unsafe { qjs::JS_IsException(routes) } {
+        return routes;
+    }
+    if !first {
+        // Untracked: a handler that changes is no change of the routes.
+        let failed = reactive::untracked_with(cx, || {
+            let on_change = get(cx, props, c"onChange");
+            // SAFETY: an inline check; the event object takes a dup of `routes`.
+            if !unsafe { qjs::JS_IsFunction(cx, on_change) } {
+                free(cx, on_change);
+                return None;
+            }
+            let event = unsafe { qjs::JS_NewObject(cx) };
+            unsafe {
+                qjs::JS_SetPropertyStr(cx, event, c"routes".as_ptr(), qjs::JS_DupValue(cx, routes))
+            };
+            let mut args = [event];
+            // SAFETY: the app's function.
+            let r = unsafe { qjs::JS_Call(cx, on_change, UNDEFINED, 1, args.as_mut_ptr()) };
+            free(cx, event);
+            free(cx, on_change);
+            // SAFETY: an inline tag check.
+            if unsafe { qjs::JS_IsException(r) } {
+                return Some(r);
+            }
+            free(cx, r);
+            None
+        });
+        if let Some(e) = failed {
+            free(cx, routes);
+            return e;
+        }
+    }
+    free(cx, routes);
+    qjs::JS_TRUE
 }
 
 /// One route of a stack: its screen (the app's `<NavPage>`, or one around
@@ -569,7 +649,20 @@ unsafe extern "C" fn screen_of_accessor(
 ) -> JsValue {
     // SAFETY: two data values: the accessor and the pop callback.
     let (accessor, popped) = unsafe { (*data, *data.add(1)) };
-    let rendered = unsafe { qjs::JS_Call(cx, accessor, UNDEFINED, 0, ptr::null_mut()) };
+    let mut rendered = unsafe { qjs::JS_Call(cx, accessor, UNDEFINED, 0, ptr::null_mut()) };
+    // A component rendering another gives an accessor around the next one
+    // (each made hot is one): read them all, tracked, down to what the
+    // innermost rendered, so a `<NavPage>` there is the screen itself and
+    // an edit of any of them renders the screen again.
+    while !unsafe { qjs::JS_IsException(rendered) }
+        && unsafe { qjs::JS_IsFunction(cx, rendered) }
+        && dom::node_id(cx, rendered).is_none()
+    {
+        // SAFETY: an owned function, freed once called.
+        let next = unsafe { qjs::JS_Call(cx, rendered, UNDEFINED, 0, ptr::null_mut()) };
+        free(cx, rendered);
+        rendered = next;
+    }
     if unsafe { qjs::JS_IsException(rendered) } {
         return rendered;
     }
@@ -1044,6 +1137,7 @@ unsafe extern "C" fn modal_run(
                     "children",
                     "open",
                     "animation",
+                    "role",
                     "class",
                     "style",
                     "backdropClass",
@@ -1070,6 +1164,12 @@ unsafe extern "C" fn modal_run(
                 free(cx, read);
                 r?;
             }
+            // A dialog for screen readers unless the app says otherwise
+            // (`"alertdialog"`), named by its `accessibilityLabel`.
+            let read = native(cx, dialog_role, 0, &mut [props]);
+            let r = dom::bind_prop_with(cx, node, "role", read);
+            free(cx, read);
+            r?;
             let (insets, on_insets) = native_insets(cx, false);
             let id = dom::node_id(cx, node).expect("a node");
             let r = dom::set_handler(cx, id, EventKind::Insets, on_insets);
@@ -1237,6 +1337,28 @@ unsafe extern "C" fn has_backdrop(
         free(cx, v);
     }
     if has { qjs::JS_TRUE } else { qjs::JS_FALSE }
+}
+
+/// The dialog's role for assistive technologies: the app's `role`, else
+/// `"dialog"`.
+unsafe extern "C" fn dialog_role(
+    cx: *mut JsContext,
+    _this: JsValue,
+    _argc: c_int,
+    _argv: *mut JsValue,
+    _magic: c_int,
+    data: *mut JsValue,
+) -> JsValue {
+    // SAFETY: one data value (the props).
+    let props = unsafe { *data };
+    let role = get(cx, props, c"role");
+    // SAFETY: an inline check of a live value.
+    if unsafe { qjs::JS_IsUndefined(role) || qjs::JS_IsNull(role) } {
+        free(cx, role);
+        // SAFETY: a new string the caller takes.
+        return unsafe { qjs::JS_NewStringLen(cx, c"dialog".as_ptr(), 6) };
+    }
+    role
 }
 
 /// The backdrop: a view filling the dialog behind the popup, with the

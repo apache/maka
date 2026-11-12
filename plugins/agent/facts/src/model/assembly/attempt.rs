@@ -52,6 +52,7 @@ pub enum PreviewPart {
         provider_part_id: String,
         text_kind: TextKind,
         text: TextBody,
+        final_answer: bool,
         provider_options: Option<Arc<Value>>,
         recorded: Option<PartReceipt>,
     },
@@ -498,7 +499,7 @@ impl AttemptWriter {
             for (index, slot) in self.builder.parts.iter().enumerate() {
                 let identity = &self.identities[index];
                 let receipt = self.recorded.get(&(index as u64));
-                let (text_kind, text, provider_options) = match slot {
+                let (text_kind, text, provider_options, phase) = match slot {
                     PartSlot::Text {
                         text_kind,
                         text,
@@ -517,6 +518,16 @@ impl AttemptWriter {
                             text,
                             if *text_kind == TextKind::Thinking {
                                 super::merged_options(options)
+                            } else {
+                                None
+                            },
+                            if *text_kind == TextKind::Text {
+                                std::iter::successors(options.as_deref(), |patch| {
+                                    patch.previous.as_deref()
+                                })
+                                .find_map(|patch| {
+                                    crate::model::responses_message_phase(&patch.value)
+                                })
                             } else {
                                 None
                             },
@@ -545,6 +556,9 @@ impl AttemptWriter {
                             } else {
                                 None
                             },
+                            provider_options
+                                .as_deref()
+                                .and_then(crate::model::responses_message_phase),
                         )
                     }
                 };
@@ -558,6 +572,7 @@ impl AttemptWriter {
                         .expect("text identity has provider part"),
                     text_kind,
                     text,
+                    final_answer: text_kind == TextKind::Text && phase == Some("final_answer"),
                     provider_options,
                     recorded: receipt.cloned(),
                 });

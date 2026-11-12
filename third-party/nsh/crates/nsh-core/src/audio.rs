@@ -59,6 +59,40 @@ pub const VOLUME: std::ops::RangeInclusive<f32> = 0.0..=1.0;
 /// The slowest and fastest playback rate.
 pub const RATE: std::ops::RangeInclusive<f32> = 0.5..=2.0;
 
+/// The media type a sound file's first bytes say it is, for bytes the app
+/// gives without a name ([`crate::element::SoundSource::Bytes`]): the
+/// decoders that go by a file's name or type read it from this.
+/// `application/octet-stream` when no format is recognized (the platform's
+/// decoder looks at the bytes alone).
+pub(crate) fn sniff(bytes: &[u8]) -> &'static str {
+    let at = |offset: usize, magic: &[u8]| bytes.get(offset..offset + magic.len()) == Some(magic);
+    if at(0, b"RIFF") && at(8, b"WAVE") {
+        "audio/wav"
+    } else if at(0, b"FORM") && (at(8, b"AIFF") || at(8, b"AIFC")) {
+        "audio/aiff"
+    } else if at(0, b"caff") {
+        "audio/x-caf"
+    } else if at(0, b"fLaC") {
+        "audio/flac"
+    } else if at(0, b"OggS") {
+        "audio/ogg"
+    } else if at(4, b"ftyp") {
+        "audio/mp4"
+    } else if at(0, b"ID3") {
+        "audio/mpeg"
+    } else if let [0xFF, second, ..] = bytes {
+        // An MPEG audio frame's sync word: layer bits 00 are AAC's ADTS,
+        // the others MP3's.
+        match second & 0xF6 {
+            0xF0 => "audio/aac",
+            _ if second & 0xE0 == 0xE0 => "audio/mpeg",
+            _ => "application/octet-stream",
+        }
+    } else {
+        "application/octet-stream"
+    }
+}
+
 /// What the core asks of the platform (on the root,
 /// [`crate::Command::Audio`]). Ids are the engine's: a sound's and a
 /// player's are never the same.
@@ -456,6 +490,23 @@ mod tests {
         fn wake(self: Arc<Self>) {
             *self.0.lock().unwrap() += 1;
         }
+    }
+
+    #[test]
+    fn bytes_say_their_format() {
+        let wav = [b"RIFF".as_slice(), &[0; 4], b"WAVEfmt "].concat();
+        assert_eq!(sniff(&wav), "audio/wav");
+        assert_eq!(sniff(b"FORM\0\0\0\0AIFC"), "audio/aiff");
+        assert_eq!(sniff(b"caff\0\x01"), "audio/x-caf");
+        assert_eq!(sniff(b"fLaC\0"), "audio/flac");
+        assert_eq!(sniff(b"OggS\0"), "audio/ogg");
+        assert_eq!(sniff(b"\0\0\0\x20ftypM4A "), "audio/mp4");
+        assert_eq!(sniff(b"ID3\x04"), "audio/mpeg");
+        assert_eq!(sniff(&[0xFF, 0xFB, 0x90]), "audio/mpeg");
+        assert_eq!(sniff(&[0xFF, 0xF1, 0x50]), "audio/aac");
+        assert_eq!(sniff(b"RIFF"), "application/octet-stream");
+        assert_eq!(sniff(&[]), "application/octet-stream");
+        assert_eq!(sniff(&[0xFF, 0x00]), "application/octet-stream");
     }
 
     #[test]

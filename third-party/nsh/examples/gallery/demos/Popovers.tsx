@@ -2,7 +2,7 @@ import { signal, Text, View } from "nsh";
 import { type OpenChangeReason, Popover } from "nsh/base";
 import { LucideIcon, type LucideIconName } from "../icons";
 import { dismissToast, toast } from "../toast";
-import { alpha, Badge, Button, Caption, Card, colors, DemoPage, hovered, PopIn, popoverLook, type PopupSide, popupSurface, Segmented, Stat, Toggle } from "../ui";
+import { alpha, Badge, Button, Caption, Card, colors, DemoPage, hovered, PopIn, placementWords, popoverLook, type PopupSide, popupSurface, Segmented, Stat, Toggle } from "../ui";
 import { Avatar, createEvents, Field, pointer, Rule, tap, Trigger } from "./OverlayUi";
 
 // Every popover here comes in with `PopIn` (the gallery's popup surface,
@@ -143,8 +143,10 @@ export function Popovers() {
     const following = signal(false);
     return (
       <Card icon="popover" title="A person's card" subtitle={`${tap} a mention: who it is, and what to do next`}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <Avatar name="Mira Chen" size={pointer ? 24 : 30} />
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <View style={{ marginRight: 10 }}>
+            <Avatar name="Mira Chen" size={pointer ? 24 : 30} />
+          </View>
           <Popover
             open={open()}
             onOpenChange={(e) => {
@@ -155,7 +157,7 @@ export function Popovers() {
             align="start"
             offset={6}
             margin={8}
-            trigger={<Trigger label="@Mira Chen" open={open()} variant="ghost" ink={colors.accent} />}
+            trigger={<Trigger label="@Mira Chen" open={open()} variant="ghost" inline ink={colors.accent} />}
           >
             <PopIn side="top" style={popoverLook({ width: pointer ? 280 : 300 })}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
@@ -207,7 +209,8 @@ export function Popovers() {
               </View>
             </PopIn>
           </Popover>
-          <Text style={{ flex: 1, fontSize: pointer ? 13 : 15, color: colors.muted }}>mentioned you in Q3 roadmap</Text>
+          {/* A word's space after the mention, as in the line of text it is part of. */}
+          <Text style={{ flex: 1, marginLeft: 4, fontSize: pointer ? 13 : 15, color: colors.muted }}>mentioned you in Q3 roadmap</Text>
         </View>
       </Card>
     );
@@ -226,7 +229,7 @@ export function Popovers() {
       if (id) void toast({ id: "reminder", kind: "info", title: `Reminder set for ${current()!.when}`, description: "Review the Q3 roadmap" });
     };
     return (
-      <Card icon="popover" title="Chosen from a list" subtitle="Controlled: choosing closes it, and the trigger shows the choice">
+      <Card icon="popover" title="Chosen from a list" subtitle="Choosing closes it; the trigger shows the choice">
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
           <Popover
             open={open()}
@@ -281,7 +284,7 @@ export function Popovers() {
     const side = signal<PopupSide>("bottom");
     const align = signal<"start" | "center" | "end">("center");
     return (
-      <Card icon="components" title="Where it goes" subtitle="The side and the alignment; it flips where there is no room">
+      <Card icon="components" title="Where it goes" subtitle="A side and an alignment; it flips without room">
         <Segmented
           size="small"
           options={[{ value: "top", label: "Top" }, { value: "bottom", label: "Bottom" }, { value: "left", label: "Left" }, { value: "right", label: "Right" }]}
@@ -295,10 +298,10 @@ export function Popovers() {
           onChange={(v) => align.set(v)}
         />
         <View style={{ alignItems: "center", paddingVertical: pointer ? 40 : 28 }}>
-          <Popover placement={side()} align={align()} offset={8} margin={8} onOpenChange={changed("placed")} trigger={<Trigger label={`${side()} · ${align()}`} icon="map-pin" />}>
+          <Popover placement={side()} align={align()} offset={8} margin={8} onOpenChange={changed("placed")} trigger={<Trigger label={placementWords(side(), align())} icon="map-pin" />}>
             <PopIn side={side()} style={{ ...popoverLook({ compact: true }), maxWidth: 220 }}>
               <Text style={{ fontSize: 13, fontWeight: "600", color: colors.text }}>
-                Placed {side()} · {align()}
+                {placementWords(side(), align())}
               </Text>
               <Text style={{ fontSize: 12, color: colors.muted }}>It grows out of the edge that faces its trigger.</Text>
             </PopIn>

@@ -9,7 +9,13 @@ import android.os.Bundle;
  * android` passes the server URL as the `url` extra). With a `package` extra
  * (a `.nshpkg` path on the device) and `root` (a root public key, base64;
  * comma-separated for several) it verifies and runs that signed package as an
- * embedding app would; its trust state lives in the cache directory.
+ * embedding app would; its trust state lives in the cache directory. Each
+ * {@code nsh.env.<name>} string extra sets the variable {@code <name>} in this
+ * process's environment before the app starts: the variables of the app's
+ * {@code capabilities.process.env} the CLI passes, which the app reads in
+ * {@code process.env}. Only this host, which only the CLI installs, applies
+ * them: a packaged app's activity is exported, and any app could start it
+ * with extras.
  */
 public final class DevActivity extends Activity {
     private NshView view;
@@ -22,6 +28,9 @@ public final class DevActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         edgeToEdge(this);
+        // Before the view starts the engine, whose `process.env` reads this
+        // process's environment.
+        applyEnv(getIntent().getExtras());
         boolean trace = getIntent().getBooleanExtra("trace", false);
         // A test session's app (`nsh test --target android`) keeps its data
         // in a directory of its own, empty when it starts.
@@ -56,6 +65,22 @@ public final class DevActivity extends Activity {
         }
         String url = getIntent().getStringExtra("url");
         view.connectDevServer(url != null ? url : "ws://127.0.0.1:8790/ws");
+    }
+
+    /** Sets each {@code nsh.env.<name>} string extra as the variable {@code <name>}. */
+    private static void applyEnv(Bundle extras) {
+        if (extras == null) return;
+        for (String key : extras.keySet()) {
+            if (!key.startsWith("nsh.env.")) continue;
+            String value = extras.getString(key);
+            if (value == null) continue;
+            String name = key.substring("nsh.env.".length());
+            try {
+                android.system.Os.setenv(name, value, true);
+            } catch (android.system.ErrnoException e) {
+                android.util.Log.w("nsh", "cannot set " + name + ": " + e.getMessage());
+            }
+        }
     }
 
     private static void deleteTree(java.io.File file) {
@@ -127,7 +152,10 @@ public final class DevActivity extends Activity {
         } else {
             android.view.View decor = activity.getWindow().getDecorView();
             int flags = decor.getSystemUiVisibility();
-            int light = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            // Both bars, as above: the navigation bar's buttons are drawn
+            // over the app (edge to edge), so they follow its mode too.
+            int light = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                    | android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
             decor.setSystemUiVisibility(dark ? flags & ~light : flags | light);
         }
     }

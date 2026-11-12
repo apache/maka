@@ -40,6 +40,7 @@ pub struct Usage {
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct InputDetails {
     pub cached_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
     #[serde(flatten)]
     pub extensions: BTreeMap<String, Value>,
 }
@@ -53,22 +54,32 @@ pub struct OutputDetails {
 }
 impl Usage {
     pub fn normalized(&self, raw: Value) -> output::Usage {
-        let input = self.prompt_tokens.unwrap_or(0);
         let output = self.completion_tokens.unwrap_or(0);
         let cache = self
             .prompt_tokens_details
             .as_ref()
             .and_then(|v| v.cached_tokens)
-            .unwrap_or(0);
+            .or_else(|| {
+                self.extensions
+                    .get("prompt_cache_hit_tokens")
+                    .and_then(Value::as_u64)
+            });
+        let cache_write = self
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|v| v.cache_write_tokens);
         let reasoning = self
             .completion_tokens_details
             .as_ref()
             .and_then(|v| v.reasoning_tokens)
             .unwrap_or(0);
         output::Usage {
-            input: Some(input),
-            uncached_input: Some(i128::from(input) - i128::from(cache)),
-            cache_read: Some(cache),
+            input: self.prompt_tokens,
+            uncached_input: self.prompt_tokens.zip(cache).map(|(input, cache)| {
+                i128::from(input) - i128::from(cache) - i128::from(cache_write.unwrap_or(0))
+            }),
+            cache_read: cache,
+            cache_write,
             output: Some(output),
             reasoning: Some(reasoning),
             text: Some(i128::from(output.saturating_sub(reasoning))),

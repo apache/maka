@@ -25,7 +25,7 @@ use maka_agent_facts::model::{
 use maka_agent_facts::tools::ToolDefinition;
 use maka_provider_protocol::{
     output::{Stop, TextKind as WireTextKind},
-    responses::{self as wire, Event, ItemMetadata, PartMetadata},
+    responses::{self as wire, Event, ItemMetadata, MessagePhase, PartMetadata},
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -193,13 +193,15 @@ impl Decoder {
                     })
                     .map(|value| format!("{value:.3}")),
             },
-            Event::PartStarted { id, kind } => ModelEvent::PartStarted {
+            Event::PartStarted { id, kind, phase } => ModelEvent::PartStarted {
                 id,
                 text_kind: match kind {
                     WireTextKind::Text => TextKind::Text,
                     WireTextKind::Reasoning => TextKind::Thinking,
                 },
-                provider_options: None,
+                provider_options: phase
+                    .filter(|phase| !matches!(phase, MessagePhase::Unknown))
+                    .map(|phase| json!({"openai":{"messagePhase":phase}})),
             },
             Event::PartDelta { id, text, summary_breaks } => ModelEvent::PartDelta {
                 id,
@@ -210,6 +212,11 @@ impl Decoder {
                 id,
                 provider_options: metadata.map(|metadata| match metadata {
                     PartMetadata::Item(metadata) => item_options(metadata),
+                    PartMetadata::Message { item, phase } => {
+                        let mut options = item_options(item);
+                        options["openai"]["messagePhase"] = json!(phase);
+                        options
+                    }
                     PartMetadata::PlaintextSummary {
                         item_id,
                         summary_part_lengths,

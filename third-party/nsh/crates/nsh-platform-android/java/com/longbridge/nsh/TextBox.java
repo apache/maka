@@ -322,9 +322,9 @@ final class TextBox extends android.view.ViewGroup implements Node {
         super.onDetachedFromWindow();
     }
 
-    /** The selected text, without the placeholders of attachments. */
+    /** The selected text, without the placeholders of attachments and hidden runs. */
     private String selectedText() {
-        return layout.getText().subSequence(selStart, selEnd).toString().replace("￼", "");
+        return TextLayouts.shown(layout.getText(), selStart, selEnd);
     }
 
     private void showToolbar() {
@@ -361,7 +361,10 @@ final class TextBox extends android.view.ViewGroup implements Node {
                 if (selStart < 0) return false;
                 int itemId = item.getItemId();
                 if (itemId == android.R.id.copy) {
-                    SystemUi.setClipboard(getContext(), selectedText());
+                    // A selection of hidden characters only leaves the
+                    // clipboard as it is.
+                    String copied = selectedText();
+                    if (!copied.isEmpty()) SystemUi.setClipboard(getContext(), copied);
                     clearSelection();
                     return true;
                 }
@@ -460,7 +463,11 @@ final class TextBox extends android.view.ViewGroup implements Node {
     @Override
     public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
         super.onInitializeAccessibilityNodeInfo(info);
-        if (layout != null && getContentDescription() == null) info.setText(layout.getText());
+        if (layout != null && getContentDescription() == null) {
+            // Hidden runs are not read.
+            CharSequence text = layout.getText();
+            info.setText(TextLayouts.shown(text, 0, text.length()));
+        }
         if (info.getClassName() == null || info.getClassName().equals(View.class.getName())) {
             info.setClassName("android.widget.TextView");
         }

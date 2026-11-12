@@ -26,11 +26,33 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { gzipSync } from 'node:zlib';
-import { executor } from './ci/run.mjs';
+import { executor, runSuites } from './ci/run.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { checkResults, createPlan, documentation } from './ci/plan.mjs';
 import { suites } from './ci/suites.mjs';
+
+test('worker suites all execute and preserve every failure', async () => {
+  const attempted = [];
+  const errors = [new Error('native compile failed'), new Error('pixel assertion failed')];
+  await assert.rejects(
+    runSuites(['native', 'desktop', 'pixels'], async (id) => {
+      attempted.push(id);
+      if (id === 'native') throw errors[0];
+      if (id === 'pixels') throw errors[1];
+    }),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(
+        error.errors.map((failure) => failure.cause),
+        errors,
+      );
+      return true;
+    },
+  );
+  assert.deepEqual(attempted, ['native', 'desktop', 'pixels']);
+  await runSuites(['desktop'], async () => {});
+});
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const full = () =>
@@ -77,6 +99,12 @@ test('a planned Root cannot go green on missing or zero test-selection evidence'
     const missingRunner = successful();
     delete missingRunner['root-tests'];
     assert.throws(() => checkResults(plan, missingRunner, true), /root-tests/);
+    const failedProducer = successful();
+    failedProducer['root-build'].result = 'failure';
+    assert.throws(
+      () => checkResults(plan, failedProducer, undefined),
+      /Required CI jobs did not succeed: root-build/,
+    );
   }
 });
 
@@ -282,9 +310,21 @@ test('non-archived native regressions fail empty selections and GTK runs under X
     'windows-nsh',
   ])
     await exec.verify(id);
-  for (const call of calls) assert(call.args.includes('--no-tests=fail'));
+  for (const call of calls.filter(({ args }) => args.includes('nextest'))) {
+    assert(call.args.includes('--no-tests=fail'));
+    assert(call.args.includes('--no-fail-fast'));
+  }
   assert(calls.some(({ args }) => args.includes('native-pixels')));
   assert(calls.some(({ args }) => args.includes('terminal_native') && !args.includes('--lib')));
+  assert(calls.some(({ args }) => args.includes('native') && args.includes('--ignored')));
+  assert(
+    calls.some(({ args }) => args.includes('crates/nsh-platform-macos/tests/host/Undo.test.tsx')),
+  );
+  assert.equal(
+    calls.find(({ args }) => args.includes('crates/nsh-platform-macos/tests/host/Undo.test.tsx'))
+      .exe,
+    join(root, 'target/debug/nsh'),
+  );
   assert(calls.some(({ exe, args }) => exe === 'xvfb-run' && args[0] === '-a'));
   const gtk = calls.find(({ args }) => args.includes('maka-desktop-shell'));
   assert.deepEqual(gtk, {
@@ -300,6 +340,7 @@ test('non-archived native regressions fail empty selections and GTK runs under X
       '-p',
       'maka-desktop-shell',
       '--no-tests=fail',
+      '--no-fail-fast',
       '--run-ignored=all',
       '-j',
       '1',
@@ -310,6 +351,64 @@ test('non-archived native regressions fail empty selections and GTK runs under X
     exe: 'cargo',
     args: ['nextest', 'run', '--locked', '-p', 'maka-desktop-shell', '--no-run'],
   });
+  const beforeMac = calls.length;
+  await exec.prepare('macos-nsh');
+  const macCalls = calls.slice(beforeMac);
+  const nativeCheck = macCalls.find(({ args }) => args[0] === 'check');
+  assert.equal(nativeCheck.exe, 'cargo');
+  assert(nativeCheck.args.includes('--all-targets'));
+  assert(nativeCheck.args.includes('nsh-platform-macos/terminal'));
+  assert(!nativeCheck.args.includes('--lib'));
+  const hostBuild = macCalls.find(({ args }) => args[0] === 'build');
+  assert.equal(hostBuild.exe, 'cargo');
+  assert(hostBuild.args.includes('nsh-cli'));
+  assert(hostBuild.args.includes('nsh-macos-host'));
+  assert(hostBuild.args.includes('--bins'));
+});
+
+test('NSH native failures do not mask browser compilation or independent checks', async () => {
+  const calls = [];
+  const exec = executor(
+    root,
+    {},
+    {
+      run: async (exe, args, options) => {
+        calls.push({ exe, args, cwd: options.cwd });
+        if (calls.length === 1) throw new Error('native tests failed');
+        return '';
+      },
+    },
+  );
+  await assert.rejects(exec.prepare('nsh'), /CI suites failed/);
+  assert(
+    calls.some(
+      ({ exe, args }) => exe === 'rustup' && args.join(' ') === 'target add wasm32-unknown-unknown',
+    ),
+  );
+  assert.deepEqual(calls.at(-1), {
+    exe: 'cargo',
+    args: [
+      'check',
+      '--locked',
+      '-p',
+      'nsh-platform-web',
+      '--target',
+      'wasm32-unknown-unknown',
+      '--no-default-features',
+      '--features',
+      'browser,linkable,dev,compiler,browser-tests',
+    ],
+    cwd: join(root, 'third-party/nsh'),
+  });
+  calls.length = 0;
+  await assert.rejects(exec.verify('nsh'), /CI suites failed/);
+  assert.equal(calls.length, 5);
+  assert(calls.some(({ args }) => args.includes('--doc') && args.includes('--no-fail-fast')));
+  assert(calls.some(({ args }) => args.includes('text') && args.includes('--no-fail-fast')));
+  assert(calls.some(({ args }) => args.includes('browser_bootstrap')));
+  assert(
+    calls.at(-1).args.includes('third-party/nsh/crates/nsh-platform-web/web/browser/dom.test.mjs'),
+  );
 });
 
 test('CI setup installs release tools and stages V8 archives via GitHub API with digest checks and 504 retries', async () => {

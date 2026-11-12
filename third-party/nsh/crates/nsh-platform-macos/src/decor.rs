@@ -356,7 +356,14 @@ impl Decor {
             s.setStrokeColor(cg_color(b.colors[0]).as_deref());
         }
         for (i, r) in self.ring.iter().enumerate() {
-            r.setFillColor(cg_color(b.colors[i]).as_deref());
+            let color = cg_color(b.colors[i]);
+            if b.style == BorderStyle::Solid {
+                r.setStrokeColor(None);
+                r.setFillColor(color.as_deref());
+            } else {
+                r.setFillColor(None);
+                r.setStrokeColor(color.as_deref());
+            }
         }
         let border_layer = container.unwrap_or(layer);
         if border_layer.borderWidth() > 0.0 {
@@ -595,8 +602,8 @@ impl Decor {
         }
     }
 
-    /// Draws borders with differing sides: the ring between the outer and
-    /// the inner edge, one layer per side color, each masked to its side.
+    /// Draws borders with differing sides: a filled ring for solid borders,
+    /// or a stroke per side for patterns, masked to each side's trapezoid.
     fn set_ring(
         &mut self,
         layer: &CALayer,
@@ -614,7 +621,11 @@ impl Decor {
         let [top, right, bottom, left] = b.widths.to_array().map(|w| w.0 as CGFloat);
         let ring = ring_path(local, radii, [top, right, bottom, left]);
         let same_color = b.colors.iter().all(|&c| c == b.colors[0]);
-        let count = if same_color { 1 } else { 4 };
+        let count = if same_color && b.style == BorderStyle::Solid {
+            1
+        } else {
+            4
+        };
         while self.ring.len() > count {
             if let Some(r) = self.ring.pop() {
                 r.removeFromSuperlayer();
@@ -631,7 +642,21 @@ impl Decor {
         for (i, r) in self.ring.iter().enumerate() {
             r.setZPosition(if behind { BORDER_BEHIND } else { IN_FRONT });
             r.setFrame(local);
-            r.setPath(Some(&ring));
+            if b.style == BorderStyle::Solid {
+                r.setPath(Some(&ring));
+                r.setHidden(false);
+            } else {
+                // Stroke each side at its own width, then keep only its
+                // trapezoid. Merely dashing the filled ring has no effect.
+                let width = b.widths.to_array()[i].0;
+                r.setHidden(width <= 0.0);
+                if width <= 0.0 {
+                    continue;
+                }
+                r.setPath(Some(&side_stroke(local, radii, i, width)));
+                r.setLineWidth(width as CGFloat);
+                set_dashes(r, b.style, width);
+            }
             if count == 1 {
                 // SAFETY: clearing the mask.
                 unsafe { r.setMask(None) };
@@ -667,6 +692,34 @@ impl Decor {
             unsafe { r.setMask(Some(&mask)) };
         }
     }
+}
+
+/// Square sides use an open line: a closed rectangle would double back
+/// over itself on a one-point separator, filling the dash gaps.
+fn side_stroke(
+    rect: CGRect,
+    radii: CornerRadii,
+    side: usize,
+    width: f32,
+) -> CFRetained<CGMutablePath> {
+    let half = width as CGFloat / 2.0;
+    if radii.to_array().iter().any(|r| r.0 > 0.0) {
+        return rounded(inset(rect, half), radii.inset(px(width / 2.0)));
+    }
+    let (w, h) = (rect.size.width, rect.size.height);
+    let (start, end) = match side {
+        0 => ((0.0, half), (w, half)),
+        1 => ((w - half, 0.0), (w - half, h)),
+        2 => ((w, h - half), (0.0, h - half)),
+        _ => ((half, h), (half, 0.0)),
+    };
+    let path = CGMutablePath::new();
+    // SAFETY: a valid mutable path and a null transform.
+    unsafe {
+        CGMutablePath::move_to_point(Some(&path), std::ptr::null(), start.0, start.1);
+        CGMutablePath::add_line_to_point(Some(&path), std::ptr::null(), end.0, end.1);
+    }
+    path
 }
 
 /// Clips the children with `mask` (corners of different radii) or none on
@@ -836,9 +889,10 @@ pub(crate) fn set_dashes(layer: &CAShapeLayer, style: BorderStyle, width: f32) {
             NSNumber::new_f64(w * 3.0),
             NSNumber::new_f64(w * 3.0),
         ])),
-        // Zero-length dashes with round caps draw dots.
+        // A tiny positive dash keeps Core Animation from dropping dots on
+        // an open, straight path. Round caps supply the visible circle.
         BorderStyle::Dotted => Some(NSArray::from_retained_slice(&[
-            NSNumber::new_f64(0.0),
+            NSNumber::new_f64(w * 0.001),
             NSNumber::new_f64(w * 2.0),
         ])),
     };
@@ -995,6 +1049,122 @@ pub(crate) fn set_corners(layer: &CALayer, r: CGFloat, continuous: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pixels(layer: &CALayer, w: usize, h: usize) -> Vec<u8> {
+        use objc2_core_graphics::{
+            CGBitmapContextCreate, CGBitmapContextGetData, CGColorSpace, CGImageAlphaInfo,
+        };
+        let space = CGColorSpace::new_device_rgb().unwrap();
+        // SAFETY: CoreGraphics owns the bitmap; the copied slice remains
+        // within the allocated h rows of w RGBA pixels.
+        unsafe {
+            let context = CGBitmapContextCreate(
+                std::ptr::null_mut(),
+                w,
+                h,
+                8,
+                w * 4,
+                Some(&space),
+                CGImageAlphaInfo::PremultipliedLast.0,
+            )
+            .unwrap();
+            layer.renderInContext(&context);
+            std::slice::from_raw_parts(
+                CGBitmapContextGetData(Some(&context)).cast::<u8>(),
+                w * h * 4,
+            )
+            .to_vec()
+        }
+    }
+
+    #[test]
+    fn single_side_patterns_have_gaps_and_solid_restores_the_fill() {
+        for side in 0..4 {
+            for style in [BorderStyle::Dashed, BorderStyle::Dotted] {
+                let (w, h) = if side % 2 == 0 { (120, 1) } else { (1, 120) };
+                let rect = CGRect::new(CGPoint::ZERO, CGSize::new(w as CGFloat, h as CGFloat));
+                let layer = CALayer::new();
+                layer.setFrame(rect);
+                let mut decor = Decor::default();
+                let mut border = Borders::NONE;
+                match side {
+                    0 => border.widths.top = px(1.0),
+                    1 => border.widths.right = px(1.0),
+                    2 => border.widths.bottom = px(1.0),
+                    _ => border.widths.left = px(1.0),
+                }
+                border.style = style;
+                quiet(|| {
+                    decor.set_ring(&layer, Some(&border), rect, CornerRadii::default(), false);
+                    decor.set_border_colors(&layer, None, &border);
+                });
+                let rgba = pixels(&layer, w, h);
+                let painted = rgba.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count();
+                assert!(
+                    painted > 0 && painted < 100,
+                    "side {side}, {style:?}: {painted} painted pixels"
+                );
+                border.style = BorderStyle::Solid;
+                quiet(|| {
+                    decor.set_ring(&layer, Some(&border), rect, CornerRadii::default(), false);
+                    decor.set_border_colors(&layer, None, &border);
+                });
+                assert!(
+                    pixels(&layer, w, h)
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .all(|p| p[3] == 255)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rounded_unequal_sides_keep_their_patterns() {
+        let rect = CGRect::new(CGPoint::ZERO, CGSize::new(120.0, 80.0));
+        let layer = CALayer::new();
+        layer.setFrame(rect);
+        let mut decor = Decor::default();
+        let mut border = Borders::NONE;
+        border.widths = Edges {
+            top: px(4.0),
+            right: px(2.0),
+            bottom: px(6.0),
+            left: px(3.0),
+        };
+        for style in [BorderStyle::Dashed, BorderStyle::Dotted] {
+            border.style = style;
+            quiet(|| {
+                decor.set_ring(
+                    &layer,
+                    Some(&border),
+                    rect,
+                    CornerRadii::all(px(16.0)),
+                    false,
+                );
+                decor.set_border_colors(&layer, None, &border);
+            });
+            let rgba = pixels(&layer, 120, 80);
+            for side in 0..4 {
+                let painted = (20..60)
+                    .filter(|&i| {
+                        let (x, y) = match side {
+                            0 => (i, 2),
+                            1 => (118, i),
+                            2 => (i, 77),
+                            _ => (1, i),
+                        };
+                        rgba[(y * 120 + x) * 4 + 3] > 128
+                    })
+                    .count();
+                assert!(
+                    painted > 0 && painted < 40,
+                    "side {side}, {style:?}: {painted}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn clipping_leaves_the_mask_that_hides_the_children() {

@@ -23,11 +23,10 @@ Rust 组件、嵌入 NSH 的原生应用），以及在 `nsh/base` 之上构建�
 
 1. 明确应用支持的 Desktop、Mobile、Web、TUI 目标，以及各自的输入、导航和密度要求。
 2. 在主题文件（`nsh.json` 的 `"theme"`）中定义语义颜色角色与浅色、深色值，并确定组件使用的字体、间距、圆角和尺寸尺度。
-3. 在 `nsh/base` 之上封装、组合应用自己的风格控件，覆盖可见部件、变体和交互状态。在支持的目标上验证有代表性的组合，再铺开到页面。
+3. 创建应用的 `ui` 模块（`src/ui/`），在 `nsh/base` 之上封装、组合其核心风格控件（[应用的 `ui` 层](./design-guides.md#应用的-ui-层)）：每个控件只接受 `variant`、`size`、状态和 slot，不接受颜色或圆角；覆盖可见部件、变体和交互状态。在支持的目标上验证有代表性的组合，再铺开到页面。
 4. 用这一层组合页面。缺少 token 或共享变体时，先在所属层补充，再由页面使用；共享控件的修改应一致地作用于所有使用处。
 
-NSH 提供无样式的 `nsh-base` crate（TSX 中为 `nsh/base`），对应 [`gpui-base`](https://gpui-kit.com/base)；应用或社区组件库拥有对应
-[`gpui-component`](https://gpui-kit.com/component) 的风格层，`nsh-core` 则对应底层的 GPUI。普通界面应该导入应用自己的风格控件，把基础组件的组装与样式
+NSH 提供原语（`nsh-core`，TSX 中为 `nsh`）和无样式的 `nsh-base` crate（TSX 中为 `nsh/base`）；应用或社区组件库拥有其上的风格层。普通界面应该导入应用自己的风格控件，把基础组件的组装与样式
 保留在共享层中。适配各目标平台的外观时，保留基础组件的行为、焦点与无障碍能力。
 
 主题颜色必须通过语义 token 读取：Rust 使用 `theme().primary` 或 `theme().color("warning")`，TSX 使用 `bg-primary`、
@@ -602,8 +601,9 @@ view()
 - 类名的含义与 Tailwind CSS v4 完全相同，样式值的含义见[样式参考](../modules/style-reference.md)（即 CSS 的含义，采用原生的写法：数字的单位是点）；`unknown class` 警告是需要修复的问题；
 - token 按语义而不是调色板位置使用；
 - 与状态无关的几何放在普通的构建器链或类名字符串中；
-- 运行时交互状态使用 `active:`、`hover:` 和 `focus:`（`.active(..)`、`.hover(..)`、`.focus(..)`），它们原生生效，不需要往返
-  应用代码；
+- 运行时交互状态使用 `active:`、`hover:` 和 `focus-visible:`（`.active(..)`、`.hover(..)`、`.focus_visible(..)`），它们原生
+  生效，不需要往返应用代码。`focus-visible:` 是键盘的焦点环：键盘移来焦点时显示，点击或轻点之后不显示；任何焦点都要显示的
+  地方（输入框的边框、列表里高亮的行）用 `focus:`；
 - checked、selected、pressed、disabled 外观使用组件的语义状态样式（`selected:`、`checked:`、`disabled:`）；
 - 弹出层的所有权使用显式状态（`open` 与 `onOpenChange`），使触发器在关闭前持续呈现打开或按下的外观；
 - 变体保持少而有意义，不为每个调用处增加一个变体；
@@ -687,7 +687,7 @@ keymap.bind("mod+s", save);
 - `Button`、`Switch` 和菜单项在桌面和 Web 上是键盘焦点的停靠点；在它们之上构建控件，而不是在裸视图上；
 - 在事件中，或在跟随状态变化的 effect 中，用 ref 的 `focus()` 移动焦点，用 `set_accessibility_focus()`（Rust）或
   `nsh` 的 `setAccessibilityFocus`（TSX）移动屏幕阅读器的焦点；
-- 绘制清楚的 `focus:` 状态；
+- 绘制清楚的 `focus-visible:` 状态；
 - 禁止在渲染时无条件设置焦点。
 
 复合控件应完成整个导航模型：方向键、适用时的 Home / End 或翻页、确认、取消与 Tab，而不是几个孤立的快捷键。
@@ -888,8 +888,7 @@ const liked = signal<Set<number>>(new Set());
 
 ### 词汇是 API 的一部分
 
-在各个组件中，同一概念使用同一个词。在给 prop 或事件命名之前，先在 NSH 自己的 API 中寻找这个术语，然后是 GPUI Kit 的
-[`gpui-base`](https://gpui-kit.com/base)、GPUI 和 [`gpui-component`](https://gpui-kit.com/component)，再然后是各平台的控件。原语所显示的内容和全局 API 的名称取自 HTML、DOM 和 CSS
+在各个组件中，同一概念使用同一个词。在给 prop 或事件命名之前，先在 NSH 自己的 API 中寻找这个术语，然后是各平台的控件。原语所显示的内容和全局 API 的名称取自 HTML、DOM 和 CSS
 （`src`、`html`、`placeholder`）。Rust 名称是 `snake_case`，在 TSX 中转换为 `camelCase`（`on_open_change` 即
 `onOpenChange`）；一个词保持一个词（`readonly`、`multiline`）。
 
@@ -913,6 +912,7 @@ const liked = signal<Set<number>>(new Set());
 | 其他事件 | `on<Event>`，现在时，一个对象 | `onPress()`、`onSubmit({ text })` |
 | 阶段 | `<act>Start`、`<act>End` | `onPanStart`、`onLoadStart` |
 | 鼠标位于视图上方 | `Enter` / `Move` / `Leave`，与 DOM 相同 | `onMouseEnter`、`onMouseMove`、`onMouseLeave` |
+| 鼠标按键松开 | `Up`，与 DOM 相同 | `onMouseUp` |
 | 开始监听 | `on(event, listener)`，返回 `() => void` | `host.on(name, l)`、`BackHandler.on("press", l)` |
 | 环境中的值 | 访问器，旁边是 `set<Value>` | `colorScheme()`、`setColorScheme` |
 | 只读的布尔值 | `is<Adjective>`、`has<Noun>` | `isAvailable` |
@@ -1050,7 +1050,7 @@ test("a tap counts", async () => {
 ## 编码代理规则
 
 修改前必须阅读与改动最相关的实现、测试、模块的公开导出和参考页面。必须在当前源码和 `.nsh/types` 中搜索签名，不能从
-React、React Native、CSS 或 GPUI 的示例类比翻译：NSH 的组件只运行一次，绑定跟随它们读取的 signal。
+React、React Native 或 CSS 的示例类比翻译：NSH 的组件只运行一次，绑定跟随它们读取的 signal。
 
 每项改动都应能回答：
 

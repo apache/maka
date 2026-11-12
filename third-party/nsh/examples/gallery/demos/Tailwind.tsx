@@ -140,7 +140,7 @@ function Buttons() {
         <View
           onPress={() => busy.set(!busy())}
           disabled={busy()}
-          class={`h-11 flex-1 items-center justify-center rounded-[10px] border ${finish.accent} transition active:scale-95 hover:opacity-90 disabled:opacity-40`}
+          class={`h-11 flex-1 items-center justify-center rounded-[10px] border ${finish.accent} transition active:scale-95 hover:opacity-90 disabled:opacity-50`}
         >
           <Text class="text-[15px] font-semibold text-on-brand">{busy() ? "Disabled" : "Disable me"}</Text>
         </View>

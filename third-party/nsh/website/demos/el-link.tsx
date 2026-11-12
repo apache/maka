@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Link } from "nsh/base";
-import { desktop, Log, Panel, size, Split, ui, sectionSurface, linkColor, linkLook, linkSize, LinkText } from "./palette";
+import { desktop, Log, Panel, Split, ui, sectionSurface, linkColor, linkLook, linkSize, LinkText } from "./palette";
 
 // Links of the shared look (`linkLook`, `LinkText`, `linkColor`): the
 // accent with a quiet underline that a bar grows over from the left under

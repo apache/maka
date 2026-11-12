@@ -708,6 +708,28 @@ impl<M: TextEngine> Core<M> {
         // (Resolved with the host's instance back: a region after this one
         // may hold its JS children.)
         let mut before = self.anchor_node(state.anchor);
+        // Already contiguous before the anchor: no child needs to move.
+        if !nested
+            && self.key(parent).is_ok_and(|key| {
+                let children = &self.nodes[key as usize].children;
+                let end = match before {
+                    Some(id) => children
+                        .iter()
+                        .position(|&child| self.nodes[child as usize].id == id),
+                    None => Some(children.len()),
+                };
+                end.is_some_and(|end| {
+                    end.checked_sub(nodes.len()).is_some_and(|start| {
+                        children[start..end]
+                            .iter()
+                            .zip(&nodes)
+                            .all(|(&child, &id)| self.nodes[child as usize].id == id)
+                    })
+                })
+            })
+        {
+            return;
+        }
         if nested {
             for &child in nodes.iter().rev() {
                 if !self.nested_precedes(parent, child, before) {

@@ -30,7 +30,9 @@ use nsh_core::{
     platform::Os,
 };
 use objc2::{rc::Retained, runtime::AnyObject};
-use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSTextView, NSView, NSWindow};
+use objc2_app_kit::{
+    NSEvent, NSEventMask, NSEventModifierFlags, NSTextInputClient, NSTextView, NSView, NSWindow,
+};
 
 use crate::surface::Surface;
 
@@ -125,8 +127,7 @@ pub(crate) fn fires(surface: &Rc<Surface>, event: &NSEvent) -> bool {
 /// bindings without re-checking the focus-settle fence.
 pub(crate) fn fires_now(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     *surface.keymap.key.borrow_mut() = Some(event.into());
-    crate::input::control_activation_target(surface, event).is_none()
-        && matched(surface, event, false)
+    matched(surface, event, false)
 }
 
 /// Whether key-down `event` was held by an unsettled focus fence or consumed
@@ -169,7 +170,10 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
     let Some(root) = crate::window::root_in(surface, &window) else {
         return false;
     };
+    // Before a binding acts: the focus it moves shows (`focus-visible:`).
+    surface.control(|c| c.set_input_modality(nsh_core::platform::InputModality::Keyboard));
     let own = root.ns() != surface.root.ns();
+    let window_root = root.id();
     if crate::window::blocked(surface, own.then_some(&root)) {
         return false;
     }
@@ -177,6 +181,12 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
     let Some(editing) = editing(surface, &window) else {
         return false;
     };
+    if composing(&window) {
+        return false;
+    }
+    // Return and Space on a focused control fire only the focus' own
+    // bindings; else the control takes them (`input::key`).
+    let control = crate::input::control_activation_target(surface, event).is_some();
     let Some(keystroke) = keystroke(event) else {
         return false;
     };
@@ -188,7 +198,7 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
         return false;
     }
     let ctrl_for_command = surface.environment.get().ctrl_for_command;
-    if !fallback && editing && crate::text::has_selection(surface) {
+    if !fallback && editing && crate::text::can_copy(surface) {
         let field_selected = window.firstResponder().is_some_and(|r| {
             r.downcast_ref::<NSTextView>()
                 .is_some_and(|v| v.selectedRange().length > 0)
@@ -212,8 +222,10 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
     let path = crate::input::focus_path(surface);
     let found = match_table(
         &table,
+        window_root,
         keystroke,
         editing,
+        control,
         event.isARepeat(),
         fallback,
         ctrl_for_command,
@@ -230,6 +242,18 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
         }
     }
     found.consumed()
+}
+
+/// Whether an input method is composing in the focused text view (it has
+/// marked text: pinyin, kana). Every key is then the input method's:
+/// Backspace deletes a letter of the composition, Return and Space
+/// commit it, arrows move through its candidates. A binding taking one
+/// first would leave the composition stuck.
+fn composing(window: &NSWindow) -> bool {
+    window
+        .firstResponder()
+        .and_then(|r| r.downcast::<NSTextView>().ok())
+        .is_some_and(|t| t.hasMarkedText())
 }
 
 /// Where the keyboard focus is: `Some(true)` in a text input or hosted
@@ -324,8 +348,10 @@ pub(crate) fn function_key_code(n: u8) -> Option<u16> {
 /// terminal surfaces where `ctrl_for_command` stands in for Apple's Command.
 fn match_table(
     table: &Keymap,
+    window: NodeId,
     keystroke: Keystroke,
     editing: bool,
+    control: bool,
     repeat: bool,
     fallback: bool,
     ctrl_for_command: bool,
@@ -333,9 +359,9 @@ fn match_table(
 ) -> KeyMatch {
     let find = |stroke| {
         if fallback {
-            table.find_fallback_with(stroke, editing, repeat, &within)
+            table.find_fallback_at_with(window, stroke, editing, control, repeat, &within)
         } else {
-            table.find_with(stroke, editing, repeat, &within)
+            table.find_at_with(window, stroke, editing, control, repeat, &within)
         }
     };
     let mut found = find(keystroke);
@@ -381,22 +407,54 @@ mod tests {
             KeyBinding::new(4, parse("mod+s"), When::Always, false),
         ]);
         assert_eq!(
-            super::match_table(&table, parse("ctrl+u"), true, false, false, false, |_| true),
+            super::match_table(
+                &table,
+                nsh_core::ROOT_ID,
+                parse("ctrl+u"),
+                true,
+                false,
+                false,
+                false,
+                false,
+                |_| true
+            ),
             KeyMatch::None
         );
         assert_eq!(
-            super::match_table(&table, parse("ctrl+u"), true, false, false, true, |_| true),
+            super::match_table(
+                &table,
+                nsh_core::ROOT_ID,
+                parse("ctrl+u"),
+                true,
+                false,
+                false,
+                false,
+                true,
+                |_| true
+            ),
             KeyMatch::Fire(1)
         );
         assert_eq!(
-            super::match_table(&table, parse("ctrl+c"), true, false, false, true, |_| true),
+            super::match_table(
+                &table,
+                nsh_core::ROOT_ID,
+                parse("ctrl+c"),
+                true,
+                false,
+                false,
+                false,
+                true,
+                |_| true
+            ),
             KeyMatch::Fire(2)
         );
         assert_eq!(
             super::match_table(
                 &table,
+                nsh_core::ROOT_ID,
                 parse("ctrl+cmd+s"),
                 true,
+                false,
                 false,
                 false,
                 true,
@@ -404,5 +462,71 @@ mod tests {
             ),
             KeyMatch::None
         );
+    }
+
+    #[test]
+    fn ctrl_for_command_respects_window_and_fallback_scope() {
+        let parse = |text| Keystroke::parse(text, Os::MacOs).unwrap();
+        let table = Keymap::new(vec![KeyBinding {
+            window: Some(7),
+            within: Some(8),
+            fallback: true,
+            ..KeyBinding::new(1, parse("mod+s"), When::Always, false)
+        }]);
+        let match_in = |window, fallback, focused| {
+            super::match_table(
+                &table,
+                window,
+                parse("ctrl+s"),
+                true,
+                false,
+                false,
+                fallback,
+                true,
+                |id| id == focused,
+            )
+        };
+        assert_eq!(match_in(7, true, 8), KeyMatch::Fire(1));
+        assert_eq!(match_in(9, true, 8), KeyMatch::None);
+        assert_eq!(match_in(7, true, 9), KeyMatch::None);
+        assert_eq!(match_in(7, false, 8), KeyMatch::None);
+    }
+
+    #[test]
+    fn activation_keys_prefer_the_focused_controls_binding_in_both_phases() {
+        for key in ["enter", "space"] {
+            let key = Keystroke::parse(key, Os::MacOs).unwrap();
+            for fallback in [false, true] {
+                let table = Keymap::new(vec![
+                    KeyBinding {
+                        fallback,
+                        ..KeyBinding::new(1, key, When::Always, false)
+                    },
+                    KeyBinding {
+                        window: Some(7),
+                        within: Some(8),
+                        for_focus: true,
+                        fallback,
+                        ..KeyBinding::new(2, key, When::Always, false)
+                    },
+                ]);
+                let match_at = |control, focused| {
+                    super::match_table(
+                        &table,
+                        7,
+                        key,
+                        false,
+                        control,
+                        false,
+                        fallback,
+                        false,
+                        |id| id == focused,
+                    )
+                };
+                assert_eq!(match_at(true, 8), KeyMatch::Fire(2));
+                assert_eq!(match_at(true, 9), KeyMatch::None);
+                assert_eq!(match_at(false, 9), KeyMatch::Fire(1));
+            }
+        }
     }
 }

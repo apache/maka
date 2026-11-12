@@ -23,6 +23,7 @@ import BaseHoverCard from "./base-hover-card";
 import BaseLink from "./base-link";
 import BaseNavPage from "./base-nav-page";
 import BaseNavStack from "./base-nav-stack";
+import BaseNavStackChange from "./base-nav-stack-change";
 import BaseNumberInput from "./base-number-input";
 import BaseOtpInput from "./base-otp-input";
 import BasePagination from "./base-pagination";
@@ -43,6 +44,7 @@ import BaseSafeAreaKeyboard from "./base-safe-area-keyboard";
 import BaseCombobox from "./base-combobox";
 import BaseCommand from "./base-command";
 import BaseDatePicker from "./base-date-picker";
+import BaseEmojiPicker from "./base-emoji-picker";
 import BaseScrollbar from "./base-scrollbar";
 import BaseSelect from "./base-select";
 import BaseSelectableView from "./base-selectable-view";
@@ -75,6 +77,7 @@ const cases: Record<string, () => JSX.Element> = {
   "base-link": BaseLink,
   "base-nav-page": BaseNavPage,
   "base-nav-stack": BaseNavStack,
+  "base-nav-stack-change": BaseNavStackChange,
   "base-number-input": BaseNumberInput,
   "base-otp-input": BaseOtpInput,
   "base-pagination": BasePagination,
@@ -105,6 +108,7 @@ const cases: Record<string, () => JSX.Element> = {
   "base-combobox": BaseCombobox,
   "base-command": BaseCommand,
   "base-date-picker": BaseDatePicker,
+  "base-emoji-picker": BaseEmojiPicker,
   "base-scrollbar": BaseScrollbar,
   "base-select": BaseSelect,
   "base-slider": BaseSlider,

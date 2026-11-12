@@ -50,8 +50,11 @@ test("cells select one by one; the row header, or a selected cell pressed again,
   await app.wait(600);
   await app.press("text:Lima >> nth=0");
   await app.waitFor("text:/sel=1:-/");
-  // A cell of a column that does not select selects nothing.
+  // A cell of a column that does not select selects nothing (scrolled into
+  // view first: a pointer reaches only what the table shows).
   await app.wait(600);
+  await app.press("to-note");
+  await app.wait(100);
   await app.press("text:note 2");
   await app.wait(100);
   expect(app.shows("text:/sel=1:-/")).toBe(true);

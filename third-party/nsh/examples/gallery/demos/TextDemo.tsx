@@ -207,7 +207,7 @@ const ARABIC = "النص الأصلي يُنضَّد مرة واحدة على خ
 
 function Cjk() {
   return (
-    <Card icon="text" title="Chinese and Japanese" subtitle="Lines break between characters, never before closing punctuation">
+    <Card icon="text" title="Chinese and Japanese" subtitle="Breaks between characters, not before punctuation">
       <Specimen label="Chinese paragraph" first>
         <Text style={body()}>{CHINESE}</Text>
       </Specimen>

@@ -1,5 +1,8 @@
 //! GTK file-list drops, routed through the surface's existing hit testing.
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use gtk4::{self as gtk, gdk, prelude::*};
 use nsh_core::{EventKind, EventPayload, NodeId};
@@ -9,32 +12,36 @@ use crate::{input, surface::Surface, view::NshView};
 #[derive(Default)]
 pub(crate) struct State {
     target: RefCell<Option<NshView>>,
+    position: Cell<Option<(f64, f64)>>,
+    uris: RefCell<Vec<String>>,
     controller: RefCell<Option<gtk::DropTarget>>,
     destinations: RefCell<Destinations>,
 }
 
 #[derive(Default)]
 struct Destinations {
-    enabled: Vec<bool>,
-    count: usize,
+    /// The views that take drops, by id (a table that follows the views
+    /// alive, not every id made).
+    enabled: nsh_core::id_table::IdTable<()>,
 }
 impl Destinations {
     fn set(&mut self, id: NodeId, enabled: bool) -> Option<bool> {
         let index = id as usize;
-        if self.enabled.get(index).copied().unwrap_or(false) == enabled {
+        if self.enabled.contains(index) == enabled {
             return None;
         }
-        let before = self.count != 0;
+        let before = self.count() != 0;
         if enabled {
-            self.enabled
-                .resize(self.enabled.len().max(index + 1), false);
-            self.count += 1;
+            self.enabled.insert(index, ());
         } else {
-            self.count -= 1;
+            self.enabled.remove(index);
         }
-        self.enabled[index] = enabled;
-        let after = self.count != 0;
+        let after = self.count() != 0;
         (before != after).then_some(after)
+    }
+
+    fn count(&self) -> usize {
+        self.enabled.len()
     }
 }
 
@@ -75,9 +82,23 @@ fn install(surface: &Rc<Surface>) {
     controller.set_propagation_phase(gtk::PropagationPhase::Capture);
     controller.set_preload(true);
     let weak = Rc::downgrade(surface);
-    controller.connect_enter(move |_, x, y| {
-        weak.upgrade()
-            .map_or(gdk::DragAction::empty(), |surface| update(&surface, x, y))
+    controller.connect_enter(move |controller, x, y| {
+        weak.upgrade().map_or(gdk::DragAction::empty(), |surface| {
+            *surface.file_drop.uris.borrow_mut() = controller
+                .value()
+                .map(|value| file_uris(&value))
+                .unwrap_or_default();
+            update(&surface, x, y)
+        })
+    });
+    // Preloading is asynchronous: report a stationary drag as soon as its
+    // list arrives. Leave/reset clears position; an old controller must
+    // also not deliver into a replacement app's new drag.
+    let weak = Rc::downgrade(surface);
+    controller.connect_value_notify(move |controller| {
+        if let Some(surface) = weak.upgrade() {
+            preloaded(&surface, controller, controller.value());
+        }
     });
     let weak = Rc::downgrade(surface);
     controller.connect_motion(move |_, x, y| {
@@ -87,7 +108,7 @@ fn install(surface: &Rc<Surface>) {
     let weak = Rc::downgrade(surface);
     controller.connect_leave(move |_| {
         if let Some(surface) = weak.upgrade() {
-            set_target(&surface, None);
+            clear(&surface);
         }
     });
     let weak = Rc::downgrade(surface);
@@ -95,16 +116,7 @@ fn install(surface: &Rc<Surface>) {
         let Some(surface) = weak.upgrade() else {
             return false;
         };
-        let Ok(files) = value.get::<gdk::FileList>() else {
-            set_target(&surface, None);
-            return false;
-        };
-        let uris = files
-            .files()
-            .into_iter()
-            .filter(|file| file.path().is_some_and(|path| path.is_absolute()))
-            .map(|file| file.uri().to_string())
-            .collect::<Vec<_>>();
+        let uris = file_uris(value);
         drop_uris(&surface, x as f32, y as f32, uris)
     });
     surface.root.add_controller(controller.clone());
@@ -116,13 +128,16 @@ fn update(surface: &Surface, x: f64, y: f64) -> gdk::DragAction {
         set_target(surface, None);
         return gdk::DragAction::empty();
     }
+    surface.file_drop.position.set(Some((x, y)));
     let target = input::file_drop_target(surface, x as f32, y as f32);
     let action = if target.is_some() {
         gdk::DragAction::COPY
     } else {
         gdk::DragAction::empty()
     };
-    set_target(surface, target);
+    // Negotiate Copy while loading; entry always carries a local file list.
+    let ready = !surface.file_drop.uris.borrow().is_empty();
+    set_target(surface, if ready { target } else { None });
     action
 }
 
@@ -139,12 +154,46 @@ fn set_target(surface: &Surface, target: Option<NshView>) {
     if let Some(next) = &target
         && next.state().events.contains(EventKind::FileDragEnter)
     {
-        surface.event(next.id(), EventKind::FileDragEnter, EventPayload::None);
+        surface.event(
+            next.id(),
+            EventKind::FileDragEnter,
+            EventPayload::FileDrop(surface.file_drop.uris.borrow().clone()),
+        );
     }
     *current = target;
 }
 
+fn preloaded(surface: &Surface, controller: &gtk::DropTarget, value: Option<gtk::glib::Value>) {
+    if surface.file_drop.controller.borrow().as_ref() == Some(controller)
+        && let Some((x, y)) = surface.file_drop.position.get()
+    {
+        *surface.file_drop.uris.borrow_mut() = value.as_ref().map(file_uris).unwrap_or_default();
+        update(surface, x, y);
+    }
+}
+
+fn file_uris(value: &gtk::glib::Value) -> Vec<String> {
+    value
+        .get::<gdk::FileList>()
+        .map(|files| {
+            files
+                .files()
+                .into_iter()
+                .filter(|file| file.path().is_some_and(|path| path.is_absolute()))
+                .map(|file| file.uri().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn clear(surface: &Surface) {
+    surface.file_drop.position.set(None);
+    surface.file_drop.uris.borrow_mut().clear();
+    set_target(surface, None);
+}
+
 fn remove_controller(surface: &Surface) {
+    clear(surface);
     let controller = surface.file_drop.controller.borrow_mut().take();
     if let Some(controller) = controller {
         surface.root.remove_controller(&controller);
@@ -166,13 +215,14 @@ pub(crate) fn drop_uris(surface: &Surface, x: f32, y: f32, uris: Vec<String>) ->
         return false;
     }
     let Some(destination) = input::file_drop_target(surface, x, y) else {
-        set_target(surface, None);
+        clear(surface);
         return false;
     };
     if uris.is_empty() {
-        set_target(surface, None);
+        clear(surface);
         return false;
     }
+    *surface.file_drop.uris.borrow_mut() = uris.clone();
     set_target(surface, Some(destination.clone()));
     surface.event(
         destination.id(),
@@ -182,6 +232,60 @@ pub(crate) fn drop_uris(surface: &Surface, x: f32, y: f32, uris: Vec<String>) ->
             page_position: nsh_core::prelude::point(nsh_core::Points(x), nsh_core::Points(y)),
         },
     );
-    set_target(surface, None);
+    clear(surface);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gtk_test;
+
+    #[test]
+    fn preload_finishes_a_stationary_drag_but_not_a_left_or_reset_drag() {
+        gtk_test::run(|| {
+            let surface = gtk_test::surface();
+            surface.root.state_mut().frame = gtk_test::frame(0.0, 0.0, 100.0, 100.0);
+            surface
+                .root
+                .state_mut()
+                .events
+                .set(EventKind::FileDrop, true);
+            surface
+                .root
+                .state_mut()
+                .events
+                .set(EventKind::FileDragEnter, true);
+            install(&surface);
+            let controller = surface.file_drop.controller.borrow().clone().unwrap();
+            let files = gdk::FileList::from_array(&[
+                gtk::gio::File::for_path("/tmp/a b.png"),
+                gtk::gio::File::for_uri("https://example.com/remote.png"),
+            ])
+            .to_value();
+            assert_eq!(update(&surface, 10.0, 10.0), gdk::DragAction::COPY);
+            assert!(surface.file_drop.target.borrow().is_none());
+            preloaded(&surface, &controller, Some(files.clone()));
+            assert_eq!(
+                surface.file_drop.target.borrow().as_ref().map(NshView::id),
+                Some(nsh_core::ROOT_ID)
+            );
+            assert_eq!(*surface.file_drop.uris.borrow(), ["file:///tmp/a%20b.png"]);
+            clear(&surface);
+            preloaded(&surface, &controller, Some(files.clone()));
+            assert!(surface.file_drop.target.borrow().is_none());
+            assert!(surface.file_drop.uris.borrow().is_empty());
+            update(&surface, 10.0, 10.0);
+            reset(&surface);
+            preloaded(&surface, &controller, Some(files.clone()));
+            assert!(surface.file_drop.uris.borrow().is_empty());
+            // A new app may already be dragging when the old controller notifies.
+            install(&surface);
+            update(&surface, 10.0, 10.0);
+            preloaded(&surface, &controller, Some(files));
+            assert!(surface.file_drop.target.borrow().is_none());
+            assert!(surface.file_drop.uris.borrow().is_empty());
+            reset(&surface);
+        });
+    }
 }

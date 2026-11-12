@@ -105,6 +105,7 @@ fn config(app: &str) -> (EngineConfig, std::path::PathBuf) {
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     let bytecode = nsh_js::compile_bytecode(&bundle.code, false).unwrap();
@@ -113,6 +114,7 @@ fn config(app: &str) -> (EngineConfig, std::path::PathBuf) {
         app: nsh_engine::App::Js(unsafe { Bundle::bytecode(bytecode) }),
         viewport: Size::new(px(320.0), px(500.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -648,6 +650,9 @@ mount(App);
 
 /// A row added above keeps every cell on its row in every batch: cells
 /// whose item moved learn their new index in the commit of the change.
+/// The list is at its start, so the new row shows at once, in a cell the
+/// window no longer needs at its far end; no cell shows a neighbour's
+/// row meanwhile.
 #[test]
 fn prepending_a_row_never_shows_a_cell_with_its_neighbours_row() {
     let app = rows_app(100, "", "rows.update((r) => [{ label: \"new\" }, ...r]);");
@@ -663,8 +668,9 @@ fn prepending_a_row_never_shows_a_cell_with_its_neighbours_row() {
     let mut wrong = Vec::new();
     paced.settle(|paced, _| {
         for (id, text) in &before {
-            if paced.texts.get(id) != Some(text) {
-                wrong.push((text.clone(), paced.texts.get(id).cloned()));
+            let now = paced.texts.get(id);
+            if now != Some(text) && now.map(String::as_str) != Some("new") {
+                wrong.push((text.clone(), now.cloned()));
             }
         }
     });
@@ -873,4 +879,56 @@ mount(App);
         assert_eq!(paced.errors(), Vec::<String>::new(), "row {change_at}");
         assert!(paced.shows(0, 2), "row {change_at}: {:?}", paced.texts);
     }
+}
+
+/// `ref.measureScrollPosition()` answers, after the layout of the turn
+/// that asks, which row the viewport starts in and how far into it, as
+/// the list lays out its rows of different sizes.
+#[test]
+fn a_list_measures_where_its_viewport_starts() {
+    let app = r#"
+import { List, mount, signal, Text, View, type ListRef } from "nsh";
+const shown = signal("waiting");
+let list!: ListRef;
+function App() {
+  return (
+    <View style={{ flex: 1 }}>
+      <Text>{shown()}</Text>
+      <List ref={list} each={Array.from({ length: 100 }, (_, i) => i)} estimatedItemSize={50} style={{ flex: 1 }}
+            onScroll={async () => {
+              const at = await list.measureScrollPosition();
+              shown.set(at ? `at ${at.index} ${at.offset}` : "none");
+            }}>
+        {(row) => <View style={{ height: 40 + (row() % 3) * 20 }} />}
+      </List>
+    </View>
+  );
+}
+mount(App);
+"#;
+    let (engine, rx, dir) = start(app);
+    let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let list = first
+        .items
+        .iter()
+        .find_map(|i| match i {
+            MountItem::Create {
+                id,
+                kind: ViewKind::Scroll,
+            } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    while rx.recv_timeout(Duration::from_millis(300)).is_ok() {}
+    // Rows of 40, 60 and 80 points: row 8 starts at 460.
+    engine.control().scroll(
+        list,
+        nsh_core::geometry::point(px(0.0), px(500.0)),
+        u32::MAX,
+    );
+    let shown: Vec<String> = std::iter::from_fn(|| rx.recv_timeout(Duration::from_secs(2)).ok())
+        .flat_map(|b| texts(&b))
+        .collect();
+    assert!(shown.iter().any(|t| t == "at 8 40"), "{shown:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

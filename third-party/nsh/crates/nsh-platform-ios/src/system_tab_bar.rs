@@ -25,10 +25,13 @@ use crate::component::{ComponentContext, ComponentFactory, NativeComponent};
 struct BarIvars {
     items: Rc<RefCell<Vec<Retained<UITabBarItem>>>>,
     selected: Cell<usize>,
-    /// The width the items were last laid out at: an element is made before
+    /// The size the items were last laid out at: an element is made before
     /// the layout that sizes it, so the first `setItems:` lands at width 0
-    /// and draws nothing until the bar is laid out again.
-    width: Cell<f64>,
+    /// and draws nothing until the bar is laid out again; and a bar left
+    /// to its intrinsic height is first laid out at the height it has out
+    /// of a window, too short for the titles, which stay missing when it
+    /// grows to the height it reports there.
+    laid_out: Cell<(f64, f64)>,
     height: Cell<f64>,
     visibility: crate::bottom_bar::Visibility,
     /// The state the transform was last set for: a layout pass must not set it
@@ -96,12 +99,14 @@ define_class!(
             if self.bottom_bar_hidden() != self.ivars().applied.get() {
                 self.apply_bottom_hidden();
             }
-            if width < 1.0 || width == self.ivars().width.get() {
+            let size = (width, self.bounds().size.height);
+            if !lays_out_items_again(self.ivars().laid_out.get(), size) {
                 return;
             }
-            self.ivars().width.set(width);
-            // Items laid out while the bar had no width keep no labels: give
-            // them up and set them again for the width it has now.
+            self.ivars().laid_out.set(size);
+            // Items laid out while the bar had no width, or less height, keep
+            // no labels: give them up and set them again for the size it has
+            // now.
             self.setItems(None);
             // After the layout pass: items set inside it are not laid out.
             // SAFETY: this zero-argument selector is defined on this class above.
@@ -173,7 +178,7 @@ impl NshTabBar {
         let this = Self::alloc(mtm).set_ivars(BarIvars {
             items,
             selected: Cell::new(0),
-            width: Cell::new(0.0),
+            laid_out: Cell::new((0.0, 0.0)),
             height: Cell::new(0.0),
             visibility: Default::default(),
             applied: Cell::new(false),
@@ -185,6 +190,13 @@ impl NshTabBar {
         let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
+}
+
+/// Whether a bar laid out at `size` (width, height) sets its items again,
+/// having last laid them out at `last`: once it has a width, each time its
+/// size changes.
+fn lays_out_items_again(last: (f64, f64), size: (f64, f64)) -> bool {
+    size.0 >= 1.0 && size != last
 }
 
 /// One tab as the app gave it (`TabBarItem`: `{ title, icon }`).
@@ -376,7 +388,20 @@ pub(crate) fn factory() -> ComponentFactory {
 mod tests {
     use serde_json::json;
 
-    use super::{Tab, parse_items, parse_tint};
+    use super::{Tab, lays_out_items_again, parse_items, parse_tint};
+
+    /// The items are laid out again for every new size once the bar has a
+    /// width: a bar left to its intrinsic height grows from the height it
+    /// has out of a window (49) to the one it reports in it (83), width
+    /// unchanged, and only items laid out at that height show their titles.
+    #[test]
+    fn items_are_laid_out_again_when_the_bar_grows() {
+        assert!(!lays_out_items_again((0.0, 0.0), (0.0, 49.0)));
+        assert!(lays_out_items_again((0.0, 0.0), (430.0, 49.0)));
+        assert!(lays_out_items_again((430.0, 49.0), (430.0, 83.0)));
+        assert!(!lays_out_items_again((430.0, 83.0), (430.0, 83.0)));
+        assert!(lays_out_items_again((430.0, 83.0), (932.0, 83.0)));
+    }
 
     /// Each tab carries its own title and icon; a tab without an icon has
     /// none.

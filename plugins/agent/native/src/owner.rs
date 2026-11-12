@@ -172,6 +172,8 @@ struct Runs {
     closing: bool,
     controls: BTreeMap<String, Control>,
     preparing: BTreeMap<String, PreparingRun>,
+    /// A failed probe only becomes runnable again after its Run gains evidence.
+    failed_frontiers: BTreeMap<String, (maka_agent_facts::durable::RunId, u64)>,
     /// Original execution custody retained after its worker has ended.
     retained_cleanup: BTreeMap<String, Vec<Arc<driver_cleanup::RetainedScope>>>,
 }
@@ -357,14 +359,19 @@ impl Owner {
             context.activation().instance(),
         );
         let managed_worktrees = root.canonical_path().join("subagent-worktrees");
-        let workspace_roots =
-            workspace::open(settings.workspace_roots.clone(), &managed_worktrees)?;
+        let workspace_specs = settings.workspace_roots.clone();
+        let import_specs = settings.import_roots.clone();
+        let managed = managed_worktrees.clone();
+        let root_path = root.canonical_path().to_owned();
+        let (workspace_roots, import_roots) = tokio::task::spawn_blocking(move || {
+            Ok::<_, String>((
+                workspace::open_projects(workspace_specs, &managed)?,
+                workspace::open(import_specs, &root_path)?,
+            ))
+        })
+        .await
+        .map_err(|_| "agent_workspace_configuration_worker_failed")??;
         let home = std::env::home_dir();
-        let import_roots = if settings.import_roots.is_empty() {
-            Vec::new()
-        } else {
-            workspace::open(settings.import_roots.clone(), root.canonical_path())?
-        };
         let workers = TaskTracker::new();
         let stop = CancellationToken::new();
         let revision = SourceRevision {
@@ -502,15 +509,6 @@ impl Owner {
                 catalog.tools = catalog
                     .tools
                     .with_always_visible(goal::tools::NAMES)
-                    .and_then(|tools| {
-                        tools.with_request_binding(
-                            goal::tools::NAMES
-                                .iter()
-                                .map(|name| (*name).into())
-                                .collect(),
-                            goals.clone(),
-                        )
-                    })
                     .map_err(|error| error.to_string())?;
             }
             // The Bot's only voice and its rules must not hide behind tool discovery.
@@ -1288,6 +1286,7 @@ impl Owner {
     ) -> Option<Box<dyn maka_host_runtime::application::NativeRetirement>> {
         let producer = self.producer_gate.clone().try_lock_owned().ok()?;
         let runs = self.runs.clone().try_lock_owned().ok()?;
+        // Close makes the final probe of retained cleanup and reports any failure.
         if self
             .completion_epoch
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -1296,7 +1295,6 @@ impl Owner {
                 .load(std::sync::atomic::Ordering::SeqCst)
             || !runs.controls.is_empty()
             || !runs.preparing.is_empty()
-            || !runs.retained_cleanup.is_empty()
             || !self.workers.is_empty()
             || !self.cleanup_workers.is_empty()
             || self.auxiliary.resources.has_pending()

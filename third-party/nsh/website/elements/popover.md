@@ -83,6 +83,32 @@ const open = signal(false);
 `closeOnEscape={false}` keeps it open on Escape and back (`onCancel` still hears them, to ask first);
 `closeOnPressOutside={false}` keeps it open on presses outside.
 
+## Keyboard focus
+
+A popover leaves the keyboard focus where it is when it opens. For a popover that works like a small non-modal dialog,
+focus its content in `onOpen`: it comes once the content is rendered, so refs inside it reach their views. Make the
+view `focusable` (or give it a press handler) so it can hold the focus. When the popover closes with the focus inside
+it, by Escape or by the app, the focus goes back to the trigger on the desktops as it starts to go, so a key pressed
+during its exit is the trigger's; a press outside leaves it where the press put it.
+
+```rust tabs
+let panel = element_ref();
+
+popover()
+    .on_open(move || panel.focus())
+    .trigger(text("Filters"))
+    .child(view().element_ref(&panel).focusable(true).child(filter_form()))
+```
+
+```tsx tabs
+let panel!: ViewRef;
+<Popover onOpen={() => panel.focus()} trigger={<Text>Filters</Text>}>
+  <View ref={panel} focusable>
+    <FilterForm />
+  </View>
+</Popover>;
+```
+
 ## Phones and desktops
 
 A popover is anchored to its trigger on every device: what it shows belongs next to what opened it.
@@ -98,7 +124,7 @@ For a list of actions use a [Menu](./menu.md), which becomes a sheet on phones; 
 
 A popover comes and goes with your transitions. `popupStartingClass` is the popup's look in its first frame, and the
 `transition-*` classes of `popupClass` carry it to its own look: its entrance. `popupEndingClass` is its look once
-closed: the popover stays, taking no presses, while those transitions run, then goes, and `onClose` follows. Opened
+closed: the popover stays, taking no presses or keys, while those transitions run, then goes, and `onClose` follows. Opened
 again on its way out, it returns to its look from where it is. `popupStartingStyle` and `popupEndingStyle` do the same
 with inline styles. When the user asks for less motion, it appears and goes at once.
 
@@ -140,7 +166,7 @@ with inline styles. When the user asks for less motion, it appears and goes at o
 | Event | Rust | Description |
 |---|---|---|
 | `onOpenChange` | `.on_open_change(\|e\| ..)` | It opened or closed, with why: `"triggerPress"`, `"pressOutside"` or `"cancel"`. |
-| `onOpen` | `.on_open(\|\| ..)` | It is shown. |
+| `onOpen` | `.on_open(\|\| ..)` | It is shown, its content rendered: refs inside it reach their views. |
 | `onClose` | `.on_close(\|\| ..)` | It is gone, after its exit; also when the app closed it. |
 | `onCancel` | `.on_cancel(\|\| ..)` | The user tried to close it (Escape or back, a press outside), whether or not it closed. |
 | `onPosition` | `.on_position(\|e\| ..)` | The popup was placed: `placement` (the side it went on), `bounds` (its frame), `available` (the room on that side). |

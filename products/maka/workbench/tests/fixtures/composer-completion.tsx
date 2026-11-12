@@ -22,7 +22,10 @@ import {
   ComposerCompletion,
   type ComposerCompletionRow,
   type ComposerCompletionView,
+  createComposerCompletion,
 } from '../../../../../plugins/agent/composer/ui/ComposerCompletion';
+import type { ComposerViewInput } from '../../../../../packages/plugin-sdk/src/composer-view';
+import { SkillInput } from '../../app/SkillInput';
 
 const skills = Array.from({ length: 16 }, (_, index) => `skill-${String(index).padStart(2, '0')}`);
 const makeRows = (read: number): ComposerCompletionRow[] =>
@@ -34,7 +37,7 @@ const makeRows = (read: number): ComposerCompletionRow[] =>
     action: { read, id: `skill:${name}` },
   }));
 
-mount(() => {
+function RecycledRows() {
   const generation = signal(1);
   const rows = signal(makeRows(1));
   const query = signal('');
@@ -74,6 +77,104 @@ mount(() => {
       </View>
       <Text>{accepted()}</Text>
       <ComposerCompletion state={state} />
+    </View>
+  );
+}
+
+function PendingComposer() {
+  const draft = signal('');
+  const submitted = signal('');
+  const backend = {
+    kind: 'model',
+    connectionId: 'fixture',
+    modelId: 'fixture',
+    thinkingLevel: null,
+  } as const;
+  const unused = () => {
+    throw new Error('Unexpected pending composer action');
+  };
+  const pending: NonNullable<ReturnType<NonNullable<ComposerViewInput['pending']>>> = {
+    id: 'pending',
+    workspace: () => '/fixture',
+    backend: () => backend,
+    modelDetails: () => ({
+      kind: 'ready',
+      choice: { selection: backend, sourceName: 'Fixture', label: 'Fixture', thinkingLevels: [] },
+    }),
+    permissions: {
+      id: 'pending',
+      access: () => null,
+      requestPermissions: () => null,
+      pending: () => false,
+      selectAccess: unused,
+      selectRequests: unused,
+    },
+    draft,
+    changeDraft: (text: string) => draft.set(text),
+    confirmation: () => 'fixture',
+    sending: () => false,
+    ready: () => true,
+    files: () => [],
+    picking: () => false,
+    selectFiles: unused,
+    dropFiles: unused,
+    pasteClipboard: unused,
+    reportError: unused,
+    removeFile: unused,
+    openPicker: unused,
+    submit: (text: string) => submitted.set(text),
+    completion: {
+      files: null,
+      pathLabel: unused,
+      skills: async ({ query }) => ({
+        skills: skills
+          .filter((name) => name.includes(query))
+          .map((name) => ({
+            reference: name,
+            name,
+            description: `Description of ${name}`,
+            invocation: `/skill:${name}`,
+          })),
+      }),
+    },
+  };
+  const completion = createComposerCompletion({
+    session: () => null,
+    pending: () => pending,
+    commands: () => [],
+    active: () => true,
+  });
+  return (
+    <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+      <Text>{`Draft ${JSON.stringify(draft())}`}</Text>
+      <Text>{`Submitted ${JSON.stringify(submitted())}`}</Text>
+      <SkillInput
+        accessibilityLabel="New chat"
+        value={draft()}
+        readonly={false}
+        autoFocus
+        placeholder=""
+        ref={(node) => completion.attach(null, node)}
+        onChange={({ value }) => completion.change(pending, value)}
+        onSelectionChange={(range) => completion.selection(pending, range)}
+        onCaretMove={(event) => completion.caret(pending, event)}
+        onSubmit={({ text }) => completion.submitPending(pending, text)}
+      />
+      <ComposerCompletion state={completion} />
+    </View>
+  );
+}
+
+mount(() => {
+  const pending = signal(false);
+  return (
+    <View style={{ flex: 1 }}>
+      <View testID="pending" onPress={() => pending.set(true)}>
+        <Text>Open new chat</Text>
+      </View>
+      <If when={pending()} else={<RecycledRows />}>
+        <PendingComposer />
+      </If>
     </View>
   );
 });

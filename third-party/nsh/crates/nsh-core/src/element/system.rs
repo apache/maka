@@ -58,6 +58,13 @@ pub struct System {
     pub refuse_connections: Option<RefuseConnections>,
     /// What `nsh/updater` runs on; `None`: the app does not update.
     pub updater: Option<Arc<dyn crate::runtime::UpdaterHost>>,
+    /// The app's address, the core's own (`UrlScheme.url()`,
+    /// [`Core::app_url_cell`](crate::Core::app_url_cell)).
+    #[doc(hidden)]
+    pub app_url: crate::url_scheme::AppUrlCell,
+    /// What `//` media sources resolve against, the page's URL on the web
+    /// ([`Access::media_url`]); `None`: such a source names no URL.
+    pub base_url: Option<Arc<str>>,
 }
 
 /// What a host refuses the app's connections with
@@ -86,6 +93,8 @@ impl System {
             os: crate::platform::Os::default(),
             refuse_connections: None,
             updater: None,
+            app_url: Default::default(),
+            base_url: None,
         }
     }
 
@@ -120,6 +129,19 @@ impl System {
     /// Sets what `nsh/updater` runs on.
     pub fn with_updater(mut self, updater: Option<Arc<dyn crate::runtime::UpdaterHost>>) -> Self {
         self.updater = updater;
+        self
+    }
+
+    /// Shares the core's address (`UrlScheme.url()`).
+    #[doc(hidden)]
+    pub fn with_app_url(mut self, app_url: crate::url_scheme::AppUrlCell) -> Self {
+        self.app_url = app_url;
+        self
+    }
+
+    /// What `//` media sources resolve against ([`System::base_url`]).
+    pub fn with_base_url(mut self, base_url: Option<Arc<str>>) -> Self {
+        self.base_url = base_url;
         self
     }
 
@@ -547,6 +569,17 @@ pub mod codes {
     /// The embedding app answered a `host.call` with an error (its handler
     /// failed, or it handles no such name); the message is the host's.
     pub const HOST_ERROR: &str = "ERR_NSH_HOST_ERROR";
+    /// A web view's script failed: it threw, its Promise rejected, its
+    /// result is not JSON, or the page runs no scripts (`evaluate`).
+    pub const WEBVIEW_SCRIPT: &str = "ERR_NSH_WEBVIEW_SCRIPT";
+    /// A web view's `evaluate` was given up before its script answered:
+    /// the page navigated, the web view went away or its web content
+    /// process ended.
+    pub const WEBVIEW_ABORTED: &str = "ERR_NSH_WEBVIEW_ABORTED";
+    /// A web view's web content process ended (it crashed, or the system
+    /// reclaimed its memory): the web view shows no page until the app
+    /// reloads it or gives it a page (a web view's `onError`).
+    pub const WEBVIEW_TERMINATED: &str = "ERR_NSH_WEBVIEW_TERMINATED";
 }
 
 /// An I/O error as Node reports it: `Error` with the message and the

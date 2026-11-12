@@ -33,7 +33,7 @@ export function NotificationsDemo() {
           </Card>
         ),
         () => (
-          <Card title="A message" subtitle="Showing the same id replaces it; pressing it reports the id">
+          <Card title="A message" subtitle="The same id replaces it; a press reports it">
             <Row>
               <Button label="Show" onPress={() => show("chat:ada", "Ada", "Are you coming tonight?")} />
               <Button label="Replace" variant="secondary" onPress={() => show("chat:ada", "Ada", "I saved you a seat.")} />

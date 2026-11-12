@@ -30,7 +30,7 @@ pub struct AnimValues {
     pub color: Option<Color>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Gestures {
     values: GestureValues,
     /// Values when the gesture began: pan x, pan y, pinch, rotation.
@@ -40,7 +40,7 @@ struct Gestures {
 /// The graph of one surface, with what binds it to views, gestures and
 /// scroll views.
 #[non_exhaustive]
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Animator {
     graph: Graph,
     /// Animations that finished, for the backend to report to JS.

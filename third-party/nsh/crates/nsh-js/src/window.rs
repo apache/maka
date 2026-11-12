@@ -806,6 +806,9 @@ pub(crate) fn platform_event(cx: *mut JsContext, id: NodeId, event: &WindowEvent
                 }
             }
         }
+        // The root's: `Application.on("quitRequest")` hears it from the
+        // core.
+        WindowEvent::QuitRequest => {}
     }
     let r = reactive::finish_value(cx, UNDEFINED);
     if is_exception(r) {

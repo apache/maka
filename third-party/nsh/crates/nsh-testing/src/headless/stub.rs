@@ -69,13 +69,13 @@ impl std::fmt::Debug for StubRoute {
 
 /// The URLs a route matches: one, or (with `*`) a glob.
 #[derive(Debug)]
-enum Url {
+pub(crate) enum Url {
     Exact(String),
     Glob(Regex),
 }
 
 impl Url {
-    fn of(pattern: &str) -> Url {
+    pub(crate) fn of(pattern: &str) -> Url {
         if !pattern.contains('*') {
             return Url::Exact(pattern.to_owned());
         }
@@ -84,7 +84,7 @@ impl Url {
         Url::Glob(re)
     }
 
-    fn matches(&self, url: &str) -> bool {
+    pub(crate) fn matches(&self, url: &str) -> bool {
         match self {
             Url::Exact(want) => want == url,
             Url::Glob(re) => re.is_match(url),

@@ -138,6 +138,21 @@ impl AppView {
             .register(name, factory);
     }
 
+    /// Watches the app's `<Scroll>` whose `nativeID` is `native_id`, for native
+    /// UI of the host that follows or drives the app's scrolling in the frame
+    /// of the scroll, without JS (a sheet under the content, say): `watcher`
+    /// gets a [`crate::ScrollHandle`] when the scroll view is there. With
+    /// several of the same `nativeID`, the newest one is watched. One watcher
+    /// per `nativeID`; `None` stops watching. On the main thread.
+    pub fn watch_scroll(
+        &self,
+        native_id: &str,
+        watcher: Option<std::rc::Rc<dyn crate::ScrollWatcher>>,
+    ) {
+        let watchers = self.inner.state.borrow().options.scroll_watchers.clone();
+        watchers.watch(native_id, watcher);
+    }
+
     /// Hands `url`, one of the embedding app's URLs, to the running app as
     /// the system opening it would (`UrlScheme.on("open")`, `nsh`); before an
     /// app runs, the next one loaded gets it. On the main thread.

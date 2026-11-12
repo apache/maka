@@ -1,5 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
-import { button, buttonText, desktop, focusRing, Inspector, Panel, Stage, ui, wide } from "./palette";
+import { button, buttonText, desktop, focusRing, Inspector, Panel, sectionSurface, Stage, ui, wide } from "./palette";
 
 function App() {
   const presses = signal(0);
@@ -16,19 +16,19 @@ function App() {
       <View
         onPress={() => presses.update((n) => n + 1)}
         activeStyle={{ backgroundColor: ui().border }}
-        style={{ ...ui().card, backgroundImage: "none", borderRadius: 16, padding: 16 }}
+        style={{ ...sectionSurface(), padding: 16 }}
         hoverStyle={{ opacity: 0.88 }}
-        focusStyle={focusRing()}
+        focusVisibleStyle={focusRing()}
       >
         <Text style={{ color: ui().text, fontSize: wide() ? 14 : 16 }}>activeStyle background ({desktop ? "click" : "tap"} and hold)</Text>
       </View>
 
       <View class="flex-row gap-3">
-        <View class="flex-1 h-20 rounded-xl bg-[#ff6170] hover:bg-[#ff7d89] active:bg-[#d94d5b] items-center justify-center" focusStyle={focusRing()} onPress={() => {}}>
-          <Text class="text-[#13160c] font-semibold">active:</Text>
+        <View class="flex-1 h-20 rounded-xl bg-primary hover:opacity-90 active:opacity-75 items-center justify-center" focusVisibleStyle={focusRing()} onPress={() => {}}>
+          <Text class="text-primary-foreground font-semibold">active:</Text>
         </View>
-        <View class="flex-1 h-20 rounded-xl bg-[#45d49a] items-center justify-center shadow-lg">
-          <Text class="text-[#0c0d0f] font-semibold">shadow-lg</Text>
+        <View class="flex-1 h-20 rounded-xl border border-border bg-card items-center justify-center shadow-lg">
+          <Text class="text-card-foreground font-semibold">shadow-lg</Text>
         </View>
         <View
           class="flex-1 h-20 rounded-xl items-center justify-center"

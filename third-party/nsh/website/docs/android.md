@@ -7,7 +7,7 @@ group: platforms
 
 # Android
 
-NSH apps run on Android with ordinary Android views and `StaticLayout` text, from Android 9 (API 28), on `arm64-v8a`,
+NSH apps run on Android with ordinary Android views and `StaticLayout` text, from Android 8 (API 26), on `arm64-v8a`,
 `armeabi-v7a` and `x86_64`. Whole apps written in Rust and in TSX run and package as on the other platforms, and an existing app
 can embed modules in an `NshView` and load signed packages it downloads, under limits and capabilities it sets. On Android, `os()` is `Os::Android` (`platform.os` is `"android"` in TSX) and TSX's
 `android={{…}}` props apply.
@@ -92,7 +92,7 @@ dist/nsh/embed/android/nsh-dev.aar   also connects to a `nsh dev` server
 
 The AAR holds the Java runtime and `libnsh.so` for `arm64-v8a`, `armeabi-v7a` and `x86_64`, with their symbols: the
 app's Gradle build strips them when it packages the app and keeps the symbols for its crash reports. It declares the
-`INTERNET` permission and needs **API 28** (Android 9) or newer. It carries its R8 rules (`proguard.txt`), which a
+`INTERNET` permission and needs **API 26** (Android 8) or newer. It carries its R8 rules (`proguard.txt`), which a
 minified build applies on its own: the native library finds the runtime's classes by name, so `com.longbridge.nsh`
 stays as it is.
 
@@ -198,6 +198,7 @@ again replaces the running app. The complete sample is
 | `loadBundleFile(File file)` | Runs a `bundle.js` file; assets come from `assets/` next to it. Refuses `.nshc` files. |
 | `runPackage(NshPackage pkg)` | Runs a verified signed package, replacing the running app. A package runs once. |
 | `registerComponent(String name, NshComponent.Factory factory)` | Registers a [native component](./native-components.md). |
+| `watchScroll(String nativeId, ScrollWatcher watcher)` | Follows and drives the app's `<Scroll>` with that `nativeID` from the UI thread, in the frame of the scroll ([Following a scroll view](#following-a-scroll-view)); `null` stops watching. |
 | `setParams(Object params)` | The launch parameters of the apps loaded next (a `Map` or `JSONObject`): the app reads them at start as `host.params` ([`host`](../modules/nsh.md#host)). Returns `false` when they are not a JSON object. |
 | `send(String name, Object data)` | Sends an event to the app (`host.on(name, …)`); kept until it listens, or for the next app while none runs. Any thread; returns `false` after `destroy()`. |
 | `handle(String name, HostHandler handler)` | Handles the app's calls (`host.call`) and posts (`host.post`) of `name` on the UI thread; `null` removes the handler. The handler answers through its `NshHostReply`, once, from any thread. |
@@ -261,6 +262,51 @@ Handlers run on the UI thread; a call waits for its answer in the app without bl
 never given fails the call once it is collected, and a call of a name with no handler fails at once. Events of names
 the app does not listen to yet are kept until it does, and events sent while no app runs (before `loadAssetBundle`,
 during a reload) go to the next one.
+## Following a scroll view
+
+Native UI of the host sometimes moves with the app's content in every frame: a sheet under the page that the end of
+the content pulls up, a header that collapses with it. Forwarding `onScroll` through JS to the host is a frame late,
+so the host watches the app's `<Scroll>` by its `nativeID` instead and gets a `NshScrollHandle` to it. Everything runs
+on the UI thread, in the frame of the scroll, without JS. The API is the same on iOS, in each platform's units.
+
+Give the `<Scroll>` a `nativeID` (it names the view for native code; `testID` stays for tests):
+
+```tsx
+<Scroll nativeID="page">…</Scroll>
+```
+
+```java
+nsh.watchScroll("page", new NshView.ScrollWatcher() {
+    @Override
+    public void onAttached(NshScrollHandle handle) {   // at once when it is there; again after a reload
+        handle.addScrollListener(new NshScrollListener() {
+            @Override
+            public void onScroll(int scrollX, int scrollY, int dx, int dy) { sheet.follow(handle); }
+
+            @Override
+            public void onContentSizeChange(int contentWidth, int contentHeight) { sheet.follow(handle); }
+        });
+    }
+
+    @Override
+    public void onDetached() { sheet.reset(); }        // deleted, nativeID changed or the app stopped
+});
+```
+
+| `NshScrollHandle` | |
+|---|---|
+| `getScrollX()`, `getScrollY()` | The offset from the start of the content, in px. |
+| `getContentWidth()`, `getContentHeight()` | The content's size (at least the viewport's), in px. |
+| `getViewportWidth()`, `getViewportHeight()` | The visible size, in px. |
+| `getContentView()` | The view holding the content: the positions of the app's views inside are relative to it. |
+| `scrollBy(int dx, int dy, boolean animated)` | Scrolls at once or with the platform's animation, clamped to the content, as the user's scroll would: the app's `onScroll` hears it. |
+| `stopScrolling()` | Ends a fling or an animated scroll where it is; nothing at rest. |
+| `addScrollListener(NshScrollListener l)`, `removeScrollListener(…)` | `onScroll(scrollX, scrollY, dx, dy)` on every offset change; `onContentSizeChange(contentWidth, contentHeight)` when the content gets larger or smaller without a scroll. |
+| `isAlive()` | Whether the scroll view is still there with that `nativeID`; once it is not, reads give 0 and the rest does nothing. |
+
+With several scroll views of the same `nativeID`, the newest one is watched. Desktop and web apps are not embedded,
+so they have no such API.
+
 ## Theme overrides
 
 One app embedded in several branded host apps takes each host's brand: the host gives the tokens its brand changes,
@@ -374,10 +420,11 @@ config of the app may override it). The release `nsh.aar` does not.
 
 - **Back button.** `NshView` gets back presses by itself while the app wants them (an open dialog, a pushed page, a
   `BackHandler` listener), and leaves them to the activity otherwise. With `android:enableOnBackInvokedCallback="true"`
-  on Android 13 and newer it registers an `OnBackInvokedCallback`; elsewhere (Android 12 and older, or the attribute
+  on Android 13 and newer it registers an `OnBackInvokedCallback`; elsewhere (Android 9 to 12, or the attribute
   off) it takes the back key before the activity's `onBackPressed`, so before AndroidX's `OnBackPressedDispatcher`
-  and the fragments' callbacks. No forwarding is needed, in an activity or a fragment. A host that already forwards
-  presses to `handleBack()` keeps working: a press goes to the app once.
+  and the fragments' callbacks. No forwarding is needed there, in an activity or a fragment. On Android 8 the activity
+  hands its back presses to the view: `if (!nshView.handleBack()) super.onBackPressed();` in `onBackPressed`. A host
+  that forwards presses to `handleBack()` on every version keeps working: a press goes to the app once.
 
   For predictive back on Android 13+, set `android:enableOnBackInvokedCallback="true"` on the `<application>`, as
   packaged NSH apps do.

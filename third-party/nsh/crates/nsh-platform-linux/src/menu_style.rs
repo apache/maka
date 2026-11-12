@@ -20,6 +20,12 @@
 //! round box, in the label's color. Images in a GTK style sheet load
 //! through gdk-pixbuf's loaders, which may not read SVG, so no image is
 //! used.
+//!
+//! A menu's items sit in a scrolled window, which is never shorter than its
+//! vertical scrollbar, shown or not. GTK's theme gives the slider 40px (44
+//! with its margins), more than a menu of one item (40), which then had
+//! more room below its item than above; a shorter slider keeps the
+//! scrollbar out of the menu's height.
 
 use nsh_core::{Hsla, Rgba, element::Tokens};
 
@@ -78,6 +84,7 @@ popover.menu modelbutton {
 popover.menu modelbutton:disabled { filter: none; opacity: 1; }
 popover.menu modelbutton accelerator { margin-left: 24px; }
 popover.menu separator { min-height: 1px; margin: 4px -4px; }
+popover.menu > contents > scrolledwindow > scrollbar.vertical > range > trough > slider { min-height: 16px; }
 popover.menu modelbutton check, popover.menu modelbutton radio, popover.menu modelbutton arrow {
   -gtk-icon-source: none; background-image: none; background-color: transparent;
   border: 0 solid currentColor; border-radius: 0; box-shadow: none; outline: none;
@@ -110,7 +117,7 @@ fn css_color(color: Hsla) -> String {
 
 #[cfg(test)]
 mod tests {
-    use gtk4 as gtk;
+    use gtk4::{self as gtk, gdk, gio, prelude::*};
     use nsh_core::element::{AdaptiveColor, Tokens};
 
     use super::css;
@@ -141,5 +148,48 @@ mod tests {
             provider.load_from_string(&sheet);
             assert!(errors.borrow().is_empty(), "{:?}", errors.borrow());
         });
+    }
+
+    /// A menu of one item is as tall as the item: the scrolled window
+    /// around the items is not held taller by its vertical scrollbar.
+    #[test]
+    fn one_item_menu_fits_its_item() {
+        crate::gtk_test::run(|| {
+            let display = gdk::Display::default().expect("a display");
+            let provider = gtk::CssProvider::new();
+            provider.load_from_string(&css(&Tokens::default()));
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+            let model = gio::Menu::new();
+            model.append(Some("New folder"), Some("app.new-folder"));
+            let menu = gtk::PopoverMenu::from_model(Some(&model));
+            let scrolled = scrolled_window(menu.upcast_ref()).expect("the menu's scrolled window");
+            // The window takes its items' natural height
+            // (`propagate-natural-height`), unless its scrollbar needs more.
+            let (_, window, ..) = scrolled.measure(gtk::Orientation::Vertical, -1);
+            let (_, items, ..) = scrolled
+                .child()
+                .expect("the items")
+                .measure(gtk::Orientation::Vertical, -1);
+            gtk::style_context_remove_provider_for_display(&display, &provider);
+            assert_eq!(window, items);
+        });
+    }
+
+    fn scrolled_window(widget: &gtk::Widget) -> Option<gtk::ScrolledWindow> {
+        if let Some(scrolled) = widget.downcast_ref::<gtk::ScrolledWindow>() {
+            return Some(scrolled.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            if let Some(found) = scrolled_window(&widget) {
+                return Some(found);
+            }
+            child = widget.next_sibling();
+        }
+        None
     }
 }

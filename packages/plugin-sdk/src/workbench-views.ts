@@ -52,18 +52,60 @@ export interface ConversationSessionHandle {
   openBot(): Promise<string>;
 }
 
-export interface QuickToolHandle {
-  /** How many rows the tool shows for the current query. */
-  rows(): number;
-  activate(row: number): void;
+export type QuickIcon =
+  | 'app'
+  | 'calculator'
+  | 'camera'
+  | 'clipboard'
+  | 'file'
+  | 'link'
+  | 'note'
+  | 'snippet'
+  | 'symbol';
+
+/** A result the launcher ranks among every tool's results and draws itself. */
+export interface QuickItem {
+  /** Stable across runs when `remembered`, and unique within the tool. */
+  readonly id: string;
+  readonly title: string;
+  readonly detail?: string | undefined;
+  readonly icon: QuickIcon;
+  /** Replaces `icon` once it returns a picture. Read only for rows on screen, so it may load. */
+  readonly image?: (() => string | undefined) | undefined;
+  /** The kind of result, shown beside it. */
+  readonly source: string;
+  /** What Return does, named in the launcher's footer. */
+  readonly action: string;
+  /** How well it matches the query, lower being better. */
+  readonly match: number;
+  /** Counts its uses for ranking and recommendations; private results leave it unset. */
+  readonly remembered?: boolean | undefined;
+  run(): void;
 }
 
-/** A view drawn in the quick launcher, below its input. */
+/** A tool's own line on the launcher's home page. */
+export interface QuickEntry {
+  /** Unique within the tool and stable across runs and languages: the user's shortcut and alias
+   * for the entry are kept under it. */
+  readonly id: string;
+  readonly title: string;
+  readonly icon: QuickIcon;
+  /** Searched; the first is shown beside the entry. */
+  readonly keywords: readonly string[];
+  /** Runs at once; without it, choosing the entry types the first keyword. */
+  run?(): void;
+}
+
+export interface QuickToolHandle {
+  /** Results for the query; for a blank query, whatever could be recommended. */
+  items(): readonly QuickItem[];
+  entries(): readonly QuickEntry[];
+}
+
+/** A tool living in the quick launcher, which draws what it attaches. */
 export interface QuickToolInput {
   query(): string;
-  /** Which of the tool's rows the keyboard selection is on. */
-  selected(): number | null;
-  /** Dismisses the launcher once a row has done its work. */
+  /** Dismisses the launcher once a result has done its work. */
   close(): void;
   report(reason: unknown): void;
   attach(handle: QuickToolHandle): void;
@@ -114,6 +156,8 @@ export const conversationPreviewView = defineUiViewContract<ConversationPreviewI
 );
 
 export const quickToolView = defineUiViewContract<QuickToolInput>('maka.quick-launcher.tool');
+/** The workbench's settings page of every quick tool, which holds the tools' own pages. */
+export const quickToolsSettings = 'quickTools';
 
 export interface SettingsRoute {
   readonly instance: InstanceId;

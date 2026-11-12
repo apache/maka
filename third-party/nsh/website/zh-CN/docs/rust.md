@@ -41,7 +41,7 @@ nsh run                        # 本机的后端；--target ios、android、web�
 nsh package --target web       # 或 ios、ios-simulator、android、macos、linux、windows
 ```
 
-推荐用 [huacnlee/cargo](https://github.com/huacnlee/cargo) 构建，NSH 自己的开发也用它：一个可以直接替换官方 Cargo 的分支，每个依赖只为你所有的项目和 Git worktree 构建一次，构建目录自己控制在大小限制之内，不需要任何配置（[安装](./installation.md#从源码构建)）。
+推荐用 [huacnlee/cargo](https://github.com/huacnlee/cargo) 构建，NSH 自己的开发也用它：一个可以直接替换官方 Cargo 的分支，每个依赖只为你所有的项目和 Git worktree 构建一次，构建目录自己控制在大小限制之内，不需要任何配置（[安装](./installation.md#用-rust-编写的应用)）。
 
 `src/lib.rs` 包含整个应用：组件、状态、事件处理和任务。
 
@@ -127,7 +127,9 @@ iOS 的 `AppView` 上用 `AppSource::Rust` 挂载 Rust 根组件。
 
 要在包括 Web 在内的所有平台上运行的代码，使用 NSH 提供的服务：HTTP 用 `fetch`（[网络](./networking.md#在-rust-组件中)），
 等待用 `timer`、`set_timeout` 和 `set_interval`，时钟用 `nsh_core::time::Instant` 和 `nsh_core::time::unix_ms()`。
-`background` 和 `blocking` 在原生目标的线程上运行任务。
+`background` 和 `blocking` 在原生目标的线程上运行任务。`run_on_main_thread(f)` 在平台的主线程上运行 `f`，用于只能在主线程调用的 API
+（AppKit 的状态栏项、UIKit）：它在本轮的视图挂载之后运行，结果是一个在引擎线程上 await 的 future。不是 `async` 的模块函数调用
+`cx.run_on_main_thread(f)`。在 Web 上和 headless 测试中，`f` 在提交结束时于引擎线程上运行；在原生平台上则稍后运行，引擎同时继续工作：以 await 到结果为准判断 `f` 已运行。`f` 返回一个值，由 await 它的代码用这个值写 signal、调用 NSH 的函数。
 
 ## 桌面标题栏
 
@@ -339,7 +341,7 @@ Rust 中；TSX 传入 props、接收事件。类型不对的 prop（`u32` 类型
 
 函数和成员按 Rust 签名运行。不是 `async` 的在 TSX 调用中直接运行并返回值（`Portfolio.total()` 是数字，`ledger.balance` 是属性）：
 它们计算并保存状态。`async fn` 返回 Promise，作为任务运行，可以使用 NSH 的服务（`fetch`、`timer`、对话框）；带
-`cx: &mut ModuleCx` 参数的模块函数与 UI 按顺序作用于平台（toast、状态栏），组件 ref 的方法也是这样；它们的返回类型决定 TSX
+`cx: &mut ModuleCx` 参数的模块函数与 UI 按顺序作用于平台（toast、状态栏），还可以 `spawn` 一个任务，任务会运行到结束。组件 ref 的方法也与 UI 按顺序作用于平台；它们的返回类型决定 TSX
 得到什么：返回 `()` 的得到 `void`，没有回复（TSX 调用后继续往下执行）；返回 `Result<(), E>` 的得到 `Promise<void>`，遇到 `Err`
 时以其消息 reject（调用与 UI 的修改一起运行，那时 TSX 的调用已经返回，所以由 Promise 带回错误；没人 await 或 catch 的会记录为
 [未处理的 rejection](./dev-server-and-debugging.md#日志)）；返回值的得到 `Promise<T>`。参数和返回值的类型来自签名：数字、
@@ -445,6 +447,12 @@ test("a tap counts", async () => {
   expect(app.texts()).toContain("Count: 1");
 });
 ```
+
+文字默认按估算宽度排版（每个字符为字号的 `0.55 ×`）；测试用 `Headless::start_with_text_engine` 启动应用时，传入一个在引擎线程上
+创建平台文字引擎的函数（`nsh_platform_macos::CoreTextEngine`、`nsh_platform_windows::DWriteTextEngine`），文字就按屏幕上的宽度量。
+`app.screen().layout_nodes()` 按树的顺序返回屏幕上的视图及布局给出的位置（`LayoutNode`：种类、test id、父视图、
+根视图坐标下未计变换的边界、是否隐藏、是否裁剪，`scroll` 里是滚动视图的方向和内容尺寸，`text` 里是文字视图的文字及其排版所用的框），
+测试据此检查有没有视图超出父视图、被裁剪的视图截掉，或文字放不下。两者都是 `nsh_testing` 给 `cargo test` 用的 Rust API。
 
 TSX 入口用 `nsh-testing` 的特性 `bundle` 按 `nsh run` 的方式构建，使用它的宿主提供的 UI 集合：NSH 的，以及每个 crate 由
 `#[native_module]` 生成的 `registry()`：

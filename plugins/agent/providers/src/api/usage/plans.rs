@@ -221,17 +221,19 @@ fn opencode_go(reply: OpenCodeGo) -> Result<Vec<UsageLimit>, Error> {
     Ok(limits)
 }
 
+// Not `f64`: the product binary enables serde_json `arbitrary_precision` (via
+// rolldown), and an untagged `f64` variant then rejects every decimal.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Number {
-    Json(f64),
+    Json(serde_json::Number),
     Text(String),
 }
 
 impl Number {
     fn value(self) -> Option<f64> {
         let value = match self {
-            Self::Json(value) => value,
+            Self::Json(value) => value.as_f64()?,
             Self::Text(value) => value.trim().parse().ok()?,
         };
         (value.is_finite() && value >= 0.0).then_some(value)
@@ -288,4 +290,21 @@ fn share(quantity: &UsageQuantity) -> Option<f64> {
 
 fn invalid(source: &str) -> Error {
     Error::Invalid(format!("invalid {source} response"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numbers_accept_decimals_integers_and_text() {
+        let read = |text| {
+            serde_json::from_str::<Number>(text)
+                .ok()
+                .and_then(Number::value)
+        };
+        assert_eq!(read("0.5972"), Some(0.5972));
+        assert_eq!(read("1"), Some(1.0));
+        assert_eq!(read(r#"" 42 ""#), Some(42.0));
+    }
 }

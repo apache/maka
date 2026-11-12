@@ -26,14 +26,14 @@ export interface TabLook {
   readonly style: ViewStyle;
   readonly hoverStyle: ViewStyle | undefined;
   readonly activeStyle?: ViewStyle;
-  readonly focusStyle: ViewStyle;
+  readonly focusVisibleStyle: ViewStyle;
   readonly disabledStyle: ViewStyle;
 }
 
 /** Under the pointer, a tab that is neither selected (its thumb shows) nor disabled. */
 const hoverOf = (state: TabState) => (read(state.selected) || read(state.disabled) ? undefined : hovered());
 
-/** A segmented control's size: 26 / 30 points with a pointer, 32 / 36 on a touch screen. */
+/** A segmented control's size: 24 / 30 points with a pointer, 32 / 36 on a touch screen. */
 export type SegmentedSize = "small" | "regular";
 
 /** Options of `segmentedLook`. */
@@ -60,7 +60,8 @@ export function segmentedLook(o?: SegmentedLookOptions) {
   const spread = !pointer || !!o?.fill;
   // The track's padding: the thumb sits inside it.
   const inset = 2;
-  const height = pointer ? (small ? 26 : 30) : small ? 32 : 36;
+  // Small is as tall as a small button with a pointer (24), so the two sit level in a row.
+  const height = pointer ? (small ? 24 : 30) : small ? 32 : 36;
   const corner = pointer ? 6 : 7;
   const thumb = (): ViewStyle => ({ borderRadius: corner, borderCurve: "continuous", borderWidth: 1, ...finish.thumb });
   return {
@@ -72,10 +73,12 @@ export function segmentedLook(o?: SegmentedLookOptions) {
         padding: inset,
         borderRadius: pointer ? 9 : 10,
         borderCurve: "continuous",
-        backgroundColor: colors.track,
+        // Sunk like the pill bar's, not the switch's track: in dark the track is
+        // raised as the thumb is, which would hide the thumb.
+        backgroundColor: colors.inset,
         boxShadow: finish.track.boxShadow,
         borderWidth: 1,
-        borderColor: finish.track.borderColor,
+        borderColor: colors.border,
       };
     },
     /** The thumb as `Tabs`' indicator, which the core springs to the selected tab. */
@@ -103,10 +106,10 @@ export function segmentedLook(o?: SegmentedLookOptions) {
         get hoverStyle() {
           return hoverOf(state);
         },
-        get focusStyle() {
+        get focusVisibleStyle() {
           return focusRing();
         },
-        disabledStyle: { opacity: 0.4 },
+        disabledStyle: { opacity: 0.5 },
       };
     },
     label(selected: Live<boolean | undefined>): TextStyle {
@@ -158,10 +161,10 @@ export function tabsLook() {
         get hoverStyle() {
           return hoverOf(state);
         },
-        get focusStyle() {
+        get focusVisibleStyle() {
           return focusRing();
         },
-        disabledStyle: { opacity: 0.4 },
+        disabledStyle: { opacity: 0.5 },
       };
     },
   };
@@ -196,10 +199,10 @@ export function underlineTabsLook() {
           return hoverOf(state);
         },
         activeStyle: { opacity: 0.7 },
-        get focusStyle() {
+        get focusVisibleStyle() {
           return focusRing();
         },
-        disabledStyle: { opacity: 0.4 },
+        disabledStyle: { opacity: 0.5 },
       };
     },
   };

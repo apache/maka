@@ -41,6 +41,11 @@
 //!   unmapped, the window minimized, or suspended: on another workspace or
 //!   covered, where the compositor says so), active while one of the
 //!   app's windows has the focus, inactive otherwise;
+//! - the wake count (`wakeCount()`): one more for every surface when
+//!   systemd's `logind` reports the end of a sleep
+//!   (`org.freedesktop.login1.Manager`'s `PrepareForSleep` with `false`,
+//!   on the system bus); without it (a container, a CI's virtual display)
+//!   nothing counts;
 //! - the time zone (`localeSettings()`'s): the process's own (the zone `TZ` names,
 //!   `GMT` or `Europe/Berlin`, as the C library reads it:
 //!   `TimeZone::posix`; its local times follow it), else the system's as
@@ -288,6 +293,7 @@ fn install() {
     watch_screen_reader();
     watch_time_zone();
     watch_clock_format();
+    watch_sleep();
 }
 
 /// Whether the system is in dark mode (the portal's answer, or GTK's
@@ -333,6 +339,15 @@ fn system_changed() {
     let appearance = appearance();
     for surface in surfaces() {
         update(&surface, appearance);
+    }
+}
+
+/// The system woke from sleep: every surface counts it (`wakeCount()`).
+fn woke() {
+    for surface in surfaces() {
+        let mut env: Environment = surface.environment.get();
+        env.wake_count = env.wake_count.wrapping_add(1);
+        surface.set_environment(env);
     }
 }
 
@@ -657,6 +672,33 @@ fn watch_time_zone() {
     );
 }
 
+/// Follows the system's sleeps as `logind` reports them: `PrepareForSleep`
+/// comes with `true` before a sleep and with `false` once the system woke
+/// ([`woke`]).
+fn watch_sleep() {
+    gio::DBusProxy::for_bus(
+        gio::BusType::System,
+        gio::DBusProxyFlags::DO_NOT_LOAD_PROPERTIES,
+        None,
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+        gio::Cancellable::NONE,
+        |proxy| {
+            let proxy = match proxy {
+                Ok(proxy) => proxy,
+                Err(err) => return log::debug!("no logind: {err}"),
+            };
+            proxy.connect_g_signal(|_, _, signal, params| {
+                if signal == "PrepareForSleep" && params.get::<(bool,)>() == Some((false,)) {
+                    woke();
+                }
+            });
+            SYSTEM.with(|s| s.borrow_mut().proxies.push(proxy));
+        },
+    );
+}
+
 /// `timedated`'s `Timezone` as the proxy has it now: every surface follows a
 /// change.
 fn timedated_zone(proxy: &gio::DBusProxy) {
@@ -774,7 +816,10 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         }
         // The status bar is a phone's; layout animations arrive as mount
         // items.
-        Command::StatusBar(_) | Command::SetStatusBar(_) | Command::LayoutAnimation(_) => {}
+        Command::StatusBar(_)
+        | Command::SetStatusBar(_)
+        | Command::LayoutAnimation(_)
+        | Command::CancelPress => {}
         other => log::debug!("linux: command {other:?} is not supported"),
     }
 }
@@ -1011,6 +1056,18 @@ fn dialog_label(text: &str, class: &str, sheet: bool) -> gtk::Label {
         label.set_margin_end(12);
     }
     label
+}
+
+/// Native dialog controls own input over this NSH subtree until dismissal.
+pub(crate) fn blocks_activation(view: &NshView) -> bool {
+    SYSTEM.with(|system| {
+        system.try_borrow().map_or(true, |system| {
+            system.overlays.iter().any(|overlay| {
+                matches!(overlay.kind, OverlayKind::Dialog { .. })
+                    && (view == &overlay.root || view.is_ancestor(&overlay.root))
+            })
+        })
+    })
 }
 
 /// Shows `dialog` over the surface: a card in the middle (an alert) or at
@@ -1582,6 +1639,19 @@ pub(crate) fn simulate_system_scheme(dark: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activation_query_fails_closed_during_overlay_mutation() {
+        crate::gtk_test::run(|| {
+            let surface = crate::gtk_test::surface();
+            assert!(!blocks_activation(&surface.root));
+            SYSTEM.with(|system| {
+                let _borrow = system.borrow_mut();
+                assert!(blocks_activation(&surface.root));
+            });
+            assert!(!blocks_activation(&surface.root));
+        });
+    }
 
     #[test]
     fn kernel_versions() {

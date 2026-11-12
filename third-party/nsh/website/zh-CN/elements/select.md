@@ -9,7 +9,7 @@ demo: el-select
 
 选择框从一组条目中选出一个值：一项设置、一个筛选条件、一个国家、一个时区。应用提供的触发元素打开列表，并按每种设备的习惯呈现：
 
-- 在桌面平台和桌面浏览器中，它是盖在触发元素上的弹出层，已选的行正好叠在触发元素上，所以已选的标题停在原处（shadcn/ui 的 `item-aligned` 定位），与触发元素一样宽（应用的 `popupStyle` / `popupClass` 设置宽度时用它的，和 `gpui-component` 的 `menu_width` 一样），高度随行数增长，最多占满屏幕上的空间；没有已选条目时它在触发元素下方打开。键盘可以在条目间移动并选中一个。
+- 在桌面平台和桌面浏览器中，它是与触发元素一样宽的弹出层（应用的 `popupStyle` / `popupClass` 设置宽度时用它的，和 `gpui-component` 的 `menu_width` 一样），高度随行数增长，最多占满屏幕上的空间。在 macOS 上它盖在触发元素上打开，已选的行正好叠在触发元素上，所以已选的标题停在原处，和系统的弹出按钮一样（shadcn/ui 的 `item-aligned` 定位）；没有已选条目时它在触发元素下方打开。在 Windows、Linux 和浏览器中它在触发元素下方打开，和这些平台的下拉列表一样。键盘可以在条目间移动并选中一个。
 - 在手机和平板上，它是屏幕底部、覆盖在背景层之上的 sheet。
 
 选择框负责行为：值（应用持有的，或它自己保存的）、打开状态、键盘、输入跳转、搜索、分组、高亮的行以及屏幕阅读器听到的内容。外观由应用决定：应用为触发元素、弹出层、列表、行、分组标题和搜索框设置样式，或者自己绘制行。
@@ -229,6 +229,7 @@ mount(App);
 | `searchable` | `.searchable(..)` | `boolean` | `false` | 条目上方的搜索框按标题筛选条目。 |
 | `searchPlaceholder` | `.search_placeholder(..)` | `string` | 无 | 搜索框的占位文字。 |
 | `searchAccessibilityLabel` | `.search_accessibility_label(..)` | `string` | 无 | 屏幕阅读器对搜索框的称呼：它搜索的是什么。 |
+| `searchTestID` | `.search_test_id(..)` | `string` | 无 | UI 测试查找搜索框所用的 id（`nsh/test` 的 `id:`），与 `testID` 指向选择框自己的视图一样。 |
 | `cleanable` | `.cleanable(..)` | `boolean` | `false` | 有选中条目时显示清除按钮；按下会清空值（`onChange({ value: null })`）。 |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 保持关闭：触发元素不接受按压和键盘焦点，并应用 `disabled:` 样式。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器对它的称呼：这次选择是关于什么的。 |
@@ -287,13 +288,13 @@ mount(App);
 | 清除按钮 | 选择框的视图，触发元素之后（`cleanable`，有选中条目时） | `clearButtonClass`、`clearButtonStyle`；内容 `clearButton` |
 | 弹出层或 sheet | 位于所有内容之上，在触发元素处（桌面）或屏幕底部（触摸屏） | `popupClass`、`popupStyle` |
 | 背景层 | sheet 后面（触摸屏） | `backdropClass`、`backdropStyle` |
-| 搜索框 | 弹出层中的第一个（`searchable`） | `searchClass`、`searchStyle`、`searchPlaceholder`、`searchAccessibilityLabel` |
+| 搜索框 | 弹出层中的第一个（`searchable`） | `searchClass`、`searchStyle`、`searchPlaceholder`、`searchAccessibilityLabel`、`searchTestID` |
 | 列表 | 弹出层中，搜索框之后 | `listClass`、`listStyle` |
 | 分组标题 | 列表中，分组的条目之前 | `groupClass`、`groupStyle`、`renderGroup` |
 | 条目的行 | 列表中 | `itemClass`、`itemStyle`、`renderItem`（其中用 `group-focus:`、`group-selected:`、`group-disabled:`，`itemClass` 里加 `group`） |
 | 空状态 | 弹出层中，没有条目显示时 | 它自己的元素（`empty`） |
 
-弹出层是一列：它的高度随搜索框和各行变化，所以在 `popupClass` 上加 `max-h-*` 可以限制它的高度，列表在其中滚动。
+弹出层是一列：它的高度随搜索框和各行变化，列表在其中滚动。不加限制时，弹出层受触发器那一侧的空间约束：它开在能完整放下的一侧（两侧都放不下时开在空间更大的一侧），并且不会高过那一侧的空间。在 `popupClass` 上加 `max-h-*` 则改由它来封顶：弹出层在哪一侧都最多这么高，并按这个高度选择开在哪一侧，但不再受那一侧空间的约束，所以封顶的高度要低于小窗口能留出的空间。
 
 <a id="keyboard"></a>
 
@@ -320,7 +321,7 @@ mount(App);
 
 | | 桌面平台和桌面浏览器 | 手机和平板 |
 | --- | --- | --- |
-| 列表 | 盖在触发元素上的弹出层，已选的行在它上面（没有已选条目时在它下方），与触发元素一样宽，除非 `popupStyle` 设置了宽度，高度随行数增长，最多占满屏幕上的空间 | 屏幕底部、覆盖在背景层之上的 sheet，高度随行数增长，最高到状态栏 |
+| 列表 | 在 macOS 上是盖在触发元素上的弹出层，已选的行在它上面（没有已选条目时在它下方），在 Windows、Linux 和浏览器中在触发元素下方，与触发元素一样宽，除非 `popupStyle` 设置了宽度，高度随行数增长，最多占满屏幕上的空间 | 屏幕底部、覆盖在背景层之上的 sheet，高度随行数增长，最高到状态栏 |
 | 关闭 | 一次选择、Escape、外部按压（按压继续作用于指针下的元素） | 一次选择、背景层、Android 返回键 |
 | 搜索 | 列表打开时搜索框获得键盘焦点 | 按下搜索框时键盘弹出 |
 | 选择 | 鼠标键按下时就选中，搜索框保持键盘焦点 | 轻点 |

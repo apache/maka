@@ -57,7 +57,8 @@ export function createHost(invoke, reactive, dom, environment, live, platform = 
         try { invoke(431, [name, data, id]); } catch (error) { settle(id, false, error); }
       });
     },
-    post(name, data) { nameOf(name); if (initial[0]) invoke(432, [name, data]); },
+    // Without an SDK channel, the page's host takes it (`Command::HostPost`).
+    post(name, data) { nameOf(name); if (initial[0]) invoke(432, [name, data]); else if (environment.host()) platform.post(name, data); },
   };
   dom.rootProp("onHost", value => { if (value.type === "event") event(value.event, value.payload, false); });
   return { host, event, reply: settle, dispose() { listeners.clear(); inbox.length = 0; for (const id of pending.keys()) settle(id, false, new Error("the app was disposed")); } };

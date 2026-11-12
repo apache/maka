@@ -113,12 +113,48 @@ final class TextLayouts {
                 if (chained != null) return chained;
                 // Exact faces are used as is; others are synthesized.
                 if (face.weight == weight && face.italic == italic) return face.typeface;
-                return Typeface.create(face.typeface, clamp(weight), italic);
+                return weighted(face.typeface, face.weight, face.italic, weight, italic);
             }
             Typeface base = installed(names.get(i));
-            if (base != null) return Typeface.create(base, clamp(weight), italic);
+            if (base != null) return weighted(base, 400, false, weight, italic);
         }
-        return Typeface.create(Typeface.DEFAULT, clamp(weight), italic);
+        return weighted(Typeface.DEFAULT, 400, false, weight, italic);
+    }
+
+    /**
+     * `base`, a face of `baseWeight` and `baseItalic`, at a weight and style.
+     * Android 9+ takes any weight. Before it, the default family takes the
+     * nearest of Roboto's named weights (thin, light, regular, medium, bold,
+     * black), and other faces get bold and italic synthesized only where
+     * they are lighter or upright, so a bold file is not thickened again.
+     */
+    static Typeface weighted(Typeface base, int baseWeight, boolean baseItalic, int weight, boolean italic) {
+        if (android.os.Build.VERSION.SDK_INT >= 28) return Typeface.create(base, clamp(weight), italic);
+        if (base == Typeface.DEFAULT) {
+            String named = robotoFamily(weight);
+            if (named != null) {
+                Typeface typeface = Typeface.create(named, italic ? Typeface.ITALIC : Typeface.NORMAL);
+                // A ROM without the alias gives its default: synthesize instead.
+                if (typeface != null && !typeface.equals(Typeface.DEFAULT)) return typeface;
+            }
+        }
+        int style = (weight >= 600 && baseWeight < 600 ? Typeface.BOLD : 0)
+                | (italic && !baseItalic ? Typeface.ITALIC : 0);
+        return style == 0 ? base : Typeface.create(base, style);
+    }
+
+    /**
+     * Roboto's family alias nearest to a weight, as CSS matches a missing
+     * weight (lighter first below 400, heavier first from 500), or null
+     * where the regular face with or without bold is nearest (400, 600, 700).
+     */
+    private static String robotoFamily(int weight) {
+        if (weight < 250) return "sans-serif-thin";
+        if (weight < 350) return "sans-serif-light";
+        if (weight < 500) return null;
+        if (weight < 600) return "sans-serif-medium";
+        if (weight < 800) return null;
+        return "sans-serif-black";
     }
 
     /**
@@ -268,6 +304,7 @@ final class TextLayouts {
     private static final int UNDERLINE = 2;
     private static final int STRIKE = 4;
     private static final int BACKGROUND = 16;
+    private static final int HIDDEN = 32;
 
     static final class Prepared {
         final CharSequence text;
@@ -403,6 +440,7 @@ final class TextLayouts {
                 s.setSpan(new Decoration((flags & UNDERLINE) != 0, (flags & STRIKE) != 0, ints[o + 5], size,
                         ints[o + 8], thickness, offset), start, end, f);
             }
+            if ((flags & HIDDEN) != 0) s.setSpan(new Hidden(), start, end, f);
             if ((flags & BACKGROUND) != 0) {
                 measure.setTypeface(typeface);
                 measure.setTextSize(size);
@@ -465,12 +503,17 @@ final class TextLayouts {
             default: truncate = TextUtils.TruncateAt.END;
         }
         // Glyphs are measured once here; every layout width reuses them.
-        PrecomputedText.Params params = new PrecomputedText.Params.Builder(paint)
-                .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
-                .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
-                .setTextDirection(direction)
-                .build();
-        CharSequence measured = PrecomputedText.create(s, params);
+        // Android 8 has no PrecomputedText: each layout measures the spans
+        // again, with the same breaks (the core caches layouts per width).
+        CharSequence measured = s;
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            PrecomputedText.Params params = new PrecomputedText.Params.Builder(paint)
+                    .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
+                    .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
+                    .setTextDirection(direction)
+                    .build();
+            measured = PrecomputedText.create(s, params);
+        }
         return new Prepared(measured, paint, alignment, align == 4, endAligned, maxLines, truncate, density,
                 direction);
     }
@@ -849,6 +892,45 @@ final class TextLayouts {
             }
             return out;
         }
+    }
+
+    /**
+     * A hidden run ({@code visibility: "hidden"}): laid out as shown, nothing
+     * of it drawn (its color emoji and shadow neither), left out of copies
+     * and screen readers ({@link #shown}).
+     */
+    static final class Hidden extends android.text.style.CharacterStyle
+            implements android.text.style.UpdateAppearance {
+        @Override
+        public void updateDrawState(TextPaint paint) {
+            paint.setColor(0);
+            paint.clearShadowLayer();
+            paint.bgColor = 0;
+        }
+    }
+
+    /**
+     * The characters {@code start..end} of a laid out text as a copy and a
+     * screen reader take them: without hidden runs and attachments'
+     * placeholders.
+     */
+    static String shown(CharSequence text, int start, int end) {
+        start = Math.max(0, Math.min(start, text.length()));
+        end = Math.max(start, Math.min(end, text.length()));
+        StringBuilder out = new StringBuilder(end - start);
+        Spanned spanned = text instanceof Spanned ? (Spanned) text : null;
+        int at = start;
+        while (at < end) {
+            int next = spanned == null ? end : spanned.nextSpanTransition(at, end, Hidden.class);
+            if (spanned == null || spanned.getSpans(at, next, Hidden.class).length == 0) {
+                for (int i = at; i < next; i++) {
+                    char c = text.charAt(i);
+                    if (c != '\uFFFC') out.append(c);
+                }
+            }
+            at = next;
+        }
+        return out.toString();
     }
 
     /**

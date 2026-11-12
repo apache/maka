@@ -23,6 +23,7 @@ mod acp;
 mod application;
 mod args;
 mod candidate;
+mod checkpoint;
 mod code;
 mod deployment;
 mod desktop;

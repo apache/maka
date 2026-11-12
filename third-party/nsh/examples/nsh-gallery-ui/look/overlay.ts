@@ -220,7 +220,7 @@ export function toastCloseLook() {
     get activeStyle(): ViewStyle {
       return { backgroundColor: alpha(colors.text, 0.1), ...pressSink(0.9).activeStyle };
     },
-    get focusStyle(): ViewStyle {
+    get focusVisibleStyle(): ViewStyle {
       return focusRing();
     },
   };

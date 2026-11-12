@@ -3,6 +3,7 @@ name = "nsh-platform-web"
 description = "WebAssembly backend: runs NSH apps in a browser page, rendering to the DOM, and publishes them as static sites."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -47,7 +48,7 @@ crate-type = ["cdylib", "rlib"]
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 nsh-core = { workspace = true, features = ["glsl"] }
 nsh-engine.workspace = true
-nsh-base = { workspace = true, features = ["editor", "highlight", "math", "plot", "rich-editor", "term"] }
+nsh-base = { workspace = true, features = ["editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term"] }
 nsh-bundler = { workspace = true, optional = true }
 serde_json.workspace = true
 sha2 = { workspace = true, optional = true }

@@ -1,6 +1,6 @@
 import { cleanup, createAnimatedValue, effect, Image, platform, reduceMotion, signal, Text, View, type ViewStyle } from "nsh";
 import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPagination, CarouselPaginationItem, CarouselPrevious } from "nsh/base";
-import { alpha, Badge, Button, Caption, Card, carouselArrowLook, CarouselDot, carouselDotItemLook, carouselPaginationLook, carouselSizes, chart, colors, DemoPage, focusRing, mono, photoUrl, type PhotoName, Press, radius, TERMINAL_GAP, terminal } from "../ui";
+import { alpha, Badge, Button, Caption, Card, carouselArrowLook, CarouselDot, carouselDotItemLook, carouselPaginationLook, carouselSizes, chart, colors, DemoPage, focusRing, photoUrl, type PhotoName, Press, radius, TERMINAL_GAP, terminal, LastEvent } from "../ui";
 import { LucideIcon, type LucideIconName } from "../icons";
 
 // `nsh/base`'s `Carousel` owns the scrolling (the platform's own: the
@@ -109,11 +109,12 @@ const COLLECTIONS: { name: string; count: number; icon: LucideIconName; tone: ()
   { name: "Ideas", count: 18, icon: "sparkles", tone: () => colors.danger },
 ];
 
+/** Short enough for one line beside the arrows in a phone-wide card. */
 const NEWS = [
-  "Offline mode is here: notes sync when you are back",
-  "Dark mode follows your system, or pick your own",
-  "Shared notebooks now show who is typing",
-  "Search finds words inside images and PDFs",
+  "Offline mode: notes sync when online",
+  "Dark mode follows your system",
+  "Shared notebooks show who is typing",
+  "Search finds words in images and PDFs",
 ];
 
 /**
@@ -157,7 +158,7 @@ export function CarouselDemo() {
       pop.spring(1, { stiffness: 420, damping: 14 });
     };
     return (
-      <Card title="Onboarding" subtitle="One step per view; the app's buttons own the index" right={<Badge label={done() ? "Done" : `Step ${step() + 1} of ${STEPS.length}`} tone={done() ? "up" : "neutral"} />}>
+      <Card title="Onboarding" subtitle="One step per view; the buttons own the index" right={<Badge label={done() ? "Done" : `Step ${step() + 1} of ${STEPS.length}`} tone={done() ? "up" : "neutral"} />}>
         <If
           when={!done()}
           else={
@@ -262,7 +263,7 @@ export function CarouselDemo() {
   function Product() {
     const photo = signal(0);
     return (
-      <Card title="Photos" subtitle="Thumbnails pick a photo; arrows over its edges" right={<Badge label={`${photo() + 1} / ${PHOTOS.length}`} />}>
+      <Card title="Photos" subtitle="Thumbnails pick a photo; arrows on its edges" right={<Badge label={`${photo() + 1} / ${PHOTOS.length}`} />}>
         <Carousel
           accessibilityLabel="Photos of the launch pad"
           onChange={({ index }) => {
@@ -311,7 +312,7 @@ export function CarouselDemo() {
                   selectedStyle={{ borderColor: colors.accent, opacity: 1 }}
                   hoverStyle={{ opacity: 0.85 }}
                   activeStyle={{ transform: [{ scale: 0.94 }] }}
-                  focusStyle={focusRing(1)}
+                  focusVisibleStyle={focusRing(1)}
                 >
                   <Image src={photoUrl(p().name, "360x360")} style={{ flex: 1, borderRadius: 5, backgroundColor: colors.raised }} />
                 </CarouselPaginationItem>
@@ -335,7 +336,7 @@ export function CarouselDemo() {
     return (
       <Card
         title="Banners"
-        subtitle={pointer ? "The app rolls them on every 4 s, past the last to the first; on hold under the pointer" : "The app rolls them on every 4 s, past the last to the first; on hold while you swipe"}
+        subtitle={pointer ? "Rolls every 4 s; holds under the pointer" : "Rolls every 4 s; holds while you swipe"}
         right={<Badge label={roll.status()} tone={roll.running() ? "accent" : "neutral"} />}
       >
         {/* The pointer over the banners holds them: a view of the app's around the carousel. */}
@@ -367,6 +368,8 @@ export function CarouselDemo() {
                 >
                   <Image src={photoUrl(b().name)} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, objectFit: "cover" }} />
                   <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundImage: "linear-gradient(90deg, rgba(0,0,0,0.66) 0%, rgba(0,0,0,0.28) 58%, rgba(0,0,0,0) 100%)" }} />
+                  {/* A shade from the bottom too, so the title keeps its contrast over a bright photo's right half. */}
+                  <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundImage: "linear-gradient(0deg, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0) 70%)" }} />
                   <View style={{ position: "absolute", top: 14, left: pointer ? 18 : 20, paddingHorizontal: 8, height: 20, borderRadius: 10, justifyContent: "center", backgroundColor: alpha("#ffffff", 0.18) }}>
                     <Text style={{ fontSize: 11, fontWeight: "600", color: "#ffffff", letterSpacing: 0.4 }}>{b().tag.toUpperCase()}</Text>
                   </View>
@@ -404,7 +407,7 @@ export function CarouselDemo() {
                     accessibilityLabel={b().title}
                     class="group"
                     style={{ width: size.bar, height: size.hit, justifyContent: "center", borderRadius: 4 }}
-                    focusStyle={focusRing()}
+                    focusVisibleStyle={focusRing()}
                   >
                     <View class="opacity-70 group-hover:opacity-100 group-selected:opacity-0" style={{ height: 4, borderRadius: 2, backgroundColor: alpha(colors.text, 0.22), ...fade() }} />
                   </CarouselPaginationItem>
@@ -481,7 +484,7 @@ export function CarouselDemo() {
     const roll = rotation(NEWS.length, 3000);
     const shown = roll.index;
     return (
-      <Card title="What's new" subtitle="A vertical carousel: the app rolls the next line up every 3 s, the first after the last">
+      <Card title="What's new" subtitle="Rolls the next line up every 3 s, looping">
         <View {...roll.hover}>
         <Carousel
           axis="vertical"
@@ -518,7 +521,7 @@ export function CarouselDemo() {
   function Last() {
     return (
       <Card title="Last event">
-        <Text style={{ fontSize: 13, color: colors.text, fontFamily: mono }}>{last()}</Text>
+        <LastEvent value={last()} hint="Move a carousel" />
       </Card>
     );
   }
