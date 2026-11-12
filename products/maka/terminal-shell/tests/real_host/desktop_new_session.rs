@@ -2552,6 +2552,73 @@ async fn desktop_connection_failure_has_one_status_below_the_workspace() {
     disconnected_desktop(theme, appearance, layout, width, height).await;
 }
 
+async fn desktop_subagent_settings_preserves_conflict_and_session_snapshot() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../workbench/tests/fixtures/subagent-settings.tsx");
+    let output = fixture.directory.path().join("preset-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(width),
+            nsh_terminal::DevicePixels(height),
+        ),
+        appearance,
+        Some((source, "en", "New")),
+    )
+    .await;
+    desktop.event("fixture.seed", json!({}));
+    desktop.control("Reviewer").await;
+    desktop.artifact(&format!("subagents-list-{theme}-{layout}"));
+    desktop.press("Reviewer").await;
+    desktop.control("Save subagent").await;
+    desktop.artifact(&format!("subagents-editor-{theme}-{layout}"));
+    desktop.press("Choose model").await;
+    desktop.control("Test model").await;
+    desktop.artifact(&format!("subagents-model-menu-{theme}-{layout}"));
+    desktop.press("Test model").await;
+    desktop.control("Save subagent").await;
+    desktop.event("fixture.conflict", json!({}));
+    desktop
+        .until("conflict did not preserve the draft", || {
+            desktop.outcome.lock().unwrap()["error"]
+                .as_str()
+                .is_some_and(|text| text.contains("changed elsewhere"))
+                .then_some(())
+        })
+        .await;
+    desktop.control("Conflict recorded").await;
+    desktop.artifact(&format!("subagents-conflict-{theme}-{layout}"));
+    desktop.event("fixture.details", json!({}));
+    desktop
+        .until("applied snapshot was lost after deletion", || {
+            (desktop.outcome.lock().unwrap()["details"] == true).then_some(())
+        })
+        .await;
+    desktop.control("Snapshot shown").await;
+    desktop.artifact(&format!("subagents-session-{theme}-{layout}"));
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     let fixture = Fixture::open().await;
     let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3416,6 +3483,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image",
     "desktop_connection_failure_has_one_status_below_the_workspace",
     "desktop_model_settings_keeps_successful_sign_in_and_retries_models",
+    "desktop_subagent_settings_preserves_conflict_and_session_snapshot",
     "desktop_provider_picker_searches_real_catalog_and_preserves_selection",
     "desktop_mermaid_renders_markdown_and_toggles_its_source",
     "desktop_goal_commands_create_pause_resume_and_finish_without_losing_the_draft",
@@ -3491,6 +3559,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_connection_failure_has_one_status_below_the_workspace" => {
             runtime.block_on(desktop_connection_failure_has_one_status_below_the_workspace())
+        }
+        "desktop_subagent_settings_preserves_conflict_and_session_snapshot" => {
+            runtime.block_on(desktop_subagent_settings_preserves_conflict_and_session_snapshot())
         }
         "desktop_model_settings_keeps_successful_sign_in_and_retries_models" => {
             runtime.block_on(desktop_model_settings_keeps_successful_sign_in_and_retries_models())

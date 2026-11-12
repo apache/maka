@@ -119,7 +119,12 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
         || (endpoint == "agent"
             && matches!(
                 method,
-                "updateGlobalInstructions" | "selectWorkspace" | "manageMcpServer"
+                "updateGlobalInstructions"
+                    | "selectWorkspace"
+                    | "manageMcpServer"
+                    | "createPreset"
+                    | "updatePreset"
+                    | "deletePreset"
             ))
         || (endpoint == "skills" && matches!(method, "install" | "update" | "delete"))
         || (endpoint == "setup" && method == "discoverModels")
@@ -1873,5 +1878,65 @@ mod fork_position_tests {
         pending.sort();
         reserved.sort();
         assert_eq!(pending, reserved);
+    }
+}
+
+#[cfg(test)]
+mod preset_settings_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn pending_preset_settings_survive_reopen_and_fence_repeated_writes() {
+        for method in ["createPreset", "updatePreset", "deletePreset"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("client.sqlite");
+            let host = DeploymentRef {
+                state_domain: "a".repeat(64),
+                deployment: Uuid::new_v4(),
+                revision: 1,
+            };
+            let owner = ServiceOwner {
+                namespace: InstanceId(vec![Uuid::new_v4()]),
+                export: "agent".into(),
+            };
+            let mut operation = Operation {
+                id: Uuid::new_v4(),
+                host: host.clone(),
+                endpoint: "agent".into(),
+                method: method.into(),
+                session_id: None,
+                correlation: owner.correlation(SETTINGS_KIND),
+                draft: None,
+                upload: None,
+                abandoned: false,
+                reference: None,
+                receipt: None,
+            };
+            assert!(settings_owner(&operation, &owner));
+            let journal = Journal::open(&path).await.unwrap();
+            journal.reserve_settings(&operation).await.unwrap();
+            drop(journal);
+            let journal = Journal::open(&path).await.unwrap();
+            let pending = journal
+                .pending_settings(&host, std::slice::from_ref(&owner))
+                .await
+                .unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].id, operation.id);
+            assert_eq!(pending[0].method, method);
+            operation.id = Uuid::new_v4();
+            assert!(journal.reserve_settings(&operation).await.is_err());
+            let foreign = ServiceOwner {
+                namespace: InstanceId(vec![Uuid::new_v4()]),
+                export: "agent".into(),
+            };
+            assert!(
+                journal
+                    .pending_settings(&host, &[foreign])
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 }
