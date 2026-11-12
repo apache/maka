@@ -518,6 +518,7 @@ impl Owner {
                                     thinking_level: job.approval.thinking_level,
                                 }),
                                 compaction_prompt: None,
+                                applied_preset: None,
                                 collaboration_mode: CollaborationMode::Agent,
                                 tools: Some(self.discovery_tools(job.recall)),
                                 title: fire.title.clone(),
