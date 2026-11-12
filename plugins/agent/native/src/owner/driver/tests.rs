@@ -253,12 +253,13 @@ impl Rig {
     }
 
     async fn start(&mut self) -> TestResult<String> {
-        self.start_with_model_observation(None).await
+        self.start_configured(None, |_| {}).await
     }
 
-    async fn start_with_model_observation(
+    async fn start_configured(
         &mut self,
         observation: Option<crate::model::Observation>,
+        configure: impl FnOnce(&mut Value),
     ) -> TestResult<String> {
         let root_path = self.directory.path().join("root");
         let workspace = self.directory.path().join("workspace");
@@ -294,6 +295,12 @@ impl Rig {
         )?;
         let agent_key = Uuid::new_v4();
         let gateway_key = Uuid::new_v4();
+        let mut configuration = json!({
+            "permissions":{"access":"read_only","requestPermissions":false},
+            "workspaceRoots":[{"label":"test","path":self.directory.path().join("workspace")}],
+            "tools":[]
+        });
+        configure(&mut configuration);
         let input = Input {
             base: None,
             ui: None,
@@ -303,11 +310,7 @@ impl Rig {
                     node(
                         agent_key,
                         agent.application_ref(),
-                        json!({
-                            "permissions":{"access":"read_only","requestPermissions":false},
-                            "workspaceRoots":[{"label":"test","path":self.directory.path().join("workspace")}],
-                            "tools":[]
-                        }),
+                        configuration,
                         BTreeMap::new(),
                     ),
                 ),
@@ -457,6 +460,8 @@ impl Rig {
                 "list",
                 "execution",
                 "stop",
+                "goal",
+                "changeGoal",
                 "metadata",
             ]
         };
@@ -2877,7 +2882,7 @@ mod model_recovery {
     async fn interrupted_empty_model_stream_retries_the_same_run() -> TestResult<()> {
         let mut rig = Rig::new()?;
         let session = rig
-            .start_with_model_observation(Some(replay_observation))
+            .start_configured(Some(replay_observation), |_| {})
             .await?;
         rig.assemble_model(
             &session,
