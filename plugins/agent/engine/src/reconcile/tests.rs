@@ -682,6 +682,7 @@ fn known_publication_failure_only_fences_followup_until_original_cleanup() {
     view.external = Some(ExternalTask {
         task,
         descriptor: view.spec.input.clone(),
+        live_workspace: false,
         admitted: true,
         binding: None,
         observed: 0,
