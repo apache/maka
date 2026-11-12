@@ -346,7 +346,6 @@ impl Owner {
                     "offset": chunk.offset,
                     "total_bytes": chunk.total_bytes,
                     "text": chunk.text,
-                    "quotes": chunk.quotes,
                 })
             })
             .collect();
