@@ -210,4 +210,9 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "track proactive summary attempts",
         sql: include_str!("../migrations/0037_proactive_summary.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 38,
+        description: "subagent presets",
+        sql: include_str!("../migrations/0038_subagent_presets.sql"),
+    },
 ];

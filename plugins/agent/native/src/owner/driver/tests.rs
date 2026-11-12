@@ -422,6 +422,11 @@ impl Rig {
         )?;
         let methods: &[&str] = if model_test {
             &[
+                "presets",
+                "preset",
+                "createPreset",
+                "updatePreset",
+                "deletePreset",
                 "create",
                 "models",
                 "observe",
@@ -2274,6 +2279,7 @@ mod source_recovery {
 mod model_recovery {
     mod bot_tools;
     mod predictions;
+    mod presets;
 
     use super::*;
     use maka_process::lifetime::{ProcessIdentity, ProcessObservation};

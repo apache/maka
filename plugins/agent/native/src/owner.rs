@@ -69,6 +69,7 @@ mod notifications;
 mod patches;
 mod predictions;
 mod preferences;
+mod presets;
 mod projects;
 mod queue;
 mod recall;
