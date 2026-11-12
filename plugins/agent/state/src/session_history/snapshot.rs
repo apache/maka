@@ -365,6 +365,12 @@ impl Snapshot {
     pub async fn view_at(&self, run: RunId) -> Result<crate::fold::RunView, StoreError> {
         self.data.query(read::View(self.clone(), run)).await
     }
+    pub(super) async fn executor_view(
+        &self,
+        run: RunId,
+    ) -> Result<(crate::fold::RunView, ExecutorTranscript), StoreError> {
+        self.data.query(read::ExecutorView(self.clone(), run)).await
+    }
     pub async fn terminated(
         &self,
         run: RunId,

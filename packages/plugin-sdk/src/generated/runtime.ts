@@ -4050,6 +4050,11 @@ export type AgentDeliveryFact =
       attemptId: ModelAttemptId;
     }
   | {
+      kind: 'executor_text_changed';
+      messageId: string;
+      thinking: boolean;
+    }
+  | {
       kind: 'transcript_changed';
     }
   | {

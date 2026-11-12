@@ -97,7 +97,11 @@ impl ProtocolSession {
         self.observation
             .binding
             .bound(NativeBinding {
-                adapter_version: PRESENTATION_VERSION,
+                adapter_version: if matches!(task, NativeTask::Antigravity { .. }) {
+                    AGY_ACTIVITY_VERSION
+                } else {
+                    PRESENTATION_VERSION
+                },
                 command_basis: self.command_basis.clone(),
                 resource: self.resource.clone(),
                 snapshot: self.snapshot.clone(),

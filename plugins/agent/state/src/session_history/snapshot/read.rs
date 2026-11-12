@@ -835,6 +835,27 @@ pub(super) fn view_with_late(
     snapshot: &Snapshot,
     run_id: RunId,
 ) -> Result<(crate::fold::RunView, u64), StoreError> {
+    read_view(c, snapshot, run_id, |_, _| {})
+}
+
+pub(super) struct ExecutorView(pub Snapshot, pub RunId);
+impl Query for ExecutorView {
+    type Output = (crate::fold::RunView, ExecutorTranscript);
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let mut transcript = ExecutorTranscript::default();
+        let (view, _) = read_view(c, &self.0, self.1, |sequence, record| {
+            transcript.observe(sequence, record);
+        })?;
+        Ok((view, transcript))
+    }
+}
+
+fn read_view(
+    c: &Connection,
+    snapshot: &Snapshot,
+    run_id: RunId,
+    mut observe: impl FnMut(u64, &RecordedFact),
+) -> Result<(crate::fold::RunView, u64), StoreError> {
     authorize(c, snapshot)?;
     let source = run_registered(c, snapshot.id, run_id)?;
     let mut view = crate::fold::RunView::admitted(source.run, source.spec)?;
@@ -864,6 +885,7 @@ pub(super) fn view_with_late(
             return Err(invalid("snapshot fact identity corrupt"));
         }
         view.apply(&record)?;
+        observe(sequence, &record);
         if matches!(record.fact, Fact::RunTerminated { .. }) {
             terminal_sequence = Some(sequence);
         } else if record.fact.is_late()

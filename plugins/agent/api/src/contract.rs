@@ -922,6 +922,10 @@ pub enum DeliveryFact {
         step_id: maka_agent_facts::durable::StepId,
         attempt_id: maka_agent_facts::durable::ModelAttemptId,
     },
+    ExecutorTextChanged {
+        message_id: String,
+        thinking: bool,
+    },
     /// Canonical transcript facts changed; clients query bounded history.
     TranscriptChanged,
     StepEnded {

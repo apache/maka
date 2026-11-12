@@ -33,6 +33,10 @@ pub(super) fn executor_tool_id(run: RunId, task: ExternalTaskId, id: &str) -> St
     maka_agent_facts::tool_call::tool_use_id(run, &format!("{task}:{id}"))
 }
 
+pub(super) fn executor_message_id(run: RunId, task: ExternalTaskId, id: &str) -> String {
+    format!("executor/{run}/{task}/{id}")
+}
+
 pub(super) fn executor_tool_display(
     name: &str,
     input: &serde_json::Value,
@@ -40,6 +44,7 @@ pub(super) fn executor_tool_display(
     Option<maka_agent_facts::display::Text>,
     Option<maka_agent_ports::session::history::ExternalToolTarget>,
 ) {
+    use crate::tools::title::Kind;
     use maka_agent_facts::display::Text;
     use maka_agent_ports::session::history::ExternalToolTarget;
     let string = |keys: &[&str]| {
@@ -60,8 +65,21 @@ pub(super) fn executor_tool_display(
     };
     let summary =
         string(&["toolSummary", "description", "Description"]).and_then(Text::single_line);
-    match name {
-        "run_command" | "Bash" | "commandExecution" | "shell" | "execute" => {
+    let file_kind = match name {
+        "read_file" | "view_file" | "Read" => Some(Kind::Read),
+        "write_file" | "write_to_file" | "Write" => Some(Kind::Write),
+        "Edit"
+        | "MultiEdit"
+        | "replace_file_content"
+        | "multi_replace_file_content"
+        | "fileChange" => Some(Kind::Edit),
+        "apply_patch" => Some(Kind::Patch),
+        "list_dir" => Some(Kind::List),
+        "Glob" | "find_by_name" => Some(Kind::Glob),
+        _ => None,
+    };
+    match (name, file_kind) {
+        ("run_command" | "Bash" | "commandExecution" | "shell" | "execute", _) => {
             let command = string(&["command", "CommandLine"]);
             (
                 summary.or_else(|| command.and_then(Text::single_line)),
@@ -71,20 +89,7 @@ pub(super) fn executor_tool_display(
                 }),
             )
         }
-        "read_file"
-        | "view_file"
-        | "Read"
-        | "write_to_file"
-        | "Write"
-        | "Edit"
-        | "MultiEdit"
-        | "replace_file_content"
-        | "multi_replace_file_content"
-        | "fileChange"
-        | "apply_patch"
-        | "list_dir"
-        | "Glob"
-        | "find_by_name" => {
+        (_, Some(kind)) => {
             let path = string(&[
                 "path",
                 "Path",
@@ -102,13 +107,13 @@ pub(super) fn executor_tool_display(
                     .and_then(|changes| changes[0]["path"].as_str())
             });
             (
-                summary.or_else(|| path.and_then(Text::single_line)),
+                summary.or_else(|| path.and_then(|path| kind.render_target(path, false))),
                 path.map(|path| ExternalToolTarget::File {
                     path: preview(path),
                 }),
             )
         }
-        "Grep" | "grep_search" | "WebSearch" | "webSearch" | "search_web" => {
+        ("Grep" | "grep_search" | "WebSearch" | "webSearch" | "search_web", _) => {
             let query = string(&["query", "pattern", "Query", "RegexPattern"]);
             (
                 summary.or_else(|| query.and_then(Text::single_line)),
@@ -117,7 +122,7 @@ pub(super) fn executor_tool_display(
                 }),
             )
         }
-        _ => (None, None),
+        _ => (summary, None),
     }
 }
 
@@ -236,6 +241,11 @@ pub(super) fn project(item: &HistoryItem, turn_id: String) -> Result<Delivery, S
         Fact::ExternalTaskObserved { task, output, .. } => {
             use maka_agent_facts::executor::Output;
             match output {
+                Output::OutputDelta { message_id, .. }
+                | Output::ThinkingDelta { message_id, .. } => DeliveryFact::ExecutorTextChanged {
+                    message_id: executor_message_id(run, *task, message_id),
+                    thinking: matches!(output, Output::ThinkingDelta { .. }),
+                },
                 Output::ToolStart {
                     tool_call_id,
                     name,

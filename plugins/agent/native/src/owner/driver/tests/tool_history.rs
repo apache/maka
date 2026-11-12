@@ -1232,7 +1232,7 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn executor_progress_and_failed_result_keep_the_original_call() {
+async fn executor_history_keeps_message_boundaries_and_tool_results() {
     use maka_agent_facts::executor::{Output, Selection, Settings, ToolResultDetails, TurnUsage};
     let mut rig = Rig::new().unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
@@ -1276,7 +1276,15 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
         let claim = driver.state.claim(run).await?;
         let task = ExternalTaskId::new();
         let view = driver.state.frontier(run).await?;
+        let message_id = "native-reply".to_owned();
         let outputs = [
+            Output::MessageStart {
+                message_id: message_id.clone(),
+            },
+            Output::OutputDelta {
+                message_id: message_id.clone(),
+                text: "Written `tmp_test_fi".into(),
+            },
             Output::ToolStart {
                 tool_call_id: "read/config".into(),
                 name: "run_command".into(),
@@ -1295,6 +1303,21 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
                     duration_ms: Some(512),
                 }),
             },
+            Output::ToolStart {
+                tool_call_id: "write".into(),
+                name: "write_file".into(),
+                input: json!({"Path":"tmp_test_file.txt"}),
+            },
+            Output::ToolResult {
+                tool_call_id: "write".into(),
+                text: String::new(),
+                is_error: false,
+                details: None,
+            },
+            Output::OutputDelta {
+                message_id: message_id.clone(),
+                text: "le.txt` successfully.".into(),
+            },
             Output::TurnUsage {
                 usage: TurnUsage {
                     tokens: maka_agent_facts::model::ModelUsage {
@@ -1307,13 +1330,16 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
                     duration_ms: Some(700),
                 },
             },
+            Output::MessageEnd {
+                message_id: message_id.clone(),
+            },
         ];
         let mut facts =
             [
                 Fact::ExternalTaskPrepared {
                     task,
                     descriptor: descriptor.reference().clone(),
-                    live_workspace: false,
+                    live_workspace: true,
                 },
                 Fact::ExternalTaskAdmitted { task },
             ]
@@ -1332,14 +1358,24 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
                 (&view).into(),
                 facts
                     .by_ref()
-                    .take(3)
+                    .take(5)
                     .map(|fact| Change::new(fact, at()))
                     .collect(),
                 vec![],
             )
             .await?;
         let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
-        let active = tools(&live(&rig, &session, wire::Position::Tail).await?);
+        let streaming = live(&rig, &session, wire::Position::Tail).await?;
+        let first = streaming["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|chunk| chunk["role"] == "assistant")
+            .unwrap();
+        assert_eq!(first["text"], "Written `tmp_test_fi");
+        assert!(first["finalOutput"].is_null());
+        let position: wire::HistoryRowAddress = serde_json::from_value(first["position"].clone())?;
+        let active = tools(&streaming);
         assert_eq!(observed["toolSeeds"][0]["toolUseId"], active[0].tool_use_id);
         assert_eq!(
             active[0]
@@ -1353,7 +1389,7 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
             "Read configuration"
         );
         let view = driver.state.frontier(run).await?;
-        driver
+        let end = driver
             .state
             .append(
                 &claim,
@@ -1361,11 +1397,68 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
                 facts.map(|fact| Change::new(fact, at())).collect(),
                 vec![],
             )
+            .await?
+            .facts
+            .last()
+            .unwrap()
+            .id;
+        let view = driver.state.frontier(run).await?;
+        driver
+            .state
+            .append(
+                &claim,
+                (&view).into(),
+                vec![Change::new(
+                    Fact::ExternalTaskClosed {
+                        task,
+                        outcome: Terminal::Completed,
+                        diagnostic: None,
+                        final_message: Some(ExternalFinalMessage { message_id, end }),
+                    },
+                    at(),
+                )],
+                vec![],
+            )
             .await?;
         let observed = query(&rig, "observe", json!({"sessionId":session})).await?;
         assert_eq!(observed["toolSeeds"], json!([]));
         let page = live(&rig, &session, wire::Position::Tail).await?;
+        let mut replies = page["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|chunk| chunk["role"] == "assistant");
+        let reply = replies.next().unwrap();
+        assert_eq!(reply["position"], first["position"]);
+        assert_eq!(reply["messageId"], first["messageId"]);
+        assert_eq!(reply["text"], "Written `tmp_test_file.txt` successfully.");
+        assert_eq!(reply["finalOutput"], true);
+        assert!(replies.next().is_none());
+        let body = query(
+            &rig,
+            "source",
+            json!({
+                "sessionId":session, "through":page["through"],
+                "source":{"kind":"row","position":position}, "field":"body",
+                "position":{"kind":"start"}
+            }),
+        )
+        .await?;
+        assert_eq!(body["source"]["text"], reply["text"]);
         let displayed = tools(&page);
+        let (writes, displayed): (Vec<_>, Vec<_>) = displayed.into_iter().partition(|tool| {
+            tool.call
+                .as_ref()
+                .is_some_and(|call| call.name == "write_file")
+        });
+        assert_eq!(writes.len(), 2);
+        assert!(writes.iter().all(|tool| {
+            let call = tool.call.as_ref().unwrap();
+            call.title
+                .as_ref()
+                .is_some_and(|title| title.fallback == "Write file · tmp_test_file.txt")
+                && tool.result.as_ref().is_some_and(|result| !result.is_error)
+        }));
         let usage = page["chunks"]
             .as_array()
             .unwrap()

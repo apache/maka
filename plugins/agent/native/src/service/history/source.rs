@@ -42,6 +42,7 @@ pub(super) struct Cache {
     )>,
     source: Option<maka_agent_state::session_history::RunSource>,
     timing: Option<wire::TurnTiming>,
+    executor: Option<maka_agent_state::session_history::ExecutorTranscript>,
     views: std::collections::BTreeMap<RunId, maka_agent_state::fold::RunView>,
     tools: std::collections::BTreeMap<ToolScope, Option<wire::Tool>>,
 }
@@ -89,9 +90,10 @@ async fn unpaired(
                     .map_err(|error| error.to_string())?;
                 let mut timing = timing(&data, &source).await?;
                 cache.views.clear();
+                cache.executor = None;
                 if matches!(source.spec.backend, BackendSpec::Executor { .. }) {
-                    let view = data
-                        .view_at(source.run)
+                    let (view, transcript) = data
+                        .executor_view(source.run)
                         .await
                         .map_err(|error| error.to_string())?;
                     timing.executor_usage = view
@@ -100,6 +102,7 @@ async fn unpaired(
                         .and_then(|task| task.turn_usage.clone())
                         .map(Box::new);
                     cache.views.insert(source.run, view);
+                    cache.executor = Some(transcript);
                 }
                 cache.timing = Some(timing);
                 cache.source = Some(source);
@@ -111,6 +114,7 @@ async fn unpaired(
                 cache.source.as_ref().expect("current original Run"),
                 address,
                 &mut cache.views,
+                cache.executor.as_ref(),
                 stop,
             )
             .await?
@@ -180,24 +184,46 @@ async fn timing(
         executor_usage: None,
     })
 }
-pub(super) async fn visible(
+pub(super) async fn search_anchor(
     tree: &SourceTree,
     address: &wire::HistoryRowAddress,
+    order: wire::HistoryOrder,
+    cache: &mut Cache,
     stop: &tokio_util::sync::CancellationToken,
-) -> Result<bool, String> {
+) -> Result<Option<(wire::HistoryRowAddress, wire::HistoryOrder)>, String> {
     if stop.is_cancelled() {
         return Err("agent_history_cancelled".into());
     }
-    Ok(
-        match tree
-            .item(address)
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            SourceItem::Canonical(item) => projection::visible(&item.recorded.fact),
-            SourceItem::Imported { .. } => true,
-        },
-    )
+    match tree
+        .item(address)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        SourceItem::Canonical(item) => {
+            use maka_agent_facts::executor::Output;
+            if !matches!(
+                item.recorded.fact,
+                Fact::ExternalTaskObserved {
+                    output: Output::OutputDelta { .. } | Output::ThinkingDelta { .. },
+                    ..
+                }
+            ) {
+                return Ok(
+                    projection::visible(&item.recorded.fact).then(|| (address.clone(), order))
+                );
+            }
+        }
+        SourceItem::Imported { .. } => return Ok(Some((address.clone(), order))),
+    }
+    let row = unpaired(tree, address, cache, stop).await?.row;
+    if row.visible {
+        return Ok(Some((row.chunk.position, row.chunk.order)));
+    }
+    if let Some(position) = row.continuation {
+        let first = unpaired(tree, &position, cache, stop).await?.row;
+        return Ok(Some((first.chunk.position, first.chunk.order)));
+    }
+    Ok(None)
 }
 pub(super) async fn selected(
     tree: &SourceTree,
@@ -235,7 +261,9 @@ pub(super) async fn window(
                 continue;
             }
             let row = selected(tree, &qualified.address, cache, stop).await?;
-            if !row.row.visible {
+            if !row.row.visible
+                || (!include_thinking && row.row.chunk.field == wire::HistoryField::Thinking)
+            {
                 continue;
             }
             rows.push(row);

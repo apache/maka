@@ -26,7 +26,7 @@ use tokio::{
 };
 
 pub(super) const SOCKET: &str = "maka-steps.sock";
-const MAX_BYTES: u64 = 4096;
+const MAX_BYTES: u64 = 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +34,8 @@ pub struct StepAnnotation {
     pub session: String,
     pub step: u64,
     pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 pub(super) struct Row {
@@ -43,7 +45,7 @@ pub(super) struct Row {
 
 impl StepAnnotation {
     /// Called by a short-lived hook process. The acknowledgement follows the
-    /// original stdout journal write, before the CLI starts the command.
+    /// original stdout journal write, before the CLI continues.
     pub fn record(&self, directory: &Path) -> io::Result<()> {
         use std::io::Read;
         std::env::set_current_dir(directory)?;
