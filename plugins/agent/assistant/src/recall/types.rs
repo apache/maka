@@ -64,7 +64,7 @@ impl Query {
 pub struct ToolQuery {
     #[schemars(length(min = 1), inner(length(min = 1)))]
     pub terms: Vec<String>,
-    /// An explicit caller-selected result budget; omission retains all matching results.
+    /// Maximum ranked turns to return, subject to the response byte limit.
     #[schemars(range(min = 1))]
     pub limit: Option<usize>,
     #[schemars(length(min = 1))]
@@ -98,6 +98,9 @@ pub struct More {
     pub anchor_message_id: String,
     pub before: Option<usize>,
     pub after: Option<usize>,
+    /// Resume reading the anchor's UTF-8 text at a returned next_text_offset.
+    /// This reads only the anchor, regardless of before/after.
+    pub text_offset: Option<usize>,
 }
 impl More {
     pub fn validate(&self) -> Result<(), String> {
@@ -120,6 +123,8 @@ pub struct PassageMessage {
     pub message_id: String,
     pub role: Role,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_text_offset: Option<usize>,
     pub timestamp: u64,
     pub is_anchor: bool,
     pub attachments: Vec<maka_agent_facts::attachment::AttachmentRef>,
@@ -142,12 +147,17 @@ pub struct ResultSet {
     pub passages: Vec<Passage>,
     pub searched_every_session: bool,
     pub gaps: Vec<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub more_passages: bool,
 }
 impl ResultSet {
     pub fn render(&self) -> String {
         let mut text = format!("Search complete: {}\n", self.searched_every_session);
         for gap in &self.gaps {
             text.push_str(&format!("{gap}\n"));
+        }
+        if self.more_passages {
+            text.push_str("More ranked passages omitted by the response byte limit. Narrow the search for other results.\n");
         }
         if self.passages.len() > 1 {
             text.push_str(&format!("\nRanked anchors ({}):\n", self.passages.len()));
@@ -197,6 +207,12 @@ impl ResultSet {
                     if message.is_anchor { " [anchor]" } else { "" },
                     message.text
                 ));
+                if let Some(offset) = message.next_text_offset {
+                    text.push_str(&format!(
+                        "Text continues with RecallMore(session_id={}, anchor_message_id={}, text_offset={offset}).\n",
+                        passage.session_id, message.message_id
+                    ));
+                }
                 for attachment in &message.attachments {
                     if let maka_agent_facts::attachment::StorageRef::SessionFile {
                         session_id,
