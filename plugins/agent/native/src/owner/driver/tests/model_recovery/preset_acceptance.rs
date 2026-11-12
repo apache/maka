@@ -154,6 +154,103 @@ fn text_messages(request: &Value) -> String {
         .join("\n")
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn truncated_cell_image_terminates_the_run() -> TestResult<()> {
+    use base64::Engine as _;
+
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(45), async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap(&base, provider.url.clone(), true).await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model_options(client, &provider.url, true, json!({"vision":true})).await?;
+
+        let mut state = 1_u32;
+        let pixels = image::RgbImage::from_fn(256, 128, |_, _| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let [r, g, b, _] = state.to_le_bytes();
+            image::Rgb([r, g, b])
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        pixels.write_to(&mut png, image::ImageFormat::Png)?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+        let tail = &encoded[encoded.len() - 65_536..];
+        assert!(!tail.starts_with("iVBOR"));
+
+        for (data, expected) in [(tail, "failed"), (encoded.as_str(), "completed")] {
+            let session = create(client, &base, &model, None).await?;
+            let id = session["id"].as_str().unwrap();
+            let sent = call(
+                client,
+                "agent",
+                "send",
+                json!({
+                    "sessionId": id, "message": "Inspect the image.", "delivery": "queue"
+                }),
+            )
+            .await?;
+            assert_eq!(sent["kind"], "queued", "{sent}");
+            let (_, reply) = provider.next().await?;
+            reply
+                .send(tool_response(
+                    "exec",
+                    json!({
+                        "code": format!("image('data:image/png;base64,{data}');")
+                    }),
+                ))
+                .map_err(|_| "image tool response lost")?;
+
+            if expected == "completed" {
+                let (request, reply) = provider.next().await?;
+                assert!(
+                    request["messages"]
+                        .to_string()
+                        .contains("data:image/png;base64,")
+                );
+                reply
+                    .send(completion(
+                        json!({"content":"Valid image received."}),
+                        "stop",
+                    ))
+                    .map_err(|_| "final model response lost")?;
+            }
+            let target = json!({"kind":"message","messageId":sent["messageId"]});
+            loop {
+                let work = call(
+                    client,
+                    "agent",
+                    "work",
+                    json!({"sessionId":id,"target":target}),
+                )
+                .await?;
+                let kind = work["execution"]["state"]["kind"].as_str();
+                if matches!(kind, Some("completed" | "failed" | "cancelled")) {
+                    assert_eq!(kind, Some(expected), "{work}");
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                provider.requests.try_recv().is_err(),
+                "unexpected model request"
+            );
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match outcome {
+        Ok(result) => result?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
 async fn tool_round(
     rig: &Rig,
     provider: &mut Provider,

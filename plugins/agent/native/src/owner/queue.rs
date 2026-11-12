@@ -615,6 +615,7 @@ impl Owner {
                 RunError::Internal(_) => "internal",
                 RunError::Json(_) => "json",
                 RunError::Preparation(_) => "preparation",
+                RunError::InvalidImage(_) => "invalid_image",
                 RunError::PreparationCleanup(_) => "preparation_cleanup",
             };
             let tool_error_variant = match error {
