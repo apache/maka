@@ -2983,15 +2983,16 @@ mod model_recovery {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let app = axum::Router::new().route(
             "/v1/chat/completions",
-            axum::routing::post(move |request: axum::extract::Request| {
+            axum::routing::post(move |bytes: axum::body::Bytes| {
+                use axum::http::StatusCode;
                 let requests = requests.clone();
                 let index = calls.fetch_add(1, Ordering::SeqCst);
                 async move {
-                    let bytes = axum::body::to_bytes(request.into_body(), 1024 * 1024)
-                        .await
-                        .unwrap();
-                    let request: Value = serde_json::from_slice(&bytes).unwrap();
-                    requests.send(request).await.unwrap();
+                    let request: Value =
+                        serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+                    requests
+                        .try_send(request)
+                        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
                     let (delta, finish) = if index == 0 {
                         (
                             json!({"role":"assistant","tool_calls":[{"index":0,"id":"web-status",
@@ -3008,14 +3009,14 @@ mod model_recovery {
                             "choices":[{"index":0,"delta":delta,"finish_reason":finish}]
                         })
                     };
-                    (
+                    Ok::<_, StatusCode>((
                         [("content-type", "text/event-stream")],
                         format!(
                             "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
                             chunk(delta, Value::Null),
                             chunk(json!({}), json!(finish))
                         ),
-                    )
+                    ))
                 }
             }),
         );
@@ -3037,26 +3038,39 @@ mod model_recovery {
                 .await
                 .ok_or("restored model request missing")?;
             for name in ["ModelList", "WebStatus"] {
-                assert!(
-                    request["tools"].as_array().is_some_and(|tools| tools
-                        .iter()
-                        .any(|tool| tool["function"]["name"] == name)),
-                    "{name} missing from the restored request: {request}"
-                );
+                if !request["tools"]
+                    .as_array()
+                    .is_some_and(|tools| tools.iter().any(|tool| tool["function"]["name"] == name))
+                {
+                    return Err(
+                        format!("{name} missing from the restored request: {request}").into(),
+                    );
+                }
             }
             let response = received.recv().await.ok_or("tool result request missing")?;
             let result = response["messages"]
                 .as_array()
-                .unwrap()
+                .ok_or("model request has no messages")?
                 .iter()
-                .find(|message| message["role"] == "tool")
+                .find(|message| {
+                    message["role"] == "tool" && message["tool_call_id"] == "web-status"
+                })
                 .ok_or("WebStatus result missing")?;
             let capture: Value = serde_json::from_str(
                 result["content"]
                     .as_str()
                     .ok_or("WebStatus result is not text")?,
             )?;
-            assert_eq!(capture["available"], false, "{capture}");
+            if capture
+                != json!({
+                    "basis": {"revision": null, "credentialRevision": null},
+                    "available": false,
+                    "source": "model",
+                    "credentialConfigured": false
+                })
+            {
+                return Err(format!("unexpected WebStatus result: {capture}").into());
+            }
             completed_message(new.client.as_ref().unwrap(), session, &sent["messageId"]).await?;
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         })

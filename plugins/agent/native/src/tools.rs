@@ -1075,11 +1075,11 @@ impl maka_tools::request::RequestBinding for SkillBinding {
 
 #[cfg(test)]
 mod tests {
-    use super::ServiceSelection;
+    use super::{SelectedTool, SelectionSnapshot};
     use serde_json::json;
 
     #[test]
-    fn existing_tool_declarations_load_without_their_binding_digest() {
+    fn existing_tool_declaration_uses_current_binding_for_the_same_method() {
         let selection = json!({
             "name": "ModelList",
             "description": "List models.",
@@ -1088,14 +1088,24 @@ mod tests {
             "result": "json",
             "confirmation": "preapproved"
         });
-        let stored = serde_json::from_value::<ServiceSelection>(json!({
-            "selection": selection,
-            "binding": "sha256:ac28b16a6969b0d128053a6a8610f4ada2322ac005feec42869ed31343d4f17c"
+        let stored = serde_json::from_value::<SelectionSnapshot>(json!({
+            "definitions": [],
+            "directOnly": [],
+            "services": [{
+                "selection": selection,
+                "binding": "sha256:ac28b16a6969b0d128053a6a8610f4ada2322ac005feec42869ed31343d4f17c"
+            }],
+            "internalBindings": {}
         }))
         .unwrap();
-        assert_eq!(stored.name(), "ModelList");
-        let written = serde_json::to_value(stored).unwrap();
-        assert_eq!(written["selection"]["method"], "models");
-        assert!(written.get("binding").is_none());
+        let mut live = SelectedTool {
+            selection: serde_json::from_value(selection).unwrap(),
+            binding: "sha256:20379da95853ba9498588b280113bf12e6e59301840666f025af97879bb548ee"
+                .into(),
+        };
+        assert!(stored.matches_service("ModelList", std::slice::from_ref(&live)));
+
+        live.selection.method = "list".into();
+        assert!(!stored.matches_service("ModelList", &[live]));
     }
 }
