@@ -32,6 +32,10 @@ import { recallMessages } from './locale-recall';
 import { pluginMessages } from './locale-plugins';
 import { configurationMessages } from './locale-configuration';
 import { externalAgentMessages } from './locale-external-agents';
+import { toolActivityMessages } from './locale-tool-activity';
+import { sessionToolMessages } from './locale-tool-sessions';
+import { deploymentToolMessages } from './locale-tool-deployment';
+import { nativeToolMessages } from './locale-tool-native';
 import { discoveryMessages } from './locale-discovery';
 
 const nativeLocale = nativeHost.systemLocale;
@@ -49,6 +53,10 @@ const copy = createCopy({
   ...pluginMessages,
   ...configurationMessages,
   ...externalAgentMessages,
+  ...toolActivityMessages,
+  ...sessionToolMessages,
+  ...deploymentToolMessages,
+  ...nativeToolMessages,
   ...discoveryMessages,
 });
 export type MessageKey = keyof ReturnType<typeof copy>;

@@ -33,7 +33,7 @@ use maka_agent_facts::{
     input::RunInput,
     model::ModelFinishReason,
 };
-use maka_agent_state::{ContentBlob, DriverClaim, fold::RunView};
+use maka_agent_state::{ContentBlob, fold::RunView};
 use serde::{Deserialize, de::DeserializeOwned};
 
 #[derive(Deserialize)]
@@ -384,28 +384,6 @@ impl Engine {
         Ok(())
     }
 
-    pub(super) async fn complete_compaction(
-        &self,
-        claim: &DriverClaim,
-        view: &RunView,
-        origin: SummaryOrigin,
-        at: UnixMillis,
-    ) -> Result<bool, RunError> {
-        let Some(content) = self.compaction_checkpoint(view, origin).await? else {
-            return Ok(false);
-        };
-        self.publish(
-            Some(claim),
-            view,
-            vec![Fact::ContextCompacted {
-                baseline: content.reference().clone(),
-            }],
-            vec![content],
-            at,
-        )
-        .await
-    }
-
     pub(super) async fn checkpoint_for_next_run(
         &self,
         view: &RunView,
@@ -433,14 +411,18 @@ impl Engine {
                 attempt,
             },
         )
-        .await
+        .await?
+        .as_ref()
+        .map(ContentBlob::json)
+        .transpose()
+        .map_err(Into::into)
     }
 
-    async fn compaction_checkpoint(
+    pub(super) async fn compaction_checkpoint(
         &self,
         view: &RunView,
         origin: SummaryOrigin,
-    ) -> Result<Option<ContentBlob>, RunError> {
+    ) -> Result<Option<CompactedContext>, RunError> {
         let original = self.store.model_attempt(origin.run, origin.attempt).await?;
         if let Some(reference) = &view.baseline {
             let baseline: CompactedContext =
@@ -579,7 +561,7 @@ impl Engine {
             native,
         };
         compacted.validate().map_err(unsupported)?;
-        Ok(Some(ContentBlob::json(&compacted)?))
+        Ok(Some(compacted))
     }
 }
 

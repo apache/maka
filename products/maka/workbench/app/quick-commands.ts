@@ -66,18 +66,16 @@ export function choose(
 export const normalAlias = (text: string) =>
   text.trim().toLowerCase().replace(/\s+/g, '').slice(0, MAX_ALIAS_LENGTH);
 
-/** `query` with a leading alias replaced by its entry's keyword, so the tool sees its own. */
-export function expandAlias(
-  query: string,
-  aliases: readonly { alias: string; keyword: string }[],
-): string {
-  const text = query.trimStart();
-  const lower = text.toLowerCase();
-  for (const { alias, keyword } of aliases) {
-    if (lower === alias || lower.startsWith(`${alias} `))
-      return `${keyword}${text.slice(alias.length)}`;
-  }
-  return query;
+/** Exact aliases and keywords rank ahead of search results. */
+export function entryMatch(
+  text: string,
+  alias: string | undefined,
+  keywords: readonly string[],
+): number | null {
+  const word = text.trim().toLowerCase();
+  if (!word) return null;
+  if (word === alias) return -2;
+  return keywords.some((keyword) => keyword.toLowerCase() === word) ? -1 : null;
 }
 
 const KEYS = [

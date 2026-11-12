@@ -92,7 +92,9 @@ impl Owner {
             return Err("agent_session_configuration_changed".into());
         }
         let mut selection = selection.or_else(|| session.configuration.backend.clone());
-        selection = self.use_bot_model(parent, selection).await?;
+        if session.configuration.applied_preset.is_none() {
+            selection = self.use_bot_model(parent, selection).await?;
+        }
         let selection = selection.ok_or(CaptureError::ModelUnavailable)?;
         let (model, executor) = match selection {
             BackendPreference::Model {
@@ -167,6 +169,36 @@ impl Owner {
         if external && !host_bridge && selected_catalog.revision.is_some() {
             return Err("agent_executor_cannot_use_session_mcp".into());
         }
+        let allowed_tools = self.admitted_tools(id, &session.configuration.tools);
+        let preset_management = !external
+            && [
+                "SubagentPresetList",
+                "SubagentPresetRead",
+                "SubagentPresetCreate",
+                "SubagentPresetUpdate",
+                "SubagentPresetDelete",
+            ]
+            .iter()
+            .all(|name| {
+                self.tools.contains(name)
+                    && allowed_tools
+                        .as_ref()
+                        .is_none_or(|held| held.iter().any(|held| held == name))
+            });
+        let behavior = self.bot_behavior(
+            id,
+            self.capture_behavior(
+                (!host_bridge).then_some(&session.configuration.workspace),
+                &snapshot,
+                language,
+                session.configuration.applied_preset.as_ref(),
+                preset_management,
+            )
+            .await?,
+            &snapshot,
+            language,
+            allowed_tools.as_deref(),
+        );
         let basis = CapturedRun {
             mcp_revision: selected_catalog.revision.clone(),
             client_mcp: selected_catalog.client_mcp,
@@ -180,7 +212,7 @@ impl Owner {
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Interactive,
             tool_discovery: !external && !legacy_discovery && self.settings.tool_discovery,
-            allowed_tools: self.admitted_tools(id, &session.configuration.tools),
+            allowed_tools,
             background: None,
             internal_tools: if external && !host_bridge {
                 Arc::default()
@@ -192,29 +224,12 @@ impl Owner {
             } else {
                 selected_catalog.bindings.clone()
             },
-            behavior: self.bot_behavior(
-                id,
-                self.capture_behavior(
-                    (!host_bridge).then_some(&session.configuration.workspace),
-                    &snapshot,
-                    language,
-                )
-                .await?,
-                &snapshot,
-                language,
-                self.admitted_tools(id, &session.configuration.tools)
-                    .as_deref(),
-            ),
+            behavior,
             model,
             executor,
             workspace: session.configuration.workspace.clone(),
             binding: session.configuration.binding,
             fingerprint,
-            tools: if external && !host_bridge {
-                Arc::default()
-            } else {
-                self.tool_basis.clone()
-            },
         };
         Ok(basis)
     }

@@ -23,7 +23,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 enum LifecycleEnd {
     Wait(Result<std::process::ExitStatus, String>),
     Failed(String),
-    Detached(String),
 }
 
 #[expect(
@@ -57,7 +56,7 @@ pub(super) async fn run(
             return Err(HandlerError::Unknown {diagnostic});
         },
     };
-    let detached=CancellationToken::new();let finished=CancellationToken::new();let fault=CancellationToken::new();
+    let stop_output=CancellationToken::new();let finished=CancellationToken::new();let fault=CancellationToken::new();
     let failure=Mutex::new(None);
     let lifecycle=async {
         let mut close_open=true;
@@ -69,9 +68,8 @@ pub(super) async fn run(
                     ()=owner.drain.cancelled()=>"Protocol provider closed",
                     ()=fault.cancelled()=>"Protocol observer I/O failed",
                 }}=>{
-                    if setup.is_none() {break LifecycleEnd::Detached(format!("{reason}; original private task detached"));}
                     failure.lock().unwrap().get_or_insert_with(||reason.to_owned());
-                    // Setup owns this original job. Runtime observation never does.
+                    stop_output.cancel();
                     if let Err(error)=process.child.terminate().await {break LifecycleEnd::Failed(error.to_string());}
                     break LifecycleEnd::Wait(process.child.wait().await.map_err(|error|error.to_string()));
                 },
@@ -83,7 +81,7 @@ pub(super) async fn run(
                 },
             }
         };
-        if !matches!(&end,LifecycleEnd::Wait(Ok(_))) && setup.is_none() {detached.cancel();}
+        if !matches!(&end,LifecycleEnd::Wait(Ok(_))) && setup.is_none() {stop_output.cancel();}
         finished.cancel();end
     };
     let output=async {
@@ -93,24 +91,13 @@ pub(super) async fn run(
             if setup.is_none() {return Err(error);}
         }
         let (stdout,stderr)=tokio::join!(
-            read(process.stdout,Stream::Stdout,context,&detached,&failure,&fault,setup.is_some()),
-            read(process.stderr,Stream::Stderr,context,&detached,&failure,&fault,setup.is_some()),
+            read(process.stdout,Stream::Stdout,context,&stop_output,&failure,&fault,setup.is_some()),
+            read(process.stderr,Stream::Stderr,context,&stop_output,&failure,&fault,setup.is_some()),
         );
         stdout.and(stderr)
     };
     let (end,(),pipes)=tokio::join!(lifecycle,report(write(process.stdin,input,&finished),&failure,&fault),output);
-    // Streams have ended; only explicit observation detach uses the local-only fence.
     let (status,physical)=match end {
-        LifecycleEnd::Detached(diagnostic)=>{
-            #[cfg(unix)]
-            let local=process.child.finish_observation().await.map_err(|error|error.to_string());
-            #[cfg(not(unix))]
-            let local=Err::<(),_>("External helper observation detach is unavailable".to_owned());
-            match local {
-                Ok(())=>(Err(diagnostic),true),
-                Err(error)=>(Err(format!("{diagnostic}; local observation cleanup unconfirmed: {error}")),false),
-            }
-        },
         LifecycleEnd::Wait(status)=>{
             #[cfg(unix)]
             let physical=process.child.local_resources_closed();
@@ -208,7 +195,7 @@ async fn read(
     mut source: impl AsyncRead + Unpin,
     stream: Stream,
     context: &Context,
-    detached: &CancellationToken,
+    stop_output: &CancellationToken,
     failure: &Mutex<Option<String>>,
     fault: &CancellationToken,
     drain_on_error: bool,
@@ -217,7 +204,7 @@ async fn read(
     let mut emit = true;
     loop {
         let count = tokio::select! {
-            ()=detached.cancelled()=>return Ok(()),
+            ()=stop_output.cancelled()=>return Ok(()),
             count=source.read(&mut buffer)=>count.map_err(|error|{
                 let diagnostic=error.to_string();failure.lock().unwrap().get_or_insert(diagnostic.clone());fault.cancel();diagnostic
             })?,
@@ -234,7 +221,7 @@ async fn read(
         })
         .map_err(|error| error.to_string())?;
         let result = tokio::select! {
-            ()=detached.cancelled()=>return Ok(()),
+            ()=stop_output.cancelled()=>return Ok(()),
             result=context.emit(value)=>result,
         };
         if let Err(error) = result {

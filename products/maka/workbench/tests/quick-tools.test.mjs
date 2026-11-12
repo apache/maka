@@ -33,7 +33,7 @@ import { afterKeyword, search } from '../../../../plugins/shared/quick-search.ts
 import { MAX_USAGE, parseUsage, ranked, recommended, recordUse } from '../app/quick-results.ts';
 import {
   choose,
-  expandAlias,
+  entryMatch,
   normalAlias,
   parseChoices,
   recordable,
@@ -150,14 +150,18 @@ test('damaged library data is an error rather than an empty library', () => {
   assert.throws(() => parseLibrary('not json'));
 });
 
-test('clipboard history keeps the newest copy of each text and stays bounded', () => {
-  assert.deepEqual(remember(['b', 'a'], 'a', DEFAULT_LIMIT), ['a', 'b']);
+test('clipboard history preserves format, deduplicates file groups and respects its limit', () => {
+  const entry = (change, format, data, paths = []) => ({ change, format, data, paths });
+  const pdf = entry(1, 'com.adobe.pdf', 'YQ==');
+  const image = entry(2, 'public.png', pdf.data);
+  const files = entry(3, 'public.file-url', '', ['/tmp/one.pdf', '/tmp/two.png']);
+  const again = { ...files, change: 5 };
+  assert.deepEqual(remember([files, image, pdf], again, DEFAULT_LIMIT), [again, image, pdf]);
   let history = [];
-  for (let index = 0; index < DEFAULT_LIMIT + 5; index += 1)
-    history = remember(history, `${index}`, DEFAULT_LIMIT);
+  for (let i = 0; i < 55; i++)
+    history = remember(history, entry(i, 'public.utf8-plain-text', String(i)), DEFAULT_LIMIT);
   assert.equal(history.length, DEFAULT_LIMIT);
-  assert.equal(history[0], `${DEFAULT_LIMIT + 4}`);
-  assert.equal(remember(history, 'new', 20).length, 20);
+  assert.equal(history[0].data, '54');
 });
 
 test('a command keeps its shortcut and alias until both are cleared', () => {
@@ -173,11 +177,13 @@ test('a command keeps its shortcut and alias until both are cleared', () => {
   assert.throws(() => parseChoices('{"shot":{"alias":1}}'));
 });
 
-test('an alias stands for its keyword in what tools see', () => {
-  const aliases = [{ alias: 'jb', keyword: 'cb' }];
-  assert.equal(expandAlias('jb', aliases), 'cb');
-  assert.equal(expandAlias('  JB hello', aliases), 'cb hello');
-  assert.equal(expandAlias('jbx', aliases), 'jbx');
+test('exact keywords and custom aliases outrank an exact result, while prefixes stay searches', () => {
+  const keywords = ['note', 'notes', '笔记'];
+  assert.equal(entryMatch('note', 'memo', keywords), -1);
+  assert.equal(entryMatch('笔记', 'memo', keywords), -1);
+  assert.equal(entryMatch(' MEMO ', 'memo', keywords), -2);
+  assert.equal(entryMatch('not', 'memo', keywords), null);
+  assert.equal(entryMatch('notebook', 'memo', keywords), null);
   assert.equal(normalAlias(' My Alias '), 'myalias');
 });
 

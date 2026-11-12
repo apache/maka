@@ -68,7 +68,7 @@ fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> Resul
             .expect("Host admission sets the client directory"),
     );
     let handle = runtime.handle().clone();
-    let detach = Detach::new(bindings, (endpoint.clone(), epoch), runtime);
+    let detach = Detach::new(bindings, runtime);
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
     glib::set_prgname(Some(APP_ID));
@@ -423,8 +423,8 @@ fn follow(
                 }
             };
             let Connection { bindings, config, endpoint, epoch } = connection;
-            if let Err(bindings) = detach.put(bindings, (endpoint.clone(), epoch)) {
-                let _ = detach.close(bindings).await;
+            if let Err(bindings) = detach.put(bindings) {
+                let _ = runtime.spawn(host::quit(bindings)).await;
                 return;
             }
             drop(moving);
@@ -442,8 +442,6 @@ struct Detach(Rc<RefCell<DetachState>>);
 struct DetachState {
     /// The client's bindings; out while the window moves to another Host.
     bindings: Option<Bindings>,
-    /// The endpoint and epoch of the Host the bindings reach.
-    host: (PathBuf, uuid::Uuid),
     /// Set by the first [`Detach::start`].
     quitting: bool,
     /// Set while the window moves its client to another Host; see [`Moving`].
@@ -454,14 +452,9 @@ struct DetachState {
 }
 
 impl Detach {
-    fn new(
-        bindings: Bindings,
-        host: (PathBuf, uuid::Uuid),
-        runtime: tokio::runtime::Runtime,
-    ) -> Self {
+    fn new(bindings: Bindings, runtime: tokio::runtime::Runtime) -> Self {
         Self(Rc::new(RefCell::new(DetachState {
             bindings: Some(bindings),
-            host,
             quitting: false,
             moving: watch::Sender::new(false),
             runtime,
@@ -477,9 +470,8 @@ impl Detach {
             let done = state.done.clone();
             match state.bindings.take() {
                 Some(bindings) => {
-                    let (endpoint, epoch) = state.host.clone();
                     state.runtime.spawn(async move {
-                        host::detach(bindings, &endpoint, epoch).await;
+                        host::quit(bindings).await;
                         done.send_replace(true);
                     });
                 }
@@ -489,8 +481,7 @@ impl Detach {
                 None => {
                     let mut moving = state.moving.subscribe();
                     state.runtime.spawn(async move {
-                        let settled = moving.wait_for(|moving| !*moving);
-                        let _ = tokio::time::timeout(host::DETACH_LIMIT, settled).await;
+                        let _ = moving.wait_for(|moving| !*moving).await;
                         done.send_replace(true);
                     });
                 }
@@ -520,15 +511,13 @@ impl Detach {
         Some(Moving(state.moving.clone()))
     }
 
-    /// Gives the client `bindings` on the next Host, at `host`; once
-    /// quitting, returns them.
-    fn put(&self, bindings: Bindings, host: (PathBuf, uuid::Uuid)) -> Result<(), Bindings> {
+    /// Gives the client the next Host's bindings, or returns them during quit.
+    fn put(&self, bindings: Bindings) -> Result<(), Bindings> {
         let mut state = self.0.borrow_mut();
         if state.quitting {
             return Err(bindings);
         }
         state.bindings = Some(bindings);
-        state.host = host;
         Ok(())
     }
 
@@ -541,8 +530,8 @@ impl Detach {
     }
 }
 
-/// A move of the window's client to another Host. Quitting waits (within
-/// [`host::DETACH_LIMIT`]) until it is dropped.
+/// A move of the window's client to another Host. Quitting waits for its
+/// result so any newly admitted Host receives the same quit request.
 struct Moving(watch::Sender<bool>);
 
 impl Drop for Moving {
@@ -684,7 +673,6 @@ mod tests {
             // Exercise Quit during a Host transition, when no bindings are installed.
             let detach = Detach(Rc::new(RefCell::new(DetachState {
                 bindings: None,
-                host: (directory.join("host"), uuid::Uuid::new_v4()),
                 quitting: false,
                 moving: watch::Sender::new(true),
                 runtime: tokio::runtime::Runtime::new().unwrap(),

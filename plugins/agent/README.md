@@ -31,3 +31,11 @@ This family owns Agent business behavior. Leaf `package.ts` files declare indepe
 - [acp-executor](acp-executor/native/README.md) connects external ACP agents through explicit process and callback services.
 
 The [workbench](../../products/maka/workbench/README.md), which the terminal and desktop shells run, consumes these public Host contracts. Product assembly belongs to [products/maka](../../products/maka/README.md); the workbench owns its draft editor and interaction lifecycle.
+
+## Subagent preset management
+
+The Agent service exposes `presets`, `preset`, `createPreset`, `updatePreset` and `deletePreset`; see the [wire contract](api/src/preset.rs). Presets start empty and persist within the Host's Agent scope. Lists omit instructions; details preserve the complete text. Model references contain no credentials.
+
+Updates and deletes require `expectedRevision`. Omitted update fields stay unchanged; `instruction: ""` clears the instruction and `thinkingLevel: {"kind":"default"}` restores the model default. A thinking level is set with `{"kind":"set","value":"high"}`. Model or thinking changes validate the selected native model; other edits and deletion remain available when a connection disappears. Names are trimmed and unique within the scope.
+
+Each mutation and its result commit atomically through the Host operation journal. If a reply is lost, recover the original operation reference instead of issuing another mutation. The default product exposes these methods as `SubagentPresetList/Read/Create/Update/Delete` tools. `SessionCreate` applies a preset by ID; `SessionSend` supplies the task.

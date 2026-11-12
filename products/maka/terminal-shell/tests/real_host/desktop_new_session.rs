@@ -1380,13 +1380,13 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     let mut answer = desktop.request(&mut fixture).await;
     // A running turn is open under its summary row, with no group header of its own.
     let summary = desktop.control("Turn work details").await;
-    let nested = desktop.control("Toggle tool GetGoal").await;
+    let nested = desktop.control("Toggle tool Read goal").await;
     assert!(desktop.controls("Process group").is_empty());
     // A turn has two lanes and no indent: each step's icon sits under the
     // summary's chevron, and an open tool card starts on that same lane.
     assert_eq!(nested.left(), summary.left());
-    assert!(desktop.controls("Toggle tool exec").is_empty());
-    desktop.press("Toggle tool GetGoal").await;
+    assert!(desktop.controls("Toggle tool Run script").is_empty());
+    desktop.press("Toggle tool Read goal").await;
     let lane = nested.left() + px(8.);
     let below = nested.bottom() + px(24.);
     desktop
@@ -1408,7 +1408,7 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         .await;
     let thinking = desktop.control("Thinking · Checking the log").await;
     let user = desktop.control("Copy user message").await;
-    let tool = desktop.control("Toggle tool GetGoal").await;
+    let tool = desktop.control("Toggle tool Read goal").await;
     let [working] = desktop
         .controls("Turn work details")
         .try_into()
@@ -1484,14 +1484,14 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     desktop.control("Copy message").await;
     desktop
         .until("completed answer did not fold the turn's work", || {
-            (desktop.controls("Toggle tool GetGoal").is_empty()
+            (desktop.controls("Toggle tool Read goal").is_empty()
                 && desktop.controls("Thinking · Checking the log").is_empty())
             .then_some(())
         })
         .await;
     desktop.artifact("completed-answer-folded-work");
     desktop.press("Turn work details").await;
-    desktop.control("Toggle tool GetGoal").await;
+    desktop.control("Toggle tool Read goal").await;
     assert_eq!(
         desktop.control("Turn work details").await.origin,
         summary.origin
@@ -1529,10 +1529,10 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     desktop.press("Turn work details").await;
     desktop.press("Trajectory").await;
     desktop.control("Inspect User input").await;
-    desktop.control("Inspect exec").await;
+    desktop.control("Inspect Run script").await;
     desktop.control("Inspect Assistant output").await;
-    let parent = desktop.control("Inspect exec").await;
-    let child = desktop.control("Inspect GetGoal").await;
+    let parent = desktop.control("Inspect Run script").await;
+    let child = desktop.control("Inspect Read goal").await;
     assert!(parent.bottom() <= child.top());
     let requests = desktop
         .until(
@@ -1586,31 +1586,188 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
 
     desktop.press("Collapse all subcalls").await;
     desktop.control("Expand all subcalls").await;
-    assert!(desktop.controls("Inspect GetGoal").is_empty());
+    assert!(desktop.controls("Inspect Read goal").is_empty());
     desktop.press("Collapse all turns").await;
     let fold = desktop.control("Expand all turns").await;
-    assert!(desktop.controls("Inspect GetGoal").is_empty());
+    assert!(desktop.controls("Inspect Read goal").is_empty());
     let previous = desktop.platform.text_input_target();
     desktop.press_at(point(fold.left() - px(32.), fold.center().y));
     desktop.target_after(previous).await;
     assert!(desktop.platform.paste(nsh_core::PasteEvent::new("GetGoal")));
-    desktop.press("Inspect GetGoal").await;
+    desktop.press("Inspect Read goal").await;
     desktop.control("Close record details").await;
     desktop.control("Toggle original tool details").await;
     desktop.artifact("trajectory-record-inspector");
 
     desktop.press("Chat").await;
     desktop.control("Copy message").await;
-    assert!(desktop.controls("Toggle tool GetGoal").is_empty());
+    assert!(desktop.controls("Toggle tool Read goal").is_empty());
 
     desktop.press("Turn work details").await;
-    desktop.control("Toggle tool GetGoal").await;
+    desktop.control("Toggle tool Read goal").await;
     if desktop.controls("Inspect in execution process").is_empty() {
-        desktop.press("Toggle tool GetGoal").await;
+        desktop.press("Toggle tool Read goal").await;
     }
     desktop.press("Inspect in execution process").await;
-    desktop.control("Inspect GetGoal").await;
+    desktop.control("Inspect Read goal").await;
     desktop.control("Close record details").await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_presents_session_tools_in_chat_and_trajectory() {
+    let mut fixture = Fixture::open_with_configuration(
+        Options {
+            session_tools: true,
+            ..Options::default()
+        },
+        |configuration, _| configuration["agent"]["toolDiscovery"] = json!(false),
+    )
+    .await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("Ask the worker for an update.").await;
+    desktop.submit().await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call(
+            "SessionSend",
+            json!({
+                "sessionId": "00000000-0000-4000-8000-000000000001",
+                "message": "Check the compiler output."
+            }),
+        )
+        .await;
+    let answer = desktop.request(&mut fixture).await;
+    assert!(
+        answer
+            .body
+            .to_string()
+            .contains("agent_session_unavailable"),
+        "{}",
+        answer.body
+    );
+    let title = "Send message to agent · Check the compiler output.";
+    let row = format!("Toggle tool {title}");
+    desktop.control(&row).await;
+    desktop.artifact("session-send-collapsed");
+    desktop.press(&row).await;
+    desktop.control("Toggle original tool details").await;
+    desktop.artifact("session-send-expanded");
+    desktop.press("Toggle original tool details").await;
+    desktop.control("Toggle original tool details").await;
+    desktop.press(&row).await;
+
+    let session = desktop
+        .sessions()
+        .await
+        .into_iter()
+        .find(|item| item["id"] != fixture.session)
+        .unwrap();
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId": session["id"]}))
+        .await
+        .unwrap();
+    answer
+        .tool_call(
+            "SessionWork",
+            json!({
+                "sessionId": session["id"],
+                "target": {"kind": "run", "runId": observed["run"]["runId"]}
+            }),
+        )
+        .await;
+    let final_answer = desktop.request(&mut fixture).await;
+    assert!(
+        final_answer.body.to_string().contains("delivered"),
+        "{}",
+        final_answer.body
+    );
+    desktop
+        .press("Toggle tool Check conversation progress")
+        .await;
+    desktop.control("Toggle original tool details").await;
+    desktop.artifact("session-work-expanded");
+
+    desktop.press("Trajectory").await;
+    desktop.control(&format!("Inspect {title}")).await;
+    desktop.control("Inspect Check conversation progress").await;
+    final_answer.finish().await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_previews_an_incoming_session_message() {
+    let mut fixture = Fixture::open_with_configuration(
+        Options {
+            session_tools: true,
+            ..Options::default()
+        },
+        |configuration, _| configuration["agent"]["toolDiscovery"] = json!(false),
+    )
+    .await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1440),
+            nsh_terminal::DevicePixels(800),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    let roots = desktop
+        .client
+        .query("agent", "directories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    let backend = json!({
+        "kind": "model",
+        "connectionId": fixture.selection["connectionId"],
+        "modelId": fixture.selection["modelId"],
+    });
+    let recipient = mutate(
+        &desktop.client,
+        "create",
+        json!({
+            "title": "Build review", "labels": [],
+            "backend": backend,
+            "workspace": {"kind":"directory", "path":roots["roots"][0]["path"]}
+        }),
+    )
+    .await;
+    mutate(
+        &desktop.client,
+        "send",
+        json!({"sessionId": fixture.session, "backend": backend, "message": "Tell the build reviewer what to check."}),
+    )
+    .await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call(
+            "SessionSend",
+            json!({
+                "sessionId": recipient["session"]["id"],
+                "message": "**The build passed.**\nPlease review the compiler warnings."
+            }),
+        )
+        .await;
+    desktop.press("Open conversation Build review").await;
+    let summary = "From NSH real Agent · The build passed. Please review the compiler warnings.";
+    desktop.control(summary).await;
+    desktop.artifact("incoming-session-message-collapsed");
+    desktop.press(summary).await;
+    desktop.control("From NSH real Agent").await;
+    desktop.artifact("incoming-session-message-expanded");
+    desktop
+        .press("Open source conversation beside this one")
+        .await;
+    desktop.control("Close side pane").await;
+    desktop.request(&mut fixture).await.finish().await;
+    desktop.request(&mut fixture).await.finish().await;
     desktop.close().await;
     fixture.finish().await;
 }
@@ -2881,7 +3038,7 @@ async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_cha
             desktop.controls(toggle).is_empty().then_some(())
         })
         .await;
-    desktop.control("Toggle tool todo_write").await;
+    desktop.control("Toggle tool Update checklist").await;
     // Progress on the same list leaves it closed, fenced on the rendered tool disclosure.
     running
         .tool_call(
@@ -2893,7 +3050,7 @@ async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_cha
     desktop
         .until(
             "the progress todo_write did not render in the transcript",
-            || (desktop.controls("Toggle tool todo_write").len() == 2).then_some(()),
+            || (desktop.controls("Toggle tool Update checklist").len() == 2).then_some(()),
         )
         .await;
     assert!(
@@ -3142,6 +3299,8 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu",
     "desktop_edits_a_message_in_place_and_forks_only_when_sent",
     "desktop_lists_a_scripts_tool_calls_in_place_of_the_script",
+    "desktop_presents_session_tools_in_chat_and_trajectory",
+    "desktop_previews_an_incoming_session_message",
     "desktop_folds_work_when_responses_starts_the_final_answer",
     "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
@@ -3194,6 +3353,12 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_lists_a_scripts_tool_calls_in_place_of_the_script" => {
             runtime.block_on(desktop_lists_a_scripts_tool_calls_in_place_of_the_script())
+        }
+        "desktop_presents_session_tools_in_chat_and_trajectory" => {
+            runtime.block_on(desktop_presents_session_tools_in_chat_and_trajectory())
+        }
+        "desktop_previews_an_incoming_session_message" => {
+            runtime.block_on(desktop_previews_an_incoming_session_message())
         }
         "desktop_folds_work_when_responses_starts_the_final_answer" => {
             runtime.block_on(desktop_folds_work_when_responses_starts_the_final_answer())

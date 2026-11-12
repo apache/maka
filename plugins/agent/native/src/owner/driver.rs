@@ -394,6 +394,7 @@ impl NativeDriver {
         &self,
         view: &RunView,
         model: &PreparedModel,
+        reset_loaded_tools: bool,
     ) -> Result<BoundStepTools, RunError> {
         let current = self.access.live_configuration().await?;
         let excluded: Vec<_> = self
@@ -434,7 +435,11 @@ impl NativeDriver {
                 cells: Some(cells), ..
             } => cells.coordinator.definitions(&bound),
             NativeBackend::Model { cells: None, .. } => {
-                let visible = bound.snapshot().await.map_err(RunError::Tool)?;
+                let visible = if reset_loaded_tools {
+                    bound.select(&Default::default())
+                } else {
+                    bound.snapshot().await.map_err(RunError::Tool)?
+                };
                 let mut definitions: Vec<_> = visible.definitions().cloned().collect();
                 if let Some(search) = bound.definition() {
                     definitions.push(search);
@@ -488,7 +493,7 @@ impl NativeDriver {
     ) -> Result<maka_tools::ToolCatalog, RunError> {
         validate_tool_digest(request)?;
         let model = self.model()?.step_tool_model(view, request).await?;
-        let bound = self.bind_step_tools(view, &model).await?;
+        let bound = self.bind_step_tools(view, &model, false).await?;
         let code = matches!(&self.backend, NativeBackend::Model { cells: Some(_), .. });
         let current = self.access.live_configuration().await?;
         let (mcp, mode) = self.access.current_model_tools(&current.workspace)?;
@@ -817,13 +822,6 @@ impl DriverPorts for NativeDriver {
             self.access.live_configuration().await?;
             self.model()?.prepare_step(view, mode, self).await
         })
-    }
-    fn proactive_summary_matches<'a>(
-        &'a self,
-        view: &'a RunView,
-        origin: maka_agent_facts::context::SummaryOrigin,
-    ) -> BoxFuture<'a, Result<bool, RunError>> {
-        Box::pin(async move { self.model()?.proactive_summary_matches(view, origin).await })
     }
     fn assess_recovery<'a>(
         &'a self,

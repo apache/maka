@@ -95,6 +95,7 @@ pub(crate) struct NativeBinding {
 
 pub(crate) trait TaskBinding: Send + Sync {
     fn observation_retired(&self) -> CancellationToken;
+    fn owner_stop(&self) -> CancellationToken;
     fn admitted_steering_batches(&self) -> BoxFuture<'_, Result<u64, Error>>;
     fn stop_requested(&self) -> BoxFuture<'_, Result<bool, Error>>;
     fn closed(&self, outcome: Outcome) -> BoxFuture<'_, Result<(), Error>>;

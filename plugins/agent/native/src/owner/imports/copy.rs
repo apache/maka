@@ -156,6 +156,7 @@ impl Owner {
                 .agent()
                 .map(|source| source.session_id.clone()),
             backend: None,
+            applied_preset: None,
             compaction_prompt: None,
             collaboration_mode: CollaborationMode::Agent,
             tools: policy.tools,

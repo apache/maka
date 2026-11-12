@@ -53,6 +53,11 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "Skill",
     "SkillSearch",
     "ModelList",
+    "SubagentPresetList",
+    "SubagentPresetRead",
+    "SubagentPresetCreate",
+    "SubagentPresetUpdate",
+    "SubagentPresetDelete",
     // Reading the user's conversations is open to the Bot. Tools that change or
     // message a conversation are deliberately absent until their confirmation
     // tiers and ownership checks exist.
@@ -632,7 +637,8 @@ impl ToolPreparer for Bot {
                             },
                         ))
                     })
-                }));
+                })
+                .presented("maka.agent.Builtin@1/sleep".into()));
             }
             let input: SendUserInput = serde_json::from_value(input).map_err(invalid)?;
             let message_id = input.message_id.trim().to_owned();
@@ -725,7 +731,8 @@ impl ToolPreparer for Bot {
                     job.await
                         .map_err(|error| ToolError::OutcomeUnknown(error.to_string()))?
                 })
-            }))
+            })
+            .presented("maka.agent.Builtin@1/SendUser".into()))
         })
     }
 }
@@ -837,6 +844,7 @@ impl Owner {
             },
         ];
         let create = Create {
+            preset_id: None,
             backend: None,
             automatic_title: false,
             tools: Some(
@@ -1122,6 +1130,18 @@ const ABILITIES: &[Ability] = &[
         "{} (read the user's conversations, read-only)",
     ),
     (
+        &[
+            "SubagentPresetList",
+            "SubagentPresetRead",
+            "SubagentPresetCreate",
+            "SubagentPresetUpdate",
+            "SubagentPresetDelete",
+        ],
+        "{}（按用户明确要求管理可复用角色；一次性要求只放入任务）",
+        "{}（依使用者明確要求管理可重用角色；一次性要求只放入任務）",
+        "{} (manage reusable roles on explicit user request; one-off requirements belong in the task)",
+    ),
+    (
         &["ModelList"],
         "{}（查找可派发的模型及推理档位）",
         "{}（尋找可派發的模型及推理檔位）",
@@ -1179,7 +1199,7 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
             if !sessions {
                 text.push_str("需要动手做的事你既做不到也无法委派，请如实告诉用户。");
             } else {
-                text.push_str("需要动手做的事，用 SessionCreate 新建一个会话，再用 SessionSend 把任务交给它；同一件事可以并行开多个。使用 ModelList 的带来源 selection 作为 backend；省略时沿用会话偏好。原生模型 worker 继承你的模型，显式执行器选择保留其来源。它每做完一轮都会叫醒你；醒来后先用会话读取工具看它的实际结果，再决定告诉用户还是继续派活，不要假装它已经做完。");
+                text.push_str("需要动手做的事，用 SessionCreate 新建一个会话，再用 SessionSend 把任务交给它；同一件事可以并行开多个。使用 ModelList 的带来源 selection 作为 backend；省略时沿用会话偏好。使用角色时向 SessionCreate 提供 presetId 且省略 backend，向 SessionSend 发送本次任务且省略 backend；不可用时报告原因，不替换角色。普通原生模型 worker 继承你的模型，显式执行器选择保留其来源。它每做完一轮都会叫醒你；醒来后先用会话读取工具看它的实际结果，再决定告诉用户还是继续派活，不要假装它已经做完。");
             }
             if skills {
                 text.push_str("技能只是说明文档，其中需要上述被禁止能力的步骤你不能自己执行，不要把技能清单当作你自己的能力介绍给用户。");
@@ -1204,7 +1224,7 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
             if !sessions {
                 text.push_str("需要動手做的事你既做不到也無法委派，請如實告訴使用者。");
             } else {
-                text.push_str("需要動手做的事，用 SessionCreate 新建一個會話，再用 SessionSend 把任務交給它；同一件事可以平行開多個。使用 ModelList 的帶來源 selection 作為 backend；省略時沿用會話偏好。原生模型 worker 繼承你的模型，明確的執行器選擇保留其來源。它每做完一輪都會叫醒你；醒來後先用會話讀取工具看它的實際結果，再決定告訴使用者還是繼續派活，不要假裝它已經做完。");
+                text.push_str("需要動手做的事，用 SessionCreate 新建一個會話，再用 SessionSend 把任務交給它；同一件事可以平行開多個。使用 ModelList 的帶來源 selection 作為 backend；省略時沿用會話偏好。使用角色時向 SessionCreate 提供 presetId 且省略 backend，向 SessionSend 傳送本次任務且省略 backend；無法使用時回報原因，不替換角色。一般原生模型 worker 繼承你的模型，明確的執行器選擇保留其來源。它每做完一輪都會叫醒你；醒來後先用會話讀取工具看它的實際結果，再決定告訴使用者還是繼續派活，不要假裝它已經做完。");
             }
             if skills {
                 text.push_str("技能只是說明文件，其中需要上述被禁止能力的步驟你不能自己執行，不要把技能清單當作你自己的能力介紹給使用者。");
@@ -1230,7 +1250,7 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 text.push_str(
                 "Hands-on work is something you can neither do nor delegate, so tell the user plainly. ");
             } else {
-                text.push_str("Hands-on work goes to a new conversation: create it with SessionCreate and give it the task with SessionSend; independent pieces can run in parallel. Use a source-tagged ModelList selection as backend; omission keeps the session preference. Native workers inherit your model; explicit executors keep their own source. Each time a worker finishes a run it wakes you; then read its actual result with the conversation read tools before deciding whether to tell the user or hand out more work, and never claim it is done before you have seen that. ");
+                text.push_str("Hands-on work goes to a new conversation: create it with SessionCreate and give it the task with SessionSend; independent pieces can run in parallel. Use a source-tagged ModelList selection as backend; omission keeps the session preference. For a role, pass presetId to SessionCreate without backend, then send the task with SessionSend without backend; report an unavailable role without substitution. Ordinary native workers inherit your model; explicit executors keep their own source. Each time a worker finishes a run it wakes you; then read its actual result with the conversation read tools before deciding whether to tell the user or hand out more work, and never claim it is done before you have seen that. ");
             }
             if skills {
                 text.push_str("Skills are only documents: steps in them that need the abilities you lack are not yours to run, and the skill list is not a description of what you can do, so do not present it to the user as your abilities. ");

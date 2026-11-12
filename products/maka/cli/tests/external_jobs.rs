@@ -1149,6 +1149,70 @@ async fn run_case(crash: bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quitting_host_reaps_the_active_original_external_process() {
+    let mut rig = Rig::new().await.expect("owned external job fixture");
+    let outcome = AssertUnwindSafe(async {
+        let (mut anchor, bootstrap) = phase("start original Host", rig.start()).await?;
+        phase(
+            "configure external runtime",
+            rig.configure(&mut anchor, &bootstrap),
+        )
+        .await?;
+        phase("close bootstrap session", bootstrap.close()).await?;
+        rig.clients.pop();
+        let sdk = phase("connect to the active Host", connect_sdk(&mut rig, &anchor)).await?;
+        let (session, run) = phase(
+            "start an external task that waits for the fixture",
+            launch(
+                &sdk,
+                &rig.sandbox.workspace,
+                "A",
+                "quit-active-external",
+                true,
+            ),
+        )
+        .await?;
+        let ready = phase("provider is running", rig.controller.event("A", "ready")).await?;
+        phase(
+            "provider is bound",
+            checkpoint(&sdk, &session, &run, &ready["checkpoint"]),
+        )
+        .await?;
+        let pid = ready["pid"].as_u64().ok_or("original PID missing")?;
+        let resource = rig.controller.resource(pid)?;
+        assert!(
+            isolated::closed_evidence(&resource)
+                .await
+                .map_err(|error| error.to_string())?
+                .is_none()
+        );
+        phase("close UI session", sdk.close()).await?;
+        rig.clients.pop();
+        phase(
+            "quit original Host without completing the task",
+            rig.hosts[0].quit(&mut anchor),
+        )
+        .await?;
+        assert!(
+            isolated::closed_evidence(&resource)
+                .await
+                .map_err(|error| error.to_string())?
+                .is_some()
+        );
+        rig.controller.assert_submissions(1, 0);
+        Ok::<_, String>(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = rig.cleanup().await;
+    match outcome {
+        Err(panic) => std::panic::resume_unwind(panic),
+        Ok(Err(error)) => panic!("{error}; cleanup={cleanup:?}"),
+        Ok(Ok(())) => assert!(cleanup.is_empty(), "{cleanup:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exact_stop_isolates_parallel_original_external_jobs() {
     run_case(false).await;
 }

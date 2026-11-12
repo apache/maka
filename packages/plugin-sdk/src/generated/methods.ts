@@ -268,6 +268,26 @@ export type AgentCompactOutput_AgentCompactRejection =
   | 'archived'
   | 'backend_unavailable'
   | 'workspace_changed';
+export type AgentCreatePresetOutput_PresetRevision = number;
+export type AgentCreatePresetOutput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+export type AgentDeletePresetOutput_PresetRevision = number;
+export type AgentDeletePresetOutput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
 export type AgentExternalUsageLimitsOutput_UsageLimit =
   | {
       kind: 'window';
@@ -589,6 +609,52 @@ export type AgentOpenBotOutput_AgentBotRejection =
   | 'creation_rejected'
   | 'no_workspace';
 export type AgentPredictNextMessageInput_AgentPredictionTrigger = 'live' | 'catch_up';
+export type AgentPresetOutput_PresetRevision = number;
+export type AgentPresetOutput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+export type AgentPresetOutput_PresetAvailability =
+  | {
+      kind: 'available';
+    }
+  | {
+      kind: 'disabled';
+    }
+  | {
+      kind: 'modelUnavailable';
+    }
+  | {
+      kind: 'thinkingLevelUnavailable';
+    };
+export type AgentPresetsOutput_PresetRevision = number;
+export type AgentPresetsOutput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+export type AgentPresetsOutput_PresetAvailability =
+  | {
+      kind: 'available';
+    }
+  | {
+      kind: 'disabled';
+    }
+  | {
+      kind: 'modelUnavailable';
+    }
+  | {
+      kind: 'thinkingLevelUnavailable';
+    };
 export type AgentPublishCheckpointInput_AgentCheckpointWorkspaceConsistency =
   | 'caller_confirmed_quiescent'
   | 'unverified';
@@ -882,6 +948,37 @@ export type AgentSystemPermissionStatusOutput_ClosureReason =
 export type AgentSystemPermissionStatusOutput_SystemPermissionGrant =
   | 'accessibility'
   | 'screen_recording';
+export type AgentUpdatePresetInput_PresetRevision = number;
+/**
+ * Omission preserves the setting; Default explicitly clears it.
+ */
+export type AgentUpdatePresetInput_PresetThinkingChange =
+  | {
+      kind: 'default';
+    }
+  | {
+      kind: 'set';
+      value: AgentUpdatePresetInput_ThinkingLevel;
+    };
+export type AgentUpdatePresetInput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
+export type AgentUpdatePresetOutput_PresetRevision = number;
+export type AgentUpdatePresetOutput_ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
 export type SettingsAssistantPreferencesOutput_LanguagePreference =
   | 'auto'
   | 'en'
@@ -1342,6 +1439,82 @@ export interface ServiceMethods {
       input: Runtime.AgentCreate;
       output: Runtime.AgentCreated;
     };
+    createPreset: {
+      mode: 'mutation';
+      input: {
+        name: string;
+        description: string;
+        instruction?: string;
+        model: Runtime.ModelSelection;
+        thinkingLevel?: Runtime.ThinkingLevel | null;
+        enabled?: boolean;
+      };
+      output:
+        | {
+            kind: 'saved';
+            preset: AgentCreatePresetOutput_Preset;
+          }
+        | {
+            kind: 'deleted';
+            id: string;
+          }
+        | {
+            kind: 'notFound';
+          }
+        | {
+            kind: 'conflict';
+            actual: AgentCreatePresetOutput_PresetRevision;
+          }
+        | {
+            kind: 'nameConflict';
+          }
+        | {
+            kind: 'invalidInput';
+            field: string;
+          }
+        | {
+            kind: 'modelUnavailable';
+          }
+        | {
+            kind: 'thinkingLevelUnavailable';
+          };
+    };
+    deletePreset: {
+      mode: 'mutation';
+      input: {
+        id: string;
+        expectedRevision: Runtime.PresetRevision;
+      };
+      output:
+        | {
+            kind: 'saved';
+            preset: AgentDeletePresetOutput_Preset;
+          }
+        | {
+            kind: 'deleted';
+            id: string;
+          }
+        | {
+            kind: 'notFound';
+          }
+        | {
+            kind: 'conflict';
+            actual: AgentDeletePresetOutput_PresetRevision;
+          }
+        | {
+            kind: 'nameConflict';
+          }
+        | {
+            kind: 'invalidInput';
+            field: string;
+          }
+        | {
+            kind: 'modelUnavailable';
+          }
+        | {
+            kind: 'thinkingLevelUnavailable';
+          };
+    };
     diagnostics: {
       mode: 'query';
       input: Runtime.AgentDiagnostics;
@@ -1736,6 +1909,18 @@ export interface ServiceMethods {
         suggestion?: string | null;
       };
     };
+    preset: {
+      mode: 'query';
+      input: {
+        id: string;
+      };
+      output: AgentPresetOutput_PresetDetail | null;
+    };
+    presets: {
+      mode: 'query';
+      input: {};
+      output: AgentPresetsOutput_PresetSummary[];
+    };
     previewHistoryCheckpoint: {
       mode: 'query';
       input: Runtime.AgentSessionRead;
@@ -2065,6 +2250,48 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.AgentGlobalInstructionsUpdate;
       output: Runtime.AgentGlobalInstructionsUpdated;
+    };
+    updatePreset: {
+      mode: 'mutation';
+      input: {
+        id: string;
+        expectedRevision: AgentUpdatePresetInput_PresetRevision;
+        name?: string | null;
+        description?: string | null;
+        instruction?: string | null;
+        model?: AgentUpdatePresetInput_ModelSelection | null;
+        thinkingLevel?: AgentUpdatePresetInput_PresetThinkingChange | null;
+        enabled?: boolean | null;
+      };
+      output:
+        | {
+            kind: 'saved';
+            preset: AgentUpdatePresetOutput_Preset;
+          }
+        | {
+            kind: 'deleted';
+            id: string;
+          }
+        | {
+            kind: 'notFound';
+          }
+        | {
+            kind: 'conflict';
+            actual: AgentUpdatePresetOutput_PresetRevision;
+          }
+        | {
+            kind: 'nameConflict';
+          }
+        | {
+            kind: 'invalidInput';
+            field: string;
+          }
+        | {
+            kind: 'modelUnavailable';
+          }
+        | {
+            kind: 'thinkingLevelUnavailable';
+          };
     };
     uploadAttachment: {
       mode: 'mutation';
@@ -3077,6 +3304,42 @@ export interface AgentCompactOutput_ContentRef {
   digest: string;
   bytes: number;
 }
+export interface AgentCreatePresetOutput_Preset {
+  id: string;
+  revision: AgentCreatePresetOutput_PresetRevision;
+  name: string;
+  description: string;
+  instruction: string;
+  model: AgentCreatePresetOutput_ModelSelection;
+  thinkingLevel?: AgentCreatePresetOutput_ThinkingLevel | null;
+  enabled: boolean;
+}
+/**
+ * Stable model identity, resolved from current connection settings at admission.
+ */
+export interface AgentCreatePresetOutput_ModelSelection {
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
+export interface AgentDeletePresetOutput_Preset {
+  id: string;
+  revision: AgentDeletePresetOutput_PresetRevision;
+  name: string;
+  description: string;
+  instruction: string;
+  model: AgentDeletePresetOutput_ModelSelection;
+  thinkingLevel?: AgentDeletePresetOutput_ThinkingLevel | null;
+  enabled: boolean;
+}
+/**
+ * Stable model identity, resolved from current connection settings at admission.
+ */
+export interface AgentDeletePresetOutput_ModelSelection {
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
 export interface AgentExternalUsageLimitsOutput_UsageQuantity {
   used: number;
   limit: number;
@@ -3318,6 +3581,46 @@ export interface AgentMarkBotReadOutput_AgentDiscoveryPublication {
   workerSessionId: string;
   workerTurnId: string;
 }
+export interface AgentPresetOutput_PresetDetail {
+  preset: AgentPresetOutput_Preset;
+  availability: AgentPresetOutput_PresetAvailability;
+}
+export interface AgentPresetOutput_Preset {
+  id: string;
+  revision: AgentPresetOutput_PresetRevision;
+  name: string;
+  description: string;
+  instruction: string;
+  model: AgentPresetOutput_ModelSelection;
+  thinkingLevel?: AgentPresetOutput_ThinkingLevel | null;
+  enabled: boolean;
+}
+/**
+ * Stable model identity, resolved from current connection settings at admission.
+ */
+export interface AgentPresetOutput_ModelSelection {
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
+export interface AgentPresetsOutput_PresetSummary {
+  id: string;
+  revision: AgentPresetsOutput_PresetRevision;
+  name: string;
+  description: string;
+  model: AgentPresetsOutput_ModelSelection;
+  thinkingLevel?: AgentPresetsOutput_ThinkingLevel | null;
+  enabled: boolean;
+  availability: AgentPresetsOutput_PresetAvailability;
+}
+/**
+ * Stable model identity, resolved from current connection settings at admission.
+ */
+export interface AgentPresetsOutput_ModelSelection {
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
 export interface AgentPreviewHistoryCheckpointOutput_AgentHistoryCheckpointSession {
   id: string;
   revision: number;
@@ -3550,6 +3853,32 @@ export interface AgentSnapshotPatchOutput_AgentWorkspacePatch {
 export interface AgentSystemPermissionStatusOutput_AgentSystemPermissionState {
   grant: AgentSystemPermissionStatusOutput_SystemPermissionGrant;
   effective: boolean;
+}
+/**
+ * Stable model identity, resolved from current connection settings at admission.
+ */
+export interface AgentUpdatePresetInput_ModelSelection {
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
+}
+export interface AgentUpdatePresetOutput_Preset {
+  id: string;
+  revision: AgentUpdatePresetOutput_PresetRevision;
+  name: string;
+  description: string;
+  instruction: string;
+  model: AgentUpdatePresetOutput_ModelSelection;
+  thinkingLevel?: AgentUpdatePresetOutput_ThinkingLevel | null;
+  enabled: boolean;
+}
+/**
+ * Stable model identity, resolved from current connection settings at admission.
+ */
+export interface AgentUpdatePresetOutput_ModelSelection {
+  connectionId: string;
+  modelId: string;
+  [k: string]: unknown | undefined;
 }
 /**
  * One message the Bot deliberately sent to its user.

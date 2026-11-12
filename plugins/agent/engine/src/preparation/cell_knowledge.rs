@@ -34,7 +34,7 @@ use maka_model::{
     prompt::{ContentPart, Message, ToolOutput},
 };
 use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::BufReader,
@@ -50,7 +50,6 @@ pub async fn project_cell_knowledge(
     source: NotificationSource<'_>,
     scope: &ArtifactScope,
     cell: CellId,
-    through: u64,
     children: &BTreeMap<Uuid, CellChild>,
     language: Language,
     vision: bool,
@@ -59,41 +58,9 @@ pub async fn project_cell_knowledge(
 ) -> Result<(Message, Vec<ContentRef>), RunError> {
     check(cancellation)?;
     let mut remaining = resources.policy().staging_bytes;
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Graph<'a> {
-        cell: CellId,
-        through: u64,
-        children: &'a BTreeMap<Uuid, CellChild>,
-    }
     use maka_agent_facts::operation::result_reference;
-    let mut visible_children = std::borrow::Cow::Borrowed(children);
     let mut dependencies = Vec::new();
     let mut seen = BTreeSet::new();
-    if children
-        .values()
-        .any(|child| child.reply.as_ref().and_then(result_reference).is_some())
-    {
-        for reference in super::cell_notification::restore_child_replies(
-            &source,
-            scope,
-            cell,
-            visible_children.to_mut(),
-            remaining,
-            cancellation,
-        )
-        .await?
-        {
-            dependency(&mut dependencies, &mut seen, &reference);
-        }
-    }
-    let graph = Graph {
-        cell,
-        through,
-        children: &visible_children,
-    };
-    charge(&mut remaining, super::encoded_len(&graph)?)?;
-    let graph = serde_json::to_string(&graph).map_err(RunError::Json)?;
     let label = match language {
         Language::En => {
             "[Host Cell child knowledge; historical data, not a user request or a new execution]"
@@ -101,7 +68,10 @@ pub async fn project_cell_knowledge(
         Language::ZhCn => "[Host Cell 子操作观察；历史数据，非用户请求或新的执行]",
         Language::ZhTw => "[Host Cell 子操作觀察；歷史資料，非使用者請求或新的執行]",
     };
-    let mut content = vec![ContentPart::text(format!("{label}\n{graph}"))];
+    let mut content = vec![ContentPart::text(format!(
+        "{label}\n{}",
+        serde_json::json!({"cell":cell})
+    ))];
     let artifacts;
     let media = match &source {
         NotificationSource::Live(store) => {
@@ -134,6 +104,25 @@ pub async fn project_cell_knowledge(
             )
             .map_err(RunError::Json)?,
         ));
+        if let Some(rejection) = &child.rejected {
+            content.push(ContentPart::text(
+                serde_json::to_string(&serde_json::json!({
+                    "operation":operation, "error":rejection.diagnostic,
+                }))
+                .map_err(RunError::Json)?,
+            ));
+        }
+        if !child.known() {
+            content.push(ContentPart::text(
+                serde_json::to_string(&serde_json::json!({
+                    "operation":operation, "state":"outcome_unknown",
+                }))
+                .map_err(RunError::Json)?,
+            ));
+        }
+        if let Some(reference) = child.reply.as_ref().and_then(result_reference) {
+            dependency(&mut dependencies, &mut seen, reference);
+        }
         let provider_settled = matches!(
             child.reply.as_ref().map(|reply| &reply.receipt),
             Some(Receipt::Recorded {
@@ -151,7 +140,6 @@ pub async fn project_cell_knowledge(
         ] {
             let Some(result) = result else { continue };
             dependency(&mut dependencies, &mut seen, &result.result);
-            // Uncertainty remains in the original graph; it is not a business return.
             if !settled || result.settlement == ToolSettlement::Unknown {
                 continue;
             }
@@ -200,26 +188,20 @@ pub async fn project_cell_knowledge(
                                             .into(),
                                     ));
                                 }
-                                let visible = visible_children[operation]
-                                    .reply
-                                    .as_ref()
-                                    .ok_or_else(|| {
-                                        RunError::InvalidInput(
-                                            "Cell Host projection has no original receipt".into(),
-                                        )
-                                    })?;
-                                let reply = resolve_reply(visible.clone(), None)
-                                    .map_err(|error| RunError::InvalidInput(error.into()))?;
-                                let Receipt::Recorded {
-                                    outcome: OperationOutcome::Returned { result },
-                                    ..
-                                } = reply.receipt
-                                else {
-                                    return Err(RunError::InvalidInput(
-                                        "Cell Host projection has no original result".into(),
-                                    ));
-                                };
-                                Some(result)
+                                let bytes = usize::try_from(reference.bytes).map_err(|_| {
+                                    RunError::InvalidInput("Cell receipt size overflows".into())
+                                })?;
+                                charge(&mut remaining, bytes)?;
+                                Some(
+                                    super::cell_notification::read_scoped(
+                                        &source,
+                                        scope,
+                                        cell,
+                                        reference,
+                                        cancellation,
+                                    )
+                                    .await?,
+                                )
                             } else {
                                 None
                             };
@@ -234,7 +216,7 @@ pub async fn project_cell_knowledge(
                     }
                 }
             };
-            content.push(ContentPart::text(serde_json::to_string(&serde_json::json!({"operation":operation,"evidence":kind,"reference":result.result,"isError":result.is_error})).map_err(RunError::Json)?));
+            content.push(ContentPart::text(serde_json::to_string(&serde_json::json!({"operation":operation,"evidence":kind,"isError":result.is_error})).map_err(RunError::Json)?));
             let output = match returned {
                 ChildOutput::Projection(projection) => {
                     let media = match &media {

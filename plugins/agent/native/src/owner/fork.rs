@@ -246,6 +246,7 @@ impl Owner {
                 .agent()
                 .map(|source| source.session_id.clone()),
             backend: parent.backend,
+            applied_preset: parent.applied_preset,
             compaction_prompt: parent.compaction_prompt,
             collaboration_mode: CollaborationMode::Agent,
             tools,

@@ -43,7 +43,7 @@ use maka_host_runtime::{
     application::{
         Handler, NativeActivation, NativeRegistry,
         host::{Client as HostClient, Configuration as HostConfiguration, Host, LocalCall},
-        transport::{Grant, HostEndpoint, gateway_native, wire::Reply},
+        transport::{Grant, HostEndpoint, NativeGrant, gateway_native, wire::Reply},
     },
     ipc::LocalListener,
 };
@@ -198,6 +198,8 @@ struct Rig {
     directory: TestDirectory,
     socket_directory: TestDirectory,
     model_listener: std::net::TcpListener,
+    model_overrides: Value,
+    native_grants: Vec<NativeGrant>,
     store: Option<Arc<RootStore>>,
     host: Option<Arc<Host>>,
     serving: Option<JoinHandle<Result<(), String>>>,
@@ -205,6 +207,7 @@ struct Rig {
     client: Option<HostClient>,
     call: Option<LocalCall>,
     captured: Arc<StdMutex<Option<Arc<Owner>>>>,
+    completion_gate: Arc<preset_test_gate::Gate>,
     lease: Option<SessionWorkLease>,
     work_effects: Option<WorkEffects>,
     driver: Option<Arc<NativeDriver>>,
@@ -231,6 +234,8 @@ impl Rig {
             directory: TestDirectory::Owned(tempfile::tempdir()?),
             socket_directory: TestDirectory::Owned(socket_directory),
             model_listener,
+            model_overrides: json!({}),
+            native_grants: vec![],
             store: None,
             host: None,
             serving: None,
@@ -238,6 +243,7 @@ impl Rig {
             client: None,
             call: None,
             captured: Arc::default(),
+            completion_gate: Arc::default(),
             lease: None,
             work_effects: None,
             driver: None,
@@ -249,12 +255,13 @@ impl Rig {
     }
 
     async fn start(&mut self) -> TestResult<String> {
-        self.start_with_model_observation(None).await
+        self.start_configured(None, |_| {}).await
     }
 
-    async fn start_with_model_observation(
+    async fn start_configured(
         &mut self,
         observation: Option<crate::model::Observation>,
+        configure: impl FnOnce(&mut Value),
     ) -> TestResult<String> {
         let root_path = self.directory.path().join("root");
         let workspace = self.directory.path().join("workspace");
@@ -290,6 +297,12 @@ impl Rig {
         )?;
         let agent_key = Uuid::new_v4();
         let gateway_key = Uuid::new_v4();
+        let mut configuration = json!({
+            "permissions":{"access":"read_only","requestPermissions":false},
+            "workspaceRoots":[{"label":"test","path":self.directory.path().join("workspace")}],
+            "tools":[]
+        });
+        configure(&mut configuration);
         let input = Input {
             base: None,
             ui: None,
@@ -299,11 +312,7 @@ impl Rig {
                     node(
                         agent_key,
                         agent.application_ref(),
-                        json!({
-                            "permissions":{"access":"read_only","requestPermissions":false},
-                            "workspaceRoots":[{"label":"test","path":self.directory.path().join("workspace")}],
-                            "tools":[]
-                        }),
+                        configuration,
                         BTreeMap::new(),
                     ),
                 ),
@@ -381,8 +390,11 @@ impl Rig {
         let mut registry = NativeRegistry::default();
         if model_test {
             maka_settings_native::provide(&mut registry, catalog.clone())?;
+            maka_files_native::provide(&mut registry)?;
+            maka_web::provide(&mut registry)?;
         }
         let capture = self.captured.clone();
+        let completion_gate = self.completion_gate.clone();
         let helper = std::env::current_exe()?;
         registry.insert(
             maka_agent_api::IMPLEMENTATION.into(),
@@ -393,6 +405,7 @@ impl Rig {
                     state.clone(),
                     helper.clone(),
                 );
+                let completion_gate = completion_gate.clone();
                 Box::pin(async move {
                     match Owner::open(context, configuration, catalog, state, helper, None).await {
                         Ok(owner) => {
@@ -407,7 +420,11 @@ impl Rig {
                                     "agent".into(),
                                     Published {
                                         contract: maka_agent_api::contract(),
-                                        value: service.clone() as Arc<dyn Handler>,
+                                        value: Arc::new(preset_test_gate::HandlerGate {
+                                            inner: service.clone(),
+                                            gate: completion_gate,
+                                        })
+                                            as Arc<dyn Handler>,
                                     },
                                 )])),
                                 owner: service,
@@ -420,11 +437,27 @@ impl Rig {
         )?;
         let methods: &[&str] = if model_test {
             &[
+                "presets",
+                "preset",
+                "createPreset",
+                "updatePreset",
+                "deletePreset",
+                "fork",
+                "list",
+                "metadata",
+                "pendingInteractions",
+                "interaction",
+                "respond",
                 "create",
+                "continueRun",
                 "history",
                 "models",
                 "observe",
+                "tools",
                 "predictNextMessage",
+                "compact",
+                "selectBackend",
+                "execution",
                 "send",
                 "uploadAttachment",
                 "work",
@@ -452,6 +485,9 @@ impl Rig {
                 "fork",
                 "list",
                 "execution",
+                "stop",
+                "goal",
+                "changeGoal",
                 "metadata",
             ]
         };
@@ -467,6 +503,17 @@ impl Rig {
             },
         )]);
         if model_test {
+            endpoints.insert(
+                "web".into(),
+                HostEndpoint {
+                    consumer: InstanceId(vec![gateway_key]),
+                    import: "web".into(),
+                    grant: Grant {
+                        methods: ["snapshot".into(), "save".into()].into(),
+                        recovery: false,
+                    },
+                },
+            );
             endpoints.insert(
                 "settings".into(),
                 HostEndpoint {
@@ -485,6 +532,25 @@ impl Rig {
                 },
             );
         }
+        let native = if !self.native_grants.is_empty() {
+            self.native_grants.clone()
+        } else if model_test {
+            let loaded = store
+                .load_application(deployment)
+                .await?
+                .ok_or("deployment missing")?;
+            let instances = &loaded.source().input.instances;
+            vec![maka_host_runtime::application::transport::NativeGrant {
+                origin: InstanceId(vec![instances["agent"].key]),
+                consumer: InstanceId(vec![instances["agent"].key]),
+                provider: InstanceId(vec![instances["web"].key]),
+                export: "web".into(),
+                methods: ["capture".into()].into(),
+                recovery: true,
+            }]
+        } else {
+            vec![]
+        };
         let host = Host::open(
             store,
             deployment,
@@ -492,7 +558,7 @@ impl Rig {
             None,
             HostConfiguration::PublicHost {
                 endpoints,
-                native: vec![],
+                native,
                 product_methods: Default::default(),
             },
         )
@@ -544,7 +610,8 @@ impl Rig {
                 "slug":"wait-local", "name":"wait-local",
                 "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
                 "configuration":{"baseUrl":format!("http://{}/v1", self.model_listener.local_addr()?)},
-                "enabled":true, "enabledModelIds":["llama3.2"]
+                "enabled":true, "enabledModelIds":["llama3.2"],
+                "modelOverrides":self.model_overrides
             }
         }))?).await?;
         let CatalogMutationResult::Committed {
@@ -1371,6 +1438,270 @@ mod bounded_risk {
         Ok((cell, parent))
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn compaction_reuses_background_summary_after_late_cell_return() {
+        use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+        use maka_agent_facts::{
+            cells::{CellObservation, CellVmBinding, SessionPublication},
+            context::{CompactedContext, RequestContextEvidence},
+            tool_output::CellFinalEvidence,
+        };
+        use std::sync::atomic::AtomicUsize;
+
+        let mut rig = Rig::new().unwrap();
+        rig.model_overrides = json!({"llama3.2":{"contextWindow":5_000}});
+        let stop = CancellationToken::new();
+        let posts = Arc::new(AtomicUsize::new(0));
+        let listener =
+            tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
+        let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(model_recovery::serve(
+            listener,
+            posts.clone(),
+            stop.clone(),
+            Some(requests),
+        ));
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble_model(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let run = driver.access.execution().run_id;
+            let (_, main, _) = rig.record_model_request(Preparation::Initial).await?;
+            let (cell, parent) = start_original_cell(&rig, main).await?;
+            rig.finish_model_request(main, None).await?;
+            let completed = ContentBlob::json(&CellObservation::Completed {
+                cell_id: cell,
+                content: vec![],
+                result: json!("completed before the cut"),
+            })?;
+            let accepted = ContentBlob::json(&AcceptedToolResult::RecoveredCell {
+                cell,
+                evidence: CellFinalEvidence::Completed {
+                    result: completed.reference().clone(),
+                },
+            })?;
+            rig.append(
+                vec![
+                    Fact::Cell {
+                        event: CellEvent::VmBound {
+                            cell,
+                            binding: CellVmBinding {
+                                runtime: "fixture".into(),
+                                version: 1,
+                                descriptor: completed.reference().clone(),
+                            },
+                        },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::Completed {
+                            cell,
+                            result: completed.reference().clone(),
+                            publication: SessionPublication {
+                                values: Default::default(),
+                                loaded_tools: None,
+                            },
+                        },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::ResultAccepted { cell },
+                    },
+                    Fact::ToolResultAccepted {
+                        tool: parent.clone(),
+                        result: accepted.reference().clone(),
+                        outcome: AcceptedResult::CellRecovered { cell },
+                    },
+                ],
+                vec![completed, accepted],
+            )
+            .await?;
+
+            // Snapshot the original tool acceptance before its callback returns.
+            let mut summary_cut = driver.state.frontier(run).await?;
+            summary_cut.current_step = None;
+            let mut summary = driver
+                .model()?
+                .prepare_step(&summary_cut, Preparation::Summary, driver)
+                .await?;
+            let summary_body = ContentBlob::json(&summary.request)?;
+            summary.contents.push(summary_body.clone());
+
+            let late_text = format!(
+                "Late result belongs after the checkpoint. {}",
+                "x".repeat(50_000)
+            );
+            let late = ContentBlob::json(&ToolReturn {
+                schema_version: SCHEMA_VERSION,
+                artifacts: vec![],
+                body: ReturnedToolResult {
+                    output: ToolOutput::Text(late_text.clone()),
+                    projection: DurableToolProjection::Text { text: late_text },
+                    is_error: false,
+                    loaded_tools: Default::default(),
+                },
+            })?;
+            rig.append(
+                vec![Fact::LocalToolReturned {
+                    tool: parent,
+                    settlement: ToolSettlement::Returned,
+                    result: late.reference().clone(),
+                    is_error: false,
+                    cell_observation: None,
+                }],
+                vec![late],
+            )
+            .await?;
+
+            let view = driver.state.frontier(run).await?;
+            let mut pending = driver
+                .model()?
+                .prepare_step(
+                    &view,
+                    Preparation::ToolContinuation { attempt: main },
+                    driver,
+                )
+                .await?;
+            let pending_body = ContentBlob::json(&pending.request)?;
+            pending.contents.push(pending_body.clone());
+            pending.contents.extend(summary.contents);
+            let background = ModelAttemptId::new();
+            rig.append(
+                vec![
+                    Fact::StepPrepared {
+                        step: pending.request.step,
+                        request: pending_body.reference().clone(),
+                        adjudications: vec![],
+                    },
+                    Fact::ProactiveSummaryPrepared {
+                        step: summary.request.step,
+                        request: summary_body.reference().clone(),
+                        attempt: background,
+                    },
+                    Fact::ModelAttemptAdmitted {
+                        attempt: background,
+                        upstream: json!({"fixture":"precomputed"}),
+                    },
+                ],
+                pending.contents,
+            )
+            .await?;
+            let provenance: RequestContextEvidence = serde_json::from_slice(
+                &driver
+                    .state
+                    .content(run, pending.request.provenance)
+                    .await?,
+            )?;
+            assert_eq!(
+                provenance.model_context.as_ref().unwrap().declared_window,
+                Some(4_250)
+            );
+            assert!(provenance.estimated_input_tokens >= 4_250, "{provenance:?}");
+            let summary_text = "Already prepared in the background.";
+            rig.finish_model_request(background, Some(summary_text))
+                .await?;
+
+            let engine = Engine::new(driver.state.clone());
+            let mut changes = driver.state.subscribe()?;
+            loop {
+                changes.borrow_and_update();
+                match engine
+                    .drive(
+                        driver.access.claim().clone(),
+                        driver.clone(),
+                        CancellationToken::new(),
+                    )
+                    .await?
+                {
+                    DriverExit::Waiting { .. } => changes.changed().await?,
+                    DriverExit::Terminal {
+                        terminal: Terminal::Completed,
+                        ..
+                    } => break,
+                    other => {
+                        let history = driver.state.history(run, 0, 128).await?;
+                        let failure = history.iter().rev().find_map(|fact| match &fact.fact {
+                            Fact::RunTerminated { diagnostic, .. }
+                            | Fact::ModelClosed { diagnostic, .. } => diagnostic.as_deref(),
+                            Fact::ModelInterrupted { diagnostic, .. } => Some(diagnostic.as_str()),
+                            _ => None,
+                        });
+                        return Err(format!(
+                            "compacted Run did not complete: {other:?}; {failure:?}"
+                        )
+                        .into());
+                    }
+                }
+            }
+            assert_eq!(posts.load(Ordering::SeqCst), 1);
+            let wire: Value = serde_json::from_slice(&received.try_recv()?)?;
+            let messages = wire["messages"]
+                .as_array()
+                .ok_or("missing provider messages")?;
+            let summary_position = messages
+                .iter()
+                .position(|message| message.to_string().contains(summary_text))
+                .ok_or("background summary missing")?;
+            let late_position = messages
+                .iter()
+                .position(|message| {
+                    message
+                        .to_string()
+                        .contains("Late result belongs after the checkpoint")
+                })
+                .ok_or("late tool result missing")?;
+            assert!(summary_position < late_position);
+
+            let history = driver.state.history(run, 0, 128).await?;
+            let [index]: [usize; 1] = history
+                .iter()
+                .enumerate()
+                .filter_map(|(index, fact)| {
+                    matches!(fact.fact, Fact::ContextCompacted { .. }).then_some(index)
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|indices: Vec<usize>| {
+                    format!("unexpected checkpoint count: {indices:?}")
+                })?;
+            let Fact::ContextCompacted { baseline } = &history[index].fact else {
+                unreachable!()
+            };
+            let checkpoint: CompactedContext =
+                serde_json::from_slice(&driver.state.content(run, baseline.clone()).await?)?;
+            assert_eq!(checkpoint.checkpoint.summary_step_id, summary.request.step);
+            let Fact::StepPrepared { step, .. } = history[index + 1].fact else {
+                return Err("compaction was not followed by prepared Main".into());
+            };
+            let main = driver.state.request(run, step).await?;
+            let provenance: RequestContextEvidence =
+                serde_json::from_slice(&driver.state.content(run, main.provenance).await?)?;
+            assert_eq!(
+                provenance.previous_checkpoint_id,
+                Some(history[index].id.to_string())
+            );
+            driver.state.rebuild(run).await?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        stop.cancel();
+        server.await.unwrap().unwrap();
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        match result {
+            Ok(result) => result.expect("compaction replay timed out").unwrap(),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
     async fn running_cell_with_returned_parent(
         rig: &Rig,
         attempt: ModelAttemptId,
@@ -2016,6 +2347,8 @@ mod model_recovery {
     mod bot_tools;
     mod discovery;
     mod predictions;
+    mod preset_acceptance;
+    mod presets;
 
     use super::*;
     use maka_process::lifetime::{ProcessIdentity, ProcessObservation};
@@ -2028,6 +2361,8 @@ mod model_recovery {
         agent: Uuid,
         settings: Uuid,
         gateway: Uuid,
+        #[serde(default)]
+        web: Option<Uuid>,
         source: Value,
         base_url: String,
         #[serde(default)]
@@ -2076,17 +2411,33 @@ mod model_recovery {
         base_url: String,
         configure: impl FnOnce(&mut Value),
     ) -> TestResult<Boot> {
+        bootstrap_deployment(base, base_url, false, configure).await
+    }
+    async fn bootstrap_deployment(
+        base: &Path,
+        base_url: String,
+        with_web: bool,
+        configure: impl FnOnce(&mut Value),
+    ) -> TestResult<Boot> {
         let mut configuration = json!({
             "permissions": {"access": "read_only", "requestPermissions": false},
             "workspaceRoots": [{"label": "model test", "path": base.join("workspace")}],
             "tools": [],
         });
+        if with_web {
+            configuration["tools"] = json!([{
+                "input":"web","result":"json","confirmation":"preapproved",
+                "name":"WebFetch","description":"Fetch a web page.",
+                "target":{"kind":"import","name":"web"},"method":"fetch"
+            }]);
+        }
         configure(&mut configuration);
         let mut boot = Boot {
             deployment: Uuid::new_v4(),
             agent: Uuid::new_v4(),
             settings: Uuid::new_v4(),
             gateway: Uuid::new_v4(),
+            web: with_web.then(Uuid::new_v4),
             source: Value::Null,
             base_url,
             replay: false,
@@ -2094,8 +2445,29 @@ mod model_recovery {
         let agent = package(
             "maka.tests.model-agent",
             maka_agent_api::native(),
+            BTreeMap::from([
+                (
+                    "files".into(),
+                    Import {
+                        contract: maka_workspace_api::files::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                ),
+                (
+                    "web".into(),
+                    Import {
+                        contract: maka_web_api::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                ),
+            ]),
+        )?;
+        let files = package(
+            "maka.tests.files",
+            maka_workspace_api::files::native(),
             BTreeMap::new(),
         )?;
+        let web = package("maka.tests.web", maka_web_api::native(), BTreeMap::new())?;
         let settings = package(
             "maka.tests.model-settings",
             maka_settings_native::native(),
@@ -2105,6 +2477,13 @@ mod model_recovery {
             "maka.tests.model-client",
             gateway_native(),
             BTreeMap::from([
+                (
+                    "web".into(),
+                    Import {
+                        contract: maka_web_api::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                ),
                 (
                     "agent".into(),
                     Import {
@@ -2126,12 +2505,41 @@ mod model_recovery {
             ui: None,
             instances: BTreeMap::from([
                 (
+                    "files".into(),
+                    node(
+                        Uuid::new_v4(),
+                        files.application_ref(),
+                        json!({}),
+                        BTreeMap::new(),
+                    ),
+                ),
+                (
+                    "web".into(),
+                    node(
+                        boot.web.unwrap_or_else(Uuid::new_v4),
+                        web.application_ref(),
+                        json!({"network": if with_web { "denied" } else { "allowed" }}),
+                        BTreeMap::new(),
+                    ),
+                ),
+                (
                     "agent".into(),
                     node(
                         boot.agent,
                         agent.application_ref(),
                         configuration,
-                        BTreeMap::new(),
+                        ["files", "web"]
+                            .into_iter()
+                            .map(|name| {
+                                (
+                                    name.into(),
+                                    vec![Target::Instance {
+                                        path: vec![name.into()],
+                                        export: name.into(),
+                                    }],
+                                )
+                            })
+                            .collect(),
                     ),
                 ),
                 (
@@ -2150,6 +2558,13 @@ mod model_recovery {
                         client.application_ref(),
                         json!({}),
                         BTreeMap::from([
+                            (
+                                "web".into(),
+                                vec![Target::Instance {
+                                    path: vec!["web".into()],
+                                    export: "web".into(),
+                                }],
+                            ),
                             (
                                 "agent".into(),
                                 vec![Target::Instance {
@@ -2176,7 +2591,7 @@ mod model_recovery {
                 0,
                 input,
                 vec![],
-                vec![agent, settings, client],
+                vec![agent, settings, client, files, web],
             )
             .await?;
         let loaded = store
@@ -2197,6 +2612,16 @@ mod model_recovery {
             serde_json::to_value(loaded.source())? == boot.source,
             "reopen changed original deployment or instance keys"
         );
+        if let Some(web) = boot.web {
+            rig.native_grants.push(NativeGrant {
+                origin: InstanceId(vec![boot.agent]),
+                consumer: InstanceId(vec![boot.agent]),
+                provider: InstanceId(vec![web]),
+                export: maka_web_api::EXPORT.into(),
+                methods: ["capture".into()].into(),
+                recovery: false,
+            });
+        }
         rig.attach_host(
             store,
             boot.deployment,
@@ -2424,10 +2849,338 @@ mod model_recovery {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn continue_run_with_web_tools_reaches_the_model() -> TestResult<()> {
+        let mut rig = Rig::new()?;
+        let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+        let boot = bootstrap_deployment(
+            rig.directory.path(),
+            format!("http://{}/v1", listener.local_addr()?),
+            true,
+            |_| {},
+        )
+        .await?;
+        attach(&mut rig, &boot).await?;
+        let (requests, mut received) = tokio::sync::mpsc::channel(4);
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post({
+                let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                move |request: axum::extract::Request| {
+                    let requests = requests.clone();
+                    let index = count.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        let body = axum::body::to_bytes(request.into_body(), 1024 * 1024)
+                            .await
+                            .unwrap();
+                        let request: Value = serde_json::from_slice(&body).unwrap();
+                        requests.send(request).await.unwrap();
+                        let (delta, finish) = if index == 0 {
+                            (json!({"role":"assistant"}), "length")
+                        } else {
+                            (json!({"role":"assistant","content":"Continued"}), "stop")
+                        };
+                        let chunk = json!({
+                            "id":format!("continuation-{index}"),"object":"chat.completion.chunk",
+                            "created":1,"model":"llama3.2","choices":[{"index":0,"delta":delta,
+                            "finish_reason":finish}],
+                            "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}
+                        });
+                        (
+                            [("content-type", "text/event-stream")],
+                            format!("data: {chunk}\n\ndata: [DONE]\n\n"),
+                        )
+                    }
+                }
+            }),
+        );
+        let stop = CancellationToken::new();
+        let shutdown = stop.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await
+        });
+        let result = tokio::time::timeout(Duration::from_secs(25), async {
+            let client = rig.client.as_ref().unwrap();
+            let tools = call(client, "agent", "tools", json!({})).await?;
+            assert!(tools["names"].as_array().unwrap().contains(&json!("WebFetch")));
+            let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+            let connection = call(client, "settings", "create", json!({
+                "expectedCatalogRevision":catalog["revision"],
+                "connection":{"slug":"continuation","name":"Continuation",
+                    "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                    "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2"],
+                    "modelOverrides":{"llama3.2":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
+            })).await?;
+            assert_eq!(connection["kind"], "committed");
+            let connection_id = &connection["connection"]["connectionId"];
+            let created = call(client, "agent", "create", json!({
+                "title":"Continue a stopped request","automaticTitle":false,"labels":[],
+                "workspace":{"kind":"directory","path":rig.directory.path().join("workspace")}
+            })).await?;
+            let session = created["session"]["id"].as_str().ok_or("session missing")?;
+            let sent = call(client, "agent", "send", json!({
+                "sessionId":session,"message":"Remember the original prompt.",
+                "backend":{"kind":"model","connectionId":connection_id,"modelId":"llama3.2"}
+            })).await?;
+            assert_eq!(sent["kind"], "queued");
+            let _ = received.recv().await.ok_or("original request missing")?;
+            let target = json!({"kind":"message","messageId":sent["messageId"]});
+            loop {
+                let readiness = call(client, "agent", "workReadiness",
+                    json!({"sessionId":session,"target":target})).await?;
+                match readiness["kind"].as_str() {
+                    Some("ready") => break,
+                    Some("pending") => tokio::task::yield_now().await,
+                    _ => return Err(format!("source Run unavailable: {readiness}").into()),
+                }
+            }
+            let original = call(client, "agent", "work", json!({"sessionId":session,"target":target})).await?;
+            let original = &original["execution"];
+            assert_eq!(original["state"]["kind"], "failed", "{original}");
+            let continued = call(client, "agent", "continueRun", json!({
+                "sessionId":session,"sourceRunId":original["runId"],"sourceHighWater":original["highWater"],
+                "model":{"connectionId":connection_id,"modelId":"llama3.2"}
+            })).await?;
+            assert_eq!(continued["kind"], "started", "{continued}");
+            assert_ne!(continued["execution"]["runId"], original["runId"]);
+            let request = received.recv().await.ok_or("continued model request missing")?;
+            assert!(request["messages"].as_array().unwrap().iter().any(|message|
+                message["role"] == "user" && message["content"].to_string().contains("Remember the original prompt.")
+            ), "{request}");
+            let continued_target = json!({"kind":"run","runId":continued["execution"]["runId"]});
+            loop {
+                let work = call(client, "agent", "work", json!({"sessionId":session,"target":continued_target})).await?;
+                match work["execution"]["state"]["kind"].as_str() {
+                    Some("completed") => break,
+                    Some("failed" | "cancelled") => return Err(format!("continuation failed: {work}").into()),
+                    _ => tokio::task::yield_now().await,
+                }
+            }
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }).await;
+        stop.cancel();
+        server.await??;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        result?
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_run_keeps_native_tools_after_host_replacement() -> TestResult<()> {
+        let mut old = Rig::new()?;
+        let mut boot = bootstrap_deployment(
+            old.directory.path(),
+            format!("http://{}/v1", old.model_listener.local_addr()?),
+            true,
+            |config| {
+                config["tools"] = json!([
+                    {"name":"ModelList","description":"List models.","result":"json",
+                     "confirmation":"preapproved","target":{"kind":"export","name":"agent"},
+                     "method":"models"},
+                    {"name":"WebStatus","description":"Read web availability.","result":"json",
+                     "confirmation":"preapproved","target":{"kind":"import","name":"web"},
+                     "method":"capture"}
+                ]);
+            },
+        )
+        .await?;
+        attach(&mut old, &boot).await?;
+        let client = old.client.as_ref().unwrap();
+        let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+        let connection = call(client, "settings", "create", json!({
+            "expectedCatalogRevision":catalog["revision"],
+            "connection":{"slug":"restart-tools","name":"Restart Tools",
+                "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2"],
+                "modelOverrides":{"llama3.2":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
+        })).await?;
+        assert_eq!(connection["kind"], "committed", "{connection}");
+        let created = call(
+            client,
+            "agent",
+            "create",
+            json!({
+                "title":"Restart tool bindings","automaticTitle":false,"labels":[],
+                "workspace":{"kind":"directory","path":old.directory.path().join("workspace")}
+            }),
+        )
+        .await?;
+        let session = created["session"]["id"].as_str().ok_or("session missing")?;
+        let owner = old.captured.lock().unwrap().clone().unwrap();
+        // Hold admission on the old Host so the queued request first runs after the reopen.
+        owner.runs.state().await.preparing.insert(
+            session.into(),
+            super::super::super::PreparingRun {
+                run: RunId::new(),
+                cancellation: CancellationToken::new(),
+                completion: futures_util::future::ready(OperationCleanup::Confirmed)
+                    .boxed()
+                    .shared(),
+            },
+        );
+        let sent = call(client, "agent", "send", json!({
+            "sessionId":session,"message":"Reply with hello.",
+            "backend":{"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"}
+        })).await;
+        owner.stop.cancel();
+        owner.producers.close();
+        owner.producers.wait().await;
+        owner.runs.state().await.preparing.remove(session);
+        let sent = sent?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        assert!(owner.durable.latest_run(session.into()).await?.is_none());
+        let cleanup = old.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+
+        let listener = tokio::net::TcpListener::from_std(old.model_listener.try_clone()?)?;
+        let directory =
+            std::mem::replace(&mut old.directory, TestDirectory::Borrowed(PathBuf::new()));
+        drop(owner);
+        drop(old);
+        let base = directory.path();
+        let store = root(base, false)
+            .await
+            .map_err(|error| format!("reopen Root for deployment edit: {error}"))?;
+        let deployment = store
+            .load_application(boot.deployment)
+            .await?
+            .ok_or("deployment missing")?;
+        let mut input = deployment.source().input.clone();
+        input
+            .instances
+            .get_mut("web")
+            .unwrap()
+            .configuration
+            .values
+            .insert("network".into(), json!("allowed"));
+        store
+            .commit_application(
+                boot.deployment,
+                deployment.source().reference.revision,
+                input,
+                vec![],
+                deployment.packages().to_vec(),
+            )
+            .await?;
+        boot.source = serde_json::to_value(
+            store
+                .load_application(boot.deployment)
+                .await?
+                .ok_or("updated deployment missing")?
+                .source(),
+        )?;
+        store.shutdown().await?;
+        drop(store);
+
+        let (requests, mut received) = tokio::sync::mpsc::channel(2);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |bytes: axum::body::Bytes| {
+                use axum::http::StatusCode;
+                let requests = requests.clone();
+                let index = calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    let request: Value =
+                        serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+                    requests
+                        .try_send(request)
+                        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+                    let (delta, finish) = if index == 0 {
+                        (
+                            json!({"role":"assistant","tool_calls":[{"index":0,"id":"web-status",
+                            "type":"function","function":{"name":"WebStatus","arguments":"{}"}}]}),
+                            "tool_calls",
+                        )
+                    } else {
+                        (json!({"role":"assistant","content":"Hello"}), "stop")
+                    };
+                    let chunk = |delta: Value, finish: Value| {
+                        json!({
+                            "id":format!("after-restart-{index}"),"object":"chat.completion.chunk",
+                            "created":1,"model":"llama3.2",
+                            "choices":[{"index":0,"delta":delta,"finish_reason":finish}]
+                        })
+                    };
+                    Ok::<_, StatusCode>((
+                        [("content-type", "text/event-stream")],
+                        format!(
+                            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                            chunk(delta, Value::Null),
+                            chunk(json!({}), json!(finish))
+                        ),
+                    ))
+                }
+            }),
+        );
+        let mut new = Rig::new()?;
+        new.directory = TestDirectory::Borrowed(base.into());
+        let stop = CancellationToken::new();
+        let shutdown = stop.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await
+        });
+        let result = tokio::time::timeout(Duration::from_secs(25), async {
+            attach(&mut new, &boot)
+                .await
+                .map_err(|error| format!("attach replacement Host: {error}"))?;
+            let request = received
+                .recv()
+                .await
+                .ok_or("restored model request missing")?;
+            for name in ["ModelList", "WebStatus"] {
+                if !request["tools"]
+                    .as_array()
+                    .is_some_and(|tools| tools.iter().any(|tool| tool["function"]["name"] == name))
+                {
+                    return Err(
+                        format!("{name} missing from the restored request: {request}").into(),
+                    );
+                }
+            }
+            let response = received.recv().await.ok_or("tool result request missing")?;
+            let result = response["messages"]
+                .as_array()
+                .ok_or("model request has no messages")?
+                .iter()
+                .find(|message| {
+                    message["role"] == "tool" && message["tool_call_id"] == "web-status"
+                })
+                .ok_or("WebStatus result missing")?;
+            let capture: Value = serde_json::from_str(
+                result["content"]
+                    .as_str()
+                    .ok_or("WebStatus result is not text")?,
+            )?;
+            if capture
+                != json!({
+                    "basis": {"revision": null, "credentialRevision": null},
+                    "available": false,
+                    "source": "model",
+                    "credentialConfigured": false
+                })
+            {
+                return Err(format!("unexpected WebStatus result: {capture}").into());
+            }
+            completed_message(new.client.as_ref().unwrap(), session, &sent["messageId"]).await?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .await;
+        stop.cancel();
+        server.await??;
+        let cleanup = new.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        result?
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn interrupted_empty_model_stream_retries_the_same_run() -> TestResult<()> {
         let mut rig = Rig::new()?;
         let session = rig
-            .start_with_model_observation(Some(replay_observation))
+            .start_configured(Some(replay_observation), |_| {})
             .await?;
         rig.assemble_model(
             &session,
@@ -3867,6 +4620,7 @@ mod replay_origin_regressions {
 
 mod tool_history;
 
+mod goals;
 mod permission_boundary;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3922,6 +4676,46 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
     let cleanup = rig.finish().await;
     assert!(cleanup.is_empty(), "{cleanup:?}");
     result.unwrap();
+}
+
+#[tokio::test]
+async fn pending_completion_subscription_allows_idle_host_exit() {
+    let mut rig = Rig::new().unwrap();
+    let result: TestResult<()> = async {
+        let session = rig.start().await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        // An unavailable completion can remain durable across Host lifetimes.
+        owner
+            .store
+            .register_message_completion(
+                &owner.prefix,
+                &session,
+                "task",
+                &session,
+                json!({"unavailable": true}),
+            )
+            .await?;
+        rig.client.take().unwrap().close().await?;
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            rig.host
+                .as_ref()
+                .unwrap()
+                .wait_until_idle(Duration::ZERO, Duration::ZERO),
+        )
+        .await??;
+        assert!(
+            owner
+                .store
+                .has_message_completions(&owner.prefix, &session, &session)
+                .await?
+        );
+        Ok(())
+    }
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(result.is_ok(), "{result:?}; {cleanup:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4224,6 +5018,124 @@ async fn queued_admission_wakes_when_goal_or_session_lock_releases() -> TestResu
     result?;
     assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compaction_cancels_background_request_when_main_finishes() {
+    use axum::{
+        body::{Body, Bytes},
+        response::IntoResponse,
+    };
+    use futures_util::StreamExt;
+    use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+
+    let mut rig = Rig::new().unwrap();
+    rig.model_overrides = json!({"llama3.2":{"compactionThreshold":1_800}});
+    let stop = CancellationToken::new();
+    let main_ready = Arc::new(tokio::sync::Notify::new());
+    let listener =
+        tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
+    let release = main_ready.clone();
+    let shutdown = stop.clone();
+    let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(
+        move |request: axum::extract::Request| {
+            let release = release.clone();
+            let stop = shutdown.clone();
+            async move {
+                let bytes = axum::body::to_bytes(request.into_body(), 1024 * 1024).await.unwrap();
+                let request: Value = serde_json::from_slice(&bytes).unwrap();
+                let chunk = |delta: Value, finish: Value| format!("data: {}\n\n", json!({
+                    "id":"compaction-cancel","object":"chat.completion.chunk","created":1,"model":"llama3.2",
+                    "choices":[{"index":0,"delta":delta,"finish_reason":finish}]
+                }));
+                let body = if request["tools"].as_array().is_some_and(|tools| !tools.is_empty()) {
+                    release.notified().await;
+                    Body::from(chunk(json!({"role":"assistant","content":"Main completed."}), Value::Null)
+                        + &chunk(json!({}), json!("stop")) + "data: [DONE]\n\n")
+                } else {
+                    let first = chunk(json!({"role":"assistant","content":"Background summary still running."}), Value::Null);
+                    Body::from_stream(futures_util::stream::once(async { Ok::<_, std::io::Error>(Bytes::from(first)) })
+                        .chain(futures_util::stream::once(async move { stop.cancelled().await; Ok(Bytes::new()) })))
+                };
+                ([("content-type", "text/event-stream")], body).into_response()
+            }
+        }
+    ));
+    let shutdown = stop.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+    });
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let session = rig.start().await?;
+        rig.assemble_model(&session, Budget { tokens:None, retries:0, deadline:None }, false).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        rig.record_model_reply(Preparation::Initial, None).await?;
+        let view = driver.state.frontier(run).await?;
+        let mut main = driver.model()?.prepare_step(&view, Preparation::Initial, driver).await?;
+        let body = ContentBlob::json(&main.request)?;
+        main.contents.push(body.clone());
+        rig.append(vec![Fact::StepPrepared {
+            step: main.request.step, request: body.reference().clone(), adjudications: vec![],
+        }], main.contents).await?;
+        let context: maka_agent_facts::context::RequestContextEvidence =
+            serde_json::from_slice(&driver.state.content(run, main.request.provenance).await?)?;
+        assert!((1_530..1_800).contains(&context.estimated_input_tokens), "{context:?}");
+
+        let engine = Engine::new(driver.state.clone());
+        let mut changes = driver.state.subscribe()?;
+        let release_main = async {
+            loop {
+                changes.borrow_and_update();
+                if let Some(background) = driver.state.frontier(run).await?.proactive_summary
+                    && driver.state.history(run, 0, 128).await?.iter().any(|fact|
+                        matches!(fact.fact, Fact::ModelFirstTokenObserved { attempt } if attempt == background)
+                    )
+                {
+                    main_ready.notify_one();
+                    return Ok::<_, Box<dyn Error + Send + Sync>>(background);
+                }
+                changes.changed().await?;
+            }
+        };
+        let drive = async {
+            let mut changes = driver.state.subscribe()?;
+            loop {
+                changes.borrow_and_update();
+                let exit = engine.drive(driver.access.claim().clone(), driver.clone(), CancellationToken::new()).await?;
+                if !matches!(exit, DriverExit::Waiting { .. }) {
+                    return Ok::<_, Box<dyn Error + Send + Sync>>(exit);
+                }
+                changes.changed().await?;
+            }
+        };
+        let (background, exit) = tokio::try_join!(release_main, Box::pin(drive))?;
+        assert!(matches!(exit, DriverExit::Terminal { terminal: Terminal::Completed, .. }), "{exit:?}");
+        let history = driver.state.history(run, 0, 128).await?;
+        let interruption = history.iter().find_map(|fact| match &fact.fact {
+            Fact::ModelInterrupted { attempt, diagnostic } if *attempt == background => Some(diagnostic),
+            _ => None,
+        }).ok_or("background source was not interrupted")?;
+        assert!(interruption.contains("cancel"), "{interruption}");
+        assert!(history.iter().any(|fact| matches!(fact.fact,
+            Fact::ModelCleanupObserved { attempt, cleanup: OperationCleanup::Confirmed } if attempt == background
+        )));
+        assert!(!history.iter().any(|fact| matches!(fact.fact,
+            Fact::AttemptRecoveryRecorded { attempt, .. } if attempt == background
+        )));
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })).catch_unwind().await;
+    stop.cancel();
+    main_ready.notify_one();
+    server.await.unwrap().unwrap();
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match result {
+        Ok(result) => result.expect("background cancellation timed out").unwrap(),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4585,4 +5497,62 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
     assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
     assert!(matches!(served, Ok(Ok(()))), "{served:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+mod preset_test_gate {
+    use super::*;
+    use maka_host_runtime::application::{Context, HandlerResult};
+    type Pause = (String, oneshot::Sender<oneshot::Sender<()>>);
+    // Pause after domain preparation, before Host commits the statement and receipt.
+    #[derive(Default)]
+    pub(super) struct Gate(StdMutex<Option<Pause>>);
+    impl Gate {
+        pub(super) fn arm(&self, method: &str) -> oneshot::Receiver<oneshot::Sender<()>> {
+            let (send, receive) = oneshot::channel();
+            assert!(
+                self.0
+                    .lock()
+                    .unwrap()
+                    .replace((method.into(), send))
+                    .is_none()
+            );
+            receive
+        }
+    }
+    pub(super) struct HandlerGate {
+        pub inner: Arc<dyn Handler>,
+        pub gate: Arc<Gate>,
+    }
+    impl Handler for HandlerGate {
+        fn call(
+            &self,
+            method: String,
+            input: Value,
+            context: Context,
+        ) -> futures_util::future::BoxFuture<'static, HandlerResult> {
+            let inner = self.inner.clone();
+            let gate = self.gate.clone();
+            Box::pin(async move {
+                let result = inner.call(method.clone(), input, context).await;
+                let paused = {
+                    let mut pending = gate.0.lock().unwrap();
+                    if pending
+                        .as_ref()
+                        .is_some_and(|(target, _)| target == &method)
+                    {
+                        pending.take()
+                    } else {
+                        None
+                    }
+                };
+                if let Some((_, ready)) = paused {
+                    let (release, wait) = oneshot::channel();
+                    if ready.send(release).is_ok() {
+                        let _ = wait.await;
+                    }
+                }
+                result
+            })
+        }
+    }
 }

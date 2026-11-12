@@ -3449,6 +3449,11 @@ export function Conversation(props: ConversationProps) {
                   preview: props.previewImage,
                 }}
                 toggle={(open) => {
+                  if (open) {
+                    historyFollowPaused.set(true);
+                    // Replace the source reading anchor before the folded rows return.
+                    list?.scrollToOffset({ offset: historyOffset, animated: false });
+                  }
                   turnState(initial.turnKey).expanded.set(open);
                 }}
               />

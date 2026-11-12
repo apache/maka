@@ -137,7 +137,6 @@ impl Processes {
             .cloned()
             .collect::<Vec<_>>();
         let mut cleanup = Ok(());
-        // Retirement is observation detachment, not an explicit process close.
         for entry in entries {
             if let Err(error) = entry.running.detach().await {
                 cleanup = Err(error);

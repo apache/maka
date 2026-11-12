@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { activityTitle } from './toolActivityPresentation';
 import { computed, inputAction, PanResponder, platform, Scroll, signal, Text, View } from 'nsh';
 import type { JSX, ViewRef } from 'nsh';
 import { Button, Input } from 'nsh/base';
@@ -24,7 +25,7 @@ import { formatDuration } from './duration';
 import type { Row } from './history';
 import { Icon } from './Icon';
 import type { ImagePreview } from './ImageThumbnail';
-import { displayText, tr } from './locale';
+import { tr } from './locale';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import { turnOutcome, type TurnPresentation } from './processGroups';
 import type { ToolActivity } from './toolActivity';
@@ -66,8 +67,7 @@ export function trajectoryRole(row: Row): string {
 }
 
 export function trajectoryLabel(row: Row): string {
-  if (row.tool?.call?.title) return displayText(row.tool.call.title);
-  return row.tool?.call?.name ?? trajectoryRole(row);
+  return row.tool?.call ? activityTitle(row.tool.call) : trajectoryRole(row);
 }
 
 function timeOfDay(value: number | undefined): string {
@@ -635,9 +635,14 @@ export function TrajectoryRecord(props: {
   };
   const status = () => {
     const row = props.row();
-    if (row.tool?.result?.isError || row.role === 'failure') return tr('Error');
     if (row.tool?.result?.settlement === 'unknown') return tr('Unknown');
-    if (props.progress() === 'running') return tr('Running tool');
+    if (row.tool?.result?.settlement === 'rejected') return tr('Rejected');
+    if (row.tool?.result?.isError || row.role === 'failure') return tr('Error');
+    if (
+      props.progress() === 'running' ||
+      (props.progress() === 'preparing' && row.tool?.call?.dispatched)
+    )
+      return tr('Running tool');
     if (props.progress() === 'preparing') return tr('Preparing tool');
     return timestamp(row);
   };
@@ -653,7 +658,7 @@ export function TrajectoryRecord(props: {
     >
       <Button
         accessibilityLabel={tr('Inspect {record}', {
-          record: props.row().tool?.call?.name ?? trajectoryLabel(props.row()),
+          record: trajectoryLabel(props.row()),
         })}
         tooltip={textTooltip(summary)}
         selected={props.selected()}

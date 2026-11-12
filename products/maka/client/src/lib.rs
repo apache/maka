@@ -1363,6 +1363,15 @@ impl Client {
     /// result does not prove physical cleanup; only this session's own close ack
     /// can release disconnected requests. Retain the scope if this returns an error.
     pub async fn close(&self) -> Result<()> {
+        self.close_session(false).await
+    }
+
+    /// Close this desktop's session and ask its ephemeral Host to quit if it is unshared.
+    pub async fn quit_ephemeral(&self) -> Result<()> {
+        self.close_session(true).await
+    }
+
+    async fn close_session(&self, quit_ephemeral: bool) -> Result<()> {
         self.0.opening_stop.cancel();
         self.0.shutdown.cancel();
         let mut host = self.0.host.lock().await;
@@ -1385,7 +1394,11 @@ impl Client {
             let _ = self.drain_request(&request, &mut state).await;
             self.release_if_clean(&request, &state).await;
         }
-        host.close().await?;
+        if quit_ephemeral {
+            host.quit_ephemeral().await?;
+        } else {
+            host.close().await?;
+        }
         self.0.requests.lock().await.clear();
         self.0.requests_changed.notify_waiters();
         for child in children {

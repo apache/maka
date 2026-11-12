@@ -43,9 +43,7 @@ impl RequestBinding for Binding {
             .clone();
         let workers = self.workers.clone();
         Box::pin(async move {
-            let access = service.access.clone().ok_or_else(|| {
-                ToolError::Failed("Web binding has no live Run capability".into())
-            })?;
+            let access = service.access.clone();
             access.fresh().await.map_err(ToolError::Failed)?;
             let request = service
                 .services
