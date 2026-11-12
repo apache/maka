@@ -28,10 +28,6 @@ use maka_agent_facts::oauth::LoginStart;
 use maka_agent_facts::oauth::Phase;
 use maka_agent_facts::oauth::Target;
 use maka_agent_facts::provider::AuthenticationInput;
-use maka_agent_ports::model::Connect;
-use maka_agent_ports::model::Error;
-use maka_agent_ports::model::Socket;
-use maka_agent_ports::model::Transport;
 use maka_agent_ports::provider;
 use maka_agent_ports::provider::authentication::Authenticate;
 use maka_config::{
@@ -46,43 +42,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// API-key authentication only validates and wraps local input. Its Context does
-/// not acquire network authority merely to satisfy the provider interface.
-struct NoNetwork;
-impl Transport for NoNetwork {
-    fn send_text(
-        &self,
-        _: std::sync::Arc<dyn maka_agent_ports::model::Socket>,
-        _: maka_agent_ports::model::TextStream,
-    ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::model::Error>> {
-        Box::pin(async {
-            Err(maka_agent_ports::model::Error::LocalAuthorization(
-                "this credential exchange has no WebSocket dispatch authority".into(),
-            ))
-        })
-    }
-    fn identity(&self) -> u64 {
-        0
-    }
-    fn request(
-        &self,
-        _: maka_capabilities::http::Request,
-        _: tokio_util::sync::CancellationToken,
-    ) -> BoxFuture<'_, Result<maka_capabilities::http::Response, Error>> {
-        Box::pin(async {
-            Err(Error::Adapter(
-                "settings_authentication_network_unavailable".into(),
-            ))
-        })
-    }
-    fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, Error>> {
-        Box::pin(async {
-            Err(Error::Adapter(
-                "settings_authentication_network_unavailable".into(),
-            ))
-        })
-    }
-}
 fn rejected(reason: CredentialRejection) -> Result<Value, String> {
     connections::encode(CredentialSaveResult::Rejected { reason })
 }
@@ -335,7 +294,7 @@ async fn enroll(
                 .map_err(|_| "settings_network_unavailable")?;
         maka_model::provider_transport(&policy).map_err(|_| "settings_network_unavailable")?
     } else {
-        Arc::new(NoNetwork) as Arc<dyn Transport>
+        provider::no_network_transport()
     };
     let provider_context = provider::Context {
         transport,

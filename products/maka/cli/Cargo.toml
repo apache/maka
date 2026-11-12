@@ -86,6 +86,7 @@ maka-agent-state.workspace = true
 maka-agent-ports.workspace = true
 maka-packages.workspace = true
 maka-product-native.workspace = true
+maka-providers.workspace = true
 maka-settings-native.workspace = true
 maka-schema.workspace = true
 maka-skills-api.workspace = true
