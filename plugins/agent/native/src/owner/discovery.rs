@@ -653,6 +653,7 @@ impl Owner {
                                     thinking_level: job.approval.thinking_level,
                                 }),
                                 compaction_prompt: None,
+                                applied_preset: None,
                                 collaboration_mode: CollaborationMode::Agent,
                                 tools: (!job.session_tools)
                                     .then(|| self.legacy_discovery_tools(job.recall)),
