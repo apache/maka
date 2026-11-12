@@ -630,7 +630,7 @@ function GroupHeader(props: TurnPanelProps) {
       return toolActivitySummary(
         tool,
         tool.phase === 'preparing' ? tr('Preparing tool') : tr('Running tool'),
-        tool.title ? displayText(tool.title) : undefined,
+        tool.title ? displayText(tool.title) : tool.source === 'native' ? '' : undefined,
       );
     if (
       activity.kind === 'thinking' &&

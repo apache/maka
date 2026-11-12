@@ -100,6 +100,34 @@ impl ToolPreparer for Scheduler {
                 })?
                 .request;
             let owner = owner.expect("checked owner");
+            use maka_agent_facts::display::Text;
+            let title = match &input {
+                Input::Create { title, .. } => {
+                    let (en, zh, tw) = ("Propose a scheduled task", "提议定时任务", "提議排程任務");
+                    if let Some(title) = Text::single_line(title) {
+                        let title = title.fallback;
+                        Text::localized(
+                            &format!("{en} · {title}"),
+                            &format!("{zh} · {title}"),
+                            &format!("{tw} · {title}"),
+                        )
+                    } else {
+                        Text::localized(en, zh, tw)
+                    }
+                }
+                Input::List { .. } => {
+                    Text::localized("List scheduled tasks", "列出定时任务", "列出排程任務")
+                }
+                Input::Pause { .. } => {
+                    Text::localized("Pause scheduled task", "暂停定时任务", "暫停排程任務")
+                }
+                Input::Resume { .. } => {
+                    Text::localized("Resume scheduled task", "恢复定时任务", "恢復排程任務")
+                }
+                Input::Delete { .. } => {
+                    Text::localized("Delete scheduled task", "删除定时任务", "刪除排程任務")
+                }
+            };
             Ok(PreparedEffect::new(move |cancellation| {
                 Box::pin(async move {
                     if cancellation.is_cancelled() {
@@ -117,7 +145,9 @@ impl ToolPreparer for Scheduler {
                     let value = job.await.map_err(failed)?.map_err(failed)?;
                     Ok(value.into())
                 })
-            }))
+            })
+            .titled(title)
+            .presented("maka.agent.Builtin@1/ScheduledTask".into()))
         })
     }
 }

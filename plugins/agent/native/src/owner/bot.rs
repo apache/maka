@@ -538,7 +538,8 @@ impl ToolPreparer for Bot {
                             },
                         ))
                     })
-                }));
+                })
+                .presented("maka.agent.Builtin@1/sleep".into()));
             }
             let input: SendUserInput = serde_json::from_value(input).map_err(invalid)?;
             let message_id = input.message_id.trim().to_owned();
@@ -615,7 +616,8 @@ impl ToolPreparer for Bot {
                     job.await
                         .map_err(|error| ToolError::OutcomeUnknown(error.to_string()))?
                 })
-            }))
+            })
+            .presented("maka.agent.Builtin@1/SendUser".into()))
         })
     }
 }

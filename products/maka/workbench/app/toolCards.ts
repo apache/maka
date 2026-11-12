@@ -18,6 +18,7 @@
  */
 
 import { tr } from './locale';
+import { structuredToolPatch, textToolPatch, type ToolPatchFile } from './toolPatch';
 import { toolPresentation, webPresentation } from '../../../../plugins/shared/tool-presentation';
 export const cardFamily = (key: string | null | undefined) =>
   toolPresentation(key) ?? webPresentation(key);
@@ -25,6 +26,7 @@ export type ToolFamily = ReturnType<typeof cardFamily>;
 export type ToolSection = {
   label: string;
   text: string;
+  style?: 'text' | 'code';
   tone?: 'added' | 'removed' | 'warning' | 'error';
 };
 export type ToolRead = {
@@ -69,9 +71,9 @@ export type ToolProcess = {
     | null;
 };
 export type ToolChange =
-  | { phase: 'requested'; operation: 'write'; path: string; content: string }
+  | { phase: 'requested'; operation: 'write'; path: string; content: string; previous?: string }
   | { phase: 'requested'; operation: 'edit'; path: string; before: string; after: string }
-  | { phase: 'requested'; operation: 'patch'; path: string; type: string; diff: string | null }
+  | { phase: 'requested'; operation: 'patch'; files: ToolPatchFile[] }
   | { phase: 'recorded'; operation: 'write'; path: string; bytes: number; previous: string | null }
   | {
       phase: 'recorded';
@@ -102,6 +104,23 @@ export const processFamily = (kind: ToolFamily) =>
 
 export function toolArguments(kind: ToolFamily, input: unknown): ToolProjection | null {
   const args = record(input);
+  if (kind === 'patch') {
+    const operation = record(args?.operation);
+    const text = typeof input === 'string' ? input : args?.patch;
+    const files =
+      typeof text === 'string'
+        ? textToolPatch(text)
+        : typeof operation?.path === 'string' && typeof operation.type === 'string'
+          ? structuredToolPatch(
+              operation.path,
+              operation.type,
+              typeof operation.diff === 'string' ? operation.diff : undefined,
+            )
+          : null;
+    return files
+      ? { kind: 'change', value: { phase: 'requested', operation: 'patch', files } }
+      : null;
+  }
   if (!kind || !args) return null;
   if (processFamily(kind)) {
     const value = kind === 'execute' ? args.command : args.ref;
@@ -112,6 +131,7 @@ export function toolArguments(kind: ToolFamily, input: unknown): ToolProjection 
             {
               label: kind === 'execute' ? tr('Requested command') : tr('Process reference'),
               text: value,
+              style: 'code',
             },
           ],
         }
@@ -130,8 +150,7 @@ export function toolArguments(kind: ToolFamily, input: unknown): ToolProjection 
         }
       : null;
   }
-  const operation = record(args.operation);
-  const path = kind === 'patch' ? operation?.path : args.path;
+  const path = args.path;
   if (typeof path !== 'string') return null;
   if (kind === 'write') {
     if (typeof args.content !== 'string') return null;
@@ -151,21 +170,8 @@ export function toolArguments(kind: ToolFamily, input: unknown): ToolProjection 
         after: args.new_string,
       },
     };
-  } else if (kind === 'patch') {
-    if (!operation || typeof operation.type !== 'string') return null;
-    if (operation.diff !== undefined && typeof operation.diff !== 'string') return null;
-    return {
-      kind: 'change',
-      value: {
-        phase: 'requested',
-        operation: 'patch',
-        path,
-        type: operation.type,
-        diff: typeof operation.diff === 'string' ? operation.diff : null,
-      },
-    };
   }
-  return { kind: 'sections', sections: [{ label: tr('File'), text: path }] };
+  return { kind: 'sections', sections: [{ label: tr('File'), text: path, style: 'code' }] };
 }
 
 // Only complete originals under the explicitly recorded display contract are
@@ -312,10 +318,37 @@ export function toolResult(kind: ToolFamily, input: unknown): ToolProjection | n
       },
     };
   }
-  if (kind === 'patch')
-    return value.status === 'completed'
-      ? { kind: 'change', value: { phase: 'recorded', operation: 'patch' } }
-      : null;
+  if (kind === 'patch') {
+    if (value.status === 'completed')
+      return { kind: 'change', value: { phase: 'recorded', operation: 'patch' } };
+    if (value.status !== 'failed' || typeof value.error !== 'string') return null;
+    const failedPath = record(value.failed)?.path ?? record(value.stoppedBefore)?.path;
+    const applied = Array.isArray(value.applied)
+      ? value.applied.flatMap((operation: unknown) => {
+          const path = record(operation)?.path;
+          return typeof path === 'string' ? [path] : [];
+        })
+      : [];
+    return {
+      kind: 'sections',
+      sections: [
+        {
+          label: tr('Patch did not finish'),
+          text: typeof failedPath === 'string' ? [failedPath, value.error].join('\n') : value.error,
+          tone: 'error',
+        },
+        ...(applied.length
+          ? [
+              {
+                label: tr('Files already changed'),
+                text: applied.join('\n'),
+                style: 'code' as const,
+              },
+            ]
+          : []),
+      ],
+    };
+  }
   if (kind === 'fetch') {
     if (
       typeof value.url !== 'string' ||
