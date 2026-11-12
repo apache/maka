@@ -72,9 +72,12 @@ export abstract class BaseBotAdapter extends EventEmitter implements BotBridge {
     return { needsRestart };
   }
 
-  protected emitIncomingMessage(message: BotIncomingMessage): void {
+  protected emitIncomingMessage(message: BotIncomingMessage): boolean {
+    const allowedUserIds = this.settings.allowedUserIds;
+    if (allowedUserIds?.length && !allowedUserIds.includes(message.userId)) return false;
     this.lastEventAt = message.receivedAt;
     this.emit('message', message);
+    return true;
   }
 
   protected emitStatusChange(): void {

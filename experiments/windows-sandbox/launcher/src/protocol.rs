@@ -40,10 +40,14 @@ pub struct LaunchRequest {
     pub exact_write_roots: Vec<String>,
     pub network: NetworkMode,
     pub environment: BTreeMap<String, String>,
-    /// Optional child-wait deadline. Appended last and skipped when absent so
-    /// manifests written before this field keep an identical launch digest.
+    /// Optional child-wait deadline. Kept in its historical position and
+    /// skipped when absent so older manifests retain an identical digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// One read-only recursive root whose operation does not follow nested
+    /// reparse points. The broker may decompose it into narrower ACL grants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_following_read_root: Option<String>,
 }
 
 pub const MIN_LAUNCH_TIMEOUT_MS: u64 = 1_000;
@@ -131,6 +135,18 @@ impl LaunchRequest {
         validate_roots(&self.write_roots, "writeRoots")?;
         validate_roots(&self.exact_read_roots, "exactReadRoots")?;
         validate_roots(&self.exact_write_roots, "exactWriteRoots")?;
+        if let Some(root) = self.non_following_read_root.as_deref() {
+            validate_path(root, "nonFollowingReadRoot")?;
+            if !contains_path(&self.read_roots, root) {
+                return Err("nonFollowingReadRoot must name a declared readRoot".to_owned());
+            }
+            if contains_path(&self.exact_read_roots, root) {
+                return Err("nonFollowingReadRoot must name a recursive readRoot".to_owned());
+            }
+            if !self.write_roots.is_empty() || !self.exact_write_roots.is_empty() {
+                return Err("nonFollowingReadRoot requires a read-only launch".to_owned());
+            }
+        }
         if let Some(timeout_ms) = self.timeout_ms {
             if !(MIN_LAUNCH_TIMEOUT_MS..=MAX_LAUNCH_TIMEOUT_MS).contains(&timeout_ms) {
                 return Err(format!(
@@ -202,6 +218,10 @@ fn validate_roots(roots: &[String], field: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn contains_path(paths: &[String], path: &str) -> bool {
+    paths.iter().any(|entry| entry.eq_ignore_ascii_case(path))
 }
 
 fn validate_path(value: &str, field: &str) -> Result<(), String> {

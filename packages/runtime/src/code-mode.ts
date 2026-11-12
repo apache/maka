@@ -29,6 +29,7 @@ import {
   experimental_runCodeMode as runCodeMode,
 } from '@ai-sdk/code-mode';
 import { jsonSchema, tool, type ToolSet } from 'ai';
+import type { EventWaitToolResult } from './event-wait-tool.js';
 
 export interface CodeModeToolDefinition {
   name: string;
@@ -59,7 +60,16 @@ export type CodeModeDiagnosticKind =
   | 'execution_error'
   | 'unknown_tool'
   | 'limit_exceeded'
+  | 'interrupted'
   | 'tool_failure';
+
+/** Internal step-boundary request, raised only after the nested tool settles. */
+export class CodeModeSteeringInterruption extends Error {
+  constructor(readonly result: EventWaitToolResult) {
+    super('Code Mode interrupted at a tool boundary to process current-Turn user input.');
+    this.name = 'CodeModeSteeringInterruption';
+  }
+}
 
 export interface CodeModeDiagnostic {
   kind: CodeModeDiagnosticKind;
@@ -69,6 +79,8 @@ export interface CodeModeDiagnostic {
 export interface CodeModeToolCall {
   index: number;
   name: string;
+  /** Recovery information from this call, including siblings settled during drain. */
+  interruptedResult?: { input: unknown; result: EventWaitToolResult };
 }
 
 export interface CodeModeExecutionSuccess {
@@ -123,9 +135,11 @@ export async function executeCodeCell(
   const toolCalls: CodeModeToolCall[] = [];
   const hostToolOperations = new Set<Promise<unknown>>();
   const fatalAbortController = new AbortController();
+  const boundaryAbortController = new AbortController();
   const invocationSignal = input.signal
     ? AbortSignal.any([input.signal, fatalAbortController.signal])
     : fatalAbortController.signal;
+  const cellSignal = AbortSignal.any([invocationSignal, boundaryAbortController.signal]);
   let fatalToolFailure: { reason: unknown } | undefined;
   const tools = Object.create(null) as ToolSet;
   for (const { name } of input.tools) {
@@ -133,18 +147,47 @@ export async function executeCodeCell(
       inputSchema: jsonSchema({}),
       execute: async (toolInput, options) => {
         if (fatalToolFailure) throw fatalToolFailure.reason;
-        toolCalls.push({ index: toolCalls.length + 1, name });
-        const operation = Promise.resolve().then(() =>
-          input.callTool(name, toolInput, options.abortSignal ?? invocationSignal),
-        );
+        if (boundaryAbortController.signal.aborted) throw boundaryAbortController.signal.reason;
+        const toolCall: CodeModeToolCall = { index: toolCalls.length + 1, name };
+        toolCalls.push(toolCall);
+        // A steering boundary stops the VM and new dispatch, not unrelated host
+        // tools already in flight. Preserve ordinary SDK/Runtime cancellation.
+        const bridgeAbort = new AbortController();
+        const onBridgeAbort = () => {
+          if (!boundaryAbortController.signal.aborted)
+            bridgeAbort.abort(options.abortSignal?.reason);
+        };
+        options.abortSignal?.addEventListener('abort', onBridgeAbort, { once: true });
+        if (options.abortSignal?.aborted) onBridgeAbort();
+        const toolSignal = AbortSignal.any([invocationSignal, bridgeAbort.signal]);
+        const operation = Promise.resolve().then(async () => {
+          if (boundaryAbortController.signal.aborted) throw boundaryAbortController.signal.reason;
+          try {
+            return await input.callTool(name, toolInput, toolSignal);
+          } catch (error) {
+            // Nested T2 events are hidden from model history. Preserve every
+            // actual interrupted result in the outer exec result, tied to its
+            // input, so the next cell can resume the right absolute deadline.
+            // Do not copy the boundary's first result onto undispatched calls.
+            if (error instanceof CodeModeSteeringInterruption)
+              toolCall.interruptedResult = { input: toolInput, result: error.result };
+            throw error;
+          }
+        });
         hostToolOperations.add(operation);
         return operation.then(
           (value) => {
             hostToolOperations.delete(operation);
+            options.abortSignal?.removeEventListener('abort', onBridgeAbort);
             return value;
           },
           (error) => {
             hostToolOperations.delete(operation);
+            options.abortSignal?.removeEventListener('abort', onBridgeAbort);
+            if (error instanceof CodeModeSteeringInterruption) {
+              boundaryAbortController.abort(error);
+              throw error;
+            }
             if (input.isFatalToolError?.(error)) {
               if (!fatalToolFailure) {
                 fatalToolFailure = { reason: error };
@@ -165,16 +208,30 @@ export async function executeCodeCell(
     const value = await runCodeMode({
       js: input.code,
       tools,
-      toolExecutionOptions: { abortSignal: invocationSignal },
+      toolExecutionOptions: { abortSignal: cellSignal },
       options: { executionPolicy },
     });
     await drainHostToolOperations(hostToolOperations);
     if (fatalToolFailure) throw fatalToolFailure.reason;
+    if (boundaryAbortController.signal.aborted) {
+      return {
+        ok: false,
+        error: { kind: 'interrupted', message: String(boundaryAbortController.signal.reason) },
+        toolCalls,
+      };
+    }
     return { ok: true, value: value ?? null, toolCalls };
   } catch (error) {
     await drainHostToolOperations(hostToolOperations);
     if (fatalToolFailure) throw fatalToolFailure.reason;
     if (input.signal?.aborted) throw input.signal.reason ?? error;
+    if (boundaryAbortController.signal.aborted) {
+      return {
+        ok: false,
+        error: { kind: 'interrupted', message: String(boundaryAbortController.signal.reason) },
+        toolCalls,
+      };
+    }
     return {
       ok: false,
       error: normalizeQuickJsError(error),

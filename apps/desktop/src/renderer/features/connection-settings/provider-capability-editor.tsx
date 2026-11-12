@@ -29,7 +29,6 @@ import {
 import { providerAcceptsOutputTokenLimit } from '@maka/core/provider-registry';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
-  THINKING_LEVELS,
   modelApplyPatchEnabled,
   type ModelOverride,
   type ThinkingLevel,
@@ -72,15 +71,6 @@ export function CapabilityEditor(props: {
         ? 'disabled'
         : 'auto';
   const draftLevels = declared?.thinkingLevels ?? [];
-  // The menu offers the five declarable levels PLUS anything the stored table
-  // already claims — a level saved while it was still declarable (or
-  // hand-written into the document) must stay visible and un-checkable, never
-  // an invisible selection the trigger counts but the menu cannot show.
-  const menuLevels: readonly ThinkingLevel[] = THINKING_LEVELS.filter(
-    (level) =>
-      (DECLARABLE_RELAY_THINKING_LEVELS as readonly ThinkingLevel[]).includes(level) ||
-      draftLevels.includes(level),
-  );
   const isCustom = props.customDefaultApiProtocol !== undefined;
   const defaultThinkingLevels = isCustom && declared?.thinkingLevels !== undefined
     ? declared.thinkingLevels
@@ -234,7 +224,7 @@ export function CapabilityEditor(props: {
             hasChevron
             menuWidth={224}
           >
-            {menuLevels.map((level) => (
+            {DECLARABLE_RELAY_THINKING_LEVELS.map((level) => (
               <DropdownMenuCheckboxItem
                 key={level}
                 label={level}

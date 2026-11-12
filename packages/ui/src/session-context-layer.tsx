@@ -19,6 +19,7 @@
 
 import { useEffect, useReducer, type ReactElement, type ReactNode } from 'react';
 import {
+  Button,
   ButtonGroup,
   Icon,
   IconButton,
@@ -44,8 +45,10 @@ export interface SessionContextRevision {
   nextSessionId?: string;
 }
 
+export interface SessionContextEventWait { id: string; label: string; detail: string; cancelLabel: string; cancelDescription: string; onCancel(): void }
 interface SessionContextGoalBase {
   condition: string;
+  pauseReason?: string;
   iterations: number;
   maxIterations: number;
   /** Epoch ms when the goal was armed; the chip derives wall-clock elapsed. */
@@ -85,6 +88,7 @@ export function SessionContextLayer(props: {
   memoryActive?: boolean;
   onOpenMemorySettings?(): void;
   goal?: SessionContextGoal;
+  eventWaits?: readonly SessionContextEventWait[];
   actions?: ReactNode;
 }) {
   const copy = getConversationCopy(useUiLocale()).chat;
@@ -284,7 +288,7 @@ export function SessionContextLayer(props: {
     });
   }
 
-  if (contextItems.length === 0 && !props.actions) return null;
+  if (contextItems.length === 0 && !props.actions && !props.eventWaits?.length) return null;
 
   return (
     <LayoutHeader
@@ -337,6 +341,13 @@ export function SessionContextLayer(props: {
           {props.actions}
         </div>
       </div>
+      {props.eventWaits?.map((wait) => (
+        <div key={wait.id} className="maka-session-context__inner maka-session-context__wait" role="status">
+          <div className="maka-session-context__lead"><Text type="supporting">{wait.label}</Text><Text type="supporting" color="secondary">{wait.detail}</Text><Text type="supporting" color="secondary">{wait.id}</Text></div>
+          <Tooltip content={wait.cancelDescription}><Button size="sm" label={wait.cancelLabel} aria-label={`${wait.cancelLabel} ${wait.id}`} onClick={wait.onCancel} /></Tooltip>
+        </div>
+      ))}
+      {props.goal?.pauseReason ? <div className="maka-session-context__inner maka-session-context__wait"><Text type="supporting" color="secondary">{props.goal.pauseReason}</Text></div> : null}
     </LayoutHeader>
   );
 }

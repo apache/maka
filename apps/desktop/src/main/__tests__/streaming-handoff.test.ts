@@ -81,6 +81,7 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): Promise<string> {
       permissionMode: 'ask',
     },
     messages: [{ type: 'user', id: 'user-1', turnId: liveTurn.turnId, ts: 1, text: 'go' }],
+    activeTurn: liveTurn.terminal ? undefined : { turnId: liveTurn.turnId },
     scrollBehavior: 'smooth',
     liveTurns: liveTurn ? [liveTurn] : undefined,
     onNew() {},
@@ -307,6 +308,7 @@ describe('single live-turn handoff', () => {
         { type: 'assistant', id: 'assistant-1', turnId: 'turn-1', ts: 2, text, modelId: 'model' },
       ],
       scrollBehavior: 'smooth',
+      activeTurn: { turnId: 'turn-1' },
       liveTurns: [{
         turnId: 'turn-1',
         steps: [{

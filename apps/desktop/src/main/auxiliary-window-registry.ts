@@ -36,6 +36,7 @@ function loadElectron(): typeof import('electron') {
 }
 
 const declarations = {
+  pet: { size: {}, reveal: showWindowInactive },
   'permission-overlay': {
     size: {},
     reveal: showWindowInactive,

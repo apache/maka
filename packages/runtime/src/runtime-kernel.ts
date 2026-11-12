@@ -50,6 +50,8 @@ import type {
   SessionStatus,
 } from '@maka/core/session';
 import { isDeepStrictEqual } from 'node:util';
+import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
+import type { TurnExecutionPolicy } from './session-manager.js';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import {
@@ -157,6 +159,8 @@ import type { AgentRunHandoffRequest } from './agent-run.js';
 
 export interface RuntimeKernelLike {
   claimExecution(sessionId: string): RuntimeExecutionClaim;
+  readExecutionPolicy?(sessionId: string, runId: string): TurnExecutionPolicy | undefined;
+  returnExecutionQuestions?(sessionId: string, runId: string): void;
   runSessionAdmissionMutation?<T>(
     sessionIds: readonly string[],
     operation: () => Promise<T> | T,
@@ -218,6 +222,13 @@ export interface RuntimeKernelLike {
    */
   sessionHostGeneration?(): string;
   hasActiveRun?(sessionId: string, runId: string, turnId?: string): boolean;
+  /** Join one already-active execution; never starts, retries or stops it. */
+  waitForRunExit?(
+    sessionId: string,
+    runId: string,
+    turnId: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
   requestRunHandoff?(
     sessionId: string,
     runId: string,
@@ -250,6 +261,8 @@ export class RuntimeContextCompactError extends Error {
 }
 
 export interface TurnStartOptions {
+  /** Trusted caller policy for this execution; the saved Session configuration is unchanged. */
+  executionPolicy?: TurnExecutionPolicy;
   runId?: string;
   userMessageId?: string | null;
   durability?: AgentRunDurability;
@@ -263,6 +276,7 @@ export interface TurnStartOptions {
 }
 
 export interface ResumeContinuationOptions {
+  executionPolicy?: TurnExecutionPolicy;
   onRunStarted?: () => void | Promise<void>;
   /** Original logical owner may have accepted Stop while its sealed attempt retired. */
   stopBeforeDispatch?: () => StopSessionInput | undefined;
@@ -324,6 +338,7 @@ export interface RuntimeKernelDeps {
 export type { HistoryCompactCleanupRequest } from './history-compact-checkpoint-coordinator.js';
 
 interface BackendGeneration extends AgentRunActiveSession {
+  executionPolicy?: TurnExecutionPolicy;
   sessionId: string;
   generation: number;
   phase: 'active' | 'stopping' | 'disposing' | 'failed' | 'terminated';
@@ -376,6 +391,7 @@ interface SessionStopIntent {
 type ExecutionClaimOutcome = { ok: true } | { ok: false; error: unknown };
 
 interface PendingExecutionClaim {
+  executionPolicy?: TurnExecutionPolicy;
   readonly handle: RuntimeExecutionClaim;
   readonly sessionId: string;
   readonly abortController: AbortController;
@@ -720,7 +736,17 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const execution = this.takeExecutionClaim(sessionId, options.execution);
     try {
       await this.enterExecutionClaim(execution);
-      const header = await this.readBackendHeader(execution);
+      execution.executionPolicy = options.executionPolicy;
+      const existing = this.active.get(sessionId);
+      if (existing && !isDeepStrictEqual(existing.executionPolicy, options.executionPolicy)) {
+        if (existing.activeRuns.size > 0)
+          throw new Error('Cannot change execution policy while a Turn is running');
+        await this.disposeBackend(sessionId);
+      }
+      const storedHeader = await this.readBackendHeader(execution);
+      const header = options.executionPolicy
+        ? { ...storedHeader, permissionMode: options.executionPolicy.permissionMode }
+        : storedHeader;
       let workspaceIdentity: string | undefined;
       if (this.deps.inspectContinuationSafety) {
         try {
@@ -759,7 +785,12 @@ export class RuntimeKernel implements RuntimeKernelLike {
             return active;
           },
           unregisterRun: (active, activeRun) => this.unregisterParentRun(active, activeRun),
-          updateHeader: (targetSessionId, patch) => this.updateHeader(targetSessionId, patch),
+          updateHeader: async (targetSessionId, patch) => {
+            const updated = await this.updateHeader(targetSessionId, patch);
+            return options.executionPolicy
+              ? { ...updated, permissionMode: options.executionPolicy.permissionMode }
+              : updated;
+          },
           updateStatus: (targetSessionId, status, blockedReason, ts) =>
             this.updateStatus(targetSessionId, status, blockedReason, ts),
           ...this.messageProjectionHook(),
@@ -825,7 +856,14 @@ export class RuntimeKernel implements RuntimeKernelLike {
       throw new Error('Cannot continue while another run is active');
     }
 
-    const header = await this.readBackendHeader(execution);
+    execution.executionPolicy = options.executionPolicy;
+    const existing = this.active.get(continuation.sessionId);
+    if (existing && !isDeepStrictEqual(existing.executionPolicy, options.executionPolicy))
+      await this.disposeBackend(continuation.sessionId);
+    const storedHeader = await this.readBackendHeader(execution);
+    const header = options.executionPolicy
+      ? { ...storedHeader, permissionMode: options.executionPolicy.permissionMode }
+      : storedHeader;
     const sessionRuns = await this.deps.runtimeEventStore.listSessionInvocations(
       continuation.sessionId,
     );
@@ -1021,7 +1059,12 @@ export class RuntimeKernel implements RuntimeKernelLike {
           return active;
         },
         unregisterRun: (active, activeRun) => this.unregisterParentRun(active, activeRun),
-        updateHeader: (targetSessionId, patch) => this.updateHeader(targetSessionId, patch),
+        updateHeader: async (targetSessionId, patch) => {
+          const updated = await this.updateHeader(targetSessionId, patch);
+          return options.executionPolicy
+            ? { ...updated, permissionMode: options.executionPolicy.permissionMode }
+            : updated;
+        },
         updateStatus: (targetSessionId, status, blockedReason, ts) =>
           this.updateStatus(targetSessionId, status, blockedReason, ts),
         ...this.messageProjectionHook(),
@@ -1314,6 +1357,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
         // next user send passively replays this standalone checkpoint, which
         // `shouldAppendContextCompactedNote` suppresses, so there is no
         // duplicate.
+        // The applied row is the apply-time boundary the usage reader orders
+        // measurements against; the note below stays the display row.
+        await run.recordSystemNote('context_compaction_applied').catch(() => {});
         await run.recordSystemNote('context_compacted').catch(() => {});
         notedTerminal = true;
       }
@@ -2374,6 +2420,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   readonly #sessionRunEpochs = new Map<string, number>();
+  readonly #runExitObservers = new Map<string, Set<() => void>>();
   readonly #hostGeneration: string;
 
   sessionRunEpoch(sessionId: string): number {
@@ -2386,12 +2433,77 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   #bumpSessionRunEpoch(sessionId: string): void {
     this.#sessionRunEpochs.set(sessionId, (this.#sessionRunEpochs.get(sessionId) ?? 0) + 1);
+    // Some claim owners increment immediately before removing their visibility.
+    // Notify after that synchronous transition; the current active set is authority.
+    queueMicrotask(() => {
+      for (const observe of this.#runExitObservers.get(sessionId) ?? []) observe();
+    });
+  }
+
+  async waitForRunExit(
+    sessionId: string,
+    runId: string,
+    turnId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted();
+    if (!this.hasActiveRun(sessionId, runId, turnId)) return;
+    await new Promise<void>((resolve, reject) => {
+      const observers = this.#runExitObservers.get(sessionId) ?? new Set<() => void>();
+      this.#runExitObservers.set(sessionId, observers);
+      const cleanup = () => {
+        observers.delete(observe);
+        if (!observers.size) this.#runExitObservers.delete(sessionId);
+        signal?.removeEventListener('abort', abort);
+      };
+      const observe = () => {
+        if (!this.hasActiveRun(sessionId, runId, turnId)) {
+          cleanup();
+          resolve();
+        }
+      };
+      const abort = () => {
+        cleanup();
+        reject(signal?.reason);
+      };
+      observers.add(observe);
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+      else observe();
+    });
   }
 
   hasActiveRun(sessionId: string, runId: string, turnId?: string): boolean {
     return this.activeRunsFor(sessionId).some(
       (run) => run.runId === runId && (turnId === undefined || run.turnId === turnId),
     );
+  }
+
+  readExecutionPolicy(sessionId: string, runId: string): TurnExecutionPolicy | undefined {
+    for (const generation of this.backendGenerationsFor(sessionId)) {
+      if (generation.activeRuns.has(runId)) return generation.executionPolicy;
+    }
+    return [...(this.executionClaims.get(sessionId) ?? [])].find(
+      (execution) => execution.run?.runId === runId,
+    )?.executionPolicy;
+  }
+
+  returnExecutionQuestions(sessionId: string, runId: string): void {
+    for (const generation of this.backendGenerationsFor(sessionId)) {
+      const run = generation.activeRuns.get(runId);
+      if (!run) continue;
+      const policy: TurnExecutionPolicy = {
+        permissionMode: run.headerSnapshot().permissionMode,
+        questions: 'return',
+      };
+      generation.executionPolicy = policy;
+      for (const execution of this.executionClaims.get(sessionId) ?? []) {
+        if (execution.run?.runId === runId) execution.executionPolicy = policy;
+      }
+      return;
+    }
+    // A terminal backend can precede the Host's terminal admission. Its queued
+    // steering is recovered into a successor with the durable delegated policy.
   }
 
   requestRunHandoff(
@@ -2769,11 +2881,17 @@ export class RuntimeKernel implements RuntimeKernelLike {
         }));
       execution.run?.bindProviderStateIdentity(prepared.providerStateIdentity);
       const subagent = await this.resolveSubagentActivation(header);
+      const kernel = this;
       const backend = await prepared.build({
         sessionId,
         workspaceRoot: header.workspaceRoot,
         header,
-        store: this.deps.store,
+        store: execution.executionPolicy
+          ? this.executionPolicyStore(sessionId, execution.executionPolicy)
+          : this.deps.store,
+        get executionPolicy() {
+          return kernel.active.get(sessionId)?.executionPolicy ?? execution.executionPolicy;
+        },
         abortSignal: execution.abortController.signal,
         ...(subagent
           ? {
@@ -2794,11 +2912,41 @@ export class RuntimeKernel implements RuntimeKernelLike {
         header,
         prepared.providerStateIdentity,
       );
+      generation.executionPolicy = execution.executionPolicy;
       this.active.set(sessionId, generation);
       return generation;
     });
     entry.cachedHeader = header;
     return entry;
+  }
+
+  private executionPolicyStore(targetSessionId: string, policy: TurnExecutionPolicy): SessionStore {
+    const store = this.deps.store;
+    // Host stores are frozen. Proxy invariants forbid replacing their own
+    // non-configurable methods, so intercept on an independent facade instead.
+    return new Proxy(Object.create(store) as SessionStore, {
+      get(_facade, property) {
+        if (property === 'readHeader')
+          return async (sessionId: string) => {
+            const header = await store.readHeader(sessionId);
+            return sessionId === targetSessionId
+              ? { ...header, permissionMode: policy.permissionMode }
+              : header;
+          };
+        if (property === 'readExecutionBoundary')
+          return async (sessionId: string) => {
+            const boundary = await store.readExecutionBoundary(sessionId);
+            if (
+              sessionId === targetSessionId &&
+              (policy.permissionMode === 'bypass' || boundary.kind === 'bypass')
+            )
+              return createGenesisExecutionBoundary(policy.permissionMode);
+            return boundary;
+          };
+        const value = Reflect.get(store, property);
+        return typeof value === 'function' ? value.bind(store) : value;
+      },
+    });
   }
 
   private async shareBackendActivation(
@@ -3588,10 +3736,13 @@ interface RuntimeRunOwnerScopeCallbacks {
 
 function runtimeSteeringInput(
   owner: RuntimeMessageRunOwner | undefined,
-): Pick<BackendSendInput, 'pullSteering' | 'ackSteering' | 'nackSteering'> {
+): Pick<BackendSendInput, 'pullSteering' | 'waitForSteering' | 'ackSteering' | 'nackSteering'> {
   return owner
     ? {
         pullSteering: () => owner.pull(),
+        ...(owner.waitForSteering
+          ? { waitForSteering: (signal: AbortSignal) => owner.waitForSteering!(signal) }
+          : {}),
         ackSteering: (ids) => owner.ack(ids),
         nackSteering: (ids) => owner.nack(ids),
       }

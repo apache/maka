@@ -22,7 +22,9 @@
 // The palette's 会话 group. Session rows subscribe the catalog here — at the
 // consumption point — so the shell is not woken by palette-only reads.
 
-import { useMemo } from 'react';
+import { useShowAssistantBackgroundSessions } from '../../../application/contracts/session-catalog/assistant-session-visibility.js';
+import { useCallback, useMemo } from 'react';
+import { useMakaClientNavigationSessionLabels } from '@maka/ui/client-plugin';
 import { MessageSquare, Palette } from '@maka/ui/icons';
 import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -78,9 +80,13 @@ export function usePaletteSessionCommands(args: {
   locale: UiLocale;
   onSelectSession(id: string): void;
 }): Command[] {
+  const entryLabels = useMakaClientNavigationSessionLabels();
+  const showAssistantBackgroundSessions = useShowAssistantBackgroundSessions();
+  const selectVisible = useCallback((state: Parameters<typeof selectPaletteSessions>[0], hidden: ReadonlySet<string>) =>
+    selectPaletteSessions(state, hidden, entryLabels, showAssistantBackgroundSessions), [entryLabels, showAssistantBackgroundSessions]);
   const sessions = useExternalStoreSelector(
     args.catalog,
-    args.paletteOpen ? selectPaletteSessions : selectClosedPaletteSessions,
+    args.paletteOpen ? selectVisible : selectClosedPaletteSessions,
     args.hiddenSessionIds,
     paletteSessionsEqual,
   );

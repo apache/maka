@@ -229,6 +229,54 @@ describe('session trace projection', () => {
     assert.equal(failure.message, 'turn ended after tool failure');
   });
 
+  test('attributes an aborted tool outcome to the aborted turn, not a tool failure', () => {
+    const trace = projectSessionTrace({
+      sessionId: 'session-1',
+      runtimeEvents: [
+        event({
+          id: 'dispatch-1',
+          ts: 1_000,
+          actions: {
+            toolDispatch: {
+              protocol: 't1_after_preflight_v1',
+              operationId: 'op-1',
+              providerToolCallId: 'tool-call-1',
+              toolName: 'Bash',
+              canonicalArgsHash: 'hash',
+              recoveryMode: 'replay_safe',
+            },
+          },
+        }),
+        event({
+          id: 'response-1',
+          ts: 1_200,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'tool-call-1',
+            name: 'Bash',
+            result: 'stopped',
+            isError: true,
+            outcome: 'aborted',
+          },
+        }),
+        event({
+          id: 'aborted-1',
+          ts: 1_300,
+          status: 'aborted',
+        }),
+      ],
+      modelCallAttempts: [],
+    });
+
+    const tool = trace.turns[0]?.steps.find((step) => step.kind === 'tool');
+    assert.equal(tool?.kind === 'tool' ? tool.status : undefined, 'interrupted');
+    assert.equal(trace.turns[0]?.failure?.code, 'turn_aborted');
+    assert.equal(trace.turns[0]?.failure?.attributedToStepId, undefined);
+    assert.equal(isSessionTrace(trace), true, 'the Host protocol accepts interrupted tool steps');
+  });
+
   test('projects a generic-lane function call as an in-flight tool step', () => {
     const trace = projectSessionTrace({
       sessionId: 'session-1',

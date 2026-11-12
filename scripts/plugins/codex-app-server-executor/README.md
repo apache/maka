@@ -39,6 +39,8 @@ Server` with id `codex.app-server`, and its desktop entry adds model and reasoni
 Session and WorkHub composers. Selecting a Codex model switches that Session or the next new Session
 to the plugin executor; selecting a native Maka model switches it back.
 
+The desktop entry requires the Composer-owned `renderPicker` slot contract. It supplies the Codex model catalog; Maka renders the shared searchable selector and reasoning control alongside ACP choices and recovery actions. When upgrading from the previous full-control slot contract, reinstall this example from the same checkout as Maka. The previous `ModelWheelPicker` client export has been removed; client integrations should use `renderPicker` instead of maintaining their own model controls.
+
 This is a repository-only example. Maka release packaging intentionally excludes `scripts/plugins`;
 install it from a complete Git checkout instead of expecting it in an ASF source or desktop release.
 

@@ -32,6 +32,21 @@ import { handleReconnectableRead, type ReconnectableReadIpcMain } from './ipc-re
 
 export const MAKA_CLIENT_PLUGIN_SCHEME = 'maka-client-plugin';
 
+/** Privileges required for Client bundles to load as executable module scripts. */
+export const MAKA_CLIENT_PLUGIN_SCHEME_PRIVILEGES = Object.freeze({
+  standard: true,
+  secure: true,
+  supportFetchAPI: true,
+  corsEnabled: true,
+});
+
+export interface ClientPluginProtocol {
+  handle(
+    scheme: string,
+    handler: (request: { readonly url: string }) => Response | Promise<Response>,
+  ): void;
+}
+
 type ClientPluginOperation =
   | 'plugin.client.query'
   | 'plugin.client.remote.call'
@@ -213,6 +228,17 @@ export class ClientPluginTransport {
       return response('Client Plugin bundle is stale or unavailable', 409);
     }
   }
+}
+
+/** One transport owns the bundle routes across startup and Runtime Host boot. */
+export const clientPluginTransport = new ClientPluginTransport();
+
+/** Bind before the first renderer starts loading Client Plugin module URLs. */
+export function registerClientPluginProtocol(
+  protocol: ClientPluginProtocol,
+  transport: ClientPluginTransport = clientPluginTransport,
+): void {
+  protocol.handle(MAKA_CLIENT_PLUGIN_SCHEME, (request) => transport.serve(request.url));
 }
 
 export function registerClientPluginIpc(input: {

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+
 import type { UiLocale } from '@maka/core/ui-locale';
 
 interface SessionHoverCardCopy {
@@ -30,9 +32,10 @@ interface SessionHoverCardCopy {
   locationCount(count: number): string;
   projectAvailable: string;
   projectUnavailable: string;
+  executionLocation: Record<'local' | 'remote' | 'environment', (name: string) => string>;
 }
 
-const COPY: Record<UiLocale, SessionHoverCardCopy> = {
+const COPY: Record<UiLocale, SessionHoverCardCopy> = resolveUiMessageCatalog(defineShippedUiMessageCatalog<SessionHoverCardCopy>()({
   'zh-CN': {
     sessionDetailsLabel: (name) => `${name} 任务详情`,
     projectDetailsLabel: (name) => `${name} 项目详情`,
@@ -44,6 +47,11 @@ const COPY: Record<UiLocale, SessionHoverCardCopy> = {
     locationCount: (count) => `${count} 个位置`,
     projectAvailable: '目录可用',
     projectUnavailable: '目录不可用',
+    executionLocation: {
+      local: () => '执行位置：本机',
+      remote: (name) => `执行位置：远程 · ${name}`,
+      environment: (name) => `执行位置：WSL · ${name}`,
+    },
   },
   'zh-TW': {
     sessionDetailsLabel: (name) => `${name} 任務詳細資料`,
@@ -56,6 +64,11 @@ const COPY: Record<UiLocale, SessionHoverCardCopy> = {
     locationCount: (count) => `${count} 個位置`,
     projectAvailable: '目錄可用',
     projectUnavailable: '目錄不可用',
+    executionLocation: {
+      local: () => '執行位置：本機',
+      remote: (name) => `執行位置：遠端 · ${name}`,
+      environment: (name) => `執行位置：WSL · ${name}`,
+    },
   },
   en: {
     sessionDetailsLabel: (name) => `${name} task details`,
@@ -68,8 +81,13 @@ const COPY: Record<UiLocale, SessionHoverCardCopy> = {
     locationCount: (count) => `${count} ${count === 1 ? 'location' : 'locations'}`,
     projectAvailable: 'Directory available',
     projectUnavailable: 'Directory unavailable',
+    executionLocation: {
+      local: () => 'Execution location: This computer',
+      remote: (name) => `Execution location: Remote · ${name}`,
+      environment: (name) => `Execution location: WSL · ${name}`,
+    },
   },
-};
+}));
 
 export function getSessionHoverCardCopy(locale: UiLocale): SessionHoverCardCopy {
   return COPY[locale];

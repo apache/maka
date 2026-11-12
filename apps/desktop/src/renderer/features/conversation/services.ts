@@ -17,12 +17,24 @@
  * under the License.
  */
 
-import { createElement, useMemo, useState, useEffect, type ReactNode } from 'react';
+import { createContext, createElement, useContext, useMemo, useState, useEffect, type ReactNode } from 'react';
 import { ComposerPromptSuggestionProvider } from '@maka/ui';
 import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { ConversationServices } from './ports.js';
 
 const context = createServicesContext<ConversationServices>('ConversationServicesProvider');
+
+interface CheckinSetting {
+  readonly enabled: boolean;
+  setEnabled(next: boolean): void;
+}
+const CheckinSettingContext = createContext<CheckinSetting | undefined>(undefined);
+
+/** The check-in switch, shared by Settings and the new-task screen; undefined without check-in. */
+export function useCheckinSetting(): CheckinSetting | undefined {
+  return useContext(CheckinSettingContext);
+}
+
 export function ConversationServicesProvider(props: { services: ConversationServices; children: ReactNode }) {
   const port = props.services.promptSuggestions;
   const [enabled, setEnabled] = useState(() => port?.readEnabled() ?? false);
@@ -37,7 +49,16 @@ export function ConversationServicesProvider(props: { services: ConversationServ
     setEnabled: (next: boolean) => { port.writeEnabled(next); setEnabled(next); },
     generate: (sessionId: string) => port.generate(sessionId),
   } : undefined, [port, enabled]);
+  const checkinPort = props.services.checkin;
+  const [checkinEnabled, setCheckinEnabled] = useState(() => checkinPort?.readEnabled() ?? false);
+  const checkinSetting = useMemo(() => checkinPort ? {
+    enabled: checkinEnabled,
+    setEnabled: (next: boolean) => { checkinPort.writeEnabled(next); setCheckinEnabled(next); },
+  } : undefined, [checkinPort, checkinEnabled]);
   return createElement(context.Provider, { services: props.services },
-    createElement(ComposerPromptSuggestionProvider, { service, children: props.children }));
+    createElement(ComposerPromptSuggestionProvider, {
+      service,
+      children: createElement(CheckinSettingContext.Provider, { value: checkinSetting }, props.children),
+    }));
 }
 export const useConversationServices = context.useServices;

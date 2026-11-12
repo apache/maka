@@ -85,8 +85,8 @@ export function GoalProvider({
     ],
   );
   const indicator = useMemo<ChatViewGoalProjection>(
-    () => ({ goalIndicator: controller.selectors.indicator }),
-    [controller.selectors.indicator],
+    () => ({ goalIndicator: controller.selectors.indicator, eventWaitIndicators: controller.selectors.eventWaitIndicators }),
+    [controller.selectors.indicator, controller.selectors.eventWaitIndicators],
   );
   const host = useMemo<GoalHostModel>(
     () => ({

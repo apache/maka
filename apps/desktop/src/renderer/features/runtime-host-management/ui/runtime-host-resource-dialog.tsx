@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { defineShippedUiMessageCatalog, resolveUiMessageCatalog, type UiMessageShape } from '@maka/core/ui-locale';
+
 import { useEffect, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
@@ -262,7 +264,38 @@ function formatPercent(value: number): string {
   return `${value.toFixed(value >= 10 ? 0 : 1)}%`;
 }
 
-const HOST_RESOURCE_COPY = {
+const HOST_RESOURCE_COPY_EN = {
+    title: 'Host resources',
+    open: 'View Host resources',
+    done: 'Done',
+    unavailable: 'Resource information is available while the Host is connected',
+    cpu: 'CPU',
+    cpuUsage: 'CPU usage',
+    memory: 'Memory',
+    graphics: 'Graphics adapters',
+    storage: 'Storage',
+    noGraphicsAdapter: 'None detected',
+    graphicsUnknown: 'Unable to determine',
+    sharedMemory: 'Shared memory',
+    memoryUnknown: 'Memory unknown',
+    network: 'Network throughput',
+    measuring: 'Measuring…',
+    logicalProcessors: (count: number, available: number) =>
+      count === available
+        ? `${count} logical processors`
+        : `${available} of ${count} logical processors available`,
+    networkRate: (interfaceName: string, received: string, transmitted: string) =>
+      `${interfaceName} · ↓ ${received}/s · ↑ ${transmitted}/s`,
+    storageVolume: (
+      mount: string,
+      available: string,
+      total: string,
+      filesystem: string | undefined,
+    ) =>
+      `${mount} · ${available} available / ${total}${filesystem ? ` · ${filesystem}` : ''}`,
+  };
+
+const HOST_RESOURCE_COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<UiMessageShape<typeof HOST_RESOURCE_COPY_EN>>()({
   'zh-CN': {
     title: '主机资源',
     open: '查看主机资源',
@@ -321,37 +354,8 @@ const HOST_RESOURCE_COPY = {
       filesystem: string | undefined,
     ) => `${mount} · ${available} 可用 / ${total}${filesystem ? ` · ${filesystem}` : ''}`,
   },
-  en: {
-    title: 'Host resources',
-    open: 'View Host resources',
-    done: 'Done',
-    unavailable: 'Resource information is available while the Host is connected',
-    cpu: 'CPU',
-    cpuUsage: 'CPU usage',
-    memory: 'Memory',
-    graphics: 'Graphics adapters',
-    storage: 'Storage',
-    noGraphicsAdapter: 'None detected',
-    graphicsUnknown: 'Unable to determine',
-    sharedMemory: 'Shared memory',
-    memoryUnknown: 'Memory unknown',
-    network: 'Network throughput',
-    measuring: 'Measuring…',
-    logicalProcessors: (count: number, available: number) =>
-      count === available
-        ? `${count} logical processors`
-        : `${available} of ${count} logical processors available`,
-    networkRate: (interfaceName: string, received: string, transmitted: string) =>
-      `${interfaceName} · ↓ ${received}/s · ↑ ${transmitted}/s`,
-    storageVolume: (
-      mount: string,
-      available: string,
-      total: string,
-      filesystem: string | undefined,
-    ) =>
-      `${mount} · ${available} available / ${total}${filesystem ? ` · ${filesystem}` : ''}`,
-  },
-} satisfies Record<UiLocale, unknown>;
+  en: HOST_RESOURCE_COPY_EN,
+})) satisfies Record<UiLocale, unknown>;
 
 function hostResourceCopy(locale: UiLocale) {
   return HOST_RESOURCE_COPY[locale];

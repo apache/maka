@@ -19,6 +19,7 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -88,24 +89,47 @@ export function useAttachmentImageSource(ref: {
   artifactId: string;
   sessionId?: string;
 } | undefined): string | undefined {
+  return useAttachmentImage(ref).src;
+}
+
+export function useAttachmentImage(ref: {
+  artifactId: string;
+  sessionId?: string;
+} | undefined) {
   const context = useContext(SessionAttachmentContext);
   const artifactId = ref?.artifactId;
   const sessionId = ref?.sessionId ?? context?.sessionId;
   const loadImage = context?.loadImage;
-  const [src, setSrc] = useState<string | undefined>(undefined);
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => {
+    setAttempt((value) => value + 1);
+  }, []);
+  const request = useMemo(
+    () => artifactId && sessionId && loadImage
+      ? { artifactId, sessionId, loadImage, attempt }
+      : undefined,
+    [artifactId, sessionId, loadImage, attempt],
+  );
+  const [result, setResult] = useState<{
+    request: typeof request;
+    status: 'loading' | 'ready' | 'failed';
+    src?: string;
+  }>();
 
   useEffect(() => {
-    setSrc(undefined);
-    if (!artifactId || !sessionId || !loadImage) return;
+    if (!request) return;
+    setResult({ request, status: 'loading' });
     let cancelled = false;
-    loadImage(sessionId, artifactId)
+    request.loadImage(request.sessionId, request.artifactId)
       .then((loaded) => {
-        if (!cancelled) setSrc(loaded);
-      })
+        if (!cancelled) setResult({ request, status: loaded ? 'ready' : 'failed', src: loaded });
+      });
     return () => {
       cancelled = true;
     };
-  }, [artifactId, loadImage, sessionId]);
+  }, [request]);
 
-  return src;
+  if (!request) return { status: 'unavailable' as const, src: undefined, retry };
+  if (result?.request !== request) return { status: 'loading' as const, src: undefined, retry };
+  return { status: result.status, src: result.src, retry };
 }

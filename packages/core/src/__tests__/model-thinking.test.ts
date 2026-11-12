@@ -33,10 +33,8 @@ import {
   declaredModelApiProtocol,
 } from '../model-thinking.js';
 
-test('declarable relay levels are every intensity tier but off', () => {
-  // `off` is a disable-wire encoding (reasoning_effort 'none'), not an
-  // intensity tier — a hybrid UI/data contract keeps it out of declarations.
-  assert.deepEqual(normalizeModelOverrides({ m: { thinkingLevels: ['off', 'low'] } }), {
+test('relay declarations accept effort tiers but not thinking switches', () => {
+  assert.deepEqual(normalizeModelOverrides({ m: { thinkingLevels: ['off', 'on', 'low'] } }), {
     m: { thinkingLevels: ['low'] },
   });
   assert.deepEqual(normalizeModelOverrides({ m: { thinkingLevels: ['off'] } }), { m: {} });
@@ -45,6 +43,30 @@ test('declarable relay levels are every intensity tier but off', () => {
     modelOverrides: { m: { thinkingLevels: ['off', 'low'] } },
   } as const;
   assert.deepEqual([...thinkingVariantsForConnection(declaredOff, 'm')], ['low']);
+});
+
+test('toggle-only Claude models offer an explicit on choice without inventing effort', () => {
+  for (const providerType of ['anthropic', 'opencode'] as const) {
+    for (const modelId of ['claude-sonnet-4-5', 'claude-haiku-4-5']) {
+      assert.deepEqual(
+        thinkingVariantsForModel(providerType, modelId),
+        ['off', 'on'],
+        `${providerType}/${modelId}`,
+      );
+    }
+  }
+  assert.equal(resolveThinkingLevel({ providerType: 'anthropic' }, 'claude-haiku-4-5', 'on'), 'on');
+  assert.equal(
+    defaultThinkingLevelForConnection(
+      {
+        providerType: 'anthropic',
+        modelOverrides: { 'claude-haiku-4-5': { defaultThinkingLevel: 'on' } },
+      },
+      'claude-haiku-4-5',
+    ),
+    'on',
+  );
+  assert.equal(thinkingVariantsForModel('anthropic', 'claude-opus-4-8').includes('on'), false);
 });
 
 test('relay profiles preserve the fast service tier declaration', () => {

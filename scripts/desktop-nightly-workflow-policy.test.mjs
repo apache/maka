@@ -206,6 +206,40 @@ test('the Nightly Linux verification runs under a virtual display', async () => 
   }
 });
 
+test('both macOS publication workflows staple through the shared recovery gate after notarization', async () => {
+  for (const name of ['desktop-nightly.yml', 'release.yml']) {
+    const workflow = await readWorkflow(name);
+    const step = workflow.jobs.desktop.steps.find((entry) =>
+      entry.run?.includes('notarytool submit'),
+    );
+    assert.ok(step, name);
+    assert.match(
+      step.run,
+      /notarytool submit[\s\S]*--wait[\s\S]*node scripts\/staple-macos-artifact\.mjs "\$DMG_PATH"/u,
+    );
+    assert.doesNotMatch(step.run, /xcrun stapler/u);
+  }
+});
+
+test('macOS publication jobs disable the broken HTTP/3 route before any notarization', async () => {
+  for (const name of ['desktop-nightly.yml', 'release.yml']) {
+    const workflow = await readWorkflow(name);
+    for (const job of [workflow.jobs.desktop, workflow.jobs['cli-macos-arm64']].filter(Boolean)) {
+      const setup = job.steps.findIndex(
+        (step) => step.name === 'Use TCP for Apple ticket delivery',
+      );
+      const packaging = job.steps.findIndex((step) =>
+        /npm run package:(macos|cli:macos)/u.test(step.run ?? ''),
+      );
+      assert.ok(setup >= 0 && setup < packaging, name);
+      const step = job.steps[setup];
+      assert.equal(step.if, job.strategy ? "matrix.platform == 'macos'" : undefined);
+      assert.match(step.run, /block return out quick proto udp from any to any port 443/u);
+      assert.match(step.run, /sudo pfctl -f -\nsudo pfctl -E/u);
+    }
+  }
+});
+
 test('Desktop Nightly has no Apache Nightlies transport or compatibility state', async () => {
   const workflow = await readWorkflow('desktop-nightly.yml');
   assert.equal(workflow.jobs.publish.environment, 'nightly');

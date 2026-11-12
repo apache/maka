@@ -24,6 +24,17 @@ export {
 export { defineInteractiveRuntimeHostComposition } from './host-composition.js';
 export { createUnavailableDomainOperationHandlers } from './operation-dispatcher.js';
 export { startExecutionRuntimeHostService } from './execution-service.js';
+export { createExecutionRuntimeHostComposition } from './execution-composition.js';
+export type {
+  HostCheckpointPublicationOptions,
+  HostCheckpointWorkspaceAuthority,
+} from './session-checkpoint-publication.js';
+export { HostCheckpointError } from './session-checkpoint-coordinator.js';
+export type {
+  HostSessionCheckpointPublication,
+  PublishHostSessionCheckpointInput,
+  PublishedHostSessionCheckpoint,
+} from './session-checkpoint-coordinator.js';
 export { runRuntimeHostProcessLifecycle } from './process-lifecycle.js';
 export {
   createPeerMeshOperationHandlers,

@@ -47,6 +47,7 @@ import {
   syncFile,
 } from './stable-storage.js';
 import { runWithContextValueMutation } from './context-value-mutation-gate.js';
+import { SqliteReclamationCheckpoint } from './sqlite-reclamation-checkpoint.js';
 
 const MAX_MEDIA_TYPE_CODE_POINTS = 256;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -131,6 +132,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
   readonly #storageRoot: string | undefined;
   readonly #valueRoot: string | undefined;
   readonly #mutationGateKey: string;
+  readonly #reclamationCheckpoint = new SqliteReclamationCheckpoint();
   #closed = false;
 
   constructor(path: string, options: SqliteContextOffloadStoreOptions) {
@@ -518,6 +520,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     this.#assertOpen();
     // Probe under a read transaction so an idle tick never takes the write lock.
     if (this.#readTransaction(() => this.#freelistPages()) === 0) {
+      this.#reclamationCheckpoint.run(this.#database, 0);
       return { reclaimedPages: 0, hasMore: false };
     }
     const result = this.#writeTransaction(() => {
@@ -530,7 +533,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
       return { reclaimedPages: before - after, hasMore: after > 0 && after < before };
     });
     // PASSIVE never waits on readers; it moves the shrink into the main file.
-    if (result.reclaimedPages > 0) this.#database.exec('PRAGMA wal_checkpoint(PASSIVE)');
+    this.#reclamationCheckpoint.run(this.#database, result.reclaimedPages);
     return result;
   }
 

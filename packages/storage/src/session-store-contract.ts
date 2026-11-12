@@ -239,6 +239,7 @@ export interface WorkHubMessageAssignmentResult {
 }
 
 export type StableSessionCreateInput = CreateSessionInput & {
+  readonly branchNameOrigin?: SessionHeader['branchNameOrigin'];
   readonly conversationCopy?: SessionConversationCopy;
   readonly role?: SessionRole;
 };
@@ -462,7 +463,16 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
     externalOrigin: SessionExternalOrigin,
-    options?: { readonly onCommitStarted?: () => void },
+    options?: {
+      readonly onCommitStarted?: () => void;
+      /** Discard prepared bytes only when no Session was committed. */
+      readonly discardPreparedMessages?: (sessionId: string) => Promise<void>;
+      /** Prepare Session-owned attachment references before any transcript publication. */
+      readonly prepareMessages?: (
+        sessionId: string,
+        messages: readonly StoredMessage[],
+      ) => Promise<readonly StoredMessage[]>;
+    },
   ): Promise<SessionHeader>;
   /** Look up live published imports for a bounded page of source Sessions. */
   lookupExternalSessionImports(

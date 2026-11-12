@@ -33,6 +33,7 @@ export type MessagePlacement = 'current_turn' | 'next_turn';
 /** One Message as the Composer submits it; the Host decides its admission. */
 export interface ConversationMessageCommand {
   readonly messageId: string;
+  readonly replacesLocalMessageId?: string;
   readonly text: string;
   readonly localDisplayPlacement?: MessagePlacement;
   readonly displayText?: string;
@@ -47,7 +48,7 @@ export interface ConversationMessageCommand {
 export type ConversationMessageSubmission =
   | {
       readonly ok: true;
-      readonly disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved';
+      readonly disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved' | 'inbox';
       readonly turnId?: string;
       readonly attachments: AttachmentRef[];
       readonly inlineReferences: InlineReference[];

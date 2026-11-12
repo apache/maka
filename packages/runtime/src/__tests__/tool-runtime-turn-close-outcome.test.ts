@@ -28,6 +28,11 @@ import type { MakaTool } from '../tool-runtime.js';
 
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import {
+  RuntimeInteractionClosedError,
+  RuntimeInteractionFailStopError,
+  RuntimeInteractionInvariantError,
+} from '../interaction-authority.js';
 
 /**
  * #2253: a stop that lands while an AskUserQuestion is parked ends the turn
@@ -41,6 +46,77 @@ import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
  * session-manager-terminal-ledger.test.ts).
  */
 describe('ToolRuntime turn-close outcome identity', () => {
+  for (const error of [
+    new RuntimeInteractionClosedError('question-1', 'turn_stopped'),
+    new RuntimeInteractionInvariantError('invalid interaction state'),
+    new RuntimeInteractionFailStopError('interaction authority unavailable', new Error('offline')),
+  ]) {
+    it(`preserves ${error.name} while only settling a known interaction closure`, async () => {
+      const prepared: ToolPreparedCommit[] = [];
+      const outcomes: ToolOutcomeCommit[] = [];
+      const events: SessionEvent[] = [];
+      const runtime = createTestToolRuntime({
+        sessionId: 'session-1',
+        header: header(),
+        connection: connection(),
+        modelId: 'model-1',
+        newId: nextId(),
+        now: nextNow(),
+        getPermissionPauseTarget: () => null,
+        runId: 'run-1',
+        runtimeCommitSink: {
+          commitToolPrepared: async (input) => {
+            prepared.push(input);
+            return { created: true, runtimeEventSeq: 1 };
+          },
+          commitToolOutcome: async (input) => {
+            outcomes.push(input);
+            return { created: true, runtimeEventSeq: 2 };
+          },
+        },
+      });
+      await assert.rejects(
+        runtime.settleToolCall({
+          tool: {
+            name: 'AskUserQuestion',
+            description: 'ask',
+            parameters: {},
+            recoveryMode: 'never_auto_retry',
+            impl: async () => {
+              throw error;
+            },
+          },
+          turnId: 'turn-1',
+          toolCallId: 'provider-call-1',
+          input: {},
+          abortSignal: new AbortController().signal,
+          eventSink: {
+            push: (event) => {
+              events.push(event);
+            },
+            pushAndWaitUntilConsumed: async (event) => {
+              events.push(event);
+            },
+          },
+        }),
+        (actual) => actual === error,
+      );
+      const results = events.filter((event) => event.type === 'tool_result');
+      if (error instanceof RuntimeInteractionClosedError) {
+        assert.equal(outcomes.length, 1);
+        assert.equal(outcomes[0]?.operationId, prepared[0]?.operationId);
+        assert.equal(outcomes[0]?.runtimeEvent?.content?.kind, 'function_response');
+        assert.equal(results.length, 1);
+        assert.equal(results[0]?.outcome, 'aborted');
+        assert.equal(results[0]?.isError, true);
+      } else {
+        assert.equal(outcomes.length, 0);
+        assert.equal(results.length, 0);
+      }
+      await runtime.endTurn('aborted');
+    });
+  }
+
   it('keeps the operation identity on a result synthesized after endTurn', async () => {
     const prepared: ToolPreparedCommit[] = [];
     const outcomes: ToolOutcomeCommit[] = [];

@@ -26,7 +26,7 @@ import type { Overrides } from '@astryxdesign/core/i18n';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 import { ASTRYX_COPY_ZH, ASTRYX_COPY_ZH_TW } from './astryx-copy.js';
 import { useUiLocale } from './locale-context.js';
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import type { ShippedUiCatalog, UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 /**
  * Astryx ships no `zh` message catalog: its built-in strings ("Copy code",
@@ -99,10 +99,10 @@ const OVERRIDES_BY_LOCALE = {
   },
   'zh-CN': chineseOverrides('zh-CN', ASTRYX_COPY_ZH),
   'zh-TW': chineseOverrides('zh-TW', ASTRYX_COPY_ZH_TW),
-} satisfies UiCatalog<Overrides>;
+} satisfies ShippedUiCatalog<Overrides>;
 
 export function astryxMessageOverrides(locale: UiLocale): Overrides {
-  return OVERRIDES_BY_LOCALE[locale];
+  return (OVERRIDES_BY_LOCALE as Partial<UiCatalog<Overrides>>)[locale] ?? OVERRIDES_BY_LOCALE.en;
 }
 
 // The catalogues live off-barrel in astryx-copy.ts because nothing outside

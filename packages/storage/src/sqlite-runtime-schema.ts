@@ -954,6 +954,22 @@ export function configureSqliteRuntimeDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON');
 }
 
+/** Set the reclamation mode before an uninitialized database gets its first page. */
+export function configureSqliteRuntimeAutoVacuumForNewDatabase(db: DatabaseSync): void {
+  // Another opener may have created the file without initializing its header.
+  // File existence cannot tell us whether it still needs this configuration.
+  // Preserve initialized databases, including those with no application tables.
+  const pages = db.prepare('PRAGMA page_count').get() as { page_count: number };
+  if (pages.page_count !== 0) return;
+  db.exec('PRAGMA auto_vacuum = INCREMENTAL');
+  const configured = db.prepare('PRAGMA auto_vacuum').get() as
+    | { auto_vacuum?: unknown }
+    | undefined;
+  if (configured?.auto_vacuum !== 2) {
+    throw new Error('New SQLite runtime database did not enable incremental auto-vacuum');
+  }
+}
+
 /** Configure connection-local lock waiting without changing persistent database state. */
 export function configureSqliteRuntimeLockWait(db: DatabaseSync): void {
   db.exec(`PRAGMA busy_timeout = ${SQLITE_INITIALIZATION_BUSY_TIMEOUT_MS}`);

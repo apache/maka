@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export interface ArchiveRetentionCopy {
@@ -55,7 +57,7 @@ export interface ArchiveRetentionCopy {
   readonly cancel: string;
 }
 
-const COPY_BY_LOCALE = {
+const COPY_BY_LOCALE = resolveUiMessageCatalog(defineShippedUiMessageCatalog<ArchiveRetentionCopy>()({
   'zh-CN': {
     noticeTitle: (hostName: string) => `「${hostName}」的自动清理`,
     viewArchivedTasks: '查看已归档任务',
@@ -171,7 +173,7 @@ const COPY_BY_LOCALE = {
     confirmChange: 'Change',
     cancel: 'Cancel',
   },
-} satisfies UiCatalog<ArchiveRetentionCopy>;
+})) satisfies UiCatalog<ArchiveRetentionCopy>;
 
 export function getArchiveRetentionCopy(locale: UiLocale): ArchiveRetentionCopy {
   return COPY_BY_LOCALE[locale];

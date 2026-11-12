@@ -63,6 +63,7 @@ export type {
   WorkbarController,
 } from './controller/use-workbar-controller.js';
 export { createWorkbarShellBridge } from './controller/workbar-shell-bridge.js';
+export { recentTurnCopy } from './ui/recent-turn-overlay.js';
 export { WorkbarShellRoot } from './ui/workbar-shell-root.js';
 export { WorkbarProvider, useWorkbarHostModel } from './ui/workbar-provider.js';
 export { SideChatCloseConfirmation } from './ui/side-chat-close-confirmation.js';

@@ -12,7 +12,7 @@ conditions. What follows is a list of issues the project is currently aware of
 (this list is likely to be incomplete):
 
  * The initial-code authorization review remains open at
-   https://github.com/apache/maka/issues/3268. Since RC1, the ASF has recorded
+   https://github.com/apache/maka/issues/3268. Since 0.2.0 RC1, the ASF has recorded
    the ICLA of contributor Mingqwqqaq, and the Deep Research implementation
    has been removed. The review still needs to record the authorization basis
    for the retained initial code; these changes do not establish that an SGA

@@ -101,7 +101,6 @@ export function buildHostAgentSettingsTools(
       'This never returns credentials, network proxy details, native client settings, or Bot settings.',
     parameters: z.object({}).strict(),
     categoryHint: 'read',
-    recoveryMode: 'replay_safe',
     impl: async () => projectSettings((await authority.read()).policy),
   };
   const updateTool: MakaTool<AgentSettingsPatch, AgentSettingsUpdateResult> = {

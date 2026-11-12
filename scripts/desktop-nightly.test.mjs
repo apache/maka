@@ -35,6 +35,7 @@ import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs
 const run = promisify(execFile);
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(import.meta.url);
+const { version: productVersion } = require('../package.json');
 const { GitHubProvider } = require('electron-updater/out/providers/GitHubProvider.js');
 const { HttpError } = require('builder-util-runtime');
 
@@ -65,7 +66,7 @@ releaseDate: '2026-09-18T00:00:00.000Z'
 }
 
 test('a nightly package embeds only the Apache GitHub dev update authority', () => {
-  const version = '0.2.0-dev.42.20260829';
+  const version = `${productVersion}-dev.42.20260829`;
   const config = resolveDesktopBuilderConfig({
     MAKA_DESKTOP_NIGHTLY_VERSION: version,
   });
@@ -83,7 +84,7 @@ test('a nightly package embeds only the Apache GitHub dev update authority', () 
 });
 
 test('the macOS Nightly wrapper accepts dev update metadata', async () => {
-  const version = '0.2.0-dev.42.20260829';
+  const version = `${productVersion}-dev.42.20260829`;
   const macosTarget = desktopReleaseTargets(version, { nightly: true }).find(
     (entry) => entry.name === 'macos-arm64',
   );
@@ -120,7 +121,7 @@ test('the macOS Nightly wrapper accepts dev update metadata', async () => {
 });
 
 test('the Windows Nightly wrapper accepts dev update metadata', async () => {
-  const version = '0.2.0-dev.42.20260829';
+  const version = `${productVersion}-dev.42.20260829`;
   const windowsTarget = desktopReleaseTargets(version, { nightly: true }).find(
     (entry) => entry.name === 'windows-x64',
   );
@@ -151,7 +152,7 @@ test('the Windows Nightly wrapper accepts dev update metadata', async () => {
 });
 
 test('the Linux Nightly wrapper builds the AppImage before the deb and merges one feed', async () => {
-  const version = '0.2.0-dev.42.20260829';
+  const version = `${productVersion}-dev.42.20260829`;
   const events = [];
   await packageLinux({
     platform: 'linux',
@@ -374,7 +375,7 @@ test('formal release checks ignore the ambient Nightly packaging environment', a
       cwd: repoRoot,
       env: {
         ...environment,
-        MAKA_DESKTOP_NIGHTLY_VERSION: '0.2.0-dev.42.20260829',
+        MAKA_DESKTOP_NIGHTLY_VERSION: `${productVersion}-dev.42.20260829`,
       },
     },
   );

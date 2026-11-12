@@ -27,6 +27,7 @@ import {
   decodeRuntimeHostPosixOperatorCommand,
   decodeRuntimeHostWebRtcStunPolicy,
   type RuntimeHostManagedUpdatePolicy,
+  type RuntimeHostNodeOperatorCommand,
   type RuntimeHostPosixOperatorCommand,
   type RuntimeHostWebRtcStunPolicy,
 } from '@maka/runtime-host/operator';
@@ -34,7 +35,6 @@ import {
   canonicalProjectDirectoryRootSpec,
   isCanonicalRuntimeHostWebSocketPath,
   PROJECT_DIRECTORY_MAX_ROOTS,
-  projectDirectoryPosixRootSpecValid,
   projectDirectoryRootSpecValid,
 } from '@maka/runtime-host/protocol';
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
@@ -150,6 +150,10 @@ export type RuntimeHostCliCommand =
       repairRootAfterRemount?: true;
       updateExisting?: true;
       reuseExistingEnvironment?: true;
+      expectedExisting?: {
+        readonly rootId: string;
+        readonly operator: RuntimeHostNodeOperatorCommand<'posix'>;
+      };
       allowInterruptActiveTasks?: true;
       clientDataRoot?: string;
       rootPath?: string;
@@ -726,12 +730,23 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   let repairRootAfterRemount = false;
   let updateExisting = false;
   let reuseExistingEnvironment = false;
+  let expectedOperator: RuntimeHostNodeOperatorCommand<'posix'> | undefined;
   let allowInterruptActiveTasks = false;
   let clientDataRoot: string | undefined;
   let enableDirectPeer = false;
   const coordinationRelays: string[] = [];
   const options = parseManagedServiceOptions(argv, {
     valueOptions: {
+      '--expected-operator-json': (value) => {
+        if (expectedOperator) return error('Duplicate --expected-operator-json');
+        try {
+          const operator = decodeRuntimeHostPosixOperatorCommand(JSON.parse(value));
+          if (operator.kind !== 'node') return error('Expected a POSIX Node operator');
+          expectedOperator = operator;
+        } catch {
+          return error('--expected-operator-json must contain a POSIX Node operator');
+        }
+      },
       '--client-data-root': (value) => {
         if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
         if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
@@ -791,6 +806,14 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   });
   if ('kind' in options) return options;
   if (
+    (options.managedRootId !== undefined || expectedOperator !== undefined) &&
+    (!reuseExistingEnvironment || !options.managedRootId || !expectedOperator)
+  ) {
+    return error(
+      'Node recovery requires --reuse-existing-environment, --managed-root-id, and --expected-operator-json',
+    );
+  }
+  if (
     reuseExistingEnvironment &&
     ((lifecycle as string) !== 'on_demand' ||
       updateExisting ||
@@ -826,6 +849,9 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     ...(repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
     ...(updateExisting ? { updateExisting: true } : {}),
     ...(reuseExistingEnvironment ? { reuseExistingEnvironment: true } : {}),
+    ...(expectedOperator
+      ? { expectedExisting: { rootId: options.managedRootId!, operator: expectedOperator } }
+      : {}),
     ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
     ...(clientDataRoot ? { clientDataRoot } : {}),
     ...(enableDirectPeer ? { directPeer: { coordinationRelays } } : {}),
@@ -1552,9 +1578,7 @@ function parseManagedServiceOptions(
         }
         projectDirectoryPolicySpecified = true;
         const root =
-          argument === '--project-root'
-            ? parseProjectRoot(parsed, 'posix')
-            : parseProjectRootJson(parsed, 'posix');
+          argument === '--project-root' ? parseProjectRoot(parsed) : parseProjectRootJson(parsed);
         if ('kind' in root) return root;
         if (projectDirectoryRoots.length >= PROJECT_DIRECTORY_MAX_ROOTS) {
           return error(
@@ -2086,9 +2110,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
       const parsed = optionValue(argv, index, argument);
       if (typeof parsed !== 'string') return parsed;
       const root =
-        argument === '--project-root'
-          ? parseProjectRoot(parsed, 'native')
-          : parseProjectRootJson(parsed, 'native');
+        argument === '--project-root' ? parseProjectRoot(parsed) : parseProjectRootJson(parsed);
       if ('kind' in root) return root;
       if (projectDirectoryRoots.length >= PROJECT_DIRECTORY_MAX_ROOTS) {
         return error(`--project-root may be provided at most ${PROJECT_DIRECTORY_MAX_ROOTS} times`);
@@ -2277,10 +2299,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   };
 }
 
-function parseProjectRoot(
-  value: string,
-  pathKind: 'native' | 'posix',
-): { label: string; path: string } | RuntimeHostCliError {
+function parseProjectRoot(value: string): { label: string; path: string } | RuntimeHostCliError {
   const separator = value.indexOf('=');
   if (separator <= 0 || separator === value.length - 1) {
     return error('--project-root must use <label>=<absolute-path>');
@@ -2289,17 +2308,14 @@ function parseProjectRoot(
     label: value.slice(0, separator),
     path: value.slice(separator + 1),
   });
-  if (!projectRootValid(root, pathKind)) {
-    return error(
-      `--project-root must use a valid label and absolute ${pathKind === 'posix' ? 'POSIX' : 'Host'} path`,
-    );
+  if (!projectRootValid(root)) {
+    return error(`--project-root must use a valid label and absolute Host path`);
   }
   return root;
 }
 
 function parseProjectRootJson(
   value: string,
-  pathKind: 'native' | 'posix',
 ): { label: string; path: string } | RuntimeHostCliError {
   let parsed: unknown;
   try {
@@ -2322,21 +2338,14 @@ function parseProjectRootJson(
     label: root.label,
     path: root.path,
   });
-  if (!projectRootValid(canonical, pathKind)) {
-    return error(
-      `--project-root-json must use a valid label and absolute ${pathKind === 'posix' ? 'POSIX' : 'Host'} path`,
-    );
+  if (!projectRootValid(canonical)) {
+    return error(`--project-root-json must use a valid label and absolute Host path`);
   }
   return canonical;
 }
 
-function projectRootValid(
-  root: { readonly label: string; readonly path: string },
-  pathKind: 'native' | 'posix',
-): boolean {
-  return pathKind === 'posix'
-    ? projectDirectoryPosixRootSpecValid(root)
-    : projectDirectoryRootSpecValid(root) && isAbsolute(root.path);
+function projectRootValid(root: { readonly label: string; readonly path: string }): boolean {
+  return projectDirectoryRootSpecValid(root) && isAbsolute(root.path);
 }
 
 function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
