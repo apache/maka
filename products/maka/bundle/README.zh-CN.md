@@ -138,3 +138,11 @@ npm --workspace @maka-agent/product test
 ```
 
 npm 测试使用轻量编译器，检查完整的 Host/UI 包与工具展示声明。`cargo test --locked -p maka-cli --test integration product_composition::` 通过实际 CLI 验证业务组合，运行时无需 Node。原生渲染、焦点和输入变更由对应 shell 的测试验证。
+
+## 在对话中使用可复用子 Agent
+
+例如：“创建一个用于代码审查的 Reviewer 角色，使用我的本地连接和 llama3.2，指令是：报告缺陷并附文件和行号。”连接或模型有歧义时，先通过 `ModelList` 澄清再保存。`SubagentPresetCreate` 返回实际保存的配置和稳定 ID；目录初始为空。只有用户明确要求保存或修改角色时才持久化。
+
+随后：“用 Reviewer 审查当前分支，本次重点看取消逻辑。”通过 `SubagentPresetList` 按名称和 description 选择可用角色，将 ID 作为 `SessionCreate.presetId`，不传 `backend`。用 `SessionSend` 发送本次任务和上下文，省略 `backend` 以保留角色模型。description 用于选择角色，instruction 指导执行，本次任务承载一次性要求。完整指令按需通过 `SubagentPresetRead` 读取，不固定加入父会话每轮上下文。显式指定的角色不可用时报告具体原因；未指定角色时仍可普通委派。
+
+最后：“今后 Reviewer 只修改输出指令，要求使用 Markdown 缺陷列表，其他不变。”先读版本，再用 `SubagentPresetUpdate` 仅提交 `id`、`expectedRevision` 和 `instruction`；空字符串可清空指令。通过 `enabled` 停用/启用，通过 `SubagentPresetDelete` 删除明确指定的角色。已有会话保留其快照。停用或失效角色仍可读取和修复。冲突时重新读取并处理，仅 `saved`/`deleted` 表示变更成功；未知结果恢复原操作回执，不重新提交变更或任务。预设不授予工具、权限或委派能力。
