@@ -19,7 +19,7 @@
 
 //! Session-owned requests exist before Run admission. Only the native owner
 //! chooses delivery policy; these statements preserve its decisions and evidence.
-use crate::{ContentBlob, Head};
+use crate::{Change, ContentBlob, Head};
 use maka_agent_facts::durable::*;
 use maka_event_log::{
     StoreError,
@@ -147,6 +147,19 @@ pub struct ReadyEntry {
     pub entry: QueueEntry,
 }
 
+pub enum Followup {
+    Queued(RunId),
+    Interrupt { run: RunId, stop: FactId },
+}
+
+impl Followup {
+    fn original(&self) -> RunId {
+        match *self {
+            Self::Queued(run) | Self::Interrupt { run, .. } => run,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct QueueStore {
     data: DataWriter,
@@ -167,7 +180,7 @@ impl QueueStore {
             session,
             command,
             contents,
-            admission_fence: None,
+            followup: None,
             work_fence: None,
         })
     }
@@ -178,13 +191,13 @@ impl QueueStore {
         session: String,
         command: QueueCommand,
         contents: Vec<ContentBlob>,
-        original: RunId,
+        followup: Followup,
     ) -> maka_event_log::root_store::DataChange {
         self.data.prepare(Write {
             session,
             command,
             contents,
-            admission_fence: Some(original),
+            followup: Some(followup),
             work_fence: None,
         })
     }
@@ -201,7 +214,7 @@ impl QueueStore {
             session,
             command,
             contents,
-            admission_fence: None,
+            followup: None,
             work_fence: Some(Arc::new(fence)),
         })
     }
@@ -210,7 +223,7 @@ impl QueueStore {
         session: String,
         command: QueueCommand,
         contents: Vec<ContentBlob>,
-        original: Option<RunId>,
+        followup: Option<Followup>,
         fence: Option<SessionWorkFence>,
         extra: S,
     ) -> maka_event_log::root_store::DataChange {
@@ -219,7 +232,7 @@ impl QueueStore {
                 session,
                 command,
                 contents,
-                admission_fence: original,
+                followup,
                 work_fence: fence.map(Arc::new),
             },
             extra,
@@ -236,7 +249,7 @@ impl QueueStore {
                 session,
                 command,
                 contents,
-                admission_fence: None,
+                followup: None,
                 work_fence: None,
             })
             .await
@@ -328,7 +341,7 @@ struct Write {
     session: String,
     command: QueueCommand,
     contents: Vec<ContentBlob>,
-    admission_fence: Option<RunId>,
+    followup: Option<Followup>,
     work_fence: Option<Arc<SessionWorkFence>>,
 }
 impl Statement for Write {
@@ -338,13 +351,29 @@ impl Statement for Write {
         vec![Arc::new((self.contents.clone(), self.work_fence.clone()))]
     }
     fn execute(self, c: &Connection) -> Result<Prepared<Self::Value>, StoreError> {
+        let at = self.command.at;
         let (value, changed) = sql::write(
             c,
             &self.session,
             self.command,
             self.contents,
-            self.admission_fence,
+            self.followup.as_ref().map(Followup::original),
         )?;
+        if changed && let Some(Followup::Interrupt { run, stop }) = self.followup {
+            // The queue entry and Stop share the same Root receipt transaction.
+            crate::store::StopRun {
+                run,
+                change: Change {
+                    id: stop,
+                    at,
+                    fact: Fact::StopRequested {
+                        diagnostic: "steering_interrupt".into(),
+                    },
+                },
+                retract_pending: false,
+            }
+            .execute(c)?;
+        }
         Ok(Prepared {
             value,
             changed,

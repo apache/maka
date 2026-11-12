@@ -28,6 +28,7 @@ use std::{
 };
 
 mod agy;
+mod agy_acp;
 mod attachments;
 mod claude;
 mod codex;
@@ -40,7 +41,7 @@ mod runtime;
 mod steering;
 mod tools;
 const PRESENTATION_VERSION: u32 = 3;
-const AGY_ACTIVITY_VERSION: u32 = 4;
+const AGY_ACP_VERSION: u32 = 5;
 pub(crate) use history::Inputs;
 pub(crate) use tools::{HostEffects, HostTools};
 
@@ -67,11 +68,9 @@ pub(crate) enum NativeTask {
         session: String,
         input: String,
     },
-    Antigravity {
-        conversation: String,
-        user_step: u64,
-        #[serde(default)]
-        step_annotations: bool,
+    AntigravityAcp {
+        session: String,
+        prompt_id: u64,
     },
 }
 
@@ -328,14 +327,14 @@ impl External {
         };
         let runtime = match &binding.task {
             NativeTask::Codex { .. } => NativeRuntime::Codex,
-            NativeTask::Antigravity { .. } => NativeRuntime::Antigravity,
+            NativeTask::AntigravityAcp { .. } => NativeRuntime::Antigravity,
             NativeTask::Claude { .. }
             | NativeTask::ClaudePty { .. }
             | NativeTask::ClaudeStream { .. } => NativeRuntime::Claude,
         };
         if !matches!(
             binding.adapter_version,
-            2 | PRESENTATION_VERSION | AGY_ACTIVITY_VERSION
+            2 | PRESENTATION_VERSION | AGY_ACP_VERSION
         ) || request
             .settings
             .runtime

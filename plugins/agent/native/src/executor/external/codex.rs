@@ -238,7 +238,7 @@ async fn run(
                 "Codex instruction-message injection has no acknowledgement".into(),
             ));
         }
-        journal.confirm_instructions(Some(update)).await?;
+        journal.confirm_instructions(update).await?;
     }
     bridge.admit()?;
     let mut input = vec![serde_json::json!({"type":"text","text":request["message"]})];

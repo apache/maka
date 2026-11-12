@@ -37,9 +37,6 @@ use std::{collections::BTreeMap, panic::AssertUnwindSafe, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-#[cfg(target_os = "macos")]
-#[doc(hidden)]
-pub mod agy_hook;
 pub(crate) mod attachments;
 pub(crate) mod cleanup;
 pub(crate) mod external;
@@ -80,7 +77,6 @@ pub(crate) struct Executors(BTreeMap<String, Backend>);
 pub(super) enum ActiveDelivery {
     Steer,
     InterruptResume,
-    InterruptUnsupported,
     Queue,
 }
 impl Executors {
@@ -185,8 +181,7 @@ impl Executors {
         }
         match accepted.selection.settings.runtime.as_deref() {
             Some("codex" | "claude") => ActiveDelivery::Steer,
-            Some("antigravity") if cfg!(unix) => ActiveDelivery::InterruptResume,
-            Some("antigravity") => ActiveDelivery::InterruptUnsupported,
+            Some("antigravity") => ActiveDelivery::InterruptResume,
             _ => ActiveDelivery::Queue,
         }
     }

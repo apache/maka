@@ -41,26 +41,6 @@ mod startup;
 mod windows;
 
 fn main() -> std::process::ExitCode {
-    #[cfg(target_os = "macos")]
-    if std::env::args_os().nth(1).as_deref()
-        == Some(std::ffi::OsStr::new(
-            maka_agent_native::executor::agy_hook::ARG,
-        ))
-    {
-        let mut args = std::env::args_os().skip(2);
-        return match (args.next(), args.next()) {
-            (Some(directory), None) => {
-                match maka_agent_native::executor::agy_hook::run(std::path::Path::new(&directory)) {
-                    Ok(()) => std::process::ExitCode::SUCCESS,
-                    Err(error) => {
-                        eprintln!("Maka Antigravity tool hook: {error}");
-                        std::process::ExitCode::FAILURE
-                    }
-                }
-            }
-            _ => std::process::ExitCode::FAILURE,
-        };
-    }
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new(maka_process::isolated::HELPER))
     {

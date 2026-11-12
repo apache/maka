@@ -25,6 +25,7 @@ pub mod install;
 pub mod ports;
 mod projection;
 pub use conversation::Provider;
+pub use projection::Projection as AcpV1Projection;
 pub mod setup;
 mod transport;
 

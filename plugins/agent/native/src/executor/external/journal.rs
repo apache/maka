@@ -97,10 +97,9 @@ impl ProtocolSession {
         self.observation
             .binding
             .bound(NativeBinding {
-                adapter_version: if matches!(task, NativeTask::Antigravity { .. }) {
-                    AGY_ACTIVITY_VERSION
-                } else {
-                    PRESENTATION_VERSION
+                adapter_version: match task {
+                    NativeTask::AntigravityAcp { .. } => AGY_ACP_VERSION,
+                    _ => PRESENTATION_VERSION,
                 },
                 command_basis: self.command_basis.clone(),
                 resource: self.resource.clone(),
@@ -126,17 +125,10 @@ impl ProtocolSession {
         let text = instruction_text(instructions);
         Some(InstructionUpdate { digest, text })
     }
-    pub async fn confirm_instructions(
-        &mut self,
-        update: Option<InstructionUpdate>,
-    ) -> Result<(), Error> {
-        self.session.instructions_digest =
-            Some(update.map_or_else(|| instruction_digest(None), |update| update.digest));
+    pub async fn confirm_instructions(&mut self, update: InstructionUpdate) -> Result<(), Error> {
+        self.session.instructions_digest = Some(update.digest);
         self.revision = Some(self.save(&self.session).await?);
         Ok(())
-    }
-    pub fn bootstrap_completed(&self) -> bool {
-        self.session.instructions_digest.is_some()
     }
     pub fn native_session(&self) -> Option<&str> {
         self.session.native_session.as_deref()
@@ -169,7 +161,7 @@ impl ProtocolSession {
     }
 }
 
-pub(super) fn instruction_text(instructions: Option<&str>) -> String {
+fn instruction_text(instructions: Option<&str>) -> String {
     match instructions {
             Some(text) => format!("These are the current Maka instructions. They replace all earlier Maka instruction blocks; do not retain superseded Maka instructions.\n\n{text}"),
             None => "The previous Maka instruction blocks are now cleared. Do not apply their instructions to subsequent requests. Continue following your native system instructions and the user's requests.".into(),

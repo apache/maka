@@ -131,17 +131,9 @@ pub(in crate::executor::external) async fn execute(
         let observation = observation.clone();
         let stop = stop.clone();
         let settled = settled.clone();
-        let bridge = bridge.clone();
         tokio::spawn(async move {
-            let process = runtime::original_child_wait(
-                &mut child,
-                &observation,
-                &stop,
-                &settled,
-                false,
-                Some(&bridge),
-            )
-            .await;
+            let process =
+                runtime::original_child_wait(&mut child, &observation, &stop, &settled).await;
             let process = match process {
                 Ok(()) => Ok(()),
                 Err(_) => child
@@ -170,7 +162,7 @@ pub(in crate::executor::external) async fn execute(
             let images = request["images"].as_array().expect("canonical images");
             let update = journal.instruction_update(request["instructions"].as_str());
             let prompt = if let Some(update) = update {
-                let bootstrap = input::text(&runtime::bootstrap_message(Some(&update.text)));
+                let bootstrap = input::text(&runtime::bootstrap_message(&update.text));
                 let sent = input::submit(
                     &mut stdin,
                     &mut screen,
@@ -196,7 +188,7 @@ pub(in crate::executor::external) async fn execute(
                 if !matches!(outcome, Outcome::Completed { .. }) {
                     return Ok(outcome);
                 }
-                journal.confirm_instructions(Some(update)).await?;
+                journal.confirm_instructions(update).await?;
                 input::send(&mut stdin, &mut screen, &prompt, images, &mut start).await?
             } else {
                 input::submit(
