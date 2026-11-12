@@ -1118,7 +1118,7 @@ impl Engine {
                 }
                 let prepared = match result {
                     Ok(value) => value,
-                    Err(error) => return self.preparation_failure(claim, &view, error, now).await,
+                    Err(error) => return self.port_failure(claim, &view, error, now).await,
                 };
                 let request = ContentBlob::json(&prepared.request)?;
                 let mut contents = prepared.contents;
@@ -1805,38 +1805,6 @@ impl Engine {
         });
         acceptance.extend(loaded);
         Ok((acceptance, result))
-    }
-
-    async fn preparation_failure(
-        &self,
-        claim: &DriverClaim,
-        view: &RunView,
-        error: RunError,
-        now: UnixMillis,
-    ) -> Result<(), RunError> {
-        let diagnostic = match error {
-            RunError::PreparationLimit(reason) => reason.into(),
-            RunError::Preparation(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::InvalidInput
-                        | std::io::ErrorKind::InvalidData
-                        | std::io::ErrorKind::Unsupported
-                ) =>
-            {
-                format!("Model input preparation rejected ({:?})", error.kind())
-            }
-            error => return self.port_failure(claim, view, error, now).await,
-        };
-        self.publish(
-            Some(claim),
-            view,
-            termination_facts(view, Terminal::Failed, Some(diagnostic)),
-            vec![],
-            now,
-        )
-        .await?;
-        Ok(())
     }
 
     async fn port_failure(

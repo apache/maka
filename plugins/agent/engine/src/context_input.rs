@@ -49,7 +49,10 @@ pub async fn fit_prepared_summary(
     if prompt.is_generated() {
         return fit_generated_summary(prompt, tokens, language, cancellation).await;
     }
-    crate::history::source_summary::fit(prompt, tokens, language, cancellation)
+    let active = prompt.active().ok_or_else(|| {
+        crate::RunError::Internal("summary source was not promoted to its full envelope".into())
+    })?;
+    crate::history::source_summary::fit(prompt, tokens, language, cancellation, &active)
         .await
         .map_err(|error| match error {
             crate::history::source_summary::FitError::Run(error) => error,

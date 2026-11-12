@@ -343,9 +343,7 @@ async fn read<T: DeserializeOwned + Send + 'static>(
     let bytes = usize::try_from(reference.bytes)
         .ok()
         .and_then(|bytes| bytes.checked_mul(3))
-        .ok_or(RunError::PreparationLimit(
-            "Cell child observation size overflows",
-        ))?;
+        .ok_or_else(|| RunError::InvalidInput("Cell child observation size overflows".into()))?;
     charge(remaining, bytes)?;
     let token = cancellation.clone();
     let decode = move |reader: &mut dyn std::io::Read| -> Result<T, RunError> {
@@ -370,11 +368,9 @@ async fn read<T: DeserializeOwned + Send + 'static>(
     Ok(decoded)
 }
 fn charge(remaining: &mut usize, bytes: usize) -> Result<(), RunError> {
-    *remaining = remaining
-        .checked_sub(bytes)
-        .ok_or(RunError::PreparationLimit(
-            "Cell child observation exceeds preparation staging limit",
-        ))?;
+    *remaining = remaining.checked_sub(bytes).ok_or_else(|| {
+        RunError::InvalidInput("Cell child observation exceeds preparation staging limit".into())
+    })?;
     Ok(())
 }
 fn check(cancellation: &CancellationToken) -> Result<(), RunError> {

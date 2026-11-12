@@ -42953,11 +42953,6 @@ export const contracts: {
                 minLength: 1,
                 default: '.',
               },
-              after: {
-                type: ['string', 'null'],
-                description:
-                  'Continue after next_after from the previous page with the same pattern and cwd.',
-              },
             },
             required: ['pattern'],
             title: 'Input',

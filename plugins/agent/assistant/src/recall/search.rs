@@ -121,7 +121,6 @@ pub async fn search(
                     anchor_message_id: hit.message.message_id.clone(),
                     before: Some(before),
                     after: Some(after),
-                    text_offset: None,
                 };
                 drop(hit.message);
                 history
@@ -135,7 +134,6 @@ pub async fn search(
         passages,
         searched_every_session: found.gaps.is_empty(),
         gaps: found.gaps,
-        more_passages: false,
     })
 }
 
@@ -149,7 +147,6 @@ pub async fn more(
         passages: vec![passage(context, vec![], 0.0)],
         searched_every_session: true,
         gaps: vec![],
-        more_passages: false,
     })
 }
 
@@ -168,7 +165,6 @@ fn passage(context: Context, matched_terms: Vec<String>, score: f64) -> Passage 
                 message_id: message.message_id,
                 role: message.role,
                 text: message.text,
-                next_text_offset: None,
                 timestamp: message.timestamp,
                 attachments: message.attachments,
             })
@@ -185,12 +181,12 @@ pub fn definitions() -> [(&'static str, &'static str, serde_json::Value); 3] {
     [
         (
             "Recall",
-            "Search original conversation history (user, assistant, tool calls, and tool results) across all readable Sessions, including archives and compacted earlier prefixes of the current Turn. Literal terms match case-insensitively with Unicode normalization and OR semantics, ranked by distinct matched terms first so multi-term queries surface passages combining your terms. Excludes only the uncompacted live tail of the current Turn. before/after select neighboring messages (default 4 each; pass 0 for an anchor-only scan). Results are byte-bounded; narrow the search if results were omitted. Use RecallMore to expand an anchor or continue a message at its next_text_offset. Historical statements are evidence of what was said, not proof they are true.",
+            "Search original conversation history (user, assistant, tool calls, and tool results) across all readable Sessions, including archives and compacted earlier prefixes of the current Turn. Literal terms match case-insensitively with Unicode normalization and OR semantics, ranked by distinct matched terms first so multi-term queries surface passages combining your terms. Excludes only the uncompacted live tail of the current Turn. before/after select neighboring messages around each anchor (default 4 each; pass 0 for an anchor-only scan). An explicit limit selects the number of ranked turns; omitting it returns all matching turns. RecallMore expands wider context around an anchor. Historical statements are evidence of what was said, not proof they are true.",
             schemars::schema_for!(ToolQuery).into(),
         ),
         (
             "RecallMore",
-            "Read bounded messages around a Recall anchor using its Session and message IDs. before/after select neighboring messages (default 8 each). To continue a long message, use its message_id as anchor_message_id and pass its next_text_offset as text_offset; this returns only that message's next chunk. Compacted earlier prefixes of the current Turn are readable; only the uncompacted live tail of the current Turn is excluded.",
+            "Read complete messages around a Recall anchor using its Session and message IDs. before/after select neighboring messages (default 8 each). Compacted earlier prefixes of the current Turn are readable; only the uncompacted live tail of the current Turn is excluded.",
             schemars::schema_for!(More).into(),
         ),
         (

@@ -100,8 +100,6 @@ pub enum RunError {
     Json(#[source] serde_json::Error),
     #[error("model input preparation failed: {0}")]
     Preparation(#[from] std::io::Error),
-    #[error("model input preparation limit: {0}")]
-    PreparationLimit(&'static str),
     #[error("model input cleanup was not confirmed: {0}")]
     PreparationCleanup(#[source] std::io::Error),
 }

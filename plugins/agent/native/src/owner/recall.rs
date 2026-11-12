@@ -21,7 +21,7 @@ use crate::contract::{RecallPage, RecallPassage};
 use maka_agent_facts::{
     durable::RunOwner,
     tool_call::ToolRejection,
-    tool_output::{ToolOutput, ToolSuccess},
+    tool_output::{DurableToolProjection, ToolOutput, ToolSuccess},
     tools::*,
 };
 use maka_agent_state::{
@@ -269,7 +269,6 @@ impl Recall {
             passages,
             searched_every_session: found.gaps.is_empty(),
             gaps: found.gaps,
-            more_passages: false,
         })
     }
     async fn more_result(
@@ -288,18 +287,16 @@ impl Recall {
         let _guard = stop.clone().drop_guard();
         let recall = self.clone();
         let scope = call.clone();
-        let (before, after) = if more.text_offset.is_some() {
-            (0, 0)
-        } else {
-            (more.before.unwrap_or(8), more.after.unwrap_or(8))
-        };
         let context = self
             .worker(call, async move {
                 let context = index
                     .context(
                         more.session_id,
                         more.anchor_message_id,
-                        maka_agent_state::recall::ContextWindow { before, after },
+                        maka_agent_state::recall::ContextWindow {
+                            before: more.before.unwrap_or(8),
+                            after: more.after.unwrap_or(8),
+                        },
                         None,
                         exclude,
                         stop,
@@ -331,7 +328,6 @@ impl Recall {
             )?],
             searched_every_session: true,
             gaps: vec![],
-            more_passages: false,
         })
     }
     pub fn tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
@@ -451,22 +447,20 @@ impl ToolPreparer for Recall {
                     let call = request.scope();
                     let result = async {
                         recall.check(call).await?;
-                        let (found, text_offset) = match input {
+                        let found = match input {
                             Input::Search {
                                 query,
                                 before,
                                 after,
-                            } => (
-                                recall.search_result(call, &query, before, after).await?,
-                                None,
-                            ),
-                            Input::More(more) => {
-                                let offset = more.text_offset;
-                                (recall.more_result(call, more).await?, offset)
-                            }
+                            } => recall.search_result(call, &query, before, after).await?,
+                            Input::More(more) => recall.more_result(call, more).await?,
                         };
                         recall.check(call).await?;
-                        budget::tool_output(found, text_offset)
+                        let text = found.render();
+                        Ok(ToolSuccess::projected(
+                            ToolOutput::Json(serde_json::to_value(found).map_err(failed)?),
+                            DurableToolProjection::Text { text },
+                        ))
                     }
                     .await;
                     request
@@ -535,7 +529,6 @@ fn passage(
                     indexed::Role::Failure => maka_agent_ports::session::history::Role::Failure,
                 },
                 text: message.body,
-                next_text_offset: None,
                 timestamp: message.timestamp,
                 attachments: message.attachments,
             })
@@ -546,6 +539,5 @@ fn passage(
         has_more_after,
     })
 }
-mod budget;
 mod material;
 mod preview;

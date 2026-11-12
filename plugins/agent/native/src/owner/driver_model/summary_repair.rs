@@ -149,7 +149,6 @@ impl DriverModel {
             .await?;
         let native_compaction =
             !repair && model.provider.capabilities.native_compaction == Some(true);
-        let fit_summary = !repair && !native_compaction;
         let context = model.context.as_ref();
         let operation = if native_compaction {
             ModelOperation::CodexCompaction
@@ -164,6 +163,16 @@ impl DriverModel {
             if !repair {
                 frozen.covered_prefix = Some(CoveredPrefix::capture(&original_prompt).await?);
             }
+            let settings = PromptSettings {
+                operation,
+                codex: context.and_then(|value| value.codex.as_ref()),
+                language: frozen.language,
+                provider: &model.provider,
+                options: request.composition.provider_options.as_ref()
+                    .ok_or_else(|| unsupported("frozen-summary-options"))?,
+                context_window: context.and_then(|value| value.model_context_window),
+                tool_choice: frozen.tool_choice,
+            };
             let source = original_prompt.recipes()
                 .ok_or_else(|| unsupported("frozen-summary-recipes"))?;
             let mut builder = preparation::PromptBuilder::new(
@@ -189,8 +198,8 @@ impl DriverModel {
                     Err(close) => preparation::preparation_cleanup_error(error, close),
                 });
             }
-            preparation::prepare_prompt_source(
-                builder, (!fit_summary).then_some(&model.provider), &self.cancellation,
+            preparation::prepare_prompt(
+                builder, &settings, &self.cancellation,
                 frozen.instructions.clone().map(Arc::new), ModelPurpose::Main, None,
             ).await
         }.await;
@@ -255,18 +264,6 @@ impl DriverModel {
             } else {
                 model.main_output_limit
             };
-            if fit_summary {
-                prompt = maka_agent_engine::context_input::fit_prepared_summary(
-                    &prompt,
-                    maka_agent_engine::context_input::summary_budget(context),
-                    frozen.language,
-                    &self.cancellation,
-                )
-                .await?;
-                prompt
-                    .prepare_media(&model.provider, &self.cancellation)
-                    .await?;
-            }
             preparation::prepare_wire(
                 &settings,
                 &mut prompt,
@@ -275,6 +272,23 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
+            if !repair && !native_compaction {
+                prompt = maka_agent_engine::context_input::fit_prepared_summary(
+                    &prompt,
+                    maka_agent_engine::context_input::summary_budget(context),
+                    frozen.language,
+                    &self.cancellation,
+                )
+                .await?;
+                preparation::prepare_wire(
+                    &settings,
+                    &mut prompt,
+                    &request.composition.tools,
+                    output,
+                    &self.cancellation,
+                )
+                .await?;
+            }
             let prepared = preparation::prepare_request(
                 &settings,
                 prompt.clone(),

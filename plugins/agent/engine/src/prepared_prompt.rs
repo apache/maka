@@ -105,15 +105,6 @@ impl PreparedPrompt {
             .as_ref()
             .and_then(|preparation| preparation.active())
     }
-    pub(crate) fn plan_directory(
-        &self,
-        bytes: usize,
-    ) -> std::io::Result<maka_model::DirectoryLease> {
-        self.preparation
-            .as_ref()
-            .ok_or_else(|| std::io::Error::other("request lacks its staging account"))?
-            .plan_directory(bytes)
-    }
     pub fn with_preparation_from(mut self, original: &Self) -> Self {
         self.preparation = original.preparation.clone();
         self.overlay_owner = original.overlay_owner.clone();

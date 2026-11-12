@@ -860,34 +860,6 @@ mod tests {
         Ok((temp, root, store, claim, attempt, witness))
     }
 
-    #[tokio::test]
-    async fn deterministic_preparation_failure_closes_run_but_temporary_contention_does_not()
-    -> TestResult<()> {
-        let (_temp, root, store, claim, _, witness) = fixture(false).await?;
-        let engine = Engine::new(store.clone());
-        let run = claim.run();
-        let view = store.frontier(run).await?;
-        let transient = std::io::Error::from(std::io::ErrorKind::WouldBlock);
-        assert!(matches!(
-            engine.preparation_failure(&claim, &view, transient.into(), at()).await,
-            Err(RunError::Preparation(error)) if error.kind() == std::io::ErrorKind::WouldBlock
-        ));
-        assert!(store.frontier(run).await?.terminal.is_none());
-
-        engine
-            .preparation_failure(
-                &claim,
-                &view,
-                RunError::PreparationLimit("fixture preparation limit"),
-                at(),
-            )
-            .await?;
-        assert_eq!(store.frontier(run).await?.terminal, Some(Terminal::Failed));
-        drop((witness, claim, engine, store));
-        root.shutdown().await?;
-        Ok(())
-    }
-
     async fn append(
         store: &Store,
         claim: &DriverClaim,

@@ -33,10 +33,7 @@ mod pattern;
 use pattern::{Segment, compile};
 
 pub const GLOB_NAME: &str = "Glob";
-pub const GLOB_DESCRIPTION: &str = "Find paths matching a Unix glob (*, ?, **, character classes), relative to the search directory. Returns one sorted page. When complete is false, pass next_after as after with the same pattern and cwd if you need more. Wildcard matching is case-insensitive on macOS and Windows, case-sensitive on Linux. Hidden names require an explicit dot; recursive wildcards do not follow directory symlinks. cwd is limited to the Session's admitted filesystem roots.";
-
-const PAGE_PATHS: usize = 128;
-const PAGE_BYTES: usize = 16 * 1024;
+pub const GLOB_DESCRIPTION: &str = "Find paths matching a Unix glob (*, ?, **, character classes), relative to the search directory. Returns the complete matching file set in the admitted search scope. Wildcard matching is case-insensitive on macOS and Windows, case-sensitive on Linux. Hidden names require an explicit dot; recursive wildcards do not follow directory symlinks. cwd is limited to the Session's admitted filesystem roots.";
 
 pub fn glob_schema() -> Value {
     schemars::schema_for!(Input).into()
@@ -50,8 +47,6 @@ struct Input {
     #[serde(default = "default_cwd")]
     #[schemars(length(min = 1))]
     cwd: String,
-    /// Continue after next_after from the previous page with the same pattern and cwd.
-    after: Option<String>,
 }
 fn default_cwd() -> String {
     ".".into()
@@ -73,7 +68,6 @@ impl ReadExecutor {
             let mut search = Search {
                 cancellation,
                 files: BTreeSet::new(),
-                after: input.after,
             };
             search.check()?;
             let mut opened = None;
@@ -98,7 +92,7 @@ impl ReadExecutor {
                 search.walk(&directory, &segments)?;
             }
             search.check()?;
-            Ok(search.page())
+            Ok(json!({"files":search.files,"complete":true}))
         })
         .await
         .map_err(|e| failed(format!("Glob worker failed: {e}")))?
@@ -108,7 +102,6 @@ impl ReadExecutor {
 struct Search {
     cancellation: CancellationToken,
     files: BTreeSet<String>,
-    after: Option<String>,
 }
 
 impl Search {
@@ -127,44 +120,8 @@ impl Search {
                 .to_str()
                 .ok_or_else(|| failed("Glob path is not UTF-8"))?
         };
-        if self.after.as_deref().is_some_and(|after| path <= after) {
-            return Ok(());
-        }
-        // Keep only the first page and one lookahead, independent of traversal order.
-        if self.files.len() <= PAGE_PATHS
-            || self.files.last().is_some_and(|last| path < last.as_str())
-        {
-            self.files.insert(path.to_owned());
-            if self.files.len() > PAGE_PATHS + 1 {
-                self.files.pop_last();
-            }
-        }
+        self.files.insert(path.to_owned());
         Ok(())
-    }
-
-    fn page(self) -> Value {
-        let total = self.files.len();
-        let mut files = Vec::new();
-        // Reserve the response envelope and, when needed, a copy of the last path
-        // for the cursor. Keep a long first path whole so every page can advance.
-        let mut bytes = r#"{"files":[],"complete":false,"next_after":null}"#.len();
-        for path in self.files.into_iter().take(PAGE_PATHS) {
-            let path_bytes = serde_json::to_string(&path)
-                .expect("serializing a string cannot fail")
-                .len();
-            let more = files.len() + 1 < total;
-            let cursor_bytes = if more { path_bytes } else { 0 };
-            if !files.is_empty() && bytes + path_bytes + 1 + cursor_bytes > PAGE_BYTES {
-                break;
-            }
-            bytes += path_bytes + 1;
-            files.push(path);
-        }
-        if files.len() == total {
-            json!({"files":files,"complete":true})
-        } else {
-            json!({"files":files,"complete":false,"next_after":files.last()})
-        }
     }
 
     fn walk(&mut self, root: &Dir, segments: &[Segment]) -> Result<(), ToolError> {

@@ -543,7 +543,6 @@ impl Owner {
                 RunError::Internal(_) => "internal",
                 RunError::Json(_) => "json",
                 RunError::Preparation(_) => "preparation",
-                RunError::PreparationLimit(_) => "preparation_limit",
                 RunError::PreparationCleanup(_) => "preparation_cleanup",
             };
             let tool_error_variant = match error {
