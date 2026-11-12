@@ -81,7 +81,7 @@ fn read(directory: &Dir, agents: bool) -> Vec<WorkspaceInstruction> {
 impl Owner {
     /// Capture once at message acceptance. Recovery replays the persisted basis.
     /// Native CLIs own their rule files; omit the workspace to capture only Maka preferences.
-    pub(super) async fn capture_behavior(
+    async fn capture_base_behavior(
         &self,
         workspace: Option<&Workspace>,
         snapshot: &RuntimePolicySnapshot,
@@ -149,5 +149,34 @@ impl Owner {
         }
         prompt.validate().map_err(|_| "agent_prompt_invalid")?;
         Ok(Some(prompt))
+    }
+}
+
+impl Owner {
+    pub(super) async fn capture_behavior(
+        &self,
+        workspace: Option<&Workspace>,
+        snapshot: &RuntimePolicySnapshot,
+        language: Language,
+        preset: Option<&maka_agent_api::preset::AppliedPreset>,
+    ) -> Result<Option<SystemPrompt>, String> {
+        let mut prompt = self
+            .capture_base_behavior(workspace, snapshot, language)
+            .await?;
+        if let Some(preset) = preset.filter(|p| !p.instruction.is_empty()) {
+            let prompt = prompt.get_or_insert_with(|| {
+                let mut source = self.revision.clone();
+                source.kind = SourceKind::PromptSection;
+                SystemPrompt {
+                    text: String::new(),
+                    policy_revision: snapshot.revision,
+                    sources: vec![source],
+                }
+            });
+            prompt.text.push_str("\n\n# Session role\nFollow these role instructions unless the user's explicit requirements for the current task conflict with them.\n\n");
+            prompt.text.push_str(&preset.instruction);
+            prompt.validate().map_err(|_| "agent_prompt_invalid")?;
+        }
+        Ok(prompt)
     }
 }

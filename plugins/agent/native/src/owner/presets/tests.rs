@@ -52,6 +52,12 @@ fn preset_storage_isolates_agent_scopes_and_checks_versions_at_commit() {
             PresetResult::Saved { .. }
         ));
     }
+    let fence = CreationFence {
+        scope: "host-a/agent-a".into(),
+        id: original.id.clone(),
+        revision: original.revision,
+    };
+    assert!(fence.check(&connection).unwrap().is_none());
     let mut updated = original.clone();
     updated.revision = PresetRevision(2);
     updated.name = "Renamed".into();
@@ -76,6 +82,10 @@ fn preset_storage_isolates_agent_scopes_and_checks_versions_at_commit() {
         PresetResult::Conflict {
             actual: PresetRevision(2)
         }
+    ));
+    assert!(matches!(
+        fence.check(&connection).unwrap(),
+        Some(Rejection::PresetConflict)
     ));
     assert_eq!(
         read(&connection, "host-b/agent-a", &original.id).unwrap(),

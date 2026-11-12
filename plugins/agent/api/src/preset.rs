@@ -132,3 +132,15 @@ pub enum PresetResult {
     ModelUnavailable,
     ThinkingLevelUnavailable,
 }
+
+/// Immutable execution configuration captured when a session is created.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppliedPreset {
+    pub id: PresetId,
+    pub revision: PresetRevision,
+    pub name: String,
+    pub instruction: String,
+    pub model: ModelSelection,
+    pub thinking_level: Option<ThinkingLevel>,
+}

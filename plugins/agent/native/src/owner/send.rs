@@ -92,7 +92,9 @@ impl Owner {
             return Err("agent_session_configuration_changed".into());
         }
         let mut selection = selection.or_else(|| session.configuration.backend.clone());
-        selection = self.use_bot_model(parent, selection).await?;
+        if session.configuration.applied_preset.is_none() {
+            selection = self.use_bot_model(parent, selection).await?;
+        }
         let selection = selection.ok_or(CaptureError::ModelUnavailable)?;
         let (model, executor) = match selection {
             BackendPreference::Model {
@@ -192,6 +194,7 @@ impl Owner {
                     (!host_bridge).then_some(&session.configuration.workspace),
                     &snapshot,
                     language,
+                    session.configuration.applied_preset.as_ref(),
                 )
                 .await?,
                 &snapshot,

@@ -846,6 +846,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -954,6 +964,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -1216,10 +1287,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -1839,6 +1906,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -1947,6 +2024,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -2210,10 +2348,6 @@ export const contracts: {
                   },
                 ],
               },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
               AgentExecutorSelection: {
                 type: 'object',
                 properties: {
@@ -2396,6 +2530,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
@@ -6048,6 +6188,11 @@ export const contracts: {
             title: 'AgentCreate',
             type: 'object',
             properties: {
+              presetId: {
+                description: 'Apply a preset at creation; mutually exclusive with backend.',
+                type: ['string', 'null'],
+                format: 'uuid',
+              },
               backend: {
                 description: 'Initial next-turn preference; admission resolves it again.',
                 anyOf: [
@@ -6314,6 +6459,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -6422,6 +6577,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -6685,10 +6901,6 @@ export const contracts: {
                   },
                 ],
               },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
               AgentExecutorSelection: {
                 type: 'object',
                 properties: {
@@ -6871,6 +7083,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
@@ -10098,6 +10316,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -10206,6 +10434,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -10468,10 +10757,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -10655,6 +10940,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
@@ -10812,6 +11103,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -10920,6 +11221,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -11182,10 +11544,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -14981,6 +15339,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -15089,6 +15457,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -15351,10 +15780,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -16118,6 +16543,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -16226,6 +16661,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -16488,10 +16984,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -18264,6 +18756,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -18372,6 +18874,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -18634,10 +19197,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -22443,6 +23002,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -22551,6 +23120,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -22814,10 +23444,6 @@ export const contracts: {
                   },
                 ],
               },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
               AgentExecutorSelection: {
                 type: 'object',
                 properties: {
@@ -23000,6 +23626,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
@@ -23316,6 +23948,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -23424,6 +24066,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -23687,10 +24390,6 @@ export const contracts: {
                   },
                 ],
               },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
               AgentExecutorSelection: {
                 type: 'object',
                 properties: {
@@ -23873,6 +24572,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
@@ -24506,6 +25211,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -24614,6 +25329,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -24876,10 +25652,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -27533,6 +28305,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -27641,6 +28423,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -27903,10 +28746,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -32338,6 +33177,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -32446,6 +33295,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -32709,10 +33619,6 @@ export const contracts: {
                   },
                 ],
               },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
               AgentExecutorSelection: {
                 type: 'object',
                 properties: {
@@ -32895,6 +33801,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
@@ -34427,6 +35339,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -34535,6 +35457,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -34798,10 +35781,6 @@ export const contracts: {
                   },
                 ],
               },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
               AgentExecutorSelection: {
                 type: 'object',
                 properties: {
@@ -34984,6 +35963,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
