@@ -22,7 +22,9 @@ import {
   Key,
   ProcessTerminal,
   SelectList,
+  TuiAltScreen,
   TuiMainScreen,
+  VStack,
   isKeyRelease,
   isKeyRepeat,
   matchesKey,
@@ -132,7 +134,7 @@ import {
 import { FormInteractionOverlay, type TuiFormDraft } from './pi-tui-form-interaction.js';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
-import { editorTheme, selectListTheme } from './tui-ansi.js';
+import { ansi, editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
 import { copyToClipboard } from './tui-clipboard.js';
@@ -157,11 +159,15 @@ import {
 } from './tui-attention.js';
 import {
   MakaActivityStripComponent,
+  MakaFullscreenChromeComponent,
   MakaPendingQueueComponent,
   MakaPiLayoutComponent,
   MakaStatusLineComponent,
   MakaTranscriptComponent,
+  MakaTranscriptDocumentComponent,
+  MakaTranscriptScrollView,
 } from './pi-tui-layout.js';
+import { openExternalUrl, resolveTuiFullscreen, TUI_FULLSCREEN_ENV } from './fullscreen-mode.js';
 import {
   MakaAutocompleteProvider,
   DirectoryPickerOverlay,
@@ -219,6 +225,19 @@ export interface MakaPiTuiInput {
   /** Maximum context tokens for the active model, for the statusline ctx segment. */
   modelContextWindow?: number;
   terminal?: Terminal;
+  /**
+   * Explicit fullscreen-TUI decision for embeddings and tests. When omitted,
+   * the nightly trial switch decides: `MAKA_TUI_FULLSCREEN` overrides, else
+   * the mode follows the build channel (`buildVersion`). See fullscreen-mode.ts
+   * and issue #4136.
+   */
+  tuiFullscreen?: boolean;
+  /**
+   * CLI package version, used to resolve the nightly-channel default of the
+   * fullscreen TUI trial. Embeddings that omit it (and `tuiFullscreen`) can
+   * only enable the mode through `MAKA_TUI_FULLSCREEN`.
+   */
+  buildVersion?: string;
   /**
    * Whether turns and control actions publish terminal taskbar progress.
    * Defaults off on native Windows and Windows Terminal sessions because its
@@ -550,7 +569,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const setTaskbarProgress = (active: boolean): void => {
     if (taskbarProgress) terminal.setProgress(active);
   };
-  const tui = new TuiMainScreen(terminal);
+  // Nightly trial (issue #4136): fullscreen swaps the terminal-scrollback
+  // renderer for an alternate-screen viewport whose transcript scrolls
+  // independently under an anchored composer. Opt out with
+  // MAKA_TUI_FULLSCREEN=0, opt in on release builds with =1.
+  const tuiFullscreen = resolveTuiFullscreen({
+    ...(input.tuiFullscreen !== undefined ? { setting: input.tuiFullscreen } : {}),
+    override: process.env[TUI_FULLSCREEN_ENV],
+    packageVersion: input.buildVersion,
+  });
+  const tui = tuiFullscreen
+    ? new TuiAltScreen(terminal, undefined, undefined, {
+        // App-owned mouse: wheel scrolls the transcript, drag selects, click
+        // opens OSC 8 links. Copy keeps pi-tui's OSC 52 write.
+        mouse: true,
+        openUrl: openExternalUrl,
+      })
+    : new TuiMainScreen(terminal);
   const state = createMakaPiTranscriptState();
   // A pending confirmation is meaningful only for the exact transcript whose
   // geometry produced it; reconnect/session replacement starts fresh.
@@ -822,6 +857,57 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   });
   let refreshEditorCwd: ((cwd: string) => void) | undefined;
   const editorSurface = new MakaAutocompleteAboveEditorComponent(editor);
+  // Fullscreen trial (#4136): the transcript document lives inside a primary
+  // ScrollView (follow-end, app-owned wheel/keyboard scrolling, chaining
+  // overscroll), the chrome is an intrinsic-height VStack entry below it, so
+  // the composer and status line stay anchored while history scrolls. The
+  // main-screen layout below is still constructed and mounted in both modes;
+  // with a layout root set, TuiAltScreen renders and routes only the root
+  // (getMountedRoots), so the main layout stays inert in fullscreen.
+  const transcriptDocument = new MakaTranscriptDocumentComponent(transcript);
+  let transcriptScroll: MakaTranscriptScrollView | undefined;
+  let fullscreenChrome: MakaFullscreenChromeComponent | undefined;
+  // Constructed above exactly when the fullscreen trial is on, so this both
+  // narrows the TUI type for setLayoutRoot and reads correctly in both arms.
+  if (tui instanceof TuiAltScreen) {
+    transcriptScroll = new MakaTranscriptScrollView(transcriptDocument, {
+      follow: 'end',
+      primary: true,
+      overscroll: 'chain',
+      scrollbar: 'auto',
+    });
+    fullscreenChrome = new MakaFullscreenChromeComponent(
+      state,
+      activityStrip,
+      pendingQueue,
+      editorSurface,
+      statusLine,
+      terminal,
+      {
+        current: () => transcriptScroll!.computedUnread,
+        present: (unreadLines) => {
+          transcriptScroll!.presentedUnread = unreadLines;
+        },
+      },
+      ansi.accent,
+      locale,
+      todoIndicator,
+    );
+    tui.setLayoutRoot(
+      new VStack([
+        { component: transcriptScroll, basis: 0, grow: 1, minSize: 1 },
+        { component: fullscreenChrome, basis: 'auto', shrink: 1, minSize: 1 },
+      ]),
+    );
+    // Typing while reading older content re-anchors to the newest output: the
+    // composer and its autocomplete live at the bottom, so composing from the
+    // middle of history would be blind. One of the trial's explicit evaluation
+    // questions (#4136) — revisit with nightly evidence.
+    editor.onUserTextChanged = () => {
+      transcriptScroll!.scrollToEnd();
+      tui.requestRender();
+    };
+  }
   const layout = new MakaPiLayoutComponent(
     state,
     transcript,
@@ -2431,6 +2517,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const prompt = userQuestionPrompt;
     if (!prompt) return;
     layout.setBlockingInteraction(undefined);
+    // In fullscreen the main-screen layout stays inert (the mounted layout
+    // root draws and budgets rows), so the chrome has to detach the question
+    // from the tree that actually renders it.
+    fullscreenChrome?.setBlockingInteraction(undefined);
     userQuestionPrompt = undefined;
     if (tui.getFocusedComponent() === prompt) tui.setFocus(editorSurface);
   };
@@ -2488,6 +2578,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       onSkip: () => advance(null),
     });
     layout.setBlockingInteraction(userQuestionPrompt);
+    // The fullscreen question must live inside the mounted layout root, or
+    // the focused overlay is never drawn and the turn waits on a blind answer
+    // (#4136 review P1).
+    fullscreenChrome?.setBlockingInteraction(userQuestionPrompt);
     tui.setFocus(userQuestionPrompt);
   };
 
@@ -4405,7 +4499,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   type TuiSlashCommandId = SlashCommandIdForSurface<'tui'>;
   type TuiSlashCommandHandler = Omit<MakaSlashCommand, 'name' | 'aliases'>;
 
-  const showGoalSummary = () => {
+  const showGoalSummary = async () => {
     // Read the live projection at request time: /goal is the one place the
     // user asks for the state *right now*.
     if (!input.driver.getGoal) {
@@ -4417,11 +4511,33 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       requestRender();
       return;
     }
+    const sessionId = input.driver.getSessionId();
+    const waits = input.driver.queryEventWaits
+      ? await input.driver.queryEventWaits()
+      : (input.driver.getEventWaits?.() ?? []);
+    if (input.driver.getSessionId() !== sessionId) return;
     const goal = input.driver.getGoal();
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: goal ? goalSummaryLines(goal, Date.now()).join('\n') : 'No goal set.',
+      text: [
+        goal ? goalSummaryLines(goal, Date.now()).join('\n') : 'No goal set.',
+        ...waits.map((wait) => {
+          const copy = TUI_COPY_RESOURCES.goal[locale];
+          const observations = {
+            checking: copy.waitChecking,
+            pending: copy.waitPending,
+            unknown: copy.waitUnknown,
+          };
+          const label =
+            wait.phase === 'result_ready'
+              ? copy.waitResultReady
+              : wait.observation === null
+                ? copy.waitObserving
+                : observations[wait.observation];
+          return `${wait.waitId}: ${label} · ${wait.resource.resourceId}${wait.deadlineAt === null ? '' : ` · ${Math.abs(wait.deadlineAt) <= 8.64e15 ? new Date(wait.deadlineAt).toISOString() : String(wait.deadlineAt)}`}`;
+        }),
+      ].join('\n'),
     });
     requestRender();
   };
@@ -4691,10 +4807,58 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           // Read-only, so no runControl busy gate: an autonomous loop keeps
           // the session busy almost by definition, and that is exactly when
           // the user wants to inspect it.
-          showGoalSummary();
+          void showGoalSummary().catch((error) => {
+            state.entries.push({ kind: 'notice', level: 'error', text: String(error) });
+            requestRender();
+          });
           return;
         }
         const action = parts[1];
+        if (
+          (parts.length === 2 || parts.length === 3) &&
+          action === 'cancel-wait' &&
+          input.driver.cancelSessionEventWait
+        ) {
+          void (async () => {
+            const waits = input.driver.queryEventWaits
+              ? await input.driver.queryEventWaits()
+              : (input.driver.getEventWaits?.() ?? []);
+            const wait = parts[2]
+              ? waits.find((candidate) => candidate.waitId === parts[2])
+              : waits.length === 1
+                ? waits[0]
+                : undefined;
+            if (!wait) {
+              state.entries.push({
+                kind: 'notice',
+                level: 'info',
+                text:
+                  waits.length > 1
+                    ? `${TUI_COPY_RESOURCES.goal[locale].chooseWait}\n${waits.map((candidate) => `${candidate.waitId} · ${candidate.resource.resourceId}`).join('\n')}`
+                    : TUI_COPY_RESOURCES.goal[locale].noCancellableWait,
+              });
+            } else {
+              const result = await input.driver.cancelSessionEventWait!({
+                sessionId: wait.sessionId,
+                waitId: wait.waitId,
+                consumer: wait.consumer,
+              });
+              state.entries.push({
+                kind: 'notice',
+                level: 'info',
+                text:
+                  result.outcome === 'cancelled'
+                    ? TUI_COPY_RESOURCES.goal[locale].sessionWaitCancelled
+                    : TUI_COPY_RESOURCES.goal[locale].waitChanged,
+              });
+            }
+            requestRender();
+          })().catch((error) => {
+            state.entries.push({ kind: 'notice', level: 'error', text: String(error) });
+            requestRender();
+          });
+          return;
+        }
         if (
           parts.length !== 2 ||
           (action !== 'pause' && action !== 'resume' && action !== 'clear')
@@ -4702,7 +4866,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: 'Usage: /goal [pause|resume|clear]',
+            text: TUI_COPY_RESOURCES.goal[locale].usage,
           });
           requestRender();
           return;

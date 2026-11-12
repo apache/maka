@@ -4,10 +4,10 @@ title: "Chapter 8: Resume Is Not Retry—How Maka Continues Safely from Crash Fa
 language: en
 source_language: zh-CN
 counterpart: ./runtime-resume-architecture.zh-CN.md
-implementation_status: phase_0_2_and_phase_3a_authority_current
+implementation_status: safe_boundary_and_unknown_outcome_current
 document_status: current
 translation_status: synced
-last_verified: 2026-10-10
+last_verified: 2026-10-16
 owners:
   - maka-backend
 ---
@@ -32,17 +32,17 @@ owners:
 
 # Chapter 8: Resume Is Not Retry—How Maka Continues Safely from Crash Facts
 
-Tracking: [Production Write/Edit recovery #4319](https://github.com/apache/maka/issues/4319), [safe-boundary continuation hardening #4324](https://github.com/apache/maka/issues/4324), [sandbox boundary negotiation #3731](https://github.com/apache/maka/issues/3731)
+Tracking: [safe-boundary continuation hardening #4324](https://github.com/apache/maka/issues/4324), [sandbox boundary negotiation #3731](https://github.com/apache/maka/issues/3731)
 
 > This chapter answers a deceptively dangerous question: when Maka crashes while a model is calling a tool, how can a restart tell what happened, what may continue, and what must stop for human attention? The answer is: **recover facts from immutable RuntimeEvents, let one RecoveryResolver classify tool state, and create a new Run only when history, execution, and workspace boundaries are all provably safe. Resume never resurrects the old process or disguises “try again” as recovery.**
 
 This chapter is for engineers entering Maka Runtime for the first time. The first half builds intuition with an interrupted file write. The second half explains Phases 0–4, Desktop and CLI integration, T1/T2, recovery decisions, workspace checkpoints, and the recommended implementation sequence.
 
-It describes `main` as verified on 2026-10-10:
+It describes the current recovery contract as verified on 2026-10-16:
 
 - Phases 0–2 are implemented.
-- Phase 3A recovery-fact atomic write authority and the Resolver are implemented.
-- The production Phase 3 reconciler, file evidence, and complete host-owner lifecycle remain future work.
+- The Resolver classifies immutable tool facts; T1 without T2 remains unknown.
+- Tool-specific reconciliation and the unused recovery-bundle writer have been retired. Existing recovery bundles remain readable, copyable, and rebuildable as historical facts.
 - Phase 4 Git checkpoints, isolated restore, and durable rebaseline are not implemented.
 
 Roadmap documents describe targets. Code and contract tests remain the authority for current behavior. This chapter always separates implemented behavior from planned work.
@@ -120,7 +120,7 @@ The rest of the chapter repeatedly uses these terms:
 | high-water | The exact immutable-log position covered by a plan |
 | park | Preserve state and stop automatic execution pending stronger evidence or a human |
 | fail closed | Refuse to continue under uncertainty instead of guessing that it is safe |
-| reconcile | Observe the outside world again to determine whether an earlier side effect completed |
+| reconcile (historical design) | Tool-specific external-state inspection; no current producer |
 | continuation | A new execution built from trusted history, not an old execution revived in place |
 
 So “create a continuation fail-closed from a canonical high-water” simply means:
@@ -135,30 +135,30 @@ These three words are easy to mix up:
 |---|---|---|
 | Repair | Durable state of an old Run | Give an interrupted Run its terminal RuntimeEvent and align Turn state |
 | Resume / Continuation | A history boundary already proved safe | Create fresh identities and continue the provider loop |
-| Reconcile | A tool operation with T1 but no T2 outcome | Observe the external world and commit either completed or parked |
+| Reconcile (historical) | An already-persisted recovery bundle | Preserve its interpretation; no current reconciliation writer |
 
-The usual order is repair, then resolve or reconcile, and only then resume. Repair alone is already useful: the UI no longer shows “running” forever, and the user can inspect an explicit failed or interrupted Turn.
+The current order is repair, classify immutable facts, and then either admit a safe continuation or keep the old execution sealed as unknown. Repair alone is already useful: the UI no longer shows “running” forever, and the user can inspect an explicit failed or interrupted Turn.
 
 ## What Phases 0–4 actually mean
 
-The phases are not five separate implementations. Each one adds a kind of fact the system can prove.
+These phase names record the historical design. The current contract retains safe continuation and unknown-outcome handling; tool-specific reconciliation has been retired.
 
 | Phase | Question it answers | Current status |
 |---|---|---|
 | Phase 0 | Given only committed RuntimeEvents, is this prefix safe to replay? | Implemented |
 | Phase 1 | At a complete safe boundary, may the Runtime create a new Run? | Implemented, feature-flagged |
 | Phase 2 | Can T1 be guaranteed before tool execution and T2 before returning the result? | Implemented in SQLite canonical mode |
-| Phase 2.5 / 3A PR A | Who owns recovery facts, how do conflicts fail closed, and how is a bundle atomic? | Implemented |
-| Later Phase 3 | Can tool-specific evidence settle an unknown side effect? | Designed; no production reconciler wiring |
+| Phase 2.5 / 3A PR A | Who owns recovery facts and how do conflicts fail closed? | Resolver retained; bundle writing retired |
+| Later Phase 3 | Can tool-specific evidence settle an unknown side effect? | Retired design; no current producer |
 | Phase 4 | Can a Runtime boundary bind to a workspace snapshot for restore or rebaseline? | Designed |
 
 ```mermaid
 flowchart LR
-  P0["Phase 0<br/>interpret committed history"] --> P1["Phase 1<br/>create execution at a complete boundary"]
-  P1 --> P2["Phase 2<br/>T1/T2 bound the side-effect window"]
-  P2 --> P3A["Phase 3A foundation<br/>single recovery authority + atomic bundle"]
-  P3A --> P3["Phase 3 recovery<br/>tool-specific evidence / reconcile"]
-  P3 --> P4["Phase 4 workspace continuity<br/>checkpoint / restore / rebaseline"]
+  P0["Phase 0<br/>interpret committed history"] --> P1["Phase 1<br/>new execution at a safe boundary"]
+  P1 --> P2["Phase 2<br/>durable T1/T2 boundary"]
+  P2 --> Unknown["Seal unknown outcomes<br/>fresh explicit user turn inspects state"]
+  P2 -. "historical read compatibility" .-> Legacy["Existing recovery bundles"]
+  P2 -. "independent design" .-> P4["Workspace continuity"]
 ```
 
 Phase 2 does not replace Phases 0 and 1. Their replay and continuation gates remain active. Phase 2 gives those gates better evidence about whether execution crossed the tool-dispatch boundary.
@@ -216,7 +216,7 @@ Safety does not come merely from putting everything in SQLite. It comes from ass
 The API and database enforce RuntimeEvent authority:
 
 - generic writers cannot persist dispatch, operation-linked outcome, or recovery facts;
-- T1, T2, and recovery bundle each have a dedicated writer;
+- T1 and T2 each have a dedicated writer; historical recovery facts are read-only;
 - journal rows reference their RuntimeEvent;
 - exact retry must match bytes and identity;
 - conflicting retry, orphan facts, lane smuggling, and identity drift are rejected;
@@ -345,7 +345,7 @@ stateDiagram-v2
   end note
   note right of Dispatched
     No response: indeterminate.
-    Reconcile or park.
+    Seal as unknown; never replay automatically.
   end note
   note right of Outcome
     Completed.
@@ -359,11 +359,11 @@ The Resolver decision table:
 |---|---|---|
 | call + matching response, no dispatch | `completed` | Pre-T1 synthetic result or legacy completed result |
 | call + dispatch + matching response | `completed` | Reuse; do not rerun |
-| call + dispatch, no response | `indeterminate` | Requires reconcile; continuation currently blocks |
+| call + dispatch, no response | `indeterminate` | Seal as unknown; block automatic continuation; a fresh explicit user turn may inspect state |
 | call, no dispatch/response, first event declares new protocol | `definitely_not_dispatched` | Proven not to have crossed T1; automatic policy still needs an explicit later phase |
 | same gap under legacy/unknown protocol | `indeterminate` | Absence of an old dispatch fact proves nothing |
-| completed recovery bundle | `completed` | Use its matching outcome |
-| parked recovery bundle | `parked` | Permanent v1 stop; no second attempt |
+| historical completed recovery bundle | `completed` | Use its matching outcome |
+| historical parked recovery bundle | `parked` | Permanent v1 stop; no second attempt |
 | orphan, duplicate, identity/hash/order conflict | `corruption` | Fail closed |
 
 The legacy rule matters: only a Run whose first event declares `toolBoundary: "t1_after_preflight_v1"` may interpret missing dispatch as definitely not dispatched.
@@ -599,82 +599,19 @@ retired with the file-backed store: `runtime-event-persistence` opens the
 SQLite store directly, all readers use SQLite, and nothing merges or falls
 back to stale JSONL.
 
-## Phase 3A: atomically commit recovery facts
+## Unknown outcomes and historical recovery bundles
 
-Phase 3A implements how trustworthy recovery output is stored. It does not yet wire a production observer/reconciler that generates the output.
+The current contract is deliberately limited: after a crash, end the old execution, retain uncertainty, and let a fresh explicit user turn inspect current state. Runtime does not promise to settle the old side effect automatically. T1 proves entry into the dispatch boundary, not that the tool completed.
 
-A recovery bundle contains:
+Current tool declarations accept only `never_auto_retry` and `outcome_unknown`. The former is the default. Client Capability proxies use the latter. Historical dispatches may still contain `replay_safe`, `idempotent`, `reconcile`, or `reattach`; decoding them never authorizes execution.
 
-1. a reconcile observation;
-2. an optional recovered outcome, only for proven completion;
-3. a terminal `completed` or `parked` decision.
+The retired Phase 3A writer could atomically append an observation, an optional successful outcome, and a completed or parked decision. No production tool declared a working reconciliation contract. Its public writer, write transitions, and failpoints have been removed. The shared scanner, bundle validator, Resolver, conversation-copy rewriting, and projection rebuild retain read compatibility with existing facts. Generic append paths continue to reject new recovery facts.
 
-```mermaid
-sequenceDiagram
-  participant R as Future reconciler
-  participant Store as SqliteRuntimeStore
-  participant Scan as Shared scanner / interpreter
-  participant Events as runtime_events
-  participant Proj as journal / operation projection
-
-  R->>Store: commitToolRecoveryBundle
-  Store->>Scan: validate call + dispatch + observation + outcome? + decision
-  Scan-->>Store: valid / corruption
-  alt valid completed
-    Store->>Events: append reconcile
-    Store->>Events: append matching successful outcome
-    Store->>Events: append completed decision
-    Store->>Proj: update recovery_completed in same transaction
-  else valid parked
-    Store->>Events: append reconcile
-    Store->>Events: append parked decision
-    Store->>Proj: update recovery_parked in same transaction
-  else invalid
-    Store-->>R: roll back and reject
-  end
-```
-
-The writer, projection rebuild, and Resolver share one scanner/interpreter, so online, reopen, rebuild, and Resolver must agree on the same immutable ledger.
-
-`parked` is terminal in v1. Only an exact bundle retry may converge idempotently. Reopening recovery would require a new versioned fact.
-
-## Later Phase 3: file recovery only finalizes
-
-Write/Edit recovery first needs durable evidence bound to:
-
-- workspace identity and canonical target;
-- operation/call/dispatch identity;
-- before and expected-after identity;
-- transform/algorithm version;
-- production-shaped result;
-- size, regular-file, symlink, and encoding boundaries.
-
-| Observation | Action |
-|---|---|
-| `matches_expected_state` | Cleanup/finalize only; synthesize outcome and commit completed bundle |
-| `matches_prior_state` | Park with `reconcile_matches_prior_state` |
-| `diverged` | Park; do not overwrite outside changes |
-| `unreadable` | Park; do not guess |
-
-```mermaid
-flowchart TD
-  T1["T1 committed, T2 missing"] --> Observe["Read durable evidence<br/>observe current file"]
-  Observe --> Expected{"current == expected-after?"}
-  Expected -->|"Yes"| Finalize["Finalize only<br/>do not write the file again"]
-  Finalize --> Completed["Commit recovered outcome<br/>+ completed decision"]
-  Expected -->|"No"| Prior{"current == before?"}
-  Prior -->|"Yes"| ParkPrior["Park<br/>reconcile_matches_prior_state"]
-  Prior -->|"No, content diverged"| ParkDiverged["Park<br/>protect outside writes"]
-  Prior -->|"Unreadable"| ParkUnreadable["Park<br/>do not guess"]
-```
-
-Atomic rename prevents torn files but does not provide conditional replacement. Without CAS, matching the prior state cannot authorize automatic redo.
-
-Generic Bash, arbitrary remote APIs, send, publish, pay, and delete continue to park without a dedicated protocol.
+Ordinary T1-without-T2 recovery seals the invocation as `outcome_unknown` without writing a tool response. A subsequent explicit user turn receives a request-local unknown response. That projection retires after a later fresh, lineage-free user invocation completes; a failed turn does not retire it. Client Capability recovery instead persists an error response with `uncertainOutcome: { code: 'outcome_unknown', retrySafe: false }`. These expressions currently differ in persistence and lifetime. Neither confirms that the original effect succeeded, and this cleanup does not unify them.
 
 ## Phase 4: bind Runtime history to the workspace
 
-Phase 1 proves history completeness. Phase 3 may settle one operation. Long tasks also need workspace-wide continuity.
+Phase 1 proves history completeness. Unknown tool effects remain unknown. Long tasks may separately need workspace-wide continuity.
 
 ```ts
 interface WorkspaceBoundary {
@@ -836,27 +773,15 @@ Eval does not resume or reconstruct Runtime execution. It asks Runtime Host to e
 7. End a Run by committing exactly one terminal RuntimeEvent.
 8. On restart, repair the old Run first.
 9. Resolve immutable facts into completed / not-dispatched / indeterminate / parked / corruption.
-10. If a production reconciler exists, commit one atomic recovery bundle; otherwise park.
+10. Seal T1-without-T2 as unknown; never automatically replay the effect. A fresh explicit user turn can inspect state.
 11. Check replay legality, workspace, tool catalog, and background work.
 12. Revalidate and claim immediately before execution.
 13. Commit continuation-start before calling the provider.
 14. At any unprovable boundary, preserve facts and emit a machine-readable park reason.
 
-## How later work should be split
+## Boundaries for future work
 
-```mermaid
-flowchart TD
-  A["PR A<br/>Recovery persistence authority<br/>complete"] --> B["PR B<br/>Immutable cursor + durable claim<br/>merged"]
-  A --> C["PR C<br/>File evidence + finalize-only recovery"]
-  B --> E["PR E<br/>Checkpoint contracts"]
-  C --> E
-  E --> F["PR F<br/>Canonical checkpoint bundle"]
-  F --> G["PR G<br/>Observe-only Git carrier"]
-  G --> H["PR H<br/>Capture + retention"]
-  H --> Restore["Isolated restore"]
-  H --> Rebaseline["Durable rebaseline"]
-  D["PR D<br/>Host owner lifecycle"] -. "Required before default capture / auto-resume" .-> H
-```
+The former PR C file-reconciliation plan is historical. Workspace continuity and Host ownership can be evaluated independently; they do not require a generic tool reconciler. Any future operation-specific recovery proposal needs a concrete production consumer and an explicit external protocol before adding Runtime authority.
 
 Each PR must name:
 
@@ -929,9 +854,7 @@ UI copy may change; machine codes must remain stable for tests, telemetry, dashb
 | Phase 0 deterministic replay / unit contract | Supported | Supported | Supported |
 | Phase 0 process-crash committed-prefix harness | Supported | Supported | Covered, but not a power-loss claim |
 | Phase 1 local safe-boundary continuation | Primary target | Primary target | Limited / best-effort |
-| SQLite T1/T2 and recovery-bundle semantics | Supported | Supported | Semantic support |
-| Recovery-bundle SIGKILL transaction proof | Release proof platform | Release proof platform | Currently skipped as limited support |
-| Phase 3 file finalize-only recovery | Not wired in production | Not wired in production | Not wired in production |
+| SQLite T1/T2 and historical recovery-bundle reading | Supported | Supported | Semantic support |
 | Phase 4 Git workspace continuity | Not implemented | Not implemented | Not implemented |
 
 Process crash and SQLite transaction atomicity do not automatically prove power-loss durability. Filesystem and hardware behavior need separate tests.
@@ -950,10 +873,7 @@ Current implementation does not promise:
 - model self-report as a substitute for RuntimeEvent, file evidence, or an external receipt;
 - green CI as a substitute for concurrency, crash, and data-safety arguments.
 
-The two most important follow-ups are:
-
-1. PR B has landed: immutable event-seq boundaries, a domain-separated prefix digest, the SQLite unique claim (`runtime_continuation_claims`), and unified ancestor replay through `continuation_start_v2`;
-2. PR C/D: production file evidence/reconciler and one complete host-owner lifecycle.
+PR B has landed: immutable event-seq boundaries, a domain-separated prefix digest, the SQLite unique claim (`runtime_continuation_claims`), and unified ancestor replay through `continuation_start_v2`. Tool-specific reconciliation is outside the current product contract.
 
 ## Code-reading map
 

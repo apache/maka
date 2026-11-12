@@ -18,9 +18,12 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { lstat, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
+import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import {
@@ -36,6 +39,7 @@ import {
   resolveRuntimeHostManagedDeployment,
   resolveRuntimeHostManagedDeploymentAuthority,
   runtimeHostManagedOperatorCommand,
+  runtimeHostManagedOperatorModulePath,
   RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostManagedDeploymentConfig,
@@ -81,7 +85,11 @@ import {
   RuntimeHostUpdateDiscoveryError,
   type RuntimeHostUpdateCandidate,
 } from './runtime-host-update-discovery.js';
-import { repairStorageRootAfterRemount, resolveStorageRoot } from '@maka/storage/root-authority';
+import {
+  repairStorageRootAfterRemount,
+  resolveStorageRoot,
+  tryAcquireStateRootOwner,
+} from '@maka/storage/root-authority';
 import {
   createPlatformRuntimeHostServiceBackend,
   discoverRuntimeHostLifecycleProvider,
@@ -107,7 +115,9 @@ import {
 } from './runtime-host-service-manager.js';
 import { expandWildcardListenAddresses } from './runtime-host-peer-management-command.js';
 import {
+  applyRuntimeHostLifecycleTransition,
   canDiscardRuntimeHostLifecycleDesiredArtifacts,
+  recoverRuntimeHostLifecycleTransition,
   replaceRuntimeHostLifecycle,
   resolveRecoverableRuntimeHostManagedDeployment,
   RUNTIME_HOST_READY_TIMEOUT_MS,
@@ -142,6 +152,10 @@ export interface RuntimeHostSetupCliOptions {
   readonly repairRootAfterRemount?: true;
   readonly updateExisting?: boolean;
   readonly reuseExistingEnvironment?: boolean;
+  readonly expectedExisting?: {
+    readonly rootId: string;
+    readonly operator: RuntimeHostNodeOperatorCommand<'posix'>;
+  };
   readonly allowInterruptActiveTasks?: boolean;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: readonly {
@@ -157,6 +171,7 @@ export interface RuntimeHostSetupCliOptions {
 }
 
 interface RuntimeHostSetupDeps {
+  readonly isWsl: () => Promise<boolean>;
   readonly manageService: typeof manageRuntimeHostService;
   readonly createBackend: (serviceId: string, clientDataRoot: string) => RuntimeHostServiceBackend;
   readonly discoverLifecycleProvider: (
@@ -239,6 +254,9 @@ export async function runRuntimeHostSetupCli(
   overrides: Partial<RuntimeHostSetupDeps> = {},
 ): Promise<number> {
   const deps: RuntimeHostSetupDeps = {
+    isWsl: async () =>
+      process.platform === 'linux' &&
+      /microsoft/i.test(await readFile('/proc/sys/kernel/osrelease', 'utf8')),
     manageService: manageRuntimeHostService,
     createBackend: createPlatformRuntimeHostServiceBackend,
     discoverLifecycleProvider: discoverRuntimeHostLifecycleProvider,
@@ -273,6 +291,12 @@ export async function runRuntimeHostSetupCli(
   };
   const emit = createEmitter(options.json, deps);
   try {
+    if (options.expectedExisting && !(await deps.isWsl())) {
+      throw new RuntimeHostSetupError(
+        'invalid_setup',
+        'Missing Node recovery is available only in WSL',
+      );
+    }
     const rootId = await resolveRuntimeHostSetupRootId(options);
     const controlRoot = resolveRuntimeHostManagedControlRoot(rootId);
     await withRuntimeHostManagedServiceDeploymentLock(
@@ -304,6 +328,25 @@ export async function runRuntimeHostSetupCli(
 }
 
 async function resolveRuntimeHostSetupRootId(options: RuntimeHostSetupCliOptions): Promise<string> {
+  if (options.expectedExisting) {
+    if (!options.reuseExistingEnvironment) {
+      throw new RuntimeHostSetupError(
+        'invalid_setup',
+        'Node recovery requires an existing Root and POSIX Node operator',
+      );
+    }
+    if (
+      !(await resolveRuntimeHostManagedDeploymentAuthority(options.expectedExisting.rootId, {
+        ...(options.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
+      }))
+    ) {
+      throw new RuntimeHostSetupError(
+        'not_installed',
+        'The requested WSL deployment is not installed',
+      );
+    }
+    return options.expectedExisting.rootId;
+  }
   const legacyRootPath = (await readOptionalLegacyServiceConfig(options.clientDataRoot))?.rootPath;
   const path = resolve(
     options.rootPath ??
@@ -347,11 +390,19 @@ async function runRuntimeHostSetupLocked(
     }
     const existing = await resolveRuntimeHostManagedDeploymentAuthority(rootId);
     if (existing) {
-      const { config, capability } = await resolveRuntimeHostManagedDeployment(rootId);
+      const { capability } = existing;
       assertCanonicalSetupTarget(options.expectedTarget, rootId, capability.canonicalPath);
-      assertExpectedDeploymentGeneration(options.expectedTarget, config);
-      // The binding comes from canonical authority. The installed operator validates
-      // its own projection when connected; discovery must not rewrite an older launcher.
+      assertExpectedDeploymentGeneration(
+        options.expectedTarget,
+        existing.record.state === 'active'
+          ? existing.record
+          : (existing.record.from ?? existing.record.to ?? undefined),
+      );
+      const config = options.expectedExisting
+        ? await repairMissingWslNode(rootId, options.expectedExisting.operator, deps)
+        : (await resolveRuntimeHostManagedDeployment(rootId)).config;
+      // Ordinary discovery retains an older launcher; only explicit missing-Node
+      // recovery rewrites it, without replacing the installed package.
       emit({
         kind: 'existing_environment',
         version: config.launch.package.version,
@@ -366,6 +417,12 @@ async function runRuntimeHostSetupLocked(
       });
       return;
     }
+    if (options.expectedExisting) {
+      throw new RuntimeHostSetupError(
+        'not_installed',
+        'The requested WSL deployment is not installed',
+      );
+    }
   }
   if (options.lifecycle === 'on_demand') {
     await runRuntimeHostOnDemandSetupLocked(options, deps, emit);
@@ -373,6 +430,123 @@ async function runRuntimeHostSetupLocked(
   }
   const target = await runRuntimeHostSupervisedSetupLocked(options, deps, emit);
   await pairAndVerifyRuntimeHostSetup(options, target, deps, emit);
+}
+
+/** Called only after Desktop has proved its saved Node is missing. */
+async function repairMissingWslNode(
+  rootId: string,
+  expected: RuntimeHostNodeOperatorCommand<'posix'>,
+  deps: RuntimeHostSetupDeps,
+): Promise<RuntimeHostManagedDeploymentConfig> {
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  if (
+    !(major! >= 24 || (major === 22 && minor! >= 19)) ||
+    typeof DatabaseSync !== 'function' ||
+    typeof zstdCompressSync !== 'function' ||
+    typeof zstdDecompressSync !== 'function'
+  ) {
+    throw new RuntimeHostSetupError(
+      'activation_failed',
+      'The Node found by the WSL login shell cannot run this Runtime Host',
+    );
+  }
+  const nodePath = await realpath(process.execPath);
+  const resolved = await resolveRuntimeHostManagedDeploymentAuthority(rootId);
+  if (!resolved)
+    throw new RuntimeHostSetupError(
+      'activation_failed',
+      'WSL deployment is absent or requires transaction recovery',
+    );
+  const { record } = resolved;
+  const current = record.state === 'active' ? record : record.from;
+  // Only this operation's Node-only plan may be recovered without retiring a Host.
+  if (
+    record.state !== 'active' &&
+    (record.operation !== 'configure' ||
+      record.recovery !== 'restore_from' ||
+      !record.from ||
+      !record.to ||
+      record.from.launch.nodePath !== expected.nodePath ||
+      !isDeepStrictEqual(record.to, {
+        ...record.from,
+        configRevision: record.from.configRevision + 1,
+        launch: { ...record.from.launch, nodePath: record.to.launch.nodePath },
+      }))
+  )
+    throw new RuntimeHostSetupError(
+      'activation_failed',
+      'WSL deployment is absent or requires transaction recovery',
+    );
+  if (
+    !current ||
+    current.lifecycle.mode !== 'on_demand' ||
+    runtimeHostManagedOperatorModulePath(current.deploymentRoot, 'posix') !== expected.modulePath
+  ) {
+    throw new RuntimeHostSetupError(
+      'activation_failed',
+      'WSL Node recovery does not match the on-demand deployment',
+    );
+  }
+  // A stale Desktop binding may be retried after another repair committed.
+  if (current.launch.nodePath !== expected.nodePath) {
+    if (await missingNode(current.launch.nodePath))
+      throw new RuntimeHostSetupError(
+        'activation_failed',
+        'WSL deployment Node binding changed; reconnect its current profile',
+      );
+    return current;
+  }
+  const owner = await tryAcquireStateRootOwner(resolved.capability);
+  if (!owner)
+    throw new RuntimeHostSetupError(
+      'activation_failed',
+      'The WSL Host is still running; Node recovery will not interrupt it',
+    );
+  const lifecycle = {
+    convergeOperator: deps.convergeOperator,
+    verifyOperator: deps.verifyOperator,
+    resolveProvider: deps.resolveLifecycleProvider,
+  };
+  try {
+    if (!(await missingNode(current.launch.nodePath)))
+      throw new RuntimeHostSetupError(
+        'activation_failed',
+        'The saved WSL Node still exists; refusing to replace it',
+      );
+    if (record.state !== 'active')
+      await recoverRuntimeHostLifecycleTransition(owner, record, lifecycle);
+    const configured = await applyRuntimeHostLifecycleTransition(
+      owner,
+      {
+        operation: 'configure',
+        current,
+        desired: {
+          ...current,
+          configRevision: current.configRevision + 1,
+          launch: { ...current.launch, nodePath },
+        },
+      },
+      lifecycle,
+    );
+    if (!configured)
+      throw new RuntimeHostSetupError(
+        'activation_failed',
+        'WSL Node recovery did not retain the deployment',
+      );
+    return configured;
+  } finally {
+    await owner.close();
+  }
+}
+
+async function missingNode(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return false;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return true;
+    throw error;
+  }
 }
 
 async function runRuntimeHostSupervisedSetupLocked(

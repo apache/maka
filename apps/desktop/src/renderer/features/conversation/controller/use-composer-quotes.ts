@@ -25,7 +25,7 @@ const MAX_QUOTE_CHARS = 32_000;
 
 type PendingQuotes = Record<string, QuoteRef[]>;
 
-export function useComposerQuotes(options: { readonly draftKey: string }) {
+export function useComposerQuotes(options: { readonly draftKey: string; onDraftChange?(key: string): void }) {
   // Each draft's bucket is mutated in place so a send in the same tick as a
   // staging call already sees the quote; the version bump only re-renders.
   // Consumers must read the contents, never depend on the array identity.
@@ -34,9 +34,10 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
   const bucket = pendingByKeyRef.current[options.draftKey] ??
     (pendingByKeyRef.current[options.draftKey] = []);
 
-  const publish = useCallback((): void => {
+  const publish = useCallback((key: string): void => {
+    options.onDraftChange?.(key);
     bumpVersion((version) => version + 1);
-  }, []);
+  }, [options.onDraftChange]);
 
   const addQuote = useCallback((input: {
     text: string;
@@ -61,8 +62,8 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
       ...(input.sourceCapturedAt !== undefined ? { sourceCapturedAt: input.sourceCapturedAt } : {}),
       ...(input.sourceTruncated !== undefined ? { sourceTruncated: input.sourceTruncated } : {}),
     });
-    publish();
-  }, [bucket, publish]);
+    publish(options.draftKey);
+  }, [bucket, options.draftKey, publish]);
 
   const updateQuoteComment = useCallback((index: number, comment: string): void => {
     const quote = bucket[index];
@@ -70,13 +71,13 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     const { comment: _previous, ...rest } = quote;
     const note = comment.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim();
     bucket[index] = note ? { ...rest, comment: note } : rest;
-    publish();
-  }, [bucket, publish]);
+    publish(options.draftKey);
+  }, [bucket, options.draftKey, publish]);
 
   const removeQuote = useCallback((index: number): void => {
     bucket.splice(index, 1);
-    publish();
-  }, [bucket, publish]);
+    publish(options.draftKey);
+  }, [bucket, options.draftKey, publish]);
 
   // An explicit owner key clears another draft's bucket — the revision
   // lifecycle re-keys its restored quotes across the commit and clears both
@@ -87,7 +88,7 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
   const clearQuotes = useCallback((ownerKey = options.draftKey): QuoteRef[] => {
     const target = pendingByKeyRef.current[ownerKey];
     const removed = target ? target.splice(0, target.length) : [];
-    publish();
+    publish(ownerKey);
     return removed;
   }, [options.draftKey, publish]);
 
@@ -99,7 +100,7 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     const ownerBucket = pendingByKeyRef.current[ownerKey] ??
       (pendingByKeyRef.current[ownerKey] = []);
     ownerBucket.push(...quotes.map((quote) => ({ ...quote })));
-    publish();
+    publish(ownerKey);
   }, [publish]);
 
   // A captured submission clears exactly the entries it sent (#5868); the
@@ -108,8 +109,8 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     for (let index = bucket.length - 1; index >= 0; index -= 1) {
       if (submitted.includes(bucket[index]!)) bucket.splice(index, 1);
     }
-    publish();
-  }, [bucket, publish]);
+    publish(options.draftKey);
+  }, [bucket, options.draftKey, publish]);
 
 
   // The composer's token asks the transcript to open the note editor over the

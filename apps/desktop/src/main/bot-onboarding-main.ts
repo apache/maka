@@ -67,7 +67,7 @@ const VOLATILE_STATUS_FIELDS: ReadonlyArray<keyof BotChannelSettings> = [
 
 type OnboardingCredential =
   | { provider: 'dingtalk'; clientId: string; clientSecret: string }
-  | { provider: 'feishu'; appId: string; appSecret: string; brand: BotOnboardingBrand; botName?: string }
+  | { provider: 'feishu'; appId: string; appSecret: string; brand: BotOnboardingBrand; botName?: string; userId?: string }
   | { provider: 'wecom'; botId: string; secret: string }
   | { provider: 'wechat'; botToken: string; baseUrl: string; botId: string; userId: string }
   | { provider: 'qq'; appId: string; appSecret: string };
@@ -579,6 +579,7 @@ function channelPatchFromCredential(credential: OnboardingCredential): Partial<B
         appId: credential.appId,
         appSecret: credential.appSecret,
         domain: credential.brand === 'lark' ? 'larksuite.com' : 'feishu.cn',
+        allowedUserIds: credential.userId ? [credential.userId] : [],
       };
     case 'wecom':
       return { ...common, appId: credential.botId, appSecret: credential.secret };
@@ -588,6 +589,7 @@ function channelPatchFromCredential(credential: OnboardingCredential): Partial<B
         token: credential.botToken,
         webhookUrl: credential.baseUrl,
         botUserId: credential.botId,
+        allowedUserIds: [credential.userId],
       };
     case 'qq':
       return { ...common, appId: credential.appId, appSecret: credential.appSecret };
@@ -606,7 +608,9 @@ function channelFieldsEqual(
   expected: BotChannelSettings,
   fields: ReadonlyArray<keyof BotChannelSettings>,
 ): boolean {
-  return fields.every((field) => Object.is(current[field], expected[field]));
+  return fields.every((field) => field === 'allowedUserIds'
+    ? JSON.stringify(current[field]) === JSON.stringify(expected[field])
+    : Object.is(current[field], expected[field]));
 }
 
 /**
@@ -792,6 +796,8 @@ function createProductionBotOnboardingAdapters(
               provider: 'feishu',
               appId: result.client_id,
               appSecret: result.client_secret,
+              userId: typeof (result.user_info as { open_id?: unknown } | undefined)?.open_id === 'string'
+                ? (result.user_info as { open_id: string }).open_id : undefined,
               brand,
               ...(botName ? { botName } : {}),
             },

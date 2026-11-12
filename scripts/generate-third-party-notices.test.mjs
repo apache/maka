@@ -51,7 +51,7 @@ test('keeps a version-pinned Apache override scoped to the Apache license', () =
   assert.doesNotMatch(providerUtils, /THIRD-PARTY COMPONENTS/);
 });
 
-test('preserves exact README MIT notices for packages without license files', () => {
+test('preserves Pele MIT and embedded Lucide ISC license texts in packaged notices', () => {
   const result = spawnSync(
     process.execPath,
     ['scripts/generate-third-party-notices.mjs', '--check'],
@@ -69,15 +69,11 @@ test('preserves exact README MIT notices for packages without license files', ()
   const sections = notices.split(
     '\n================================================================================\n',
   );
-  const fastdom = sections.find((section) => section.includes('Package: fastdom@1.0.12'));
-  const strictdom = sections.find((section) => section.includes('Package: strictdom@1.0.1'));
-
-  assert.ok(fastdom, 'fastdom notice section must exist');
-  assert.match(fastdom, /Copyright \(c\) 2016 Wilson Page <wilsonpage@me\.com>/);
-  assert.match(fastdom, /associated documentation files \(the 'Software'\)/);
-  assert.doesNotMatch(fastdom, /Kornel Lesinski/);
-
-  assert.ok(strictdom, 'strictdom notice section must exist');
-  assert.match(strictdom, /Copyright \(c\) 2013 Wilson Page <wilsonpage@me\.com>/);
-  assert.match(strictdom, /associated documentation files \(the 'Software'\)/);
+  const pele = sections.find((section) => section.includes('Package: pele@'));
+  assert.ok(pele, 'Pele notice section must exist');
+  const license = readFileSync(join(root, 'node_modules/pele/LICENSE'), 'utf8').trim();
+  assert.ok(pele.includes(license), 'the complete upstream license file must survive generation');
+  assert.match(pele, /MIT License/);
+  assert.match(pele, /ISC License/);
+  assert.match(pele, /Copyright \(c\) 2026 Lucide Icons and Contributors/);
 });

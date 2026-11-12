@@ -41,6 +41,8 @@ export type BotReadinessState = (typeof BOT_READINESS_STATES)[number];
 
 export interface BotChannelSettings {
   provider: BotProvider;
+  /** Optional channel override; absent means inherit the global message handling target. */
+  messageHandling?: BotMessageHandling;
   enabled: boolean;
   /**
    * Legacy credential-test boolean. Do not use this to mean runtime
@@ -68,7 +70,7 @@ export interface BotChannelSettings {
   allowedUserIds?: ReadonlyArray<string>;
 }
 
-export type BotMessageHandling = 'task' | 'workhub';
+export type BotMessageHandling = 'task' | 'workhub' | 'assistant';
 
 export interface BotChatSettings {
   messageHandling?: BotMessageHandling;
@@ -169,7 +171,7 @@ export function normalizeBotChatSettings(
   rawSettings: Partial<BotChatSettings> | undefined,
 ): BotChatSettings {
   return {
-    messageHandling: rawSettings?.messageHandling === 'workhub' ? 'workhub' : 'task',
+    messageHandling: normalizeMessageHandling(rawSettings?.messageHandling) ?? 'task',
     channels: Object.fromEntries(
       BOT_PROVIDERS.map((provider) => {
         const rawChannel = rawSettings?.channels?.[provider] as
@@ -197,6 +199,7 @@ function normalizeBotChannel(
   const allowedUserIds = normalizeAllowedUserIds(channel.allowedUserIds);
   return {
     ...channel,
+    messageHandling: normalizeMessageHandling(channel.messageHandling),
     provider,
     connected,
     ...(allowedUserIds ? { allowedUserIds } : { allowedUserIds: undefined }),
@@ -329,4 +332,19 @@ export function parseAllowedUserIdsFromText(raw: string): string[] {
     if (out.length >= MAX_ALLOWED_USER_IDS) break;
   }
   return out;
+}
+
+function normalizeMessageHandling(value: unknown): BotMessageHandling | undefined {
+  return value === 'task' || value === 'workhub' || value === 'assistant' ? value : undefined;
+}
+
+export function resolveBotMessageHandling(
+  settings: BotChatSettings,
+  provider: BotProvider,
+): BotMessageHandling {
+  return (
+    normalizeMessageHandling(settings.channels[provider]?.messageHandling) ??
+    normalizeMessageHandling(settings.messageHandling) ??
+    'task'
+  );
 }

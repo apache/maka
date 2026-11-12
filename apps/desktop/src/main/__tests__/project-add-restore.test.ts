@@ -505,6 +505,28 @@ for (const invalidation of ['host', 'verification', 'unmount'] as const) {
   });
 }
 
+test('Settings submits a blank project name as no name', async () => {
+  const harness = installRenderer();
+  const received: unknown[] = [];
+  bridge({
+    add: async (_target: DesktopRuntimeHostRef, options?: { name?: string }) => {
+      received.push(options);
+      return { ok: true, project: restored };
+    },
+  });
+  await harness.render(createElement(components.SettingsFixture));
+  await click('New project');
+  const form = document.querySelector('#maka-new-project-form');
+  assert.ok(form, document.body.textContent);
+  // Submit without typing: the field is optional now, so the picker still opens.
+  await act(async () => {
+    form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  });
+  await flushFrames();
+  assert.deepEqual(received, [undefined]);
+  assert.equal(document.querySelector('#maka-new-project-form'), null);
+});
+
 test('remote registration rejects same-tick duplicate submissions without invalidating the first request', async () => {
   const harness = installRenderer();
   const registration = deferred<ProjectRecord>();

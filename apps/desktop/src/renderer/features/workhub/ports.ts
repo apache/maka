@@ -18,6 +18,7 @@
  */
 
 import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
+import type { ResolveImageDelivery } from '@maka/core/image-delivery';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { StoredMessage, SessionSummary } from '@maka/core/session';
@@ -32,11 +33,12 @@ import type { WorkHubWorkspaceServices } from '../../application/contracts/workh
 export interface WorkHubTranscriptSnapshot {
   readonly messages: readonly StoredMessage[];
   readonly hasOlder: boolean;
+  readonly historyComplete: boolean;
   readonly ready: boolean;
 }
 export interface WorkHubTranscript {
   observationChanged(phase: 'pending' | 'ready'): void;
-  loadEarlier(): Promise<void>;
+  loadEarlier(throughSequence?: number): Promise<void>;
   close(): Promise<void>;
 }
 export interface WorkHubServices extends WorkHubWorkspaceServices {
@@ -57,6 +59,7 @@ export interface WorkHubServices extends WorkHubWorkspaceServices {
   }): Promise<void>;
   readonly attachments: ComposerAttachmentService;
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
+  resolveImageDelivery?: ResolveImageDelivery;
   prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;
   listActiveInteractions(sessionId: string): Promise<import('@maka/core/events').ActiveInteractionRequestEvent[]>;
   subscribeActiveInteractions(handler: (event: { sessionId: string; interactions: import('@maka/core/events').ActiveInteractionRequestEvent[] }) => void): () => void;

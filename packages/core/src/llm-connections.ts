@@ -108,6 +108,8 @@ export interface ModelInfo {
   /** Account-advertised request wire when one provider exposes multiple model protocols. */
   apiProtocol?: ModelApiProtocol;
   contextWindow?: number;
+  /** Opaque compatibility identifier advertised by the Codex subscription model catalog. */
+  codexCompactionHash?: string;
   /** Maximum provider-visible input tokens, when narrower than contextWindow. */
   inputLimit?: number;
   maxOutputTokens?: number;
@@ -164,6 +166,8 @@ export interface RuntimeExecutionConnection {
   defaultApiProtocol?: ModelApiProtocol;
   defaultModel: string;
   models?: ModelInfo[];
+  /** Host-only timestamp of the fetched Codex compatibility metadata snapshot. */
+  codexCompactionMetadataFetchedAt?: number;
   /** User model parameters, retained independently of the enabled selection. */
   modelOverrides?: ModelOverrides;
   /** Additional top-level JSON properties added to model request bodies. */
@@ -641,8 +645,14 @@ export function deriveInteractiveOAuthConnectionSlug(
  *   - Any other scheme (`file:`, `javascript:`, `data:`, `vbscript:`,
  *     `chrome-extension:`, `app:`, `maka:`, custom).
  *   - Malformed URL strings the `URL` constructor throws on.
+ *   - Embedded credentials (`https://user:pw@host`), query strings and
+ *     fragments — the Runtime Host codec refuses these, so accepting
+ *     them here only turns the eventual rejection into the generic
+ *     "service unavailable" copy.
  *   - Pathological lengths (> 2048 chars — defense against
- *     adversarial inputs; real-world baseUrls are < 100 chars).
+ *     adversarial inputs; real-world baseUrls are < 100 chars) and
+ *     canonical forms longer than 2048 bytes, which is the unit the
+ *     Host measures.
  *
  * Returns `null` on accept, an error string on reject. Mirrors
  * `validateSlug`'s shape.
@@ -667,6 +677,18 @@ export function validateConnectionBaseUrl(baseUrl: string | undefined | null): s
   // schemes.
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return `baseUrl scheme '${parsed.protocol}' is not allowed (use http: or https:)`;
+  }
+  // The Runtime Host rejects these too (`normalizeCatalogConnectionBaseUrl`),
+  // so gating here is what turns a downstream, unclassified failure into a
+  // message that names the endpoint field.
+  if (parsed.username || parsed.password) {
+    return 'baseUrl must not contain credentials';
+  }
+  if (trimmed.includes('?') || trimmed.includes('#')) {
+    return 'baseUrl must not contain a query or fragment';
+  }
+  if (new TextEncoder().encode(parsed.toString()).byteLength > 2048) {
+    return 'baseUrl must be 2048 bytes or fewer';
   }
   return null;
 }

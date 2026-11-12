@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { decodeTurnOrigin, type TurnOrigin } from '@maka/core/turn-origin';
 import { invalidProtocolFrame } from './errors.js';
 import {
   assertExactKeys,
@@ -105,6 +106,8 @@ export interface SessionMessageQueueProjection {
  * decides that such a Message can only open its own Turn.
  */
 export interface TurnMessageSubmitInput {
+  /** Connector transport provenance, never evidence that the sender is the human owner. */
+  readonly externalSource?: Extract<TurnOrigin, { kind: 'external_connector' }>;
   readonly originHostEpoch: string;
   readonly sessionId: string;
   readonly messageId: string;
@@ -124,6 +127,7 @@ export type TurnMessageSubmitResult = {
     }
   | { readonly disposition: 'turn_started'; readonly turnId: string }
   | { readonly disposition: 'blocked' }
+  | { readonly disposition: 'inbox' }
 );
 
 export interface TurnMessageQueryInput {
@@ -151,6 +155,7 @@ export interface TurnMessageExecutionQueryResult {
 
 export type TurnMessageExecutionResolution =
   | { readonly messageId: string; readonly state: 'pending' }
+  | { readonly messageId: string; readonly state: 'inbox' }
   | { readonly messageId: string; readonly state: 'cancelled' }
   | { readonly messageId: string; readonly state: 'not_admitted' }
   | {
@@ -268,8 +273,12 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
     value,
     'turn.message.submit input',
     ['originHostEpoch', 'sessionId', 'messageId', 'content', 'placement'],
-    ['skillIds', 'turnOrchestration'],
+    ['skillIds', 'turnOrchestration', 'externalSource'],
   );
+  const externalSource =
+    record.externalSource === undefined ? undefined : decodeTurnOrigin(record.externalSource);
+  if (record.externalSource !== undefined && externalSource?.kind !== 'external_connector')
+    throw invalidProtocolFrame('Invalid external connector source');
   const skillIds = decodeSkillIds(record.skillIds);
   const placement = requireMessagePlacement(record.placement);
   const turnOrchestration =
@@ -286,6 +295,7 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     messageId: requireEntityId(record.messageId, 'messageId'),
     content: decodeMessageAdmissionContent(record.content, skillIds.length > 0),
+    ...(externalSource?.kind === 'external_connector' ? { externalSource } : {}),
     placement,
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(turnOrchestration !== undefined ? { turnOrchestration } : {}),
@@ -335,6 +345,13 @@ function decodeTurnMessageExecutionQueryResult(value: unknown): TurnMessageExecu
   }
   const resolutions = record.resolutions.map((value): TurnMessageExecutionResolution => {
     const resolution = requireRecord(value, 'turn.message.execution.query resolution');
+    if (resolution.state === 'inbox') {
+      assertExactKeys(resolution, 'turn.message.execution.query inbox resolution', [
+        'messageId',
+        'state',
+      ]);
+      return { messageId: requireEntityId(resolution.messageId, 'messageId'), state: 'inbox' };
+    }
     if (resolution.state === 'pending') {
       assertExactKeys(resolution, 'turn.message.execution.query pending resolution', [
         'messageId',
@@ -389,6 +406,13 @@ function decodeTurnMessageExecutionQueryResult(value: unknown): TurnMessageExecu
 
 function decodeTurnMessageSubmitResult(value: unknown): TurnMessageSubmitResult {
   const record = requireRecord(value, 'turn.message.submit result');
+  if (record.disposition === 'inbox') {
+    assertExactKeys(record, 'turn.message.submit inbox result', ['disposition', 'skillInvocation']);
+    return {
+      disposition: 'inbox',
+      skillInvocation: decodeSubmitSkillInvocation(record.skillInvocation),
+    };
+  }
   if (record.disposition === 'turn_started') {
     assertExactKeys(record, 'turn.message.submit turn_started result', [
       'disposition',

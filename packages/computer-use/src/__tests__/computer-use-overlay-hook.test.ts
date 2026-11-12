@@ -19,7 +19,6 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { CuAction } from '@maka/core/computer-use';
 import { buildComputerUseTools } from '@maka/runtime/computer-use-tools';
 import { parseObservationText } from '@maka/runtime/test-only/observation-text-reader';
 import { createComputerUseOverlayHook } from '../computer-use-overlay-hook.js';
@@ -111,6 +110,55 @@ test('with no window to order against the cursor stays elevated', () => {
   assert.equal((moves[0] as { targetWindowId?: number }).targetWindowId, undefined);
 });
 
+test('a covered aim point stays elevated even with a window to sink onto', () => {
+  // A rect list is not a whole-window cover: the top-edge control can still
+  // be visible. Only the point about to be drawn decides elevation.
+  const { controller, moves } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'click_element' },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetWindowId: 4321,
+      obscuringRects: [{ x: 200, y: 150, width: 20, height: 20 }],
+    },
+  );
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, true);
+});
+
+test('an uncovered aim point still sinks when a window is there to order against', () => {
+  const { controller, moves } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'click_element' },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetWindowId: 4321,
+      obscuringRects: [{ x: 0, y: 0, width: 10, height: 10 }],
+    },
+  );
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, false);
+});
+
+test('missing obscuring rects do not flip a window-bound cursor to stay up', () => {
+  const { controller, moves } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'click_element' },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetWindowId: 4321,
+    },
+  );
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, false);
+});
+
 test('the landing carries the window the cursor has to come back down to', () => {
   // `complete` raises the cursor for the trip to the executor's coordinate, so
   // it is the last thing that can tell the sink which window to sink onto. An
@@ -188,11 +236,73 @@ test('non-presented actions keep the session cursor without moving it', () => {
     { type: 'key', text: 'Return' },
     { type: 'screenshot' },
     { type: 'wait', durationMs: 100 },
-  ] as CuAction[]) {
+    { type: 'window_action' },
+  ] as const) {
     hook.onActionBegin(action, { sessionId: 's1', toolCallId: 'a1' });
   }
   assert.deepEqual(moves, []);
-  assert.deepEqual(ensured, ['s1', 's1', 's1', 's1']);
+  assert.deepEqual(ensured, ['s1', 's1', 's1', 's1', 's1']);
+});
+
+test('set_value moves the cursor to the bound element point', () => {
+  const { controller, moves, ensured } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'set_value' },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetWindowId: 4321,
+    },
+  );
+  assert.deepEqual(ensured, []);
+  assert.equal((moves[0] as { kind: string }).kind, 'click');
+  assert.equal((moves[0] as { screenX: number }).screenX, 201);
+});
+
+test('press_key without a presentation point still only ensures', () => {
+  const { controller, moves, ensured } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin({ type: 'press_key' }, { sessionId: 's1', toolCallId: 'a1' });
+  assert.deepEqual(moves, []);
+  assert.deepEqual(ensured, ['s1']);
+});
+
+test('press_key with a presentation point moves the click cursor', () => {
+  const { controller, moves, ensured } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'press_key' },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetWindowId: 4321,
+    },
+  );
+  assert.deepEqual(ensured, []);
+  assert.equal((moves[0] as { kind: string }).kind, 'click');
+  assert.equal((moves[0] as { screenX: number }).screenX, 201);
+});
+
+test('window_action with a presentation point still only ensures', () => {
+  // Production can attach a point: window_action has an elementId, and binding
+  // derives presentationScreenPoint from that frame. Without a point the
+  // ensure path hides a kindOf regression into the click group.
+  const { controller, moves, ensured } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'window_action' },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetWindowId: 4321,
+    },
+  );
+  assert.deepEqual(moves, []);
+  assert.deepEqual(ensured, ['s1']);
 });
 
 // ── The seam, not the fixture ───────────────────────────────────────────────
@@ -315,6 +425,75 @@ test('a semantic action reaches the sink with the point it is aimed at', async (
     'an element action must move the cursor and land it, not ensure-then-cancel',
   );
   // The centre of the element's own observed frame, in screen coordinates.
+  assert.deepEqual(events[0]?.input, {
+    screenX: 220,
+    screenY: 110,
+    kind: 'click',
+    instant: true,
+    keepElevated: false,
+    targetWindowId: 4321,
+  });
+  assert.deepEqual(events[1]?.input, {
+    screenX: 220,
+    screenY: 110,
+    kind: 'click',
+    pulse: true,
+    targetWindowId: 4321,
+  });
+});
+
+test('a covered aim point from a real observation stays elevated', async () => {
+  // The hook-only cases cannot see computer-use-tools copying record.obscuringRects
+  // onto overlay context. A rect covering the element centre (220,110) must survive
+  // observe → registerObservation → runWithPresentation.
+  const events = await driveRealTool(
+    { obscuringRects: [{ x: 210, y: 100, width: 20, height: 20 }] },
+    { action: 'click_element', element_id: '5' },
+  );
+  assert.ok(events[0], 'covered aim must produce a move event');
+  assert.equal((events[0].input as { keepElevated?: boolean }).keepElevated, true);
+});
+
+test('an uncovered aim point from a real observation still sinks', async () => {
+  const events = await driveRealTool(
+    { obscuringRects: [{ x: 0, y: 0, width: 10, height: 10 }] },
+    { action: 'click_element', element_id: '5' },
+  );
+  assert.ok(events[0], 'uncovered aim must produce a move event');
+  assert.equal((events[0].input as { keepElevated?: boolean }).keepElevated, false);
+});
+
+test('set_value reaches the sink with the point it is aimed at', async () => {
+  const events = await driveRealTool({}, { action: 'set_value', element_id: '5', value: 'hi' });
+  assert.deepEqual(
+    events.map((event) => event.call),
+    ['move', 'complete'],
+    'writing into a field must move the cursor and land it, not ensure-then-cancel',
+  );
+  assert.deepEqual(events[0]?.input, {
+    screenX: 220,
+    screenY: 110,
+    kind: 'click',
+    instant: true,
+    keepElevated: false,
+    targetWindowId: 4321,
+  });
+  assert.deepEqual(events[1]?.input, {
+    screenX: 220,
+    screenY: 110,
+    kind: 'click',
+    pulse: true,
+    targetWindowId: 4321,
+  });
+});
+
+test('press_key with an element reaches the sink with the point it is aimed at', async () => {
+  const events = await driveRealTool({}, { action: 'press_key', element_id: '5', text: 'Return' });
+  assert.deepEqual(
+    events.map((event) => event.call),
+    ['move', 'complete'],
+    'a key aimed at a named control must move the cursor and land it, not ensure-then-cancel',
+  );
   assert.deepEqual(events[0]?.input, {
     screenX: 220,
     screenY: 110,

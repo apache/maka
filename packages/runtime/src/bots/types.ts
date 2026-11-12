@@ -89,6 +89,10 @@ export interface BotBridge {
  * the same parent.
  */
 export interface BotSendOptions {
+  /** AI-authored optional summary, for channels with expandable cards. */
+  readonly summary?: string;
+  /** Stable retry identity where the provider supports request deduplication. */
+  readonly clientMessageId?: string;
   readonly replyToMessageId?: string;
   /**
    * PR-BOT-EPHEMERAL-REPLY-0 (external bot research): when set, the bridge
@@ -127,7 +131,12 @@ export interface BotReplyStream {
   abort(): Promise<void>;
 }
 
+export interface BotMessageReadStatus {
+  state: 'read' | 'unread' | 'unknown';
+}
+
 export interface SendCapable {
+  getMessageReadStatus?(messageId: string, userId: string): Promise<BotMessageReadStatus>;
   sendMessage(chatId: string, text: string, options?: BotSendOptions): Promise<string | null>;
   startReplyStream?(chatId: string, options: BotReplyStreamOptions): BotReplyStream | null;
   /**
@@ -138,6 +147,8 @@ export interface SendCapable {
    * (including unsupported platforms — drops silently rather than throw).
    */
   sendTypingIndicator?(chatId: string): Promise<boolean>;
+  /** Explicitly clear a typing hint where the platform supports it. */
+  cancelTypingIndicator?(chatId: string): Promise<boolean>;
 }
 
 /** Stable machine codes for producer-known test failures; presenters own copy. */

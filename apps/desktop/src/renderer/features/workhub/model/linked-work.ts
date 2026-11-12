@@ -22,7 +22,7 @@ import { desktopSessionKey, parseDesktopSessionKey } from '../../../../shared/ru
 import { readWorkHubTopicAssociation, workHubAssociationTarget } from '../../../../shared/desktop-session-projection.js';
 import { workspaceNameFromCwd } from './workspace-name.js';
 
-import type { StoredMessage } from '@maka/core/session';
+import type { StoredMessage, ToolResultMessage } from '@maka/core/session';
 
 export interface WorkHubLinkedWork {
   readonly id: string;
@@ -41,10 +41,17 @@ export function workHubLinkedWork(
 ): WorkHubLinkedWork[] {
   const sessionById = new Map(sessions.map((session) => [session.id, session]));
   const workspaceName = (id: string) => workspaceNameFromCwd(sessionById.get(id)?.cwd);
-  const associationCalls = new Map(messages.flatMap((message) => {
+  // Providers may reuse a tool-call id in a later turn, so call-side lookups
+  // are keyed by turn first and can only pair a result with its own turn.
+  const associationCalls = new Map<string, Map<string, string | null>>();
+  for (const message of messages) {
+    if (message.type !== 'tool_call') continue;
     const target = workHubAssociationTarget(message);
-    return target !== undefined ? [[message.id, { target, turnId: message.turnId }] as const] : [];
-  }));
+    if (target === undefined) continue;
+    let byId = associationCalls.get(message.turnId);
+    if (!byId) associationCalls.set(message.turnId, byId = new Map());
+    byId.set(message.id, target);
+  }
   const taskCalls = new Set(messages.flatMap((message) =>
     message.type === 'tool_call' && message.toolName === 'mcp__desktop_workhub__tasks' ? [message.id] : [],
   ));
@@ -58,14 +65,20 @@ export function workHubLinkedWork(
     if (value && typeof value === 'object' && 'structuredContent' in value) value = value.structuredContent;
     return value && typeof value === 'object' ? value as Record<string, unknown> : undefined;
   };
-  const results = new Map(messages.flatMap((message) => message.type === 'tool_result' ? [[message.toolUseId, message] as const] : []));
+  const results = new Map<string, Map<string, ToolResultMessage>>();
+  for (const message of messages) {
+    if (message.type !== 'tool_result') continue;
+    let byId = results.get(message.turnId);
+    if (!byId) results.set(message.turnId, byId = new Map());
+    byId.set(message.toolUseId, message);
+  }
   // Association is mutable per turn. Fold only validated decisions in transcript
   // order; clearing a topic must not retract actual execution/result links.
   const topics = new Map<string, WorkHubLinkedWork>();
   for (const message of messages) {
     if (message.type !== 'tool_result') continue;
-    const call = associationCalls.get(message.toolUseId);
-    const topic = call?.turnId === message.turnId ? readWorkHubTopicAssociation(message, call.target) : undefined;
+    const expected = associationCalls.get(message.turnId)?.get(message.toolUseId);
+    const topic = expected === undefined ? undefined : readWorkHubTopicAssociation(message, expected);
     if (!topic) continue;
     if (topic.targetSessionId === null) topics.delete(message.turnId);
     else topics.set(message.turnId, {
@@ -101,7 +114,7 @@ export function workHubLinkedWork(
       const request = args && typeof args === 'object' && 'request' in args ? args.request : undefined;
       if (!request || typeof request !== 'object' || !('operation' in request) ||
         (request.operation !== 'stop' && request.operation !== 'resume')) return [];
-      const resultMessage = results.get(message.id);
+      const resultMessage = results.get(message.turnId)?.get(message.id);
       const result = readResult(resultMessage);
       let target = typeof result?.targetSessionKey === 'string' && !resultMessage?.isError ? result.targetSessionKey : undefined;
       if (!target && coordinationSessionKey && 'targetSessionId' in request && typeof request.targetSessionId === 'string') {

@@ -116,6 +116,7 @@ import type {
   DesktopTranscriptBatch,
   DesktopTranscriptHandle,
   DesktopTranscriptOpenMode,
+  DesktopTranscriptPosition,
 } from './transcript-contract.js';
 import type { PetPackManifestV1 } from '@maka/core/pet';
 import type {
@@ -354,6 +355,18 @@ export type DesktopSessionStopResult =
   | { kind: 'retracted'; messageId: string }
   | { kind: 'interrupted'; retractedMessageIds: string[] }
   | undefined;
+
+/**
+ * How a projectless Session's bound directory relates to the Client's
+ * dedicated task-directory root:
+ * - `managed`: inside the dedicated root — the policy's steady state.
+ * - `suspicious`: a binding that cannot be a deliberate user choice — the
+ *   filesystem root, or inside a reserved location (application state,
+ *   install files) — and warrants a repair offer.
+ * - `other`: a real path outside the root — possibly intentional, possibly
+ *   inherited; correctable but not flagged.
+ */
+export type TaskDirectoryBinding = 'managed' | 'suspicious' | 'other';
 
 /** Cancellation proof aggregated across every Runtime Host query batch. */
 export interface DesktopMessageCancellationQueryResult {
@@ -898,6 +911,7 @@ export interface MakaBridge {
     command<K extends RendererRuntimeHostCommandOperation>(
       operation: K,
       input: OperationInput<K>,
+      host?: DesktopRuntimeHostRef,
     ): Promise<OperationOutput<K>>;
   };
 
@@ -1017,7 +1031,8 @@ export interface MakaBridge {
   };
 
   newTasks: {
-    getExecutors(target: DesktopNewTaskTarget, cwd: string, refresh?: boolean): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    getExecutors(target: DesktopNewTaskTarget, cwd: string, refresh?: boolean, executorId?: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    listExecutors(target: DesktopNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     getCatalog(): Promise<DesktopNewTaskCatalog>;
     subscribeChanges(handler: () => void): () => void;
     addProject(host: DesktopNewTaskHostRef, name?: string): Promise<
@@ -1064,6 +1079,12 @@ export interface MakaBridge {
     ): Promise<DesktopSessionSummary>;
   };
 
+  petDesktop: {
+    configuration(): Promise<{ enabled: boolean; mode: 'session' | 'assistant' }>;
+    subscribeConfiguration(handler: (value: { enabled: boolean; mode: 'session' | 'assistant' }) => void): () => void;
+    publish(value: import('../renderer/application/contracts/pet-desktop.js').PetPublication): void;
+    subscribeOpen(handler: (sessionId: string | undefined) => void): () => void;
+  };
   pets: {
     list(): Promise<PetPackManifestV1[]>;
     getSelection(): Promise<string | null>;
@@ -1166,7 +1187,14 @@ export interface MakaBridge {
       sessions: DesktopSessionSummary[];
       completeHostIds: string[];
     }>;
-    create(input?: CreateSessionRequestInput): Promise<DesktopSessionSummary>;
+    /**
+     * Creates on the active Runtime Host, or with `besideSessionId` on that
+     * Session's Host, failing when it is no longer available.
+     */
+    create(
+      input?: CreateSessionRequestInput,
+      options?: { readonly besideSessionId?: string },
+    ): Promise<DesktopSessionSummary>;
     send(
       sessionId: string,
       command: {
@@ -1251,6 +1279,7 @@ export interface MakaBridge {
         text: string;
         /** Local presentation before the Host assigns a Turn or queue entry. */
         localDisplayPlacement?: 'current_turn' | 'next_turn';
+        replacesLocalMessageId?: string;
         displayText?: string;
         skillIds?: string[];
         turnOrchestration?: TurnOrchestration;
@@ -1267,7 +1296,7 @@ export interface MakaBridge {
     ): Promise<
       | {
           ok: true;
-          disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved';
+          disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved' | 'inbox';
           turnId?: string;
           attachments: import('@maka/core/events').AttachmentRef[];
           inlineReferences: import('@maka/core/events').InlineReference[];
@@ -1313,6 +1342,14 @@ export interface MakaBridge {
     listTurns(sessionId: string): Promise<TurnRecord[]>;
     /** Request a bounded next-prompt prediction for this Session. */
     generatePromptSuggestion(sessionId: string): Promise<import('@maka/runtime-host/protocol').PromptSuggestionResult>;
+    /**
+     * Ask the default Runtime Host for check-in cards. Card Session ids come back
+     * as Desktop Session keys on that Host.
+     */
+    generateCheckin(input: {
+      effectId: string;
+      since: number | null;
+    }): Promise<import('@maka/runtime-host/protocol').SessionCheckinGenerateResult>;
     /** Read a bounded, redacted tail from another same-Host Session. */
     readSnapshot(sessionId: string, options?: { maxChars?: number }): Promise<SessionSnapshot>;
     /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */
@@ -1372,6 +1409,14 @@ export interface MakaBridge {
      * archived Session.
      */
     moveToProject(sessionId: string, projectId: string | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
+    /**
+     * Explicit per-task correction: rebinds this Session's workspace to a
+     * fresh dedicated task directory. Preserves every relocation safeguard of
+     * `moveToProject` (busy/archived/CAS); refuses on Hosts that cannot
+     * provision Client directories. The landed directory is the returned
+     * Session's `cwd`.
+     */
+    moveToDedicatedDirectory(sessionId: string): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * Enter or leave Plan — a temporary collaboration excursion Runtime ends
@@ -1454,6 +1499,7 @@ export interface MakaBridge {
       mode?: DesktopTranscriptOpenMode,
       /** The oldest sequence the reader already holds; the first answer reads back down to it. */
       resumeFrom?: number,
+      position?: DesktopTranscriptPosition,
     ): Promise<DesktopTranscriptHandle>;
   };
   externalSessions: {
@@ -1563,7 +1609,7 @@ export interface MakaBridge {
   };
   goal: {
     /** The session's current goal (null when none is set). */
-    get(sessionId: string): Promise<import('@maka/runtime/goal-state').GoalState | null>;
+    get(sessionId: string): Promise<import('../shared/goal-arm').DesktopGoal | null>;
     /**
      * Arm a goal for this session. It drives the session from the next turn
      * on; arming alone starts nothing. Rejects when the session already has an
@@ -1724,6 +1770,7 @@ export interface MakaBridge {
       | { ok: true; base64: string; mimeType: string }
       | { ok: false; reason: string }
     >;
+    resolveImageDelivery: import('@maka/core/image-delivery').ResolveImageDelivery;
     readBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   };
   search: {
@@ -1960,6 +2007,7 @@ export interface MakaBridge {
     sessionProjectInfo(sessionId: string): Promise<{
       projectPath: string;
       projectGit: { isGitRepo: boolean; branch?: string };
+      taskDirectory?: TaskDirectoryBinding;
     }>;
     openPath(
       key: 'workspace' | 'memory' | 'project',

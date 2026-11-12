@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { InlineReference } from '@maka/core/events';
 import { useToast, useUiLocale } from '@maka/ui';
 import { NEW_TASK_PENDING_KEY } from '@maka/ui/pending-items';
@@ -25,6 +25,7 @@ import { activeHostTurn } from '../../../application/contracts/session-execution
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { parseDesktopSlashCommand } from '../../../application/contracts/desktop-slash-command.js';
 import { catalogWatchedRowsUsable } from '../../../application/contracts/session-catalog/catalog-row-watch.js';
+import { useSessionSettingsSettlement } from '../../../application/contracts/session-settings-settlement.js';
 import { useStableActions } from '../../../application/contracts/use-stable-actions.js';
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import type {
@@ -69,6 +70,7 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
   const services = useComposerSubmissionServices();
   const { workspace, commands } = useConversationOwner();
   const queue = useConversationQueueCommands();
+  const sessionSettings = useSessionSettingsSettlement();
   const composerRef = queue.composer;
   const uiLocale = useUiLocale();
   const toastApi = useToast();
@@ -85,18 +87,8 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     toastApi,
     shellCopy: getShellCopy(uiLocale).app,
     uiLocale,
+    onFollowLatest: commands.prepareSend,
   });
-  // A withdrawn send — an edited queue entry or a cancelled local message —
-  // hands its staged context back under the key of the Session it left, so the
-  // restore lands there even after navigation; the text goes through the
-  // editor's keyed draft beside it.
-  useLayoutEffect(() => {
-    const slot = queue.draftContextRestorer;
-    const restore: NonNullable<typeof slot.current> = (sessionId, draft) => staging.restoreContext(sessionId, draft);
-    slot.current = restore;
-    return () => { if (slot.current === restore) slot.current = undefined; };
-  }, [queue, staging]);
-
   // Held for the whole of a send; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
   const [revisionDraft, setRevisionDraft] = useState<TurnRevisionDraft | null>(null);
@@ -119,6 +111,7 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     captureSelection: commands.captureSelection,
     checkTaskSubmissionReadiness: async () =>
       !sharedSessionActive && (!!activeIdRef.current || !!newTask.target),
+    awaitSessionSettings: sessionSettings?.settled,
     isNewChatSendSurfaceActive: shell.isNewChatOwnerActive,
     isShellSurfaceOwnerActive: shell.isOwnerActive,
     refreshSessions: shell.refreshSessions,
@@ -176,6 +169,15 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     captureStaging: staging.captureSubmission,
     prepareRevisionSend: revision.prepareRevisionSend,
     send: chat.send,
+    // The same owner and selection checks `chat.send` applies, captured before
+    // the submit waits on setting writes.
+    captureSubmitSurface: () => {
+      const owner = shell.captureOwner();
+      const selectionIsCurrent = commands.captureSelection();
+      const hadSession = Boolean(activeIdRef.current);
+      return () => selectionIsCurrent() &&
+        (hadSession ? shell.isOwnerActive(owner) : shell.isNewChatOwnerActive(owner));
+    },
     completeRevisionCopyAttempt: completeTurnRevisionCopyAttempt,
     parseSlashCommand: parseDesktopSlashCommand,
     mergeWorkspaceReferences,
@@ -257,6 +259,12 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     clearPendingTurnActions: (sessionId) => turnActionRegistry.clearForSession(sessionId),
   }), [revision, turn, turnActionRegistry.clearForSession]);
   const reader = useMemo(() => ({
+    // Card clicks are independent chat requests: never consume the editor's draft,
+    // attachments or edit-and-resend staging. The normal send path owns admission.
+    sendCardReply: async (text: string) => {
+      if (!ownerSessionId || sharedSessionActive || revisionDraft || !commands.isSessionSelected(ownerSessionId)) return false;
+      return chat.send(text, [], { targetSessionId: ownerSessionId, waitForHostAdmission: true });
+    },
     onSend,
     newTaskSendPending,
     revisionDraft,
@@ -266,7 +274,7 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     respondToUserForm: chat.respondToUserForm,
     stop,
     composerResumeAction: resume.composerResumeAction,
-  }), [chat, newTaskSendPending, onSend, resume.composerResumeAction, revision, revisionDraft, stop]);
+  }), [chat, ownerSessionId, sharedSessionActive, newTaskSendPending, onSend, resume.composerResumeAction, revision, revisionDraft, stop]);
   // What the transcript and the chrome readers take, apart from the Composer's
   // submission state, so a send or an edit draft does not repaint the transcript.
   const turnReader = useMemo(() => ({
@@ -280,14 +288,6 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     shellCommands,
     reader,
     turnReader,
-    // Local delivery recovery publishes into, and restores drafts for, the
-    // Session the Composer shows.
-    localMessages: {
-      publish: commands.addTransientMessage,
-      retire: commands.removeTransientMessage,
-      reportError: toastApi.error,
-      restoreDraft: queue.restoreDraft,
-    },
     revisionWatch: {
       sessionIds: [revisionDraft?.sourceSessionId, revisionDraft?.draftSessionId] as const,
       onRows: retireRevisionDraftIfRowsLeave,

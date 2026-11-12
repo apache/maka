@@ -363,6 +363,7 @@ function mapBackendSessionEvent(
         name,
         result: event.content,
         ...(event.isError ? { isError: true as const } : {}),
+        ...(event.outcome ? { outcome: event.outcome } : {}),
         ...(event.providerExecuted !== undefined
           ? { providerExecuted: event.providerExecuted }
           : {}),
@@ -500,6 +501,13 @@ function mapBackendSessionEvent(
     // ── Steering: a user message injected mid-turn at a step boundary ─────
     // Persisted as a first-class user event so the ledger, transcript, and
     // future-turn context all carry the interjection in place.
+    case 'runtime_context':
+      return {
+        ...base,
+        role: 'system',
+        author: 'host',
+        content: { kind: 'text', text: event.text, runtimeContextName: event.name },
+      };
     case 'steering_message':
       return {
         ...base,

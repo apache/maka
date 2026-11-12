@@ -230,6 +230,10 @@
   -webkit-app-region: no-drag;
 }
 
+.maka-project-row[data-host-kind="remote"] > div > .astryx-side-nav-item .lucide-globe {
+  color: var(--color-text-blue);
+}
+
 /*
  * A project row receiving a dragged task. Drawn on the row's own box rather
  * than on the nested SideNavItem so the whole target — the heading and any
@@ -412,6 +416,10 @@
   min-height: var(--h-control-sm, 24px);
 }
 
+.maka-session-row-trailing[data-new-task="true"] {
+  width: calc(2 * var(--h-control-sm, 24px) + var(--space-2));
+}
+
 /*
  * The signal slot: the row's state at rest, or its timestamp when it has no
  * state; the ⋯ menu on hover or keyboard focus.
@@ -490,7 +498,8 @@
  * sibling slot instead of non-interactive endContent. Menus occupy a reserved
  * trailing slot visually, but stay siblings in the DOM so neither control
  * contains the other. */
-.maka-session-row-action {
+.maka-session-row-action,
+.maka-project-row-actions {
   position: absolute;
   inset-block-start: calc(
     (var(--size-element-md) - var(--size-element-sm)) / 2
@@ -500,6 +509,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+.maka-session-row-action {
   width: var(--h-control-sm, 24px);
 }
 
@@ -507,14 +519,22 @@
   inset-inline-end: calc(var(--space-2) - (var(--h-control-sm, 24px) - var(--_ring-box)) / 2);
 }
 
-/* A collapsible project keeps Astryx's 24px disclosure after endContent. Match
- * the placeholder's original slot immediately before that disclosure: row
- * gutter + disclosure + SideNavItem gap. Empty projects have no disclosure and
- * use the default trailing inset above. */
-.maka-project-row
+.maka-project-row-actions {
+  gap: var(--space-2);
+}
+
+.maka-project-row-actions > .maka-session-row-action {
+  position: static;
+}
+
+/* Astryx's whole-row collapse control has a decorative trailing chevron but
+ * no hide-chevron prop. Keep its collapse behavior and aria-expanded while
+ * replacing that decoration with the project's sibling action controls. */
+.maka-project-row:has(> div > .maka-project-row-actions)
   > div
-  > .maka-session-row-action[data-position="before-disclosure"] {
-  inset-inline-end: calc(var(--space-2) + var(--space-6) + var(--space-2));
+  > .astryx-side-nav-item[aria-expanded]
+  > .astryx-icon:last-child {
+  display: none;
 }
 
 /* The sibling menu is visually part of the project header, but Astryx's
@@ -522,14 +542,14 @@
  * feedback only while the direct project action is targeted; a plain wrapper
  * :hover selector would also light the header over nested session rows. */
 @media (hover: hover) {
-  .maka-project-row:has(> div > .maka-session-row-action:hover)
+  .maka-project-row:has(> div > .maka-project-row-actions:hover)
     > div
     > .astryx-side-nav-item {
     background-color: var(--color-overlay-hover);
   }
 }
 
-.maka-project-row:has(> div > .maka-session-row-action button:active)
+.maka-project-row:has(> div > .maka-project-row-actions button:active)
   > div
   > .astryx-side-nav-item {
   background-color: var(--color-overlay-pressed);
@@ -585,8 +605,11 @@
  * `isSelected` itself is spent on the open row alone: it renders
  * `aria-current="page"`, and a set of picked rows is not a set of current
  * pages. What a screen reader hears instead is in the row's description.
+ * A menu target shares this ground only while its menu is open; opening a
+ * menu does not make that row part of the persistent selection.
  */
-.maka-session-row[data-picked='true'] .astryx-side-nav-item {
+.maka-session-row[data-picked='true'] .astryx-side-nav-item,
+.maka-session-row:has(> .maka-session-row-action[data-menu-open='true']) .astryx-side-nav-item {
   background-color: var(--color-neutral);
 }
 
@@ -598,7 +621,8 @@
  * ground — the two states stay one paint in both worlds.
  */
 @media (forced-colors: active) {
-  .maka-session-row[data-picked='true'] .astryx-side-nav-item {
+  .maka-session-row[data-picked='true'] .astryx-side-nav-item,
+  .maka-session-row:has(> .maka-session-row-action[data-menu-open='true']) .astryx-side-nav-item {
     background-color: Highlight;
     color: HighlightText;
   }

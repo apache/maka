@@ -1318,6 +1318,57 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     assert.match(result.text, /stopped at step 1 of 1: outcome_unknown/);
   });
 
+  test('a sequence reports a retired pre-dispatch step as a duplicate action', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    backend.captureObservation = async () => observation();
+    let dispatches = 0;
+    backend.runSemantic = async () => {
+      dispatches += 1;
+      return {
+        outcome: {
+          ok: false,
+          error: 'dispatch_refused',
+          message: 'the executor refused before dispatch',
+          evidence: { path: 'none' },
+        },
+      };
+    };
+    const [tool] = buildComputerUseTools({ backend });
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const observationId = JSON.parse(observed.text).observation_id as string;
+    const refused = (await tool.impl(
+      {
+        action: 'click_element',
+        observation_id: observationId,
+        element_id: '5',
+      } as never,
+      ctx(undefined, { toolCallId: 'refused' }),
+    )) as { error?: string };
+    assert.equal(refused.error, 'dispatch_refused');
+
+    const sequence = (await tool.impl(
+      {
+        action: 'element_sequence',
+        observation_id: observationId,
+        steps: [{ label: 'Continue' }],
+      } as never,
+      ctx(undefined, { toolCallId: 'sequence' }),
+    )) as { error?: string; text: string };
+    assert.equal(sequence.error, 'duplicate_action');
+    const modelOutput = tool.toModelOutput?.({
+      toolCallId: 'sequence',
+      input: {},
+      output: sequence,
+    });
+    assert.match(JSON.stringify(modelOutput), /stopped at step 0 of 1: duplicate_action/);
+    assert.match(JSON.stringify(modelOutput), /Address a different element/);
+    assert.doesNotMatch(JSON.stringify(modelOutput), /retired_action/);
+    assert.equal(dispatches, 1);
+  });
+
   test('a stopped sequence preserves a partially delivered outcome over frame confirmation failure', async () => {
     const backend = fakeBackend();
     backend.observeApp = async () => observation();
@@ -2101,6 +2152,8 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     const r = await callComputer(fakeBackend({ accessibility: false }), { action: 'wait' });
     assert.match(r.text, /permission_missing/);
     assert.match(r.text, /Accessibility/);
+    assert.equal((r as { error?: string }).error, 'permission_missing');
+    assert.equal((r as { outcome?: string }).outcome, 'error');
   });
 
   test('requests Accessibility once on first use while every action still preflights', async () => {
@@ -2979,6 +3032,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     const backend = fakeBackend();
     const r = await callComputer(backend, { action: 'wait', duration: 0.001 }, ac.signal);
     assert.match(r.text, /aborted/);
+    assert.equal((r as { outcome?: string }).outcome, 'aborted');
     assert.equal(backend.last, undefined, 'backend.run must not be called after abort');
   });
 

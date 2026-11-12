@@ -799,3 +799,34 @@ function shellRunSnapshot(revision: number): Extract<ShellRunSnapshotResult, { m
     },
   };
 }
+
+
+test('Host continuity keeps unresolved reconnect tools running only in the matching Turn', () => {
+  const messages: StoredMessage[] = [
+    { type: 'user', id: 'user', turnId: 'observed', ts: 1, text: 'run' },
+    toolCall('pending', 'observed', 'Bash', { command: 'sleep 10' }, 2),
+  ];
+  const projection = createTranscriptProjection();
+  const input = { locale: 'en' as const, sessionId: SESSION, messages };
+  const stopped = projection.project(input);
+  assert.equal(stopped[0]?.tools[0]?.status, 'interrupted');
+  const running = projection.project({ ...input, activeTurnId: 'observed' });
+  assert.equal(running[0]?.tools[0]?.status, 'running');
+  assert.strictEqual(projection.project({ ...input, activeTurnId: 'observed' }), running);
+  assert.equal(stopped[0]?.tools[0]?.status, 'interrupted', 'previous snapshots stay immutable');
+  for (const activeTurnId of ['unrelated', undefined, 'observed', undefined]) {
+    assert.equal(projection.project({ ...input, activeTurnId })[0]?.tools[0]?.status,
+      activeTurnId === 'observed' ? 'running' : 'interrupted');
+  }
+  for (const status of ['completed', 'failed', 'aborted'] as const) {
+    const terminal: StoredMessage[] = [...messages,
+      { type: 'turn_state', id: 'ended', turnId: 'observed', ts: 3, status }];
+    assert.equal(projection.project({ ...input, messages: terminal, activeTurnId: 'observed' })[0]?.tools[0]?.status, 'interrupted');
+  }
+  const finished: StoredMessage[] = [...messages,
+    { type: 'tool_result', id: 'result', turnId: 'observed', ts: 3, toolUseId: 'pending', isError: false, content: { kind: 'text', text: 'done' } }];
+  assert.equal(projection.project({ ...input, messages: finished, activeTurnId: 'observed' })[0]?.tools[0]?.status, 'completed');
+  const failed: StoredMessage[] = [...messages,
+    { type: 'tool_result', id: 'failure', turnId: 'observed', ts: 3, toolUseId: 'pending', isError: true, content: { kind: 'text', text: 'failed' } }];
+  assert.equal(projection.project({ ...input, messages: failed, activeTurnId: 'observed' })[0]?.tools[0]?.status, 'errored');
+});

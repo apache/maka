@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { UiLocale } from '@maka/core/ui-locale';
+
 import type { ReactNode } from 'react';
 import type { BotChannelSettings, BotProvider, BotMessageHandling } from '@maka/core/bot-chat-settings';
 import type { BotStatus } from '@maka/runtime/bots';
@@ -96,6 +98,7 @@ export function BotChatOverview(props: {
             options={[
               { value: 'task', label: copy.separateTask },
               { value: 'workhub', label: 'WorkHub' },
+              { value: 'assistant', label: copy.personalAssistant },
             ]}
             onChange={(value) => props.onMessageHandlingChange?.(value as BotMessageHandling)}
           />}
@@ -159,7 +162,7 @@ function botOverviewDetail(
   currentError: string | undefined,
   fallback: string,
   liveOperational: boolean,
-  locale: 'zh-CN' | 'zh-TW' | 'en',
+  locale: UiLocale,
 ): ReactNode {
   const copy = getBotSettingsCopy(locale).overview;
   const identity = status?.identity?.username ?? status?.identity?.displayName;

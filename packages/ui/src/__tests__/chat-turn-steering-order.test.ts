@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createElement } from 'react';
+import { act, createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import { TurnView } from '../chat-turn.js';
@@ -29,26 +29,27 @@ import { materializeTurns, overlayLiveTurn, type TurnTimelineItem, type TurnView
 import { createTranscriptProjection } from '../transcript-projection.js';
 import { ChatView } from '../chat-view.js';
 import { Composer } from '../composer.js';
-import { renderTranscriptMarkup } from './transcript-test-dom.js';
+import { installTranscriptDom, renderTranscriptMarkup } from './transcript-test-dom.js';
 import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { armLiveTurn, type LiveTurnProjection } from '../live-turn-projection.js';
 import { applyLiveTurnEvent } from './live-turn-zh.js';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 
-test('renders a thinking-only interruption as a divider without an empty answer bubble', () => {
+test('renders a thinking-only interruption as a divider without an empty answer bubble', async () => {
   const messages: StoredMessage[] = [
     { type: 'user', id: 'user', turnId: 'turn', ts: 1, text: 'request' },
     { type: 'assistant', id: 'partial', turnId: 'turn', ts: 2, modelId: 'mock', text: '', interrupted: true, thinking: { text: 'partial thought' } },
   ];
   const [turn] = materializeTurns(messages, 'en');
   assert.ok(turn);
-  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
-    locale: 'en', children: createElement(TurnView, { turn }),
-  }));
-  const { document } = parseHTML(`<html><body>${markup}</body></html>`);
-  assert.equal(document.querySelectorAll('.maka-chat-message-bubble-assistant').length, 0);
-  assert.match(document.body.textContent, /partial thought/);
-  assert.match(document.body.textContent, /Response stream ended before completion/);
+  const dom = installTranscriptDom();
+  try {
+    await dom.render(createElement(LocaleProvider, { locale: 'en', children: createElement(TurnView, { turn }) }));
+    assert.equal(dom.document.querySelectorAll('.maka-chat-message-bubble-assistant').length, 0);
+    assert.match(dom.container.textContent, /Response stream ended before completion/);
+    await act(() => { dom.document.querySelector('.maka-processing-summary')!.dispatchEvent(new dom.window.Event('click', { bubbles: true, cancelable: true })); });
+    assert.match(dom.container.textContent, /partial thought/);
+  } finally { await dom.cleanup(); }
 });
 
 test('renders steering where it arrived in the assistant timeline', () => {
@@ -94,6 +95,43 @@ test('renders steering where it arrived in the assistant timeline', () => {
   for (const text of [...texts, 'failure detail']) {
     assert.equal(visibleText.split(text).length - 1, 1, `${text} should render exactly once`);
   }
+});
+
+test('keeps the first steering message in a resumed Turn at its timeline position', () => {
+  const messages: StoredMessage[] = [
+    { type: 'user', id: 'original-user', turnId: 'original-turn', ts: 1, text: 'original request' },
+    { type: 'assistant', id: 'before-steer', turnId: 'resumed-turn', ts: 10, modelId: 'mock', text: 'work before the steer' },
+    { type: 'user', id: 'first-steer', turnId: 'resumed-turn', ts: 11, text: 'remember to commit after each point', steeringEventId: 'steer-event' },
+    { type: 'assistant', id: 'after-steer', turnId: 'resumed-turn', ts: 12, modelId: 'mock', text: 'work after the steer' },
+  ];
+  const turn = materializeTurns(messages, 'en').find((candidate) => candidate.turnId === 'resumed-turn');
+  assert.ok(turn);
+  assert.equal(turn.user, undefined, 'a resumed Turn does not get a synthetic opening prompt');
+  assert.deepEqual(
+    turn.timeline.map((item) => item.kind === 'user' ? `user:${item.message.text}` : `${item.kind}:${'text' in item ? item.text : ''}`),
+    [
+      'text:work before the steer',
+      'user:remember to commit after each point',
+      'text:work after the steer',
+    ],
+  );
+
+  const markup = renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(TurnView, { turn }),
+    }),
+  );
+  const visibleText = parseHTML(`<html><body>${markup}</body></html>`).document.body.textContent ?? '';
+  const positions = [
+    'work before the steer',
+    'remember to commit after each point',
+    'work after the steer',
+  ].map((text) => visibleText.indexOf(text));
+  assert.ok(
+    positions[0]! < positions[1]! && positions[1]! < positions[2]!,
+    `expected before < steer < after; positions=${positions.join(',')}; visible=${visibleText}`,
+  );
 });
 
 test('holds queued steering in the transcript while old output continues, then renders its real reply boundary', async () => {

@@ -48,6 +48,8 @@
  * item without reviving the retired 0.1.x StoredMessage history path.
  */
 
+import { assistantCardText } from '@maka/core/assistant-card';
+
 import {
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
@@ -420,6 +422,7 @@ export function estimateRuntimeEventChars(event: RuntimeEvent): number {
     // attachment-only user message must not estimate to zero, or the
     // history-compact gate drops a model-visible event (#4804).
     if (content.kind === 'text') {
+      if (content.card) total += assistantCardText(content.card).length;
       for (const quote of content.quotes ?? []) {
         total += formatQuoteRefs([quote]).length;
       }
@@ -554,6 +557,7 @@ export type RuntimeEventModelReplayItem =
        * dedupe works on identity, never on text.
        */
       steering?: { eventId: string };
+      runtimeContextName?: string;
       eventId: string;
       ts: number;
     }
@@ -967,7 +971,11 @@ export function buildRuntimeEventModelReplayPlan(
       continue;
     }
 
-    if (event.role === 'system' && !includeSystemEvents) {
+    const runtimeContextName =
+      event.role === 'system' && event.author === 'host' && event.content.kind === 'text'
+        ? event.content.runtimeContextName
+        : undefined;
+    if (event.role === 'system' && !includeSystemEvents && runtimeContextName === undefined) {
       diagnostics.push(
         diagnostic(
           event,
@@ -980,7 +988,7 @@ export function buildRuntimeEventModelReplayPlan(
 
     switch (event.content.kind) {
       case 'text': {
-        const role = modelTextRole(event.role);
+        const role = runtimeContextName !== undefined ? 'user' : modelTextRole(event.role);
         if (!role) {
           diagnostics.push(
             diagnostic(
@@ -1004,8 +1012,12 @@ export function buildRuntimeEventModelReplayPlan(
           // envelope); the raw text is a UI/transcript projection only.
           content: steeringReplay
             ? buildSteeringEnvelope(formatTextWithInlineRefs(event.content))
-            : formatTextWithInlineRefs(event.content),
+            : formatTextWithInlineRefs(event.content) +
+              (role === 'assistant' && event.content.card
+                ? '\n\n' + assistantCardText(event.content.card)
+                : ''),
           ...(steeringReplay ? { steering: { eventId: event.id } } : {}),
+          ...(runtimeContextName !== undefined ? { runtimeContextName } : {}),
           ...(event.content.attachments ? { attachments: event.content.attachments } : {}),
           ...(event.content.providerOptions !== undefined
             ? {
@@ -1230,7 +1242,13 @@ export function buildRuntimeEventModelReplayPlan(
             content: item.content,
             providerOptions: steeringProviderOptions(item.steering.eventId),
           }
-        : { role: item.role, content: item.content },
+        : {
+            role: item.role,
+            content: item.content,
+            ...(item.runtimeContextName !== undefined
+              ? { providerOptions: runtimeContextProviderOptions(item.runtimeContextName) }
+              : {}),
+          },
     );
   return {
     items,
@@ -1238,6 +1256,12 @@ export function buildRuntimeEventModelReplayPlan(
     diagnostics,
     hasProviderNativeSemantics: items.some((item) => item.kind !== 'text'),
   };
+}
+
+export function runtimeContextProviderOptions(
+  name: string,
+): NonNullable<ModelMessage['providerOptions']> {
+  return { makaRuntimeContext: { name } };
 }
 
 function modelTextRole(role: RuntimeEventRole): TextModelMessage['role'] | undefined {

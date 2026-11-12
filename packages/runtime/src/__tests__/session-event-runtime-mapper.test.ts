@@ -423,6 +423,16 @@ type ProjectionSamples = {
 };
 
 const PROJECTION_SAMPLES: ProjectionSamples = {
+  runtime_context: {
+    subject: {
+      type: 'runtime_context',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      name: 'clock',
+      text: 'UTC: 2026-10-19T00:00:00Z',
+    },
+  },
   context_compaction_applied: {
     subject: { type: 'context_compaction_applied', id: 'e', turnId: 'turn-1', ts: 1 },
   },

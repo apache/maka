@@ -17,8 +17,10 @@
  * under the License.
  */
 
+import { defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+
 import type { UiCatalog } from '@maka/core/ui-locale';
-export const workHubLiveCopy = {
+export const workHubLiveCopy = resolveUiMessageCatalog(defineShippedUiMessageCatalog<Record<string, string>>()({
   en: { selectedAnswers: 'Selected', clarifiedPreferences: 'Your answers', filterConversation: 'Filter conversation by Work', clearConversationFilter: 'Show all conversations', noWorkConversation: 'No conversations for this Work in this part of history.', work: 'Work', attachmentLimit: 'Attachment count or size exceeds the limit', attachmentUploadFailed: 'Attachment upload did not return a reference', reviewAttachments: 'Please review the attachments.', sendFailed: 'Could not send',
     retrySteering: 'Retry the original text and attachments with Cmd/Ctrl+Enter to resolve the previous submission first.',
     retryFollowup: 'Retry the original text and attachments with Enter to resolve the previous submission first.',
@@ -36,6 +38,7 @@ export const workHubLiveCopy = {
     collapseConversation: 'Collapse conversation',
     expandConversation: 'Expand conversation',
     retry: 'Retry', selectModelToSend: 'Choose a model before sending.', configureModelToSend: 'Configure an available model before sending.', loadingModels: 'Loading models…', noModelsAvailable: 'No usable models are available.',
+    historyIncomplete: 'Could not load the complete task history. Retry to restore WorkHub links and filters.',
     reloadRequired: 'WorkHub needs to reload',
     welcome: 'What can I help with?',
     hint: 'Ask a question, manage your tasks, or ask me to work in Maka.',
@@ -60,6 +63,7 @@ export const workHubLiveCopy = {
     collapseConversation: '收起对话',
     expandConversation: '展开对话',
     retry: '重试', selectModelToSend: '请先选择模型', configureModelToSend: '请先配置可用模型', loadingModels: '正在加载模型…', noModelsAvailable: '暂无可用模型',
+    historyIncomplete: '无法加载完整任务历史。请重试以恢复 WorkHub 关联和筛选。',
     reloadRequired: '工作台需要重新加载',
     welcome: '有什么可以帮你？',
     hint: '问个问题、管理任务，或让我帮你操作 Maka。',
@@ -84,6 +88,7 @@ export const workHubLiveCopy = {
     collapseConversation: '收起對話',
     expandConversation: '展開對話',
     retry: '重試', selectModelToSend: '請先選擇模型', configureModelToSend: '請先設定可用模型', loadingModels: '正在載入模型…', noModelsAvailable: '暫無可用模型',
+    historyIncomplete: '無法載入完整任務歷史。請重試以恢復 WorkHub 關聯與篩選。',
     reloadRequired: '工作台需要重新載入',
     welcome: '有什麼可以幫你？',
     hint: '問個問題、管理任務，或讓我幫你操作 Maka。',
@@ -91,4 +96,4 @@ export const workHubLiveCopy = {
     restore: '收回工作台',
     openWork: '開啟任務', openResult: '開啟結果',
   },
-} satisfies UiCatalog<Record<string, string>>;
+})) satisfies UiCatalog<Record<string, string>>;

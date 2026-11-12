@@ -329,12 +329,15 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (input.llmConnectionId) this.#llmConnectionId = input.llmConnectionId;
     this.#llmConnectionSlug = input.llmConnectionSlug;
     this.#model = input.model;
-    this.#thinkingLevel = input.thinkingLevel;
+    this.#thinkingLevel = input.thinkingLevel ?? undefined;
     // An omitted mode stays omitted: the Host applies its configured default.
     // Substituting a literal `ask` here would make the CLI a second authority
     // over the starting boundary and silently override that default.
     this.#permissionMode = input.permissionMode;
-    const session = await this.#createSession(input.name ?? DEFAULT_SESSION_NAME);
+    const session = await this.#createSession(
+      input.name ?? DEFAULT_SESSION_NAME,
+      input.thinkingLevel,
+    );
     return projectSessionCatalogSummary(session);
   }
 
@@ -1280,6 +1283,33 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return this.#channel?.snapshot.goal ?? null;
   }
 
+  getEventWaits(): readonly import('@maka/runtime-host/protocol').SessionEventWaitProjection[] {
+    return this.#channel?.snapshot.eventWaits?.items ?? [];
+  }
+  async queryEventWaits(): Promise<
+    readonly import('@maka/runtime-host/protocol').SessionEventWaitProjection[]
+  > {
+    const sessionId = this.#sessionId;
+    if (!sessionId) return [];
+    const items: import('@maka/runtime-host/protocol').SessionEventWaitProjection[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.#request('session.event-waits.query', {
+        sessionId,
+        ...(cursor ? { afterWaitId: cursor } : {}),
+      });
+      items.push(...page.items);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return items;
+  }
+  async cancelSessionEventWait(
+    input: import('@maka/runtime-host/protocol').SessionEventWaitCancelInput,
+  ): Promise<import('@maka/runtime-host/protocol').SessionEventWaitCancelResult> {
+    if (input.sessionId !== this.#sessionId) throw new Error('Wait belongs to another Session');
+    return this.#request('session.event-wait.cancel', input);
+  }
+
   subscribeGoalChanges(listener: (goal: GoalProjection | null) => void): () => void {
     this.#goalListeners.add(listener);
     return () => this.#goalListeners.delete(listener);
@@ -1435,7 +1465,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     }
   }
 
-  async #createSession(name: string): Promise<SessionCatalogProjection> {
+  async #createSession(
+    name: string,
+    thinkingLevel: CreateSessionRequest['thinkingLevel'] = this.#thinkingLevel,
+  ): Promise<SessionCatalogProjection> {
     const workspace = this.#workspace.target;
     if (!workspace) {
       throw new Error('A remote Runtime Host Session requires an explicit Project');
@@ -1460,7 +1493,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         ...(this.#orchestrationMode === 'default'
           ? {}
           : { orchestrationMode: this.#orchestrationMode }),
-        ...(this.#thinkingLevel === undefined ? {} : { thinkingLevel: this.#thinkingLevel }),
+        ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
       }),
     );
     this.#sessionGeneration += 1;

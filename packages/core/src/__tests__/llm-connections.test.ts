@@ -38,6 +38,7 @@ import {
   type ProviderType,
 } from '../llm-connections.js';
 import { isRealConnection } from '../connection-readiness.js';
+import { normalizeCatalogConnectionBaseUrl } from '../runtime-policy/connection-catalog-codec.js';
 import { resolveConnectionModelCatalog } from '../model-catalog.js';
 import { buildChatModelChoices } from '../chat-model-choice.js';
 import { deriveProviderAuthContract } from '../provider-auth.js';
@@ -80,6 +81,57 @@ test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs',
   const exactLimit = `https://example.com/${'a'.repeat(2048 - 'https://example.com/'.length)}`;
   assert.equal(exactLimit.length, 2048);
   assert.equal(validateConnectionBaseUrl(exactLimit), null);
+});
+
+test('connection base URL gate agrees with the Runtime Host contract (#3672)', () => {
+  // The Host codec is the authority. Accepting what it refuses sends the rejection back
+  // unclassified, so the form shows generic "service unavailable" copy on the wrong field.
+  const hostRejects = (value: string): boolean => {
+    try {
+      normalizeCatalogConnectionBaseUrl(value);
+      return false;
+    } catch {
+      return true;
+    }
+  };
+
+  for (const [value, rule] of [
+    ['https://user:pw@gw.example.com/v1', 'credentials'],
+    ['https://gw.example.com/v1?api-version=2024-06', 'query or fragment'],
+    ['https://gw.example.com/v1#main', 'query or fragment'],
+    ['https://gw.example.com/v1?api-version=2024-06#main', 'query or fragment'],
+  ] as const) {
+    const gate = validateConnectionBaseUrl(value);
+    assert.notEqual(gate, null, value);
+    assert.match(gate ?? '', new RegExp(rule), value);
+    assert.equal(hostRejects(value), true, value);
+  }
+
+  for (const value of [
+    'https://gw.example.com/v1',
+    'https://gw.example.com',
+    'http://localhost:11434/v1',
+  ]) {
+    assert.equal(validateConnectionBaseUrl(value), null, value);
+    assert.equal(hostRejects(value), false, value);
+  }
+});
+
+test('connection base URL gate bounds bytes like the Host, not only characters (#3672)', () => {
+  const multibyte = `https://gw.example.com/${'é'.repeat(1200)}`;
+  assert.equal(
+    multibyte.length <= 2048,
+    true,
+    `character cap must not reject it: ${multibyte.length}`,
+  );
+  assert.match(validateConnectionBaseUrl(multibyte) ?? '', /2048 bytes/);
+  let hostThrew = false;
+  try {
+    normalizeCatalogConnectionBaseUrl(multibyte);
+  } catch {
+    hostThrew = true;
+  }
+  assert.equal(hostThrew, true);
 });
 
 test('base URL normalization preserves clear intent and rejects untrusted runtime types', () => {

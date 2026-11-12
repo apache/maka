@@ -22,13 +22,14 @@ import {
   Banner,
   Button,
   ClientCapabilityPrompt,
-  Composer,
+  clearUserQuestionWizardState,
   type ComposerInteraction,
   ComposerGoalProjectionConsumer,
   FormInteractionPrompt,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
 } from '@maka/ui';
+import { PersonalAssistantComposer as Composer } from './features/personal-assistant/index.js';
 import { StagedComposer, type ComposerStagingProp } from './features/conversation/index.js';
 import type { ComposerHandle } from '@maka/ui';
 import {
@@ -202,9 +203,21 @@ export function ChatComposerRegion({
           choice.model === composerRest.activeModel,
       )
     : undefined;
-  const previousNewTaskDraftKey = useRef(newTaskDraftKey);
+  const composerLifecycleRef = useRef({
+    newTaskDraftKey,
+    sessionId: activeId,
+    question: activeQuestion,
+  });
   useLayoutEffect(() => {
-    const previous = previousNewTaskDraftKey.current;
+    const lifecycle = composerLifecycleRef.current;
+    const previousQuestion = lifecycle.question;
+    const previousSessionId = lifecycle.sessionId;
+    lifecycle.sessionId = activeId;
+    lifecycle.question = activeQuestion;
+    if (previousQuestion && !activeQuestion && previousSessionId === activeId) {
+      clearUserQuestionWizardState(previousQuestion.requestId);
+    }
+    const previous = lifecycle.newTaskDraftKey;
     // A submission owns the text it submitted until it settles. `sendCurrent`
     // captures the key it sent from and clears exactly that key when the send
     // resolves, so carrying the text to a target chosen mid-flight would leave
@@ -214,7 +227,7 @@ export function ChatComposerRegion({
     // slot the completion has already cleared, so nothing sent comes with it,
     // and anything typed after the send does.
     if (newTaskSendPending) return;
-    previousNewTaskDraftKey.current = newTaskDraftKey;
+    lifecycle.newTaskDraftKey = newTaskDraftKey;
     if (previous === newTaskDraftKey) return;
     const composer = composerRef.current;
     if (!composer) return;
@@ -257,7 +270,7 @@ export function ChatComposerRegion({
         ? carried
         : (newTaskDraftPersistence.read(newTaskDraftKey) ?? ''),
     );
-  }, [composerRef, newTaskDraftKey, newTaskSendPending]);
+  }, [activeId, activeQuestion, composerRef, newTaskDraftKey, newTaskSendPending]);
 
   // The composer body as a function of the gauge's live reading, so the probe
   // — when mounted — can feed it the per-settled-request snapshot (#4717), and
@@ -364,6 +377,7 @@ export function ChatComposerRegion({
         )}
         {activeQuestion && (
           <UserQuestionPrompt
+            key={activeQuestion.requestId}
             request={activeQuestion}
             onRespond={respondToUserQuestion}
             onStop={stop}

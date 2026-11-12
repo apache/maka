@@ -394,6 +394,7 @@ export async function runMakaCli(
         ...(command.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
         updateExisting: command.updateExisting,
         reuseExistingEnvironment: command.reuseExistingEnvironment,
+        ...(command.expectedExisting ? { expectedExisting: command.expectedExisting } : {}),
         allowInterruptActiveTasks: command.allowInterruptActiveTasks,
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots
@@ -786,6 +787,7 @@ export async function runMakaCli(
         locale: locale.locale,
         cwd: process.cwd(),
         onProcessExit: handleMakaCliProcessExit,
+        buildVersion: version,
         ...(command.resumeSessionId ? { resumeSessionId: command.resumeSessionId } : {}),
         ...(command.resumeCwd ? { resumeCwd: command.resumeCwd } : {}),
         ...(command.hostProfileId ? { hostProfileId: command.hostProfileId } : {}),

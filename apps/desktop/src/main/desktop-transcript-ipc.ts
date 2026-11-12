@@ -40,6 +40,7 @@ export interface TranscriptBatchContent {
   readonly durableThrough: number | null;
   readonly durable: readonly DesktopSequencedTranscriptMessage[];
   readonly hasOlder?: boolean;
+  readonly hasNewer?: boolean;
   readonly beginsAtTurnBoundary?: boolean;
   readonly earlierThan?: number;
   readonly coversFrom?: number | null;
@@ -102,6 +103,7 @@ export function* encodeDesktopTranscriptBatches(
       durableThrough: content.durableThrough,
       fragments: batchFragments,
       ...(content.hasOlder === undefined || !(last && content.ready) ? {} : { hasOlder: content.hasOlder }),
+      ...(content.hasNewer === undefined || !(last && content.ready) ? {} : { hasNewer: content.hasNewer }),
       ...(content.beginsAtTurnBoundary === undefined || !(last && content.ready)
         ? {}
         : { beginsAtTurnBoundary: content.beginsAtTurnBoundary }),

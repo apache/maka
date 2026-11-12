@@ -25,6 +25,8 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { createProjectCatalog } from '@maka/storage/project-catalog';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
@@ -52,6 +54,7 @@ import {
 } from './e2e-fixture/scenarios-chat.js';
 import { seedMcpFixture, seedSkillsMarketFixture } from './e2e-fixture/scenarios-modules.js';
 import { longSidebarSessions } from './e2e-fixture/scenarios-sessions.js';
+import { CHECKIN_FIXTURE_CONNECTION, checkinSessions } from './e2e-fixture/scenarios-checkin.js';
 import {
   writeConnections,
   writeDailyReviewArchives,
@@ -77,6 +80,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'module-daily-review',
   'scheduled-tasks',
   'sidebar-search-modal-open',
+  'checkin',
 ]);
 
 export interface E2eFixture {
@@ -156,7 +160,8 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
   if (!fixture) return null;
   const state: E2eFixtureState = {
     enabled: true,
-    now: E2E_FIXTURE_NOW,
+    // Check-in compares Session activity with the Host's real clock.
+    ...(fixture.scenario === 'checkin' ? {} : { now: E2E_FIXTURE_NOW }),
     ...(fixture.reducedMotion ? { reducedMotion: true } : {}),
     ...(fixture.theme ? { theme: fixture.theme } : {}),
     ...(fixture.locale ? { locale: fixture.locale } : {}),
@@ -203,6 +208,8 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'daily-review', sidebarCollapsed: false };
     case 'scheduled-tasks':
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'automations', sidebarCollapsed: false };
+    case 'checkin':
+      return { ...state, sidebarCollapsed: false };
     case 'sidebar-search-modal-open':
       return {
         ...state,
@@ -221,8 +228,8 @@ export async function seedE2eFixture(input: {
   /** Test seam: bounds lagging runs per fold pass; unset keeps the ledger default. */
   projectionCatchUpLimit?: number;
 }): Promise<void> {
-  const now = input.now ?? E2E_FIXTURE_NOW;
   const scenario = input.fixture.scenario;
+  const now = input.now ?? (scenario === 'checkin' ? Date.now() : E2E_FIXTURE_NOW);
   await rm(input.workspaceRoot, { recursive: true, force: true });
   await mkdir(input.workspaceRoot, { recursive: true });
   const storageRoot = await resolveStorageRoot({ path: input.workspaceRoot, kind: 'interactive' });
@@ -264,6 +271,7 @@ export async function seedE2eFixture(input: {
       catalog.close();
     }
   }
+  if (scenario === 'checkin') await writeCheckinSessions(input.workspaceRoot, storageRoot, now);
   if (scenario === 'scheduled-tasks') await writeScheduledTasks(input.workspaceRoot, now);
   if (scenario === 'module-daily-review') await writeDailyReviewArchives(input.workspaceRoot, now);
   if (scenario === 'module-skills') await seedSkillsMarketFixture(input.workspaceRoot);
@@ -317,5 +325,48 @@ export async function seedE2eFixture(input: {
       await usage.close();
       await owner.close();
     }
+  }
+}
+
+async function writeCheckinSessions(
+  workspaceRoot: string,
+  storageRoot: Awaited<ReturnType<typeof resolveStorageRoot>>,
+  now: number,
+): Promise<void> {
+  // A Session that names its connection by slug alone is a legacy one the Host
+  // will not run, so each is bound to the seeded connection's identity.
+  const connectionId = await withFixtureRootOwner(storageRoot, async (lease) => {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(lease);
+    const catalog = await policy.connectionCatalog.getSnapshot();
+    const connection = catalog.connections.find((entry) => entry.slug === CHECKIN_FIXTURE_CONNECTION);
+    if (!connection) throw new Error('The check-in fixture connection was not seeded');
+    return connection.connectionId;
+  });
+  const seeds = checkinSessions(now);
+  for (const seed of seeds) {
+    await writeSession(workspaceRoot, { ...seed.header, llmConnectionId: connectionId }, seed.messages);
+  }
+  const owner = await tryAcquireInteractiveRootOwner(storageRoot);
+  if (!owner) throw new Error('Unable to acquire the E2E fixture storage root');
+  try {
+    const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
+    for (const seed of seeds) {
+      if (seed.todos) await todos.replaceAll(seed.header.id, seed.todos);
+    }
+  } finally {
+    await owner.close();
+  }
+}
+
+async function withFixtureRootOwner<T>(
+  storageRoot: Awaited<ReturnType<typeof resolveStorageRoot>>,
+  run: (lease: NonNullable<Awaited<ReturnType<typeof tryAcquireInteractiveRootOwner>>>['lease']) => Promise<T>,
+): Promise<T> {
+  const owner = await tryAcquireInteractiveRootOwner(storageRoot);
+  if (!owner) throw new Error('Unable to acquire the E2E fixture storage root');
+  try {
+    return await run(owner.lease);
+  } finally {
+    await owner.close();
   }
 }

@@ -69,11 +69,6 @@
   .workHubLiveError { padding: var(--space-3); }
   .workHubComposerSurface { position: relative; width: 100%; }
   .workHubComposerContent { position: relative; }
-  /* Compact WorkHub keeps its original inline wheel footprint. Other hosts
-     keep the button footprint and paint the same wheel over that position. */
-  .workHubLive[data-placement='floating'][data-conversation-expanded='false'] .maka-model-wheel-anchor[data-open='true'] {
-    width: min(264px, 55vw); height: var(--maka-model-wheel-height);
-  }
   /* Selector popups stay translucent over the transparent WorkHub surface. */
   .workHubLive .astryx-selector-popup {
     background: color-mix(in oklch, var(--background-elevated) 94%, transparent);
@@ -111,7 +106,8 @@
   }
   .workHubLive[data-placement='floating'][data-conversation-expanded='false'], body:has(.workHubLive[data-placement='floating'][data-conversation-expanded='false'])::after { border-radius: 20px; }
   .workHubLive[data-placement='floating'][data-conversation-expanded='false']::before { opacity: 1; }
-  .workHubLive[data-placement='floating'] .maka-chat-layout { background: transparent; }
+  /* The floating dock's animated inset owns its edge spacing. */
+  .workHubLive[data-placement='floating'] .maka-chat-layout { background: transparent; scrollbar-gutter: auto; }
   /* Keep the sticky dock bottom-aligned even before the native window has
      grown enough to fit its composer, 32px scroll button and 12px gaps. */
   .workHubLive[data-placement='floating'][data-conversation-expanded='true'] > .workHubWorkspace {

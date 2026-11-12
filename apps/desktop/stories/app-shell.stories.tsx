@@ -32,6 +32,7 @@ import type {
 } from '@maka/core/events';
 import {
   ChatSurfaceLayout,
+  MessageCardSendContext,
   ChatView,
   applyLiveTurnBufferEvent,
   reconcileLiveTurnBuffer,
@@ -41,8 +42,10 @@ import {
   deriveTitlebarProjectName,
   TitlebarSessionIdentity,
   ToastProvider,
+  useUiLocale,
 } from '@maka/ui';
 import type { ChatModelChoice, ComposerHandle, SessionViewMode, TurnViewModel, LiveTurnBuffer } from '@maka/ui';
+import { PersonalAssistantChatLayout, PersonalAssistantComposer } from '../src/renderer/features/personal-assistant/stories';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
 import { deriveMessageQueueProjection } from '../src/renderer/application/contracts/message-queue-projection';
 import { retractQueuedEntryToDraft, withQueuedSteeringTransients } from '../src/renderer/application/contracts/transient-message-projection';
@@ -71,6 +74,9 @@ import {
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
 import { Button } from '@astryxdesign/core';
 import { GoalDialog } from '../src/renderer/features/goals/testing';
+import { localMessagePresentation } from '../src/renderer/features/conversation/testing';
+import { getSessionLocalCopy } from '../src/renderer/locales/session-local-copy';
+import type { DesktopLocalMessage } from '../src/shared/session-local-contract';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
 
@@ -503,10 +509,11 @@ function ComposedShell(props: {
             // padding, so a story without it measures its own box.
             (<div className="maka-detail-with-artifacts">
               <div className="mainColumn" inert={props.switchingSession || undefined}>
-              <ChatSurfaceLayout
+              <PersonalAssistantChatLayout
+                session={active}
                 hidden={props.chatHidden}
                 composer={
-                  <Composer
+                  <PersonalAssistantComposer
                     {...baseComposerProps}
                     activeSession={active}
                     modelSwitchHasHistory={messages.some(
@@ -524,7 +531,7 @@ function ComposedShell(props: {
                   {...props.chat}
                   revisionNavigation={revisionNavigation}
                 />
-              </ChatSurfaceLayout>
+              </PersonalAssistantChatLayout>
               </div>
             </div>)
           )}
@@ -737,6 +744,40 @@ export const RunningStatusDuringToolRun: Story = {
   },
 };
 
+function ReconnectedRunningToolScene() {
+  // Like QueuedMessageLifecycle, start this active scene at mount: the user
+  // attaches ten seconds after the command began, rather than months after a
+  // fixed catalog timestamp. The clock is real; no output is fabricated.
+  const [attachedAt] = useState(Date.now);
+  return (
+    <ComposedShell
+      session={{ status: 'running', streaming: true, lastMessageAt: attachedAt - 10_000 }}
+      chat={{
+        activeTurn: { turnId: 'turn-reconnect' },
+        messages: [
+          { ...user('reconnect-user', 'turn-reconnect', 2, '等待这个命令执行完毕。'), ts: attachedAt - 10_000 },
+          { type: 'tool_call', id: 'reconnect-tool', turnId: 'turn-reconnect', ts: attachedAt - 9_000,
+            toolName: 'Bash', activityKind: 'command', args: { command: 'sleep 10' } },
+        ],
+      }}
+    />
+  );
+}
+
+// Real path: open a conversation while its Host Turn is still running; a
+// reconnect seed supplies continuity but no live tool buffer for this legacy
+// transcript. This fixture supplies production ChatView props, not a native
+// Electron reproduction. Keep process details visible for before/after evidence.
+export const ReconnectedRunningTool: Story = {
+  render: () => <ReconnectedRunningToolScene />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.querySelector('.maka-processing-sequence')).not.toBeNull());
+    const process = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence')!;
+    if (!process.open) await userEvent.click(process.querySelector('summary')!);
+    await waitFor(() => expect(within(canvasElement).getByText('sleep 10')).toBeVisible());
+  },
+};
+
 // A real prefix of `npm test` stdout, copied verbatim from an actual run killed
 // mid-build (the full suite runs for minutes, so a cancel here is genuinely
 // reachable). Kept short by cutting inside the build phase — no test-runner
@@ -759,7 +800,6 @@ export const PromptSentBeforeTurnLands: Story = {
           ts: NOW,
           transientPlacement: 'transcript',
           hostTurnId: 'turn-sent',
-          deliveryStatus: '已接收',
         }],
       }}
     />
@@ -775,9 +815,103 @@ export const PromptSentBeforeTurnLands: Story = {
       const lastTurn = canvasElement.querySelector('.maka-transcript-turn > .maka-turn')!;
       expect(Math.round(pending.getBoundingClientRect().top - lastTurn.getBoundingClientRect().bottom)).toBe(40);
     });
-    // Delivery is news, so its row stays up at rest.
+    // Ordinary admission is not actionable delivery news. Only the Turn's
+    // running cue stays up; timestamp/copy follow the normal hover contract.
     (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
-    await expect(getComputedStyle(pending.querySelector('.maka-message-meta')!).opacity).toBe('1');
+    const pendingMetadata = pending.querySelector<HTMLElement>('.maka-message-meta')!;
+    await expect(pending.querySelector('.maka-message-delivery')).toBeNull();
+    await waitFor(() => expect(getComputedStyle(pendingMetadata).opacity).toBe('0'));
+    pendingMetadata.querySelector('button')!.focus();
+    await waitFor(() => expect(getComputedStyle(pendingMetadata).opacity).toBe('1'));
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    await waitFor(() => expect(getComputedStyle(pendingMetadata).opacity).toBe('0'));
+  },
+};
+
+function FailedLocalMessageHarness({ paused = false }: { paused?: boolean }) {
+  const locale = useUiLocale();
+  const copy = getSessionLocalCopy(locale);
+  const message: DesktopLocalMessage = {
+    sessionId: activeSession.id, messageId: 'failed-local', createdAt: NOW,
+    state: paused ? 'paused' : 'failed', canCancel: true, placement: 'next_turn', localDisplayPlacement: 'current_turn',
+    text: '请保留这条未发送的问题，我需要编辑后重新发送。',
+    attachments: [], inlineReferences: [], error: paused ? undefined : 'Host rejected the message before admission.',
+  };
+  const presentation = localMessagePresentation(message, locale);
+  return <ComposedShell chat={{
+    messages: conversation.slice(0, 2),
+    transientMessages: [{
+      id: message.messageId, text: message.text, ts: message.createdAt, transientPlacement: 'transcript',
+      deliveryStatus: presentation.status, deliveryDetail: presentation.detail, deliveryTone: presentation.tone,
+      deliveryDiagnostic: message.error, deliveryDiagnosticLabel: copy.diagnostics,
+      deliveryActions: paused
+        ? [{ label: copy.editUnsent, onClick: noop }, { label: copy.resume, onClick: noop }, { label: copy.removeUnsent, onClick: noop }]
+        : [{ label: copy.edit, onClick: noop }, { label: copy.remove, onClick: noop }],
+    }],
+  }} />;
+}
+
+// Real path: send in an existing conversation → Host rejects admission → the
+// durable failed local copy retains its feedback and edit/delete actions.
+// The production presenter derives the failed status rather than hardcoding it.
+export const FailedLocalMessage: Story = {
+  render: () => <FailedLocalMessageHarness />,
+  play: async ({ canvasElement }) => {
+    const failed = canvasElement.querySelector('[data-transient-message-id="failed-local"]')!;
+    const failedMetadata = failed.querySelector<HTMLElement>('.maka-message-meta')!;
+    // Actionable delivery remains visible beside, not inside, the metadata.
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    await expect(getComputedStyle(failedMetadata).opacity).toBe('1');
+    await expect(getComputedStyle(failedMetadata).pointerEvents).toBe('auto');
+    await expect(failed.querySelector('.maka-message-delivery [role="status"]')).toBeVisible();
+    await expect(failed.querySelectorAll('.maka-message-delivery-actions button')).toHaveLength(2);
+    await expect(canvasElement.querySelector('.maka-pending-turn')).toBeNull();
+    // The exception belongs only to this message, not the whole transcript.
+    // Settled metadata still reveals on keyboard focus and hides on blur.
+    // The virtualized history mounts after the local tail. Read it inside the
+    // wait instead of retaining a null from the tail's first render.
+    const settledMetadata = await waitFor(() => {
+      const metadata = canvasElement.querySelector<HTMLElement>('.maka-transcript-turn .maka-user-message .maka-message-meta');
+      expect(metadata).not.toBeNull();
+      return metadata!;
+    });
+    // Migrated from session-local-recovery.spec.ts: alignment is a browser
+    // layout contract, independent of Electron's durable recovery round trip.
+    await waitFor(() => {
+      const canonical = canvasElement.querySelector<HTMLElement>('.maka-transcript-turn .maka-turn');
+      expect(canonical).not.toBeNull();
+      const canonicalBox = canonical!.getBoundingClientRect();
+      const localBox = failed.getBoundingClientRect();
+      expect(canonicalBox.width).toBeGreaterThan(0);
+      expect(localBox.width).toBeGreaterThan(0);
+      expect(Math.abs(localBox.x - canonicalBox.x)).toBeLessThan(1);
+      expect(Math.abs(localBox.width - canonicalBox.width)).toBeLessThan(1);
+    });
+    await waitFor(() => expect(getComputedStyle(settledMetadata).opacity).toBe('0'));
+    settledMetadata.querySelector('button')!.focus();
+    await waitFor(() => expect(getComputedStyle(settledMetadata).opacity).toBe('1'));
+    await expect(getComputedStyle(settledMetadata).pointerEvents).toBe('auto');
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    await waitFor(() => expect(getComputedStyle(settledMetadata).opacity).toBe('0'));
+    await expect(getComputedStyle(failedMetadata).opacity).toBe('1');
+  },
+};
+
+// Real path: edit a locally waiting message, then discard the draft or restart.
+// The original remains paused, with recovery and explicit resumption available.
+// State transitions are tested through SessionLocalMessages; this story checks
+// the production message frame's status and action visibility in a browser.
+export const PausedLocalMessage: Story = {
+  render: () => <FailedLocalMessageHarness paused />,
+  play: async ({ canvasElement }) => {
+    const row = canvasElement.querySelector('[data-transient-message-id="failed-local"]')!;
+    await expect(row.querySelector('.maka-message-delivery [role="status"]')).toBeVisible();
+    const actions = row.querySelectorAll<HTMLButtonElement>('.maka-message-delivery-actions button');
+    await expect(actions).toHaveLength(3);
+    for (const button of actions) await expect(button).toBeVisible();
+    actions[1]!.focus();
+    await expect(actions[1]).toHaveFocus();
+    await expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth + 1);
   },
 };
 
@@ -1615,6 +1749,26 @@ export const EmptyHome: Story = {
     await waitFor(() => expect(emptyComposerSend).toHaveBeenCalledWith('send and clear', undefined));
     await waitFor(() => expect(editor.textContent).toBe(''));
     assertLineBox();
+
+    const layout = canvasElement.querySelector<HTMLElement>('.maka-chat-layout')!;
+    const columns = canvasElement.querySelectorAll<HTMLElement>('.maka-chatContent, .maka-composer-astryx');
+    expect(columns).toHaveLength(2);
+    // Native scrollbars appearing and disappearing must keep both columns centered.
+    for (const messages of [[], longConversation, []]) {
+      await transition({ messages });
+      await waitFor(() => {
+        expect(layout.scrollHeight > layout.clientHeight).toBe(messages.length > 0);
+        if (messages.length > 0) {
+          expect(layout.offsetWidth - layout.clientWidth).toBeGreaterThan(0);
+        }
+        const box = layout.getBoundingClientRect();
+        for (const column of columns) {
+          const content = column.getBoundingClientRect();
+          expect(Math.abs(content.left + content.width / 2 - (box.left + box.width / 2)))
+            .toBeLessThanOrEqual(1);
+        }
+      });
+    }
   },
 };
 
@@ -1623,27 +1777,29 @@ type EmptyComposerState = {
   chatHidden: boolean;
   draftKey: string;
   disabled: boolean;
+  messages: StoredMessage[];
 };
 let setEmptyComposerState: ((next: Partial<EmptyComposerState>) => void) | undefined;
 const emptyComposerSend = fn();
 function EmptyComposerLifecycle() {
   const [state, setState] = useState<EmptyComposerState>({
-    switchingSession: false, chatHidden: false, draftKey: 'session:caret-a', disabled: false,
+    switchingSession: false, chatHidden: false, draftKey: 'session:caret-a', disabled: false, messages: [],
   });
   useEffect(() => {
     emptyComposerSend.mockClear();
     setEmptyComposerState = (next) => setState((current) => ({ ...current, ...next }));
     return () => { setEmptyComposerState = undefined; };
   }, []);
-  return <ComposedShell chat={{ messages: [] }} switchingSession={state.switchingSession}
+  return <ComposedShell chat={{ messages: state.messages }} switchingSession={state.switchingSession}
     chatHidden={state.chatHidden} composer={{ draftKey: state.draftKey, disabled: state.disabled, onSend: emptyComposerSend }} />;
 }
 
-// Real path: 新任务 → no session exists yet. The composer swaps
-// ChatModelSwitcher for NewChatModelPicker and drops the thinking selector,
-// because both are keyed on an active session (composer.tsx). That branch has
-// no other story, so without this one nothing renders the picker a user meets
-// before their first send.
+// Real path: 新任务 → no session exists yet. The composer shows
+// NewChatModelPicker (plus the new-task thinking selector when the model offers
+// levels) instead of the open Session's unified options menu, which is keyed on
+// an active session (composer.tsx, phase 1 of #5787). That branch has no other
+// story, so without this one nothing renders the picker a user meets before
+// their first send.
 export const NewChatComposer: Story = {
   beforeEach: () => {
     // AppShell can mount the composer beneath an inert ancestor while a
@@ -1687,7 +1843,7 @@ export const NewChatComposer: Story = {
     await expect(card.getBoundingClientRect().height).toBe(initialCardHeight);
 
     const projectPicker = canvasElement.querySelector<HTMLElement>('.maka-workspace-picker')!;
-    const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-new-chat-model-selector')!;
+    const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-model-switcher-trigger')!;
     await expect(getComputedStyle(projectPicker).borderRadius).toBe(getComputedStyle(modelPicker).borderRadius);
     await expect(projectPicker.querySelector('.maka-workspace-picker-chevron svg')).not.toBeNull();
 
@@ -1714,6 +1870,63 @@ export const NewChatComposer: Story = {
       });
     } finally {
       card.style.maxWidth = originalMaxWidth;
+    }
+  },
+};
+
+function DraftCatalogRefreshFailure() {
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  return <ToastProvider><ComposedShell session={null} chat={{ messages: [] }} composer={{
+    executorPicker: {
+      catalog: [{
+        id: 'antigravity', displayName: 'Antigravity', readiness: 'ready', refreshFailed,
+        models: [
+          { id: 'flash-low', name: 'Gemini 3.8 Flash (Low)', providerType: 'google' },
+          { id: 'flash-high', name: 'Gemini 3.8 Flash (High)', providerType: 'google' },
+        ],
+        modelGroups: [{ id: 'flash', name: 'Gemini 3.8 Flash', variants: [
+          { modelId: 'flash-low', level: 'low' }, { modelId: 'flash-high', level: 'high' },
+        ] }],
+        currentModel: 'flash-high', supportsModelChange: true, supportsAttachments: true,
+      }],
+      selection: { executorId: 'antigravity', configuration: { model: 'flash-high' } },
+      loadingIds: refreshing ? ['antigravity'] : [],
+      onSelect: noop, onSetup: noop, onNewTask: noop,
+      onRetry: () => {
+        setRefreshing(true);
+        window.setTimeout(() => { setRefreshFailed(true); setRefreshing(false); }, 300);
+      },
+    },
+  }} /></ToastProvider>;
+}
+
+// Real path: 新任务 → select an ACP model → Refresh models fails; the global toast appears outside the unchanged Composer.
+export const NewChatCatalogRefreshFailure: Story = {
+  render: () => <DraftCatalogRefreshFailure />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const page = within(canvasElement.ownerDocument.body);
+    const refresh = canvas.getByRole('button', { name: /Antigravity: (Refresh models|刷新模型|重新整理模型)/ });
+    const composer = canvasElement.querySelector<HTMLElement>('.maka-composer')!;
+    const model = canvasElement.querySelector<HTMLElement>('.maka-model-switcher-trigger')!;
+    const before = composer.getBoundingClientRect();
+    const controlsBefore = [refresh, model].map(control => ({ control, box: control.getBoundingClientRect() }));
+    await userEvent.click(refresh);
+    const notice = await page.findByText(/Could not refresh models|模型列表刷新失败|模型清單重新整理失敗/);
+    await waitFor(() => expect(notice).toBeVisible());
+    await expect(composer.contains(notice)).toBe(false);
+    await expect(refresh).toBeEnabled();
+    await expect(within(composer).queryByRole('button', { name: /^(Retry|重试|重試)$/ })).not.toBeInTheDocument();
+    await expect(composer.querySelector('.maka-executor-notice')).toBeNull();
+    await expect(model).toHaveTextContent('Gemini 3.8 Flash');
+    const after = composer.getBoundingClientRect();
+    await expect(after.height).toBe(before.height);
+    // Controls may already wrap on narrow screens; the toast must preserve their positions within the Composer.
+    for (const { control, box } of controlsBefore) {
+      const current = control.getBoundingClientRect();
+      await expect(Math.abs((current.x - after.x) - (box.x - before.x))).toBeLessThanOrEqual(2);
+      await expect(Math.abs((current.y - after.y) - (box.y - before.y))).toBeLessThanOrEqual(2);
     }
   },
 };
@@ -2899,10 +3112,21 @@ async function verifySendKeepsPrompt(canvasElement: HTMLElement): Promise<void> 
   await userEvent.keyboard('{Enter}');
   await arrival;
   expect(canvasElement.querySelector('[data-transient-message-id="msg-tail-1"]')).not.toBeNull();
+  // Sending and external-session restoration must never leave a silent gap,
+  // even before a Host Turn or any assistant output has arrived.
+  const processing = () => canvasElement.querySelector('.maka-turn-processing')!;
+  await expect(processing()).toBeVisible();
+  await expect(processing()).toHaveAttribute('role', 'status');
+  await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
+  await expect(canvasElement.querySelector('.maka-turn-elapsed')).toBeNull();
   startHostTurn?.();
   await sample();
+  await expect(processing()).toBeVisible();
+  await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
   admitTailTurn?.();
   await sample();
+  await expect(processing()).toBeVisible();
+  await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
   expect(canvasElement.querySelector('[data-transient-message-id]')).toBeNull();
   expect(canvasElement.querySelector('[data-transcript-turn-id="turn-tail"] .maka-turn-processing')).not.toBeNull();
   expect(new Set(tops).size, JSON.stringify(tops)).toBe(1);
@@ -2922,6 +3146,7 @@ async function verifySendKeepsPrompt(canvasElement: HTMLElement): Promise<void> 
   await sample(1);
   settleTailTurn?.();
   await sample();
+  await expect(canvasElement.querySelector('.maka-turn-processing')).toBeNull();
   const reversal = Math.max(0, ...tops.slice(1).map((top, index) => top - tops[index]!));
   expect(reversal, JSON.stringify(tops)).toBe(0);
   expect(new Set(tops.slice(-13)).size, JSON.stringify(tops)).toBe(1);
@@ -2976,14 +3201,18 @@ function SettledTranscriptHarness({
  * `HISTORY_BATCH` Turns. The loader settles a frame later, the way an answer
  * delivered over IPC does.
  */
+let releaseHistoryPage: (() => void) | undefined;
+
 function HistoryHarness({
   turns,
   olderTurns = 0,
   mixed = false,
-}: { turns: number; olderTurns?: number; mixed?: boolean }) {
+  holdFirstPage = false,
+}: { turns: number; olderTurns?: number; mixed?: boolean; holdFirstPage?: boolean }) {
   const [from, setFrom] = useState(0);
   useEffect(() => {
     historyLoads.length = 0;
+    releaseHistoryPage = undefined;
   }, []);
   return (
     <ComposedShell
@@ -2992,6 +3221,11 @@ function HistoryHarness({
         hasEarlierHistory: from > -olderTurns,
         onLoadEarlierHistory: async () => {
           historyLoads.push(firstResidentTurnId() ?? '(none)');
+          // A pending remote page lets the story measure the reading anchor
+          // before delivering the same production history update.
+          if (holdFirstPage && historyLoads.length === 1) {
+            await new Promise<void>((resolve) => { releaseHistoryPage = resolve; });
+          }
           setFrom((current) => Math.max(-olderTurns, current - HISTORY_BATCH));
           await painted(2);
         },
@@ -3134,21 +3368,39 @@ export const DockAffordanceReturnsToTail: Story = {
   },
 };
 
+// Real path: scroll a tool's nested output near the beginning of loaded conversation history.
 export const NestedScrollerNearHistoryBoundaryAsksForNothing: Story = {
   render: () => <HistoryHarness turns={7} olderTurns={HISTORY_BATCH} />,
   play: async () => {
     await tailSettled();
 
     const nested = injectNestedScroller(messageList());
-    scrollAsReader(tailScroller(), 0);
+    const root = tailScroller();
+    // End the setup's real scroll before moving the viewport without reader
+    // input. An early synthetic scrollend can precede its queued scroll event
+    // and leave that upward gesture active during the boundary setup.
+    const setupScrollEnded = new Promise<void>((resolve) => {
+      const onEnd = (event: Event) => {
+        if (event.target !== root) return;
+        root.removeEventListener('scrollend', onEnd);
+        resolve();
+      };
+      root.addEventListener('scrollend', onEnd);
+    });
+    expect(scrollAsReader(root, root.clientHeight * 2)).not.toBe(0);
+    await setupScrollEnded;
+    await painted(2);
+    root.scrollTop = 0;
+    root.dispatchEvent(new Event('scroll'));
     await painted(6);
+    expect(historyLoads, 'preparing the boundary without reader input must not load history').toEqual([]);
 
     wheelUp(nested);
-    wheelUp(tailScroller());
     await painted(6);
-    // Scrolling never loads history; only the explicit control does.
     expect(historyLoads).toEqual([]);
     expect(nested.scrollTop).toBe(600);
+    wheelUp(root);
+    await waitFor(() => expect(historyLoads).toHaveLength(1));
   },
 };
 
@@ -3481,8 +3733,9 @@ export const UpwardTraversalHoldsTurnGeometry: Story = {
   },
 };
 
+// Real path: open a long conversation, scroll upward, and receive an older history page.
 export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
-  render: () => <HistoryHarness turns={16} olderTurns={HISTORY_BATCH} />,
+  render: () => <HistoryHarness turns={16} olderTurns={HISTORY_BATCH} holdFirstPage />,
   play: async () => {
     const root = tailScroller();
     // Measure history publication against rendered content, not the cold
@@ -3496,8 +3749,8 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
       expect(settled.scrollTop, JSON.stringify(settled)).toBeGreaterThan(0);
       expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
     });
-    // The one position where the browser declines to anchor, and the one the
-    // load-earlier control sits at. Rows mounted by the scroll still carry the
+    expect(historyLoads).toEqual([]);
+    // The one position where the browser declines to anchor. Rows mounted by the scroll still carry the
     // cold Markdown layout — measure the anchor only after they settle, the
     // same rule as the tail state above.
     scrollAsReader(root, 0);
@@ -3505,13 +3758,16 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
     await painted(4);
     const before = firstResidentTurnId();
     const reading = anchorInView();
-    within(document.body).getByRole('button', { name: '载入更早的记录' }).click();
+    await waitFor(() => expect(releaseHistoryPage).toBeDefined());
+    releaseHistoryPage!();
 
     await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
     await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
     await painted(6);
 
-    expect(historyLoads).toEqual([before]);
+    // The request can precede the virtualizer mounting the rows at the new
+    // scroll offset; its previous first DOM row is not the history boundary.
+    expect(historyLoads).toHaveLength(1);
     expect(Math.abs(turnTop(reading.turnId) - reading.top)).toBeLessThanOrEqual(1);
     expect(within(document.body).queryByRole('button', { name: '载入更早的记录' })).toBeNull();
   },
@@ -3560,11 +3816,12 @@ async function measureEveryRow(): Promise<void> {
  * batch along: the document's extent goes wrong, and rows the reader has
  * already been past push them when they come back.
  */
+// Real path: scroll into older history, then revisit already measured Turns in both directions.
 export const PrependedHistoryKeepsMeasuredHeights: Story = {
   // Shallower than the other history stories: this one walks the whole
   // transcript twice, and a slid measurement shows on the first row past the
   // prepend as well as on the hundredth.
-  render: () => <HistoryHarness turns={10} olderTurns={HISTORY_BATCH} mixed />,
+  render: () => <HistoryHarness turns={10} olderTurns={HISTORY_BATCH} mixed holdFirstPage />,
   play: async () => {
     const root = tailScroller();
     await document.fonts.ready;
@@ -3576,7 +3833,8 @@ export const PrependedHistoryKeepsMeasuredHeights: Story = {
     await measureEveryRow();
     const before = firstResidentTurnId();
 
-    within(document.body).getByRole('button', { name: '载入更早的记录' }).click();
+    await waitFor(() => expect(releaseHistoryPage).toBeDefined());
+    releaseHistoryPage!();
     await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
     await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
     await painted(6);
@@ -4429,7 +4687,7 @@ export const NarrowWorkbarCappedTitlebarReserve: Story = {
 
 // Real path: a session with the right workbar open while the conversation
 // column is narrow enough for a long model label to exercise the composer's
-// footer shrink contract. Model and thinking controls remain available while
+// footer shrink contract. The unified model menu remains available while
 // the lower-priority usage action is hidden.
 export const NarrowComposerFooter: Story = {
   parameters: {
@@ -4475,20 +4733,18 @@ export const NarrowComposerFooter: Story = {
 
     const send = within(card).getByRole('button', { name: '发送' });
     const contextGauge = within(card).queryByRole('button', { name: '打开用量追踪' });
-    const thinkingField = card.querySelector<HTMLElement>(
-      '.maka-model-selection-controls .astryx-field:has(.maka-thinking-level-selector)',
-    );
-    if (!thinkingField) throw new Error('thinking level field is missing');
+    const modelMenu = card.querySelector<HTMLElement>('.maka-model-switcher-trigger');
+    if (!modelMenu) throw new Error('composer model menu is missing');
     await waitFor(() => {
       const cardBox = card.getBoundingClientRect();
       const sendBox = send.getBoundingClientRect();
       expect(sendBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
       expect(sendBox.right).toBeLessThanOrEqual(cardBox.right + 1);
       expect(contextGauge).toBeNull();
-      expect(getComputedStyle(thinkingField).display).not.toBe('none');
-      const thinkingBox = thinkingField.getBoundingClientRect();
-      expect(thinkingBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
-      expect(thinkingBox.right).toBeLessThanOrEqual(sendBox.left + 1);
+      expect(getComputedStyle(modelMenu).display).not.toBe('none');
+      const modelBox = modelMenu.getBoundingClientRect();
+      expect(modelBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
+      expect(modelBox.right).toBeLessThanOrEqual(sendBox.left + 1);
       // The remaining controls must stay inside their flex slot rather than
       // painting over the fixed send slot when the window narrows.
       const controlsBox = leftControls.getBoundingClientRect();
@@ -4716,7 +4972,9 @@ export const CompletedProcessCollapsed: Story = {
     await expect(process!.open).toBe(false);
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');
     await expect(answer).toBeVisible();
-    await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).not.toBeVisible();
+    // A completed process that has never been opened does not mount its body.
+    await expect(within(canvasElement).queryByText('我先检查登录状态的存储和恢复逻辑。')).toBeNull();
+    await expect(process!.querySelector('.maka-processing-body')!.childElementCount).toBe(0);
     const summary = process!.querySelector('summary')!;
     await expect(getComputedStyle(process!).borderTopWidth).toBe('0px');
     await expect(getComputedStyle(process!).backgroundColor).toBe('rgba(0, 0, 0, 0)');
@@ -4806,5 +5064,94 @@ export const CompletedProcessExpanded: Story = {
     summary.click();
     await waitFor(() => expect(process.open).toBe(true));
     selection.removeAllRanges();
+  },
+};
+
+
+const PARALLEL_EVENT_WAIT_IDS = ['a', 'b'].map((value) => `wait_${value.repeat(64)}`);
+
+function ParallelEventWaitsStory() {
+  const [waits, setWaits] = useState(PARALLEL_EVENT_WAIT_IDS);
+  return <ComposedShell session={{ streaming: true }} chat={{
+    eventWaitIndicators: waits.map((id) => ({
+      id, label: 'Waiting for external event', detail: 'Background build process',
+      cancelLabel: 'Cancel wait', cancelDescription: 'Cancel this wait. The underlying work keeps running.',
+      onCancel: () => setWaits((current) => current.filter((wait) => wait !== id)),
+    })),
+  }} />;
+}
+
+// Real path: an admitted Goal Turn opens two waits for the same ShellRun, then the user clears the Goal.
+// The fixture supplies the remaining Session projections to the production ChatView frame.
+export const ParallelEventWaitsAfterGoalClear: Story = {
+  render: () => <ParallelEventWaitsStory />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    for (const id of PARALLEL_EVENT_WAIT_IDS) {
+      await expect(canvas.getByRole('button', { name: `Cancel wait ${id}` })).toBeVisible();
+      await expect(canvas.getByText(id)).toBeVisible();
+    }
+    await expect(canvas.getAllByText('Background build process')).toHaveLength(2);
+    const rows = canvasElement.querySelectorAll('.maka-session-context__wait');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const cancel = row.querySelector('button')!.getBoundingClientRect();
+      const frame = row.getBoundingClientRect();
+      expect(cancel.left).toBeGreaterThanOrEqual(frame.left);
+      expect(cancel.right).toBeLessThanOrEqual(frame.right);
+    }
+  },
+};
+
+
+function AssistantCardsDemo() {
+  const [accepted, setAccepted] = useState<StoredMessage[]>([]);
+  const composer = useRef<ComposerHandle>(null);
+  const messages: StoredMessage[] = [
+    user('cards-user', 'cards', 3, '今天事情有点多，也想看看周末能去哪儿走走。'),
+    { type: 'assistant', id: 'cards-offer', turnId: 'assistant-output:offer', ts: NOW - 1000, modelId: 'bot', text: '材料我先核对了一遍，你可以选一下怎么处理。', card: {
+      type: 'offer', title: '报销这边，我可以帮你收尾', items: [{ title: '报销这边，我可以帮你收尾', description: '材料找到了 3 份，还缺用车凭证。要我先把已有材料整理好吗？', actions: [
+        { kind: 'reply', label: '帮我整理', value: '请帮我整理这次出差的报销材料，先对应已有车票、酒店发票和行程，列出缺失材料。餐费暂不计入。' },
+        { kind: 'reply', label: '缺什么？', value: '这次报销还缺哪些材料？' },
+        { kind: 'reply', label: '先不用', value: '报销先不用帮我整理，我自己处理。' },
+      ] }],
+    } },
+    { type: 'assistant', id: 'cards-recommendation', turnId: 'assistant-output:recommendation', ts: NOW, modelId: 'bot', text: '周末，换个地方慢下来', card: {
+      type: 'recommendation', title: '周末，换个地方慢下来', items: [
+        { title: '城市影像 · 摄影展', description: '看看人与城市的日常切片，逛完还能顺路喝杯茶。', facts: [{ label: '时间', value: '周六下午' }, { label: '位置', value: '城市艺术中心' }], actions: [{ kind: 'reply', label: '看看详情', value: '帮我查一下城市影像摄影展的开放时间和预约方式。' }] },
+        { title: '河畔散步 · 顺路喝茶', description: '不用赶场，沿河走一段，再找个安静的地方坐坐。', facts: [{ label: '时间', value: '周日下午' }, { label: '步行', value: '约 40 分钟' }], actions: [{ kind: 'reply', label: '看看路线', value: '帮我安排周日下午沿河散步和喝茶的路线。' }] },
+      ],
+    } },
+  ];
+  return <MessageCardSendContext.Provider value={async text => { setAccepted(old => [...old, user(`card-reply-${old.length}`, `reply-${old.length}`, 0, text)]); return true; }}>
+    <ComposedShell sidebarCollapsed frameHeight="100vh" session={{ labels: ['personal-assistant'], name: '个人助手' }} chat={{ messages: [...messages, ...accepted] }} composer={{ ref: composer, draftKey: 'assistant-card-demo' }} />
+  </MessageCardSendContext.Provider>;
+}
+
+// Real path: personal assistant → Bot SendUser with recommendation/offer cards → click a reply to send directly through the chat action boundary.
+// The example places and itinerary are synthetic presentation fixtures.
+export const AssistantCards: Story = {
+  render: () => <AssistantCardsDemo />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByRole('button', { name: '帮我整理' })).toBeVisible());
+    expect(canvasElement.querySelectorAll('.maka-message-card')).toHaveLength(2);
+    const card = canvasElement.querySelector<HTMLElement>('.maka-message-card')!;
+    expect(card.getBoundingClientRect().width).toBeGreaterThan(250);
+    const bubble = card.closest<HTMLElement>('.maka-chat-message-bubble-assistant')!;
+    expect(getComputedStyle(bubble).paddingLeft).toBe('12px');
+    expect(getComputedStyle(bubble).backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+    expect(getComputedStyle(bubble, '::before').display).not.toBe('none');
+    expect(getComputedStyle(card.closest<HTMLElement>('.maka-turn')!).maxWidth).toBe('800px');
+    const choices = [...card.querySelectorAll<HTMLButtonElement>('button')];
+    expect(choices).toHaveLength(3);
+    expect(new Set(choices.map(button => getComputedStyle(button).backgroundColor)).size).toBe(1);
+    expect(card.querySelectorAll('h3, h4')).toHaveLength(1);
+    expect(card.querySelector('img')).toBeNull();
+    const editor = canvasElement.querySelector<HTMLElement>('[contenteditable="true"]')!;
+    const draft = editor.textContent;
+    await userEvent.click(canvas.getByRole('button', { name: '帮我整理' }));
+    await waitFor(() => expect(canvas.getByText('请帮我整理这次出差的报销材料，先对应已有车票、酒店发票和行程，列出缺失材料。餐费暂不计入。')).toBeVisible());
+    expect(editor.textContent).toBe(draft);
   },
 };

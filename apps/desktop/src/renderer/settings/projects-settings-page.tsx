@@ -108,15 +108,16 @@ export function ProjectsSettingsPage(props: {
   }, [host, mountedRef, props.runtimeHostTargetVerified]);
 
   /**
-   * Create a project from the name the New project dialog collected. The add
-   * call still owns the folder picker, so a cancelled picker simply leaves the
-   * list unchanged; the name rides along and the project is registered under it.
+   * Create a project from the optional name the New project dialog collected.
+   * The add call still owns the folder picker, so a cancelled picker simply
+   * leaves the list unchanged; a typed name rides along, and a blank one lets
+   * the catalog name the project after its folder.
    */
-  async function addNamedProject(name: string, registration: ProjectRegistration) {
+  async function addNamedProject(name: string | undefined, registration: ProjectRegistration) {
     if (!host || !props.runtimeHostTargetVerified) return;
     await runRowAction('add', async () => {
       const result = await registration.register(
-        () => window.maka.projects.add(host, { name }),
+        () => window.maka.projects.add(host, name ? { name } : undefined),
         () => mountedRef.current,
       );
       // Cancelled or invalidated registrations must not trigger a refresh.
@@ -292,8 +293,8 @@ export function ProjectsSettingsPage(props: {
                     if (props.runtimeHostTargetVerified) setProjectDialog('directory');
                   }
                 : () => {
-                    // The dialog names the project first; the folder picker it
-                    // opens is the same one, just reached one step later.
+                    // The dialog collects an optional name; the folder picker
+                    // it opens is the same one, just reached one step later.
                     if (props.runtimeHostTargetVerified) setProjectDialog('new');
                   }}
             />

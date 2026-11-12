@@ -149,11 +149,9 @@ export interface ProviderDefaults {
   runtimeAdapter: ProviderRuntimeAdapter;
   /** Additional request protocols; omitted models still use runtimeAdapter. */
   protocolAdapters?: Partial<Record<ModelApiProtocol, ProviderRuntimeAdapter>>;
-  /**
-   * Maka used to offer this provider and no longer does. The entry stays
-   * registered so stored connections still decode; it just cannot be used.
-   */
-  retired?: true;
+  // Whether Maka still offers a provider is owned by `provider-retirement.ts`,
+  // not by a flag here: the Desktop first screen needs that answer without
+  // loading the generated models.dev tables this module is built from.
   modelDiscovery: ProviderModelDiscovery;
   category: ProviderCategory;
   catalogGroup?: ProviderCatalogGroup;
@@ -858,6 +856,20 @@ const providerRegistry = {
     signupUrl: 'https://platform.openai.com/api-keys',
     catalogOrder: 10,
   },
+  inception: {
+    label: 'Inception',
+    baseUrl: 'https://api.inceptionlabs.ai/v1',
+    authKind: 'api_key',
+    fallbackModels: ['mercury-3', 'mercury-2.5', 'mercury-2'],
+    status: 'ready',
+    runtimeAdapter: { kind: 'openai-compatible' },
+    // The general /models list also includes non-chat Edit and Decide models.
+    modelDiscovery: { kind: 'protocol', path: 'chat/completions/models' },
+    category: 'overseas',
+    catalogGroup: 'api',
+    signupUrl: 'https://platform.inceptionlabs.ai',
+    catalogOrder: 10.5,
+  },
   google: {
     label: 'Google Gemini',
     menuLabel: 'Google',
@@ -941,7 +953,7 @@ const providerRegistry = {
     label: 'MiniMax',
     baseUrl: 'https://api.minimax.io/anthropic/v1',
     authKind: 'api_key',
-    fallbackModels: ['MiniMax-M3', 'MiniMax-M2.7'],
+    fallbackModels: ['MiniMax-M3.1-Flash', 'MiniMax-M3'],
     status: 'ready',
     runtimeAdapter: { kind: 'anthropic', auth: 'bearer', normalizeBaseUrl: false },
     modelDiscovery: { kind: 'protocol' },
@@ -954,7 +966,7 @@ const providerRegistry = {
     label: 'MiniMax 中国站',
     baseUrl: 'https://api.minimaxi.com/anthropic/v1',
     authKind: 'api_key',
-    fallbackModels: ['MiniMax-M3', 'MiniMax-M2.7'],
+    fallbackModels: ['MiniMax-M3.1-Flash', 'MiniMax-M3'],
     status: 'ready',
     runtimeAdapter: { kind: 'anthropic', auth: 'bearer', normalizeBaseUrl: false },
     modelDiscovery: { kind: 'protocol' },
@@ -1206,7 +1218,6 @@ const providerRegistry = {
     fallbackModels: [],
     status: 'phase3-experimental',
     runtimeAdapter: { kind: 'unavailable' },
-    retired: true,
     modelDiscovery: {
       kind: 'fallback',
       reason: 'OpenCode restricts its free tier to the OpenCode client.',
@@ -1499,7 +1510,6 @@ const providerRegistry = {
     fallbackModels: [],
     status: 'phase3-experimental',
     runtimeAdapter: { kind: 'unavailable' },
-    retired: true,
     modelDiscovery: {
       kind: 'fallback',
       reason: 'The GO plan was reached through the official CLI\u2019s private transport.',
@@ -1636,7 +1646,6 @@ const providerRegistry = {
     ],
     status: 'phase3-experimental',
     runtimeAdapter: { kind: 'unavailable' },
-    retired: true,
     modelDiscovery: {
       kind: 'fallback',
       reason:
@@ -1711,14 +1720,7 @@ export function providerMenuLabel(providerType: string): string | undefined {
   return defaults && (defaults.menuLabel ?? defaults.label);
 }
 
-/**
- * A provider Maka used to offer and no longer does. Read this rather than
- * inferring retirement from an unavailable adapter: a provider that was never
- * wired looks identical from there and is not the same thing.
- */
-export function isRetiredProvider(providerType: string): boolean {
-  return providerDefaultsOf(providerType)?.retired === true;
-}
+export { isRetiredProvider, RETIRED_PROVIDER_TYPES } from './provider-retirement.js';
 
 /**
  * Whether a request on this provider may carry an output-token limit. The

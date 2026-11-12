@@ -222,6 +222,13 @@ export interface RuntimeKernelLike {
    */
   sessionHostGeneration?(): string;
   hasActiveRun?(sessionId: string, runId: string, turnId?: string): boolean;
+  /** Join one already-active execution; never starts, retries or stops it. */
+  waitForRunExit?(
+    sessionId: string,
+    runId: string,
+    turnId: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
   requestRunHandoff?(
     sessionId: string,
     runId: string,
@@ -2413,6 +2420,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   readonly #sessionRunEpochs = new Map<string, number>();
+  readonly #runExitObservers = new Map<string, Set<() => void>>();
   readonly #hostGeneration: string;
 
   sessionRunEpoch(sessionId: string): number {
@@ -2425,6 +2433,44 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   #bumpSessionRunEpoch(sessionId: string): void {
     this.#sessionRunEpochs.set(sessionId, (this.#sessionRunEpochs.get(sessionId) ?? 0) + 1);
+    // Some claim owners increment immediately before removing their visibility.
+    // Notify after that synchronous transition; the current active set is authority.
+    queueMicrotask(() => {
+      for (const observe of this.#runExitObservers.get(sessionId) ?? []) observe();
+    });
+  }
+
+  async waitForRunExit(
+    sessionId: string,
+    runId: string,
+    turnId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted();
+    if (!this.hasActiveRun(sessionId, runId, turnId)) return;
+    await new Promise<void>((resolve, reject) => {
+      const observers = this.#runExitObservers.get(sessionId) ?? new Set<() => void>();
+      this.#runExitObservers.set(sessionId, observers);
+      const cleanup = () => {
+        observers.delete(observe);
+        if (!observers.size) this.#runExitObservers.delete(sessionId);
+        signal?.removeEventListener('abort', abort);
+      };
+      const observe = () => {
+        if (!this.hasActiveRun(sessionId, runId, turnId)) {
+          cleanup();
+          resolve();
+        }
+      };
+      const abort = () => {
+        cleanup();
+        reject(signal?.reason);
+      };
+      observers.add(observe);
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+      else observe();
+    });
   }
 
   hasActiveRun(sessionId: string, runId: string, turnId?: string): boolean {
@@ -3690,10 +3736,13 @@ interface RuntimeRunOwnerScopeCallbacks {
 
 function runtimeSteeringInput(
   owner: RuntimeMessageRunOwner | undefined,
-): Pick<BackendSendInput, 'pullSteering' | 'ackSteering' | 'nackSteering'> {
+): Pick<BackendSendInput, 'pullSteering' | 'waitForSteering' | 'ackSteering' | 'nackSteering'> {
   return owner
     ? {
         pullSteering: () => owner.pull(),
+        ...(owner.waitForSteering
+          ? { waitForSteering: (signal: AbortSignal) => owner.waitForSteering!(signal) }
+          : {}),
         ackSteering: (ids) => owner.ack(ids),
         nackSteering: (ids) => owner.nack(ids),
       }

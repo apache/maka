@@ -36,7 +36,7 @@ import {
   decodeSkillInvocationResult,
   type SkillInvocationResult,
 } from '@maka/core/skill-invocation';
-import { decodeTurnOrigin, type CloudActivationOrigin } from '@maka/core/turn-origin';
+import { decodeTurnOrigin, type TurnOrigin } from '@maka/core/turn-origin';
 import { invalidProtocolFrame } from './errors.js';
 import {
   assertExactKeys,
@@ -64,8 +64,8 @@ export interface TurnStartInput {
   skillIds?: string[];
   turnOrchestration?: TurnOrchestration;
   maxSteps?: number;
-  /** Client-originated Runtime Host turns may identify cloud activation only. */
-  origin?: CloudActivationOrigin;
+  /** Provenance only: clients may identify cloud activation or external connector input. */
+  origin?: Extract<TurnOrigin, { kind: 'cloud_activation' | 'external_connector' }>;
 }
 
 export type TurnStartResult =
@@ -321,7 +321,10 @@ export function decodeTurnStartInput(value: unknown): TurnStartInput {
   );
   const skillIds = decodeSkillIds(record.skillIds);
   const decodedOrigin = record.origin === undefined ? undefined : decodeTurnOrigin(record.origin);
-  const origin = decodedOrigin?.kind === 'cloud_activation' ? decodedOrigin : undefined;
+  const origin =
+    decodedOrigin?.kind === 'cloud_activation' || decodedOrigin?.kind === 'external_connector'
+      ? decodedOrigin
+      : undefined;
   if (record.origin !== undefined && origin === undefined) {
     throw invalidProtocolFrame('Invalid turn.start origin');
   }

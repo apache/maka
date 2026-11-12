@@ -20,9 +20,8 @@
 import { FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { awaitSendReady, COMPOSER_INPUT, expect, test, getWorkHubPage } from './fixtures';
 
-// The compact native window must contain the inline wheel and retain its
-// bottom anchor; native dragging must scroll the no-drag
-// wheel instead of moving the frameless window. A browser has neither boundary.
+// Model changes cross the Host boundary; picker sheets must preserve the
+// compact native window's bounds and bottom anchor.
 test('WorkHub uses its coordination model and shared attachment composer', async ({ sessionLocalWindow: { page, app } }, testInfo) => {
   await page.evaluate(async () => {
     const { connections } = await window.maka.connections.getSnapshot();
@@ -324,77 +323,40 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await workhub.screenshot({ animations: 'disabled', path: testInfo.outputPath('floating-composer-controls.png') });
   const compactHeight = await workhub.evaluate(() => innerHeight);
   const floatingBounds = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.getContentBounds());
+  const beforeModelPicker = await floatingBounds();
   await model.click();
-  const wheel = workhub.getByRole('listbox');
-  await expect(wheel).toBeVisible();
-  await expect(wheel.getByRole('option')).toHaveCount(3);
-  const modelChoices = await workhub.evaluate(async (id) => (await window.maka.connections.getSnapshot(id)).chatModelChoices, sessionId);
-  await expect(wheel.getByRole('option').locator('.maka-model-wheel-label')).toHaveText(modelChoices.map((choice) => choice.label));
+  const modelSheet = workhub.getByRole('dialog');
+  await expect(modelSheet).toBeVisible();
   await expect(workhub.locator('.workHubHistory')).toBeHidden();
-  await expect.poll(() => workhub.evaluate(() => innerHeight)).toBeGreaterThan(compactHeight);
   await expect.poll(floatingBottom).toBe(anchoredBottom);
-  await expect.poll(() => workhub.evaluate(() => innerHeight)).toBeLessThanOrEqual(compactHeight + 132);
-  const expectWheelInsideWindow = () => expect.poll(() => wheel.evaluate((element) => {
+  await expect.poll(floatingBounds).toEqual(beforeModelPicker);
+  await expect.poll(() => modelSheet.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     return rect.top >= 0 && rect.left >= 0 && rect.bottom <= innerHeight && rect.right <= innerWidth;
   })).toBe(true);
-  await expectWheelInsideWindow();
-  await workhub.screenshot({ path: testInfo.outputPath('floating-composer-wheel.png') });
-  const expectSnappedSelection = async (index: number) => {
-    const choice = modelChoices[index]!;
-    const option = wheel.getByRole('option').nth(index);
-    await expect(option).toHaveAttribute('data-active', 'true');
-    await expect(option).toHaveAttribute('aria-selected', 'true');
-    await expect(wheel).toHaveAttribute('aria-busy', 'false');
-    return choice;
-  };
-  const initialIndex = await wheel.getByRole('option').evaluateAll((options) => options.findIndex((option) => option.getAttribute('aria-selected') === 'true'));
-  const scrollDirection = initialIndex < modelChoices.length - 1 ? 1 : -1;
-  await wheel.hover();
-  await workhub.mouse.wheel(0, scrollDirection * 30);
-  await expectSnappedSelection(initialIndex + scrollDirection);
-  await wheel.press('Escape');
-  await model.click();
-  await expect(wheel.getByRole('option')).toHaveCount(3);
-  await expect.poll(() => workhub.evaluate(() => innerHeight === Math.ceil(document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBe(true);
-  const dragInitialTop = await wheel.evaluate((element) => element.scrollTop);
-  const beforeDrag = await floatingBounds();
-  const dragDistance = dragInitialTop > 0 ? 32 : -32;
-  const wheelBounds = (await wheel.boundingBox())!;
-  const dragX = wheelBounds.x + wheelBounds.width / 2;
-  const dragY = wheelBounds.y + wheelBounds.height / 2;
-  await workhub.mouse.move(dragX, dragY);
-  await workhub.mouse.down();
-  await workhub.mouse.move(dragX, dragY + dragDistance, { steps: 8 });
-  await expect.poll(() => wheel.evaluate((element) => element.scrollTop)).toBe(dragInitialTop - dragDistance);
-  await workhub.mouse.up();
-  // A model label may resize; dragging the no-drag wheel must not move its window.
-  await expect.poll(floatingBounds).toEqual(beforeDrag);
-  await expect(wheel).toBeVisible();
-  const draggedIndex = Math.round((dragInitialTop - dragDistance + 44) / 44) % modelChoices.length;
-  await expectSnappedSelection(draggedIndex);
-  await wheel.press('ArrowDown');
-  await expectSnappedSelection((draggedIndex + 1) % modelChoices.length);
-  await wheel.press('Escape');
-  await expect(wheel).toHaveCount(0);
-  await expect(model).toBeFocused();
-  await model.click();
-  const options = wheel.getByRole('option');
-  const chooseLast = await options.first().getAttribute('aria-selected') === 'true';
-  await wheel.press(chooseLast ? 'End' : 'Home');
-  const selectedChoice = await expectSnappedSelection(chooseLast ? modelChoices.length - 1 : 0);
-  await expectWheelInsideWindow();
-  await wheel.press('Enter');
-  await expect(wheel).toHaveCount(0);
-  await expect(model).toBeFocused();
-  await model.click();
-  await expect(wheel.getByRole('option', { selected: true })).toContainText(selectedChoice.label);
-  await wheel.press('Escape');
+  const selectedChoice = await workhub.evaluate(async (id) => {
+    const session = await window.maka.workHub.getSession(id);
+    const { chatModelChoices } = await window.maka.connections.getSnapshot(id);
+    return chatModelChoices.find((choice) => choice.model !== session.model)!;
+  }, sessionId);
+  await modelSheet.getByRole('option', { name: selectedChoice.label, exact: true }).click();
+  await expect.poll(async () => workhub.evaluate(async (id) => {
+    const session = await window.maka.workHub.getSession(id);
+    return { model: session.model, connectionId: session.llmConnectionId };
+  }, sessionId)).toEqual({ model: selectedChoice.model, connectionId: selectedChoice.connectionId });
+  await expect(modelSheet).toHaveCount(0);
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBe(compactHeight);
   await expect(editor).toHaveText('Keep this draft while folding the conversation.');
   const longDraft = Array.from({ length: 30 }, (_, index) => `第 ${index + 1} 行：长输入应当只在编辑区内滚动。`).join('\n');
+  await editor.click();
+  await expect(editor).toBeFocused();
   await editor.fill(longDraft);
-  await expect.poll(() => editor.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await expect.poll(() => editor.evaluate((element) => ({
+    text: element.textContent,
+    overflow: element.scrollHeight > element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    clientHeight: element.clientHeight,
+  }))).toMatchObject({ text: longDraft, overflow: true });
   await expect.poll(() => editor.evaluate((element) => element.clientHeight)).toBeLessThanOrEqual(132);
   await expect(workhub.locator('[data-chat-scroll-container]')).toHaveCSS('overflow-y', 'hidden');
   await expect.poll(floatingBottom).toBe(anchoredBottom);

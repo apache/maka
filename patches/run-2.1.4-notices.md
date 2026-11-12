@@ -2,8 +2,10 @@
 
 `run` embeds the `devalue` serializer and a QuickJS WebAssembly runtime built by the
 [`quickjs-wasi`](https://github.com/vercel-labs/quickjs-wasi) project.
-The following packages are used to build the published JavaScript and embedded
-WebAssembly artifact:
+The source patch includes the generated JavaScript changes, but no WebAssembly
+binary. During postinstall, `scripts/apply-dependency-patches.mjs` replaces
+`__MAKA_RUN_WASM_BASE64__` with the unchanged payload from the installed `run`
+package. The following packages build that dependency's JavaScript and runtime:
 
 | Package        | Version | License |
 | -------------- | ------- | ------- |

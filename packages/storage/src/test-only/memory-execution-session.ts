@@ -469,12 +469,15 @@ export function createMemorySessionStore(
       write('session.createStable', (s) => stable(s, root, request, initial)),
     probeStableSessionCreate: async (id, fingerprint) => read((s) => probe(s, id, fingerprint)),
     createImportedSession: async (input, values, origin, options) => {
-      const canonicalValues = values.map((value) => decodeCanonicalMessage(copy(value)));
       const h = {
         ...buildSessionHeader(root, input),
         externalOrigin: copy(origin),
         transcriptLedgerVersion: 0 as const,
       };
+      const preparedValues = options?.prepareMessages
+        ? await options.prepareMessages(h.id, values)
+        : values;
+      const canonicalValues = preparedValues.map((value) => decodeCanonicalMessage(copy(value)));
       const catalogProjection = projectSessionCatalogMessages(canonicalValues);
       options?.onCommitStarted?.();
       return write('session.import', (s) => {

@@ -12,6 +12,8 @@
         "src/overlay/permission-overlay-preload.ts",
         "src/overlay/pip.ts",
         "src/overlay/pip-preload.ts",
+        "src/overlay/pet.ts",
+        "src/overlay/pet-preload.ts",
         "src/main/**/*.test.ts",
         "e2e/**/*.spec.ts",
         ".storybook/preview.@(ts|tsx)",

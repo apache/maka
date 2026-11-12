@@ -49,10 +49,10 @@ submission owner reads them from the controller. Its
 published Session reference is a frozen getter, and consuming contracts declare
 it readonly. It has no map setters, range
 controller, publication callback, writable refs, or whole-state getter.
-Copy and Save call `renderPublishedConversation(sessionName, locale)`, which
-renders the **published range** as Markdown at invocation; the shell gets the
-export, not the messages, and it is not a full-history promise. Revision commands
-read the same range from the controller inside the Composer submission owner.
+Copy and Save call `renderCompleteConversation(sessionId, sessionName, locale)`,
+which reads complete history without changing the displayed window and returns
+Markdown. The shell receives the export, not the messages. Revision commands
+read the published range from the controller inside the Composer submission owner.
 
 The Desktop adapter supplies `ConversationObservationServices`. The feature
 never imports the Desktop range implementation or accesses `window.maka`.
@@ -219,13 +219,17 @@ directory pickers still require the original draft and Host to remain current.
 Staging uses `activeId ?? NEW_TASK_PENDING_KEY`; the editor's new-task persistence
 key remains distinct. Do not key this provider or the Composer's parent by Session.
 
-Delivery recovery stays bound to the Session and Message it started from. A
-cancelled local message or an edited queue entry hands its text to the editor's
-keyed draft and its attachments, directories and quotes to staging's
-`restoreContext`, both under the key of the Session it left, so the restore
-lands there even after navigation. The submission owner binds that restore; with
-no staging owner mounted it does nothing. A message whose outcome is unknown
-keeps its id and offers only the Host check.
+Delivery recovery stays bound to the Session and Message it started from. An
+edited Host queue entry hands its text to the editor's keyed draft and its
+attachments, directories and quotes to staging's `restoreContext`, both under
+the key of the Session it left. The submission owner binds that restore.
+Local unsent Edit instead captures a conditional recovery operation before
+pausing the durable original. It restores full text, context and replacement
+identity together only if that draft and its owners are unchanged. Navigation
+alone is allowed; draft mutations, Session removal or ownership changes and
+unmount invalidate the operation. Refusal releases only unused approvals, leaving
+the original paused. A message whose outcome is unknown keeps its id and offers
+only the Host check.
 
 ## Composer submission ownership (R2 M3)
 

@@ -22,10 +22,9 @@ import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { Dialog } from '@astryxdesign/core/Dialog';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
-import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
-import type { MermaidConfig } from 'mermaid';
-import mermaidPackage from 'mermaid/package.json' with { type: 'json' };
-import { ICON_SIZE, Check, Copy, Maximize2, Minimize2, Scan, ZoomIn, ZoomOut } from './icons.js';
+import type { RenderOptions, RenderResult } from 'pele';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
+import { ICON_SIZE, Check, Copy, Maximize2, Minimize2 } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
@@ -34,170 +33,39 @@ export const MAX_MERMAID_SOURCE_LENGTH = 20_000;
 export const MAX_MERMAID_EDGES = 500;
 export const MERMAID_RENDER_CACHE_LIMIT = 24;
 export const MERMAID_RENDER_CACHE_MAX_CHARS = 4 * 1024 * 1024;
-export const MIN_MERMAID_ZOOM = 0.5;
 export const MAX_MERMAID_ZOOM = 3;
-export const MERMAID_ZOOM_STEP = 0.25;
-/** Export clipboard PNG pixel ratio: 2x balances sharpness against clipboard.write size. */
+/** Lay diagrams out again only after the container stops resizing. */
+export const MERMAID_RESIZE_SETTLE_MS = 150;
 export const MERMAID_EXPORT_PIXEL_RATIO = 2;
-/**
- * Export canvas edge cap, in pixels. Chromium's own limit is 65535 (kMaxSkiaDim); 32767 is
- * Firefox's edge limit and leaves a 2x margin under Chromium's, at the cost of downscaling
- * wider diagrams.
- */
+/** Leave a 2x margin below Chromium's canvas edge limit. */
 export const MERMAID_EXPORT_MAX_EDGE_PX = 32_767;
-/**
- * Export canvas area cap: 64 megapixels, at worst 256MB of RGBA. Chromium's limit is
- * 32768 * 8192 = 268435456 CSS px (kMaxCanvasArea); stay 4x under it to keep the bitmap
- * desktop-sized.
- */
+/** Cap RGBA allocations at 256 MiB. */
 export const MERMAID_EXPORT_MAX_PIXELS = 64 * 1024 * 1024;
-/** useClipboardCopyFeedback attempt key, distinct from the other text-copy entry points. */
 const MERMAID_IMAGE_COPY_KEY = 'mermaid-image';
-const MERMAID_RENDER_CACHE_SCHEMA_VERSION = 1;
-const MERMAID_ID_REFERENCE_ATTRIBUTES = new Set([
-  'aria-activedescendant',
-  'aria-controls',
-  'aria-describedby',
-  'aria-details',
-  'aria-errormessage',
-  'aria-flowto',
-  'aria-labelledby',
-  'aria-owns',
-  'for',
-  'headers',
-]);
-
-type MermaidTheme = 'default' | 'dark';
+type MermaidLayout = { width: number; fontFamily: string; fontFamilyMono: string };
 
 type MermaidRenderState =
   | { status: 'deferred' }
   | { status: 'loading' }
-  | { status: 'rendered'; cacheKey: string; svg: string; naturalWidth: number; naturalHeight: number }
+  | { status: 'rendered'; template: MermaidRenderTemplate; svg: string }
   | { status: 'error'; reason: 'invalid' | 'too-large' };
 
 type MermaidRenderTemplate = {
+  code: string;
+  fonts: string;
+  intrinsicWidth: number;
+  adapts?: boolean;
+  maxWidth?: number;
   svg: string;
   namespace: string;
   naturalWidth: number;
   naturalHeight: number;
 };
 
-type MermaidRenderInFlight = {
-  promise: Promise<MermaidRenderTemplate | null>;
-  consumers: Set<() => boolean>;
-};
-
-let mermaidModule: Promise<typeof import('mermaid').default> | undefined;
-let renderQueue: Promise<void> = Promise.resolve();
 let diagramSequence = 0;
-const MERMAID_RENDERER_VERSION = `${mermaidPackage.version}:${MERMAID_RENDER_CACHE_SCHEMA_VERSION}`;
 const mermaidRenderCache = new Map<string, MermaidRenderTemplate>();
-const mermaidRenderInFlight = new Map<string, MermaidRenderInFlight>();
-let mermaidRenderCacheChars = 0;
 
-export function createMermaidConfig(theme: MermaidTheme): MermaidConfig {
-  return {
-    startOnLoad: false,
-    securityLevel: 'strict',
-    suppressErrorRendering: true,
-    maxTextSize: MAX_MERMAID_SOURCE_LENGTH,
-    maxEdges: MAX_MERMAID_EDGES,
-    htmlLabels: false,
-    logLevel: 'fatal',
-    theme,
-  };
-}
-
-function loadMermaid() {
-  mermaidModule ??= import('mermaid').then((module) => module.default);
-  return mermaidModule;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function replaceMermaidLocalUrlReferences(
-  value: string,
-  replacements: ReadonlyMap<string, string>,
-): string {
-  return value.replace(
-    /url\(\s*(['"]?)#([^\s)'"}]+)\1\s*\)/g,
-    (match, quote: string, id: string) => {
-      const replacement = replacements.get(id);
-      return replacement ? `url(${quote}#${replacement}${quote})` : match;
-    },
-  );
-}
-
-function replaceMermaidStyleIdReferences(
-  value: string,
-  replacements: ReadonlyMap<string, string>,
-): string {
-  let rewritten = replaceMermaidLocalUrlReferences(value, replacements);
-  for (const [id, replacement] of replacements) {
-    const attributeSelector = new RegExp(
-      `(\\[\\s*id\\s*=\\s*)(['"]?)${escapeRegExp(id)}\\2(\\s*(?:[iIsS]\\s*)?\\])`,
-      'g',
-    );
-    rewritten = rewritten.replace(
-      attributeSelector,
-      (_match, prefix: string, quote: string, suffix: string) =>
-        `${prefix}${quote}${replacement}${quote}${suffix}`,
-    );
-    const selector = new RegExp(
-      `(^|[\\s,>+~}(.])#${escapeRegExp(id)}(?=$|[\\s,.:>+~{\\[])`,
-      'gm',
-    );
-    rewritten = rewritten.replace(selector, `$1#${replacement}`);
-  }
-  return rewritten;
-}
-
-function namespaceRenderedMermaidIds(documentNode: Document, namespace: string): void {
-  const replacements = new Map<string, string>();
-  for (const element of documentNode.querySelectorAll('[id]')) {
-    const id = element.getAttribute('id');
-    if (!id || id.includes(namespace)) continue;
-    let replacement = replacements.get(id);
-    if (!replacement) {
-      replacement = `${namespace}-scoped-${replacements.size}`;
-      replacements.set(id, replacement);
-    }
-    element.setAttribute('id', replacement);
-  }
-  if (replacements.size === 0) return;
-
-  for (const element of documentNode.querySelectorAll('*')) {
-    for (const attribute of Array.from(element.attributes)) {
-      if (attribute.name.toLowerCase() === 'id') continue;
-      const name = attribute.name.toLowerCase();
-      let value = replaceMermaidLocalUrlReferences(attribute.value, replacements);
-      if ((name === 'href' || name.endsWith(':href')) && value.startsWith('#')) {
-        const replacement = replacements.get(value.slice(1));
-        if (replacement) value = `#${replacement}`;
-      } else if (MERMAID_ID_REFERENCE_ATTRIBUTES.has(name)) {
-        value = value
-          .split(/(\s+)/)
-          .map((token) => replacements.get(token) ?? token)
-          .join('');
-      } else if (name === 'begin' || name === 'end') {
-        for (const [id, replacement] of replacements) {
-          value = value.replace(
-            new RegExp(`(^|;\\s*)${escapeRegExp(id)}(?=\\.)`, 'g'),
-            `$1${replacement}`,
-          );
-        }
-      }
-      if (value !== attribute.value) element.setAttribute(attribute.name, value);
-    }
-  }
-  for (const style of documentNode.querySelectorAll('style')) {
-    style.textContent = replaceMermaidStyleIdReferences(style.textContent ?? '', replacements);
-  }
-}
-
-function sanitizeRenderedMermaidSvg(svg: string, namespace: string): string {
+function sanitizeRenderedMermaidSvg(svg: string): string {
   const documentNode = new DOMParser().parseFromString(svg, 'image/svg+xml');
   if (documentNode.querySelector('parsererror')) throw new Error('Invalid Mermaid SVG output');
 
@@ -219,13 +87,59 @@ function sanitizeRenderedMermaidSvg(svg: string, namespace: string): string {
       }
     }
   }
-  namespaceRenderedMermaidIds(documentNode, namespace);
 
   return new XMLSerializer().serializeToString(documentNode.documentElement);
 }
 
-function mermaidRenderCacheKey(code: string, theme: MermaidTheme): string {
-  return `${MERMAID_RENDERER_VERSION}\0${theme}\0${code}`;
+function mermaidFonts(layout: MermaidLayout): string {
+  return `${layout.fontFamily}\0${layout.fontFamilyMono}`;
+}
+
+function mermaidTemplateFits(template: MermaidRenderTemplate, code: string, layout: MermaidLayout): boolean {
+  if (template.code !== code || template.fonts !== mermaidFonts(layout)) return false;
+  const constrained = layout.width < template.intrinsicWidth && template.adapts !== false;
+  return template.maxWidth === (constrained ? layout.width : undefined);
+}
+
+// Like Pele's mount(): keep the unconstrained layout unless the container is
+// narrower and maxWidth actually changes this diagram's layout.
+function renderMermaidTemplate(
+  render: (code: string, options: RenderOptions) => RenderResult,
+  code: string,
+  layout: MermaidLayout,
+  previous: MermaidRenderTemplate | undefined,
+): MermaidRenderTemplate {
+  const namespace = nextMermaidRenderId('template', code);
+  const fonts = mermaidFonts(layout);
+  const options: RenderOptions = {
+    limit: MAX_MERMAID_SOURCE_LENGTH,
+    maxEdges: MAX_MERMAID_EDGES,
+    outputLimit: MERMAID_RENDER_CACHE_MAX_CHARS,
+    links: false,
+    images: false,
+    idPrefix: namespace,
+    fontFamily: layout.fontFamily,
+    fontFamilyMono: layout.fontFamilyMono,
+  };
+  let { intrinsicWidth, adapts } = previous?.fonts === fonts ? previous : { intrinsicWidth: Infinity, adapts: undefined };
+  const template = (result: RenderResult, maxWidth?: number): MermaidRenderTemplate => ({
+    code,
+    fonts,
+    intrinsicWidth,
+    adapts,
+    maxWidth,
+    namespace,
+    svg: sanitizeRenderedMermaidSvg(result.svg),
+    naturalWidth: result.width,
+    naturalHeight: result.height,
+  });
+  const constrained = () => template(render(code, { ...options, maxWidth: layout.width }), layout.width);
+  if (adapts && layout.width < intrinsicWidth) return constrained();
+  const natural = render(code, options);
+  intrinsicWidth = natural.width;
+  if (layout.width >= intrinsicWidth) return template(natural);
+  adapts ??= render(code, { ...options, maxWidth: 1 }).svg !== natural.svg;
+  return adapts ? constrained() : template(natural);
 }
 
 function touchMermaidRenderCacheEntry(key: string, entry: MermaidRenderTemplate): void {
@@ -233,26 +147,17 @@ function touchMermaidRenderCacheEntry(key: string, entry: MermaidRenderTemplate)
   mermaidRenderCache.set(key, entry);
 }
 
-function trimMermaidRenderCache(): void {
+function writeMermaidRenderCache(key: string, template: MermaidRenderTemplate): void {
+  if (template.svg.length > MERMAID_RENDER_CACHE_MAX_CHARS) return;
+  touchMermaidRenderCacheEntry(key, template);
   while (
     mermaidRenderCache.size > MERMAID_RENDER_CACHE_LIMIT
-    || mermaidRenderCacheChars > MERMAID_RENDER_CACHE_MAX_CHARS
+    || [...mermaidRenderCache.values()].reduce((total, entry) => total + entry.svg.length, 0) > MERMAID_RENDER_CACHE_MAX_CHARS
   ) {
     const oldestKey = mermaidRenderCache.keys().next().value;
     if (oldestKey === undefined) break;
-    mermaidRenderCacheChars -= mermaidRenderCache.get(oldestKey)?.svg.length ?? 0;
     mermaidRenderCache.delete(oldestKey);
   }
-}
-
-function writeMermaidRenderCache(key: string, template: MermaidRenderTemplate): void {
-  if (template.svg.length > MERMAID_RENDER_CACHE_MAX_CHARS) return;
-  const existing = mermaidRenderCache.get(key);
-  if (existing) mermaidRenderCacheChars -= existing.svg.length;
-  mermaidRenderCache.delete(key);
-  mermaidRenderCache.set(key, template);
-  mermaidRenderCacheChars += template.svg.length;
-  trimMermaidRenderCache();
 }
 
 function nextMermaidRenderId(kind: 'template' | 'instance', code = ''): string {
@@ -269,101 +174,21 @@ function instantiateMermaidSvg(template: MermaidRenderTemplate): string {
   );
 }
 
-/**
- * Mermaid owns global configuration, so initialization and rendering must be
- * one serialized operation. This also caps concurrent layout work when one
- * assistant turn contains several diagrams.
- */
-function renderMermaid(
-  code: string,
-  theme: MermaidTheme,
-  shouldRender: () => boolean,
-): Promise<MermaidRenderTemplate | null> {
-  if (!shouldRender()) return Promise.resolve(null);
-  const cacheKey = mermaidRenderCacheKey(code, theme);
-  const cached = mermaidRenderCache.get(cacheKey);
-  if (cached) {
-    touchMermaidRenderCacheEntry(cacheKey, cached);
-    return Promise.resolve(shouldRender() ? cached : null);
-  }
-
-  const inFlight = mermaidRenderInFlight.get(cacheKey);
-  if (inFlight) {
-    inFlight.consumers.add(shouldRender);
-    return inFlight.promise.then((template) => shouldRender() ? template : null);
-  }
-
-  const consumers = new Set([shouldRender]);
-  const promise = renderQueue.then(async () => {
-    if (![...consumers].some((isActive) => isActive())) return null;
-    const mermaid = await loadMermaid();
-    if (![...consumers].some((isActive) => isActive())) return null;
-    mermaid.initialize(createMermaidConfig(theme));
-    const id = nextMermaidRenderId('template', code);
-    const { svg } = await mermaid.render(id, code);
-    const sanitizedSvg = sanitizeRenderedMermaidSvg(svg, id);
-    const { width: naturalWidth, height: naturalHeight } = mermaidViewBoxSize(sanitizedSvg);
-    return { svg: sanitizedSvg, namespace: id, naturalWidth, naturalHeight };
-  });
-  const entry = { promise, consumers };
-  mermaidRenderInFlight.set(cacheKey, entry);
-  void promise.then(
-    (template) => {
-      if (template) writeMermaidRenderCache(cacheKey, template);
-    },
-    () => {},
-  ).finally(() => {
-    if (mermaidRenderInFlight.get(cacheKey) === entry) mermaidRenderInFlight.delete(cacheKey);
-    consumers.clear();
-  });
-
-  renderQueue = promise.then(
-    () => undefined,
-    () => undefined,
-  );
-  return promise.then((template) => shouldRender() ? template : null);
-}
-
-function currentMermaidTheme(): MermaidTheme {
-  if (typeof document === 'undefined') return 'default';
-  return document.documentElement.classList.contains('dark') ? 'dark' : 'default';
-}
-
-function mermaidViewBoxSize(svg: string): { width: number; height: number } {
-  const viewBox = /\bviewBox=["']\s*[-+\d.e]+[\s,]+[-+\d.e]+[\s,]+([-+\d.e]+)[\s,]+([-+\d.e]+)/i.exec(svg);
-  const width = Number(viewBox?.[1]);
-  const height = Number(viewBox?.[2]);
-  return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0
-    ? { width, height }
-    : { width: 1200, height: 675 };
-}
-
-function clampMermaidZoom(value: number): number {
-  return Math.min(MAX_MERMAID_ZOOM, Math.max(MIN_MERMAID_ZOOM, value));
-}
-
-/**
- * Pure function: inject explicit pixel dimensions into the SVG root and encode it as a data URL.
- * Strips width/height/style from the root tag (mermaid emits width="100%" + max-width by
- * default); otherwise the percentage sizing degrades to the default viewport when the Image
- * decodes and the export canvas ratio is distorted.
- */
+// Standalone SVG images need explicit dimensions to preserve their aspect ratio.
 export function mermaidSvgToDataUrl(svg: string, width: number, height: number): string {
   const rootTag = /<svg\b[^>]*>/i.exec(svg)?.[0] ?? '';
   const sizedRootTag = rootTag
-    .replace(/\s(?:width|height|style)="[^"]*"/gi, '')
+    .replace(/\s(?:width|height)="[^"]*"/gi, '')
+    .replace(/\sstyle="([^"]*)"/i, (_match, style: string) => {
+      const retained = style.split(';').filter((declaration) =>
+        !/^\s*(?:width|height|max-width)\s*:/i.test(declaration) && declaration.trim()).join(';');
+      return retained ? ` style="${retained}"` : '';
+    })
     .replace(/^<svg\b/i, `<svg width="${width}" height="${height}"`);
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(sizedRootTag + svg.slice(rootTag.length))}`;
 }
 
-/**
- * Pure function: the export canvas scale relative to the SVG's natural size.
- * Diagrams live in viewBox coordinates (tens of thousands of pixels); scaling that by 2x with no
- * cap crosses Chromium's canvas limits (32768 * 8192 CSS px area, 65535 per side). There the 2D
- * context is lost and toBlob yields null, so the copy fails; just under the limit it instead
- * allocates the RGBA bitmap (up to 1GB at 2^28 px). So clamp against both an edge and an area
- * budget; elongated diagrams may drop below 1x and still produce a complete, usable image.
- */
+// Oversized canvases can lose their context or fail toBlob.
 export function mermaidExportScale(width: number, height: number): number {
   return Math.min(
     MERMAID_EXPORT_PIXEL_RATIO,
@@ -372,11 +197,68 @@ export function mermaidExportScale(width: number, height: number): number {
   );
 }
 
-/**
- * Rasterizes a rendered Mermaid SVG string into a PNG Blob (browser only).
- * Takes the sanitized SVG string from state rather than from the DOM, so pan/zoom interaction
- * state does not affect it.
- */
+// An SVG image cannot inherit the page's computed theme styles.
+async function snapshotMermaidSvg(svg: SVGSVGElement, width: number, height: number): Promise<string> {
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  const properties = [
+    'fill', 'stroke', 'color', 'font-family', 'font-size', 'font-weight', 'font-style',
+    'opacity', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'stroke-dasharray',
+    'stroke-linecap', 'stroke-linejoin', 'text-anchor', 'dominant-baseline', 'letter-spacing',
+  ];
+  const originals = [svg, ...svg.querySelectorAll<SVGElement>('*')];
+  const copies = [clone, ...clone.querySelectorAll<SVGElement>('*')];
+  const fonts = new Set<string>();
+  for (let index = 0; index < originals.length; index++) {
+    const computed = getComputedStyle(originals[index]!);
+    if (originals[index]!.localName === 'text') {
+      fonts.add(computed.getPropertyValue('font-family').split(',')[0]!.trim().replace(/^["']|["']$/g, ''));
+    }
+    for (const property of properties) {
+      const value = computed.getPropertyValue(property);
+      // Chromium resolves paint-server URLs against the page, but exported
+      // gradients must still point into the standalone SVG.
+      if (value) copies[index]!.style.setProperty(property, value.replace(/url\(["']?[^#)]+#([^"')]+)["']?\)/g, 'url(#$1)'));
+    }
+  }
+  // Export the full diagram regardless of the current zoom.
+  clone.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  // SVG images cannot inherit the page's @font-face rules.
+  const faces = new Map<string, string>();
+  const collectFaces = (rules: CSSRuleList, baseUrl: string) => {
+    for (const rule of Array.from(rules)) {
+      if (rule.type === 5) { // CSSRule.FONT_FACE_RULE
+        const face = rule as CSSFontFaceRule;
+        const family = face.style.getPropertyValue('font-family').trim().replace(/^["']|["']$/g, '');
+        if (fonts.has(family)) faces.set(face.cssText, baseUrl);
+      } else if ('cssRules' in rule) collectFaces((rule as CSSGroupingRule).cssRules, baseUrl);
+    }
+  };
+  for (const sheet of Array.from(document.styleSheets ?? [])) {
+    // Cross-origin stylesheets are inaccessible; product fonts are same-origin.
+    try { collectFaces(sheet.cssRules, sheet.href ?? document.baseURI); } catch {}
+  }
+  const embedded = await Promise.all([...faces].map(async ([css, baseUrl]) => {
+    for (const match of css.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/g)) {
+      const response = await fetch(new URL(match[1]!, baseUrl));
+      if (!response.ok) throw new Error('Could not export diagram font');
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        void response.blob().then((blob) => reader.readAsDataURL(blob), reject);
+      });
+      css = css.replace(match[0], `url("${dataUrl}")`);
+    }
+    return css;
+  }));
+  if (embedded.length > 0) {
+    const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+    style.textContent = embedded.join('\n');
+    clone.prepend(style);
+  }
+  return new XMLSerializer().serializeToString(clone);
+}
+
 async function mermaidSvgToPngBlob(
   svg: string,
   width: number,
@@ -384,13 +266,11 @@ async function mermaidSvgToPngBlob(
   background: string,
 ): Promise<Blob> {
   const scale = mermaidExportScale(width, height);
-  // floor makes the area cap a hard guarantee; a side below 1px afterwards means the aspect
-  // ratio is too extreme to export — fail through the existing feedback rather than silently
-  // copying a 1px image.
+  // Round down so neither export budget can be exceeded.
   const canvasWidth = Math.floor(width * scale);
   const canvasHeight = Math.floor(height * scale);
   if (canvasWidth < 1 || canvasHeight < 1) throw new Error('Mermaid diagram too large to export');
-  // Bound the SVG image viewport as well as the canvas; preserve its original viewBox.
+  // The SVG decoder must respect the same size limits as the canvas.
   const image = new Image();
   image.src = mermaidSvgToDataUrl(svg, canvasWidth, canvasHeight);
   await image.decode();
@@ -407,28 +287,11 @@ async function mermaidSvgToPngBlob(
   return blob;
 }
 
-function useMermaidTheme(): MermaidTheme {
-  const [theme, setTheme] = useState<MermaidTheme>(currentMermaidTheme);
-
-  useEffect(() => {
-    const root = document.documentElement;
-    const updateTheme = () => setTheme(currentMermaidTheme());
-    const observer = new MutationObserver(updateTheme);
-    observer.observe(root, { attributes: true, attributeFilter: ['class'] });
-    updateTheme();
-    return () => observer.disconnect();
-  }, []);
-
-  return theme;
-}
-
-function renderedMermaidState(template: MermaidRenderTemplate, cacheKey: string): MermaidRenderState {
+function renderedMermaidState(template: MermaidRenderTemplate): MermaidRenderState {
   return {
     status: 'rendered',
-    cacheKey,
+    template,
     svg: instantiateMermaidSvg(template),
-    naturalWidth: template.naturalWidth,
-    naturalHeight: template.naturalHeight,
   };
 }
 
@@ -438,31 +301,46 @@ export function MermaidDiagram(props: {
   autoRender?: boolean;
 }) {
   const copy = getSharedUiCopy(useUiLocale()).markdown;
-  const theme = useMermaidTheme();
   const autoRender = props.autoRender ?? true;
-  const cacheKey = mermaidRenderCacheKey(props.code, theme);
+  const [layout, setLayout] = useState<MermaidLayout>({ width: 640, fontFamily: 'sans-serif', fontFamilyMono: 'monospace' });
   const [expanded, setExpanded] = useState(false);
   const [manualRenderRequested, setManualRenderRequested] = useState(false);
   const [state, setState] = useState<MermaidRenderState>(() => {
     if (props.code.length > MAX_MERMAID_SOURCE_LENGTH) return { status: 'error', reason: 'too-large' };
     if (!autoRender && !manualRenderRequested) return { status: 'deferred' };
-    const template = mermaidRenderCache.get(cacheKey);
-    if (!template) return { status: 'loading' };
-    touchMermaidRenderCacheEntry(cacheKey, template);
-    return renderedMermaidState(template, cacheKey);
+    const cached = mermaidRenderCache.get(props.code);
+    if (!cached) return { status: 'loading' };
+    touchMermaidRenderCacheEntry(props.code, cached);
+    return renderedMermaidState(cached);
   });
-  const [zoom, setZoom] = useState(1);
-  const [panning, setPanning] = useState(false);
-  const [pannableAxis, setPannableAxis] = useState<'none' | 'horizontal' | 'vertical' | 'both'>('none');
   const copyFeedback = useClipboardCopyFeedback();
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const panRef = useRef<{
-    pointerId: number;
-    x: number;
-    y: number;
-    scrollLeft: number;
-    scrollTop: number;
-  } | null>(null);
+  const containerRef = useRef<HTMLElement | null>(null);
+  const svgRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const measure = () => {
+      // Measuring SVG height would feed rendering back into layout.
+      const width = Math.max(1, (container.clientWidth || 704) - 64);
+      const style = getComputedStyle(container);
+      const fontFamily = style.getPropertyValue('--font-family-body').trim() || style.fontFamily || 'sans-serif';
+      const fontFamilyMono = style.getPropertyValue('--font-family-code').trim() || 'monospace';
+      setLayout((current) => current.width === width && current.fontFamily === fontFamily && current.fontFamilyMono === fontFamilyMono
+        ? current : { width, fontFamily, fontFamilyMono });
+    };
+    measure();
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const observer = new ResizeObserver(() => {
+      clearTimeout(settle);
+      settle = setTimeout(measure, MERMAID_RESIZE_SETTLE_MS);
+    });
+    observer.observe(container);
+    return () => {
+      observer.disconnect();
+      clearTimeout(settle);
+    };
+  }, [expanded, state.status]);
 
   useEffect(() => {
     if (props.code.length > MAX_MERMAID_SOURCE_LENGTH) {
@@ -473,106 +351,64 @@ export function MermaidDiagram(props: {
       setState({ status: 'deferred' });
       return;
     }
-    if (state.status === 'rendered' && state.cacheKey === cacheKey) return;
-
-    setZoom(1);
-    const template = mermaidRenderCache.get(cacheKey);
-    if (template) {
-      touchMermaidRenderCacheEntry(cacheKey, template);
-      setState(renderedMermaidState(template, cacheKey));
-      return;
-    }
+    if (state.status === 'rendered' && mermaidTemplateFits(state.template, props.code, layout)) return;
 
     let cancelled = false;
-    setState({ status: 'loading' });
-    void renderMermaid(props.code, theme, () => !cancelled).then(
-      (template) => {
-        if (!cancelled && template) {
-          setState(renderedMermaidState(template, cacheKey));
-        }
-      },
-      () => {
-        if (!cancelled) setState({ status: 'error', reason: 'invalid' });
-      },
-    );
+    setState((current) => current.status === 'rendered' ? current : { status: 'loading' });
+    void (async () => {
+      const { render } = await import('pele');
+      await document.fonts?.ready;
+      if (cancelled) return;
+      // Recheck after awaiting: another instance may have populated the cache.
+      let template = mermaidRenderCache.get(props.code);
+      if (template && mermaidTemplateFits(template, props.code, layout)) {
+        touchMermaidRenderCacheEntry(props.code, template);
+      } else {
+        template = renderMermaidTemplate(render, props.code, layout, template);
+        writeMermaidRenderCache(props.code, template);
+      }
+      setState(renderedMermaidState(template));
+    })().catch(() => {
+      if (!cancelled) setState({ status: 'error', reason: 'invalid' });
+    });
     return () => {
       cancelled = true;
     };
-  }, [autoRender, manualRenderRequested, props.code, theme]);
+  }, [autoRender, manualRenderRequested, props.code, layout]);
 
   useEffect(() => {
-    const updatePannableAxis = () => {
-      const viewport = viewportRef.current;
-      if (!viewport) {
-        setPannableAxis('none');
-        return;
-      }
-      const horizontal = viewport.scrollWidth > viewport.clientWidth + 1;
-      const vertical = viewport.scrollHeight > viewport.clientHeight + 1;
-      setPannableAxis(horizontal
-        ? vertical ? 'both' : 'horizontal'
-        : vertical ? 'vertical' : 'none');
-    };
-    updatePannableAxis();
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    // Observe affordances only; sizing is entirely declarative in CSS.
-    const observer = new ResizeObserver(updatePannableAxis);
-    observer.observe(viewport);
-    return () => observer.disconnect();
-  }, [expanded, state.status, zoom]);
-
-  function updateZoom(nextZoom: number, anchor?: { clientX: number; clientY: number }) {
-    const next = clampMermaidZoom(nextZoom);
-    if (next === zoom) return;
-    const viewport = viewportRef.current;
-    const viewportBounds = viewport?.getBoundingClientRect();
-    const anchorX = viewport && viewportBounds && anchor
-      ? Math.min(viewport.clientWidth, Math.max(0, anchor.clientX - viewportBounds.left))
-      : (viewport?.clientWidth ?? 0) / 2;
-    const anchorY = viewport && viewportBounds && anchor
-      ? Math.min(viewport.clientHeight, Math.max(0, anchor.clientY - viewportBounds.top))
-      : (viewport?.clientHeight ?? 0) / 2;
-    const contentX = viewport && viewport.scrollWidth > 0
-      ? (viewport.scrollLeft + anchorX) / viewport.scrollWidth
-      : 0.5;
-    const contentY = viewport && viewport.scrollHeight > 0
-      ? (viewport.scrollTop + anchorY) / viewport.scrollHeight
-      : 0.5;
-    setZoom(next);
-    requestAnimationFrame(() => {
-      if (!viewport) return;
-      viewport.scrollLeft = contentX * viewport.scrollWidth - anchorX;
-      viewport.scrollTop = contentY * viewport.scrollHeight - anchorY;
+    const container = svgRef.current;
+    if (!container || state.status !== 'rendered') return;
+    let cancelled = false;
+    let destroy: (() => void) | undefined;
+    void import('pele').then(({ enableZoom }) => {
+      if (cancelled) return;
+      const zoom = enableZoom(container, {
+        always: true,
+        maxScale: MAX_MERMAID_ZOOM,
+        labels: { zoomIn: copy.mermaidZoomIn, zoomOut: copy.mermaidZoomOut, reset: copy.mermaidResetView },
+      });
+      destroy = () => zoom.destroy();
     });
-  }
-
-  function resetViewport() {
-    setZoom(1);
-    requestAnimationFrame(() => {
-      const viewport = viewportRef.current;
-      if (!viewport) return;
-      viewport.scrollLeft = 0;
-      viewport.scrollTop = 0;
-    });
-  }
+    return () => { cancelled = true; destroy?.(); };
+  }, [expanded, state, copy]);
 
   const className = `maka-markdown-code maka-markdown-code-${props.density}`;
   if (state.status === 'rendered') {
-    const zoomPercent = Math.round(zoom * 100);
+    const { naturalWidth, naturalHeight } = state.template;
     const diagramCopyPhase = copyFeedback.phaseFor(MERMAID_IMAGE_COPY_KEY);
     async function copyDiagramToClipboard(event: ReactMouseEvent<HTMLButtonElement>) {
-      if (state.status !== 'rendered') return;
-      // Background color comes from the figure's resolved value (styles.css binds --background on
-      // .maka-mermaid-diagram), so a dark-theme export is neither transparent nor wrongly light.
       const figure = event.currentTarget.closest('figure');
       if (!figure) return;
+      const svg = figure.querySelector<SVGSVGElement>('.maka-mermaid-svg > svg');
+      if (!svg) return;
       const background = getComputedStyle(figure).backgroundColor;
       await copyFeedback.attempt(MERMAID_IMAGE_COPY_KEY, async () => {
+        const snapshot = await snapshotMermaidSvg(svg, naturalWidth, naturalHeight);
         const blob = await mermaidSvgToPngBlob(
-          state.svg,
-          state.naturalWidth,
-          state.naturalHeight,
+          snapshot,
+          naturalWidth,
+          naturalHeight,
           background,
         );
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
@@ -583,12 +419,11 @@ export function MermaidDiagram(props: {
         className={`${className} maka-mermaid-diagram${isExpanded ? ' maka-mermaid-diagram-expanded' : ''}`}
         data-maka-contract="mermaid"
         data-maka-mermaid-state="rendered"
-        data-maka-mermaid-zoom={zoom.toFixed(2)}
         style={{
-          '--maka-mermaid-natural-width': `${state.naturalWidth}px`,
-          '--maka-mermaid-ratio': state.naturalWidth / state.naturalHeight,
-          '--maka-mermaid-zoom': zoom,
+          '--maka-mermaid-natural-width': `${naturalWidth}px`,
+          '--maka-mermaid-ratio': naturalWidth / naturalHeight,
         } as CSSProperties}
+        ref={isExpanded === expanded ? (element) => { containerRef.current = element; } : undefined}
         aria-label={copy.mermaidDiagram}
       >
         <Toolbar
@@ -598,37 +433,6 @@ export function MermaidDiagram(props: {
           startContent={<span className="maka-mermaid-title">{copy.mermaidDiagram}</span>}
           endContent={(
             <div className="maka-mermaid-actions">
-              <div className="maka-mermaid-zoom-actions">
-                <IconButton
-                  variant="ghost"
-                  label={copy.mermaidZoomOut}
-                  tooltip={copy.mermaidZoomOut}
-                  isDisabled={zoom <= MIN_MERMAID_ZOOM}
-                  onClick={() => updateZoom(zoom - MERMAID_ZOOM_STEP)}
-                  icon={<ZoomOut size={ICON_SIZE.chrome} aria-hidden="true" />}
-                />
-                <output
-                  className="maka-mermaid-zoom-level"
-                  aria-label={copy.mermaidZoomLevel(zoomPercent)}
-                >
-                  {zoomPercent}%
-                </output>
-                <IconButton
-                  variant="ghost"
-                  label={copy.mermaidZoomIn}
-                  tooltip={copy.mermaidZoomIn}
-                  isDisabled={zoom >= MAX_MERMAID_ZOOM}
-                  onClick={() => updateZoom(zoom + MERMAID_ZOOM_STEP)}
-                  icon={<ZoomIn size={ICON_SIZE.chrome} aria-hidden="true" />}
-                />
-                <IconButton
-                  variant="ghost"
-                  label={copy.mermaidResetView}
-                  tooltip={copy.mermaidResetView}
-                  onClick={resetViewport}
-                  icon={<Scan size={ICON_SIZE.chrome} aria-hidden="true" />}
-                />
-              </div>
               <IconButton
                 variant="ghost"
                 label={diagramCopyPhase === 'failed' ? copy.mermaidCopyImageFailed : copy.mermaidCopyImage}
@@ -652,78 +456,12 @@ export function MermaidDiagram(props: {
             </div>
           )}
         />
-        {showContent && <div
-          ref={viewportRef}
-          className="maka-mermaid-viewport"
-          data-maka-mermaid-panning={panning ? 'true' : 'false'}
-          data-maka-mermaid-pannable={pannableAxis}
+        <div
+          ref={showContent ? svgRef : undefined}
+          className="maka-mermaid-viewport maka-mermaid-svg"
           aria-label={copy.mermaidViewport}
-          tabIndex={0}
-          onKeyDown={(event) => {
-            if (event.key === '+' || event.key === '=') {
-              event.preventDefault();
-              updateZoom(zoom + MERMAID_ZOOM_STEP);
-            } else if (event.key === '-' || event.key === '_') {
-              event.preventDefault();
-              updateZoom(zoom - MERMAID_ZOOM_STEP);
-            } else if (event.key === '0') {
-              event.preventDefault();
-              resetViewport();
-            }
-          }}
-          onWheel={(event) => {
-            if (!event.ctrlKey && !event.metaKey) return;
-            event.preventDefault();
-            updateZoom(
-              zoom + (event.deltaY < 0 ? MERMAID_ZOOM_STEP : -MERMAID_ZOOM_STEP),
-              { clientX: event.clientX, clientY: event.clientY },
-            );
-          }}
-          onPointerDown={(event) => {
-            const viewport = viewportRef.current;
-            if (!viewport || event.button !== 0 || pannableAxis === 'none') return;
-            panRef.current = {
-              pointerId: event.pointerId,
-              x: event.clientX,
-              y: event.clientY,
-              scrollLeft: viewport.scrollLeft,
-              scrollTop: viewport.scrollTop,
-            };
-            viewport.setPointerCapture(event.pointerId);
-            setPanning(true);
-          }}
-          onPointerMove={(event) => {
-            const viewport = viewportRef.current;
-            const pan = panRef.current;
-            if (!viewport || !pan || pan.pointerId !== event.pointerId) return;
-            viewport.scrollLeft = pan.scrollLeft - (event.clientX - pan.x);
-            viewport.scrollTop = pan.scrollTop - (event.clientY - pan.y);
-          }}
-          onPointerUp={(event) => {
-            if (panRef.current?.pointerId !== event.pointerId) return;
-            panRef.current = null;
-            setPanning(false);
-          }}
-          onPointerCancel={() => {
-            panRef.current = null;
-            setPanning(false);
-          }}
-        >
-          <div
-            className="maka-mermaid-canvas"
-            style={{ aspectRatio: `${state.naturalWidth} / ${state.naturalHeight}` }}
-          >
-            <div
-              className="maka-mermaid-svg"
-              // Mermaid's strict security level disables link callbacks, encodes
-              // HTML labels, and sanitizes the SVG. A final product-owned pass
-              // removes navigation wrappers, event attributes, scripts, and
-              // foreignObject before output crosses React's HTML boundary. We
-              // never call bindFunctions.
-              dangerouslySetInnerHTML={{ __html: state.svg }}
-            />
-          </div>
-        </div>}
+          dangerouslySetInnerHTML={{ __html: showContent ? state.svg : '' }}
+        />
         {showContent && <Collapsible
           className="maka-mermaid-source"
           trigger={copy.mermaidViewSource}
@@ -769,6 +507,7 @@ export function MermaidDiagram(props: {
       className={`${className} maka-mermaid-fallback`}
       data-maka-contract="mermaid"
       data-maka-mermaid-state={state.status}
+      ref={(element) => { containerRef.current = element; }}
     >
       <CodeBlock
         code={props.code}

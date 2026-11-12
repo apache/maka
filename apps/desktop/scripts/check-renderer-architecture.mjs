@@ -3630,6 +3630,7 @@ function validateMainWindowEntryContract(desktopRoot, violations) {
     'src/main/computer-use/pip-electron.ts',
     MAIN_RENDERER_LOADER_SOURCE,
     'src/main/permission-overlay/permission-overlay-main.ts',
+    'src/main/pet-desktop.ts',
   ]);
   for (const file of sourceFiles(resolve(desktopRoot, 'src/main'))) {
     const fileRelative = normalizePath(relative(desktopRoot, file));

@@ -44,9 +44,11 @@ for (const mode of ['bounded', 'pipes', 'wrapped']) {
       const marker = join(directory, 'started.json');
       const late = join(directory, 'late.txt');
       const script = join(directory, 'writer.cjs');
+      // Publish only complete JSON: creating the final file before writing it
+      // lets the owner's readiness poll observe an empty marker.
       await writeFile(
         script,
-        `const fs=require('node:fs');\nprocess.on('SIGTERM',()=>{});\nfs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,ppid:process.ppid}));\nsetTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'late'),1500);\nsetInterval(()=>{},1000);`,
+        `const fs=require('node:fs');\nprocess.on('SIGTERM',()=>{});\nfs.writeFileSync(${JSON.stringify(`${marker}.tmp`)},JSON.stringify({pid:process.pid,ppid:process.ppid}));\nfs.renameSync(${JSON.stringify(`${marker}.tmp`)},${JSON.stringify(marker)});\nsetTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'late'),1500);\nsetInterval(()=>{},1000);`,
       );
       const owner = fork(
         new URL('./fixtures/shell-owner.js', import.meta.url),
@@ -107,7 +109,7 @@ test('owner SIGKILL also terminates a descendant that left the command group wit
   const marker = join(directory, 'escaped.json');
   const late = join(directory, 'late.txt');
   const script = join(directory, 'escaper.cjs');
-  const escapee = `const fs=require('node:fs');process.on('SIGTERM',()=>{});fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,pgid:process.pid}));setTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'late'),1500);setInterval(()=>{},1000);`;
+  const escapee = `const fs=require('node:fs');process.on('SIGTERM',()=>{});fs.writeFileSync(${JSON.stringify(`${marker}.tmp`)},JSON.stringify({pid:process.pid,pgid:process.pid}));fs.renameSync(${JSON.stringify(`${marker}.tmp`)},${JSON.stringify(marker)});setTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'late'),1500);setInterval(()=>{},1000);`;
   // The command stays alive while its child leads a new session, outside the
   // supervisor's process group but still inside its process tree.
   await writeFile(

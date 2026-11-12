@@ -31,6 +31,8 @@ export interface RuntimeMessageRunIdentity {
 /** Lease bridge owned by the Runtime Host for one live root run. */
 export interface RuntimeMessageRunOwner extends RuntimeMessageRunIdentity {
   pull(): Promise<readonly SteeringLease[]>;
+  /** Event-driven notification only; pull/ack/nack retain exclusive consumption authority. */
+  waitForSteering?(signal: AbortSignal): Promise<void>;
   ack(leaseIds: readonly string[]): void;
   nack(leaseIds: readonly string[]): void;
   /** Ends Runtime access; the Host closes admission at its terminal transition cut. */

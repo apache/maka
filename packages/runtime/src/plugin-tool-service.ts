@@ -228,6 +228,9 @@ function validateTool(tool: MakaTool): void {
   if (tool.parameters === undefined) {
     throw new TypeError(`Tool ${JSON.stringify(tool.name)} requires an input schema`);
   }
+  if (tool.discovery !== undefined && tool.discovery !== 'direct' && tool.discovery !== 'search') {
+    throw new TypeError(`Tool ${JSON.stringify(tool.name)} has invalid discovery mode`);
+  }
   if (tool.providerTool) {
     throw new TypeError(
       `Plugin Tool ${JSON.stringify(tool.name)} cannot claim a provider protocol`,

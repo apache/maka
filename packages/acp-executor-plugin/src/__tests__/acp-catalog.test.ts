@@ -22,7 +22,7 @@ import { setImmediate } from 'node:timers/promises';
 import { test } from 'node:test';
 import type { ExecutorCatalogEntry } from '@maka/core/executor-catalog';
 import { AdmissionLimiter } from '@maka/runtime/admission-limiter';
-import { AcpCatalog } from '../acp-catalog.js';
+import { AcpCatalog, type AcpCatalogStore } from '../acp-catalog.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -98,52 +98,70 @@ test('the shared runtime budget covers cleanup and queues different executor ins
   assert.equal(admission.activeCount, 0);
 });
 
-test('repeated refresh drains the old process and redirects every waiter to the latest probe', async () => {
-  const admission = new AdmissionLimiter(2);
-  const started = deferred<void>();
-  const cleaning = deferred<void>();
-  const cleanup = deferred<void>();
-  let probes = 0;
-  const catalog = new AcpCatalog(
-    admission,
-    async (startup) => {
-      probes++;
-      if (probes > 1) return entry('fresh');
-      started.resolve();
-      try {
-        await new Promise<void>((_resolve, reject) => {
-          startup.addEventListener('abort', () => reject(startup.reason), { once: true });
-        });
-        return entry('stale');
-      } finally {
-        cleaning.resolve();
-        await cleanup.promise;
-      }
-    },
-    () => entry('unavailable', 'unavailable'),
-  );
-  const old = catalog.get(signal());
-  try {
-    await started.promise;
-    const refresh = catalog.get(signal(), true);
-    await cleaning.promise;
-    const newer = catalog.get(signal(), true);
-    await setImmediate();
-    assert.equal(probes, 1, 'replacement must wait for the old process to close');
-    assert.equal(admission.activeCount, 1);
-    cleanup.resolve();
-    const results = await Promise.all([old, refresh, newer]);
-    assert.equal(probes, 2, 'an invalidated queued refresh must never start a process');
-    assert.equal(
-      results.every((result) => result.id === 'fresh'),
-      true,
+for (const shutdown of [false, true]) {
+  test(`repeated refresh drains the old process before ${shutdown ? 'shutdown' : 'replacement'}`, async () => {
+    const admission = new AdmissionLimiter(2);
+    const started = deferred<void>();
+    const cleaning = deferred<void>();
+    const cleanup = deferred<void>();
+    let probes = 0;
+    const catalog = new AcpCatalog(
+      admission,
+      async (startup) => {
+        probes++;
+        if (probes > 1) return entry('fresh');
+        started.resolve();
+        try {
+          await new Promise<void>((_resolve, reject) => {
+            startup.addEventListener('abort', () => reject(startup.reason), { once: true });
+          });
+          return entry('stale');
+        } finally {
+          cleaning.resolve();
+          await cleanup.promise;
+        }
+      },
+      () => entry('unavailable', 'unavailable'),
     );
-    assert.equal(await catalog.get(signal()), results[2]);
-  } finally {
-    cleanup.resolve();
-    await catalog.dispose();
-  }
-});
+    const old = catalog.get(signal());
+    try {
+      await started.promise;
+      const refresh = catalog.get(signal(), true);
+      await cleaning.promise;
+      const newer = catalog.get(signal(), true);
+      await setImmediate();
+      assert.equal(probes, 1, 'replacement must wait for the old process to close');
+      assert.equal(admission.activeCount, 1);
+      let disposed = false;
+      const closing = shutdown
+        ? catalog.dispose().then(() => {
+            disposed = true;
+          })
+        : undefined;
+      await setImmediate();
+      assert.equal(disposed, false, 'shutdown must wait for superseded probe cleanup');
+      cleanup.resolve();
+      const results = await Promise.all([old, refresh, newer]);
+      await closing;
+      if (shutdown) {
+        assert.equal(disposed, true);
+        assert.equal(probes, 1, 'shutdown cannot start a queued replacement');
+        assert.equal(admission.activeCount, 0);
+        assert.ok(results.every((result) => result.readiness === 'unavailable'));
+        return;
+      }
+      assert.equal(probes, 2, 'an invalidated queued refresh must never start a process');
+      assert.equal(
+        results.every((result) => result.id === 'fresh'),
+        true,
+      );
+      assert.equal(await catalog.get(signal()), results[2]);
+    } finally {
+      cleanup.resolve();
+      await catalog.dispose();
+    }
+  });
+}
 
 test('disposing a queued executor removes its admission without starting a probe', async () => {
   const admission = new AdmissionLimiter(1);
@@ -284,7 +302,7 @@ test('repeated invalidations without refresh drain and join the latest revision'
   }
 });
 
-test('ready catalog cache expires without a timer or caller refresh', async () => {
+test('ready catalog survives idle time until explicit refresh or invalidation', async () => {
   let calls = 0;
   let now = 100000;
   const original = Date.now;
@@ -301,11 +319,268 @@ test('ready catalog cache expires without a timer or caller refresh', async () =
     await catalog.get(signal());
     await catalog.get(signal());
     assert.equal(calls, 1);
-    now += 61000;
+    now += 24 * 60 * 60 * 1000;
     await catalog.get(signal());
+    assert.equal(calls, 1, 'opening another draft after a day does not start a probe');
+    await catalog.get(signal(), true);
     assert.equal(calls, 2);
+    catalog.invalidate();
+    await catalog.get(signal());
+    assert.equal(calls, 3);
   } finally {
     Date.now = original;
     await catalog.dispose();
   }
+});
+
+function catalogModels(id: string): ExecutorCatalogEntry {
+  return {
+    ...entry('agent'),
+    models: [{ id, name: id }],
+    currentModel: id,
+    modes: [{ id: 'neutral-mode', name: 'Neutral mode' }],
+    currentMode: 'neutral-mode',
+    supportsModelChange: true,
+    supportsModeChange: true,
+  };
+}
+
+test('shutdown flushes neutral candidates and restart uses them without a probe', async () => {
+  let saved: ExecutorCatalogEntry | undefined;
+  let writes = 0;
+  let probes = 0;
+  const store: AcpCatalogStore = {
+    load: async () => saved,
+    save: async (entry) => {
+      saved = entry;
+      writes++;
+    },
+  };
+  const make = () =>
+    new AcpCatalog(
+      new AdmissionLimiter(1),
+      async () => {
+        probes++;
+        return catalogModels('probe');
+      },
+      () => entry('unavailable', 'unavailable'),
+      undefined,
+      store,
+    );
+  const first = make();
+  await first.get(signal());
+  await first.get(signal(), true);
+  await first.dispose();
+  const discoveryWrites = writes;
+  const restarted = make();
+  try {
+    assert.deepEqual(await restarted.get(signal()), catalogModels('probe'));
+    assert.equal(writes, discoveryWrites, 'cached reads do not rewrite the disk snapshot');
+    assert.equal(probes, 2, 'restart reads the persisted snapshot');
+    await restarted.get(signal(), true);
+    assert.equal(probes, 3, 'manual refresh bypasses both cache layers');
+  } finally {
+    await restarted.dispose();
+  }
+  assert.deepEqual(saved, catalogModels('probe'));
+});
+
+for (const action of ['invalidate', 'dispose'] as const) {
+  test(`late disk reads cannot override ${action}`, async () => {
+    const started = deferred<void>();
+    const read = deferred<ExecutorCatalogEntry>();
+    let saved: ExecutorCatalogEntry | undefined = catalogModels('stale-disk');
+    let probes = 0;
+    const catalog = new AcpCatalog(
+      new AdmissionLimiter(1),
+      async () => {
+        probes++;
+        return catalogModels('fresh-probe');
+      },
+      () => entry('unavailable', 'unavailable'),
+      undefined,
+      {
+        load: async () => {
+          started.resolve();
+          return read.promise;
+        },
+        save: async (entry) => {
+          saved = entry;
+        },
+      },
+    );
+    const waiting = catalog.get(signal());
+    try {
+      await started.promise;
+      if (action === 'invalidate') catalog.invalidate();
+      const closing = action === 'dispose' ? catalog.dispose() : undefined;
+      read.resolve(catalogModels('stale-disk'));
+      const result = await waiting;
+      await closing;
+      if (action === 'invalidate') {
+        assert.deepEqual(result, catalogModels('fresh-probe'));
+        assert.equal(probes, 1);
+      } else {
+        assert.equal(result.readiness, 'unavailable');
+        assert.equal(probes, 0);
+      }
+      await catalog.dispose();
+      assert.deepEqual(
+        saved,
+        catalogModels(action === 'invalidate' ? 'fresh-probe' : 'stale-disk'),
+      );
+    } finally {
+      read.resolve(catalogModels('cleanup'));
+      await catalog.dispose();
+    }
+  });
+}
+
+test('invalidation deletes the disk cache after an already-running write settles', async () => {
+  const started = deferred<void>();
+  const writing = deferred<void>();
+  let saved: ExecutorCatalogEntry | undefined;
+  const catalog = new AcpCatalog(
+    new AdmissionLimiter(1),
+    async () => catalogModels('probe'),
+    () => entry('unavailable', 'unavailable'),
+    undefined,
+    {
+      load: async () => saved,
+      save: async (entry) => {
+        if (entry) {
+          started.resolve();
+          await writing.promise;
+        }
+        saved = entry;
+      },
+    },
+  );
+  await catalog.get(signal());
+  await started.promise;
+  catalog.invalidate();
+  const disposal = catalog.dispose();
+  writing.resolve();
+  await disposal;
+  assert.equal(saved, undefined, 'a late write cannot resurrect an invalidated account catalog');
+});
+
+test('cache read and write failures do not prevent discovery or refresh', async () => {
+  const catalog = new AcpCatalog(
+    new AdmissionLimiter(1),
+    async () => catalogModels('probe'),
+    () => entry('unavailable', 'unavailable'),
+    undefined,
+    {
+      load: async () => {
+        throw new Error('unreadable');
+      },
+      save: async () => {
+        throw new Error('read-only');
+      },
+    },
+  );
+  try {
+    assert.equal((await catalog.get(signal())).models[0]?.id, 'probe');
+    assert.equal((await catalog.get(signal(), true)).models[0]?.id, 'probe');
+  } finally {
+    await catalog.dispose();
+  }
+});
+
+test('failed refresh retains memory and disk choices while concurrent reads stay available', async () => {
+  const started = deferred<void>();
+  const result = deferred<ExecutorCatalogEntry>();
+  let saved: ExecutorCatalogEntry | undefined = catalogModels('saved');
+  let probes = 0;
+  const catalog = new AcpCatalog(
+    new AdmissionLimiter(1),
+    async () => {
+      probes++;
+      started.resolve();
+      return probes === 1 ? result.promise : catalogModels('refreshed');
+    },
+    () => entry('agent', 'unavailable'),
+    undefined,
+    {
+      load: async () => saved,
+      save: async (value) => {
+        saved = value;
+      },
+    },
+  );
+  try {
+    const refresh = catalog.get(signal(), true);
+    await started.promise;
+    assert.equal((await catalog.get(signal())).models[0]?.id, 'saved');
+    result.resolve(entry('agent', 'unavailable'));
+    const failed = await refresh;
+    assert.equal(failed.readiness, 'ready');
+    assert.equal(failed.models[0]?.id, 'saved');
+    assert.equal(failed.refreshFailed, true);
+    assert.equal((await catalog.get(signal())).refreshFailed, true);
+    assert.equal(probes, 1);
+    assert.equal(
+      saved?.refreshFailed,
+      undefined,
+      'failure state is not persisted over a successful snapshot',
+    );
+    assert.equal((await catalog.get(signal(), true)).refreshFailed, undefined);
+  } finally {
+    result.resolve(entry('agent', 'unavailable'));
+    await catalog.dispose();
+  }
+  assert.equal(saved?.models[0]?.id, 'refreshed');
+});
+
+test('cold failures cool down automatic reads but manual retry and invalidation bypass the delay', async () => {
+  const original = Date.now;
+  let now = 0;
+  let probes = 0;
+  const catalog = new AcpCatalog(
+    new AdmissionLimiter(1),
+    async () => {
+      probes++;
+      return entry('agent', 'unavailable');
+    },
+    () => entry('agent', 'unavailable'),
+  );
+  try {
+    Date.now = () => now;
+    await catalog.get(signal());
+    now = 59_999;
+    await catalog.get(signal());
+    assert.equal(probes, 1);
+    now = 60_000;
+    await Promise.all([catalog.get(signal()), catalog.get(signal())]);
+    assert.equal(probes, 2, 'concurrent retries share one probe after the cooldown');
+    await catalog.get(signal(), true);
+    assert.equal(probes, 3);
+    catalog.invalidate();
+    await catalog.get(signal());
+    assert.equal(probes, 4);
+  } finally {
+    Date.now = original;
+    await catalog.dispose();
+  }
+});
+
+test('authentication failure discards persisted choices', async () => {
+  let saved: ExecutorCatalogEntry | undefined = catalogModels('old-account');
+  const catalog = new AcpCatalog(
+    new AdmissionLimiter(1),
+    async () => entry('agent', 'authentication_required'),
+    () => entry('agent', 'unavailable'),
+    undefined,
+    {
+      load: async () => saved,
+      save: async (value) => {
+        saved = value;
+      },
+    },
+  );
+  assert.equal((await catalog.get(signal(), true)).readiness, 'authentication_required');
+  assert.equal((await catalog.get(signal())).readiness, 'authentication_required');
+  await catalog.dispose();
+  assert.equal(saved, undefined);
 });

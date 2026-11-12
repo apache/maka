@@ -57,6 +57,16 @@ function baseEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
   };
 }
 
+test('interrupted assistant text survives recovery decoding without becoming model context', () => {
+  const event = baseEvent({
+    modelVisibility: 'hidden',
+    content: { kind: 'text', text: 'unfinished answer', interrupted: true },
+  });
+  const decoded = decodeRuntimeEvent(JSON.parse(JSON.stringify(event)));
+  assert.deepEqual(decoded, event);
+  assert.equal(runtimeEventHasModelVisibleContent(decoded), false);
+});
+
 test('Stored assistant reasoning parts survive recovery decoding', () => {
   const parts = [
     {
@@ -1045,4 +1055,46 @@ test('Coordination Runtime receipts survive decoding and reject unrecognized res
       actions: { coordination: { ...coordination, executionStatus: 'completed' } },
     }),
   );
+});
+
+test('legacy Goal wait provenance is readable but strict and cannot mix with natural waiting', () => {
+  const eventWait = {
+    waitId: 'wait',
+    deliveryKey: 'event-wait/wait',
+    sourceTurnId: 'source',
+    sourceToolCallId: 'tool',
+    generation: 0,
+    outcome: 'satisfied' as const,
+    resultDigest: `sha256:${'a'.repeat(64)}` as const,
+  };
+  const origin = { kind: 'goal' as const, goalId: 'goal', eventWait };
+  const event = baseEvent({
+    role: 'user',
+    author: 'user',
+    content: { kind: 'text', text: 'continue', origin },
+  });
+  assert.deepEqual(decodeRuntimeEvent(event), event);
+  assert.deepEqual(decodeTurnOrigin(origin), origin);
+  for (const invalid of [
+    { ...origin, eventWait: { ...eventWait, extra: true } },
+    { ...origin, eventWait: { ...eventWait, deliveryKey: 'other' } },
+    { ...origin, eventWait: { ...eventWait, resultDigest: 'invalid' } },
+    {
+      ...origin,
+      goalWaiting: {
+        waitId: 'wait',
+        sourceTurnId: 'source',
+        generation: 0,
+        resultDigest: eventWait.resultDigest,
+      },
+    },
+  ]) {
+    assert.equal(decodeTurnOrigin(invalid), undefined);
+    assert.throws(() =>
+      decodeRuntimeEvent({
+        ...event,
+        content: { kind: 'text', text: 'continue', origin: invalid },
+      }),
+    );
+  }
 });

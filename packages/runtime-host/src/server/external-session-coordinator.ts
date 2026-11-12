@@ -64,7 +64,14 @@ type ExternalSessionStore = {
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
     externalOrigin: SessionExternalOrigin,
-    options?: { readonly onCommitStarted?: () => void },
+    options?: {
+      readonly onCommitStarted?: () => void;
+      readonly prepareMessages?: (
+        sessionId: string,
+        messages: readonly StoredMessage[],
+      ) => Promise<readonly StoredMessage[]>;
+      readonly discardPreparedMessages?: (sessionId: string) => Promise<void>;
+    },
   ): Promise<SessionHeader>;
   lookupExternalSessionImports(
     adapterId: string,
@@ -77,6 +84,7 @@ type ExternalSessionStore = {
 
 export interface HostExternalSessionCoordinatorOptions {
   readonly adapters: ExternalSessionAdapterRegistry;
+  readonly artifacts?: ConstructorParameters<typeof ExternalSessionImporter>[2];
   readonly admission: SessionAdmissionGate;
   readonly sessions: ExternalSessionStore;
   readonly workspaceResolver: Pick<HostWorkspaceResolver, 'resolve'>;
@@ -95,6 +103,7 @@ export class HostExternalSessionCoordinator {
   };
 
   readonly #adapters: ExternalSessionAdapterRegistry;
+  readonly #artifacts: HostExternalSessionCoordinatorOptions['artifacts'];
   readonly #admission: SessionAdmissionGate;
   readonly #sessions: ExternalSessionStore;
   readonly #workspaceResolver: Pick<HostWorkspaceResolver, 'resolve'>;
@@ -132,6 +141,7 @@ export class HostExternalSessionCoordinator {
 
   constructor(options: HostExternalSessionCoordinatorOptions) {
     this.#adapters = options.adapters;
+    this.#artifacts = options.artifacts;
     this.#admission = options.admission;
     this.#sessions = options.sessions;
     this.#workspaceResolver = options.workspaceResolver;
@@ -321,15 +331,20 @@ export class HostExternalSessionCoordinator {
     }
 
     let commitAttempted = false;
-    const importer = new ExternalSessionImporter(this.#adapters, {
-      createImportedSession: async (sessionInput, messages, externalOrigin) => {
-        return this.#sessions.createImportedSession(sessionInput, messages, externalOrigin, {
-          onCommitStarted: () => {
-            commitAttempted = true;
-          },
-        });
+    const importer = new ExternalSessionImporter(
+      this.#adapters,
+      {
+        createImportedSession: async (sessionInput, messages, externalOrigin, options) => {
+          return this.#sessions.createImportedSession(sessionInput, messages, externalOrigin, {
+            ...options,
+            onCommitStarted: () => {
+              commitAttempted = true;
+            },
+          });
+        },
       },
-    });
+      this.#artifacts,
+    );
     let header: SessionHeader;
     try {
       header = await importer.import({

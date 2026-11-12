@@ -4,10 +4,10 @@ title: "第八章：Resume 不是重试——Maka 如何从崩溃事实安全继
 language: zh-CN
 source_language: zh-CN
 counterpart: ./runtime-resume-architecture.md
-implementation_status: phase_0_2_and_phase_3a_authority_current
+implementation_status: safe_boundary_and_unknown_outcome_current
 document_status: current
 translation_status: synced
-last_verified: 2026-10-10
+last_verified: 2026-10-16
 owners:
   - maka-backend
 ---
@@ -32,17 +32,17 @@ owners:
 
 # 第八章：Resume 不是重试——Maka 如何从崩溃事实安全继续
 
-跟踪：[生产级 Write/Edit 恢复 #4319](https://github.com/apache/maka/issues/4319)、[safe-boundary continuation 加固 #4324](https://github.com/apache/maka/issues/4324)、[sandbox boundary negotiation #3731](https://github.com/apache/maka/issues/3731)
+跟踪：[safe-boundary continuation 加固 #4324](https://github.com/apache/maka/issues/4324)、[sandbox boundary negotiation #3731](https://github.com/apache/maka/issues/3731)
 
 > 本章回答一个看起来简单、实际上很危险的问题：Maka 在模型调用工具时崩溃，重启后怎样知道哪些事情已经发生、哪些事情可以继续、哪些事情必须停下来等人处理？核心答案是：**先从不可变的 RuntimeEvent 恢复事实，再由唯一的 RecoveryResolver 判定工具状态；只有历史、执行和 workspace 三条边界都能证明安全时，才创建新的 Run 继续。Resume 从不复活旧进程，也不把“再试一次”伪装成恢复。**
 
 本文面向第一次接触 Maka Runtime 的工程师。前半部分用一个文件写入例子建立直觉，后半部分说明 Phase 0–4、Desktop/CLI 接线、T1/T2、恢复判定、workspace checkpoint 和工程实施顺序。
 
-本文描述截至 2026-10-10 的 `main`：
+本文描述于 2026-10-16 核验的恢复合同：
 
 - Phase 0–2 已落地；
-- Phase 3A 的 recovery fact 原子写入权威与 Resolver 已落地；
-- Phase 3 的生产 reconciler、文件 evidence 和完整 host owner lifecycle 仍在后续路线中；
+- Resolver 根据 immutable tool facts 分类；T1 无 T2 的结果保持未知；
+- 工具专属 reconciliation 与无生产消费者的 recovery bundle writer 已退役；已有 bundle 仍可读取、复制和重建投影；
 - Phase 4 的 Git checkpoint、隔离恢复和 durable rebaseline 尚未落地。
 
 路线文档写的是目标，代码和 contract tests 才是当前事实。本文会始终把“已经实现”和“计划实现”分开。
@@ -120,7 +120,7 @@ flowchart TD
 | high-water | 这次计划明确读到了不可变日志的哪个位置 |
 | park | 保留现状，停止自动执行，等待更强证据或人工处理 |
 | fail closed | 不确定时拒绝继续，而不是猜一个“可能没事”的答案 |
-| reconcile | 重新观察外部世界，判断之前的副作用究竟有没有完成 |
+| reconcile（历史设计） | 工具专属的外部状态检查；当前没有生产者 |
 | continuation | 从可信历史创建的新执行，不是旧执行原地复活 |
 
 因此，“从 canonical high-water fail closed 地创建 continuation”并不神秘，意思只是：
@@ -135,32 +135,32 @@ flowchart TD
 |---|---|---|
 | Repair | 旧 Run 的持久化状态 | 给被中断的 Run 补上 terminal RuntimeEvent，并对齐 Turn 状态 |
 | Resume / Continuation | 一段已经证明安全的历史边界 | 创建新身份，继续 provider loop |
-| Reconcile | T1 已派发但没有 T2 outcome 的工具操作 | 观察外部世界，提交 completed 或 parked recovery decision |
+| Reconcile（历史） | 已持久化的 recovery bundle | 保留原有解释；当前没有 reconciliation writer |
 
-典型顺序是先 repair，再 resolve/reconcile，最后才可能 resume。系统启动时即使只完成了 repair，也已经有价值：UI 不会永远显示“运行中”，用户可以检查一个明确失败或中断的 Turn。
+当前顺序是先 repair，再根据 immutable facts 分类，随后安全续接，或将旧执行封为未知。系统启动时即使只完成了 repair，也已经有价值：UI 不会永远显示“运行中”，用户可以检查一个明确失败或中断的 Turn。
 
 ## Phase 0–4 到底各做什么
 
-Phase 不是五套实现，而是逐层增加“可以证明的事实”。
+这些阶段名称记录历史设计演进；当前保留安全续接与未知结果处理，工具专属 reconciliation 已退役。
 
 | 阶段 | 它回答的问题 | 当前状态 |
 |---|---|---|
 | Phase 0 | 只看已提交 RuntimeEvent 前缀，这段历史能安全 replay 吗？ | 已实现 |
 | Phase 1 | 在完整、安全边界上，能否创建一个新 Run 继续？ | 已实现，feature flag 控制 |
 | Phase 2 | 能否保证工具执行前有 T1、结果返回模型前有 T2？ | 已实现，SQLite canonical 模式 |
-| Phase 2.5 / 3A PR A | 谁拥有恢复事实？冲突怎样 fail closed？恢复 bundle 怎样原子提交？ | 已实现 |
-| Phase 3 后续 | 能否用专属 evidence 判断未知副作用，并完成或永久 park？ | 设计中，生产 reconciler 未接线 |
+| Phase 2.5 / 3A PR A | 谁拥有恢复事实？冲突怎样 fail closed？ | 保留 Resolver；bundle 写入已退役 |
+| Phase 3 后续 | 能否用专属 evidence 判断未知副作用？ | 历史设计已退役；没有当前生产者 |
 | Phase 4 | 能否把 Runtime 边界绑定到 workspace snapshot，并隔离恢复或 rebaseline？ | 设计中 |
 
 从能力上看，它们形成一条递进关系：
 
 ```mermaid
 flowchart LR
-  P0["Phase 0<br/>能解释 committed history"] --> P1["Phase 1<br/>完整边界可新建执行"]
-  P1 --> P2["Phase 2<br/>T1/T2 固化副作用窗口"]
-  P2 --> P3A["Phase 3A foundation<br/>唯一恢复权威与原子 bundle"]
-  P3A --> P3["Phase 3 recovery<br/>专属 evidence / reconcile"]
-  P3 --> P4["Phase 4 workspace continuity<br/>checkpoint / restore / rebaseline"]
+  P0["Phase 0<br/>解释 committed history"] --> P1["Phase 1<br/>安全边界上的新执行"]
+  P1 --> P2["Phase 2<br/>T1/T2 持久化边界"]
+  P2 --> Unknown["封口未知结果<br/>新的明确用户轮检查"]
+  P2 -. "历史读取兼容" .-> Legacy["旧 recovery bundle"]
+  P2 -. "独立设计" .-> P4["Workspace continuity"]
 ```
 
 Phase 0 和 Phase 1 并没有因为 Phase 2 出现而失效。它们仍是 replay 和 continuation 的安全闸门；Phase 2 只是让闸门获得了更精确的“是否跨过工具派发边界”证据。
@@ -218,7 +218,7 @@ Resume 安全性的核心不是“数据都写进 SQLite”，而是每类数据
 “RuntimeEvent 是唯一事实源”不是一句注释，而是由 API 和数据库约束落实：
 
 - generic writer 不能写 dispatch、operation-linked outcome 或 recovery fact；
-- T1/T2 和 recovery bundle 有各自专用 writer；
+- T1/T2 有各自专用 writer；历史 recovery facts 只读；
 - journal row 必须引用对应 RuntimeEvent；
 - exact retry 必须字节和身份一致；
 - 冲突 retry、orphan event、lane smuggling 和 identity 漂移全部拒绝；
@@ -349,7 +349,7 @@ stateDiagram-v2
   end note
   note right of Dispatched
     无 response：indeterminate
-    需要 reconcile 或 park
+    封为未知；禁止自动重放
   end note
   note right of Outcome
     completed
@@ -363,11 +363,11 @@ Resolver 的核心决策表是：
 |---|---|---|
 | call + matching response，无 dispatch | `completed` | T1 前 synthetic result 或 legacy completed result |
 | call + dispatch + matching response | `completed` | 复用结果，不重跑 |
-| call + dispatch，无 response | `indeterminate` | 需要专属 reconcile；当前 continuation 会阻断 |
+| call + dispatch，无 response | `indeterminate` | 封为未知，阻断自动 continuation；新的明确用户轮可以检查现状 |
 | call，无 dispatch、无 response，首事件声明新协议 | `definitely_not_dispatched` | 事实可证明未跨 T1；自动策略仍需由后续阶段明确 |
 | call，无 dispatch、无 response，legacy/unknown protocol | `indeterminate` | 不能用“没看到 dispatch”证明旧版本没执行 |
-| recovery bundle 得出 completed | `completed` | 使用 bundle 中匹配的 outcome |
-| recovery bundle 得出 parked | `parked` | v1 永久停车，不产生第二次 attempt |
+| 历史 recovery bundle 得出 completed | `completed` | 使用 bundle 中匹配的 outcome |
+| 历史 recovery bundle 得出 parked | `parked` | v1 永久停车，不产生第二次 attempt |
 | orphan、duplicate、identity/hash/order 冲突 | `corruption` | fail closed |
 
 这里最值得记住的是 legacy 规则：新协议的首事件带有 `toolBoundary: "t1_after_preflight_v1"`，系统才有资格把“缺少 dispatch”解释成“确定没跨 T1”。旧日志没有这个承诺，所以同样的缺口只能保守判成未知。
@@ -596,85 +596,19 @@ host 把 SQLite store 同时接成 `RuntimeEventStore` 和 `RuntimeCommitSink`�
 `runtime-event-persistence` 直接打开 SQLite store，所有 reader 都只读 SQLite，
 不会再与过期 JSONL 合并或 fallback。
 
-## Phase 3A：恢复事实怎样原子提交
+## 未知结果与历史 recovery bundle
 
-Phase 3A 已经实现“恢复结果怎样写才可信”，但还没有实现生产级 observer/reconciler 去自动产生这些结果。
+当前合同明确限定为：崩溃后结束旧执行，保留未知事实，由用户发起新的明确一轮，让模型检查现状。Runtime 不承诺自动结算旧副作用。T1 只证明已进入派发边界，不能证明工具执行完成。
 
-一个 recovery bundle 最多包含三条 immutable facts：
+当前工具声明只接受 `never_auto_retry` 和 `outcome_unknown`，前者为默认值，Client Capability 代理使用后者。历史 dispatch 仍可能带有 `replay_safe`、`idempotent`、`reconcile` 或 `reattach`；能够解码这些值不构成执行授权。
 
-1. reconcile observation：当前外部状态看起来是什么；
-2. 可选 recovered outcome：只有确实能证明 completed 时才存在；
-3. terminal recovery decision：`completed` 或 `parked`。
+已退役的 Phase 3A writer 曾支持原子追加 observation、可选的成功 outcome，以及 completed 或 parked decision。没有生产工具提供完整的 reconciliation 合同，其公开 writer、写入 transition 和 failpoint 已移除。共享 scanner、bundle validator、Resolver、conversation copy 引用重写和投影重建继续解释已有事实。普通 append 路径仍拒绝新增 recovery facts。
 
-```mermaid
-sequenceDiagram
-  participant R as Future reconciler
-  participant Store as SqliteRuntimeStore
-  participant Scan as Shared scanner / interpreter
-  participant Events as runtime_events
-  participant Proj as journal / operation projection
-
-  R->>Store: commitToolRecoveryBundle
-  Store->>Scan: 校验 call + dispatch + observation + outcome? + decision
-  Scan-->>Store: valid / corruption
-  alt valid completed
-    Store->>Events: append reconcile
-    Store->>Events: append matching successful outcome
-    Store->>Events: append completed decision
-    Store->>Proj: 同事务更新 recovery_completed
-  else valid parked
-    Store->>Events: append reconcile
-    Store->>Events: append parked decision
-    Store->>Proj: 同事务更新 recovery_parked
-  else invalid
-    Store-->>R: rollback，拒绝写入
-  end
-```
-
-Writer、projection rebuild 和 `RecoveryResolver` 共享同一个 scanner/interpreter，所以 online、close/reopen、rebuild 和 Resolver 对同一 immutable ledger 必须得到同一解释。
-
-`parked` 在 v1 中是 terminal：之后只允许 exact bundle retry 幂等收敛，不能悄悄发起第二次恢复 attempt。若未来需要重新打开，必须设计新的版本化事实，而不是修改旧事件。
-
-## Phase 3 后续：文件恢复为什么只做 finalize
-
-文件 Write/Edit 的目标策略是先持久化可信 evidence：
-
-- workspace identity 与 canonical target；
-- operation/call/dispatch identity；
-- before identity；
-- expected-after identity；
-- transform/algorithm version；
-- production-shaped result；
-- size、regular-file、symlink、UTF-8 等观察边界。
-
-崩溃后比较 current state：
-
-| observation | 动作 |
-|---|---|
-| `matches_expected_state` | 只做 cleanup/finalize，合成 outcome，提交 completed bundle |
-| `matches_prior_state` | park，`reconcile_matches_prior_state` |
-| `diverged` | park，不覆盖外部写入 |
-| `unreadable` | park，不猜测 |
-
-```mermaid
-flowchart TD
-  T1["T1 已提交，T2 缺失"] --> Observe["读取 durable evidence<br/>观察 current file"]
-  Observe --> Expected{"current == expected-after?"}
-  Expected -->|"是"| Finalize["Finalize only<br/>不再次写文件"]
-  Finalize --> Completed["提交 recovered outcome<br/>+ completed decision"]
-  Expected -->|"否"| Prior{"current == before?"}
-  Prior -->|"是"| ParkPrior["Park<br/>reconcile_matches_prior_state"]
-  Prior -->|"否，内容分叉"| ParkDiverged["Park<br/>保护外部写入"]
-  Prior -->|"无法读取"| ParkUnreadable["Park<br/>不猜测"]
-```
-
-即使 atomic rename 能避免半文件，也不能保证“检查 hash 到 rename”之间没有另一个进程修改文件。没有 conditional replace/CAS 前，`matches_prior_state` 不能自动 redo。
-
-通用 Bash、任意远程 API、发送、发布、付款和删除等没有专属协议的副作用继续默认 park。恢复覆盖范围不是越大越好；错误地自动执行一次，通常比明确停车更危险。
+普通 T1 无 T2 的恢复将 invocation 封为 `outcome_unknown`，不持久化 tool response；后续明确用户轮通过请求投影获得 unknown response。只有更晚的 fresh、无 lineage 用户 invocation 成功完成后，投影才会退役；失败一轮不会触发退役。Client Capability 则持久化带 `uncertainOutcome: { code: 'outcome_unknown', retrySafe: false }` 的错误 response。这两种表达的持久性和生命周期目前不同，都不能证明原副作用成功；本次清理不统一二者。
 
 ## Phase 4：Runtime history 还要绑定 workspace
 
-Phase 1 证明模型历史完整，Phase 3 证明单个 operation 可以收敛，但长任务还需要 workspace-wide continuity。
+Phase 1 证明模型历史完整，未知工具结果继续保持未知。长任务可以另行需要 workspace-wide continuity。
 
 Phase 4 把 checkpoint 建模为：
 
@@ -845,29 +779,15 @@ Eval 不恢复或重建 Runtime execution，只请求 Runtime Host 执行 Maka s
 7. 一次执行只以提交唯一一个 terminal RuntimeEvent 来结束。
 8. 崩溃重启后先 repair 旧 Run。
 9. Resolver 只读 immutable facts，判定 completed / not-dispatched / indeterminate / parked / corruption。
-10. 有 production reconciler 时，对 indeterminate 提交一个原子 recovery bundle；没有时 park。
+10. 将 T1 无 T2 封为未知，禁止自动重放副作用；新的明确用户轮可以检查现状。
 11. Planner 检查合法 replay、workspace、工具和后台操作。
 12. Kernel 在执行前重新验证并建立 continuation claim。
 13. 新 Run 提交 continuation-start 后才调用 provider。
 14. 任意一步不能证明安全，就保留事实并输出 machine-readable park reason。
 
-## 后续实现应该怎样拆
+## 后续工作的边界
 
-Phase 3–4 不适合做成一个横跨 schema、runtime protocol、host lifecycle 和 platform I/O 的大 PR。推荐依赖顺序是：
-
-```mermaid
-flowchart TD
-  A["PR A<br/>Recovery persistence authority<br/>已完成"] --> B["PR B<br/>Immutable cursor + durable claim<br/>已合并"]
-  A --> C["PR C<br/>File evidence + finalize-only recovery"]
-  B --> E["PR E<br/>Checkpoint contracts"]
-  C --> E
-  E --> F["PR F<br/>Canonical checkpoint bundle"]
-  F --> G["PR G<br/>Observe-only Git carrier"]
-  G --> H["PR H<br/>Capture + retention"]
-  H --> Restore["Isolated restore"]
-  H --> Rebaseline["Durable rebaseline"]
-  D["PR D<br/>Host owner lifecycle"] -. "默认启用 capture / auto-resume 前必须完成" .-> H
-```
+旧 PR C 文件 reconciliation 路线只作为历史设计保留。Workspace continuity 和 Host ownership 可以独立评估，不需要以通用 tool reconciler 为前置。未来如果重新提出某个操作的专属恢复能力，应先提供具体生产消费者与明确外部协议，再增加 Runtime 权威。
 
 每个 PR 都应该写清：
 
@@ -937,9 +857,7 @@ UI 文案可以演进，但 code 必须稳定，才能支持 crash tests、telem
 | Phase 0 deterministic replay / unit contract | 支持 | 支持 | 支持 |
 | Phase 0 process-crash committed-prefix harness | 支持 | 支持 | 有覆盖，但不代表断电 durability |
 | Phase 1 local safe-boundary continuation | 主要支持目标 | 主要支持目标 | 有限支持 / best-effort |
-| SQLite T1/T2 与 recovery bundle 语义 | 支持 | 支持 | 语义支持 |
-| Recovery bundle SIGKILL transaction proof | 发布证明平台 | 发布证明平台 | 当前按有限支持跳过 |
-| Phase 3 file finalize-only recovery | 尚未生产接线 | 尚未生产接线 | 尚未生产接线 |
+| SQLite T1/T2 与历史 recovery bundle 读取 | 支持 | 支持 | 语义支持 |
 | Phase 4 Git workspace continuity | 尚未实现 | 尚未实现 | 尚未实现 |
 
 Process crash、SQLite transaction atomicity 和应用级 `fsync` 不能自动升级成“机器断电后绝不丢数据”的承诺。具体文件系统、磁盘缓存和平台行为必须由单独 durability test 证明。
@@ -958,10 +876,7 @@ Process crash、SQLite transaction atomicity 和应用级 `fsync` 不能自动�
 - 用模型自述替代 RuntimeEvent、文件 evidence 或外部 receipt；
 - 用 CI 全绿替代并发、崩溃和数据安全论证。
 
-当前最重要的两个后续缺口是：
-
-1. PR B 已落地：immutable event-seq 边界、domain-separated prefix digest、SQLite 唯一 claim（`runtime_continuation_claims`），祖先 replay 通过 `continuation_start_v2` 统一；
-2. PR C/D：production file evidence/reconciler 与唯一 host owner lifecycle。
+PR B 已落地：immutable event-seq 边界、domain-separated prefix digest、SQLite 唯一 claim（`runtime_continuation_claims`），祖先 replay 通过 `continuation_start_v2` 统一。工具专属 reconciliation 已退出当前产品合同。
 
 ## 代码阅读地图
 
@@ -972,8 +887,8 @@ Process crash、SQLite transaction atomicity 和应用级 `fsync` 不能自动�
 1. `packages/core/src/runtime-event.ts`：RuntimeEvent、T1 marker、dispatch 与 recovery fact envelope。
 2. `packages/core/src/canonical-runtime-event.ts`：唯一 canonical codec 与稳定 JSON bytes。
 3. `packages/core/src/tool-ledger-scanner.ts`：call/dispatch/outcome/reconcile/decision lane 和 corruption 检测。
-4. `packages/core/src/tool-recovery-bundle.ts`：recovery bundle 因果校验与解释。
-5. `packages/core/src/runtime-event-store.ts`：普通 append、T1/T2 与 recovery bundle 的 API 权限边界。
+4. `packages/core/src/tool-recovery-bundle.ts`：历史 recovery bundle 因果校验与解释。
+5. `packages/core/src/runtime-event-store.ts`：普通 append、T1/T2 的 API 权限边界。
 
 ### Storage
 

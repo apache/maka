@@ -26,6 +26,7 @@ export * from './client-plugin-runtime.js';
 export * from './chat-empty-hero.js';
 export * from './chat-model-helpers.js';
 export * from './use-mounted-ref.js';
+export * from './use-draft-mutation-guard.js';
 export * from './session-setting-intent.js';
 export * from './components.js';
 export type { ComposerProps } from './components.js';
@@ -62,7 +63,6 @@ export * from './live-turn-buffer.js';
 export * from './transcript-projection.js';
 export * from './use-transcript-projection.js';
 export * from './model-picker.js';
-export * from './model-wheel-picker.js';
 export * from './new-project-dialog.js';
 export * from './interaction-queue.js';
 export * from './user-question-prompt.js';
@@ -206,3 +206,5 @@ export { formatCompactTokenCount } from './compact-token-count.js';
 export * from './revision-staged-context.js';
 
 export { TranscriptDisclosure } from './transcript-disclosure.js';
+
+export { MessageCard, MessageCardSendContext, MessageCardActionsContext, type MessageCardActions } from './message-card.js';

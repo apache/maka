@@ -17,10 +17,13 @@
  * under the License.
  */
 
+import { isAssistantCard, type AssistantCard } from './assistant-card.js';
+
 import type { ExecutorConfiguration } from './executor-catalog.js';
 
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
 import { isExecutorId } from './executor-id.js';
+import { isToolCallOutcome } from './tool-result-status.js';
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 
 import {
@@ -260,6 +263,8 @@ export interface SessionHeader {
   // User metadata
   name: string;
   titleIsManual: boolean;
+  /** Host-generated branch title and its untruncated base; absent on legacy Sessions. */
+  branchNameOrigin?: { readonly base: string; readonly name: string };
   isFlagged: boolean;
   labels: string[];
 
@@ -878,6 +883,9 @@ export function isConversationTextMessage(message: StoredMessage): boolean {
 }
 
 export interface AssistantMessage {
+  /** Model-authored preview; text remains the complete message. */
+  summary?: string;
+  card?: AssistantCard;
   type: 'assistant';
   interrupted?: true;
   id: string;
@@ -958,6 +966,7 @@ export interface ToolResultMessage {
   /** Matches ToolCallMessage.id. */
   toolUseId: string;
   isError: boolean;
+  outcome?: import('./tool-result-status.js').ToolCallOutcome;
   content: ToolResultContent;
   providerExecuted?: boolean;
   /** Raw provider result retained only for provider-native replay. */
@@ -1373,7 +1382,7 @@ const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
 );
 const ASSISTANT_MESSAGE_SHAPE = defineObjectShape<AssistantMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text', 'modelId'],
-  ['thinking', 'contentOrder', 'providerOptions', 'interrupted'],
+  ['thinking', 'contentOrder', 'providerOptions', 'interrupted', 'summary', 'card'],
 );
 const TOOL_CALL_MESSAGE_SHAPE = defineObjectShape<ToolCallMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolName', 'args'],
@@ -1394,6 +1403,7 @@ const TOOL_RESULT_MESSAGE_SHAPE = defineObjectShape<ToolResultMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolUseId', 'isError', 'content'],
   [
     'durationMs',
+    'outcome',
     'providerExecuted',
     'providerOutput',
     'origin',
@@ -1663,6 +1673,8 @@ function decodeMessage(
         hasMessageEnvelope(message, true) &&
         typeof message.text === 'string' &&
         typeof message.modelId === 'string' &&
+        (message.summary === undefined || typeof message.summary === 'string') &&
+        (message.card === undefined || isAssistantCard(message.card)) &&
         (message.interrupted === undefined || message.interrupted === true) &&
         (message.providerOptions === undefined || isRecord(message.providerOptions)) &&
         (message.thinking === undefined || isAssistantThinking(message.thinking)) &&
@@ -1697,6 +1709,9 @@ function decodeMessage(
         hasMessageEnvelope(message, true) &&
         typeof message.toolUseId === 'string' &&
         typeof message.isError === 'boolean' &&
+        (message.outcome === undefined ||
+          (isToolCallOutcome(message.outcome) &&
+            (message.outcome !== 'success') === message.isError)) &&
         (message.providerExecuted === undefined || typeof message.providerExecuted === 'boolean') &&
         isOptionalFiniteDuration(message.durationMs) &&
         isToolActivityIdentity(message)
@@ -2076,3 +2091,6 @@ function inferLegacyTurnStatus(messages: readonly StoredMessage[]): TurnStatus {
     return 'failed';
   return 'completed';
 }
+
+/** Durable provenance for assistant-created workers; visibility is a client preference. */
+export const ASSISTANT_BACKGROUND_SESSION_LABEL = 'personal-assistant-background';

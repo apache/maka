@@ -140,7 +140,6 @@ export const ALLOWED_VISIBLE_LITERALS = {
     'Usage: /thinking ${…}',
     'default',
     'Usage: /compact',
-    'Usage: /goal [pause|resume|clear]',
     'Cannot control the goal while a turn or another action is running — interrupt it (Esc) or wait for it to finish.',
     'Usage: /mcp',
     'Usage: /setup',

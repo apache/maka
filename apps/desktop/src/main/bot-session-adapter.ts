@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { TurnOrigin } from '@maka/core/turn-origin';
+
 export interface BotSessionCreateInput {
   readonly name: string;
   readonly labels: readonly string[];
@@ -36,6 +38,7 @@ export interface BotSessionAdapter {
     readonly sessionId: string;
     readonly turnId: string;
     readonly text: string;
+    readonly origin?: Extract<TurnOrigin, { kind: 'external_connector' }>;
     /**
      * Best-effort projection of the latest assistant text for this Turn.
      *

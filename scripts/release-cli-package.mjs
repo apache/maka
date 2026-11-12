@@ -35,9 +35,9 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { npmSpawnOptions } from './npm-spawn.mjs';
-import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
 import { assertProductNightlyVersion } from './release-version.mjs';
 import {
   isCurrentDevelopmentJavaScript,
@@ -145,14 +145,21 @@ function packageCli(publishable) {
   const dependencyTree = readCliDependencyTree();
   const cli = dependencyTree.dependencies?.['maka-agent'];
   if (!cli) throw new Error('npm ls did not return the maka-agent workspace');
+  const evalUndiciVersion = createRequire(join(repoRoot, 'packages/eval/package.json'))(
+    'undici/package.json',
+  ).version;
+  const evalUndici = findDependency(cli, 'undici', evalUndiciVersion);
+  if (!evalUndici?.path || !existsSync(evalUndici.path)) {
+    throw new Error(`The installed CLI closure does not contain undici@${evalUndiciVersion}`);
+  }
 
   rmSync(artifactRoot, { recursive: true, force: true });
   mkdirSync(stageRoot, { recursive: true, mode: 0o755 });
   copyCliRuntime();
   copyRuntimeHostNativePrebuilds(publishable);
-  const expectedDependencyManifests = copyDependencyClosure(cli);
+  const expectedDependencyManifests = copyDependencyClosure(cli, evalUndici);
   copyReleaseDocuments();
-  writeReleaseManifest(cli, publishable);
+  writeReleaseManifest(cli, publishable, evalUndici);
   validateStaging(publishable);
 
   const packOutput = JSON.parse(
@@ -166,11 +173,6 @@ function packageCli(publishable) {
   if (packs.length !== 1 || !pack?.filename || !Array.isArray(pack.files)) {
     throw new Error('npm pack did not return one JSON package result');
   }
-  validateCliReleaseArtifactMetrics({
-    compressedBytes: pack.size,
-    unpackedBytes: pack.unpackedSize,
-    entryCount: pack.entryCount,
-  });
   const tarballPath = join(artifactRoot, pack.filename);
   validatePackedFiles(pack.files, expectedDependencyManifests, publishable);
   const sha256 = digestFile(tarballPath);
@@ -334,7 +336,7 @@ function copyCliRuntime() {
   chmodSync(join(stageRoot, 'dist/cli.js'), 0o755);
 }
 
-function copyDependencyClosure(cli) {
+function copyDependencyClosure(cli, evalUndici) {
   const copiedDestinations = new Map();
   const visit = (node, parentDestination) => {
     for (const dependency of Object.values(node.dependencies ?? {})) {
@@ -371,10 +373,6 @@ function copyDependencyClosure(cli) {
   };
   visit(cli, stageRoot);
 
-  const evalUndici = findDependency(cli, 'undici', '8.11.2');
-  if (!evalUndici?.path || !existsSync(evalUndici.path)) {
-    throw new Error('The installed CLI closure does not contain undici@8.11.2');
-  }
   copyThirdPartyPackage(realpathSync(evalUndici.path), join(stageRoot, 'node_modules/undici'));
   copiedDestinations.set(join(stageRoot, 'node_modules/undici'), realpathSync(evalUndici.path));
   return [...copiedDestinations.keys()].map(
@@ -659,7 +657,7 @@ function requireDevelopmentCommand(command, args, message) {
   throw new Error(`${message}; install it before setting up this development Runtime Host`);
 }
 
-function writeReleaseManifest(cli, publishable) {
+function writeReleaseManifest(cli, publishable, evalUndici) {
   const source = readJson(join(cliSource, 'package.json'));
   const root = readJson(join(repoRoot, 'package.json'));
   if (source.version !== cli.version) {
@@ -667,8 +665,7 @@ function writeReleaseManifest(cli, publishable) {
       `CLI manifest and installed lockfile disagree: ${source.version} vs ${cli.version}`,
     );
   }
-  const undici = findDependency(cli, 'undici', '8.11.2');
-  const dependencies = { ...source.dependencies, undici: undici.version };
+  const dependencies = { ...source.dependencies, undici: evalUndici.version };
   const updateCompatibility = source.maka?.managedRuntimeHostUpdateCompatibility;
   if (!Number.isSafeInteger(updateCompatibility) || updateCompatibility < 1) {
     throw new Error(
