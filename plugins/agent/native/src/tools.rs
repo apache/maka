@@ -285,6 +285,7 @@ pub(crate) fn catalog(
         editing,
         host_tools,
         resource_reads,
+        discovery_reads,
     } = catalog_inner(services, selected, additional, None)?;
     Ok(Catalog {
         tools: Declarations(tools),
@@ -292,6 +293,7 @@ pub(crate) fn catalog(
         editing,
         host_tools,
         resource_reads,
+        discovery_reads,
     })
 }
 
