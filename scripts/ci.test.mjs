@@ -320,6 +320,11 @@ test('non-archived native regressions fail empty selections and GTK runs under X
   assert(
     calls.some(({ args }) => args.includes('crates/nsh-platform-macos/tests/host/Undo.test.tsx')),
   );
+  assert.equal(
+    calls.find(({ args }) => args.includes('crates/nsh-platform-macos/tests/host/Undo.test.tsx'))
+      .exe,
+    join(root, 'target/debug/nsh'),
+  );
   assert(calls.some(({ exe, args }) => exe === 'xvfb-run' && args[0] === '-a'));
   const gtk = calls.find(({ args }) => args.includes('maka-desktop-shell'));
   assert.deepEqual(gtk, {
@@ -346,12 +351,19 @@ test('non-archived native regressions fail empty selections and GTK runs under X
     exe: 'cargo',
     args: ['nextest', 'run', '--locked', '-p', 'maka-desktop-shell', '--no-run'],
   });
+  const beforeMac = calls.length;
   await exec.prepare('macos-nsh');
-  assert.equal(calls.at(-1).exe, 'cargo');
-  assert.equal(calls.at(-1).args[0], 'check');
-  assert(calls.at(-1).args.includes('--all-targets'));
-  assert(calls.at(-1).args.includes('nsh-platform-macos/terminal'));
-  assert(!calls.at(-1).args.includes('--lib'));
+  const macCalls = calls.slice(beforeMac);
+  const nativeCheck = macCalls.find(({ args }) => args[0] === 'check');
+  assert.equal(nativeCheck.exe, 'cargo');
+  assert(nativeCheck.args.includes('--all-targets'));
+  assert(nativeCheck.args.includes('nsh-platform-macos/terminal'));
+  assert(!nativeCheck.args.includes('--lib'));
+  const hostBuild = macCalls.find(({ args }) => args[0] === 'build');
+  assert.equal(hostBuild.exe, 'cargo');
+  assert(hostBuild.args.includes('nsh-cli'));
+  assert(hostBuild.args.includes('nsh-macos-host'));
+  assert(hostBuild.args.includes('--bins'));
 });
 
 test('NSH native failures do not mask browser compilation or independent checks', async () => {

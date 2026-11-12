@@ -440,6 +440,19 @@ export function executor(
           ...suites[id].cargoArgs.filter((arg) => arg !== '--lib'),
           '--all-targets',
         ]);
+        await cargo([
+          'build',
+          '--locked',
+          '--manifest-path',
+          manifests.nsh,
+          '-p',
+          'nsh-cli',
+          '-p',
+          'nsh-macos-host',
+          '--features',
+          'nsh-platform-macos/terminal',
+          '--bins',
+        ]);
       }
     } else if (id === 'bridge') {
       await node(['scripts/rust/check-cua-build.mjs']);
@@ -548,18 +561,9 @@ export function executor(
             { env: { ...suiteEnv(id), NSH_MENU_LABELS_CHECK_ONLY: '1' } },
           );
         else
-          await cargo(
-            [
-              'run',
-              '--locked',
-              '-p',
-              'nsh-cli',
-              '--',
-              'test',
-              'crates/nsh-platform-macos/tests/host/Undo.test.tsx',
-              '--target',
-              'macos',
-            ],
+          await run(
+            join(target, 'debug/nsh'),
+            ['test', 'crates/nsh-platform-macos/tests/host/Undo.test.tsx', '--target', 'macos'],
             { cwd: join(root, 'third-party/nsh'), env: suiteEnv(id) },
           );
       });
