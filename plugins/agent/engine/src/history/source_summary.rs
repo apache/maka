@@ -24,7 +24,6 @@ use super::{
 };
 use crate::{RunError, prepared_prompt::PreparedPrompt};
 use maka_agent_facts::{language::Language, model::prompt_source::source::*};
-use maka_capabilities::model_preparation::ActivePreparation;
 use maka_model::{DirectoryLease, prompt::Prompt};
 use std::{collections::VecDeque, fmt::Write as _, io, sync::Arc};
 use tokio_util::sync::CancellationToken;
@@ -550,13 +549,8 @@ async fn plan(
     tokens: u64,
     language: Language,
     cancel: &CancellationToken,
-    resident_limit: Option<usize>,
+    resident_limit: usize,
 ) -> Result<Plan, FitError> {
-    let resources = prompt.resources().ok_or_else(|| {
-        FitError::Run(RunError::Internal(
-            "source summary fitting requires Host preparation resources".into(),
-        ))
-    })?;
     let source = prompt.recipes().ok_or_else(|| {
         FitError::Run(RunError::Internal(
             "source summary fitting requires immutable message recipes".into(),
@@ -577,7 +571,6 @@ async fn plan(
                 .ok_or_else(|| failure(overflow()))?;
         }
     }
-    let resident_limit = resident_limit.unwrap_or(resources.policy().resident_bytes);
     let plan = Plan::new(
         tokens,
         systems,
@@ -612,7 +605,6 @@ pub(crate) async fn fit(
     tokens: u64,
     language: Language,
     cancel: &CancellationToken,
-    active: &ActivePreparation,
 ) -> Result<PreparedPrompt, FitError> {
     if prompt.breakdown().estimated_tokens() <= tokens {
         return Ok(prompt.clone());
@@ -628,22 +620,16 @@ pub(crate) async fn fit(
         ))
     })?;
     let model = prompt.model();
-    let plan = match plan(
-        prompt,
-        tokens,
-        language,
-        cancel,
-        Some(
-            active
-                .capacity()
-                .saturating_sub(PreparedPrompt::backed_wire_bytes()),
-        ),
-    )
-    .await
-    {
+    let policy = resources.policy();
+    let limit = policy.staging_bytes.min(
+        policy
+            .resident_bytes
+            .saturating_sub(PreparedPrompt::backed_wire_bytes()),
+    );
+    let plan = match plan(prompt, tokens, language, cancel, limit).await {
         Ok(plan) => plan,
         Err(FitError::NeedsBacking { .. }) if prompt.arena().is_some() => {
-            return backed::fit(prompt, tokens, language, cancel, active).await;
+            return backed::fit(prompt, tokens, language, cancel).await;
         }
         Err(error) => return Err(error),
     };
@@ -655,7 +641,7 @@ pub(crate) async fn fit(
     if cancel.is_cancelled() {
         return Err(RunError::Cancelled.into());
     }
-    let lease = active.directory(plan.bytes).map_err(failure)?;
+    let lease = prompt.plan_directory(plan.bytes).map_err(failure)?;
     let owner = Arc::new(Owner {
         _input: prompt.without_wire(),
         _lease: lease,

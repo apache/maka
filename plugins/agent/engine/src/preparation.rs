@@ -149,12 +149,34 @@ pub async fn prepare_prompt(
     purpose: ModelPurpose,
     instruction: Option<Arc<String>>,
 ) -> Result<PreparedPrompt, RunError> {
+    prepare_prompt_source(
+        builder,
+        Some(settings.provider),
+        cancellation,
+        system,
+        purpose,
+        instruction,
+    )
+    .await
+}
+
+pub async fn prepare_prompt_source(
+    builder: PromptBuilder,
+    provider: Option<&maka_model::ProviderConfig>,
+    cancellation: &CancellationToken,
+    system: Option<Arc<String>>,
+    purpose: ModelPurpose,
+    instruction: Option<Arc<String>>,
+) -> Result<PreparedPrompt, RunError> {
     let mut prompt = builder.finish().await?;
     let result = async {
         prompt
             .initialize_overlays(system, purpose == ModelPurpose::Summary, instruction)
             .await?;
-        prompt.prepare_media(settings.provider, cancellation).await
+        if let Some(provider) = provider {
+            prompt.prepare_media(provider, cancellation).await?;
+        }
+        Ok(())
     }
     .await;
     if let Err(error) = result {

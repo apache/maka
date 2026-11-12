@@ -856,7 +856,6 @@ pub(super) async fn fit(
     tokens: u64,
     language: Language,
     cancel: &CancellationToken,
-    active: &ActivePreparation,
 ) -> Result<PreparedPrompt, FitError> {
     let resources = prompt.resources().ok_or_else(|| {
         failure(io::Error::other(
@@ -891,7 +890,7 @@ pub(super) async fn fit(
     let media = usize::try_from(prompt.breakdown().counts.media)
         .map_err(|error| failure(io::Error::other(error)))?;
     let bytes = allocation_bytes(language).map_err(failure)?;
-    let lease = active.directory(bytes).map_err(failure)?;
+    let lease = prompt.plan_directory(bytes).map_err(failure)?;
     let required = prompt
         .resident_bytes()
         .checked_add(prompt.overlay_bytes())

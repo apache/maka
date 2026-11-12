@@ -497,6 +497,7 @@ impl DriverModel {
         };
         let native_compaction = purpose == ModelPurpose::Summary
             && model.provider.capabilities.native_compaction == Some(true);
+        let fit_summary = summary && !native_compaction;
         let context = model.context.as_ref();
         validate_native_compaction_producer(native_compaction, context)?;
         let settings = PromptSettings {
@@ -549,9 +550,9 @@ impl DriverModel {
             None
         };
         let rendered = Arc::new(rendered);
-        let mut prompt = preparation::prepare_prompt(
+        let mut prompt = preparation::prepare_prompt_source(
             messages,
-            &settings,
+            (!fit_summary).then_some(&model.provider),
             &self.cancellation,
             Some(rendered.clone()),
             purpose,
@@ -564,6 +565,16 @@ impl DriverModel {
                 prompt.initialize_overlays(Some(rendered),true,instruction).await?;
                 Some(covered)
             }else{None};
+            if fit_summary {
+                prompt = maka_agent_engine::context_input::fit_prepared_summary(
+                    &prompt,
+                    maka_agent_engine::context_input::summary_budget(context),
+                    view.spec.language,
+                    &self.cancellation,
+                )
+                .await?;
+                prompt.prepare_media(&model.provider, &self.cancellation).await?;
+            }
             preparation::prepare_wire(
                 &settings,
                 &mut prompt,
@@ -572,23 +583,6 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            if purpose == ModelPurpose::Summary && !native_compaction {
-                prompt = maka_agent_engine::context_input::fit_prepared_summary(
-                    &prompt,
-                    maka_agent_engine::context_input::summary_budget(context),
-                    view.spec.language,
-                    &self.cancellation,
-                )
-                .await?;
-                preparation::prepare_wire(
-                    &settings,
-                    &mut prompt,
-                    &definitions,
-                    model.main_output_limit,
-                    &self.cancellation,
-                )
-                .await?;
-            }
             let calibration = if purpose==ModelPurpose::Main {
                 self.calibration(view,&source_evidence,&model,previous_checkpoint_id.as_deref()).await?
             }else{None};
