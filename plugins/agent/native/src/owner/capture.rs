@@ -217,12 +217,11 @@ impl Owner {
         let catalog = self.selected_tools(
             session_id,
             basis,
-            basis.tool_discovery,
             basis.model.as_ref().and_then(|model| model.editing_tools),
         )?;
         let selection = crate::tools::SelectionSnapshot {
             definitions: catalog.definitions().cloned().collect(),
-            direct_only: catalog.direct_only().names().into_iter().collect(),
+            direct_only: catalog.direct_only_names().into_iter().collect(),
             services: basis.tools.as_ref().clone(),
             internal_bindings: basis.internal_bindings.as_ref().clone(),
         };

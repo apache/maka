@@ -434,6 +434,7 @@ impl Rig {
                 "continueRun",
                 "models",
                 "observe",
+                "tools",
                 "predictNextMessage",
                 "send",
                 "uploadAttachment",
@@ -2807,6 +2808,8 @@ mod model_recovery {
         });
         let result = tokio::time::timeout(Duration::from_secs(25), async {
             let client = rig.client.as_ref().unwrap();
+            let tools = call(client, "agent", "tools", json!({})).await?;
+            assert!(tools["names"].as_array().unwrap().contains(&json!("WebFetch")));
             let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
             let connection = call(client, "settings", "create", json!({
                 "expectedCatalogRevision":catalog["revision"],
