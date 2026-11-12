@@ -8,6 +8,8 @@ mod text_input;
 
 mod performance;
 
+mod hyperlink;
+
 #[cfg(unix)]
 mod lifecycle;
 

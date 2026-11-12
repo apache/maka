@@ -162,6 +162,7 @@ fn edits_replace_modules_and_keep_unrelated_state() {
         app: nsh_engine::App::Js(Bundle::source(code).with_source_map(map.unwrap())),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -325,6 +326,7 @@ fn entry_edits_keep_navigation_and_state() {
             app: nsh_engine::App::Js(Bundle::source(code).with_source_map(map.unwrap())),
             viewport: Size::new(px(390.0), px(844.0)),
             trace: false,
+            content_culling: false,
             network: None,
             websocket: None,
             refuse_connections: None,
@@ -424,4 +426,126 @@ fn entry_edits_keep_navigation_and_state() {
         assert!(errors.try_recv().is_err(), "no errors");
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+const NESTED_NAV_APP: &str = r#"
+import { mount, Text, View } from "nsh";
+import { NavPage, NavStack, createNavStack } from "nsh/base";
+
+const nav = createNavStack<{ name: string }>([{ name: "home" }]);
+
+function Shell(props: { title: string; children: JSX.Element }) {
+  return <NavPage title={props.title}><View>{props.children}</View></NavPage>;
+}
+
+function HomePage() {
+  return <Shell title="Home"><Text>home page</Text></Shell>;
+}
+
+function App() {
+  return (
+    <NavStack state={nav} style={{ flex: 1 }}>
+      {() => <HomePage />}
+    </NavStack>
+  );
+}
+
+mount(App);
+"#;
+
+/// A route's page made by a component that renders another (each a hot
+/// proxy, an accessor around the next) is still the stack's own screen:
+/// the stack unwraps every accessor down to the `<NavPage>`, rather than
+/// putting a screen in a screen, which no platform shows.
+#[test]
+fn nested_hot_components_render_the_stacks_screen() {
+    let dir = std::env::temp_dir().join(format!("nsh-hot-nested-nav-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("App.tsx"), NESTED_NAV_APP).unwrap();
+    let sets = [nsh_base::registry()];
+    let described: Vec<_> = sets.iter().map(Into::into).collect();
+    let mut bundle = nsh_bundler::bundle_hot(&dir.join("App.tsx"), &described).unwrap();
+    let (code, map) = bundle.script();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let (failed_tx, _failed) = crossbeam_channel::unbounded();
+    let (errors_tx, errors) = crossbeam_channel::unbounded();
+    let config = EngineConfig {
+        app: nsh_engine::App::Js(Bundle::source(code).with_source_map(map.unwrap())),
+        viewport: Size::new(px(390.0), px(844.0)),
+        trace: false,
+        content_culling: false,
+        network: None,
+        websocket: None,
+        refuse_connections: None,
+        filesystem: None,
+        assets: None,
+        chunk_loader: None,
+        environment: Default::default(),
+        header_heights: (nsh_core::Points(44.0), nsh_core::Points(96.0)),
+        limits: nsh_engine::Limits::default(),
+        ui_sets: sets.to_vec(),
+        runtime: None,
+        data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
+        storage: None,
+        clock: Default::default(),
+        context: Default::default(),
+        pinned: Default::default(),
+        clipboard: None,
+        host: Default::default(),
+        picker: None,
+        speech: None,
+        audio: None,
+        windows: None,
+    };
+    let engine = Engine::start(
+        config,
+        || ApproxTextEngine,
+        ChannelSink(tx, failed_tx, errors_tx),
+    )
+    .unwrap();
+    let mut kinds = std::collections::HashMap::new();
+    let mut parents = std::collections::HashMap::new();
+    let mut screen = Screen::default();
+    while let Ok(batch) = rx.recv_timeout(Duration::from_millis(300)) {
+        screen.apply(&batch);
+        for item in &batch.items {
+            match item {
+                MountItem::Create { id, kind } => {
+                    kinds.insert(*id, *kind);
+                }
+                MountItem::Insert { parent, child, .. } => {
+                    parents.insert(*child, *parent);
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(screen.texts(), ["home page"]);
+    let screens: Vec<_> = kinds
+        .iter()
+        .filter(|(_, k)| **k == nsh_core::ViewKind::Screen)
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(screens.len(), 1, "one screen, not one in another");
+    assert_eq!(
+        parents.get(&screens[0]).and_then(|p| kinds.get(p)),
+        Some(&nsh_core::ViewKind::Stack),
+        "the page's screen is the stack's child"
+    );
+
+    // An edit of the inner component renders the screen again.
+    let edited = NESTED_NAV_APP.replace(
+        "<View>{props.children}</View>",
+        "<View><Text>shell</Text>{props.children}</View>",
+    );
+    std::fs::write(dir.join("App.tsx"), edited).unwrap();
+    engine
+        .control()
+        .hot_update(update(&dir, &mut bundle, 1).unwrap());
+    drain(&rx, &mut screen);
+    assert_eq!(screen.texts(), ["home page", "shell"]);
+    assert!(errors.try_recv().is_err(), "no errors");
+    let _ = std::fs::remove_dir_all(&dir);
 }

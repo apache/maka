@@ -8,6 +8,16 @@ export const EXCEPTION = 0xffffffff;
 // every value Rust holds, so one per call into Wasm made every signal read
 // cost as much as the app is large.
 const COLLECT_MS = 100;
+// An accounting is still as long as the app is large; the next waits this
+// many times as long as the last took (and at least COLLECT_MS), so
+// accounting keeps to a twentieth of the page's time however large the app
+// is (an app holding 10,000 rows' handlers spent most of every keystroke in
+// it). Waiting longer only keeps values strong longer: nothing is released
+// sooner.
+const COLLECT_COST_RATIO = 20;
+// Accessor generations below this make a number key (`accessorKey`) that is
+// exact: an owner is a u32, so the key stays under 2^53.
+const NUMBER_KEY_GENERATIONS = 2 ** 21;
 // The accounting runs on the page's own time, taken before a test's manual
 // clock replaces the realm's (`testing.js`): it is the runtime's work, not
 // the app's, and on the app's clock a collection put off while a call into
@@ -40,6 +50,8 @@ export class Values {
     this.weakened = false;
     this.collectTimer = 0;
     this.lastCollect = 0;
+    // How long the last accounting took, in ms.
+    this.lastCollectCost = 0;
   }
   put(value) {
     if (this.closed) throw new Error("the app was disposed");
@@ -99,16 +111,27 @@ export class Values {
       if (slot?.refs > 0 && slot.weak) slot.value = slot.weak.deref();
     }
   }
+  // How long, at `now`, until the next accounting may run.
+  collectDelay(now) {
+    return Math.max(0, this.lastCollect + Math.max(COLLECT_MS, COLLECT_COST_RATIO * this.lastCollectCost) - now);
+  }
   schedule(trace) {
     this.trace ??= trace;
     if (this.collectTimer) return;
-    const wait = Math.max(0, this.lastCollect + COLLECT_MS - pageNow());
+    const wait = this.collectDelay(pageNow());
     this.collectTimer = collectLater(() => {
       this.collectTimer = 0;
       if (this.closed) return;
       if (this.depth > 0) return this.schedule(trace);
       this.collect(trace);
     }, wait);
+  }
+  // The key of accessor `owner` at `generation` in `accessors`: a number
+  // while one is exact. Accounting looks one up per edge Rust reports, and a
+  // string key cost a concatenation and a hash each: most of an accounting's
+  // time, which grew with the app.
+  accessorKey(owner, generation) {
+    return generation < NUMBER_KEY_GENERATIONS ? generation * 0x100000000 + owner : `${owner}:${generation}`;
   }
   // Conservative reference accounting: a value only Rust's references from
   // collectable peers hold is held weakly, through those peers.
@@ -122,7 +145,7 @@ export class Values {
       trace();
       const mirrors = new WeakMap(), counts = new Map();
       for (const [kind, owner, generation, id] of this.edges) {
-        const peer = (kind === 0 ? this.classPeers.get(owner) : kind === 2 ? this.nodes.get(owner) : this.accessors.get(`${owner}:${generation}`))?.deref();
+        const peer = (kind === 0 ? this.classPeers.get(owner) : kind === 2 ? this.nodes.get(owner) : this.accessors.get(this.accessorKey(owner, generation)))?.deref();
         if (!peer) continue;
         const slot = this.slot(id);
         if (slot.refs === Infinity || (slot.weak && slot.value === undefined)) continue;
@@ -148,7 +171,10 @@ export class Values {
       }
       this.mirrors = mirrors;
       this.edges = null;
-    } finally { this.depth--; }
+    } finally {
+      this.depth--;
+      this.lastCollectCost = pageNow() - this.lastCollect;
+    }
   }
   reconcile() { if (this.trace && !this.closed) this.schedule(this.trace); }
   bind(wasm) {

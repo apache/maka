@@ -52,7 +52,7 @@ dist\nsh\runtime\windows\nsh-windows-host --bundle build\bundle.nshc --window-si
 ### 性能监视器
 
 `--fps`（`nsh run App.tsx --target windows --fps`、`nsh test --target windows --fps`、宿主的 `--fps`、Rust 应用在
-`run_app` 中用 `AppOptions { fps: true, .. }`、环境变量 `NSH_FPS=1`，或应用自己调用 `setFpsEnabled(true)`）每秒输出一行性能监视器读数（target `nsh::perf`）：显示的帧数与显示器刷新率、
+`run_app` 中用 `AppOptions { fps: true, .. }`、环境变量 `NSH_FPS=1`，或应用自己调用 `setFpsEnabled(true)`）每秒输出一行性能监视器读数（target `nsh::fps`）：显示的帧数与显示器刷新率、
 主线程每帧的耗时及其各阶段（`tick`、`drain`、`paint`、`present`、`canvas`）、引擎的 commit、CPU 和内存，格式与其他桌面平台一致
 （毫秒，依次为 mean/p50/p95/max）。`nsh test --fps -v` 会显示这些读数，`examples/gallery/tools/perf.py` 会读取它们
 （[性能报告](./performance-report.md#windowswin32direct2d)）。请测量 release 构建；监视器关闭时没有任何开销。
@@ -64,18 +64,24 @@ nsh package --target windows [--run]           # Rust 应用，在它的目录�
 nsh package App.tsx --target windows [--run]   # TSX 应用
 ```
 
-会写出一个目录，以及同样内容的压缩包：
+会写出一个目录、同样内容的压缩包，以及安装程序：
 
 ```text
 .nsh\out\<Name>\
   <Name>.exe             可执行文件，带应用图标：Rust 应用是用它的 crate 构建的自有 runner；TSX 应用是 nsh 的发布版运行器
   nsh\bundle.nshc         编译后的 TSX 应用
   nsh\assets\…           应用导入的资源（也包括 Rust crate 的 `assets!()`）
-  nsh\app.json           窗口标题、应用 id、版本和外观
+  nsh\app.json           窗口标题、应用 id、版本、外观和 nsh.json 中的窗口设置
 .nsh\out\<Name>.zip
+.nsh\out\<Name>.iss        安装程序的 Inno Setup 脚本
+.nsh\out\<Name>-setup.exe  安装程序，装有 Inno Setup 6 时生成
 ```
 
-可执行文件会在自身旁边找到 `nsh\`；把整个目录复制到（或把 `.zip` 解压到）应用要放的位置即可，不需要安装。`nsh.json`
+可执行文件会在自身旁边找到 `nsh\`；把整个目录复制到（或把 `.zip` 解压到）应用要放的位置即可，也可以分发安装程序。`nsh package` 还会写出
+`.nsh\out\<Name>.iss`，一个 [Inno Setup](https://jrsoftware.org/isinfo.php) 脚本；装有 Inno Setup 6 时（`winget install
+JRSoftware.InnoSetup`）会把它编译成 `.nsh\out\<Name>-setup.exe`。安装程序不需要管理员权限：它为当前用户安装到
+`%LOCALAPPDATA%\Programs\<Name>`，添加开始菜单快捷方式（带应用 id，任务栏和通知都用它），并在“已安装的应用”中添加可卸载它的条目。
+它的 AppId 就是应用 id，所以新版本的安装程序会先关闭应用，再原地升级已安装的版本；升级和卸载都不会动应用的数据。`nsh.json`
 中的图标会直接嵌入可执行文件（资源管理器和任务栏都会显示它），不需要额外的工具；在其他系统上打包则保留默认图标。应用 id
 用于在任务栏中归组应用的窗口。`--run` 会在打包后启动应用。可执行文件没有签名：要分发，请用你自己的证书签名（`signtool`）。
 

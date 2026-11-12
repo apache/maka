@@ -711,6 +711,16 @@ impl<M: TextEngine> Core<M> {
 /// replay while it has any.
 fn issue(scroll: &mut ScrollState, pending: PendingScroll) {
     scroll.issued = scroll.issued.wrapping_add(1);
+    if let Some((n, (x, y))) = scroll.target.as_mut() {
+        *n = scroll.issued;
+        if let PendingScroll::By(by) = pending {
+            if scroll.horizontal {
+                *x += by;
+            } else {
+                *y += by;
+            }
+        }
+    }
     if !scroll.dependents.is_empty() {
         scroll.pending.push((scroll.issued, pending));
     }

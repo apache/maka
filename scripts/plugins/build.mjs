@@ -141,7 +141,7 @@ async function compileUi(source, output, cache, executable) {
   if (cache?.[source]) return cache[source];
   if (cache) throw new Error(`Missing precompiled UI entry: ${source}`);
   await new Promise((resolve, reject) => {
-    const child = spawn(executable, ['--entry', source, '--output', output], {
+    const child = spawn(executable, ['--entry', source, '--output', output, '--asset-root', repo], {
       cwd: repo,
       stdio: ['ignore', 'ignore', 'inherit'],
     });

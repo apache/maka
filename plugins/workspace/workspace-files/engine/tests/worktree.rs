@@ -64,6 +64,63 @@ fn repository(root: &Path, hash: &str) {
     git(root, &["commit", "--quiet", "-m", "base"]);
 }
 
+#[tokio::test]
+async fn empty_git_mount_target_does_not_expose_parent_repository() {
+    use maka_fs_tools::{
+        directory, git,
+        workspace::project::{ProjectKind, resolve_selected},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path().join("repository");
+    repository(&parent, "sha1");
+    let selected = parent.join("folder");
+    fs::create_dir_all(selected.join(".git")).unwrap();
+    let private = temp.path().join("private");
+    fs::create_dir(&private).unwrap();
+    let nested = selected.join("nested");
+    fs::create_dir(&nested).unwrap();
+    for path in [&selected, &nested] {
+        let (path, identity) = directory::capture(path).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        assert_eq!(
+            resolve_selected(&path).await.unwrap().kind,
+            ProjectKind::Folder
+        );
+        assert_eq!(
+            git::status(&path, &identity, &private, None, cancel.clone()).unwrap(),
+            None
+        );
+        assert_eq!(
+            git::diff(
+                &path,
+                &identity,
+                &private,
+                None,
+                git::GitArea::Worktree,
+                &git::WorkspacePath::from_bytes(b"source.txt").unwrap(),
+                cancel,
+            )
+            .unwrap(),
+            None
+        );
+    }
+    fs::write(selected.join(".git/broken"), "invalid repository").unwrap();
+    for path in [&selected, &nested] {
+        let (path, identity) = directory::capture(path).unwrap();
+        assert!(resolve_selected(&path).await.is_err());
+        assert!(
+            git::status(
+                &path,
+                &identity,
+                &private,
+                None,
+                Arc::new(AtomicBool::new(false))
+            )
+            .is_err()
+        );
+    }
+}
+
 #[test]
 fn linked_worktree_is_git_compatible_and_reopening_preserves_child_changes() {
     for hash in ["sha1", "sha256"] {

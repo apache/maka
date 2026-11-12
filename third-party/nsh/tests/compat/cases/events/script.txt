@@ -105,6 +105,12 @@ prop id:paste pasteBehavior report
 expect Pasted: none
 event id:paste onPaste text=hello
 expect Pasted: hello html 0 files 0 uris 0
+expect Inserted: none
+# The app inserts a paste it allowed (`insertText`): the call is made
+# without throwing; what it inserts is the platforms' (nsh-testing's paste
+# tests check it headless).
+event id:paste onPaste text=insert:hi
+expect Pasted: insert:hi html 0 files 0 uris 0
 covers [events] onPaste
 prop id:paste pasteBehavior report
 covers [props] pasteBehavior
@@ -197,12 +203,12 @@ expect Hover: move -2,0 page 18,121 left down
 event id:hover onMouseLeave position.x=-2 position.y=0
 expect Hover: move -2,0 page 18,121 left down out -2,0
 # Files dragged over, away, back and dropped.
-event id:drop onFileDragEnter
-expect Drop: enter
+event id:drop onFileDragEnter uris=file:///tmp/a.txt uris="file:///tmp/b%20c.png"
+expect Drop: enter 2: file:///tmp/a.txt file:///tmp/b%20c.png [text/plain image/png]
 event id:drop onFileDragLeave
-expect Drop: enter leave
-event id:drop onFileDrop uris=file:///tmp/a.txt uris="file:///tmp/b c.png"
-expect Drop: dropped 2: file:///tmp/a.txt file:///tmp/b c.png
+expect Drop: enter 2: file:///tmp/a.txt file:///tmp/b%20c.png [text/plain image/png] leave
+event id:drop onFileDrop uris=file:///tmp/a.txt uris="file:///tmp/b c.png" uris=file:///tmp/c.pdf
+expect Drop: dropped 3: file:///tmp/a.txt file:///tmp/b c.png file:///tmp/c.pdf [text/plain image/png application/pdf]
 # An assistive technology performs an action.
 event id:action onAccessibilityAction actionName=increment
 expect Action: increment
@@ -312,3 +318,10 @@ expect Committed: 腾
 event id:compose onCompositionChange composing=false text=""
 expect Composition: ended []
 covers [events] onCompositionChange
+# events-pinch
+tap id:case-events-pinch
+expect Pinch: none
+# The canvas asks the platform for touchpad pinches over it. (The payload
+# takes steps once nsh-compat's `event` builds it.)
+listens id:canvas onPinch
+covers [events] onPinch

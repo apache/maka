@@ -150,7 +150,7 @@ points past each side, without changing its layout or its look: one number for e
 - `disabled` is announced as the platform announces it (VoiceOver, TalkBack, UI Automation, the browser's accessibility
   tree).
 - On macOS and the web a switch is a stop of the keyboard focus: Tab reaches it, Space and Return toggle it, and
-  `focus:` styles show where the focus is.
+  `focus-visible:` styles show where the focus is.
 
 See [Accessibility](../docs/accessibility.md) for labels, roles and announcements in general.
 

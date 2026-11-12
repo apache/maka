@@ -568,6 +568,26 @@ async def check_facade_failure(page, script):
         await begin(page, "failed")
         reason = "could not load the browser facade" if script == "bootstrap.js" else "could not load the app realm"
         await outcome(page, "failed", "rejected", reason)
+        if script == "bootstrap.js":
+            assert "bootstrap.js" in await page.evaluate("harness.outcomes.failed.error")
+        await page.evaluate("harness.expectedReports.push(harness.outcomes.failed.report)")
+        assert await page.locator("iframe").count() == 0
+        assert len(await page.evaluate("errors")) == 1
+    finally:
+        await page.unroute(pattern)
+    await start(page, "recovered")
+    await stopped(page, ["recovered"])
+
+
+async def check_facade_not_found(page):
+    pattern = "**/browser/bootstrap.js"
+    await page.route(pattern, lambda route: route.fulfill(status=404, body=""))
+    try:
+        await begin(page, "failed")
+        await outcome(page, "failed", "rejected", "could not load the browser facade")
+        error = await page.evaluate("harness.outcomes.failed.error")
+        assert "bootstrap.js" in error, error
+        assert "status 404" in error, error
         await page.evaluate("harness.expectedReports.push(harness.outcomes.failed.report)")
         assert await page.locator("iframe").count() == 0
         assert len(await page.evaluate("errors")) == 1
@@ -641,6 +661,7 @@ def lifecycle_cases():
           for action in ("stop", "replace")],
         *[(f"failed-{script[:-3]}", functools.partial(check_facade_failure, script=script),
            (f"/browser/{script}",)) for script in ("bootstrap.js", "realm.js")],
+        ("failed-bootstrap-404", check_facade_not_found, ("/browser/bootstrap.js",)),
         *[(f"bootstrap-{name}", functools.partial(check_bootstrap_execution_failure, code=code), ())
           for name, code in [("syntax-error", "const = ;"),
                              ("throw", "throw new Error('fixture bootstrap failed');"),

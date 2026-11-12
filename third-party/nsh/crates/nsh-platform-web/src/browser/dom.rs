@@ -289,10 +289,15 @@ impl Dom {
             315 => {
                 let id = Self::id(&args.index(0)?)?;
                 let call = args.index(2)?.as_number().unwrap_or(0.0) as u32;
-                self.bindings.ops.borrow_mut().push(Op::Command {
-                    id,
-                    command: nsh_core::Command::Measure { call },
-                });
+                // `ref.measureScrollPosition()` names what it measures.
+                let command = match args.index(1)?.index(0)?.as_string().as_deref() {
+                    Some("scrollPosition") => nsh_core::Command::MeasureScrollPosition { call },
+                    _ => nsh_core::Command::Measure { call },
+                };
+                self.bindings
+                    .ops
+                    .borrow_mut()
+                    .push(Op::Command { id, command });
                 Ok(Value(0))
             }
             313 => {

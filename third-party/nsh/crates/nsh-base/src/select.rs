@@ -16,6 +16,9 @@
 //!   toggles the list; while it has the keyboard focus (the desktops),
 //!   Down, Up, Return and Space open it, and letters and digits choose by
 //!   typeahead without opening it, as a native select does.
+//! - **The list** on the desktops opens with the chosen item over the
+//!   trigger on macOS (the system's pop-up button) and below the trigger
+//!   elsewhere (the drop-down lists of Windows and Linux).
 //! - **Opening** highlights the chosen item; with none, Down (Return,
 //!   Space) highlights the first enabled item, Up the last, and a press
 //!   nothing until a key or the pointer moves it. The highlighted item is
@@ -236,6 +239,10 @@ pub struct SelectProps {
     /// What screen readers call the search field (the app's words: what
     /// it searches); a placeholder is a hint, not its name.
     pub search_accessibility_label: Prop<Option<SharedString>>,
+    /// The id UI tests find the search field by (TS `searchTestID`, as
+    /// `testID` names the select's own view).
+    #[prop(rename = "searchTestID")]
+    pub search_test_id: Prop<Option<SharedString>>,
     /// A clear button while an item is chosen (`gpui-component`'s
     /// `cleanable`): a press clears the value, reported by
     /// `onChange(null)`, and leaves the list closed.
@@ -546,6 +553,7 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
                     KeyOptions {
                         when: When::NotEditing,
                         repeat: false,
+                        for_focus: true,
                         ..Default::default()
                     },
                     move |_| {
@@ -634,13 +642,18 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
             style: props.search_style,
             placeholder: props.search_placeholder,
             accessibility_label: props.search_accessibility_label,
+            test_id: props.search_test_id,
         }),
         render_item: props.render_item,
         render_group: props.render_group,
         empty: props.empty,
         footer: None,
-        // A terminal's list opens under the trigger, never over it.
-        cover: (!is_terminal()).then(crate::popup::Cover::new),
+        // On macOS the list opens with the chosen item over the trigger,
+        // as the system's pop-up buttons do; elsewhere (Windows, Linux,
+        // browsers, terminals) it drops below the trigger, as their own
+        // drop-down lists do.
+        cover: (os() == nsh_core::platform::Os::MacOs && !is_terminal())
+            .then(crate::popup::Cover::new),
     };
     // Tab past the trigger, or out of the list's search field, closes the
     // list and moves the focus on.
@@ -662,6 +675,14 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
             $t.element_ref(&anchor)
                 .role(AccessibilityRole::Combobox)
                 .optional_label(props.accessibility_label)
+                // While the list is open the trigger keeps the keyboard
+                // focus: the highlighted row is its active descendant.
+                .accessibility_active_descendant(
+                    move || {
+                        if open.get() { lb.active_row() } else { None }
+                    },
+                )
+                .accessibility_controls(move || open.get().then_some(lb.listbox))
                 .disabled(props.disabled)
                 .focusable(move || !props.disabled.get())
                 .accessibility_state(move || AccessibilityState {

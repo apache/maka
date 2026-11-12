@@ -329,7 +329,7 @@ pub struct ColorAreaProps {
     pub panel_style: Prop<Style>,
     /// The Tailwind classes of the thumb, centered on the color
     /// (`size-4 rounded-full border-2 border-white`); `active:` while it is
-    /// dragged, `focus:` with the keyboard focus.
+    /// dragged, `focus-visible:` with the keyboard focus.
     pub thumb_class: Prop<Option<SharedString>>,
     /// The style of the thumb, over `thumbClass`.
     #[prop(default)]
@@ -536,7 +536,7 @@ pub struct ColorSliderProps {
     pub track_style: Prop<Style>,
     /// The Tailwind classes of the thumb, centered on the value on the
     /// track (`size-5 rounded-full border-2 border-white`); `active:` while
-    /// it is dragged, `focus:` with the keyboard focus.
+    /// it is dragged, `focus-visible:` with the keyboard focus.
     pub thumb_class: Prop<Option<SharedString>>,
     /// The style of the thumb, over `thumbClass`.
     #[prop(default)]

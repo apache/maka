@@ -7,11 +7,13 @@
 //! and is shown by its container's layer's `sublayerTransform` while it
 //! moves; the container's bounds origin (as `NSClipView` scrolls) takes it
 //! once the view and the display link rest ([`commit_due`]), as
-//! `setBoundsOrigin:` walks the whole subtree. AppKit's geometry (hit
+//! `setBoundsOrigin:` walks the whole subtree. Scroll views containing
+//! inputs instead update the bounds each frame so AppKit draws newly
+//! visible fields at the live offset. AppKit's geometry (hit
 //! tests, conversions, `visibleRect`) follows the bounds, so what asks it
 //! commits first ([`commit_pending`], [`commit_ancestors`]); NSH's own
 //! (picking, [`bounds_origin`]) follows the live offset.
-//! Every change goes through [`moved_to`], which moves the transform,
+//! Every change goes through [`moved_to`], which moves the container,
 //! pins the sticky cells, feeds the native scroll value in the same frame
 //! and queues a report to the engine. Reports are coalesced to one per
 //! frame by the view's frame callback, which also runs animated
@@ -43,7 +45,7 @@ use nsh_core::{
     geometry::point,
     scroll::{
         dragged, ease_out, indicator_alpha, indicator_hold_left, indicator_span, projected, rate,
-        reveal_delta, snap_duration, sticky_shift, thumb_scroll,
+        reveal_focus_delta, snap_duration, sticky_shift, thumb_scroll,
     },
 };
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
@@ -243,7 +245,12 @@ fn limits(state: &ViewState) -> (f32, f32) {
     let Some(s) = &state.scroll else {
         return (0.0, 0.0);
     };
-    let max = s.max((state.frame.size.width.0, state.frame.size.height.0));
+    range(s, (state.frame.size.width.0, state.frame.size.height.0))
+}
+
+/// [`limits`] of scroll state `s` in a viewport of `viewport` points.
+fn range(s: &ScrollState, viewport: (f32, f32)) -> (f32, f32) {
+    let max = s.max(viewport);
     let min = if !s.horizontal && s.live.refreshing {
         -s.behavior.refresh_inset().0
     } else {
@@ -321,6 +328,26 @@ pub(crate) fn can_scroll(view: &NshView, dx: f32, dy: f32) -> bool {
     };
     let pos = main(s);
     (d > 0.0 && pos < max - 0.5) || (d < 0.0 && pos > min + 0.5)
+}
+
+/// Whether `view` is a scroll view the user can move at all: it is
+/// enabled and its content is larger than its viewport along its axis.
+/// Unlike [`can_scroll`] it needs no direction, so input can ask it as a
+/// scroll begins, before the scroll has one: an embedded app passes on a
+/// scroll with no such view under the pointer
+/// ([`crate::input::forwards_scroll`]).
+pub(crate) fn movable(view: &NshView) -> bool {
+    let state = view.state();
+    state
+        .scroll
+        .as_ref()
+        .is_some_and(|s| movable_in(s, (state.frame.size.width.0, state.frame.size.height.0)))
+}
+
+/// [`movable`] for scroll state `s` in a viewport of `viewport` points.
+fn movable_in(s: &ScrollState, viewport: (f32, f32)) -> bool {
+    let (min, max) = range(s, viewport);
+    s.behavior.enabled && max > min
 }
 
 /// Whether a trackpad gesture by `(dx, dy)` may stretch `view` past its
@@ -442,17 +469,24 @@ const COMMIT_MS: u64 = 140;
 /// hosted views sync their remote state, per scroll step, which is the
 /// jank on long lists). The bounds commit once it settles ([`commit`])
 /// puts AppKit's model right for the price of one walk per scroll.
+/// Inputs need live bounds instead: AppKit clips their drawing by its
+/// visible rectangles, which do not follow the layer transform.
 fn apply_offset(surface: &Rc<Surface>, view: &NshView) {
     let origin = bounds_origin(view);
     // Every offset, inset and mirroring change comes through here: what
     // shows under it changed ([`crate::sight`]).
     crate::sight::moved();
-    let committed = view.container_bounds_origin();
-    view.set_layer_scroll(committed.0 - origin.0, committed.1 - origin.1);
-    // What it shows moved without a view moving: the effects around it
-    // (and a screen effect reading the surface) picture it again.
+    let inputs = view.state().input_count != 0;
+    if inputs {
+        view.commit_bounds_origin(origin.0, origin.1);
+    } else {
+        let committed = view.container_bounds_origin();
+        view.set_layer_scroll(committed.0 - origin.0, committed.1 - origin.1);
+        arm_commit(surface, view);
+    }
+    // The effects around it (and a screen effect reading the surface)
+    // picture the changed viewport again.
     crate::shader::ui_changed(view);
-    arm_commit(surface, view);
 }
 
 /// Schedules the trailing bounds commit, `COMMIT_MS` after the offset
@@ -652,6 +686,7 @@ fn report(surface: &Surface, view: &NshView) {
         (state.id, x, y, applied)
     };
     surface.control(|c| c.scroll(id, point(Points(x), Points(y)), applied));
+    crate::access::scroll_bar::moved(view);
 }
 
 /// Eases to `to` (clamped to the rest limits).
@@ -1388,6 +1423,7 @@ pub(crate) fn content(surface: &Rc<Surface>, view: &NshView, size: Size<Points>)
         ensure_ticking(surface, view);
     }
     update_overlays(view);
+    crate::access::scroll_bar::moved(view);
 }
 
 /// The viewport changed size: an offset now past the end is pulled back.
@@ -2079,8 +2115,9 @@ pub(crate) fn scroll_intent(surface: &Surface, view: &NshView, intent: &'static 
 }
 
 /// Scrolls the scroll views around `target` (animated) so that it shows,
-/// as iOS and Android do for the focused field. For the text fields: call
-/// it when one gets the keyboard focus.
+/// as iOS and Android do for the focused field. Called when a field gets
+/// the keyboard focus, and when another stop gets it other than by a click
+/// (Tab, `focus()`).
 pub(crate) fn reveal(surface: &Rc<Surface>, target: &NshView) {
     // The rectangles are AppKit's, which the bounds place.
     commit_ancestors(target);
@@ -2120,7 +2157,7 @@ pub(crate) fn reveal(surface: &Rc<Surface>, target: &NshView) {
         };
         // Pending animations count from where they are headed.
         let start = start - (base - pos);
-        let delta = reveal_delta(Points(start), Points(start + len), Points(dim)).0;
+        let delta = reveal_focus_delta(Points(start), Points(start + len), Points(dim)).0;
         let to = (base + delta).clamp(min, max.max(min));
         if (to - base).abs() < 0.5 {
             continue;
@@ -2138,6 +2175,46 @@ pub(crate) fn reveal(surface: &Rc<Surface>, target: &NshView) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scroll view of `content` points in a 300 x 200 viewport.
+    fn movable_with(content: (f32, f32), horizontal: bool, enabled: bool) -> bool {
+        let s = ScrollState {
+            content,
+            horizontal,
+            behavior: nsh_core::ScrollBehavior {
+                enabled,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        movable_in(&s, (300.0, 200.0))
+    }
+
+    /// A scroll view switched off (`scrollable={false}`) cannot move, however
+    /// long its content: an embedded app passes its scrolls on.
+    #[test]
+    fn a_disabled_scroll_view_does_not_move() {
+        assert!(!movable_with((300.0, 800.0), false, false));
+        assert!(!movable_with((900.0, 200.0), true, false));
+    }
+
+    /// A scroll view whose content fits its viewport along its axis cannot
+    /// move, even when the content overflows across it.
+    #[test]
+    fn a_scroll_view_whose_content_fits_does_not_move() {
+        assert!(!movable_with((300.0, 200.0), false, true));
+        assert!(!movable_with((300.0, 120.0), false, true));
+        assert!(!movable_with((900.0, 200.0), false, true));
+        assert!(!movable_with((300.0, 800.0), true, true));
+    }
+
+    /// An enabled scroll view whose content overflows along its axis moves:
+    /// an embedded app keeps its scrolls.
+    #[test]
+    fn an_overflowing_scroll_view_moves() {
+        assert!(movable_with((300.0, 800.0), false, true));
+        assert!(movable_with((900.0, 200.0), true, true));
+    }
 
     #[test]
     fn a_long_scroll_commits_only_when_it_ends() {

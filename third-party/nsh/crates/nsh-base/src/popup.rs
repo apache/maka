@@ -41,8 +41,9 @@ pub enum OpenChangeReason {
     /// tooltip's); left its trigger and itself (a hover card's).
     Hover,
     /// The keyboard focus came to its trigger, or left it (a hover
-    /// card's); Tab or Shift+Tab moved it on from a select or combobox
-    /// whose list was open (the focus goes where Tab takes it).
+    /// card's); moved to another item of its menu (a submenu's); Tab or
+    /// Shift+Tab moved it on from a select or combobox whose list was open
+    /// (the focus goes where Tab takes it).
     Focus,
     /// A finger was held on its trigger (a context menu's on touch
     /// screens).
@@ -61,6 +62,15 @@ pub enum OpenChangeReason {
 pub(crate) struct OpenState {
     controlled: Prop<Option<bool>>,
     own: Signal<bool>,
+    /// What was last reported to the app that controls it, until its
+    /// answer reached the popup: a request before then is a change from
+    /// that (a secondary click on an open context menu's trigger closes
+    /// it and opens it again, both reported).
+    asked: Stored<Option<bool>>,
+    /// The popup's own owner, which lets go of `asked`: a request comes
+    /// from what it shows (Escape, an item chosen), which the answer
+    /// closing it takes away before the answer reaches the popup.
+    owner: Owner,
 }
 
 impl OpenState {
@@ -68,6 +78,8 @@ impl OpenState {
         Self {
             controlled: open,
             own: signal(default_open.get_untracked()),
+            asked: stored(None),
+            owner: Owner::current(),
         }
     }
 
@@ -82,6 +94,12 @@ impl OpenState {
             .unwrap_or_else(|| self.own.get_untracked())
     }
 
+    /// Opened by the app that controls it, not in answer to the user's
+    /// request (`asked`): read as it opens.
+    pub(crate) fn opened_by_app(self) -> bool {
+        self.controlled.get_untracked() == Some(true) && self.asked.get() != Some(true)
+    }
+
     /// The user asks for it to be `open`: when that is a change, `report`
     /// runs (the popup emits `OpenChange`), then its own state follows when
     /// the app does not control it. Reported first: the lifecycle
@@ -89,12 +107,20 @@ impl OpenState {
     /// once where the popup has no motion (no ending look, reduced motion),
     /// and the app hears `onOpenChange` before them.
     pub(crate) fn request(self, open: bool, report: impl FnOnce()) {
-        if self.get_untracked() == open {
+        if self.asked.get().unwrap_or_else(|| self.get_untracked()) == open {
             return;
         }
         report();
         if self.controlled.get_untracked().is_none() {
             self.own.set(open);
+        } else {
+            self.asked.replace(Some(open));
+            let asked = self.asked;
+            self.owner.run(|| {
+                after_answer(move || {
+                    asked.replace(None);
+                })
+            });
         }
     }
 }
@@ -104,7 +130,45 @@ impl OpenState {
 /// (after it went: a sheet's motion, a popup's exit), whoever opened or
 /// closed it. `shown` is tracked; its
 /// first value only counts when it is shown.
+///
+/// All there is rendered: `open` waits for the commit after the one that
+/// made the content, whose refs then name its views, so the app's
+/// `focus()` in `onOpen` reaches them. A popup gone before then neither
+/// opens nor closes.
 pub(crate) fn lifecycle(
+    shown: impl Fn() -> bool + 'static,
+    open: impl Fn() + 'static,
+    close: impl Fn() + 'static,
+) {
+    let open = Rc::new(open);
+    // A newer flip ends an opening still waiting.
+    let generation = stored(0u64);
+    let opened = stored(false);
+    flips(
+        shown,
+        move || {
+            let current = generation.get().wrapping_add(1);
+            generation.replace(current);
+            let open = open.clone();
+            after_answer(move || {
+                if generation.get() == current {
+                    opened.replace(true);
+                    untracked(|| open());
+                }
+            });
+        },
+        move || {
+            generation.replace(generation.get().wrapping_add(1));
+            if opened.replace(false) {
+                close();
+            }
+        },
+    );
+}
+
+/// `open` as `shown` turns true and `close` as it turns false, in the
+/// change itself; its first value only counts when it is true.
+fn flips(
     shown: impl Fn() -> bool + 'static,
     open: impl Fn() + 'static,
     close: impl Fn() + 'static,
@@ -193,9 +257,10 @@ impl StateLooks {
 /// `data-starting-style` / `data-ending-style`: opened, it is mounted with
 /// its starting look until its first display frame, so the app's
 /// `transition-*` classes run its entrance; closed, it stays mounted with
-/// its ending look (taking no presses) for as long as its transitions then
-/// run (the core says, [`ElementRef::transition_time`]; two seconds at
-/// most), then goes. Opened again on its way out, it is taken back (its
+/// its ending look (taking no presses, nor keys once its component gave
+/// the focus back: [`Self::focus_back_on_close`]) for as long as its
+/// transitions then run (the core says, [`ElementRef::transition_time`];
+/// two seconds at most), then goes. Opened again on its way out, it is taken back (its
 /// transitions run back). Without a look for a state, or when the user
 /// asked for less motion, it skips that state: a popup with no ending look
 /// goes at once, as one with no motion did.
@@ -312,9 +377,43 @@ impl PopupPresence {
         self.mounted.get()
     }
 
+    /// [`Self::mounted`], untracked.
+    pub(crate) fn mounted_untracked(self) -> bool {
+        self.mounted.get_untracked()
+    }
+
     /// The ref its popup part carries.
     pub(crate) fn popup(self) -> ElementRef {
         self.popup
+    }
+
+    /// The keyboard focus in the popup as it closes (Escape, a choice in
+    /// it, the app closing it) goes back where `back` puts it (its
+    /// trigger) at once, not once the popup is gone: on its way out the
+    /// popup takes no keys, as it takes no presses, so a key pressed
+    /// during its exit cannot act in it again. `open` is tracked; `back`
+    /// runs as it turns false while the focus is inside.
+    pub(crate) fn focus_back_on_close(
+        self,
+        open: impl Fn() -> bool + 'static,
+        back: impl Fn() + 'static,
+    ) {
+        let inside = stored(false);
+        self.popup.on_focus_in(move || {
+            inside.replace(true);
+        });
+        self.popup.on_focus_out(move || {
+            inside.replace(false);
+        });
+        let was = stored(false);
+        effect(move || {
+            let now = open();
+            // Not cleared here: the focus watch says when the focus leaves,
+            // and keeps its own record of where it is across openings.
+            if was.replace(now) && !now && inside.get() {
+                untracked(&back);
+            }
+        });
     }
 
     /// The part's classes now: its own with its state's over them

@@ -3,6 +3,7 @@ name = "nsh-macros"
 description = "Derive macros of nsh's Rust components: props, prop enums, events and component metadata."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true

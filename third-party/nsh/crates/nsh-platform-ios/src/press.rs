@@ -76,6 +76,10 @@ define_class!(
     impl PressRecognizer {
         #[unsafe(method(touchesBegan:withEvent:))]
         fn touches_began(&self, touches: &NSSet<UITouch>, event: &UIEvent) {
+            // Before the press acts: the focus it moves does not show.
+            self.ivars()
+                .target
+                .input_with(nsh_core::platform::InputModality::Pointer);
             let (Some(view), Some(touch)) = (self.view(), touches.anyObject()) else {
                 return self.set_state(UIGestureRecognizerState::Failed);
             };

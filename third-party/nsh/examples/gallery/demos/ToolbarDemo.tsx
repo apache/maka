@@ -1,6 +1,6 @@
 import { Canvas, cleanup, computed, createAnimatedValue, Easing, effect, Image, type JSX, LayoutAnimation, Path2D, platform, reduceMotion, signal, Text, View, type ViewStyle } from "nsh";
 import { Button as BaseButton, Link, Menu, MenuItem, MenuSeparator, Popover, Slider, Toggle, ToggleGroup, Toolbar, ToolbarGroup, ToolbarSeparator } from "nsh/base";
-import { alpha, backdrop, Badge, Caption, Card, chart, colors, DemoPage, finish, focusRing, hovered, menuIndicator, menuItemGlyph, menuItemLabel, menuItemLook, menuItemSize, MenuMark, MenuPanel, menuSeparator, menuSheet, mono, motion, photoUrl, PopIn, popoverLook, sliderFill, sliderLook, terminal, TERMINAL_GAP, Tip, Toggle as Switch, toggleGlyph, toggleLabel, toggleLook, type ToggleLookOptions, toggleSizes, toolbarRule, toolbarTrack } from "../ui";
+import { alpha, Badge, Caption, Card, chart, colors, DemoPage, finish, focusRing, hovered, menuIndicator, menuItemGlyph, menuItemLabel, menuItemLook, menuItemSize, MenuMark, menuSeparator, motion, photoUrl, PopIn, popoverLook, sliderFill, sliderLook, terminal, TERMINAL_GAP, Tip, toggleGlyph, toggleLabel, toggleLook, type ToggleLookOptions, toggleSizes, toolbarRule, toolbarTrack, LastEvent, LabeledToggle, menuPopup } from "../ui";
 import { Field } from "./OverlayUi";
 import { LucideIcon, type LucideIconName } from "./RichEditorUi";
 
@@ -141,6 +141,9 @@ function Mark(props: Icon & { label: string; short?: string; text?: string; shor
 }
 
 type Align = "left" | "center" | "right" | "justify";
+
+/** An alignment in words, for the caption. */
+const ALIGNED: Record<Align, string> = { left: "left aligned", center: "centered", right: "right aligned", justify: "justified" };
 type Block = "Paragraph" | "Heading" | "Quote";
 
 /** Four lines of a paragraph, set as `align` sets them. */
@@ -296,7 +299,7 @@ export function ToolbarDemo() {
     const decoration = () => (has("underline") && has("strike") ? "underline line-through" : has("underline") ? "underline" : has("strike") ? "line-through" : "none");
     const block = () => state().block;
     return (
-      <Card title="Text formatting" subtitle="History, a block menu, marks, alignment and a link: one stop of Tab" right={<Badge label={`${past().length} edits`} />}>
+      <Card title="Text formatting" subtitle="Marks, blocks, alignment: one Tab stop" right={<Badge label={`${past().length} edits`} />}>
         <Toolbar accessibilityLabel="Formatting" style={track()} onLayout={({ bounds }) => width.set(bounds.size.width)}>
           <If when={!folded("undo")}>
             <ToolbarGroup accessibilityLabel="History" style={{ gap: GAP }}>
@@ -310,8 +313,7 @@ export function ToolbarDemo() {
           <Menu
             offset={6}
             margin={8}
-            popupStyle={menuSheet()}
-            backdropStyle={backdrop()}
+            {...menuPopup({ minWidth: 190 })}
             onOpenChange={({ open }) => blockOpen.set(open)}
             trigger={
               <Trigger label={`Block: ${block()}`} tip={<Tip label="Turn into" />} open={blockOpen()} wide>
@@ -325,11 +327,9 @@ export function ToolbarDemo() {
               </Trigger>
             }
           >
-            <MenuPanel minWidth={190}>
-              <Each of={BLOCKS}>
-                {(b) => <Item label={b().value} icon={b().icon} checked={block() === b().value} onSelect={() => commit({ block: b().value }, `Block: ${b().value}`)} />}
-              </Each>
-            </MenuPanel>
+            <Each of={BLOCKS}>
+              {(b) => <Item label={b().value} icon={b().icon} checked={block() === b().value} onSelect={() => commit({ block: b().value }, `Block: ${b().value}`)} />}
+            </Each>
           </Menu>
           <Rule />
           {/* A toggle group inside the toolbar is one of its groups: its toggles are the toolbar's items. */}
@@ -393,8 +393,7 @@ export function ToolbarDemo() {
             align="end"
             offset={6}
             margin={8}
-            popupStyle={menuSheet()}
-            backdropStyle={backdrop()}
+            {...menuPopup({ minWidth: 190 })}
             onOpenChange={({ open }) => moreOpen.set(open)}
             trigger={
               <Trigger label="More formatting" tip={<Tip label="More" />} open={moreOpen()}>
@@ -402,30 +401,28 @@ export function ToolbarDemo() {
               </Trigger>
             }
           >
-            <MenuPanel minWidth={190}>
-              {/* What the bar folded: the history, the marks, then the alignment. */}
-              <If when={folded("redo")}>
-                <If when={folded("undo")}>
-                  <Item label="Undo" icon="undo-2" disabled={past().length === 0} onSelect={undo} />
-                </If>
-                <Item label="Redo" icon="redo-2" disabled={future().length === 0} onSelect={redo} />
-                <MenuSeparator style={menuSeparator()} />
+            {/* What the bar folded: the history, the marks, then the alignment. */}
+            <If when={folded("redo")}>
+              <If when={folded("undo")}>
+                <Item label="Undo" icon="undo-2" disabled={past().length === 0} onSelect={undo} />
               </If>
-              <If when={folded("strike")}>
-                <Each of={MARKS.filter((m) => folded(m.value))}>
-                  {(m) => <Item label={m().label} icon={m().icon} check checked={has(m().value)} onSelect={() => toggleMark(m(), !has(m().value))} />}
-                </Each>
-                <MenuSeparator style={menuSeparator()} />
-              </If>
-              <If when={compact()}>
-                <Each of={ALIGNS}>
-                  {(a) => <Item label={a().label} checked={state().align === a().value} onSelect={() => commit({ align: a().value }, `Align: ${a().value}`)} />}
-                </Each>
-                <MenuSeparator style={menuSeparator()} />
-              </If>
-              <Item label="Clear formatting" icon="x" disabled={state().marks.length === 0 && state().block === "Paragraph"} onSelect={() => commit({ marks: [], block: "Paragraph" }, "Clear formatting")} />
-              <Item label="Copy as Markdown" icon="copy" onSelect={() => last.set("Copied as Markdown")} />
-            </MenuPanel>
+              <Item label="Redo" icon="redo-2" disabled={future().length === 0} onSelect={redo} />
+              <MenuSeparator style={menuSeparator()} />
+            </If>
+            <If when={folded("strike")}>
+              <Each of={MARKS.filter((m) => folded(m.value))}>
+                {(m) => <Item label={m().label} icon={m().icon} check checked={has(m().value)} onSelect={() => toggleMark(m(), !has(m().value))} />}
+              </Each>
+              <MenuSeparator style={menuSeparator()} />
+            </If>
+            <If when={compact()}>
+              <Each of={ALIGNS}>
+                {(a) => <Item label={a().label} checked={state().align === a().value} onSelect={() => commit({ align: a().value }, `Align: ${a().value}`)} />}
+              </Each>
+              <MenuSeparator style={menuSeparator()} />
+            </If>
+            <Item label="Clear formatting" icon="x" disabled={state().marks.length === 0 && state().block === "Paragraph"} onSelect={() => commit({ marks: [], block: "Paragraph" }, "Clear formatting")} />
+            <Item label="Copy as Markdown" icon="copy" onSelect={() => last.set("Copied as Markdown")} />
           </Menu>
         </Toolbar>
         <View style={{ padding: 12, borderRadius: 8, backgroundColor: colors.inset, borderWidth: 1, borderColor: colors.line, borderLeftWidth: block() === "Quote" ? 3 : 1, borderLeftColor: block() === "Quote" ? colors.accent : colors.line }}>
@@ -446,8 +443,8 @@ export function ToolbarDemo() {
           </Text>
         </View>
         <Caption
-          label={pointer ? "Tab into the bar: ← → move, Home / End jump, Space presses" : "Press a tool; what the bar has no room for folds into ⋯"}
-          note={`${state().marks.length} ${state().marks.length === 1 ? "mark" : "marks"} · ${state().align}${compact() ? ` · ${1 + folds()} in ⋯` : ""}`}
+          label={pointer ? "Tab in, ← → to move" : "Press a tool; what the bar has no room for folds into ⋯"}
+          note={`${state().marks.length} ${state().marks.length === 1 ? "mark" : "marks"}, ${ALIGNED[state().align]}${compact() ? `, ${1 + folds()} folded` : ""}`}
         />
       </Card>
     );
@@ -529,7 +526,7 @@ export function ToolbarDemo() {
     };
     const big = pointer ? 40 : 52;
     return (
-      <Card title="Media player" subtitle="Transport and volume: buttons, toggles and a slider in one bar">
+      <Card title="Media player" subtitle="Buttons, toggles and a slider in one bar">
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           {/* The cover: one of the gallery's photos, the raised fill while it loads. */}
           <Image src={photoUrl(track().art, "360x360")} style={{ width: pointer ? 56 : 64, height: pointer ? 56 : 64, borderRadius: 10, borderCurve: "continuous", objectFit: "cover", backgroundColor: colors.raised }} />
@@ -541,11 +538,11 @@ export function ToolbarDemo() {
         </View>
         <View style={{ gap: 4 }}>
           <View style={{ height: 4, borderRadius: 2, overflow: "hidden", backgroundColor: colors.track }}>
-            <View style={{ height: 4, width: "100%", borderRadius: 2, backgroundColor: colors.accent, transformOrigin: "left", transform: [{ scaleX: progress }] }} />
+            <View style={{ height: 4, width: "100%", borderRadius: 2, backgroundColor: colors.accent, backgroundImage: terminal ? undefined : finish.fill.backgroundImage, transformOrigin: "left", transform: [{ scaleX: progress }] }} />
           </View>
           <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-            <Text style={{ fontSize: 11, color: colors.faint, fontFamily: mono }}>{time(elapsed())}</Text>
-            <Text style={{ fontSize: 11, color: colors.faint, fontFamily: mono }}>-{time(track().length - elapsed())}</Text>
+            <Text style={{ fontSize: 11, color: colors.muted, fontVariant: ["tabular-nums"] }}>{time(elapsed())}</Text>
+            <Text style={{ fontSize: 11, color: colors.muted, fontVariant: ["tabular-nums"] }}>-{time(track().length - elapsed())}</Text>
           </View>
         </View>
         <Toolbar accessibilityLabel="Playback" style={{ alignItems: "center", gap: terminal ? TERMINAL_GAP : pointer ? 4 : 8, flexWrap: "wrap" }}>
@@ -559,10 +556,11 @@ export function ToolbarDemo() {
               accessibilityLabel={playing() ? "Pause" : "Play"}
               tooltip={<Tip label={playing() ? "Pause" : "Play"} shortcut="Space" />}
               onPress={play}
-              style={{ width: terminal ? undefined : big, height: terminal ? undefined : big, borderRadius: big / 2, alignItems: "center", justifyContent: "center", backgroundColor: colors.light, ...transition() }}
+              // The volume's fill (`sliderFill`, `finish.fill`), so the bar's play button, progress and volume are one green.
+              style={{ width: terminal ? undefined : big, height: terminal ? undefined : big, borderRadius: big / 2, alignItems: "center", justifyContent: "center", backgroundColor: colors.light, ...(terminal ? {} : { backgroundImage: finish.fill.backgroundImage, borderWidth: 1, borderColor: finish.fill.borderColor }), ...transition() }}
               hoverStyle={{ opacity: 0.9 }}
               activeStyle={{ transform: [{ scale: 0.9 }] }}
-              focusStyle={focusRing(2)}
+              focusVisibleStyle={focusRing(2)}
             >
               <View style={{ transform: [{ scale: pop }] }}>
                 <If when={playing()} else={<ToolIcon icon="play" label="Play" size={pointer ? 18 : 22} tint={colors.onLight} />}>
@@ -665,7 +663,7 @@ export function ToolbarDemo() {
             </View>
             <Text style={{ fontSize: pointer ? 13 : 15, fontWeight: "600", color: colors.text }}>{current().label}</Text>
             <Text style={{ fontSize: pointer ? 12 : 13, color: colors.muted, textAlign: "center" }}>{current().hint}</Text>
-            <Text style={{ fontSize: 11, color: colors.faint, fontFamily: mono }}>{`${zoom()}%`}</Text>
+            <Text style={{ fontSize: 11, color: colors.muted, fontVariant: ["tabular-nums"] }}>{`${zoom()}%`}</Text>
           </View>
         </View>
       </Card>
@@ -677,7 +675,7 @@ export function ToolbarDemo() {
     const approved = signal(false);
     const comments = signal(true);
     return (
-      <Card title="Disabled" subtitle="A review bar the app locks: every item in it, link included" right={<Switch value={locked()} onChange={(v) => locked.set(v)} label="Lock" />}>
+      <Card title="Disabled" subtitle="Everything in it locks, link included" right={<LabeledToggle label="Lock" value={locked()} onChange={(v) => locked.set(v)} />}>
         <Toolbar accessibilityLabel="Review" disabled={locked()} style={{ ...track(), flexWrap: "wrap" }}>
           {/* Approved or not is on or off: a toggle, as the comments are. */}
           <Mark icon="check" text="Approve" label="Approve" pressed={approved()} onChange={(on) => {
@@ -700,8 +698,8 @@ export function ToolbarDemo() {
             onOpen={({ href }) => last.set(`Open: ${href}`)}
             style={{ paddingHorizontal: 8, height: TOOL.side, justifyContent: "center", borderRadius: 6, borderWidth: 1, borderColor: "transparent", ...transition() }}
             hoverStyle={hovered()}
-            focusStyle={focusRing(1)}
-            disabledStyle={{ opacity: 0.4 }}
+            focusVisibleStyle={focusRing(1)}
+            disabledStyle={{ opacity: 0.5 }}
           >
             <Text style={{ fontSize: TOOL.text, color: colors.accent, textDecorationLine: "underline" }}>Review guide</Text>
           </Link>
@@ -714,7 +712,7 @@ export function ToolbarDemo() {
   function Last() {
     return (
       <Card title="Last event">
-        <Text style={{ fontSize: 13, color: colors.text, fontFamily: mono }}>{last()}</Text>
+        <LastEvent value={last()} hint="Use a tool" />
       </Card>
     );
   }

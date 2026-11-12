@@ -346,11 +346,25 @@ fn tls_config() -> Result<rustls::ClientConfig, JsError> {
     let provider = rustls::crypto::CryptoProvider::get_default()
         .cloned()
         .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
-    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    rustls::ClientConfig::builder_with_provider(provider)
+    let failed = |error: rustls::Error| {
+        JsError::Error(format!("WebSocket TLS configuration failed: {error}"))
+    };
+    let builder = rustls::ClientConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
-        .map_err(|error| JsError::Error(format!("WebSocket TLS configuration failed: {error}")))
-        .map(|builder| builder.with_root_certificates(roots).with_no_client_auth())
+        .map_err(failed)?;
+    // The system trust store: roots the OS (or an administrator) trusts,
+    // such as a corporate proxy's, verify without NSH bundling them.
+    #[cfg(not(target_os = "android"))]
+    let builder = builder
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(
+            rustls_platform_verifier::Verifier::new(provider).map_err(failed)?,
+        ));
+    #[cfg(target_os = "android")]
+    let builder = builder.with_root_certificates(rustls::RootCertStore::from_iter(
+        webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+    ));
+    Ok(builder.with_no_client_auth())
 }
 
 /// What a close frame says: its code and reason, 1005 for a frame

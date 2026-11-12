@@ -171,7 +171,7 @@ const some = () => selected().length > 0 && !all();
 
 - 复选框对屏幕阅读器而言是一个元素，角色是 `"checkbox"`（或它的 `role`），带有它的值：勾选、未勾选，或半选时的部分选中。指示器和标记是它的部件。它的标签是子元素的文字；没有文字时设置 `accessibilityLabel`。
 - `disabled` 按平台的方式报告（VoiceOver、TalkBack、UI Automation、浏览器的无障碍树）。
-- 在 macOS 和 Web 上，复选框是键盘焦点的一站：Tab 可以到达它，Space 和 Return 切换它，`focus:` 样式显示焦点所在。
+- 在 macOS 和 Web 上，复选框是键盘焦点的一站：Tab 可以到达它，Space 和 Return 切换它，`focus-visible:` 样式显示焦点所在。
 
 标签、角色和播报的一般用法见[无障碍](../docs/accessibility.md)。
 

@@ -116,7 +116,9 @@ pub(crate) fn live() -> Live {
 const RELAYOUT: LayoutAnimation = LayoutAnimation {
     create: Some(LayoutTransition::new(LayoutCurve::EaseInEaseOut, 380.0)),
     update: Some(LayoutTransition {
-        curve: LayoutCurve::Spring { damping: 0.84 },
+        curve: LayoutCurve::FittedSpring {
+            damping_ratio: 0.84,
+        },
         property: LayoutProperty::Opacity,
         duration_ms: 380.0,
         delay_ms: 0.0,

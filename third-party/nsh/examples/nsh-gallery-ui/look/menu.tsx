@@ -1,14 +1,15 @@
 // What a menu looks like: its items, the rows that open and leave a
-// submenu, a group's title, a separator, the surface its items come in on
-// and the sheet a touch screen shows it in. Shared by the gallery's menus
+// submenu, a group's title, a separator, the popup surface its items come
+// in on and the sheet a touch screen shows it in. Shared by the gallery's menus
 // (the Menu demo, a toolbar's and a split button's menus, a pagination's
 // jump menu) and by the website's demos (through `demo.ts`). `nsh/base`'s
 // menus draw none of it.
 import type { JSX, TextStyle, ViewStyle } from "nsh";
 import { platform, Text, token, View } from "nsh";
 import { Icon } from "../icons";
-import { PopIn, type PopupSide, popupSurface } from "../popup";
+import { popInStyles, type PopupSide, popupSurface } from "../popup";
 import { alpha, colors, finish, terminal } from "../theme";
+import { backdrop } from "./overlay";
 
 const pointer = platform.desktop;
 
@@ -55,7 +56,7 @@ export interface MenuItemLookOptions {
  * pointer and 46 on a touch screen (`menuItemSize`), 8 points in from the
  * popup's sides. Under the pointer and under the keyboard alike it takes
  * the neutral `accent` fill (`menuHighlight`), so arrow keys show where
- * they are; pressed, a shade deeper; disabled, 35%. Its label takes
+ * they are; pressed, a shade deeper; disabled, 50%. Its label takes
  * `menuItemLabel`, a note `menuItemNote`, an icon `menuItemGlyph`.
  */
 export function menuItemLook(o?: MenuItemLookOptions) {
@@ -81,7 +82,7 @@ export function menuItemLook(o?: MenuItemLookOptions) {
     get activeStyle(): ViewStyle {
       return menuPressed();
     },
-    disabledStyle: { opacity: 0.35 } as ViewStyle,
+    disabledStyle: { opacity: 0.5 } as ViewStyle,
   };
 }
 
@@ -111,35 +112,40 @@ export function menuItemGlyph(o?: MenuItemTextOptions) {
   };
 }
 
-/**
- * The sheet a touch screen shows a menu in (the menu's `popupStyle`): the
- * card's surface, its top corners 20 points round, 34 points under its
- * rows for the home indicator. `undefined` with a pointer (a terminal's
- * too, which frames the popup itself), where the popup's box keeps no look
- * and its `MenuPanel` has it. Read it where it is used (`popupStyle={menuSheet()}`),
- * so it follows the appearance.
- */
-export function menuSheet(): ViewStyle | undefined {
-  return pointer
-    ? undefined
-    : { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderCurve: "continuous", paddingHorizontal: 10, paddingTop: 10, paddingBottom: 34 };
+/** Options of `menuPopup`. */
+export interface MenuPopupOptions {
+  /** The side of its trigger it opens on (its `placement`), which it comes in from: `"bottom"` unless set. */
+  side?: PopupSide;
+  /** With a pointer, its least width in points: 200 unless set. */
+  minWidth?: number;
 }
 
 /**
- * A menu's items on their surface: with a pointer the popup surface every
- * menu shares (`popupSurface`), at least `minWidth` (200) across, coming in
- * from the trigger's `side` (`PopIn`: a fade, 96% to full size, 4 points of
- * slide, 150 ms); on a touch screen the items alone, in the sheet that
- * slides up (`menuSheet`). `flush` drops the padding (a menu that scrolls,
- * its `Scroll` padded instead).
+ * What a menu takes besides its items (spread it on a `Menu` or a
+ * `ContextMenu`; its submenus' popups take the same): with a pointer the
+ * popup surface every menu shares (`popupSurface`), at least `minWidth`
+ * across, coming in from the trigger's `side` (`popInStyles`: a fade, 96%
+ * to full size, 4 points of slide, 150 ms); on a touch screen the sheet
+ * that slides up, the card's surface with its top corners 20 points round
+ * and 34 points under its rows for the home indicator; the scrim behind the
+ * sheet. The surface is the popup's own box: `nsh/base` holds it to the
+ * room on its side and scrolls the items inside it, so its edges and
+ * shadow stay put. Its values are getters, so they follow the appearance.
  */
-export function MenuPanel(props: { side?: PopupSide; flush?: boolean; minWidth?: number; children: JSX.Element }) {
-  if (!pointer) return props.children;
-  return (
-    <PopIn side={props.side} style={{ ...popupSurface(), minWidth: props.minWidth ?? 200, padding: props.flush ? 0 : 4 }}>
-      {props.children}
-    </PopIn>
-  );
+export function menuPopup(o?: MenuPopupOptions) {
+  return {
+    get popupStyle(): ViewStyle {
+      return pointer
+        ? { ...popupSurface(), minWidth: o?.minWidth ?? 200, ...popInStyles(o?.side).style }
+        : { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderCurve: "continuous", paddingHorizontal: 10, paddingTop: 10, paddingBottom: 34 };
+    },
+    get popupStartingStyle(): ViewStyle | undefined {
+      return pointer ? popInStyles(o?.side).starting : undefined;
+    },
+    get backdropStyle(): ViewStyle {
+      return backdrop();
+    },
+  };
 }
 
 /** A group's title in a menu: not an item, nothing to press; 11 points semibold with a pointer, 13 on a touch screen, faint. */
@@ -159,7 +165,7 @@ export function menuSeparator(): ViewStyle {
 /**
  * The row that opens a submenu (a `Submenu`'s `trigger`): `menuItemLook`'s
  * row, `lead` (an icon) before the label and a faint chevron at its end;
- * disabled, 35%.
+ * disabled, 50%.
  */
 export function SubmenuRow(props: { label: string; lead?: JSX.Element; disabled?: boolean }) {
   const look = menuItemLook();

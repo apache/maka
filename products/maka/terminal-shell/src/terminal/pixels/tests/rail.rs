@@ -66,6 +66,8 @@ pub(super) fn every_visible_turn_mark_can_be_clicked_with_cell_coordinates() {
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into(), host.into()],
+        asset_root_from: Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")),
+        ..Default::default()
     })
     .unwrap();
     check_marks(&bundle.code);

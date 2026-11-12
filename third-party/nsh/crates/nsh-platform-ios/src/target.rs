@@ -2,7 +2,7 @@
 //! gesture actions, pull-to-refresh, scroll view and text input delegate
 //! calls and display link ticks. Views are identified by their `tag` (the node id).
 
-use dispatch2::DispatchQueue;
+use dispatch2::{DispatchQueue, MainThreadBound};
 use nsh_core::{
     EventKind, EventPayload, KeyboardTaps, NodeId, SubmitBehavior,
     geometry::{point, px},
@@ -37,6 +37,9 @@ pub(crate) struct TargetIvars {
     scrolls_applied: std::cell::RefCell<rustc_hash::FxHashMap<NodeId, u32>>,
     /// The app's keyboard shortcuts, matched as keys are pressed.
     keymap: crate::keymap::KeymapState,
+    /// The scroll views of the surface the embedding app may watch
+    /// ([`crate::scroll_watch`]).
+    scrolls: crate::scroll_watch::SurfaceScrolls,
 }
 
 define_class!(
@@ -126,9 +129,15 @@ define_class!(
 
         #[unsafe(method(handleRefresh:))]
         fn handle_refresh(&self, control: &UIRefreshControl) {
-            if let Some(scroll) = control.superview() {
-                self.dispatch(scroll.tag() as NodeId, EventKind::Refresh, EventPayload::None);
-            }
+            // The control names its scroll view (`refresh_owner`): UIKit
+            // may move it into an untagged container (iOS 26 under a large
+            // title), so its superview may name nothing.
+            let id = crate::mount::refresh_owner(control);
+            let control = MainThreadBound::new(control.retain(), self.mtm());
+            self.with_mounter(move |m| {
+                let mtm = MainThreadMarker::new().expect("main thread");
+                m.refresh_pulled(id, control.get(mtm));
+            });
         }
 
         #[unsafe(method(dismissKeyboard:))]
@@ -336,6 +345,9 @@ define_class!(
                 .control
                 .scroll(id, point(px(offset.x as f32), px(offset.y as f32)), applied);
             self.with_mounter(move |m| m.scrolled(id, offset));
+            // The host's handle hears it in this frame, without the mounter
+            // (its listener may scroll, which calls back in).
+            self.ivars().scrolls.scrolled(id);
             // A text area scrolling moves its caret, and a built-in bar's
             // thumb.
             if scroll.downcast_ref::<input::Area>().is_some() {
@@ -498,12 +510,14 @@ impl EventTarget {
         mtm: MainThreadMarker,
         control: EngineControl,
         mounter: SharedMounter,
+        scrolls: crate::scroll_watch::SurfaceScrolls,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(TargetIvars {
             control,
             mounter,
             scrolls_applied: Default::default(),
             keymap: Default::default(),
+            scrolls,
         });
         // SAFETY: NSObject's designated initializer.
         unsafe { msg_send![super(this), init] }
@@ -529,6 +543,13 @@ impl EventTarget {
     /// Forgets a deleted scroll view.
     pub(crate) fn scroll_deleted(&self, id: NodeId) {
         self.ivars().scrolls_applied.borrow_mut().remove(&id);
+    }
+
+    /// The user gave the surface input with `modality` (a finger going
+    /// down, a hardware key): told before it acts, so the focus it moves
+    /// shows or not (`focus-visible:`).
+    pub(crate) fn input_with(&self, modality: nsh_core::platform::InputModality) {
+        self.ivars().control.set_input_modality(modality);
     }
 
     /// The app's keyboard shortcuts.
@@ -705,6 +726,13 @@ impl EventTarget {
     /// only dismiss it (`keyboardShouldPersistTaps` "never").
     pub(crate) fn press_allowed(&self, view: &UIView) -> bool {
         self.keyboard_tap(view) != Some(KeyboardTaps::Never) || on_input(view)
+    }
+
+    /// The host stopped `scroll`'s glide ([`crate::ScrollHandle::stop_scrolling`]):
+    /// UIKit reports no end of it, so the app hears it here.
+    pub(crate) fn glide_stopped(&self, scroll: &UIScrollView) {
+        self.scroll_event(scroll, EventKind::MomentumEnd);
+        self.scroll_event(scroll, EventKind::ScrollEnd);
     }
 
     fn scroll_event(&self, scroll: &UIScrollView, event: EventKind) {

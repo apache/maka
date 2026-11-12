@@ -145,6 +145,20 @@ fn emphasis_beside_cjk_text() {
             }),
         ]
     );
+    // Full-width brackets inside, punctuation after; plain CJK letters.
+    assert_eq!(
+        blocks("说明**（可选）**为"),
+        vec![p(vec![t("说明"), strong(vec![t("（可选）")]), t("为")])]
+    );
+    assert_eq!(
+        blocks("**注意**：这里，中文**加粗**中文"),
+        vec![p(vec![
+            strong(vec![t("注意")]),
+            t("：这里，中文"),
+            strong(vec![t("加粗")]),
+            t("中文"),
+        ])]
+    );
     // `_` reads as in CommonMark: not inside words.
     assert_eq!(blocks("中_“x”_中"), vec![p(vec![t("中_“x”_中")])]);
     // Code, HTML and links keep their text as written.
@@ -278,11 +292,29 @@ fn bare_urls_end_at_cjk_text() {
             t("。后面"),
         ])]
     );
-    // A path with CJK characters ends there; angle brackets and links keep
-    // the whole URL.
+    // Emphasis after the CJK text that ends the URL.
+    assert_eq!(
+        blocks("访问https://a.dev获取**数据**"),
+        vec![p(vec![
+            t("访问"),
+            url("https://a.dev"),
+            t("获取"),
+            strong(vec![t("数据")]),
+        ])]
+    );
+    // A path keeps its CJK characters and ends at CJK punctuation; angle
+    // brackets and links keep the whole URL.
     assert_eq!(
         blocks("https://zh.wikipedia.org/wiki/中文"),
-        vec![p(vec![url("https://zh.wikipedia.org/wiki/"), t("中文")])]
+        vec![p(vec![url("https://zh.wikipedia.org/wiki/中文")])]
+    );
+    assert_eq!(
+        blocks("见https://zh.wikipedia.org/wiki/中文（维基）。"),
+        vec![p(vec![
+            t("见"),
+            url("https://zh.wikipedia.org/wiki/中文"),
+            t("（维基）。"),
+        ])]
     );
     assert_eq!(
         blocks("<https://zh.wikipedia.org/wiki/中文> [维基](https://zh.wikipedia.org/wiki/中文)"),
@@ -336,6 +368,31 @@ fn bare_urls_beside_latin_text_are_githubs() {
 }
 
 #[test]
+fn bare_urls_in_link_text_are_text() {
+    // Links do not contain other links (GFM): a URL written as a link's
+    // text is that text, at any depth, from a reference or `<a>` too.
+    assert_eq!(
+        blocks("[https://a.com](https://b.com)"),
+        vec![p(vec![link("https://b.com", vec![t("https://a.com")])])]
+    );
+    assert_eq!(
+        blocks("[see **www.a.com** 中文](https://b.com)"),
+        vec![p(vec![link(
+            "https://b.com",
+            vec![t("see "), strong(vec![t("www.a.com")]), t(" 中文")]
+        )])]
+    );
+    assert_eq!(
+        blocks("[https://a.com][r]\n\n[r]: https://b.com"),
+        vec![p(vec![link("https://b.com", vec![t("https://a.com")])])]
+    );
+    assert_eq!(
+        blocks("<a href=\"https://b.com\">https://a.com</a>"),
+        vec![p(vec![link("https://b.com", vec![t("https://a.com")])])]
+    );
+}
+
+#[test]
 fn emphasis_beside_latin_text_is_commonmarks() {
     // CommonMark's examples, unchanged.
     assert_eq!(blocks("a**\"foo\"**"), vec![p(vec![t("a**\"foo\"**")])]);
@@ -354,6 +411,15 @@ fn emphasis_beside_latin_text_is_commonmarks() {
         ])])]
     );
     assert_eq!(blocks("naïve**“q”**x"), vec![p(vec![t("naïve**“q”**x")])]);
+    assert_eq!(
+        blocks("**bold**text a*b*c"),
+        vec![p(vec![
+            strong(vec![t("bold")]),
+            t("text a"),
+            em(vec![t("b")]),
+            t("c"),
+        ])]
+    );
 }
 
 #[test]
@@ -1140,6 +1206,195 @@ fn streaming() {
 }
 
 #[test]
+fn streamed_reference_brackets_and_unknown_tags_stay_text() {
+    // Every prefix of a streamed reply: reference numbers in escaped
+    // brackets never flash as a formula, and words in an unknown tag never
+    // vanish once their `>` has arrived.
+    let parser = Parser::new().options(MarkdownOptions {
+        streaming: true,
+        ..options()
+    });
+    for source in [
+        "增长较快\\[1\\]\\[3\\]，见 <US tech> 板块",
+        "\\[1\\] \\[3\\]",
+        "<foo> and <US tech>\nnext",
+    ] {
+        for (end, _) in source.char_indices().skip(1).chain([(source.len(), ' ')]) {
+            let prefix = &source[..end];
+            let doc = parser.markdown(prefix);
+            let debug = format!("{:?}", doc.blocks);
+            assert!(!debug.contains("Math"), "{prefix:?}: {debug}");
+            let text = doc.plain_text();
+            for tag in ["<US tech>", "<foo>"] {
+                if prefix.contains(tag) {
+                    assert!(text.contains(tag), "{prefix:?}: {text:?}");
+                }
+            }
+        }
+    }
+    // Finished, the same text.
+    assert_eq!(
+        blocks("增长较快\\[1\\]\\[3\\]，见 <US tech> 板块"),
+        vec![p(vec![t("增长较快[1][3]，见 <US tech> 板块")])]
+    );
+    assert_eq!(blocks("\\[1\\] \\[3\\]"), vec![p(vec![t("[1] [3]")])]);
+    assert_eq!(blocks("<foo> x"), vec![p(vec![t("<foo> x")])]);
+}
+
+/// Every prefix of `source` (at each character), as a streamed reply
+/// shows it.
+fn streamed_prefixes(source: &str) -> impl Iterator<Item = (&str, Document)> {
+    let parser = Parser::new().options(MarkdownOptions {
+        streaming: true,
+        ..options()
+    });
+    source
+        .char_indices()
+        .skip(1)
+        .map(|(end, _)| end)
+        .chain([source.len()])
+        .map(move |end| (&source[..end], parser.markdown(&source[..end])))
+}
+
+/// The list items and blocks of code in `blocks`, at any depth.
+fn walk<'b>(blocks: &'b [Block], items: &mut Vec<&'b ListItem>, code: &mut Vec<&'b CodeBlock>) {
+    for block in blocks {
+        match block {
+            Block::List { items: list, .. } => {
+                for item in list {
+                    items.push(item);
+                    walk(&item.children, items, code);
+                }
+            }
+            Block::Blockquote { children, .. } | Block::Details { children, .. } => {
+                walk(children, items, code);
+            }
+            Block::CodeBlock(block) => code.push(block),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn streamed_markers_never_flash_empty_items_or_headings() {
+    // A list marker alone, digits that become one and a `-` line being
+    // typed: no empty item and no heading of the line above in any
+    // prefix, and the finished reply as it parses without streaming.
+    for source in [
+        "para\n\n- one\n- two\n\n1. first\n2. second\n10. tenth",
+        "Intro\n- **bold** item\n  - nested\n> - quoted\n> - again",
+        "Title\n-- not a heading, a dash\n\nText\n== and equals",
+        "Done: 1 + 1\n= 2, and -1\n-2 stays text",
+    ] {
+        for (prefix, doc) in streamed_prefixes(source) {
+            let debug = format!("{:?}", doc.blocks);
+            assert!(!debug.contains("Heading"), "{prefix:?}: {debug}");
+            let (mut items, mut code) = (Vec::new(), Vec::new());
+            walk(&doc.blocks, &mut items, &mut code);
+            assert!(
+                items.iter().all(|item| !item.children.is_empty()),
+                "{prefix:?}: {debug}"
+            );
+        }
+        let (_, streamed) = streamed_prefixes(source).last().expect("a prefix");
+        assert_eq!(streamed.blocks, blocks(source), "{source:?}");
+    }
+    // A heading's underline is one once its line ends.
+    let source = "Title\n---\nBody";
+    for (prefix, doc) in streamed_prefixes(source) {
+        let heading = doc
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Heading { .. }));
+        assert_eq!(heading, prefix.contains("---\n"), "{prefix:?}: {doc:?}");
+    }
+    assert_eq!(
+        blocks(source),
+        vec![heading(2, "Title", "title"), p(vec![t("Body")])]
+    );
+    // Finished, CommonMark as written.
+    assert_eq!(
+        blocks("para\n\n-"),
+        vec![
+            p(vec![t("para")]),
+            Block::List {
+                ordered: false,
+                start: 1,
+                loose: false,
+                items: vec![item(vec![])],
+            }
+        ]
+    );
+    assert_eq!(blocks("Title\n--")[0], heading(2, "Title", "title"));
+}
+
+#[test]
+fn streamed_fences_never_flash_empty_code_or_their_closer() {
+    // A fence's info string and its closer being typed: no block of code
+    // before its opening line ends, and no backtick of the closer in the
+    // code.
+    for source in [
+        "Intro\n\n```python\nprint(1)\n```\n\nAfter",
+        "- step\n\n  ```sh\n  ls\n  ```",
+        "````md\n```\nnested\n```\n````",
+        "~~~\nplain\n~~~",
+    ] {
+        let finished = blocks(source);
+        let mut finished_code = Vec::new();
+        walk(&finished, &mut Vec::new(), &mut finished_code);
+        for (prefix, doc) in streamed_prefixes(source) {
+            let (mut items, mut code) = (Vec::new(), Vec::new());
+            walk(&doc.blocks, &mut items, &mut code);
+            for block in code {
+                // What a block holds is the start of what it holds
+                // finished, never more (a closer's backtick).
+                assert!(
+                    finished_code
+                        .iter()
+                        .any(|f| f.code.starts_with(&block.code) && f.language == block.language),
+                    "{prefix:?}: {block:?}"
+                );
+                // A language's name never shows half typed.
+                let opener = format!("{}\n", block.language.as_deref().unwrap_or(""));
+                assert!(prefix.contains(&opener), "{prefix:?}: {block:?}");
+            }
+        }
+        let (_, streamed) = streamed_prefixes(source).last().expect("a prefix");
+        assert_eq!(streamed.blocks, finished, "{source:?}");
+    }
+    // Finished, CommonMark as written: an open fence runs to the end.
+    assert_eq!(
+        blocks("```py\nx\n``"),
+        vec![Block::CodeBlock(CodeBlock {
+            source: Vec::new(),
+            language: Some("py".into()),
+            meta: None,
+            code: "x\n``".into(),
+        })]
+    );
+}
+
+#[test]
+fn streamed_stars_inside_words_stay_text() {
+    // A `*` inside a word is closed by nothing the stream adds: no prefix
+    // shows emphasis the finished reply does not have.
+    for source in ["a*b", "f(x) = a*x + b\n\nso 2*3 is 6", "- x*y\n- a*b"] {
+        for (prefix, doc) in streamed_prefixes(source) {
+            let debug = format!("{:?}", doc.blocks);
+            assert!(!debug.contains("Emphasis"), "{prefix:?}: {debug}");
+        }
+        let (_, streamed) = streamed_prefixes(source).last().expect("a prefix");
+        assert_eq!(streamed.blocks, blocks(source), "{source:?}");
+    }
+    assert_eq!(blocks("a*b"), vec![p(vec![t("a*b")])]);
+    // Emphasis written inside a word is still emphasis once closed.
+    assert_eq!(
+        blocks("a*b*c"),
+        vec![p(vec![t("a"), em(vec![t("b")]), t("c")])]
+    );
+}
+
+#[test]
 fn empty_paragraphs_are_dropped() {
     assert_eq!(
         blocks("<!-- comment -->\n\na <!-- c --> b"),
@@ -1519,6 +1774,30 @@ fn native_sources_compose_crlf_streaming_deletions_and_tex_rewrites() {
             ("x".into(), vec![(0, 1, 2, 7, R)]),
             (" B".into(), vec![(0, 2, 7, 9, L)]),
         ]
+    );
+}
+
+#[test]
+fn native_sources_keep_offsets_when_streaming_holds_undecided_lines() {
+    use nsh_core::TextSourceKind::Literal as L;
+    let parser = Parser::new().options(MarkdownOptions {
+        streaming: true,
+        ..options()
+    });
+    // Holding an unfinished fence also repairs the preceding emphasis.
+    // CRLF normalization and synthetic closers never become source bytes.
+    assert_eq!(
+        source_leaves(&parser.markdown_projection("同🙂\r\n\r\n**粗体\r\n```ru")),
+        vec![
+            ("同🙂".into(), vec![(0, 3, 0, 7, L)]),
+            ("粗体".into(), vec![(0, 2, 13, 19, L)]),
+        ]
+    );
+    // Removing the unfinished emphasis exposes a list marker; that line
+    // stays held too, without shifting the paragraph's original interval.
+    assert_eq!(
+        source_leaves(&parser.markdown_projection("同🙂\r\n- **")),
+        vec![("同🙂".into(), vec![(0, 3, 0, 7, L)])]
     );
 }
 

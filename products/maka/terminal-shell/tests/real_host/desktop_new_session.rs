@@ -179,12 +179,24 @@ impl Desktop {
         std::fs::create_dir_all(&directory).unwrap();
         self.pump();
         let guard = self.frame.lock().unwrap();
-        let frame = guard.as_ref().unwrap();
+        let Some(frame) = guard.as_ref() else {
+            return;
+        };
         let size = frame.size();
         let mut ppm = format!("P6\n{} {}\n255\n", size.width.0, size.height.0).into_bytes();
         for pixel in frame.pixels().as_chunks::<4>().0 {
             ppm.extend_from_slice(&pixel[..3]);
         }
+        let name = match std::env::var("NEXTEST_TEST_NAME") {
+            Ok(test) => {
+                let test = test
+                    .rsplit("::")
+                    .next()
+                    .expect("a test name has a final component");
+                format!("{test}-{name}")
+            }
+            Err(_) => name.to_owned(),
+        };
         std::fs::write(directory.join(format!("{name}.ppm")), ppm).unwrap();
     }
 
@@ -207,7 +219,8 @@ impl Desktop {
 
     fn pump(&self) {
         self.platform.pump_with_draw(true);
-        assert!(self.platform.take_error().is_none(), "native UI failed");
+        let error = self.platform.take_error();
+        assert!(error.is_none(), "native UI failed: {error:?}");
     }
 
     async fn until<T>(&self, stage: &str, mut read: impl FnMut() -> Option<T>) -> T {
@@ -224,10 +237,7 @@ impl Desktop {
             }
         })
         .await
-        .unwrap_or_else(|_| {
-            self.artifact("failure");
-            panic!("{stage}; observed: {:?}", self.outcome.lock().unwrap());
-        })
+        .unwrap_or_else(|_| self.timed_out(stage))
     }
 
     /// Acts until `done`, slowly enough that a repeat does not undo what the
@@ -259,10 +269,36 @@ impl Desktop {
             }
         })
         .await
-        .unwrap_or_else(|_| {
-            self.artifact("failure");
-            panic!("{stage}; observed: {:?}", self.outcome.lock().unwrap());
-        })
+        .unwrap_or_else(|_| self.timed_out(stage))
+    }
+
+    fn timed_out(&self, stage: &str) -> ! {
+        self.artifact("failure");
+        let rendered = [
+            "Focus message composer",
+            "Send message",
+            "Stop response",
+            "Add to queue",
+            "Edit queued message 1",
+            "Retry message",
+            "Continue response",
+            "Messages",
+        ]
+        .map(|label| (label, self.controls(label)));
+        let frame = self
+            .frame
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|frame| (frame.token(), frame.size()));
+        panic!(
+            "{stage}; native target: {:?}; native editor text: {:?}; native pending: {}; native active: {}; captured frame: {frame:?}; rendered controls: {rendered:?}; preview outcome: {:?}",
+            self.platform.text_input_target(),
+            self.platform.editor_text(),
+            self.platform.has_pending(),
+            self.platform.is_active(),
+            self.outcome.lock().unwrap(),
+        );
     }
 
     fn key(&self, name: &str, control: bool) {
@@ -594,7 +630,8 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
     let mut fixture = images_fixture().await;
     let (path, _) = image_file(&fixture);
     let workspace = fixture.directory.path().join("workspace");
-    std::fs::create_dir_all(workspace.join("other-project/workspace")).unwrap();
+    let nested_workspace = workspace.join("other-project").join("workspace");
+    std::fs::create_dir_all(&nested_workspace).unwrap();
     let desktop = Desktop::open(&fixture, &fixture.address).await;
     desktop.new_draft().await;
     desktop.attach(&path).await;
@@ -616,6 +653,9 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
     desktop.press("Focus message composer").await;
     desktop.expect_text("UNSENT_LOCAL_ONLY").await;
     desktop.press("Choose composer workspace").await;
+    desktop
+        .control(&format!("Use folder {}", nested_workspace.display()))
+        .await;
     desktop
         .control(&format!("Use folder {}", workspace.display()))
         .await;
@@ -1669,7 +1709,12 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         .type_text("Review the current implementation.")
         .await;
     desktop.submit().await;
-    let original = desktop.request(&mut fixture).await;
+    let original = desktop
+        .wait(
+            "initial submission did not reach the provider",
+            fixture.next_request(),
+        )
+        .await;
     let session = desktop
         .sessions()
         .await
@@ -1697,7 +1742,12 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop.key("right", false);
     desktop.artifact(&format!("steering-{theme}-{width_name}-sending"));
     gate.release();
-    let second = desktop.request(&mut fixture).await;
+    let second = desktop
+        .wait(
+            "frozen steering did not reach the provider after releasing the send reply",
+            fixture.next_request(),
+        )
+        .await;
     let sent = second.body["messages"].to_string();
     assert!(
         sent.contains("Review the current implementation.")
@@ -1796,7 +1846,12 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     );
     desktop.type_text("Check keyboard focus too.").await;
     desktop.submit().await;
-    let third = desktop.request(&mut fixture).await;
+    let third = desktop
+        .wait(
+            "steering after queue and IME did not reach the provider",
+            fixture.next_request(),
+        )
+        .await;
     let sent = third.body["messages"].to_string();
     assert!(
         sent.contains("Check keyboard focus too."),
@@ -1950,7 +2005,7 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
             .await;
         desktop.drop_paths(vec![directory.clone()], position);
         let expanded = desktop
-            .composer_height("the dropped directory did not wrap", |height| {
+            .composer_height(&format!("the dropped directory did not wrap; pending={}, blur={blur}, before={before:?}", pending_height.is_some()), |height| {
                 height > before
             })
             .await;
@@ -2200,7 +2255,17 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
         .join("../terminal-shell/tests/real_host/model_settings_preview.tsx");
     let output = fixture.directory.path().join("settings-preview");
     let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
         std::fs::read_to_string(compiled.module).unwrap()
     })
     .await
@@ -2285,7 +2350,17 @@ async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection()
         .join("../terminal-shell/tests/real_host/model_settings_preview.tsx");
     let output = fixture.directory.path().join("settings-preview");
     let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
         std::fs::read_to_string(compiled.module).unwrap()
     })
     .await
@@ -2416,7 +2491,17 @@ async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
         .join("../terminal-shell/tests/real_host/mermaid_preview.tsx");
     let output = fixture.directory.path().join("mermaid-preview");
     let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
         std::fs::read_to_string(compiled.module).unwrap()
     })
     .await
@@ -2914,7 +2999,17 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
         .join("../terminal-shell/tests/real_host/permission_preview.tsx");
     let output = fixture.directory.path().join("permission-preview");
     let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
         std::fs::read_to_string(compiled.module).unwrap()
     })
     .await

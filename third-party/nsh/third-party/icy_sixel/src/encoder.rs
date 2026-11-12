@@ -3,12 +3,13 @@
 //! This encoder uses the quantette library (MIT/Apache licensed) for optimal
 //! color palette generation and dithering, then encodes the result to SIXEL format.
 
-use crate::{BackgroundMode, PixelAspectRatio, Result, SixelError};
-use quantette::{deps::palette::Srgb, dither::FloydSteinberg, ImageRef, PaletteSize, Pipeline};
 use std::io::{self, Write};
 
 // Re-export QuantizeMethod for public API
 pub use quantette::QuantizeMethod;
+use quantette::{ImageRef, PaletteSize, Pipeline, deps::palette::Srgb, dither::FloydSteinberg};
+
+use crate::{BackgroundMode, PixelAspectRatio, Result, SixelError};
 
 /// Color type for palette entries (RGB).
 #[derive(Clone, Copy, Debug)]
@@ -29,7 +30,9 @@ struct BitMask {
 impl BitMask {
     /// Create a mask with `len` bits, all cleared.
     fn zeros(len: usize) -> Self {
-        Self { words: vec![0; len.div_ceil(64)] }
+        Self {
+            words: vec![0; len.div_ceil(64)],
+        }
     }
 
     /// Set the bit at `index` to 1.
@@ -76,7 +79,11 @@ pub struct EncodeOptions {
 
 impl Default for EncodeOptions {
     fn default() -> Self {
-        Self { max_colors: 256, diffusion: FloydSteinberg::DEFAULT_ERROR_DIFFUSION, quantize_method: QuantizeMethod::Wu }
+        Self {
+            max_colors: 256,
+            diffusion: FloydSteinberg::DEFAULT_ERROR_DIFFUSION,
+            quantize_method: QuantizeMethod::Wu,
+        }
     }
 }
 
@@ -102,8 +109,20 @@ impl Default for EncodeOptions {
 /// println!("{}", sixel);
 /// ```
 #[must_use = "this returns the encoded SIXEL string"]
-pub fn sixel_encode(rgba: &[u8], width: usize, height: usize, opts: &EncodeOptions) -> Result<String> {
-    sixel_encode_impl(rgba, width, height, opts, PixelAspectRatio::default(), BackgroundMode::default())
+pub fn sixel_encode(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    opts: &EncodeOptions,
+) -> Result<String> {
+    sixel_encode_impl(
+        rgba,
+        width,
+        height,
+        opts,
+        PixelAspectRatio::default(),
+        BackgroundMode::default(),
+    )
 }
 
 /// Encodes the same SIXEL image into a fallible output writer.
@@ -113,8 +132,22 @@ pub fn sixel_encode(rgba: &[u8], width: usize, height: usize, opts: &EncodeOptio
 /// string. The first writer error aborts encoding and is returned immediately;
 /// the writer may already contain a partial image. To admit a complete terminal
 /// transaction, encode to a bounded memory writer before writing to the terminal.
-pub fn sixel_encode_into<W: Write + ?Sized>(rgba: &[u8], width: usize, height: usize, opts: &EncodeOptions, output: &mut W) -> Result<()> {
-    sixel_encode_impl_into(rgba, width, height, opts, PixelAspectRatio::default(), BackgroundMode::default(), output)
+pub fn sixel_encode_into<W: Write + ?Sized>(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    opts: &EncodeOptions,
+    output: &mut W,
+) -> Result<()> {
+    sixel_encode_impl_into(
+        rgba,
+        width,
+        height,
+        opts,
+        PixelAspectRatio::default(),
+        BackgroundMode::default(),
+        output,
+    )
 }
 
 pub(crate) fn sixel_encode_impl(
@@ -126,7 +159,15 @@ pub(crate) fn sixel_encode_impl(
     background_mode: BackgroundMode,
 ) -> Result<String> {
     let mut output = Vec::new();
-    sixel_encode_impl_into(rgba, width, height, opts, pixel_aspect_ratio, background_mode, &mut output)?;
+    sixel_encode_impl_into(
+        rgba,
+        width,
+        height,
+        opts,
+        pixel_aspect_ratio,
+        background_mode,
+        &mut output,
+    )?;
     Ok(String::from_utf8(output).expect("the SIXEL encoder emits ASCII"))
 }
 
@@ -144,7 +185,10 @@ fn sixel_encode_impl_into<W: Write + ?Sized>(
     }
     let expected = width * height * 4;
     if rgba.len() != expected {
-        return Err(SixelError::BufferSizeMismatch { expected, actual: rgba.len() });
+        return Err(SixelError::BufferSizeMismatch {
+            expected,
+            actual: rgba.len(),
+        });
     }
 
     // Single pass over the RGBA buffer building both the transparency mask
@@ -165,29 +209,54 @@ fn sixel_encode_impl_into<W: Write + ?Sized>(
     let palette_size = PaletteSize::try_from(max_colors).unwrap_or(PaletteSize::MAX);
 
     // Create image reference for quantette
-    let image = ImageRef::new(width as u32, height as u32, &rgb_pixels).map_err(|e| SixelError::Quantization(e.to_string()))?;
+    let image = ImageRef::new(width as u32, height as u32, &rgb_pixels)
+        .map_err(|e| SixelError::Quantization(e.to_string()))?;
 
     // Use configured quantization method with diffusion-based dithering
     let diffusion = opts.diffusion.clamp(0.0, 1.0);
-    let pipeline = Pipeline::new().palette_size(palette_size).quantize_method(opts.quantize_method.clone());
+    let pipeline = Pipeline::new()
+        .palette_size(palette_size)
+        .quantize_method(opts.quantize_method.clone());
 
     // Apply dithering based on diffusion setting
     let indexed_image = if diffusion <= 0.0 {
         // No dithering - sharp edges, may show banding
-        pipeline.ditherer(None).input_image(image).output_srgb8_indexed_image()
+        pipeline
+            .ditherer(None)
+            .input_image(image)
+            .output_srgb8_indexed_image()
     } else {
         // Use Floyd-Steinberg dithering with specified diffusion strength
         let ditherer = FloydSteinberg::with_error_diffusion(diffusion).unwrap_or_default();
-        pipeline.ditherer(ditherer).input_image(image).output_srgb8_indexed_image()
+        pipeline
+            .ditherer(ditherer)
+            .input_image(image)
+            .output_srgb8_indexed_image()
     };
 
     // Extract palette and indices
-    let palette: Vec<Rgb> = indexed_image.palette().iter().map(|c| Rgb { r: c.red, g: c.green, b: c.blue }).collect();
+    let palette: Vec<Rgb> = indexed_image
+        .palette()
+        .iter()
+        .map(|c| Rgb {
+            r: c.red,
+            g: c.green,
+            b: c.blue,
+        })
+        .collect();
 
     let indices: Vec<u8> = indexed_image.indices().to_vec();
 
     // Encode to SIXEL with transparency support
-    encode_indexed_to_sixel(&palette, &indices, &opacity_mask, (width, height), pixel_aspect_ratio, background_mode, output)
+    encode_indexed_to_sixel(
+        &palette,
+        &indices,
+        &opacity_mask,
+        (width, height),
+        pixel_aspect_ratio,
+        background_mode,
+        output,
+    )
 }
 
 /// Encode RGBA with default options.
@@ -364,8 +433,13 @@ mod tests {
 
     #[test]
     fn writer_output_preserves_the_string_api_and_image_colours() {
-        let rgba = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
-        let opts = EncodeOptions { diffusion: 0.0, ..EncodeOptions::default() };
+        let rgba = [
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        let opts = EncodeOptions {
+            diffusion: 0.0,
+            ..EncodeOptions::default()
+        };
         let original = sixel_encode(&rgba, 2, 2, &opts).unwrap();
         let mut output = Vec::new();
         sixel_encode_into(&rgba, 2, 2, &opts, &mut output).unwrap();
@@ -377,12 +451,8 @@ mod tests {
         assert_eq!(
             decoded.pixels,
             [
-                255, 0, 0, 255, 0, 255, 0, 255,
-                0, 0, 255, 255, 255, 255, 255, 255,
-                0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0,
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             ]
         );
     }
@@ -465,9 +535,21 @@ mod tests {
                 Ok(())
             }
         }
-        let mut output = Limited { bytes: Vec::new(), rejected: false };
-        let error = sixel_encode_into(&[255, 0, 0, 255], 1, 1, &EncodeOptions::default(), &mut output).unwrap_err();
-        let SixelError::Output(error) = error else { panic!("unexpected error: {error}") };
+        let mut output = Limited {
+            bytes: Vec::new(),
+            rejected: false,
+        };
+        let error = sixel_encode_into(
+            &[255, 0, 0, 255],
+            1,
+            1,
+            &EncodeOptions::default(),
+            &mut output,
+        )
+        .unwrap_err();
+        let SixelError::Output(error) = error else {
+            panic!("unexpected error: {error}")
+        };
         assert_eq!(error.to_string(), "budget exhausted");
         assert_eq!(output.bytes, b"\x1bP9");
     }

@@ -334,7 +334,9 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             };
             let Some(view) = view else { return };
             hide_error(ui);
-            view.load(App::Rust(root));
+            let app = App::Rust(root);
+            app_came(&view, &app);
+            view.load(app);
         }
         DevEvent::Building => show_status(ui, "Building…"),
         DevEvent::BuildFailed(message) => {
@@ -406,7 +408,9 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             log::info!("loading build {version}");
             hide_error(ui);
             view.set_limits(limits);
-            view.load(App::Js(bundle));
+            let app = App::Js(bundle);
+            app_came(&view, &app);
+            view.load(app);
         }
         DevEvent::Patch {
             session,
@@ -442,6 +446,16 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             }
         }
     }
+}
+
+/// `app` came: the standalone host's window, held until the app's options
+/// came, shows unless they say it starts hidden (nsh.json
+/// `window.defaultVisible: false`), as the app's package shows it.
+fn app_came(view: &AppView, app: &App) {
+    let visible = app
+        .main_window()
+        .is_none_or(nsh_core::desktop::MainWindowOptions::visible_at_launch);
+    crate::app::dev_app_came(view.surface(), visible);
 }
 
 /// A hot update could not be applied in place: loads its build from
@@ -712,6 +726,8 @@ fn show_error(ui: &Rc<RefCell<DevUi>>, title: &str, message: &str, prose: bool) 
         (ui.view.upgrade(), ui.key)
     };
     let Some(view) = view else { return };
+    // A hidden window (held for the app, or hidden by it) shows the error.
+    crate::app::dev_error_shown(view.surface());
     let container = view.container();
     let mtm = MainThreadMarker::new().expect("main thread");
     let bounds = container.bounds();

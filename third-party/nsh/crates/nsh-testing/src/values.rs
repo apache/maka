@@ -250,10 +250,71 @@ pub(crate) fn truthy(v: JsIn<'_>) -> bool {
 /// say as JS would (`undefined`, `NaN`, `-0`, `Date(2024-01-01T00:00:00.000Z)`,
 /// `/a+/i`, `Map {"a" => 1}`, `Set {1, 2}`, `Uint8Array [1,2]`, an
 /// instance with its class's name, `[Circular]` for a value inside
-/// itself).
+/// itself). Unbounded: failure messages pass what they show through
+/// [`shorten`] or [`show_pair`].
 pub(crate) fn show(v: JsIn<'_>) -> String {
     let mut out = String::new();
     Shower { stack: Vec::new() }.write(v, &mut out);
+    out
+}
+
+/// `shown` cut to `limit` characters, with `… (<n> more characters)` after
+/// what is left, so a long value cannot flood a failure message.
+pub(crate) fn shorten(shown: &str, limit: usize) -> String {
+    let total = shown.chars().count();
+    if total <= limit {
+        return shown.to_owned();
+    }
+    let rest = total - limit;
+    let mut preview: String = shown.chars().take(limit).collect();
+    // A cut string keeps its closing quote, so the message still reads.
+    if shown.starts_with('"') && !preview.ends_with('"') {
+        preview.push('…');
+        preview.push('"');
+    } else {
+        preview.push('…');
+    }
+    format!("{preview} ({})", crate::failure::more(rest, 0))
+}
+
+/// `shown` and `expected` cut around the first character where they
+/// differ, each to about half of `limit`, so a long common prefix does not
+/// hide why they differ; `…` marks where a value was cut.
+pub(crate) fn show_pair(shown: &str, expected: &str, limit: usize) -> (String, String) {
+    let total = shown.chars().count() + expected.chars().count();
+    if total <= limit {
+        return (shown.to_owned(), expected.to_owned());
+    }
+    let at = shown
+        .chars()
+        .zip(expected.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let width = (limit / 2).saturating_sub(8);
+    (window(shown, at, width), window(expected, at, width))
+}
+
+/// `value`'s characters around `at`, at most `width` of them, with `…`
+/// where it was cut.
+fn window(value: &str, at: usize, width: usize) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let len = chars.len();
+    if len <= width {
+        return value.to_owned();
+    }
+    if width == 0 {
+        return "…".into();
+    }
+    let start = at.saturating_sub(width / 2).min(len - width);
+    let end = start + width;
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.extend(&chars[start..end]);
+    if end < len {
+        out.push('…');
+    }
     out
 }
 

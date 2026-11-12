@@ -68,10 +68,10 @@ function App() {
       onChange={({ value }) => strength.set(value as number)}
       accessibilityLabel="选项强度"
       class="flex-row items-center gap-2"
-      trackClass="h-2 flex-1 px-2 rounded-full bg-muted focus-within:ring-2 focus-within:ring-primary/36 focus-within:ring-offset-2 focus-within:ring-offset-background disabled:opacity-35"
+      trackClass="h-2 flex-1 px-2 rounded-full bg-muted disabled:opacity-35"
       indicatorClass="h-full"
       rangeClass="-ml-2 rounded-full bg-linear-to-r from-primary via-primary to-muted-foreground"
-      thumbClass="h-2 w-4 rounded-full bg-muted-foreground transition hover:brightness-110 active:brightness-125 focus:outline-none disabled:brightness-100 motion-reduce:transition-none"
+      thumbClass="h-2 w-4 rounded-full bg-muted-foreground transition hover:brightness-110 active:brightness-125 focus-visible:outline-3 focus-visible:outline-primary/36 disabled:brightness-100 motion-reduce:transition-none"
       thumbStyle={{ boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.42)" }}
     >
       <Text class="w-[42px] text-right font-mono text-[11px] text-muted-foreground">{`${strength()}%`}</Text>
@@ -160,12 +160,12 @@ const price = signal<[number, number]>([200, 800]);
 
 部件显示的状态：
 
-- 滑块：指针悬停时 `hover:`，拖动时 `active:`，获得键盘焦点时 `focus:`，以及 `disabled:`。
+- 滑块：指针悬停时 `hover:`，拖动时 `active:`，获得键盘焦点时 `focus-visible:`（拖动之后也有 `focus:`），以及 `disabled:`。
 - 轨道：按压轨道并拖动时 `active:`；它是一个 `group`，所以指示条、范围和滑块可以用 `group-hover:` 和 `group-active:`。
 - 每个部件：滑块禁用时 `disabled:`。
 
 滑块随数值移动，拖动时立即跟随。滑块各状态的动效由应用决定（例如 `transition` 让滑块在 `hover:` 和 `active:` 时变亮），
-`motion-reduce:` 为要求减少动效的用户保持静止。键盘焦点在滑块上：滑块持有焦点时，轨道上的 `focus-within:` 给整条滑轨加上焦点环，滑块的 `focus:outline-none` 取代平台自带的焦点轮廓。
+`motion-reduce:` 为要求减少动效的用户保持静止。键盘焦点在滑块上：键盘把焦点移到滑块时，滑块的 `focus-visible:` 类给它加上焦点环；按下或拖动之后不显示。
 
 ## 键盘
 

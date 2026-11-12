@@ -1,10 +1,11 @@
-import { cleanup, effect, type InputRef, type JSX, reduceMotion, Scroll, signal, split, Text, View } from "nsh";
+import { cleanup, effect, type InputRef, type JSX, reduceMotion, Scroll, signal, split, Text, token, View } from "nsh";
 import { Animated, createAnimatedValue, LayoutAnimation } from "nsh";
 import { Dialog, Input, type InputProps, NavPage } from "nsh/base";
 import { Keyboard, keyboardFrame, platform, safeAreaInsets } from "nsh";
+import { isAvailable as hasWindow, titleBar } from "nsh/desktop";
 import { Icon, type IconName } from "../icons";
 import { nav } from "../nav";
-import { alpha, Appear, Badge, Button, Caption, Card, colors, DemoPage, fieldLook, fieldSize, fieldText, finish, focusRing, follow, header, hint, IconTile, Inset, Meter, mono, PageHeader, Press, radius, RoundButton, Section, Segmented, Spinner, terminal, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, tints, type Tone, toneColor } from "../ui";
+import { alpha, Appear, Badge, Button, Caption, Card, colors, DemoPage, fieldLook, fieldSize, fieldText, finish, focusRing, follow, header, hint, IconTile, Inset, Meter, PageHeader, Press, radius, RoundButton, Section, Segmented, Spinner, terminal, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, tints, type Tone, toneColor } from "../ui";
 
 /** A pointer and a keyboard: desktop density. */
 const pointer = platform.desktop;
@@ -19,7 +20,7 @@ const relayout = () => {
   if (!reduceMotion()) LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 };
 
-/** A prefix or suffix of a field: quiet text inside it, or an `addon` set off on the inset color with a hairline. */
+/** A prefix or suffix of a field: quiet text inside it, or an `addon` set off on the muted fill with a hairline. */
 function Affix(props: { text: string; addon?: boolean; side: "start" | "end" }) {
   return (
     <If
@@ -31,7 +32,8 @@ function Affix(props: { text: string; addon?: boolean; side: "start" | "end" }) 
           alignSelf: "stretch",
           justifyContent: "center",
           paddingHorizontal: fieldPad,
-          backgroundColor: colors.inset,
+          // shadcn's input addon: the muted fill, a step off the field in both appearances.
+          backgroundColor: token("muted"),
           [props.side === "start" ? "borderRightWidth" : "borderLeftWidth"]: 1,
           borderColor: colors.line,
           // The field's corners on its outer side, inside its border.
@@ -103,9 +105,10 @@ function Field(
     <View style={{ gap: terminal ? 0 : 6, translate: [shake, 0], opacity: props.disabled ? 0.5 : 1 }}>
       {/* The terminal keeps two columns between the label, the API and the hint: one would run them together. */}
       <View style={{ flexDirection: "row", alignItems: "baseline", gap: terminal ? TERMINAL_GAP : 8 }}>
-        <Text style={{ flex: 1, fontSize: 13, fontWeight: "500", color: colors.muted }}>{own.label}</Text>
+        <Text style={{ flex: 1, fontSize: 13, fontWeight: "500", color: colors.text }}>{own.label}</Text>
         <If when={own.api}>
-          <Text style={{ fontSize: 12, color: colors.faint, fontFamily: mono }}>{own.api}</Text>
+          {/* The API in the sans of the hints beside it, as the sections' notes: one face on every field's row. */}
+          <Text style={{ fontSize: 12, color: colors.faint }}>{own.api}</Text>
         </If>
         <If when={own.hint}>
           <Text style={{ fontSize: 13, color: own.hintColor ?? colors.faint, fontVariant: ["tabular-nums"], transitionProperty: "color", transitionDuration: 150 }}>{own.hint}</Text>
@@ -127,7 +130,7 @@ function Field(
           {...input}
           style={[
             {
-              ...fieldText({ readonly: props.readonly, multiline: props.multiline }),
+              ...fieldText({ readonly: props.readonly, multiline: props.multiline, inWell: true }),
               // The terminal keeps one Cell between a prefix and the value.
               paddingLeft: own.prefix && terminal ? TERMINAL_COLUMN : fieldPad,
             },
@@ -177,7 +180,7 @@ function FieldButton(props: { icon: IconName; label: string; short: string; show
       accessibilityLabel={props.label}
       disabled={props.show === false}
       hitSlop={4}
-      focusStyle={focusRing()}
+      focusVisibleStyle={focusRing()}
       hoverStyle={{ backgroundColor: alpha(colors.text, 0.06) }}
       activeStyle={{ backgroundColor: alpha(colors.text, 0.12), transform: [{ scale: 0.9 }] }}
       style={{
@@ -257,7 +260,7 @@ function LinkRow(props: { icon: IconName; title: string; note: string; first?: b
         <IconTile name={props.icon} size={34} />
         <View style={terminal ? { flex: 1, flexDirection: "row", gap: TERMINAL_GAP } : { flex: 1, gap: 2 }}>
           <Text style={{ flex: terminal ? 1 : undefined, fontSize: 15, fontWeight: "500", color: colors.text }}>{props.title}</Text>
-          <Text style={{ numberOfLines: 1, fontSize: 12, color: colors.faint, fontFamily: mono }}>
+          <Text style={{ numberOfLines: 1, fontSize: 12, color: colors.faint }}>
             {props.note}
           </Text>
         </View>
@@ -317,7 +320,7 @@ function Strength(props: { password: string }) {
             {(i) => {
               const on = follow(() => (score() > i() ? 1 : 0));
               return (
-                <View style={{ flex: 1, height: 6, borderRadius: 3, overflow: "hidden", backgroundColor: colors.track, borderWidth: 1, ...finish.track }}>
+                <View style={{ flex: 1, height: 6, borderRadius: 3, overflow: "hidden", backgroundColor: alpha(colors.text, 0.1) }}>
                   <View
                     style={{
                       position: "absolute",
@@ -569,11 +572,12 @@ export function Form() {
           <Card
             icon="form"
             title="Keyboard"
-            subtitle="keyboardDismissMode while dragging"
-            right={<Badge label={`${Math.round(keyboardFrame().height)} pt`} tone={keyboardFrame().height > 0 ? "accent" : "neutral"} />}
+            subtitle="How a drag dismisses the keyboard"
+            // Only where there is an on-screen keyboard: what it covers while up.
+            right={pointer ? undefined : <Badge label={keyboardFrame().height > 0 ? `Keyboard up, ${Math.round(keyboardFrame().height)} pt` : "Keyboard hidden"} tone={keyboardFrame().height > 0 ? "accent" : "neutral"} />}
           >
             <Segmented options={modes} value={mode()} onChange={(m) => mode.set(m)} />
-            <Caption label={hint("Drag the form with the keyboard up", "Desktops have no on-screen keyboard to dismiss")} note={mode()} />
+            <Caption label={hint("Drag the form with the keyboard up", "Desktops have no on-screen keyboard to dismiss")} />
           </Card>
         ),
         () => (
@@ -670,8 +674,7 @@ export function Form() {
             </Pair>
             <Field
               label="Offset"
-              api="numbers-and-punctuation"
-              hint="dark keyboard (iOS)"
+              hint="A dark keyboard on iOS"
               keyboardType="numbers-and-punctuation"
               ios={{ keyboardAppearance: "dark" }}
               placeholder="-12.5"
@@ -792,6 +795,11 @@ export function Form() {
       ]}
     >
       <Dialog open={sheet()} presentation="pageSheet" onOpenChange={({ open }) => sheet.set(open)} style={{ flex: 1 }}>
+        {/* On the desktops a dialog covers the whole window: leave the
+            gallery's title bar showing, and still dragging the window. */}
+        <If when={hasWindow && !terminal}>
+          <View desktop={{ windowDrag: true }} style={{ height: titleBar().height || 40, flexShrink: 0 }} />
+        </If>
         <View
           style={{
             flex: 1,
@@ -911,7 +919,7 @@ function MessageBar() {
             testID="message-bar"
             returnKeyType="send"
             style={{
-              placeholderColor: colors.faint,
+              placeholderColor: colors.muted,
               caretColor: colors.accent,
               selectionColor: colors.accent,
               flex: 1,

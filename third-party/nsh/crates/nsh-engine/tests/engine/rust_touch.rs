@@ -76,6 +76,7 @@ fn touch(phase: TouchPhase, path: &[u32], x: f32, y: f32, t: f64) -> EventPayloa
             page: nsh_core::geometry::point(px(x), px(y + 100.0)),
             location: nsh_core::geometry::point(px(x), px(y)),
             changed: true,
+            pointer_type: nsh_core::PointerType::Touch,
         }],
     }))
 }
@@ -124,6 +125,7 @@ fn a_rust_element_claims_touches_in_a_scroll_view() {
         app: App::Rust(Root::of::<Sketch>()),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,

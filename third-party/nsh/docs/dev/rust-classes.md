@@ -139,7 +139,8 @@ a visibility (`pub fn`, `pub(crate) fn`; the others are the block's helpers):
 - **`fn` without a context:** synchronous, called directly in the JS call like a class's method (`parse(text)`,
   `checksum(bytes)`): TS gets the value, not a promise.
 - **`fn` taking `cx: &mut ModuleCx`:** an op, run in order with what JS set before it (a dialog, the status bar,
-  focus). Its return type decides what TS gets:
+  focus, `cx.run_on_main_thread(f)` for APIs that only work on the platform's main thread). Its return type decides
+  what TS gets:
   - returning `()`, it gives `void`, with no reply: JS calls it and moves on, the op runs in order with the UI at
     the commit, nothing answers it (`RustOp::call` 0, no `JsEvent::Reply`), and a wrong argument throws in the call;
   - returning `Result<(), E>`, it gives `Promise<void>`: resolved once the op ran, rejected with the `Err`'s message.

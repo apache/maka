@@ -157,6 +157,16 @@ fn key_pressed(
     key: gdk::Key,
     modifiers: gdk::ModifierType,
 ) -> bool {
+    // Every key the window gets passes here first (the capture phase),
+    // before it acts: the focus it moves shows (`focus-visible:`). A
+    // modifier alone does not count.
+    let modifier = keys.current_event().is_some_and(|e| {
+        e.downcast_ref::<gdk::KeyEvent>()
+            .is_some_and(gdk::KeyEvent::is_modifier)
+    });
+    if !modifier {
+        surface.control(|c| c.set_input_modality(nsh_core::platform::InputModality::Keyboard));
+    }
     if matches!(
         key,
         gdk::Key::Tab | gdk::Key::ISO_Left_Tab | gdk::Key::KP_Tab
@@ -171,8 +181,9 @@ fn key_pressed(
     let Some(view) = focused_stop(surface, focus) else {
         return false;
     };
-    // The app's bindings come first (a menu's trigger opens at its first
-    // item with Return): the shortcut controller runs right after this.
+    // The app's bindings come first: the shortcut controller runs right
+    // after this. Return and Space on a control fire only the focus' own
+    // (a menu button's opening its menu, `keymap::fires`).
     if keys
         .current_event()
         .is_some_and(|event| crate::keymap::claims(surface, &event))
@@ -184,20 +195,47 @@ fn key_pressed(
     if core_input::opens_context_menu(key == gdk::Key::Menu, function, held) {
         return show_context_menu(surface, &view);
     }
-    let activates = matches!(
-        key,
-        gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter | gdk::Key::space
-    ) && !(held.ctrl || held.alt || held.cmd);
-    if activates && view.state().events.contains(EventKind::Press) {
-        let events = view.state().events;
-        for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
-            if events.contains(kind) {
-                surface.event(view.id(), kind, EventPayload::None);
-            }
-        }
-        return true;
+    let pressing = match key {
+        gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter => Key::Enter,
+        gdk::Key::space => Key::Char(' '),
+        _ => return false,
+    };
+    press(surface, &view, pressing, held)
+}
+
+/// Whether `focus` (a window's focus widget) is a stop that Return and
+/// Space press: one of the surface's views that takes presses. The app's
+/// bindings of those keys then give way to it, but for the focus' own
+/// (`Keymap::find_at`).
+pub(crate) fn is_control(surface: &Surface, focus: &gtk::Widget) -> bool {
+    focused_stop(surface, Some(focus.clone()))
+        .is_some_and(|view| view.state().events.contains(EventKind::Press))
+}
+
+/// Return and Space press the focused stop `view` when it takes presses
+/// ([`core_input::presses_focused_control`]), once the app's bindings of
+/// the focus passed on them. A stop that takes no presses (a `focusable`
+/// chart) hears them through the shortcuts only. True when it was
+/// pressed.
+fn press(surface: &Surface, view: &NshView, key: Key, held: nsh_core::keymap::Modifiers) -> bool {
+    if !core_input::presses_focused_control(key, held)
+        || !view.state().events.contains(EventKind::Press)
+    {
+        return false;
     }
-    false
+    crate::input::activate(surface, view);
+    true
+}
+
+/// A key pressed without a GDK event (`nsh test --target linux` without
+/// XTest) that no binding took: Return or Space press the focused stop of
+/// the key window, as [`key_pressed`] has them do. True when it was
+/// pressed.
+#[cfg(feature = "dev")]
+pub(crate) fn press_key(surface: &Surface, stroke: nsh_core::keymap::Keystroke) -> bool {
+    let focus = crate::window::key_window(surface).and_then(|w| GtkWindowExt::focus(&w));
+    focused_stop(surface, focus)
+        .is_some_and(|view| press(surface, &view, stroke.key, stroke.modifiers))
 }
 
 /// A context menu asked for on `view` without a pointer: the nearest view

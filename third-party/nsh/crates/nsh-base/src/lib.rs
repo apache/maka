@@ -1,7 +1,7 @@
 //! `nsh/base`: the behavior and infrastructure foundation of NSH apps' UI,
 //! written in Rust, with no look of its own (as `gpui-base` is GPUI Kit's):
 //! controls (`Button`, a link (`Link`), `Checkbox`, avatars (`Avatar`, `AvatarGroup`), a carousel (`Carousel` and its parts), a color picker: `ColorPicker` and its parts, `NumberInput`, `Radio` in a
-//! `RadioGroup`, `Slider`, `Switch`, `Toggle` in a `ToggleGroup`, a bar of them and of buttons and links (`Toolbar`, `ToolbarGroup`, `ToolbarSeparator`), a scroll bar of the app's own look (`Scrollbar`), `Tab` in `Tabs`, `Select`, `Combobox`, a command palette (`Command`), a one-time code: `OtpInput`), the pages of a set (`Pagination`), items that hold items (`Tree`), a progress bar (`Progress`), disclosure (`Collapsible`, `Accordion` and its parts),
+//! `RadioGroup`, `Slider`, `Switch`, `Toggle` in a `ToggleGroup`, a bar of them and of buttons and links (`Toolbar`, `ToolbarGroup`, `ToolbarSeparator`), a scroll bar of the app's own look (`Scrollbar`), `Tab` in `Tabs`, `Select`, `Combobox`, a command palette (`Command`), an emoji picker (`EmojiPicker`), a one-time code: `OtpInput`), the pages of a set (`Pagination`), items that hold items (`Tree`), a progress bar (`Progress`), disclosure (`Collapsible`, `Accordion` and its parts),
 //! the parts of charts (`plot`: `nsh/base/plot`), navigation (stacks and pages), dialogs, popups on the core's overlays
 //! (`Popover`, `HoverCard`, `Menu`, `ContextMenu`, `Tooltip`, `Sheet`), a code editor
 //! (`Editor`), the changes between two texts (`DiffView`), tables over any number of rows and columns (`DataTable`) and static tables
@@ -29,16 +29,19 @@ mod collapsible;
 mod color_picker;
 mod combobox;
 mod command;
-mod data_table;
+pub mod data_table;
 mod date_picker;
 #[cfg(feature = "editor")]
 mod diff;
 pub mod dock;
 #[cfg(feature = "editor")]
 pub mod editor;
+#[cfg(feature = "emoji-picker")]
+mod emoji_picker;
 mod hover_card;
 mod keys;
 mod link;
+mod link_hint;
 mod listbox;
 mod menu;
 mod navigation;
@@ -71,6 +74,13 @@ mod term;
 pub mod terminal;
 pub mod text_view;
 
+/// `EmojiPicker`'s emoji (`emoji_picker/emoji.tsv`): the native runtimes
+/// embed them; `nsh` publishes them next to a web runtime, which fetches
+/// them for its first picker.
+#[cfg(all(feature = "emoji-picker", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub use crate::emoji_picker::EMOJI_DATA;
+
 /// The KaTeX fonts `TextView` draws formulas with, in one file,
 /// zstd-compressed (about 230 kB of 500 kB; license in
 /// `fonts/katex.LICENSE.txt`). The native runtimes embed them; `nsh` publishes
@@ -94,6 +104,12 @@ use nsh_core::element::{ComponentSpec, Registry};
 /// TSX's `Input` of `nsh/base`, a host element the core makes.
 pub use nsh_core::element::{Input, input};
 
+#[cfg(feature = "emoji-picker")]
+pub use crate::emoji_picker::{
+    EmojiAnnotation, EmojiEntry, EmojiGroup, EmojiGroupId, EmojiGroupLabels, EmojiPicker,
+    EmojiPickerApi, EmojiPickerElement, EmojiPickerEvent, EmojiPickerProps, EmojiSkinTone,
+    emoji_picker,
+};
 #[cfg(feature = "term")]
 pub use crate::term::{
     Terminal, TerminalApi, TerminalColor, TerminalCursor, TerminalElement, TerminalEmulator,
@@ -161,9 +177,10 @@ pub use crate::{
     link::{Link, LinkElement, LinkEvent, LinkOpenWith, LinkProps, link},
     menu::{
         ContextMenu, ContextMenuElement, ContextMenuProps, Menu, MenuElement, MenuEvent, MenuItem,
-        MenuItemElement, MenuItemEvent, MenuItemProps, MenuProps, MenuSeparator,
-        MenuSeparatorElement, MenuSeparatorProps, Submenu, SubmenuElement, SubmenuEvent,
-        SubmenuProps, context_menu, menu, menu_item, menu_separator, submenu,
+        MenuItemElement, MenuItemEvent, MenuItemProps, MenuList, MenuListElement, MenuListEntry,
+        MenuListProps, MenuProps, MenuSeparator, MenuSeparatorElement, MenuSeparatorProps, Submenu,
+        SubmenuElement, SubmenuEvent, SubmenuProps, context_menu, menu, menu_item, menu_list,
+        menu_separator, submenu,
     },
     navigation::{dialog, nav_page, nav_stack},
     number_input::{
@@ -296,6 +313,8 @@ pub fn registry_of(parts: impl IntoIterator<Item = parts::Part>) -> Registry {
 pub mod parts {
     use nsh_core::element::Registry;
 
+    #[cfg(feature = "emoji-picker")]
+    use crate::EmojiPicker;
     #[cfg(feature = "plot")]
     use crate::plot;
     #[cfg(feature = "rich-editor")]
@@ -329,6 +348,8 @@ pub mod parts {
         ("toast", toast),
         ("pickers", pickers),
         ("color_picker", color_picker),
+        #[cfg(feature = "emoji-picker")]
+        ("emoji_picker", emoji_picker),
         ("carousel", carousel),
         ("tree", tree),
         ("fields", fields),
@@ -448,6 +469,13 @@ pub mod parts {
             .register::<ColorEyeDropper>();
     }
 
+    /// `EmojiPicker`: a search field over every emoji, with the emoji's
+    /// data (fetched by the web runtime the first time a picker shows).
+    #[cfg(feature = "emoji-picker")]
+    pub fn emoji_picker(registry: &mut Registry) {
+        registry.register::<EmojiPicker>();
+    }
+
     /// `Carousel` and its parts.
     pub fn carousel(registry: &mut Registry) {
         registry
@@ -551,7 +579,12 @@ mod tests {
     /// The exports are named after the types (`std::any::type_name`): a
     /// renamed type, or a compiler that formats type names differently,
     /// changes what apps import.
-    #[cfg(all(feature = "editor", feature = "plot", feature = "rich-editor"))]
+    #[cfg(all(
+        feature = "editor",
+        feature = "emoji-picker",
+        feature = "plot",
+        feature = "rich-editor"
+    ))]
     #[test]
     fn the_exports_are_pinned() {
         let registry = super::registry();
@@ -591,6 +624,7 @@ mod tests {
                 "DiffView",
                 "DockArea",
                 "Editor",
+                "EmojiPicker",
                 "HoverCard",
                 "Link",
                 "Menu",

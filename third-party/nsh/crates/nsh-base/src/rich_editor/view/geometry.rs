@@ -114,6 +114,10 @@ pub(crate) struct Geometry {
     /// Each block's frame in its parent's box, and its parent; `None` for
     /// a frame measured in the content box directly (a content slot).
     pub(crate) frames: HashMap<u64, (Option<u64>, Bounds<Points>)>,
+    /// Where a block's children start in its box, when they sit in a
+    /// holder that is not the block's own origin (a task item's content,
+    /// after its checkbox): their frames are in the holder, not the block.
+    pub(crate) insets: HashMap<u64, Point<Points>>,
     /// The textblocks, by block id.
     pub(crate) texts: HashMap<u64, TextGeo>,
     /// The atoms and node views edited as units, by block id: their
@@ -159,7 +163,13 @@ impl Geometry {
             at.x += frame.origin.x;
             at.y += frame.origin.y;
             id = match parent {
-                Some(p) => Some(*p),
+                Some(p) => {
+                    if let Some(inset) = self.insets.get(p) {
+                        at.x += inset.x;
+                        at.y += inset.y;
+                    }
+                    Some(*p)
+                }
                 None => return Some(at),
             };
             guard += 1;
@@ -468,6 +478,23 @@ fn line_of(lines: &[TextLine], t: u32, affinity: Affinity) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A task item's content holds its blocks after the checkbox: their
+    /// frames are in the holder, so the holder's offset is part of where
+    /// they are (the caret and the selection of a task's text).
+    #[test]
+    fn a_holders_inset_is_part_of_its_children_origin() {
+        let mut geo = Geometry::default();
+        let at =
+            |x: f32, y: f32| Bounds::new(Point::new(px(x), px(y)), Size::new(px(100.0), px(20.0)));
+        geo.frames.insert(1, (Some(DOC), at(0.0, 40.0)));
+        geo.frames.insert(2, (Some(1), at(0.0, 0.0)));
+        assert_eq!(geo.origin(2), Some(Point::new(px(0.0), px(40.0))));
+        geo.insets.insert(1, Point::new(px(24.0), px(0.0)));
+        assert_eq!(geo.origin(2), Some(Point::new(px(24.0), px(40.0))));
+        // The item itself is in its own parent's box: no inset of its own.
+        assert_eq!(geo.origin(1), Some(Point::new(px(0.0), px(40.0))));
+    }
 
     fn map() -> InlineMap {
         // "ab", an atom, a widget before "cd".

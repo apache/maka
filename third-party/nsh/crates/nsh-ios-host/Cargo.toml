@@ -3,6 +3,7 @@ name = "nsh-ios-host"
 description = "Prebuilt development host app (Mac Catalyst / iOS) that runs a nsh bundle."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true

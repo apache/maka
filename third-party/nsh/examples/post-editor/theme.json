@@ -1,0 +1,8 @@
+{
+  "name": "post-editor",
+  "cssVars": {
+    "theme": {},
+    "light": { "up": "#138a5a", "down": "#d92d3a", "info": "#2563eb" },
+    "dark": { "up": "#45d49a", "down": "#ff6b78", "info": "#6aa6ff" }
+  }
+}

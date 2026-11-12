@@ -157,10 +157,14 @@ player.dispose();
 
 - `Sound.available(): Promise<boolean>`: whether this platform plays sounds
   (`Environment::audio`, or the core has an `AudioBackend`).
-- `Sound.load(src: string): Promise<Sound>`: fetches the bytes and has the
+- `Sound.load(src: string | Uint8Array): Promise<Sound>`: fetches the bytes and has the
   platform decode them to PCM. `src` is what `Image` takes: a bundled asset
   (relative path or `asset:`; TSX imports `.wav`, `.m4a`, `.aac` and `.mp3`
-  files as their `asset:/` URL and ships them, `nsh-bundler`'s `plugin.rs`), a `file:` URL, `data:` / `blob:`, or `http(s)`.
+  files, and any file with `?url`, as their `asset:/` URL and ships them,
+  `nsh-bundler`'s `plugin.rs`), a `file:` URL, `data:` / `blob:`, or `http(s)`;
+  or a sound file's bytes (`SoundSource::Bytes` in Rust, which also takes
+  `include_bytes!`), sent to the platform as a `data:` source's are, named
+  by the format their first bytes say and a digest of them.
   The bytes come through the image loader's L1–L3 (`image-loading-design.md`:
   assets, files, the remote loader with its disk cache, dedup and limits) so
   `Sound.load` never writes a second loader; the platform only decodes.

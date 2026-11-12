@@ -167,7 +167,9 @@ pub(crate) fn state(hwnd: HWND) -> Option<WindowState> {
         state.mode = mode;
         state.minimized = minimized;
         state.visible = shown && !minimized;
-        state.focused = foreground;
+        // A window hidden while it had the keyboard can stay the foreground
+        // one: the user sees nothing take keys there.
+        state.focused = foreground && shown;
         state.content_bounds = content_bounds(hwnd, &screen).unwrap_or(state.bounds);
         state.display = Some(screen.display.id);
         state.scale_factor = window::dpi(hwnd) as f32 / 96.0;
@@ -512,6 +514,13 @@ pub(crate) fn size_content(hwnd: HWND, content: nsh_core::geometry::Size<Points>
 pub(crate) fn bounds_of(hwnd: HWND) -> Option<Bounds<Points>> {
     let rect = window_rect(hwnd)?;
     with_screens(|screens| Some(screen_of(screens, hwnd, rect)?.bounds(rect)))
+}
+
+/// `rect` (screen pixels) in screen points, converted on the monitor with
+/// most of it: a tray icon's, whose taskbar may be on another monitor than
+/// the app's window.
+pub(crate) fn screen_bounds(rect: RECT) -> Option<Bounds<Points>> {
+    with_screens(|screens| Some(screens.native_screen(rect)?.bounds(rect)))
 }
 
 #[cfg(test)]

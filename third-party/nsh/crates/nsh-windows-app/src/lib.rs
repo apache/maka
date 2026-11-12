@@ -50,9 +50,9 @@ pub fn main() -> std::process::ExitCode {
     std::process::ExitCode::FAILURE
 }
 
-/// Installs the logger and reads the package: its `nsh` directory (next
-/// to the executable, or `NSH_APP_DIR`: `nsh run` of a Rust app) and the
-/// window's options.
+/// Installs the logger (unless the app has its own) and reads the
+/// package: its `nsh` directory (next to the executable, or
+/// `NSH_APP_DIR`: `nsh run` of a Rust app) and the window's options.
 #[cfg(windows)]
 fn setup() -> (std::path::PathBuf, nsh_platform_windows::AppOptions) {
     use nsh_platform_windows::{AppOptions, Appearance, AssetBase, Limits};
@@ -81,8 +81,11 @@ fn setup() -> (std::path::PathBuf, nsh_platform_windows::AppOptions) {
     static LOGGER: Logger = Logger;
     let development = std::env::var_os("NSH_APP_DIR");
     let _ = DEVELOPMENT.set(development.is_some());
-    let _ = log::set_logger(&LOGGER);
-    log::set_max_level(log::LevelFilter::Info);
+    // An app that installed its own logger (from its native module, which
+    // runs first) keeps it, and its level, as on macOS and iOS.
+    if log::set_logger(&LOGGER).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
 
     let dir = match development {
         Some(dir) => std::path::PathBuf::from(dir),
@@ -122,6 +125,17 @@ fn setup() -> (std::path::PathBuf, nsh_platform_windows::AppOptions) {
             .filter_map(|s| s.as_str().map(str::to_owned))
             .collect();
     }
+    // nsh.json `fileTypes`: the files it opens.
+    options.file_types = info
+        .as_ref()
+        .and_then(|info| info.get("fileTypes"))
+        .map(nsh_platform_windows::file_type::file_types_from_json)
+        .unwrap_or_default();
+    // nsh.json `singleInstance`: a second launch goes to this one.
+    options.single_instance = info
+        .as_ref()
+        .and_then(|info| info.get("singleInstance")?.as_bool())
+        .unwrap_or(false);
     // The window opens in the app's appearance (no flash of the system's).
     match field("appearance").as_deref() {
         Some("light") => options.appearance = Appearance::Light,

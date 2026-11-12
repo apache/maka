@@ -3,7 +3,7 @@
 // flat surface per section, a sunk well inside it, and rows whose hover fill
 // reaches past their content.
 import type { ViewStyle } from "nsh";
-import { platform, Text, token, View } from "nsh";
+import { platform, Text, token, View, windowSize } from "nsh";
 import { colors, finish, focusRing, radius, terminal, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW } from "../theme";
 
 const pointer = platform.desktop;
@@ -83,25 +83,44 @@ export function insetSurface(): ViewStyle {
  * the padding stays a column, pushing the label in. */
 export const ROW_BLEED = terminal ? 0 : 8;
 
+/** The widest window that takes the phone's layout (a phone, or a narrow
+ * desktop window), in points. */
+const NARROW = 600;
+
+/**
+ * Whether the window is narrow enough for the phone's layout, on every
+ * tier: a row's wide control (`plainRow`'s `wide`, a combobox) goes under
+ * its label. Never in a terminal, which wraps its rows instead. Reactive:
+ * it reads the window's size.
+ */
+export const narrowWindow = () => !terminal && windowSize().width < NARROW;
+
 /** Options of `plainRow`. */
 export interface PlainRowOptions {
   /** The first row of its list: no hairline above it. */
   first?: boolean;
   /** A row of values (`controlSize.line` high, no padding) rather than a control's. */
   dense?: boolean;
+  /** Its control is as wide as it can be (a combobox): in a narrow window
+   * (`narrowWindow`: a phone, or a narrow desktop window) the control goes
+   * under its label, across the row, so the control's text is not cut
+   * short. */
+  wide?: boolean;
 }
 
 /**
  * A row of a list that takes no presses (a section's values, a row holding
  * a field): its items on one line, centered, a hairline above all but the
- * first (none in the terminal, whose rows are one row each).
+ * first (none in the terminal, whose rows are one row each). A `wide`
+ * control goes under its label in a narrow window.
  */
 export function plainRow(o?: PlainRowOptions): ViewStyle {
+  const stacked = !!o?.wide && narrowWindow();
   return {
     minHeight: o?.dense ? controlSize.line : controlSize.row,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: controlSize.gap,
+    flexDirection: stacked ? "column" : "row",
+    alignItems: stacked ? "stretch" : "center",
+    gap: stacked ? 8 : controlSize.gap,
     paddingVertical: o?.dense ? 0 : controlSize.padding,
     borderTopWidth: o?.first || terminal ? 0 : 1,
     borderTopColor: colors.line,
@@ -114,7 +133,7 @@ export interface ListRowOptions {
   first?: boolean;
   /** More room before the content (a child row under a "Select all"). */
   start?: number;
-  /** No hover; dimmed to 40% (`disabledStyle`). Pass the same value to the control's `disabled`. */
+  /** No hover; dimmed to 50% (`disabledStyle`). Pass the same value to the control's `disabled`. */
   disabled?: Live<boolean | undefined>;
   /** More style (`flexDirection: "row-reverse"` for a switch at the trailing edge, `alignItems`), over the row's. */
   style?: Live<ViewStyle | undefined>;
@@ -125,7 +144,7 @@ export interface ListRowLook {
   readonly style: ViewStyle;
   readonly hoverStyle: ViewStyle | undefined;
   readonly activeStyle: ViewStyle;
-  readonly focusStyle: ViewStyle;
+  readonly focusVisibleStyle: ViewStyle;
   readonly disabledStyle: ViewStyle;
 }
 
@@ -137,7 +156,7 @@ export interface ListRowLook {
  * reaching `ROW_BLEED` (8) past the content on both sides with rounded
  * corners, so the content stays where the section's padding puts it: put
  * rows on a padded surface (`sectionSurface({ padded: true })`). Pressed it
- * dims to 70%, natively; keyboard focus is `focusRing()`; disabled, 40% and
+ * dims to 70%, natively; keyboard focus is `focusRing()`; disabled, 50% and
  * no hover. The hairline above a row that is not the first is a
  * `RowDivider` among its children; the point it takes stays in the padding,
  * so nothing moves.
@@ -163,10 +182,10 @@ export function listRow(o?: ListRowOptions): ListRowLook {
       return read(o?.disabled) ? undefined : { backgroundColor: token("accent") };
     },
     activeStyle: { opacity: 0.7 },
-    get focusStyle(): ViewStyle {
+    get focusVisibleStyle(): ViewStyle {
       return focusRing();
     },
-    disabledStyle: { opacity: 0.4 },
+    disabledStyle: { opacity: 0.5 },
   };
 }
 
@@ -201,8 +220,8 @@ export const labelColumn = (names: readonly string[]) => Math.max(LABEL_WIDTH, .
  * A row's label and a quieter line under it (after it in the terminal):
  * `controlSize.label` in the text color, regular weight (`strong`: 600, the
  * row that leads others, as a "Select all"), the detail 12 points with a
- * pointer, 13 on a touch screen, muted, on one line. `width`: the
- * terminal's label column (`labelColumn`).
+ * pointer, 13 on a touch screen, muted, wrapping rather than cut short
+ * beside a control. `width`: the terminal's label column (`labelColumn`).
  */
 export function RowLabel(props: { label: string; detail?: string; strong?: boolean; width?: number }) {
   return (
@@ -221,11 +240,10 @@ export function RowLabel(props: { label: string; detail?: string; strong?: boole
         {props.label}
       </Text>
       <If when={props.detail}>
-        {/* Beside the label in a terminal, it wraps rather than lose its end to `…`;
-            with less than DETAIL_WIDTH beside it, it goes under the label, as on a phone. */}
+        {/* It wraps rather than lose its end to `…`. Beside the label in a terminal:
+            with less than DETAIL_WIDTH beside it, it goes under the label, as elsewhere. */}
         <Text
           style={{
-            numberOfLines: terminal ? undefined : 1,
             flexShrink: 1,
             ...(terminal ? { flexGrow: 1, flexBasis: DETAIL_WIDTH } : {}),
             fontSize: controlSize.detail,

@@ -35,7 +35,8 @@ import java.util.List;
  *
  * <p>{@code Picker.pickFiles}: the system's document picker ({@code
  * ACTION_OPEN_DOCUMENT}), which needs no permission either. The files are read
- * as they are.
+ * as they are; one larger than the request reads is not: it answers with its
+ * name and size only.
  */
 final class Picker {
     private static final String TAG = "nsh";
@@ -54,7 +55,7 @@ final class Picker {
         boolean files;
         /** The extensions a pick of files offers; none: any file. */
         String[] extensions = new String[0];
-        /** The largest file a pick of files reads. */
+        /** The largest file a pick of files reads; a larger one answers with its name and size only. */
         int maxBytes;
         /** The view's engine, when the pick ends. */
         NshView view;
@@ -179,7 +180,10 @@ final class Picker {
     private static final class Picked {
         String name;
         String type;
+        /** {@code null}: not read, larger than the pick reads ({@link #length}). */
         byte[] bytes;
+        /** The size in bytes of a file not read. */
+        long length;
         int width;
         int height;
     }
@@ -203,19 +207,24 @@ final class Picker {
         String[] types = new String[n];
         byte[][] data = new byte[n][];
         int[] sizes = new int[n * 2];
+        long[] lengths = new long[n];
         for (int i = 0; i < n; i++) {
             Picked f = files.get(i);
             names[i] = f.name;
             types[i] = f.type;
             data[i] = f.bytes;
+            lengths[i] = f.length;
             sizes[i * 2] = f.width;
             sizes[i * 2 + 1] = f.height;
         }
         long handle = request.view.handle;
-        if (handle != 0) Native.picked(handle, request.id, names, types, data, sizes);
+        if (handle != 0) Native.picked(handle, request.id, names, types, data, sizes, lengths);
     }
 
-    /** A picked file as it is; {@code null} when it is larger than the request reads. */
+    /**
+     * A picked file as it is; one larger than the request reads comes without its bytes, with its
+     * size: told by the provider before reading, else counted while reading past the limit.
+     */
     private static Picked readFile(ContentResolver resolver, Uri uri, Request request) throws Exception {
         long length = -1;
         try (android.content.res.AssetFileDescriptor fd = resolver.openAssetFileDescriptor(uri, "r")) {
@@ -223,17 +232,47 @@ final class Picker {
         } catch (Exception e) {
             // Unknown length: told after reading.
         }
-        byte[] bytes = length > request.maxBytes ? null : readAll(resolver, uri);
-        if (bytes == null || bytes.length > request.maxBytes) {
-            Log.w(TAG, "a picked file is left out: larger than " + request.maxBytes + " bytes");
-            return null;
-        }
         Picked file = new Picked();
         file.name = displayName(resolver, uri);
         String type = resolver.getType(uri);
         file.type = type != null ? type.toLowerCase(java.util.Locale.ROOT) : "";
-        file.bytes = bytes;
+        if (length > request.maxBytes) {
+            file.length = length;
+        } else {
+            file.bytes = readAtMost(resolver, uri, request.maxBytes, length, file);
+        }
+        if (file.bytes == null) {
+            Log.w(TAG, "a picked file is not read: larger than " + request.maxBytes + " bytes");
+        }
         return file;
+    }
+
+    /**
+     * The bytes at {@code uri} when there are at most {@code max}; else {@code null}, the rest only
+     * counted into {@code file.length}, so no more than {@code max} bytes are ever held ({@code length}: what the
+     * provider told, -1 when it told nothing).
+     */
+    private static byte[] readAtMost(ContentResolver resolver, Uri uri, int max, long length, Picked file)
+            throws Exception {
+        try (InputStream in = resolver.openInputStream(uri)) {
+            if (in == null) throw new java.io.IOException("no stream for " + uri);
+            ByteArrayOutputStream out = new ByteArrayOutputStream(length > 0 ? (int) length : 64 * 1024);
+            byte[] buffer = new byte[64 * 1024];
+            long total = 0;
+            for (int n; (n = in.read(buffer)) > 0; ) {
+                total += n;
+                if (total <= max) {
+                    out.write(buffer, 0, n);
+                } else if (out.size() > 0) {
+                    out = new ByteArrayOutputStream();
+                }
+            }
+            if (total > max) {
+                file.length = total;
+                return null;
+            }
+            return out.toByteArray();
+        }
     }
 
     private static Picked prepare(ContentResolver resolver, Uri uri, Request request) throws Exception {

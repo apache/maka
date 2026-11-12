@@ -1,6 +1,6 @@
 import { cleanup, Image, type JSX, List, Scroll, signal, Text, View, type ViewStyle } from "nsh";
 import { Animated, createAnimatedValue, Easing, platform } from "nsh";
-import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, hint, isDark, mono, Press, radius, Segmented, tints, Toggle } from "../ui";
+import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, hint, isDark, mono, Press, radius, Segmented, tints, LabeledToggle } from "../ui";
 
 /** The stage every specimen stands on: the card's light, without its drop shadow. */
 const stage = () => ({
@@ -173,6 +173,21 @@ function Borders() {
             <View style={{ width: 112, height: 28, borderRadius: 8, borderWidth: 3, borderColor: colors.warn, borderStyle: "dotted" }} />
           </View>
         </Tile>
+        <Tile label="Single-side dashes" code="border-t · border-l · border-dashed">
+          <View style={{ width: 112, height: 76, gap: 12 }}>
+            <View class="h-px w-full border-t border-dashed" style={{ borderColor: colors.info }} />
+            <View class="flex-1 border-l-2 border-dashed" style={{ borderColor: colors.info }} />
+          </View>
+        </Tile>
+        <Tile label="Unequal sides" note="4 · 2 · 3 · 1 pt, clockwise">
+          <View style={{ ...box(), borderRadius: 16, borderStyle: "dashed", borderColor: colors.info, borderTopWidth: 4, borderRightWidth: 2, borderBottomWidth: 3, borderLeftWidth: 1 }} />
+        </Tile>
+        <Tile label="Single-side dots" code="border-b-4 · border-dotted">
+          <View class="border-b-4 border-dotted" style={{ ...box(), borderColor: colors.warn }} />
+        </Tile>
+        <Tile label="Colored dashes" note="One color per side">
+          <View style={{ ...box(), borderRadius: 16, borderWidth: 3, borderStyle: "dashed", borderTopColor: colors.danger, borderRightColor: colors.up, borderBottomColor: colors.info, borderLeftColor: colors.warn }} />
+        </Tile>
       </Grid>
     </Card>
   );
@@ -273,17 +288,7 @@ function Layers() {
   const level = signal<"0.2" | "0.45" | "1">("0.45");
   const stack = ["danger", "info", "up"] as const;
   return (
-    <Card icon="lists" title="Clipping and layers" subtitle="overflow · zIndex · opacity" right={
-        // The terminal's switch is a glyph: its label beside it says what it turns on.
-        platform.idiom === "terminal" ? (
-          <View style={{ flexDirection: "row", gap: 8 }}>
-            <Text style={{ fontSize: 12, color: colors.muted }}>Clip</Text>
-            <Toggle value={clip()} onChange={(v) => clip.set(v)} label="Clip" />
-          </View>
-        ) : (
-          <Toggle value={clip()} onChange={(v) => clip.set(v)} label="Clip" />
-        )
-      }
+    <Card icon="lists" title="Clipping and layers" subtitle="overflow · zIndex · opacity" right={<LabeledToggle label="Clip" value={clip()} onChange={(v) => clip.set(v)} />}
     >
       <Grid>
         <Tile label={clip() ? "Clipped" : "Visible"} code={`overflow: ${clip() ? "hidden" : "visible"}`} note={hint("Tap to switch", "Click to switch")} onPress={() => clip.set(!clip())}>

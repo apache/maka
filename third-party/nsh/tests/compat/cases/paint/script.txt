@@ -418,6 +418,10 @@ style span:gone textUnderlineOffset 2
 style span:SHOUT textTransform uppercase
 style span:outer color #007affff
 style span:inner color #007affff
+# A hidden span keeps its characters and their place: as wide as shown.
+expect Seen unseen words
+frame id:hidden-span 0 942 131 17
+frame id:shown-span 0 959 131 17
 style span:inner fontSize 16
 covers [styles] fontFamily
 covers [styles] fontSize
@@ -651,6 +655,7 @@ style id:icon backgroundColor #ffffffff
 style id:busy backgroundColor #ff0000ff
 style id:checked backgroundColor #00ff00ff
 style id:selected backgroundColor #0000ffff
+style id:invalid backgroundColor #ff8800ff
 # `data-*:` and `group-data-*:` are known classes; without the attribute
 # (only components' parts show them) the plain ones apply.
 style id:data backgroundColor #ccccccff
@@ -677,6 +682,20 @@ style id:frame backgroundColor #ccccccff
 state id:popup-field none
 style id:holder backgroundColor #ccccccff
 covers [props] focusWithinStyle
+# state-focus-visible
+tap id:case-state-focus-visible
+# No focus: the field's own style.
+style id:ringed backgroundColor #ccccccff
+style id:ringed opacity 0.5
+# A field that edits shows its focus: `focus-visible:` and
+# `focusVisibleStyle`.
+state id:ringed focused
+style id:ringed backgroundColor #3366ffff
+style id:ringed opacity 1
+state id:ringed none
+style id:ringed backgroundColor #ccccccff
+style id:ringed opacity 0.5
+covers [props] focusVisibleStyle
 # paint-inline-align
 tap id:case-paint-inline-align
 # The headless engine's 16.8 pt line has its baseline at the bottom and a
@@ -721,6 +740,7 @@ style id:drop-shadow-color filter drop-shadow(0 3 3 #ff000080)
 style id:bg-current backgroundColor #ff000080
 style id:perspective-none transform rotateY(45deg)
 style id:palette backgroundColor #79697bff
+style id:bg-image backgroundImage linear-gradient(180deg, #ff0000ff, #0000ffff)
 covers [styles] borderStyle
 covers [styles] borderWidth
 covers [styles] borderTopWidth

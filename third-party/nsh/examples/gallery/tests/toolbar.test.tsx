@@ -84,14 +84,14 @@ test("on a phone the formatting bar folds what has no room into its overflow men
   await phone.press("role:button[Toolbar]");
   await phone.waitFor("Text formatting");
   // A 324-point bar: the alignment, Strikethrough, Underline and Redo fold; the rest stays.
-  await phone.waitFor("1 mark · left · 4 in ⋯");
+  await phone.waitFor("1 mark, left aligned, 4 folded");
   const bar = "role:toolbar[Formatting]";
   for (const label of ["Undo", "Block: Paragraph", "Bold", "Italic", "Link", "More formatting"]) expect(phone.count(`${bar} >> label:${label}`)).toBe(1);
   for (const label of ["Redo", "Underline", "Strikethrough", "Align left"]) expect(phone.count(`${bar} >> label:${label}`)).toBe(0);
   // The folded marks are check items of the menu.
   await phone.press(`${bar} >> label:More formatting`);
   await phone.press("text:Underline");
-  await phone.waitFor("2 marks · left · 4 in ⋯");
+  await phone.waitFor("2 marks, left aligned, 4 folded");
 });
 
 test("the transport plays and skips, and the palette picks one tool", async () => {

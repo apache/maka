@@ -1770,6 +1770,57 @@ pub(crate) fn set_selection(view: &NshView, start: u32, end: u32) {
     );
 }
 
+/// `Command::InsertText`: `text` in place of the selection, as the user's
+/// edit, through the editors' own keybinding signals, so GTK records it in
+/// the undo history (`gtk_editable_insert_text` from outside an edit would
+/// clear it, as a new `value` does). The input's handlers see it as a
+/// paste: `maxLength` clips it, `onChangeText` reports it, no key does. A
+/// text view inserts in one user action, one undo step; a line records a
+/// replaced selection as its own step, as its own paste does.
+pub(crate) fn insert_text(view: &NshView, text: &str) {
+    let Some(input) = view.state().input.clone() else {
+        return;
+    };
+    let (editable, multiline) = {
+        let config = input.config.borrow();
+        (config.editable, config.multiline)
+    };
+    if !editable {
+        log::warn!("insertText: the input is read-only");
+        return;
+    }
+    if input.composition.borrow().is_some() {
+        // The input method's text would be committed around it.
+        log::warn!("insertText: an input method is composing; nothing inserted");
+        return;
+    }
+    let text = nsh_core::text_edit::pasted(text, multiline);
+    let editor = input.editor.borrow().clone();
+    // Neither the deletion nor the insertion types a key.
+    input.pasting.set(true);
+    match &editor {
+        Editor::Line(t) => {
+            if t.selection_bounds().is_some() {
+                t.emit_by_name::<()>("delete-from-cursor", &[&gtk::DeleteType::Chars, &1i32]);
+            }
+            if !text.is_empty() {
+                t.emit_by_name::<()>("insert-at-cursor", &[&text]);
+            }
+        }
+        Editor::Area { view, .. } => {
+            let buffer = view.buffer();
+            buffer.begin_user_action();
+            buffer.delete_selection(true, view.is_editable());
+            if !text.is_empty() {
+                buffer.insert_interactive_at_cursor(&text, view.is_editable());
+            }
+            buffer.end_user_action();
+            view.scroll_mark_onscreen(&buffer.get_insert());
+        }
+    }
+    input.pasting.set(false);
+}
+
 /// Return or Enter.
 fn is_return(key: gtk::gdk::Key) -> bool {
     use gtk::gdk::Key;
@@ -2118,7 +2169,8 @@ pub(crate) fn removing(surface: &Surface, view: &NshView) {
 }
 
 fn focused_input_view(surface: &Surface) -> Option<NshView> {
-    let root = surface.root.upcast_ref::<gtk::Widget>();
+    let key_root = crate::window::key_root(surface);
+    let root = key_root.upcast_ref::<gtk::Widget>();
     let mut focus = root.root()?.focus()?;
     if !(focus == *root || focus.is_ancestor(root)) {
         return None;

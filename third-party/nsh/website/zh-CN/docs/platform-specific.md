@@ -106,7 +106,7 @@ TSX 的这些对象和其他属性一样是响应式的；从对象中移除的�
 
 ## 平台模块
 
-在 Rust 中，只有一个平台才有的 API 是 `nsh_core::prelude` 的函数（`on_back_press`、`input_accessory_view`）和 `nsh_core::element::desktop` 的函数（窗口：`window`、`current_window` 及其 `WindowRef`、`title_bar`、`displays`；应用：`quit`、`restart`；菜单：`set_application_menu`、`popup_menu`）；在其他平台上它们什么都不做。在 TSX 中，`nsh/mobile` 存放 iOS 和 Android 的 API（其中一些只属于其中一个平台），`nsh/desktop` 存放桌面的 API。两者在所有平台上都可以导入，因此同一个包可以到处运行：在其他平台上，它们的函数会立即返回，组件不占空间。每个模块都导出 `isAvailable`，在自己的平台上为 `true`；`platform.os` 区分具体平台。
+在 Rust 中，只有一个平台才有的 API 是 `nsh_core::prelude` 的函数（`on_back_press`、`haptic`、`input_accessory_view`）和 `nsh_core::element::desktop` 的函数（窗口：`window`、`current_window` 及其 `WindowRef`、`title_bar`、`displays`；应用：`quit`、`restart`；菜单：`set_application_menu`、`popup_menu`）；在其他平台上它们什么都不做。在 TSX 中，`nsh/mobile` 存放 iOS 和 Android 的 API（其中一些只属于其中一个平台），`nsh/desktop` 存放桌面的 API。两者在所有平台上都可以导入，因此同一个包可以到处运行：在其他平台上，它们的函数会立即返回，组件不占空间。每个模块都导出 `isAvailable`，在自己的平台上为 `true`；`platform.os` 区分具体平台。
 
 ### nsh/mobile
 
@@ -152,6 +152,16 @@ function Player() {
 
 返回键先由最上层的对话框处理，然后是返回键监听器（最近添加的最先），再然后是最上层的导航栈，都没有处理时应用退出。见[导航](./navigation.md#android-返回键)。
 
+#### Haptics（iOS、Android）
+
+| Rust | TSX | 说明 |
+|---|---|---|
+| `haptic(Haptic::Selection)` | `Haptics.selection()` | 选择发生变化时的触感。 |
+| `haptic(Haptic::Impact(HapticImpact::…))` | `Haptics.impact(style)` | 元素碰撞时的触感，按它的分量（默认 `"medium"`）。 |
+| `haptic(Haptic::Notification(HapticNotification::…))` | `Haptics.notification(kind)` | 任务结束时的触感（默认 `"success"`）。 |
+
+见 [nsh/mobile](../modules/nsh-mobile.md#haptics)。
+
 #### InputAccessoryView（iOS）
 
 | Rust | TSX | 说明 |
@@ -174,6 +184,10 @@ Rust 应用用 `nsh_core::element::desktop` 绘制自己的标题栏（[用 Rust
 | `isAvailable` | 在窗口和菜单 API 可用的地方为 `true`：macOS、Windows 和 Linux。桌面浏览器的 `platform.desktop` 为 `true`，窗口和菜单仍是浏览器自己的。 |
 
 见 [nsh/desktop](../modules/nsh-desktop.md)。
+
+### nsh/web
+
+在浏览器中，应用是站点的一个页面。`nsh/web` 的 `Head` 在挂载期间设置页面的标题、描述、规范 URL 和元数据，供搜索引擎和链接预览使用。在其他平台上 `Head` 不渲染任何内容。见 [nsh/web](../modules/nsh-web.md) 和 [Web](./web.md#搜索引擎)。
 
 ### 状态栏
 
@@ -208,7 +222,7 @@ function PhotoViewer() {
 
 ## platform.os 与 platform.select
 
-Rust 中的 `os()` 和 TSX 中 `nsh` 的常量 `platform` 告诉你应用运行在哪里：`Os::Ios`、`Os::Android`、`Os::MacOs`、`Os::Windows`、`Os::Linux` 或 `Os::Web`，`platform.os` 为 `"ios"`、`"android"`、`"macos"`、`"windows"`、`"linux"` 或 `"web"`（Mac Catalyst 为 `"ios"`，无论哪种形态 `platform.catalyst` 都为真；[macOS 后端](./macos.md)为 `"macos"`，[Linux 后端](./linux.md)为 `"linux"`，[Windows 后端](./windows.md)为 `"windows"`，它们的元素会应用 `desktop` 属性；[浏览器](./web.md)为 `"web"`，`platform.desktop` 为 `true` 时也会应用 `desktop` 属性）。版本、界面风格等见[设备与环境](./device-and-environment.md#平台)。
+Rust 中的 `os()` 和 TSX 中 `nsh` 的常量 `platform` 告诉你应用运行在哪里：`Os::Ios`、`Os::Android`、`Os::MacOs`、`Os::Windows`、`Os::Linux` 或 `Os::Web`，`platform.os` 为 `"ios"`、`"android"`、`"macos"`、`"windows"`、`"linux"` 或 `"web"`（Mac Catalyst 为 `"ios"`，无论哪种形态 `platform.catalyst` 都为真；[macOS 后端](./macos.md)为 `"macos"`，[Linux 后端](./linux.md)为 `"linux"`，[Windows 后端](./windows.md)为 `"windows"`，它们的元素会应用 `desktop` 属性；[浏览器](./web.md)为 `"web"`，`platform.desktop` 为 `true` 时也会应用 `desktop` 属性）。Rust 中的 `platform_name()` 和 TSX 中的 `platform.name` 是平台本身的名字：在 NSH 自带的平台上就是系统名，[在 NSH 之外构建的平台](./platform-extensions.md)则是它自己的名字（`"miniprogram"`），此时 `platform.os` 是它所运行设备的系统。版本、界面风格等见[设备与环境](./device-and-environment.md#平台)。
 
 ```rust tabs
 use nsh_core::{element::Os, prelude::*};

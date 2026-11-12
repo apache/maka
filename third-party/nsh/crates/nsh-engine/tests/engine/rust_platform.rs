@@ -51,6 +51,7 @@ fn config(app: App) -> EngineConfig {
         app,
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -265,6 +266,86 @@ fn tasks_wait_for_display_frames() {
     // Each frame asked for the next; none is asked for once the task ended.
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(frames.load(Ordering::SeqCst), 3);
+}
+
+/// What a platform's UI thread gets, in the order the engine sends it.
+enum ToMain {
+    Batch(MountBatch),
+    Task(nsh_engine::MainThreadTask),
+}
+
+/// Sends batches and the app's functions for the main thread down one
+/// channel, as a platform's UI thread gets them.
+struct MainThreadSink(Sender<ToMain>);
+
+impl MountSink for MainThreadSink {
+    fn submit(&self, batch: MountBatch) {
+        let _ = self.0.send(ToMain::Batch(batch));
+    }
+
+    fn run_on_main_thread(&self, task: nsh_engine::MainThreadTask) {
+        let _ = self.0.send(ToMain::Task(task));
+    }
+}
+
+/// Asks the main thread for its name, and for a function that panics.
+#[component]
+fn OnMain() -> impl IntoElement {
+    let shown = signal(String::from("asking"));
+    spawn(async move {
+        shown.set("calling".into());
+        let name = run_on_main_thread(|| std::thread::current().name().map(str::to_owned))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let failed = run_on_main_thread(|| -> u8 { panic!("no AppKit here") }).await;
+        shown.set(format!("{name} {}", failed.is_err()));
+    });
+    text(move || shown.get())
+}
+
+#[test]
+fn functions_run_on_the_platforms_main_thread_and_answer_the_engine() {
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let (main_tx, main_rx) = crossbeam_channel::unbounded::<ToMain>();
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let seen = order.clone();
+    std::thread::Builder::new()
+        .name("ui".into())
+        .spawn(move || {
+            for message in main_rx {
+                match message {
+                    ToMain::Batch(batch) => {
+                        for item in &batch.items {
+                            if let MountItem::Text { text, .. } = item {
+                                seen.lock().unwrap().push(text.text.clone());
+                            }
+                        }
+                        let _ = tx.send(batch);
+                    }
+                    ToMain::Task(task) => {
+                        seen.lock().unwrap().push("task".into());
+                        task.run();
+                    }
+                }
+            }
+        })
+        .unwrap();
+    let engine = Engine::start(
+        config(App::Rust(Root::of::<OnMain>())),
+        || ApproxTextEngine,
+        MainThreadSink(main_tx),
+    )
+    .unwrap();
+    let (texts, ..) = until(&rx, "ui true");
+    assert_eq!(texts.last().map(String::as_str), Some("ui true"));
+    // The batch of the turn that asked reaches the UI thread before the function.
+    let order = order.lock().unwrap();
+    let calling = order.iter().position(|t| t == "calling").unwrap();
+    let task = order.iter().position(|t| t == "task").unwrap();
+    assert!(calling < task, "{order:?}");
+    drop(engine);
 }
 
 /// A Rust app's root, laid out in the surface's direction.

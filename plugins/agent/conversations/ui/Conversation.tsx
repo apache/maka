@@ -3412,7 +3412,6 @@ export function Conversation(props: ConversationProps) {
                 }}
                 toggle={(open) => {
                   turnState(initial.turnKey).expanded.set(open);
-                  if (open) reveal();
                 }}
               />
             );

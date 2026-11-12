@@ -101,7 +101,8 @@ nsh test --filter "adds"      # 名称包含 "adds" 的测试
 error 2 tests: 1 passed, 1 failed (0.9s)
 ```
 
-失败的测试会显示抛出的内容、它在测试文件中的位置，以及所打开应用当时屏幕上的文字。只要有失败，`nsh test` 就以非零
+失败的测试会显示抛出的内容、它在测试文件中的位置，以及所打开应用当时屏幕上的文字。这些文字会被截断到几 KB（尾部以
+`… (<n> more characters)` 标出剩余内容），以免长文档刷屏输出；`-v` 会显示全部。只要有失败，`nsh test` 就以非零
 退出码结束。`nsh init` 会随应用创建一个 `App.test.tsx`，`nsh check` 会连同其他代码一起对测试文件做类型检查
 （`.nsh/types` 中声明了 `nsh/test`）。
 
@@ -162,9 +163,10 @@ describe("the cart", () => {
 | `locale` | `"en-US"` | 设备的区域设置，BCP 47 标签（`locale()`、`Intl` 的默认值）。 |
 | `localeSettings` | 区域设置的，UTC | 用户的语言与地区设置（`localeSettings()`），列出的项覆盖区域设置的：`languages`（BCP 47 标签，按偏好从高到低排列；`[locale]`）、`timeZone`（IANA 名称；`"UTC"`）、`hourCycle`（`"h12"`、`"h23"`、`"h11"` 或 `"h24"`）、`firstDayOfWeek`（1 是星期一，7 是星期日）、`measurementSystem`（`"metric"`、`"us"` 或 `"uk"`）和 `temperatureUnit`（`"celsius"` 或 `"fahrenheit"`），后四项是区域设置所在地区的。时区只给出名称：`Date` 和 `Intl` 的本地时间仍是这台机器的，`Intl` 给出的时区也是。 |
 | `reducedMotion` | `false` | 用户要求减少动态效果（`reduceMotion()`）。 |
-| `platform` | `"ios"` | headless 时应用运行所在的平台：`"ios"`、`"android"`，或桌面平台 `"macos"`、`"windows"`、`"linux"`，以及桌面形态的 `"web"`（`platform.os`、`ios={{…}}` / `android={{…}}` / `desktop={{…}}` 属性、键盘快捷键）。使用 `--target` 时，应用以目标平台运行：桌面平台的 `platform` 可用于任何桌面目标和 web，且总以桌面形态运行（在浏览器中无论宽度都是桌面形态，`platform.os` 仍是 `"web"`），`"ios"` 和 `"android"` 只用于各自的目标。 |
+| `platform` | `"ios"` | headless 时应用运行所在的平台：`"ios"`、`"android"`，或桌面平台 `"macos"`、`"windows"`、`"linux"`，以及桌面形态的 `"web"`（`platform.os`、`ios={{…}}` / `android={{…}}` / `desktop={{…}}` 属性、键盘快捷键；桌面平台和 web 上页面的 `header` 放在页面顶部、与窗口同宽，iOS 和 Android 上导航头是系统的）。使用 `--target` 时，应用以目标平台运行：桌面平台的 `platform` 可用于任何桌面目标和 web，且总以桌面形态运行（在浏览器中无论宽度都是桌面形态，`platform.os` 仍是 `"web"`），`"ios"` 和 `"android"` 只用于各自的目标。 |
 | `clock` | 系统时钟 | 手动时钟，它的时间只随测试推进：`{}`，或者用 `{ time }` 从某个 `Date`（或自 Unix 纪元起的毫秒数）开始。见[控制时间](#控制时间)。 |
 | `host` | 无 | 由测试扮演的宿主应用：`{ params, handlers }`。见[扮演宿主应用](#扮演宿主应用)。 |
+| `modules` | 无 | 按模块标识替换应用导入的原生模块的导出：见[替换原生模块](#替换原生模块)。仅限 headless 运行。 |
 | `url` | 无 | 启动应用的链接：应用认领了它的 scheme（`nsh.json` 的 `schemes`）时，`UrlScheme.on("open")` 会像从系统那里一样收到它（[UrlScheme](../modules/nsh.md#urlscheme)）。仅限 headless 运行。 |
 
 ### 扮演宿主应用
@@ -191,6 +193,38 @@ expect(app.shows("Conversation c-43")).toBe(true);
 ```
 
 `app.host.send(name, data)` 发送一个事件，然后等待应用空闲。`app.host.calls()` 和 `app.host.posts()` 按顺序列出处理函数收到的调用和投递：`name` 和 `data`。
+
+### 替换原生模块
+
+`modules` 用替身替换应用导入的原生模块的导出：应用自己 crate 的（`#[native_module]` UI 集）、`nsh/base` 的或运行时的。键先是模块标识，再是导出名（`"save"`）或某个导出的成员（`"Keychain.get"`）。应用的导入拿到的是替身；模块的其他导出保持原样，Rust 代码直接调用模块时仍运行模块本身。
+
+替身是一个值或一个函数，应用的代码拿到什么取决于替身的种类，与真实导出的返回方式无关：
+
+| 替身 | 应用拿到的 |
+|---|---|
+| 值 | 直接拿到这个值：本是函数的导出变成同步返回该值的函数，其他导出就是这个值。 |
+| 函数 | 每次调用都拿到一个 promise，同步导出也是如此：函数收到调用的参数，promise 兑现为函数的返回值（或它返回的 promise 兑现的值），函数抛出的错误让 promise reject。 |
+
+应用同步调用的函数，用值做替身就保持同步；应用 await 的函数，用函数做替身。
+
+```tsx
+const saved: unknown[][] = [];
+const app = await open("./App.tsx", {
+  modules: {
+    "my-app/native": {
+      "Keychain.get": async (key) => (key === "token" ? "t-1" : null),
+      "Keychain.set": async (...args) => void saved.push(args),
+      "Keychain.available": true,
+    },
+  },
+});
+await app.press("Sign out");
+expect(saved).toEqual([["token", null]]);
+```
+
+参数和回答以 JSON 值传递。替换只在 headless 运行：使用 `--target` 时，`modules` 会以 `ERR_NSH_TEST_UNSUPPORTED` reject。
+
+键对应一个导出或它自身的成员，例如类的静态方法：实例沿用类的方法，`#[class]` 导出的值替身会整个替换这个类。对不上任何导出或成员的键会被跳过，并在日志中给出警告。
 
 应用打开的 URL（[`openUrl`](../modules/nsh.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）会被记录下来，并以“已打开”回报给应用，本机上不会真正打开任何东西。`app.openedUrls()` 列出它们：
 
@@ -349,10 +383,10 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 | `await app.hover(selector)` | 把鼠标移到视图中央：鼠标离开的视图收到 `onMouseLeave`，移入的视图收到 `onMouseEnter` 并应用 `hover:` 样式，监听的视图收到带位置、没有按下按键的 `onMouseMove`。用于桌面和任意宽度的 web，包括手机形态的浏览器（headless 时使用桌面或 `"web"` `platform`）；iOS 和 Android 手机没有鼠标，在那里会 reject。 |
 | `await app.rightClick(selector)` | 在视图中央按下鼠标右键：该视图或其外层最近的监听视图收到 `onContextMenu`。用于桌面和 web（headless 时使用桌面 `platform`）；手机没有鼠标，在那里会 reject。 |
 | `await app.paste(selector, { text?, html?, files?, uris? })` | 像剪贴板上有这些内容时用户粘贴一样粘贴到输入框：输入框获得焦点并收到 `onPaste`（`html` 是带格式的同一内容，`files` 是文件路径，其字节以 `File` 交给它，`uris` 是 `file:` URL），然后按 `pasteBehavior` 插入文本。支持 headless、macOS、iOS 和 web；本机剪贴板保持不变。 |
-| `app.menu()` | 应用显示的上下文菜单（`Menu.popup`）中的操作：`label`（子菜单中的项写在子菜单名之后，如 `"Share > Mail"`）、`disabled`，可勾选项还有 `checked`；没有打开的菜单时为 `null`。 |
-| `await app.chooseMenuItem(label)` | 选择已打开上下文菜单中的操作，如同点击它：应用收到 `onMenu`（其 `onSelect` 运行），然后菜单关闭。该项被禁用或不存在时 reject。 |
+| `app.menu()` | 应用显示的上下文菜单（`Menu.popup`）中的操作，或编辑器在手机上于选区处显示的系统编辑菜单（`RichEditor` 的，标签与平台一致：`Cut`、`Copy`、`Paste`、`Select All`）中的操作：`label`（子菜单中的项写在子菜单名之后，如 `"Share > Mail"`）、`disabled`，可勾选项还有 `checked`；没有打开的菜单时为 `null`。 |
+| `await app.chooseMenuItem(label)` | 选择已打开上下文菜单中的操作，如同点击它：应用收到 `onMenu`（其 `onSelect` 运行），然后菜单关闭。在编辑菜单中选择时，由编辑器执行该操作；Paste 粘贴测试自己的剪贴板。该项被禁用或不存在时 reject。 |
 | `await app.closeMenu()` | 关闭已打开的上下文菜单，不选择任何项，如同按下 Escape。 |
-| `await app.keyboard.press(keys)` | 按下一个带修饰键的按键，写法同 `keymap`（`"mod+k"`、`"shift+/"`、`"escape"`；`mod` 是平台的命令键），如同硬件键盘，在所有平台上都可用（手机和平板也可以接硬件键盘）：由应用的对应快捷键接收（`keymap.bind`、`onKeyCommand`），否则在 macOS 和 Web 上由 Tab 和 Shift+Tab 在输入框和可按压的视图之间移动键盘焦点（`onFocus`、`onBlur`、`focus:` 样式），Return 或空格按下焦点所在的视图，在 Web 上（`platform: "web"`）Shift+F10 为它请求上下文菜单（`onContextMenu`，`pointerType` 为 `null`），否则由获得焦点的输入框接收字符、Backspace 或回车，否则 Escape 执行返回。 |
+| `await app.keyboard.press(keys)` | 按下一个带修饰键的按键，写法同 `keymap`（`"mod+k"`、`"shift+/"`、`"escape"`；`mod` 是平台的命令键），如同硬件键盘，在所有平台上都可用（手机和平板也可以接硬件键盘）：由应用的对应快捷键接收（`keymap.bind`、`onKeyCommand`），否则在桌面上选中应用菜单里带这个快捷键的项（`Menu.setApplicationMenu`，输入框有焦点时遵守它的 `when`），否则在 macOS 和 Web 上由 Tab 和 Shift+Tab 在输入框和可按压的视图之间移动键盘焦点（`onFocus`、`onBlur`、`focus:` 样式；有对话框开着时只在最新的对话框里移动，对话框关闭后焦点回到打开前所在的视图），Return 或空格按下焦点所在的视图，在 Web 上（`platform: "web"`）Shift+F10 为它请求上下文菜单（`onContextMenu`，`pointerType` 为 `null`），否则由获得焦点的输入框接收字符、Backspace 或回车，否则 Escape 执行返回。 |
 | `await app.keyboard.down(keys)` / `up(keys)` | 按住修饰键（`"mod"`、`"shift"`、`"alt"`、`"ctrl"`、`"meta"`，用 `+` 连接）直到 `up`：期间的按压、拖动和悬停都带着这些键，如同 Mod 加点击或 Shift 加拖动。目前在 headless 和 Linux 上可用。 |
 | `await app.dragAndHold(selector, by)` / `app.drop()` | 像 `drag` 一样拖动，但手指一直按着，直到 `drop()` 在当前位置抬起：其间的步骤可以查看拖动中的画面（拖动预览、放置线）。目前在 headless 和 Linux 上可用。 |
 | `await app.dropFiles(selector, uris)` | 把本地文件（`file:` URL，如同从文件管理器拖来）放到视图中央：它或外层最近一个监听的视图收到 `onFileDrop`。桌面平台，目前在 headless 和 Linux 上可用。 |
@@ -368,9 +402,10 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 | `app.spanStyle(selector)` | 返回匹配到的第一个字符的解析样式（无界面测试和各个 `--target` 都支持）：`color`、可选的 `backgroundColor`、`fontSize`、`fontWeight`、`italic`、`underline` 和 `lineThrough`。颜色为 `#rrggbbaa`，字号单位为 pt。 |
 | `app.storage()` | 应用存储当前保存的内容。 |
 | `await app.back()` | 像用户那样返回（导航栏的返回按钮、下滑关闭弹出页）：最新的模态窗口里（没有模态窗口时就在整个屏幕上）最内层、布局尺寸不为零（不在尺寸为零的标签页里）的导航栈弹出栈顶页面（`onDismiss`），栈顶页面设置了 `preventBack` 时改为询问它（`onBackRequest`）；没有可返回的栈时，最新的模态窗口请求关闭（`onRequestClose`）。没有可返回的内容时 reject。 |
+| `await app.forward()` | 像浏览器的前进按钮那样在浏览器历史中前进。仅限 `--target web`；其他情况下以 `ERR_NSH_TEST_UNSUPPORTED` reject。 |
 | `app.onDialog(handler)` | 回答应用之后弹出的对话框（`Alert.alert`、操作表）：`handler` 接收对话框（`title`、`message`、`buttons`、`cancelable`、`sheet`），返回要按的按钮文字，返回 `null` 则不按按钮直接关闭。 |
 | `app.dialogs()` | 应用弹出过的对话框，按顺序排列。 |
-| `app.onPick(handler)` | 回答应用之后发起的选取（`Picker.pickImages`、`Picker.pickFiles`）：`handler` 接收这次选取的要求（`kind`：`"images"` 或 `"files"`，`multiple`、`limit`、`maxDimension`、`quality`、`format`、`filters`），返回用户选中的文件（`{ name, type?, data: Uint8Array }`，原样交给应用），返回 `null` 则取消。没有 handler 时选取都会被取消。仅限无界面运行。 |
+| `app.onPick(handler)` | 回答应用之后发起的选取（`Picker.pickImages`、`Picker.pickFiles`）：`handler` 接收这次选取的要求（`kind`：`"images"` 或 `"files"`，`multiple`、`limit`、`maxDimension`、`quality`、`format`、`filters`、`maxSize`），返回用户选中的文件（`{ name, type?, data: Uint8Array }`，原样交给应用；超过 `maxSize` 的文件到应用时不带内容，`status` 为 `"tooLarge"`），返回 `null` 则取消。没有 handler 时选取都会被取消。仅限无界面运行。 |
 | `app.picks()` | 应用发起过的选取，按顺序排列。 |
 | `app.hear(text)` | 用户对正在运行的语音会话（`Speech.start`）说出 `text`：它的 `result` 把 `text` 报告为到目前为止的完整转写。仅限无界面运行。 |
 | `app.endSpeech(error?)` | 结束正在运行的语音会话：带 `error`（`"no-speech"`、`"network"` 等）时会话失败，否则先到达最后一个最终结果再到达 `end`，什么都没听到时为 `no-speech`。仅限无界面运行。 |
@@ -383,9 +418,11 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 | `app.host.calls()`、`app.host.posts()` | `open` 的 `host.handlers` 收到的应用调用和投递，按顺序排列：`name`、`data`。 |
 | `app.openedUrls()` | 应用打开的 URL（`openUrl`），按顺序排列：只记录，不打开。 |
 | `await app.openWithUrl(url)` | 系统把一个打开应用的链接交给应用，就像用户在应用运行时打开链接一样（`UrlScheme.on("open")`；应用未认领的 scheme 的链接会被丢弃，与设备上一致），然后等待应用安静下来。仅限 headless 运行。 |
+| `await app.failImages(url)` | 从此刻起，来源为 `url` 的图片都加载失败，正在加载的也包括在内：每张图片都像在设备上一样用 `onError` 报告失败，测试便可检查应用改为显示的内容（头像的首字母、占位图）。`url` 整体匹配，其中的 `*` 匹配任意内容（`"https://cdn.example.com/avatars/*"`），与 `network` 路由的写法相同；打包图片的来源是 `asset:/<path>`。然后等待应用安静下来。仅限 headless 运行。 |
 | `await app.setViewport(width, height)` | 改变视口大小，就像旋转设备或调整窗口大小那样（`windowSize()`）。 |
 | `await app.setColorScheme(scheme)` | 像用户那样把系统外观切换为 `"light"` 或 `"dark"`。 |
 | `await app.setLifecycle(state)` | 把应用移到 `"background"`、`"inactive"` 或 `"active"`，就像用户离开应用、切换到另一个应用或窗口、再回来时系统所做的那样（`lifecycle()`）。仅限 headless 运行。 |
+| `await app.wake()` | 让系统从睡眠中唤醒，就像用户打开笔记本的盖子：`wakeCount()` 加一，`lifecycle()` 保持不变。仅限 headless 运行。 |
 | `await app.setLocaleSettings(settings)` | 修改 `settings` 中列出的语言与地区设置（`{ hourCycle: "h23", timeZone: "Asia/Tokyo" }`；还有 `languages`、`firstDayOfWeek`、`measurementSystem` 和 `temperatureUnit`，与 `open` 的 `localeSettings` 相同），就像用户修改系统设置或出行时那样；其余不变（`localeSettings()`）。仅限 headless 运行。 |
 | `await app.screenshot(path?)` | 应用截图（`Uint8Array`）：图形平台返回应用窗口的 PNG，`tui` 返回 UTF-8 Cell JSON；给出 `path` 时同时保存到本机的这个路径（相对当前目录）。只有真实平台会绘制应用：见[在真实平台上运行](#在真实平台上运行)。 |
 | `app.window(id)` | 桌面上应用的一个窗口，按应用给它的 id 找（`"main"`：主窗口）。headless 运行模拟桌面的窗口：一块显示器，每个窗口在它要求的位置打开，除非是面板或要求不获得焦点，否则获得焦点。 |
@@ -411,7 +448,7 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 | `ERR_NSH_TEST_COVERED` | `press` 指向的视图上面盖着另一个视图，手指按在那里会按到它（盖住按钮的浮层、滚到底栏下面的行）。 |
 | `ETIMEDOUT` | `waitFor` 或 `waitUntil` 超时，或者应用在 `open` 之后没有渲染任何内容。 |
 | `ERR_NSH_TEST_NO_BACK` | `back()` 没有可以返回的地方。 |
-| `ERR_NSH_TEST_UNSUPPORTED` | 使用 `--target` 时，`open` 收到了目标平台无法满足的选项：iOS 和 Android 上的 `width` 或 `height`、桌面或 web 上的手机 `platform`、iOS 或 Android 上的桌面平台或另一种手机的 `platform`、`host.handlers`、`url`。消息会指出是哪一个。 |
+| `ERR_NSH_TEST_UNSUPPORTED` | 使用 `--target` 时，`open` 收到了目标平台无法满足的选项：iOS 和 Android 上的 `width` 或 `height`、桌面或 web 上的手机 `platform`、iOS 或 Android 上的桌面平台或另一种手机的 `platform`、`host.handlers`、`modules`、`url`。消息会指出是哪一个。不使用 `--target web` 时的 `forward()` 也是如此。 |
 
 ```tsx
 await expect(app.press("Pay")).rejects.toMatchObject({ code: "ERR_NSH_TEST_DISABLED" });
@@ -437,7 +474,7 @@ await expect(app.press("Pay")).rejects.toMatchObject({ code: "ERR_NSH_TEST_DISAB
 - **语音由测试决定**：`Speech.available()` resolve 为 `true`，会话立即开始，听到 `hear` 说的内容。
 - **声音交给假扬声器**：音效按 WAV 解码（时长取自文件头，其他字节以 `decode` 失败），播放器立即播放其源的一分钟，在 `endAudio()` 时播到结尾。
 - **模态窗口立即出现**：弹出时就会触发 `onShow`。
-- **图片不会加载**：不会有 `onLoad` 或 `onError`，`Image.getSize` 和 `Image.prefetch` 会 reject。
+- **图片不会加载**：不会有 `onLoad`，也不会有 `onError`，除非测试让这张图片加载失败（`app.failImages`）；`Image.getSize` 和 `Image.prefetch` 会 reject，app 里和测试文件里都一样。`blob:` URL 的尺寸直接从它的数据读取，所以对它调用 `Image.getSize` 会 resolve。
 - **只有真实平台才能回答的请求会让步骤失败**：剪贴板里的图片或文件。
 
 ### 页面的宿主
@@ -445,7 +482,7 @@ await expect(app.press("Pay")).rejects.toMatchObject({ code: "ERR_NSH_TEST_DISAB
 发布到 Web 的应用从页面得到宿主：`nsh.json` 的 `web.host`，一个导出 `createHost(player)` 的模块
 （[Web](./web.md#宿主的函数)）。无界面运行时，测试每打开一个应用，都会在应用启动前，在独立的 JavaScript 上下文中加载
 这个模块（有定时器和 `console`，没有浏览器的 API，不能 import）：它的 `call` 应答应用的
-[`host.call`](../modules/nsh.md#host)，它的 `player.hostEvent` 送到 `host.on`，`host.available()` 为 `true`。
+[`host.call`](../modules/nsh.md#host)，它的 `post`（没有时用 `call`）接收应用的 `host.post`，它的 `player.hostEvent` 送到 `host.on`，`host.available()` 为 `true`。
 `call` 抛出异常、Promise 被拒绝或返回值不是 JSON 时，应用的调用以它的消息被拒绝，与页面上一致；应用启动前发送的事件
 会在应用启动后送到它顶层注册的监听器。`--web-host <module>` 指定另一个模块。应用调用的函数必须列在它的 `capabilities.host` 中，
 与页面上一致。调用的超时和宿主自己的定时器都按应用的时间计算，手动时钟（`app.clock.runFor`）会推进它们。在浏览器中（`--target web`），开发页面像发布的页面一样为每个应用运行 `nsh.json` 的 `web.host`；在其他平台上（`--target`）应用没有宿主：`host.available()` 为 `false`。
@@ -501,7 +538,7 @@ test("calls reach the page's host", async () => {
 数据目录；步骤用平台自己的输入作用在选择器指向的视图上，就像 Playwright 在浏览器里那样：
 
 - 按压是在视图中心点击，长按是按住不放，`type` 先点击输入框再逐键输入，`scroll` 是在滚动视图上的触控板手势，`back` 是用户的操作（macOS 和 Linux 上按 Escape，Windows 和 GPUI 里按鼠标的后退键，web 上是浏览器的后退按钮，iOS 上是把 sheet 往下滑，菜单、弹出框或 `Sheet` 打开时是 VoiceOver 的退出手势，否则点标题栏的返回按钮，Android 上是返回键）；
-- 不在屏幕上的视图会先被滚动到可见，每次一个手势；在触摸屏上，手指像用户那样落在页面本身接收拖动的地方，避开跟随拖动的视图（滑块、绘图区域）；
+- 不在屏幕上的视图会先被滚动到可见，每次一个手势；在触摸屏上，手指像用户那样落在页面本身接收拖动的地方，避开跟随拖动的视图（滑块、绘图区域）；滚动视图已经到头时，贴在它边缘的视图就地操作，不会把滚动视图拖过头（那样会触发下拉刷新或关掉页面 sheet）；
 - 选择器、等待和查询看到的应用模型与 headless 相同，由 host 绘制的内容建立，所以找到的是同样的视图；
 - 对话框是平台自己的：`app.dialogs()` 读取它们，回答对话框（`onDialog`，或测试没有回答时按它的取消按钮）会按下对应的按钮；
 - `app.screenshot(path)` 截取窗口，`app.window(id).screenshot(path)` 截取应用的其他窗口。
@@ -518,7 +555,7 @@ nsh test --target tui                         # 在内存终端里运行
 nsh test tests/form.test.tsx --target macos   # 只运行一个文件
 ```
 
-窗口按视口大小打开（除非 `open` 指定，否则为 390 × 844），并且不会超出屏幕；在 iOS 和 Android 上，应用以设备的尺寸占满屏幕。应用以目标平台运行（`platform.os`）。
+窗口按视口大小打开（除非 `open` 指定，否则为 390 × 844），并且不会超出屏幕（在 macOS 上，`setViewport` 改变大小后窗口也不会超出屏幕；比屏幕还大时，左上角留在屏幕内）；在 iOS 和 Android 上，应用以设备的尺寸占满屏幕。应用以目标平台运行（`platform.os`）。
 手动 `clock` 和 headless 时一样：`app.clock.runFor`、
 `fastForward` 和 `setSystemTime` 立即推进应用的时间（计时器、每隔一帧的 `requestAnimationFrame`、`Date`），`app.wait(ms)`、`waitFor` 和 `waitUntil` 也会推进它；
 平台每显示一帧，时钟前进一帧（1/60 秒），所以应用在动画时时间照常流逝。平台自身的动画和路由的 `delay` 按真实时间进行。应用的请求和 headless
@@ -528,7 +565,7 @@ nsh test tests/form.test.tsx --target macos   # 只运行一个文件
 应用的剪贴板调用由测试自己的剪贴板应答（`clipboard` 是它的初始文本，`app.clipboard()` 读取它），机器的剪贴板保持不变；文本输入框自身的复制和
 粘贴使用系统剪贴板。`host.params` 会传给应用，`app.host.send` 发送事件，应用打开的 URL 被记录下来供 `app.openedUrls()` 读取，而不会真正打开。
 `host.handlers` 在 headless 运行，由测试回答应用的调用。`open` 会按目标检查它的选项：iOS 和 Android 上的 `width` 与
-`height`、属于另一类设备的 `platform`（桌面或 web 上的手机平台，iOS 或 Android 上的桌面平台或另一种手机）、`host.handlers` 以及 `url` 会以
+`height`、属于另一类设备的 `platform`（桌面或 web 上的手机平台，iOS 或 Android 上的桌面平台或另一种手机）、`host.handlers`、`modules` 以及 `url` 会以
 `ERR_NSH_TEST_UNSUPPORTED` reject，这样测试要么按写的那样运行，要么说明它需要什么。桌面平台的 `platform`（例如用 `"macos"` 获得桌面的鼠标和按键）
 可以在任何桌面目标和 web 上运行，应用以该目标的平台运行，且总是桌面形态：在浏览器中页面无论宽度都以桌面形态启动；
 不给 `platform`（或给 `"web"`）时，页面像浏览器一样自己判断形态（宽度至少 600 点时为桌面）。带有自己 Rust crate 的应用运行在 NSH 为该平台用这些 crate 构建的开发 host 中；
@@ -545,11 +582,17 @@ Rust 应用的 host 运行它的 root，所以 `open(".")` 在那里启动它，
 `--browser <PATH>` 指定的可执行文件（需要有浏览器：找不到时 `nsh test` 会列出它找过的位置）。整个运行共用一个浏览器，
 每次 `open` 得到一个拥有独立存储的页面。输入是浏览器的可信输入，与用户的输入一样：鼠标点击、滚轮滚动和按键。
 
-在 iOS 上，应用运行在 iOS 模拟器里的开发 host 中：使用已启动的模拟器，否则 `nsh test` 会启动最新的 iPhone。步骤是手指的触摸和软键盘的输入，
+在 iOS 上，应用运行在 iOS 模拟器里的开发 host 中：使用 `--device` 指定的模拟器（名称或 UDID），否则使用已启动的模拟器，
+再否则 `nsh test` 会启动最新的 iPhone。步骤是手指的触摸和软键盘的输入，
 UIKit 收到它们的方式与在设备上相同。`setColorScheme` 切换模拟器的外观，`nsh test` 会在应用结束后把它恢复原样；屏幕是所模拟设备的尺寸。
+`nsh test` 环境中由应用在 `capabilities.process.env` 里声明的变量，会传给模拟器中的应用，与桌面上一样（`nsh run --target ios` 也会传递）；
+`HOME`、`TMPDIR` 和 `PATH` 是模拟器为应用设置的路径。
 
 在 Android 上，应用运行在 `adb devices` 列出的第一个设备或模拟器上的开发 host 中，并拥有独立的存储。步骤是手指的触摸和键盘的按键，
 应用的视图收到它们的方式与在设备上相同；`back` 是系统的返回。`setColorScheme` 切换设备的深色主题，`nsh test` 会在应用结束后把它恢复原样。
+`nsh test` 环境中由应用在 `capabilities.process.env` 里声明的变量，会传给设备上的应用，与桌面上一样（`nsh run --target android`
+运行 TSX 应用时也会传递）；`PATH`、`HOME`、`TMPDIR` 以及 Android 为每个应用设置的其他路径保持设备上的值。打包的应用
+（`nsh package --target android`）使用设备上的环境。
 
 ### 从标准输入给出步骤
 

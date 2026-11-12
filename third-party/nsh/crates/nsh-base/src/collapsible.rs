@@ -6,26 +6,21 @@
 use std::time::Duration;
 
 use nsh_core::{
-    element::{LayoutCurve, LayoutTransition},
+    element::{LayoutTransition, Spring},
     prelude::*,
 };
 
-/// How long a reveal takes, in milliseconds: as long as `gpui-component`'s
-/// `spring_control` (critically damped, a 180 ms response, settled within a
-/// thousandth: `theme/motion.rs`) takes, which is where a critically damped
-/// layout spring fitted into this duration comes within a thousandth of its
-/// end too (`nsh_core::transition`). `9.233 / (2π / 0.18 s)`.
-const REVEAL_MS: f32 = 265.0;
-
 /// The reveal: the frames that the region's change moves in the commit
 /// that opens or closes it (its own, its content's, and what follows it)
-/// spring to their new places, critically damped (a height should not
-/// overshoot, as `gpui-base`'s `Spring::with_damping` says); the rest of
-/// that commit (a list updating elsewhere) changes at once. Views inserted
-/// and removed in it are not animated: the content shows at once, clipped
-/// by the region growing around it.
-pub(crate) const REVEAL: LayoutTransition =
-    LayoutTransition::new(LayoutCurve::Spring { damping: 1.0 }, REVEAL_MS);
+/// spring to their new places on `gpui-component`'s `spring_control` (a
+/// 180 ms response, critically damped: a height should not overshoot, as
+/// `gpui-base`'s `Spring::with_damping` says); the rest of that commit (a
+/// list updating elsewhere) changes at once. Views inserted and removed in
+/// it are not animated: the content shows at once, clipped by the region
+/// growing around it.
+pub(crate) fn reveal_motion() -> LayoutTransition {
+    LayoutTransition::spring(Spring::new(180.0))
+}
 
 /// The props of [`Collapsible`].
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -87,7 +82,7 @@ pub fn Collapsible(props: CollapsibleProps, _cx: Scope<NoEvent>) -> impl IntoEle
 
 /// Follows `open` for a region whose content comes and goes, revealed while
 /// `reveal` holds and motion is not reduced: each change of `open` animates
-/// the frames `region` moves in the commit that makes it ([`REVEAL`]), and
+/// the frames `region` moves in the commit that makes it ([`reveal_motion`]), and
 /// the signal returned says whether the content is in the tree. It turns
 /// on with `open`, and off with it, or once the region has closed after a
 /// reveal. The region's clip (zero high while closed) is the caller's:
@@ -113,7 +108,7 @@ pub(crate) fn follow_open(
             generation.replace(current);
             let animated = reveal.get() && !reduce_motion();
             if animated {
-                region.animate_layout(REVEAL);
+                region.animate_layout(reveal_motion());
             }
             if open || !animated {
                 mounted.set(open);
@@ -121,11 +116,14 @@ pub(crate) fn follow_open(
             }
             // Out once the region has closed. The platform runs the reveal
             // and reports no end, so its time is the end.
-            set_timeout(Duration::from_millis(REVEAL_MS as u64), move || {
-                if generation.get() == current {
-                    mounted.set(false);
-                }
-            });
+            set_timeout(
+                Duration::from_millis(reveal_motion().run_ms() as u64),
+                move || {
+                    if generation.get() == current {
+                        mounted.set(false);
+                    }
+                },
+            );
         });
     });
     mounted

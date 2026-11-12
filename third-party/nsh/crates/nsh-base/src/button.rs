@@ -49,9 +49,10 @@ pub enum ButtonEvent {
 /// A press target that owns its behavior (presses, the disabled and
 /// selected states, its role for screen readers) and leaves its look to the
 /// app: no colors, sizes or label of its own. The app's `class` and `style`
-/// style it, its states with `active:`, `hover:`, `focus:`, `selected:` and
-/// `disabled:` classes or `activeStyle`, `hoverStyle`, `focusStyle`,
-/// `selectedStyle` and `disabledStyle`, and its children are its content.
+/// style it, its states with `active:`, `hover:`, `focus-visible:` (the
+/// keyboard's ring), `selected:` and `disabled:` classes or `activeStyle`,
+/// `hoverStyle`, `focusVisibleStyle`, `selectedStyle` and `disabledStyle`,
+/// and its children are its content.
 /// `hitSlop` widens where presses count past its bounds, as a view's does.
 /// In a `Toolbar` (or a `ToggleGroup`), it is one of the toolbar's items:
 /// a stop of the keyboard focus only while it is the item Tab enters the

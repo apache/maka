@@ -11,7 +11,7 @@ use super::json::{AttrsJson, Content};
 use crate::rich_editor::{
     commands::{self as cmd, BoxCommand, CommandRegistry, Dispatch, command},
     extensions::{history, input_rules},
-    formats::{DocFormat, MarkdownFormat, MarkdownNames, slice_from_text},
+    formats::{DocFormat, DomParser, MarkdownFormat, MarkdownNames, ParseOptions, slice_from_text},
     model::{Attrs, Fragment, Node, Schema, Slice},
     state::{EditorState, NodeSelection, TextSelection},
     transform::MarkMatch,
@@ -157,6 +157,9 @@ pub(crate) enum RichFormat {
     /// Plain text: one paragraph per line.
     #[default]
     Text,
+    /// HTML: read with the schema's `parseDOM` rules, written with its
+    /// `toDOM` specs (Tiptap's `setContent(html)` / `getHTML()`).
+    Html,
 }
 
 impl RichCommand {
@@ -229,6 +232,10 @@ pub(crate) fn fragment_of(
                 let doc = crate::rich_editor::formats::PlainTextFormat::default()
                     .parse(schema, text)
                     .map_err(|e| e.to_string())?;
+                Ok(doc.content().clone())
+            }
+            RichFormat::Html => {
+                let doc = DomParser::from_schema(schema).parse(text, &ParseOptions::default());
                 Ok(doc.content().clone())
             }
         },

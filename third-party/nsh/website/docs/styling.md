@@ -253,6 +253,15 @@ Color stops are placed by percentages or lengths (`px`, `pt`, `rem`; plain numbe
 
 Colors mix between stops as in CSS: in the space a gradient names (`linear-gradient(in oklab, …)`; also `srgb`, `srgb-linear`, `xyz`, `oklch` with a hue method such as `longer hue`, and `hsl`), and otherwise in sRGB when every color is a hex, `rgb()`, `hsl()` or named color, and in Oklab when one is `oklch()`, `oklab()`, `lab()`, `lch()` or `color()`.
 
+`repeating-linear-gradient`, `repeating-radial-gradient` and `repeating-conic-gradient` repeat their stops past the last one, as in CSS: the distance from the first stop to the last is one period. They draw hatching, ruled lines and grids:
+
+```tsx
+// Diagonal hatching: a 1px line every 8px.
+<View style={{ backgroundImage: "repeating-linear-gradient(45deg, #d0d7de 0 1px, transparent 1px 8px)" }} />
+// A page grid: two ruled layers, one across and one down.
+<View style={{ backgroundImage: "repeating-linear-gradient(0deg, #eaeef2 0 1px, transparent 1px 24px), repeating-linear-gradient(90deg, #eaeef2 0 1px, transparent 1px 24px)" }} />
+```
+
 Text elements do not draw gradients on iOS.
 
 ## Filters and blending
@@ -379,11 +388,13 @@ function ProgressiveBlur(props: { radius: number; style: ViewStyle }) {
 
 A masked `backdropFilter` draws the blur alone, without the system material's tint, at its exact radius, on iOS and macOS too. Each layer blurs what the window shows on every frame, so keep the layers few and the area small. Linux and GPUI draw no `backdropFilter`, so give the region a fading `backgroundImage` where the text over it must stay readable.
 
+GPUI draws no `maskImage` yet: a masked view draws whole, so a fade made with a mask is a hard edge there.
+
 ## Outlines, opacity and visibility
 
 - `outlineWidth`, `outlineColor`, `outlineStyle`, `outlineOffset` (`.outline(..)`, `.outline_color(..)`, `.outline_dashed()`, `.outline_offset(..)`): a line outside the border that takes no space (negative offsets draw inside). `outlineStyle: "none"` (or `"hidden"`, `.outline_none()`) hides the outline whatever its width, as in CSS.
 - `opacity` (`.opacity(n)`): 0 to 1, applied to the view and its children.
-- `visibility: "hidden"` (`.invisible()` in Rust): the view is not drawn but keeps its space, and screen readers skip it and its subtree, as in a browser. `display: "none"` (`.hidden()`) removes it from layout.
+- `visibility: "hidden"` (`.invisible()` in Rust): the view is not drawn but keeps its space, and screen readers skip it and its subtree, as in a browser. On a span (a `Text` inside a `Text`) it hides the span's characters in place, and copies leave them out too ([Text element](../elements/text.md#hidden-spans)). `display: "none"` (`.hidden()`) removes it from layout.
 - `zIndex` (`.z_index(n)`): the order among siblings, also the native stacking order (stable for equal values).
 - `cursor` (`.cursor(..)`, `.cursor_pointer()`): the pointer shape over the view, for pointers and desktops.
 
@@ -414,7 +425,7 @@ Each is a property of its own, as with classes: a style's `scale` replaces a `sc
 
 Rust's `.perspective(..)` is CSS's `perspective` property, as Tailwind's `perspective-*`: it gives the view's children their depth, while the `perspective()` function of a `transform` applies to the view's own transform. `transformOrigin` takes keywords, percentages and lengths (`"top left"`, `"50% 0"`, `[10, 20]`; `.origin_top_left()`, `.transform_origin(..)` in Rust); the default is the center. Transforms do not affect layout: siblings are placed as if the view were untransformed.
 
-Android has no skew transforms.
+Android has no skew transforms. GPUI cannot turn an image's pixels: a rotated or skewed `Image` is drawn upright at its own size, centered where it would be.
 
 ## Transitions
 

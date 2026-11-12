@@ -3,6 +3,7 @@ name = "nsh-tui-host"
 description = "Development host that runs a prebuilt Native Shell bundle in a terminal."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -22,6 +23,7 @@ clap.workspace = true
 log.workspace = true
 
 [dev-dependencies]
+nsh-base.workspace = true
 nsh-dev = { workspace = true, features = ["server"] }
 nsh-bundler = { workspace = true, features = ["bundle"] }
 

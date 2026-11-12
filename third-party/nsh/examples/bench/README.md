@@ -19,3 +19,13 @@ an OtpInput. Steps on standard input drive them, `--trace` shows each keystroke'
 desktop window and holds it for 20 s while something outside drives it: on Linux, Xvfb and XTest dragging the scroll
 bar's thumb or turning the wheel, with `nsh test examples/bench/data-table --target linux --fps -v` logging the frame
 rate and the engine's cost each second. Results: `docs/dev/performance.md` ("DataTable scroll bar drag").
+
+`RichEditor.tsx` holds 1,000 paragraphs of 80 ASCII characters. Each press alternates inserting and deleting one
+character in the first paragraph, retaining the rows' keys and order:
+
+```sh
+echo 'for (let i = 0; i < 8; i++) await app.press("id:edit");' | nsh test examples/bench/RichEditor.tsx --trace
+```
+
+Compare the final four edits after four warmups. Headless runs keep the complete document mounted; the trace
+includes selection geometry as well as the changed text. Results: `docs/dev/performance.md`.

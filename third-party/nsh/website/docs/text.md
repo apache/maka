@@ -116,6 +116,23 @@ text("Run ")
 </Text>
 ```
 
+### Hidden spans
+
+`visibility: "hidden"` on a span hides its characters where they stand: the text lays out as when they show, nothing
+of them (or of views and images inside it) is drawn, and copies and screen readers leave them out. Showing the span
+again draws it without moving anything, so a paragraph that is still being written can reveal its last words one at a time
+([Text element](../elements/text.md#hidden-spans)):
+
+```rust tabs
+text("Loading ").child(text("the next words").invisible())
+```
+
+```tsx tabs
+<Text>
+  Loading <Text style={{ visibility: "hidden" }}>the next words</Text>
+</Text>
+```
+
 ### Views and images inside text
 
 Any element other than a text inside a text is laid out inline, on the baseline, and wraps with the words. It can take presses of its own:

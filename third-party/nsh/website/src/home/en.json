@@ -115,6 +115,11 @@
   "waysHead": "Three ways to ship, one engine",
   "foundTitle": "Behavior from NSH, the look from you",
   "foundLead": "nsh/base holds unstyled base components that own state, focus, keyboard and accessibility, and the app styles every part. One nsh command line does the rest.",
+  "kitNote": [
+    "Building for the desktop only? ",
+    "GPUI Kit",
+    ", from the same Longbridge team, is a ready-to-use UI component library for macOS, Windows and Linux. Much of NSH's design comes from GPUI Kit, and apps built with NSH embed directly in GPUI Kit apps."
+  ],
   "closeTitle": [
     "Native views and interaction,",
     "your visual design"

@@ -49,7 +49,7 @@ pub fn primary(label: impl IntoReactive<SharedString>, on_press: impl Fn() + 'st
         .rounded(move || theme().radius)
         .bg(move || theme().primary)
         .active(|s| s.opacity(0.85))
-        .focus(|s| s.outline(px(2.0)).outline_color(move || theme().ring))
+        .focus_visible(|s| s.outline(px(2.0)).outline_color(move || theme().ring))
         .disabled_style(|s| s.opacity(0.5))
         .child(text(label).text_sm().text_color(move || theme().primary_foreground))
 }

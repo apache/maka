@@ -1,5 +1,5 @@
 import type { JSX, ViewStyle } from "nsh";
-import { effect, signal, Text, View } from "nsh";
+import { effect, signal, Text, token, View } from "nsh";
 import { reduceMotion } from "nsh";
 import { createAnimatedValue } from "nsh";
 import { platform } from "nsh";
@@ -7,7 +7,7 @@ import { keymap } from "nsh";
 import { Button as BaseButton, Sheet as BaseSheet, Switch, Tooltip } from "nsh/base";
 import { Icon, type IconName } from "./icons";
 import { createPresence, type PopupSide } from "./popup";
-import { alpha, colors, finish, focusRing, mono, motion, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, terminal, toneColor, toneTint, type Tone, wholeRows } from "./theme";
+import { alpha, colors, finish, focusRing, motion, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, terminal, toneColor, toneTint, type Tone, wholeRows } from "./theme";
 import { buttonGlyph, buttonLabel, buttonLook, type ButtonLookOptions, type ButtonSize, roundButtonGlyph, roundButtonLook } from "./look/button";
 import { pressSink } from "./look/press";
 import { switchLook } from "./look/switch";
@@ -33,6 +33,8 @@ export * from "./look/disclosure";
 export * from "./look/nav";
 export * from "./look/plot";
 export * from "./look/workspace";
+export * from "./look/color";
+export * from "./color-format";
 export * from "./photos";
 export { Segmented } from "./segmented";
 export * from "./popup";
@@ -41,6 +43,7 @@ export * from "./slider";
 export * from "./scrollbar-theme";
 export * from "./tree";
 export * from "./command";
+export * from "./emoji";
 export * from "./avatar";
 
 /**
@@ -95,7 +98,7 @@ export function Press(props: {
       accessibilityState={props.accessibilityState}
       hitSlop={props.hitSlop}
       style={[props.style ?? null, { ...pressSink().transition, opacity: props.disabled ? 0.4 : 1 }]}
-      focusStyle={focusRing()}
+      focusVisibleStyle={focusRing()}
     >
       {props.children}
     </View>
@@ -195,7 +198,12 @@ function SectionHead(props: { title: string; subtitle?: JSX.Element; right?: JSX
           <Text style={{ fontSize: density.note, color: colors.muted }}>{props.subtitle}</Text>
         </If>
       </View>
-      {props.right}
+      {/* A box of its own, set on the title's last line as the row aligns
+          it: a control that places itself (a segmented control keeps to
+          its start) lines up with the others. */}
+      <If when={props.right}>
+        <View>{props.right}</View>
+      </If>
     </View>
   );
 }
@@ -278,26 +286,58 @@ export function Figure(props: { value: string; unit?: string; note?: string; ton
   );
 }
 
-/** A small label in a tinted capsule (a word on its row in the terminal). */
+/**
+ * A small label in a capsule (a word on its row in the terminal), after
+ * shadcn/ui's secondary badge: 20 points tall, flat, no shadow; a neutral
+ * badge on the theme's `muted` fill in the text color, a toned one on its
+ * tone's tint in the tone's color, `outline` an edge in the tone's color.
+ */
 export function Badge(props: { label: string; tone?: Tone; outline?: boolean }) {
   const tone = () => props.tone ?? "neutral";
   return (
     <View
       style={{
-        paddingHorizontal: terminal ? 0 : 10,
-        height: terminal ? TERMINAL_ROW : 26,
-        borderRadius: 13,
+        paddingHorizontal: terminal ? 0 : 8,
+        height: terminal ? TERMINAL_ROW : 20,
+        borderRadius: 10,
         justifyContent: "center",
-        backgroundColor: props.outline ? "transparent" : toneTint(tone()),
-        boxShadow: props.outline ? undefined : finish.chip.boxShadow,
-        borderWidth: 1,
-        borderColor: props.outline ? toneColor(tone()) : alpha(tone() === "neutral" ? colors.text : toneColor(tone()), 0.1),
+        backgroundColor: props.outline ? "transparent" : tone() === "neutral" ? token("muted") : toneTint(tone()),
+        borderWidth: props.outline ? 1 : 0,
+        borderColor: props.outline ? toneColor(tone()) : undefined,
         // A change of tone (a window turning active) crosses over.
         transitionProperty: "colors",
         transitionDuration: 160,
       }}
     >
-      <Text style={{ fontSize: 12, fontWeight: "500", color: tone() === "neutral" ? colors.text : toneColor(tone()) }}>{props.label}</Text>
+      <Text style={{ fontSize: 12, fontWeight: "500", color: tone() === "neutral" ? colors.text : toneColor(tone()), numberOfLines: 1, fontVariant: ["tabular-nums"] }}>{props.label}</Text>
+    </View>
+  );
+}
+
+/**
+ * What a "Last event" card shows: the last thing that happened, in words,
+ * or while nothing has yet, `hint` (what to do to see one) in the muted
+ * color, as the overlay demos' event cards do. `"—"` counts as nothing.
+ */
+export function LastEvent(props: { value: string | null | undefined; hint: string }) {
+  const empty = () => !props.value || props.value === "—";
+  return (
+    <If when={!empty()} else={<Caption label={props.hint} />}>
+      <Text style={{ fontSize: density.body, color: colors.text }}>{props.value}</Text>
+    </If>
+  );
+}
+
+/**
+ * A switch with its label before it, for a section head's trailing edge
+ * (`Card`'s `right`): "Disable all", "Lock". The switch carries the label
+ * for screen readers; the text is what sighted users read.
+ */
+export function LabeledToggle(props: { label: string; value: boolean; onChange: (value: boolean) => void }) {
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: terminal ? TERMINAL_COLUMN : 8 }}>
+      <Text style={{ fontSize: density.note, color: colors.muted }}>{props.label}</Text>
+      <Toggle value={props.value} onChange={props.onChange} label={props.label} />
     </View>
   );
 }
@@ -387,7 +427,7 @@ export function Row(props: { first?: boolean; focusable?: boolean; onPress?: () 
     <View
       onPress={props.onPress}
       focusable={props.focusable}
-      focusStyle={props.focusable ? focusRing() : undefined}
+      focusVisibleStyle={props.focusable ? focusRing() : undefined}
       activeStyle={props.onPress ? { backgroundColor: colors.raised } : undefined}
       style={{
         minHeight: terminal ? TERMINAL_ROW : density.row,
@@ -508,6 +548,24 @@ export function Button(props: {
 }
 
 /**
+ * A small secondary button that turns something on and off (a workspace's
+ * toolbar: a dock, live updates, stripes): selected while on (`buttonLook`'s
+ * `on` fill), a dot before its name lit in the accent while on, faint while
+ * off; the name stays the same. `accessibilityLabel` says what it toggles.
+ */
+export function ToggleButton(props: { label: string; accessibilityLabel?: string; on: boolean; onPress: () => void }) {
+  const look = { size: "small" as const, selected: () => props.on };
+  return (
+    <BaseButton onPress={props.onPress} selected={props.on} accessibilityLabel={props.accessibilityLabel ?? props.label} {...buttonLook("secondary", { ...look, style: { gap: 6 } })}>
+      <If when={!terminal}>
+        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: props.on ? colors.accent : colors.faint, transitionProperty: "colors", transitionDuration: 150 }} />
+      </If>
+      <Text style={buttonLabel("secondary", look)}>{props.label}</Text>
+    </BaseButton>
+  );
+}
+
+/**
  * A round icon button (`roundButtonLook`'s); in the terminal a text button
  * reading `title` (a word or two), else `label`.
  */
@@ -578,7 +636,8 @@ export function Toggle(props: { value: boolean; onChange: (value: boolean) => vo
       // 8 pt more to press on every side (a hit slop around the small
       // track), without taking more room.
       style={{ margin: -8, padding: 8 }}
-      trackStyle={look.trackStyle}
+      trackClass={look.trackClass}
+          trackStyle={look.trackStyle}
       thumbStyle={look.thumbStyle}
     />
   );

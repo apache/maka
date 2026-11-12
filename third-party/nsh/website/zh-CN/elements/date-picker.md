@@ -84,7 +84,7 @@ function App() {
       presetClass="rounded-md px-2 py-1.5 text-sm hover:bg-accent"
       headerClass="flex-row items-center justify-between"
       rowClass="flex-row justify-between"
-      itemClass="h-8 min-w-8 items-center justify-center rounded-md text-sm focus:ring-2 focus:ring-ring selected:bg-primary selected:text-primary-foreground disabled:opacity-50"
+      itemClass="h-8 min-w-8 items-center justify-center rounded-md text-sm focus-visible:ring-2 focus-visible:ring-ring selected:bg-primary selected:text-primary-foreground disabled:opacity-50"
       timeClass="mt-2 gap-3"
       timeLabel={<Text class="text-sm">Time</Text>}
       timeAccessibilityLabel="Due time"

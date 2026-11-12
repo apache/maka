@@ -11,7 +11,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use nsh_core::{ATTACHMENT_CHAR, Affinity, TextPosition};
+use nsh_core::{Affinity, TextPosition};
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     rc::{Retained, Weak},
@@ -228,11 +228,12 @@ impl TextView {
         self.ivars().selection.range.get() == Some((0, self.text_length()))
     }
 
-    /// The selected text, without the placeholders of attachments.
+    /// The selected text, without the placeholders of attachments and
+    /// hidden runs (`None` when nothing is left of it).
     pub(crate) fn selected_string(&self) -> Option<String> {
         let (a, b) = self.ivars().selection.range.get().filter(|(a, b)| a < b)?;
-        let text = self.ns_text().substringWithRange(NSRange::new(a, b - a));
-        Some(text.to_string().replace(ATTACHMENT_CHAR, ""))
+        let text = self.ivars().text.borrow();
+        Some(text.as_ref()?.copied_text(a as u32..b as u32)).filter(|t| !t.is_empty())
     }
 
     /// Changes the selection from code (not UIKit), telling UIKit's

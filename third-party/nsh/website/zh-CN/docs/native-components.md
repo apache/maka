@@ -326,8 +326,9 @@ final class Badge implements NshComponent {
     private final float density;
     private int taps;
 
-    Badge(Context app, NshComponentContext context) {
+    Badge(NshComponentContext context) {
         this.context = context;
+        Context app = context.getContext();
         density = app.getResources().getDisplayMetrics().density;
         label = new TextView(app);
         label.setTextColor(Color.WHITE);
@@ -362,13 +363,13 @@ final class Badge implements NshComponent {
 }
 
 // Before loading the bundle:
-nsh.registerComponent("embed.badge", context -> new Badge(this, context));
+nsh.registerComponent("embed.badge", Badge::new);
 ```
 
 用 Kotlin 写法相同：
 
 ```kotlin
-nsh.registerComponent("embed.badge") { context -> Badge(this, context) }
+nsh.registerComponent("embed.badge") { context -> Badge(context) }
 ```
 
 | API | 说明 |
@@ -376,6 +377,7 @@ nsh.registerComponent("embed.badge") { context -> Badge(this, context) }
 | `NshView.registerComponent(String name, NshComponent.Factory factory)` | 以某个名称注册一个工厂；此后每创建一个元素，它就生成一个组件（UI 线程）。 |
 | `interface NshComponent` | `View view()`、`void setProp(String, Object)`、`default void command(String, Object)`、`default void destroy()`（元素已移除：被移除，或它的应用被 `NshView.destroy()` 停止、被再次加载替换；每个组件调用一次）。在 UI 线程上调用。 |
 | `setProp` 的值 | `String`、`Number`、`Boolean`、`java.util.List`、`java.util.Map`；被移除时（或 JSON `null`）为 `null`。 |
+| `NshComponentContext.getContext()` | 组件所在 `NshView` 的 context（即其 Activity 的），用于创建组件的视图、读取资源和获取系统服务；生命周期比组件长的对象应持有它的 `getApplicationContext()`。可在任意线程调用。 |
 | `NshComponentContext.emit(String event, Object data)` | 发出一个事件；`data` 使用同样的 Java 类型，或 `null`。可在任意线程调用。 |
 | `NshComponentContext.setSize(float width, float height)` | 以 dp 为单位上报组件自身的尺寸。可在任意线程调用。 |
 

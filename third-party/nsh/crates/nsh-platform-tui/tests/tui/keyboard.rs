@@ -144,6 +144,56 @@ fn app_shortcuts_win_over_the_terminal_scheme() {
 }
 
 #[component]
+fn FocusedControlShortcuts() -> impl IntoElement {
+    let shortcuts = signal(0);
+    let presses = signal(0);
+    for stroke in ["enter", "space", "shift+enter"] {
+        on_key(stroke, move |_| shortcuts.update(|n| *n += 1));
+    }
+    view()
+        .flex_1()
+        .child(
+            view()
+                .h(px(16.0))
+                .on_press(move |_: &()| presses.update(|n| *n += 1))
+                .child(text("button")),
+        )
+        .child(text(move || {
+            format!("shortcuts {} presses {}", shortcuts.get(), presses.get())
+        }))
+}
+
+#[test]
+fn enter_and_space_press_the_focused_control_before_shortcuts_elsewhere() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    view.load(App::Rust(Root::new::<FocusedControlShortcuts>(|| ())))
+        .unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "shortcuts 0 presses 0");
+    assert_eq!(view.handle(key("Enter", Default::default())), Handled::Yes);
+    draw_until(&mut view, &mut terminal, &rx, "shortcuts 1 presses 0");
+    assert_eq!(view.handle(key("Tab", Default::default())), Handled::Yes);
+    for (name, shift, presses) in [("Enter", false, 1), (" ", false, 2), ("Enter", true, 3)] {
+        assert_eq!(
+            view.handle(key(
+                name,
+                Modifiers {
+                    shift,
+                    ..Default::default()
+                }
+            )),
+            Handled::Yes
+        );
+        draw_until(
+            &mut view,
+            &mut terminal,
+            &rx,
+            &format!("shortcuts 1 presses {presses}"),
+        );
+    }
+}
+
+#[component]
 fn ScrollKeys() -> impl IntoElement {
     let target = element_ref();
     let offset = signal(0);

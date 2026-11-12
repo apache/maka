@@ -1,5 +1,5 @@
 //! The performance monitor ([`crate::AppOptions::fps`], `--fps`): an
-//! on-screen panel with readings and a frame-cost chart; once a second, one `nsh::perf` line of what the surface's frames and commits
+//! on-screen panel with readings and a frame-cost chart; once a second, one `nsh::fps` line of what the surface's frames and commits
 //! cost, from its [`PerfMonitor`]:
 //!
 //! `fps 120/120 frame 1.21/1.10/2.40/3.90 gap 8.33/8.33/8.40/16.70 over 0% update 0.10/… layout
@@ -81,6 +81,9 @@ pub(crate) struct Fps {
     drains: RefCell<Vec<Duration>>,
     logged: Cell<Instant>,
     hud: RefCell<Option<Hud>>,
+    /// The panel shows only the frame rate and CPU (a click toggles it; per
+    /// window, for the session).
+    collapsed: Cell<bool>,
 }
 
 impl Drop for Fps {
@@ -105,6 +108,7 @@ impl Fps {
             drains: RefCell::default(),
             logged: Cell::new(Instant::now()),
             hud: RefCell::default(),
+            collapsed: Cell::new(false),
         }
     }
 
@@ -123,8 +127,8 @@ impl Fps {
     }
 }
 
-/// A native diagnostic overlay, matching the macOS monitor. It belongs to
-/// the monitor, never to the app's layout, focus order or pointer targets.
+/// A native diagnostic overlay. It belongs to the monitor, never to the
+/// app's layout, focus order or pointer targets.
 struct Hud {
     panel: gtk::DrawingArea,
     overlay: glib::WeakRef<gtk::Overlay>,
@@ -142,26 +146,42 @@ impl Drop for Hud {
     }
 }
 
-/// Shows readings and the most recent 120 frame costs. Updating at 2 Hz
-/// keeps the diagnostics readable without asking the app for continuous frames.
+/// Shows readings and the most recent [`CHART_FRAMES`] frame costs. Updating
+/// at 2 Hz keeps the diagnostics readable without asking the app for
+/// continuous frames. A click collapses the panel to the frame rate and CPU,
+/// and expands it again.
 pub(crate) fn show(overlay: &gtk::Overlay, fps: &Rc<Fps>) {
     let panel = gtk::DrawingArea::new();
-    panel.set_content_width(262);
-    panel.set_content_height(186);
+    resize(&panel, fps.collapsed.get());
     panel.set_halign(gtk::Align::End);
     panel.set_valign(gtk::Align::Start);
     // Leave the app's title bar and native window controls uncovered.
     panel.set_margin_top(54);
     panel.set_margin_end(10);
-    panel.set_can_target(false);
+    // Aligned to its corner, the panel is allocated only its own size: it
+    // takes the clicks on itself and every other point reaches the app.
     panel.set_focusable(false);
+    panel.set_cursor_from_name(Some("pointer"));
     panel.set_accessible_role(gtk::AccessibleRole::Presentation);
     let weak = Rc::downgrade(fps);
     panel.set_draw_func(move |_, cx, width, height| {
         if let Some(fps) = weak.upgrade() {
-            draw(cx, width as f64, height as f64, &fps.monitor.snapshot());
+            let s = fps.monitor.snapshot();
+            draw(cx, width as f64, height as f64, &s, fps.collapsed.get());
         }
     });
+    let click = gtk::GestureClick::new();
+    click.connect_pressed(|gesture, _, _, _| {
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+    });
+    let weak = Rc::downgrade(fps);
+    click.connect_released(move |gesture, _, _, _| {
+        let panel = gesture.widget().and_downcast::<gtk::DrawingArea>();
+        if let (Some(fps), Some(panel)) = (weak.upgrade(), panel) {
+            toggle(&fps, &panel);
+        }
+    });
+    panel.add_controller(click);
     overlay.add_overlay(&panel);
     let weak = Rc::downgrade(fps);
     let timer = glib::timeout_add_local(Duration::from_millis(500), move || {
@@ -185,100 +205,285 @@ pub(crate) fn show(overlay: &gtk::Overlay, fps: &Rc<Fps>) {
     });
 }
 
-fn readings(s: &PerfSnapshot) -> [String; 5] {
+/// The panel's size and inner padding (points), and its size collapsed: a
+/// small pill holding the frame rate and the process' CPU.
+const WIDTH: i32 = 288;
+const HEIGHT: i32 = 96;
+const PAD: f64 = 10.0;
+const COLLAPSED_WIDTH: i32 = 128;
+const COLLAPSED_HEIGHT: i32 = 24;
+
+/// Collapses or expands the panel.
+fn toggle(fps: &Fps, panel: &gtk::DrawingArea) {
+    fps.collapsed.set(!fps.collapsed.get());
+    resize(panel, fps.collapsed.get());
+    panel.queue_draw();
+}
+
+/// Sizes the panel for its state.
+fn resize(panel: &gtk::DrawingArea, collapsed: bool) {
+    let (width, height) = if collapsed {
+        (COLLAPSED_WIDTH, COLLAPSED_HEIGHT)
+    } else {
+        (WIDTH, HEIGHT)
+    };
+    panel.set_content_width(width);
+    panel.set_content_height(height);
+}
+
+/// How many frames the curve shows, edge to edge, and how high a frame
+/// that takes a whole refresh rises from the bottom: frames within budget
+/// stay under the text, slow ones rise into it (three refreshes reach the
+/// top).
+const CHART_FRAMES: usize = 120;
+const BUDGET_RISE: f64 = 14.0;
+
+/// Text colors: values bright, labels and units muted.
+const VALUE: (f64, f64, f64) = (0.93, 0.94, 0.95);
+const MUTED: (f64, f64, f64) = (0.56, 0.58, 0.62);
+
+/// The two rows of readings under the frame rate, as label / value cells:
+/// times in milliseconds (the first row, its unit once at its end), then
+/// what the process and the app hold.
+fn cells(s: &PerfSnapshot) -> [[(&'static str, String); 4]; 2] {
+    let ms = |d: Duration| format!("{:.2}", d.as_secs_f64() * 1e3);
+    let none = || "—".to_owned();
+    let memory = s.memory;
     [
-        format!(
-            "FPS {:3.0} / {:.0} Hz",
-            s.fps,
-            s.refresh_rate.unwrap_or(60.0)
-        ),
-        format!(
-            "Frame {:5.2}  p95 {:5.2} ms",
-            s.frame.mean.as_secs_f64() * 1e3,
-            s.frame.p95.as_secs_f64() * 1e3
-        ),
-        format!(
-            "JS    {:5.2}  Core {:5.2} ms",
-            s.js.mean.as_secs_f64() * 1e3,
-            s.layout.mean.as_secs_f64() * 1e3
-        ),
-        format!(
-            "CPU {}  RSS {}",
-            s.process.cpu.map_or("—".into(), |cpu| format!("{cpu:.0}%")),
-            s.process
-                .memory
-                .map_or("—".into(), |m| format!("{:.1} MB", m as f64 / 1e6))
-        ),
-        format!(
-            "Frame cost · budget {:.1} ms",
-            1000.0 / s.refresh_rate.unwrap_or(60.0)
-        ),
+        [
+            ("frame", ms(s.frame.mean)),
+            ("p95", ms(s.frame.p95)),
+            ("js", ms(s.js.mean)),
+            ("core", ms(s.layout.mean)),
+        ],
+        [
+            (
+                "cpu",
+                s.process.cpu.map_or_else(none, |c| format!("{c:.0}%")),
+            ),
+            ("mem", s.process.memory.map_or_else(none, bytes)),
+            ("heap", memory.map_or_else(none, |m| bytes(m.js_heap))),
+            ("nodes", memory.map_or_else(none, |m| count(m.nodes))),
+        ],
     ]
 }
 
-fn draw(cx: &cairo::Context, width: f64, height: f64, s: &PerfSnapshot) {
-    // Diagnostic colors deliberately match macOS: a dark panel in either
-    // appearance, with green / amber / red frame costs against the budget.
-    let _ = cx.save();
-    cx.set_source_rgb(0.06, 0.07, 0.08);
-    let radius = 8.0;
-    for (x, y, angle) in [
-        (width - radius, radius, -std::f64::consts::FRAC_PI_2),
-        (width - radius, height - radius, 0.0),
-        (radius, height - radius, std::f64::consts::FRAC_PI_2),
-        (radius, radius, std::f64::consts::PI),
-    ] {
-        cx.arc(x, y, radius, angle, angle + std::f64::consts::FRAC_PI_2);
+/// A size, short: `85 MB`, `1.2 GB`.
+fn bytes(n: u64) -> String {
+    if n < 1_000_000_000 {
+        format!("{:.0} MB", n as f64 / 1e6)
+    } else {
+        format!("{:.1} GB", n as f64 / 1e9)
     }
+}
+
+/// A count, short: `950`, `12.3k`, `4.1M`.
+fn count(n: u64) -> String {
+    match n {
+        0..1_000 => n.to_string(),
+        1_000..1_000_000 => format!("{:.1}k", n as f64 / 1e3),
+        _ => format!("{:.1}M", n as f64 / 1e6),
+    }
+}
+
+/// Draws `text` with its baseline at `y`, starting at `x`, or ending there
+/// when `end` (right-aligned); returns its advance.
+fn text(cx: &cairo::Context, x: f64, y: f64, s: &str, end: bool) -> f64 {
+    let advance = cx.text_extents(s).map_or(0.0, |e| e.x_advance());
+    cx.move_to(if end { x - advance } else { x }, y);
+    let _ = cx.show_text(s);
+    advance
+}
+
+fn font(cx: &cairo::Context, family: &str, weight: cairo::FontWeight, size: f64) {
+    cx.select_font_face(family, cairo::FontSlant::Normal, weight);
+    cx.set_font_size(size);
+}
+
+fn color(cx: &cairo::Context, (r, g, b): (f64, f64, f64)) {
+    cx.set_source_rgb(r, g, b);
+}
+
+/// A rounded rectangle's path.
+fn rounded(cx: &cairo::Context, x: f64, y: f64, w: f64, h: f64, radius: f64) {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    cx.new_sub_path();
+    cx.arc(x + w - radius, y + radius, radius, -FRAC_PI_2, 0.0);
+    cx.arc(x + w - radius, y + h - radius, radius, 0.0, FRAC_PI_2);
+    cx.arc(x + radius, y + h - radius, radius, FRAC_PI_2, PI);
+    cx.arc(x + radius, y + radius, radius, PI, PI + FRAC_PI_2);
     cx.close_path();
-    let _ = cx.fill();
-    cx.select_font_face(
-        "monospace",
-        cairo::FontSlant::Normal,
-        cairo::FontWeight::Normal,
-    );
-    cx.set_font_size(11.0);
-    cx.set_source_rgb(0.94, 0.95, 0.96);
-    for (i, line) in readings(s).iter().enumerate() {
-        cx.move_to(8.0, 18.0 + i as f64 * 21.0);
-        let _ = cx.show_text(line);
-    }
-    let (x, y, w, h) = (8.0, height - 72.0, width - 16.0, 48.0);
-    cx.set_source_rgba(1.0, 1.0, 1.0, 0.08);
-    cx.rectangle(x, y, w, h);
-    let _ = cx.fill();
-    let budget = 1000.0 / s.refresh_rate.unwrap_or(60.0).max(1.0) as f64;
-    let bar = w / 120.0;
-    let count = s.frames.len().min(120);
-    for (i, frame) in s.frames.iter().skip(s.frames.len() - count).enumerate() {
-        let ms = frame.as_secs_f64() * 1e3;
-        let (r, g, b) = if ms <= budget / 2.0 {
-            (0.30, 0.85, 0.45)
-        } else if ms <= budget {
-            (0.98, 0.75, 0.25)
-        } else {
-            (0.98, 0.35, 0.33)
-        };
-        cx.set_source_rgb(r, g, b);
-        let cost = (ms / (budget * 2.0) * h).clamp(1.0, h);
-        cx.rectangle(
-            x + (120 - count + i) as f64 * bar,
-            y + h - cost,
-            (bar - 0.5).max(0.5),
-            cost,
-        );
+}
+
+/// The panel: the frame rate large over the display's rate and two rows of
+/// readings, over the latest frames' cost as its background ([`curve`]). A
+/// dark panel in either appearance, as diagnostics read best. `collapsed`:
+/// only the frame rate and the process' CPU, on a small pill.
+fn draw(cx: &cairo::Context, width: f64, height: f64, s: &PerfSnapshot, collapsed: bool) {
+    let _ = cx.save();
+    cx.set_source_rgba(0.07, 0.075, 0.085, 0.92);
+    if collapsed {
+        // The frame rate and the process' CPU, centered on the pill: each
+        // figure bright, its unit muted after it.
+        rounded(cx, 0.0, 0.0, width, height, height / 2.0);
         let _ = cx.fill();
+        let cpu = s
+            .process
+            .cpu
+            .map_or_else(|| "—".to_owned(), |c| format!("{c:.0}%"));
+        let pairs = [(format!("{:.0}", s.fps), "fps"), (cpu, "cpu")];
+        let measure = |s: &str, weight, size| {
+            font(cx, "sans", weight, size);
+            cx.text_extents(s).map_or(0.0, |e| e.x_advance())
+        };
+        let (unit_gap, pair_gap) = (3.0, 10.0);
+        let widths: Vec<(f64, f64)> = pairs
+            .iter()
+            .map(|(value, unit)| {
+                (
+                    measure(value, cairo::FontWeight::Bold, 13.0),
+                    measure(unit, cairo::FontWeight::Normal, 9.0),
+                )
+            })
+            .collect();
+        let total: f64 = widths.iter().map(|(v, u)| v + unit_gap + u).sum::<f64>()
+            + pair_gap * (pairs.len() - 1) as f64;
+        let mut x = ((width - total) / 2.0).max(0.0).round();
+        let baseline = (height / 2.0 + 4.5).round();
+        for ((value, unit), (advance, unit_advance)) in pairs.iter().zip(widths) {
+            font(cx, "sans", cairo::FontWeight::Bold, 13.0);
+            color(cx, VALUE);
+            text(cx, x, baseline, value, false);
+            font(cx, "sans", cairo::FontWeight::Normal, 9.0);
+            color(cx, MUTED);
+            text(cx, x + advance + unit_gap, baseline, unit, false);
+            x += advance + unit_gap + unit_advance + pair_gap;
+        }
+        let _ = cx.restore();
+        return;
     }
-    cx.set_source_rgba(1.0, 1.0, 1.0, 0.5);
-    cx.set_line_width(1.0);
-    cx.move_to(x, y + h / 2.0);
-    cx.line_to(x + w, y + h / 2.0);
-    let _ = cx.stroke();
-    cx.set_source_rgb(0.7, 0.72, 0.75);
-    cx.set_font_size(10.0);
-    cx.move_to(x, height - 8.0);
-    let _ = cx.show_text("120 frames · newest →");
+    rounded(cx, 0.0, 0.0, width, height, 10.0);
+    let _ = cx.save();
+    cx.clip_preserve();
+    let _ = cx.fill();
+    curve(cx, width, height, s);
     let _ = cx.restore();
+    let right = width - PAD;
+
+    // The frame rate, then the display's rate at the right.
+    font(cx, "sans", cairo::FontWeight::Bold, 22.0);
+    color(cx, VALUE);
+    let advance = text(cx, PAD, 32.0, &format!("{:.0}", s.fps), false);
+    font(cx, "sans", cairo::FontWeight::Normal, 11.0);
+    color(cx, MUTED);
+    text(cx, PAD + advance + 4.0, 32.0, "fps", false);
+    let rate = s
+        .refresh_rate
+        .map_or_else(|| "— Hz".to_owned(), |r| format!("{r:.0} Hz"));
+    text(cx, right, 32.0, &rate, true);
+
+    // Readings on a shared four-column grid: label at a cell's start,
+    // value right-aligned at its end; the first row's unit after it.
+    let unit = 14.0;
+    let column = (width - 2.0 * PAD - unit) / 4.0;
+    for (row, cells) in cells(s).iter().enumerate() {
+        let y = 52.0 + row as f64 * 16.0;
+        for (i, (label, value)) in cells.iter().enumerate() {
+            let x = PAD + i as f64 * column;
+            font(cx, "sans", cairo::FontWeight::Normal, 9.0);
+            color(cx, MUTED);
+            text(cx, x, y, label, false);
+            font(cx, "monospace", cairo::FontWeight::Normal, 9.5);
+            color(cx, VALUE);
+            text(cx, x + column - 4.0, y, value, true);
+        }
+        if row == 0 {
+            font(cx, "sans", cairo::FontWeight::Normal, 9.0);
+            color(cx, MUTED);
+            text(cx, right, y, "ms", true);
+        }
+    }
+
+    let _ = cx.restore();
+}
+
+/// How far a frame of `ms` rises from the panel's bottom: within the budget
+/// up to [`BUDGET_RISE`], beyond it towards the top, reached at three
+/// refreshes.
+fn rise(ms: f64, budget: f64, height: f64) -> f64 {
+    if ms <= budget {
+        BUDGET_RISE * ms / budget
+    } else {
+        let over = (ms - budget) / (2.0 * budget);
+        (BUDGET_RISE + (height - BUDGET_RISE) * over).min(height - 4.0)
+    }
+}
+
+/// The latest frames' cost as a smooth curve with a soft fill under it,
+/// the panel's background layer (drawn clipped to it, under the text):
+/// newest at the right edge, green within the budget and amber above it.
+fn curve(cx: &cairo::Context, width: f64, height: f64, s: &PerfSnapshot) {
+    let count = s.frames.len().min(CHART_FRAMES);
+    if count < 2 {
+        return;
+    }
+    let budget = 1000.0 / s.refresh_rate.unwrap_or(60.0).max(1.0) as f64;
+    let step = width / (CHART_FRAMES - 1) as f64;
+    let points: Vec<(f64, f64)> = s.frames[s.frames.len() - count..]
+        .iter()
+        .enumerate()
+        .map(|(i, frame)| {
+            let ms = frame.as_secs_f64() * 1e3;
+            let x = width - (count - 1 - i) as f64 * step;
+            (x, height - rise(ms, budget, height))
+        })
+        .collect();
+    // Catmull-Rom segments as Béziers, their control points kept between
+    // the segment's ends so the curve never swings past a sample.
+    let path = |cx: &cairo::Context| {
+        cx.line_to(points[0].0, points[0].1);
+        for i in 0..count - 1 {
+            let (p0, p1) = (points[i.saturating_sub(1)], points[i]);
+            let (p2, p3) = (points[i + 1], points[(i + 2).min(count - 1)]);
+            let (low, high) = (p1.1.min(p2.1), p1.1.max(p2.1));
+            cx.curve_to(
+                p1.0 + (p2.0 - p0.0) / 6.0,
+                (p1.1 + (p2.1 - p0.1) / 6.0).clamp(low, high),
+                p2.0 - (p3.0 - p1.0) / 6.0,
+                (p2.1 - (p3.1 - p1.1) / 6.0).clamp(low, high),
+                p2.0,
+                p2.1,
+            );
+        }
+    };
+    // Green up to the budget's height, amber over it.
+    let edge = height - BUDGET_RISE;
+    let gradient = |line: f64, fill: f64| {
+        let g = cairo::LinearGradient::new(0.0, edge + 1.0, 0.0, edge - 5.0);
+        g.add_color_stop_rgba(0.0, 0.42, 0.80, 0.58, if line > 0.0 { line } else { fill });
+        g.add_color_stop_rgba(
+            1.0,
+            0.98,
+            0.72,
+            0.28,
+            if line > 0.0 { line } else { fill * 1.4 },
+        );
+        g
+    };
+    cx.new_path();
+    cx.move_to(points[0].0, height);
+    path(cx);
+    cx.line_to(width, height);
+    cx.close_path();
+    let _ = cx.set_source(gradient(0.0, 0.16));
+    let _ = cx.fill();
+    cx.new_path();
+    cx.move_to(points[0].0, points[0].1);
+    path(cx);
+    cx.set_line_width(1.25);
+    cx.set_line_join(cairo::LineJoin::Round);
+    let _ = cx.set_source(gradient(0.7, 0.0));
+    let _ = cx.stroke();
 }
 
 /// Measures `widget`'s frames into `fps` once it has a frame clock. Each
@@ -371,7 +576,7 @@ fn after_paint(fps: &Fps, clock: &gdk::FrameClock) {
         stat(&mut phases.snapshot),
         stat(&mut phases.canvas),
     ];
-    log::info!(target: "nsh::perf", "{}", line(&fps.monitor.snapshot(), &phases, &drains));
+    log::info!(target: nsh_engine::perf::LOG_TARGET, "{}", line(&fps.monitor.snapshot(), &phases, &drains));
 }
 
 /// One second's line (see the module documentation).
@@ -446,8 +651,19 @@ mod tests {
             let fps = surface.fps_for_test();
             let panel = fps.hud.borrow().as_ref().unwrap().panel.clone();
             assert!(panel.parent().is_some());
-            assert!(!panel.can_target());
+            assert!(panel.can_target());
             assert!(!panel.is_focusable());
+            // A click collapses it to a pill and expands it again.
+            toggle(&fps, &panel);
+            assert_eq!(
+                (panel.content_width(), panel.content_height()),
+                (COLLAPSED_WIDTH, COLLAPSED_HEIGHT)
+            );
+            toggle(&fps, &panel);
+            assert_eq!(
+                (panel.content_width(), panel.content_height()),
+                (WIDTH, HEIGHT)
+            );
             // Re-enabling keeps a single panel and collector.
             surface.enable_fps();
             assert!(Rc::ptr_eq(&fps, &surface.fps_for_test()));
@@ -476,28 +692,102 @@ mod tests {
         clippy::field_reassign_with_default,
         reason = "PerfSnapshot is non-exhaustive outside nsh-engine"
     )]
-    fn frame_cost_chart_draws_samples_and_the_budget_line() {
-        let mut snapshot = PerfSnapshot::default();
-        snapshot.refresh_rate = Some(60.0);
-        snapshot.frames = vec![
-            Duration::from_millis(2),
-            Duration::from_millis(12),
-            Duration::from_millis(28),
-        ];
-        let mut image = cairo::ImageSurface::create(cairo::Format::ARgb32, 262, 186).unwrap();
+    fn frame_cost_curve_is_the_background_and_rises_only_when_slow() {
+        let render = |frames: &[u64]| {
+            let mut snapshot = PerfSnapshot::default();
+            snapshot.refresh_rate = Some(60.0);
+            snapshot.frames = frames.iter().map(|&ms| Duration::from_millis(ms)).collect();
+            let mut image =
+                cairo::ImageSurface::create(cairo::Format::ARgb32, WIDTH, HEIGHT).unwrap();
+            let cx = cairo::Context::new(&image).unwrap();
+            draw(&cx, WIDTH as f64, HEIGHT as f64, &snapshot, false);
+            drop(cx);
+            let stride = image.stride() as usize;
+            let pixels = image.data().unwrap().to_vec();
+            move |x: usize, y: usize| {
+                let offset = y * stride + x * 4;
+                u32::from_ne_bytes(pixels[offset..offset + 4].try_into().unwrap())
+            }
+        };
+        let empty = render(&[]);
+        let fast = render(&[8; CHART_FRAMES]);
+        let slow = render(&[[8; CHART_FRAMES - 2].as_slice(), &[40, 40]].concat());
+        // Fast frames tint the bottom edge to edge, green, and leave the
+        // text area as it is.
+        let (bottom, green) = (
+            HEIGHT as usize - 2,
+            fast(WIDTH as usize / 2, HEIGHT as usize - 2),
+        );
+        assert_ne!(fast(12, bottom), empty(12, bottom));
+        assert_ne!(
+            fast(WIDTH as usize - 12, bottom),
+            empty(WIDTH as usize - 12, bottom)
+        );
+        assert!((green >> 8 & 255) > (green >> 16 & 255) + 10);
+        assert_eq!(fast(150, 40), empty(150, 40));
+        assert_eq!(fast(WIDTH as usize - 3, 50), empty(WIDTH as usize - 3, 50));
+        // Slow newest frames rise into it at the right edge.
+        assert_ne!(slow(WIDTH as usize - 2, 50), empty(WIDTH as usize - 2, 50));
+    }
+
+    #[test]
+    fn frames_within_budget_stay_under_the_text() {
+        let (budget, height) = (16.7, HEIGHT as f64);
+        assert!(rise(budget, budget, height) <= BUDGET_RISE);
+        // The second row of readings ends near 70; a fast frame stays below.
+        assert!(height - rise(budget, budget, height) > 72.0);
+        assert!(height - rise(budget * 2.0, budget, height) < 52.0);
+        assert!(rise(budget * 10.0, budget, height) < height);
+    }
+
+    #[test]
+    #[allow(
+        clippy::field_reassign_with_default,
+        reason = "PerfSnapshot is non-exhaustive outside nsh-engine"
+    )]
+    fn the_collapsed_panel_is_a_pill_of_the_frame_rate_and_cpu() {
+        let (w, h) = (COLLAPSED_WIDTH, COLLAPSED_HEIGHT);
+        let mut image = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h).unwrap();
         let cx = cairo::Context::new(&image).unwrap();
-        draw(&cx, 262.0, 186.0, &snapshot);
+        let mut snapshot = PerfSnapshot::default();
+        snapshot.fps = 134.0;
+        snapshot.refresh_rate = Some(144.0);
+        snapshot.process.cpu = Some(24.0);
+        draw(&cx, w as f64, h as f64, &snapshot, true);
         drop(cx);
         let stride = image.stride() as usize;
         let pixels = image.data().unwrap();
-        let pixel = |x: usize, y: usize| {
-            let offset = y * stride + x * 4;
-            u32::from_ne_bytes(pixels[offset..offset + 4].try_into().unwrap())
-        };
-        // Samples end at the chart's right edge; this red bar exceeds
-        // the 16.7 ms budget. The line is also visible without any samples.
-        let red = pixel(252, 130);
-        assert!((red >> 16 & 255) > (red >> 8 & 255) * 2);
-        assert_ne!(pixel(20, 138), pixel(20, 128));
+        let alpha = |x: usize, y: usize| pixels[y * stride + x * 4 + 3];
+        // Round ends: the corners stay clear, the middle of an end is filled.
+        assert_eq!(alpha(1, 1), 0);
+        assert_eq!(alpha(w as usize - 2, h as usize - 2), 0);
+        assert!(alpha(2, h as usize / 2) > 200);
+        // Both figures are drawn bright across the middle of the pill: one
+        // in each half.
+        let red = |x: usize, y: usize| pixels[y * stride + x * 4 + 2];
+        let half = w as usize / 2;
+        assert!((0..half).any(|x| red(x, h as usize / 2) > 150));
+        assert!((half..w as usize).any(|x| red(x, h as usize / 2) > 150));
+    }
+
+    #[test]
+    #[allow(
+        clippy::field_reassign_with_default,
+        reason = "PerfSnapshot is non-exhaustive outside nsh-engine"
+    )]
+    fn readings_show_what_the_process_and_the_app_hold() {
+        let mut snapshot = PerfSnapshot::default();
+        let [times, held] = cells(&snapshot);
+        assert_eq!(times[0], ("frame", "0.00".to_owned()));
+        assert!(held.iter().all(|(_, value)| value == "—"));
+        snapshot.process.cpu = Some(57.0);
+        snapshot.process.memory = Some(1_234_000_000);
+        snapshot.memory = Some(nsh_engine::perf::MemorySample {
+            js_heap: 85_000_000,
+            nodes: 6_100,
+            ..Default::default()
+        });
+        let values = cells(&snapshot)[1].clone().map(|(_, value)| value);
+        assert_eq!(values, ["57%", "1.2 GB", "85 MB", "6.1k"]);
     }
 }

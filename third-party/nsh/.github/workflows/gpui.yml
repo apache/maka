@@ -6,15 +6,9 @@ name: GPUI
 # it (`nsh run --target gpui`).
 
 on:
-  # Only the GPUI workspace's own changes run it; a daily run catches what
-  # changes to the crates it shares with the main workspace break.
-  push:
-    branches: [main]
-    paths:
-      - "crates/gpui/**"
-      - "examples/embed-gpui/**"
-      - ".github/workflows/gpui.yml"
-      - ".github/actions/cargo/**"
+  # Pull requests run it on the GPUI workspace's own changes; a run every three
+  # hours on main (when it moved) catches what changes to the crates it shares with the main workspace
+  # break, and saves the dependencies' caches pull requests restore.
   pull_request:
     # `closed` runs nothing, but it takes the pull request's concurrency group
     # and so cancels its runs still queued or running once it merges or closes.
@@ -25,7 +19,7 @@ on:
       - ".github/workflows/gpui.yml"
       - ".github/actions/cargo/**"
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 */3 * * *"
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
@@ -50,9 +44,18 @@ env:
   RUSTUP_TOOLCHAIN: stable
 
 jobs:
+  # Scheduled runs: only when main moved since the last one.
+  changed:
+    if: github.event_name == 'schedule'
+    permissions:
+      actions: read
+    uses: ./.github/workflows/changed.yml
+
   check:
-    # Nothing for drafts or a pull request being closed.
-    if: github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
     # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
     # push cancels this run before it takes one.
     environment:
@@ -108,6 +111,9 @@ jobs:
         uses: ./.github/actions/cargo
         with:
           cache: gpui
+          # The GPUI workspace's and the GPUI Kit example's, besides the
+          # main workspace's.
+          lockfiles: "**/Cargo.lock"
 
       # A workspace of its own: huacnlee/cargo builds the dependencies it
       # shares with the main workspace once (`shared-deps`).

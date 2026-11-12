@@ -124,10 +124,21 @@ fn keystroke(key: &AnyObject) -> Option<Keystroke> {
     Some(Keystroke { modifiers, key })
 }
 
+/// Tells the core a hardware key went down (`focus-visible:`), unless
+/// `presses` are modifiers alone (HID usages Caps Lock and 0xE0 to 0xE7,
+/// the Control, Shift, Option and Command keys).
+fn keyboard_input(target: &EventTarget, presses: &AnyObject) {
+    let modifier = |code: isize| code == 0x39 || (0xE0..=0xE7).contains(&code);
+    if keys(presses).iter().any(|key| !modifier(code(key))) {
+        target.input_with(nsh_core::platform::InputModality::Keyboard);
+    }
+}
+
 /// `pressesBegan:withEvent:` of a responder of the surface: whether the
 /// table consumed `presses` (then the responder neither handles them nor
 /// passes them on). `editing`: a text input or hosted view has the focus.
 pub(crate) fn began(target: &EventTarget, presses: &AnyObject, editing: bool) -> bool {
+    keyboard_input(target, presses);
     let state = target.keymap();
     if !state.active() {
         return false;
@@ -238,13 +249,6 @@ fn schedule(target: &EventTarget, code: isize, generation: u64, delay: Duration)
         .ok();
 }
 
-/// The event target of text input `view` (its delegate).
-fn input_target(view: &UIView) -> Option<Retained<EventTarget>> {
-    // SAFETY: both input classes have a `delegate`, set to the target.
-    let delegate: Option<Retained<AnyObject>> = unsafe { msg_send![view, delegate] };
-    delegate?.downcast::<EventTarget>().ok()
-}
-
 /// `pressesBegan:withEvent:` of text input `view`: whether the table
 /// consumed `presses`. While an input method composes, its keys are its
 /// own (choosing a candidate, committing).
@@ -252,12 +256,12 @@ pub(crate) fn input_began(view: &UIView, presses: &AnyObject) -> bool {
     if crate::input::marked_text(view).is_some() {
         return false;
     }
-    input_target(view).is_some_and(|target| began(&target, presses, true))
+    crate::input::target_of(view).is_some_and(|target| began(&target, presses, true))
 }
 
 /// `pressesEnded:` / `pressesCancelled:` of text input `view`.
 pub(crate) fn input_ended(view: &UIView, presses: &AnyObject) -> bool {
-    input_target(view).is_some_and(|target| ended(&target, presses))
+    crate::input::target_of(view).is_some_and(|target| ended(&target, presses))
 }
 
 /// `pressesBegan:withEvent:` of the surface's root view, which gets the
@@ -267,6 +271,7 @@ pub(crate) fn input_ended(view: &UIView, presses: &AnyObject) -> bool {
 /// text.
 pub(crate) fn root_began(target: &EventTarget, presses: &AnyObject) -> bool {
     use objc2::ProtocolType;
+    keyboard_input(target, presses);
     // SAFETY: as in `keys`; `responder` is UIPress's.
     let responder: Option<Retained<AnyObject>> = unsafe {
         let all: Retained<NSArray<AnyObject>> = msg_send![presses, allObjects];

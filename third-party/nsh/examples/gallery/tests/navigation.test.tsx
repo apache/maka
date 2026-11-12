@@ -27,3 +27,13 @@ test("unsaved changes ask before going back", async () => {
   await app.back();
   await app.waitFor("Native stack");
 });
+
+test("a stack tells the app each change of its pages, which gives each its address", async () => {
+  const app = await open("../App.tsx", { clock: {} });
+  await app.press("label:NavStack");
+  await app.waitFor("0 changes, 0 opens: no address");
+  await app.press("label:Open Invoice");
+  await app.waitFor("1 changes, 0 opens: #/messages/Invoice");
+  await app.press("label:Back to the inbox");
+  await app.waitFor("2 changes, 0 opens: no address");
+});

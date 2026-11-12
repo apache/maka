@@ -195,6 +195,7 @@ const depth = () => nav.routes().length;
 | `children` | `.child(..)` | `(route: R, index: Accessor<number>) => JSX.Element` | 渲染一个路由。返回 `<NavPage>` 以设置它的选项。必填。 |
 | `style`、`class` | 样式方法 | | 栈的样式；通常为 `flex: 1`。 |
 | `testID` | `.test_id(..)` | `string` | 在测试和 `nsh test --trace` 中找到这个栈。 |
+| `onChange` | 读取路由 signal 的 `effect` | `({ routes }: { routes: readonly R[] }) => void` | 路由变化了：应用压入、弹出、替换或设置了路由，或用户从某个页面返回（返回按钮、滑动返回、浏览器的后退）。它在变化渲染之后运行，栈最初的路由不触发它。可用于统计页面、保存导航状态，或用 [`UrlScheme.setUrl`](../modules/nsh.md#urlscheme) 设置页面的地址。 |
 
 TSX 的子函数接收路由值本身，以及一个表示它在栈中位置的 accessor。
 

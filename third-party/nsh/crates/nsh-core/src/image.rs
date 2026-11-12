@@ -45,23 +45,166 @@ type Bytes = dyn AsRef<[u8]> + Send + Sync;
 /// The bytes of an in-memory image, shared: cloning one copies no bytes.
 /// Two are equal when they share their bytes (no byte is compared).
 #[derive(Clone)]
-pub struct ImageData(Arc<Bytes>);
+pub struct ImageData {
+    bytes: Arc<Bytes>,
+    /// Set when the image is a pixel buffer ([`Self::rgba`]): then
+    /// [`Self::bytes`] is its PNG, encoded on first use.
+    rgba: Option<Arc<Rgba>>,
+}
 
 impl ImageData {
     /// Image bytes held in `bytes` (a `Vec<u8>`, an `Arc<[u8]>`, ...), not
     /// copied.
     pub fn new(bytes: impl AsRef<[u8]> + Send + Sync + 'static) -> Self {
-        Self(Arc::new(bytes))
+        Self {
+            bytes: Arc::new(bytes),
+            rgba: None,
+        }
     }
 
-    /// The bytes.
+    /// An image of `width` × `height` pixels held in `pixels`, not copied:
+    /// straight (not premultiplied) 8-bit RGBA, rows top to bottom with no
+    /// padding. The backends that draw pixels take them as they are; the
+    /// others get them as a PNG ([`Self::bytes`]).
+    ///
+    /// # Panics
+    ///
+    /// When `pixels` is not `width * height * 4` bytes long, or a side is 0.
+    pub(crate) fn from_rgba(
+        width: u32,
+        height: u32,
+        pixels: impl AsRef<[u8]> + Send + Sync + 'static,
+    ) -> Self {
+        let len = pixels.as_ref().len();
+        assert!(
+            width > 0 && height > 0 && len as u64 == u64::from(width) * u64::from(height) * 4,
+            "an RGBA image of {width}x{height} pixels takes {} bytes, not {len}",
+            u64::from(width) * u64::from(height) * 4
+        );
+        let rgba = Arc::new(Rgba {
+            width,
+            height,
+            pixels: Box::new(pixels),
+            png: std::sync::OnceLock::new(),
+        });
+        Self {
+            bytes: rgba.clone(),
+            rgba: Some(rgba),
+        }
+    }
+
+    /// The bytes: a pixel buffer's ([`Self::rgba`]) encoded as a PNG the
+    /// first time they are asked for.
     pub fn bytes(&self) -> &[u8] {
-        (*self.0).as_ref()
+        (*self.bytes).as_ref()
+    }
+
+    /// The width, height and straight RGBA pixels of a pixel buffer, which
+    /// a backend that draws pixels takes without decoding [`Self::bytes`].
+    pub fn rgba(&self) -> Option<(u32, u32, &[u8])> {
+        self.rgba
+            .as_deref()
+            .map(|r| (r.width, r.height, (*r.pixels).as_ref()))
     }
 
     fn downgrade(&self) -> Weak<Bytes> {
-        Arc::downgrade(&self.0)
+        Arc::downgrade(&self.bytes)
     }
+}
+
+/// A pixel buffer, and the PNG it is to the backends that load encoded
+/// images only (iOS, Android, the browser).
+struct Rgba {
+    width: u32,
+    height: u32,
+    pixels: Box<Bytes>,
+    png: std::sync::OnceLock<Vec<u8>>,
+}
+
+impl AsRef<[u8]> for Rgba {
+    fn as_ref(&self) -> &[u8] {
+        self.png
+            .get_or_init(|| stored_png(self.width, self.height, (*self.pixels).as_ref()))
+    }
+}
+
+/// `rgba` (straight, `width * height * 4` bytes) as an uncompressed PNG:
+/// no compression to wait for, a copy and two checksums.
+fn stored_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+    fn crc32(parts: &[&[u8]]) -> u32 {
+        static TABLE: std::sync::LazyLock<[u32; 256]> = std::sync::LazyLock::new(|| {
+            std::array::from_fn(|n| {
+                (0..8).fold(n as u32, |c, _| {
+                    if c & 1 == 1 {
+                        0xedb8_8320 ^ (c >> 1)
+                    } else {
+                        c >> 1
+                    }
+                })
+            })
+        });
+        !parts.iter().flat_map(|p| p.iter()).fold(!0u32, |c, &b| {
+            TABLE[((c ^ u32::from(b)) & 0xff) as usize] ^ (c >> 8)
+        })
+    }
+    fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        out.extend_from_slice(&crc32(&[kind, data]).to_be_bytes());
+    }
+    let row = width as usize * 4;
+    // Each row is a filter byte (0: none) and its pixels.
+    let raw_len = (row + 1) * height as usize;
+    let mut zlib = Vec::with_capacity(raw_len + raw_len / 0xffff * 5 + 16);
+    zlib.extend_from_slice(&[0x78, 0x01]);
+    let (mut a, mut b) = (1u32, 0u32);
+    let mut raw = rgba
+        .chunks_exact(row)
+        .flat_map(|r| std::iter::once(&0u8).chain(r.iter()));
+    let mut left = raw_len;
+    while left > 0 {
+        let n = left.min(0xffff);
+        left -= n;
+        zlib.push(u8::from(left == 0));
+        zlib.extend_from_slice(&(n as u16).to_le_bytes());
+        zlib.extend_from_slice(&(!(n as u16)).to_le_bytes());
+        for &byte in raw.by_ref().take(n) {
+            zlib.push(byte);
+            a = (a + u32::from(byte)) % 65521;
+            b = (b + a) % 65521;
+        }
+    }
+    zlib.extend_from_slice(&((b << 16) | a).to_be_bytes());
+    let mut out = Vec::with_capacity(zlib.len() + 64);
+    out.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    let mut ihdr = [0u8; 13];
+    ihdr[..4].copy_from_slice(&width.to_be_bytes());
+    ihdr[4..8].copy_from_slice(&height.to_be_bytes());
+    ihdr[8..].copy_from_slice(&[8, 6, 0, 0, 0]);
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &zlib);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+/// The short URI a pixel buffer goes by: unique to it, and of the form of a
+/// decoded `data:` URI's key, which an app cannot write itself
+/// ([`crate::ImageSource::inline`]). Every buffer is a new image: the
+/// caches drop what no view shows any more, as they do any image's.
+pub(crate) fn rgba_key() -> String {
+    use std::{
+        fmt::Write,
+        hash::BuildHasher,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    static SEED: std::sync::LazyLock<std::hash::RandomState> =
+        std::sync::LazyLock::new(std::hash::RandomState::new);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let mut key = String::from("data:image/png;nsh-key=");
+    let _ = write!(key, "{:016x}{n:016x}", SEED.hash_one(n));
+    key
 }
 
 impl Default for ImageData {
@@ -93,13 +236,16 @@ impl From<Vec<u8>> for ImageData {
 
 impl PartialEq for ImageData {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::addr_eq(Arc::as_ptr(&self.0), Arc::as_ptr(&other.0))
+        std::ptr::addr_eq(Arc::as_ptr(&self.bytes), Arc::as_ptr(&other.bytes))
     }
 }
 
 impl fmt::Debug for ImageData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ImageData({} bytes)", self.bytes().len())
+        match self.rgba() {
+            Some((w, h, _)) => write!(f, "ImageData({w}x{h} RGBA)"),
+            None => write!(f, "ImageData({} bytes)", self.bytes().len()),
+        }
     }
 }
 
@@ -204,7 +350,7 @@ impl InlineImages {
         };
         let held = self.map.entry(source.uri.clone()).or_default();
         let new = !held.iter().any(|w| w.strong_count() > 0);
-        let ptr = Arc::as_ptr(&data.0);
+        let ptr = Arc::as_ptr(&data.bytes);
         if !held.iter().any(|w| std::ptr::addr_eq(w.as_ptr(), ptr)) {
             held.push(data.downgrade());
         }
@@ -217,7 +363,7 @@ impl InlineImages {
             .get(uri)?
             .iter()
             .find_map(Weak::upgrade)
-            .map(ImageData)
+            .map(|bytes| ImageData { bytes, rgba: None })
     }
 
     /// Forgets the URIs whose bytes no source keeps any more, and returns
@@ -308,6 +454,55 @@ mod tests {
         .inline();
         assert_eq!(&*bad.uri, "data:,");
         assert!(bad.data.is_none());
+    }
+
+    #[test]
+    fn rgba_sources_keep_their_pixels_under_a_unique_key() {
+        let pixels: Arc<[u8]> = (0..3 * 2 * 4).map(|i| i as u8).collect();
+        let src = crate::element::ImageSrc::rgba(3, 2, pixels.clone());
+        let again = crate::element::ImageSrc::rgba(3, 2, pixels.clone());
+        // Each buffer is an image of its own, under a key an app cannot
+        // write itself.
+        assert_ne!(src.uri, again.uri);
+        assert!(src.uri.starts_with("data:image/png;nsh-key="));
+        assert_eq!(src.size, Some((3.0, 2.0)));
+        let data = src.data.clone().unwrap();
+        let (w, h, rgba) = data.rgba().unwrap();
+        assert_eq!((w, h), (3, 2));
+        assert!(std::ptr::eq(rgba, &*pixels));
+        assert_eq!(format!("{data:?}"), "ImageData(3x2 RGBA)");
+        let forged = ImageSource {
+            uri: src.uri.to_arc(),
+            ..ImageSource::default()
+        }
+        .inline();
+        assert_eq!(&*forged.uri, "data:,");
+        // The backends that load encoded images get a PNG.
+        assert_eq!(&data.bytes()[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            crate::image::Natural::of(data.bytes()),
+            Some(crate::image::Natural::Pixels(3, 2))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "takes 24 bytes, not 23")]
+    fn rgba_sources_check_their_length() {
+        crate::element::ImageSrc::rgba(3, 2, vec![0u8; 23]);
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn rgba_sources_encode_to_a_png_that_decodes_to_them() {
+        // Over one stored deflate block (65535 bytes).
+        let (w, h) = (130u32, 140u32);
+        let pixels: Vec<u8> = (0..w * h)
+            .flat_map(|i| [(i % 251) as u8, (i % 13) as u8, (i / 256) as u8, 255])
+            .collect();
+        let data = crate::ImageData::from_rgba(w, h, pixels.clone());
+        let png = resvg::tiny_skia::Pixmap::decode_png(data.bytes()).unwrap();
+        assert_eq!((png.width(), png.height()), (w, h));
+        assert_eq!(png.data(), &pixels[..]);
     }
 
     #[test]

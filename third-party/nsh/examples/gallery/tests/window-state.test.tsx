@@ -50,6 +50,16 @@ test("a panel opens without taking the focus; a popup closes when the focus leav
   await app.waitFor("Windows: main,notes,panel");
 });
 
+test("focus() as a panel opens gives it the focus a panel otherwise leaves", async () => {
+  const app = await open(FIXTURE, OPTIONS);
+  // `Window.open(..).focus()`, as the docs show: the focus is asked for
+  // before the panel's first frame. Read from the panel's own state:
+  // `focusedWindow()` stayed on the main window on Windows, also in the
+  // cases above.
+  await app.press("Open palette");
+  await app.waitFor("text:/^Palette: mode=normal minimized=false visible=true focused=true /");
+});
+
 test("a dialog closes on Escape", async () => {
   const app = await open(FIXTURE, OPTIONS);
   await app.press("Open dialog");

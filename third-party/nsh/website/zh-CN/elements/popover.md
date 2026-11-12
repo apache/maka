@@ -78,6 +78,30 @@ const open = signal(false);
 
 `closeOnEscape={false}` 让它在 Escape 和返回键时保持打开（`onCancel` 仍会收到它们，可以先询问用户）；`closeOnPressOutside={false}` 让它在外部按压时保持打开。
 
+<a id="keyboard-focus"></a>
+
+## 键盘焦点
+
+弹出框打开时不移动键盘焦点。要让弹出框像一个小的非模态对话框那样接住焦点，就在 `onOpen` 中聚焦它的内容：`onOpen` 在内容渲染之后才触发，此时内容里的 ref 已经指向各自的视图。给这个视图加上 `focusable`（或一个按压处理函数），它才能持有焦点。焦点在弹出框内时，弹出框因 Escape 或被应用关闭，焦点会在桌面平台上于它开始离开时回到触发元素，离开途中按下的键归触发元素；外部按压则让焦点留在按压所在的位置。
+
+```rust tabs
+let panel = element_ref();
+
+popover()
+    .on_open(move || panel.focus())
+    .trigger(text("Filters"))
+    .child(view().element_ref(&panel).focusable(true).child(filter_form()))
+```
+
+```tsx tabs
+let panel!: ViewRef;
+<Popover onOpen={() => panel.focus()} trigger={<Text>Filters</Text>}>
+  <View ref={panel} focusable>
+    <FilterForm />
+  </View>
+</Popover>;
+```
+
 <a id="phones-and-desktops"></a>
 
 ## 手机与桌面
@@ -93,7 +117,7 @@ const open = signal(false);
 
 ## 出现与离开
 
-弹出框随你的过渡出现和离开。`popupStartingClass` 是弹出层第一帧的外观，`popupClass` 里的 `transition-*` 类把它过渡到自己的外观：这就是它的出现。`popupEndingClass` 是关闭后的外观：弹出框会保留下来、不再接受按压，直到这些过渡播放完毕才离开，随后触发 `onClose`。在离开途中再次打开时，它从当前状态回到自己的外观。`popupStartingStyle` 和 `popupEndingStyle` 以内联样式做同样的事。用户要求减少动态效果时，它立即出现、立即离开。
+弹出框随你的过渡出现和离开。`popupStartingClass` 是弹出层第一帧的外观，`popupClass` 里的 `transition-*` 类把它过渡到自己的外观：这就是它的出现。`popupEndingClass` 是关闭后的外观：弹出框会保留下来、不再接受按压和按键，直到这些过渡播放完毕才离开，随后触发 `onClose`。在离开途中再次打开时，它从当前状态回到自己的外观。`popupStartingStyle` 和 `popupEndingStyle` 以内联样式做同样的事。用户要求减少动态效果时，它立即出现、立即离开。
 
 ```tsx
 <Popover
@@ -136,7 +160,7 @@ const open = signal(false);
 | 事件 | Rust | 说明 |
 |---|---|---|
 | `onOpenChange` | `.on_open_change(\|e\| ..)` | 它打开或关闭了，附带原因：`"triggerPress"`、`"pressOutside"` 或 `"cancel"`。 |
-| `onOpen` | `.on_open(\|\| ..)` | 它已显示。 |
+| `onOpen` | `.on_open(\|\| ..)` | 它已显示，内容已渲染：其中的 ref 已指向各自的视图。 |
 | `onClose` | `.on_close(\|\| ..)` | 它已消失（在离开过渡之后），应用关闭它时也会触发。 |
 | `onCancel` | `.on_cancel(\|\| ..)` | 用户尝试关闭它（Escape 或返回键、外部按压），无论它是否关闭。 |
 | `onPosition` | `.on_position(\|e\| ..)` | 弹出层已放置：`placement`（它所在的一侧）、`bounds`（它的框）、`available`（那一侧的空间）。 |

@@ -77,7 +77,7 @@ function App() {
       class="w-72 gap-2 rounded-lg border border-border p-3"
       headerClass="flex-row items-center justify-between"
       rowClass="flex-row justify-between"
-      itemClass="group h-8 min-w-8 items-center justify-center rounded-md text-sm focus:ring-2 focus:ring-ring selected:bg-primary selected:text-primary-foreground data-range-middle:rounded-none data-range-middle:bg-accent data-range-middle:text-accent-foreground data-outside:text-muted-foreground disabled:opacity-50"
+      itemClass="group h-8 min-w-8 items-center justify-center rounded-md text-sm focus-visible:ring-2 focus-visible:ring-ring selected:bg-primary selected:text-primary-foreground data-range-middle:rounded-none data-range-middle:bg-accent data-range-middle:text-accent-foreground data-outside:text-muted-foreground disabled:opacity-50"
       renderItem={(item) => (
         <Text class={item.today ? "font-semibold" : ""}>
           {item.kind === "weekday"

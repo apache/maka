@@ -9,6 +9,66 @@ Please submit **one PR that does one thing**. It makes your change easier to rev
 Before writing code, read [AGENTS.md](AGENTS.md) (the project rules, commands and conventions) and the page of
 [docs/dev](docs/dev/README.md) for the area you change.
 
+## Scope: what NSH accepts
+
+NSH is a lightweight, cross-platform GUI framework: native views, layout, text, input, animation, the reactive
+runtime, unstyled base components, and the toolchain that builds, tests, packages and delivers the apps made with
+them. It is not an all-in-one application platform in the manner of Electron. Small binaries, fast builds and fast
+start-up are part of its design, and every feature added to NSH costs all of them for every app, including the
+apps that never use it.
+
+Apps extend NSH in Rust. An app's own crate can export Rust components, modules and classes to its TSX, register
+native components, and call any platform API directly ([Building with Rust](website/docs/rust.md),
+[Native components](website/docs/native-components.md), [Platform extensions](website/docs/platform-extensions.md)).
+What one app or a few apps need belongs there, or in a community crate, not in NSH. The tools NSH already ships for
+delivering apps (packaging, signing, updates) exist because every app needs to be delivered; they are not precedent
+for adding other features.
+
+NSH's directions are set, and each has its pages in the [documentation](website/docs/): layout, styling and text;
+lists and scrolling; touch, gestures, forms and the keyboard; animation; navigation; accessibility; i18n; images,
+media and web views; native components and platform integration; the sandbox, capabilities and signed packages; app
+and OTA updates; and the toolchain that develops, tests and packages apps. Contributions work within these
+directions. A feature that would need a new section or page of its own in that documentation opens a new direction:
+it is the change to question hardest, it needs a maintainer's agreement on an issue first, and it is rarely accepted.
+
+Most contributions we take improve what NSH already has. In order of preference:
+
+- **Bug fixes**, on any platform.
+- **Performance**: faster rendering, layout, scrolling and start-up, less memory, fewer mount items.
+- **Refinements of existing behavior**: smoother animations and gestures, better input, focus and accessibility,
+  details that make a platform feel right.
+- **Completing existing components** within their domain. The components of `nsh/base` are not finished, and an
+  option or part they lack is welcome when it is common in that domain. `Editor`, `DiffView`, `DataTable` and
+  `RichEditor` especially are still far from what their domains offer, and contributions that fill those gaps are
+  the ones we most want. Common in the domain means the design and API that comparable components (GPUI Kit's
+  first, then well-known code editors, diff viewers, data grids and rich text editors) share. A `DiffView` option that diff viewers generally offer fits; one shaped by a single app's workflow does not,
+  and belongs in the app, built on the component's parts and slots.
+- **Bringing an existing feature to every platform** where a backend lacks it.
+
+These need no prior issue.
+
+A new feature, one NSH does not have in any form, is accepted only when all of these hold:
+
+- **Apps cannot build it themselves**, with NSH's existing APIs or through the Rust extension points above. A
+  WebView's page and the app already talk through `postMessage` / `onMessage` and `evaluate`, for example, so a flow
+  that can go through that bridge needs no new API.
+- **Many apps need it**, not one app's scenario.
+- **It works the same on every platform NSH supports**, with a complete design. An API whose operations fail or do
+  nothing on some platforms, or that covers a few cases of a larger problem, is not accepted, even with documented
+  "unsupported" errors.
+- **Its cost is measured and justified**: dependencies, binary size, build time and start-up time.
+
+Not accepted, unless a complete design meets every point above: wrappers of individual platform APIs for specific
+scenarios (WebView cookies, downloads, page capture, developer tools and similar controls), features only some
+platforms can support, and options that serve one app.
+
+Before writing a new feature, open an issue that answers these points and wait for a maintainer to agree. A pull
+request that adds a feature without that agreement may be closed without a review of its code, however well it is
+written.
+
+Reviewers, people and AI agents alike, judge scope first: a pull request that adds public API or a dependency is
+checked against this section before its implementation is reviewed.
+
 ## Component design standards
 
 Native Shell provides native views, rendering, animation and interaction. Its goal is not to reproduce the default
@@ -54,6 +114,36 @@ backends additionally integrate with platform view and text-input infrastructure
 supply their own integration with those services; rendering architecture alone does not establish whether a
 particular framework supports accessibility or autofill.
 
+## API design
+
+NSH's public API follows [GPUI Kit](https://gpui-kit.com)'s coding guides: an API is shaped by what it means, not
+by how a feature works today. [docs/dev/api-naming.md](docs/dev/api-naming.md) records each name and why it was
+chosen; these rules apply when adding one.
+
+- **Short, accurate, neutral names.** Name an API by what it does in one plain word where one exists, never by a
+  phrase describing the feature or its mechanism: such a name ties the API to today's implementation and is longer
+  to read and write. Reuse the project's word for the same concept before borrowing the web's: a ref's method that
+  brings its view into view is `reveal`, as `Tree.revealItem` and `Editor.revealPosition` are, not the DOM's
+  `scrollIntoView`.
+- **Names match the semantics.** A borrowed name brings its meaning with it. When the behavior differs, choose a
+  name that says what NSH does: physical alignments are `vertical` / `horizontal`, not the DOM's `block` / `inline`,
+  which follow the writing direction.
+- **Differences from GPUI Kit are written down.** A name, shape or option that differs from its GPUI, `gpui-base` or
+  `gpui-component` counterpart gets a row in `docs/dev/api-naming.md` saying what it maps to and why.
+- **Options are one named object.** Parameters that may grow are one options object named `<Method>Options`
+  (`RevealOptions`), declared as a named TypeScript type that apps can import, not an inline object type.
+- **Rust options read as one expression.** An options struct is `#[non_exhaustive]` with `Default` and public fields,
+  plus a setter per field that takes and returns `Self`, so a caller in another crate writes the value in place:
+
+  ```rust
+  row.reveal(RevealOptions::default().vertical(ScrollAlignment::Center));
+  ```
+
+- **Generated from one definition.** A string union is a Rust enum with `#[derive(PropEnum)]` (and
+  `#[non_exhaustive]`), never a hand-written `from_name`, a union typed out in a declaration or a list of names in an
+  error message. A value JS passes is decoded by one `HostValue` implementation in `nsh-core`, which QuickJS and the
+  browser runtime share and which declares its TypeScript type, never by a decoder written once per runtime.
+
 ## NSH and React Native
 
 NSH has a design of its own, and React Native is a reference for which capabilities a mobile UI framework
@@ -76,7 +166,7 @@ contributor is always responsible for the final result.
 
 Before opening a pull request, please make sure that:
 
-- The problem is real and the change is necessary.
+- The problem is real and the change is necessary, and a new feature is within [NSH's scope](#scope-what-nsh-accepts).
 - The API and implementation follow the existing patterns of NSH, and the rules in [AGENTS.md](AGENTS.md).
 - The code has been reviewed by you and properly tested: tests at the layer that owns the behavior, `nsh test --trace` for
   the JS runtime, engine and core, and a run on a simulator, emulator or device for platform code (screenshots or

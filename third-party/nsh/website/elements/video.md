@@ -132,7 +132,9 @@ const ratio = signal(16 / 9);
 ## Capabilities
 
 When the app declares [capabilities](../docs/sandbox-and-capabilities.md), video sources load from the hosts `network`
-allows; a source on another host shows an empty view and reports `onError` with `code` `"ERR_ACCESS_DENIED"`.
+allows; a source on another host shows an empty view and reports `onError` with `code` `"ERR_ACCESS_DENIED"`. A local
+file (an absolute path or a `file:` URL) plays on the desktops when `fs.read` holds it, and not on mobile or the web; a
+relative path plays only on the web, as the page's.
 
 ## Platform notes
 

@@ -164,8 +164,8 @@ Each side has its own `editor::highlight::Highlighter` over a rope of its text, 
 (`docs/dev/editor.md` "Highlighting"), with the language and its `Syntax` found by `editor::languages::resolve`: the
 engine's registered languages and highlighters first, then the built-in ones. The
 controller hands both sides' jobs (and guesses, for lines far past the parse) to one blocking thread at a time, up to
-1000 lines past each side's last line in view, as the `Editor` does; the syntaxes load on a blocking thread the first
-time (after a frame on WebAssembly). A patch's files each have a highlighter per side, in their own language
+1000 lines past each side's last line in view, as the `Editor` does; the syntaxes load in the first job (on
+WebAssembly after a frame, from the page). A patch's files each have a highlighter per side, in their own language
 (`files::Segment`), whose jobs go out with the others'. Colors are `crate::syntax`'s tokens, as the `Editor`'s and
 `TextView`'s code blocks.
 

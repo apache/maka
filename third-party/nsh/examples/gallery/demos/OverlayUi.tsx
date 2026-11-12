@@ -4,7 +4,7 @@
 import { createAnimatedValue, type JSX, platform, signal, split, Text, token, View } from "nsh";
 import { Input, type InputProps } from "nsh/base";
 import { LucideIcon, type LucideIconName } from "../icons";
-import { alpha, Caption, Card, colors, finish, focusRing, hovered, mono, radius, terminal, toneColor, toneTint, type Tone } from "../ui";
+import { alpha, Caption, Card, colors, fieldSize, finish, focusRing, hovered, mono, radius, solidTint, terminal, toneColor, type Tone } from "../ui";
 
 /** A pointer and a keyboard: desktop density. */
 export const pointer = platform.desktop;
@@ -16,9 +16,13 @@ export const tap = pointer ? "Click" : "Tap";
  * What opens a popup, as the gallery's `Button` looks (`secondary` raised,
  * `ghost` bare until the pointer is over it, `primary` the citrus fill) but
  * a plain view: the popup's trigger slot takes its presses and anchors to
- * it. While what it opens is open (`open`) it shows as selected; pressed
- * it sinks. With `onPress` it is a button of its own (a toolbar's), `tip`
- * its tooltip, `ink` its icon's and label's color. A terminal draws no
+ * it. While what it opens is open (`open`) it shows as selected; `on`, a
+ * tool that stays chosen (a toolbar's current one), takes the toolbar's on
+ * fill (`finish.on`), clear in both appearances; pressed it sinks. With `onPress` it is a button of its own (a toolbar's), `tip`
+ * its tooltip, `ink` its icon's and label's color. `inline`: a word in a
+ * line of text (a mention): no padding of its own, so the text flows on
+ * past it, its hover fill reaching 4 points out with a pointer and a hit
+ * slop making a finger's target on a touch screen. A terminal draws no
  * icons: an icon-only trigger shows `short` there (its accessibility label
  * when unset), as text.
  */
@@ -26,23 +30,27 @@ export function Trigger(props: {
   label?: string;
   icon?: LucideIconName;
   open?: boolean;
+  on?: boolean;
   variant?: "secondary" | "ghost" | "primary";
   ink?: string;
   accessibilityLabel?: string;
   short?: string;
   tip?: JSX.Element;
   disabled?: boolean;
+  inline?: boolean;
   onPress?: () => void;
 }) {
   const variant = () => props.variant ?? "secondary";
   const look = () =>
-    variant() === "primary"
-      ? { ...finish.accent, opacity: props.open ? 0.88 : 1 }
-      : variant() === "ghost"
-        ? { backgroundColor: props.open ? token("accent") : "transparent", borderColor: "transparent" }
-        : props.open
-          ? finish.pressed
-          : finish.raised;
+    props.on
+      ? finish.on
+      : variant() === "primary"
+        ? { ...finish.accent, opacity: props.open ? 0.88 : 1 }
+        : variant() === "ghost"
+          ? { backgroundColor: props.open ? token("accent") : "transparent", backgroundImage: "none", boxShadow: "none", borderColor: "transparent" }
+          : props.open
+            ? finish.pressed
+            : finish.raised;
   const ink = () => props.ink ?? (variant() === "primary" ? colors.onAccent : variant() === "ghost" ? colors.muted : colors.text);
   const label = () => props.label ?? (terminal ? (props.short ?? props.accessibilityLabel) : undefined);
   return (
@@ -51,11 +59,12 @@ export function Trigger(props: {
       onPress={props.onPress}
       disabled={props.disabled}
       accessibilityLabel={props.accessibilityLabel ?? props.label}
-      accessibilityState={props.onPress && props.open !== undefined ? { selected: props.open } : undefined}
+      accessibilityState={props.onPress && (props.open ?? props.on) !== undefined ? { selected: !!(props.open || props.on) } : undefined}
       tooltip={props.tip}
-      hoverStyle={props.open || props.disabled ? undefined : variant() === "primary" ? { opacity: 0.94 } : variant() === "ghost" ? hovered() : finish.hover}
+      hoverStyle={props.open || props.on || props.disabled ? undefined : variant() === "primary" ? { opacity: 0.94 } : variant() === "ghost" ? hovered() : finish.hover}
       activeStyle={{ ...(variant() === "primary" ? { opacity: 0.88 } : variant() === "ghost" ? { backgroundColor: alpha(colors.text, 0.09) } : finish.pressed), transform: [{ scale: 0.97 }] }}
-      focusStyle={focusRing()}
+      focusVisibleStyle={focusRing()}
+      hitSlop={props.inline && !pointer && !terminal ? { left: 8, right: 8, top: 2, bottom: 2 } : undefined}
       style={{
         alignSelf: "flex-start",
         flexDirection: "row",
@@ -65,11 +74,12 @@ export function Trigger(props: {
         // The terminal sizes it to its label.
         height: terminal ? undefined : pointer ? 28 : 40,
         minWidth: terminal ? undefined : pointer ? 28 : 40,
-        paddingHorizontal: label() ? (pointer ? 10 : 14) : 0,
+        paddingHorizontal: props.inline ? (pointer && !terminal ? 4 : 0) : label() ? (pointer ? 10 : 14) : 0,
+        marginHorizontal: props.inline && pointer && !terminal ? -4 : 0,
         borderRadius: radius.control,
         borderCurve: "continuous",
         borderWidth: 1,
-        opacity: props.disabled ? 0.4 : 1,
+        opacity: props.disabled ? 0.5 : 1,
         ...look(),
         transitionProperty: "background-color, border-color, box-shadow, opacity, transform",
         transitionDuration: 120,
@@ -86,7 +96,7 @@ export function Trigger(props: {
 }
 
 /**
- * A one-line text field: a well below the surface it sits on, an accent
+ * A one-line text field, as tall and in the type of the form's (`fieldSize`): a well below the surface it sits on, an accent
  * ring that fades in around it while it has the keyboard, `prefix` before
  * the text.
  */
@@ -107,7 +117,7 @@ export function Field(props: InputProps & { prefix?: string }) {
       }}
     >
       <If when={own.prefix}>
-        <Text style={{ paddingLeft: pointer ? 8 : 12, fontSize: pointer ? 13 : 15, color: colors.faint }}>{own.prefix}</Text>
+        <Text style={{ paddingLeft: fieldSize.pad, fontSize: fieldSize.font, color: colors.faint }}>{own.prefix}</Text>
       </If>
       <Input
         {...input}
@@ -122,13 +132,14 @@ export function Field(props: InputProps & { prefix?: string }) {
         style={[
           {
             flex: 1,
-            paddingHorizontal: own.prefix ? 2 : pointer ? 8 : 12,
-            fontSize: pointer ? 13 : 15,
+            paddingHorizontal: own.prefix ? 2 : fieldSize.pad,
+            // The form's field size (`fieldSize`), inside the well's 1-point edge.
+            fontSize: fieldSize.font,
             color: colors.text,
-            placeholderColor: colors.faint,
+            placeholderColor: colors.muted,
             caretColor: colors.accent,
             selectionColor: colors.accent,
-            ...(props.multiline ? { minHeight: pointer ? 56 : 84, paddingTop: pointer ? 6 : 12, paddingBottom: pointer ? 6 : 12 } : { height: pointer ? 28 : 40 }),
+            ...(props.multiline ? { minHeight: pointer ? 56 : 84, paddingTop: pointer ? 6 : 12, paddingBottom: pointer ? 6 : 12 } : { height: fieldSize.height - 2 }),
           },
           ...(Array.isArray(own.style) ? own.style : [own.style]),
         ]}
@@ -155,8 +166,10 @@ export function Field(props: InputProps & { prefix?: string }) {
 /** The tones avatars take, by name: one person keeps one color. */
 const avatarTones: Tone[] = ["accent", "info", "up", "warn", "danger"];
 
-/** A person's initials on a disc of a tone their name picks. */
-export function Avatar(props: { name: string; size?: number }) {
+/** A person's initials on a disc of a tone their name picks, opaque on
+ * `on`, the color of what it sits on (default the card), so faces that
+ * overlap hide each other. */
+export function Avatar(props: { name: string; size?: number; on?: string }) {
   const size = () => props.size ?? (pointer ? 28 : 36);
   const tone = () => avatarTones[[...props.name].reduce((n, c) => n + c.charCodeAt(0), 0) % avatarTones.length];
   const initials = () =>
@@ -174,7 +187,7 @@ export function Avatar(props: { name: string; size?: number }) {
         borderRadius: size() / 2,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: toneTint(tone()),
+        backgroundColor: solidTint(tone(), props.on ?? colors.surface),
         borderWidth: 1,
         borderColor: alpha(toneColor(tone()), 0.25),
       }}

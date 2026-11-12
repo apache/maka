@@ -82,13 +82,15 @@ define_class!(
             self.a11y_label()
         }
 
+        // The description, then the hint: UIKit has one place for what
+        // VoiceOver reads after the name and the value.
         #[unsafe(method_id(accessibilityHint))]
         fn accessibility_hint(&self) -> Option<Retained<NSString>> {
             self.ivars()
                 .props
                 .borrow()
                 .accessibility
-                .hint
+                .help_text(None)
                 .as_deref()
                 .map(NSString::from_str)
         }
@@ -461,7 +463,9 @@ fn steps(a: &Accessibility) -> bool {
 }
 
 /// Roles of groups whose elements stay VoiceOver's own: a semantic
-/// group, which VoiceOver names by its label as it moves into it.
+/// group, which VoiceOver names by its label as it moves into it. A
+/// dialog is one (UIKit has no dialog trait): its title is said as the
+/// focus enters it, and its controls stay reachable.
 fn is_container(a: &Accessibility) -> bool {
     matches!(
         a.role,
@@ -470,6 +474,9 @@ fn is_container(a: &Accessibility) -> bool {
             | AccessibilityRole::Navigation
             | AccessibilityRole::Tree
             | AccessibilityRole::Toolbar
+            | AccessibilityRole::Radiogroup
+            | AccessibilityRole::Dialog
+            | AccessibilityRole::AlertDialog
     )
 }
 
@@ -533,8 +540,8 @@ fn traits(props: &ViewProps) -> UIAccessibilityTraits {
 }
 
 /// The spoken value: an explicit `accessibilityValue`, plus checked,
-/// mixed pressed, expanded and current states (UIKit has no traits for
-/// those).
+/// mixed pressed, expanded, current and invalid states (UIKit has no
+/// traits for those).
 fn accessibility_value(props: &ViewProps) -> Option<String> {
     let a = &props.accessibility;
     let mut parts: Vec<String> = Vec::new();
@@ -579,6 +586,10 @@ fn accessibility_value(props: &ViewProps) -> Option<String> {
             }
             .into(),
         );
+    }
+    // ARIA's `aria-invalid`, read after the value as WebKit reads it.
+    if a.state.invalid {
+        parts.push("invalid data".into());
     }
     (!parts.is_empty()).then(|| parts.join(", "))
 }
@@ -687,6 +698,17 @@ mod tests {
         ));
         assert!(is_container(
             &props(AccessibilityRole::Toolbar, &[]).accessibility
+        ));
+        // A labelled radio group names the set, its radios still reached.
+        assert!(is_container(
+            &props(AccessibilityRole::Radiogroup, &[]).accessibility
+        ));
+        // A labelled dialog names what VoiceOver enters, never hiding it.
+        assert!(is_container(
+            &props(AccessibilityRole::Dialog, &[]).accessibility
+        ));
+        assert!(is_container(
+            &props(AccessibilityRole::AlertDialog, &[]).accessibility
         ));
         assert!(!is_container(
             &props(AccessibilityRole::Button, &[]).accessibility

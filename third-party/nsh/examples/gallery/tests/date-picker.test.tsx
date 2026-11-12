@@ -38,7 +38,8 @@ describe("on a phone", () => {
     // The first day starts the range; only the second ends and reports it.
     await app.press("label:2026-10-29");
     expect(app.shows("label:2026-10-30")).toBe(true);
-    expect(app.shows("—")).toBe(true);
+    // Nothing reported yet: the last event still asks for a change.
+    expect(app.shows("Change a control")).toBe(true);
     await app.press("label:2026-10-30");
     await app.waitFor("Trip: 2026-10-29 → 2026-10-30");
     await app.waitFor("Oct 29 – Oct 30");

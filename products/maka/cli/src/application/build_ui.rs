@@ -30,13 +30,17 @@ pub(crate) struct BuildUi {
     /// Directory for the compiled module, assets and manifest.json.
     #[arg(long, value_name = "DIRECTORY")]
     output: PathBuf,
+    /// Root containing every imported asset; defaults to the NSH app directory.
+    #[arg(long, value_name = "DIRECTORY")]
+    asset_root: Option<PathBuf>,
 }
 
 impl BuildUi {
     pub(super) async fn run(self) -> Result<(), HostError> {
-        let manifest =
-            tokio::task::spawn_blocking(move || maka_ui_build::compile(&self.entry, &self.output))
-                .await??;
+        let manifest = tokio::task::spawn_blocking(move || {
+            maka_ui_build::compile(&self.entry, &self.output, self.asset_root.as_deref())
+        })
+        .await??;
         println!("{}", serde_json::to_string_pretty(&manifest)?);
         Ok(())
     }

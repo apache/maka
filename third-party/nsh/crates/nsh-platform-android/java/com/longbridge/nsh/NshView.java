@@ -206,7 +206,9 @@ public class NshView extends FrameLayout {
         }
         // The back key where the window has no OnBackInvokedCallback in
         // effect (below Android 13, or `enableOnBackInvokedCallback` off).
-        addOnUnhandledKeyEventListener((v, e) -> onBackKey(e));
+        // Android 8 has no such listener: there the activity's
+        // `onBackPressed` hands the press to `handleBack`.
+        if (Build.VERSION.SDK_INT >= 28) addOnUnhandledKeyEventListener((v, e) -> onBackKey(e));
         // Apps keep their data in <dataDir>/<app id>: nsh in the files
         // directory unless the development host's test session says.
         // ... and the images they download in <cacheDir>/<app id>/images: nsh
@@ -480,6 +482,35 @@ public class NshView extends FrameLayout {
         mounter.components.put(name, factory);
     }
 
+    /** Hears a scroll view the host watches ({@link #watchScroll}) come and go, on the UI thread. */
+    public interface ScrollWatcher {
+        /**
+         * The scroll view is there: at once when it already is, and again
+         * with a new handle when the app replaces the element or reloads.
+         *
+         * @param handle follows and drives it
+         */
+        void onAttached(NshScrollHandle handle);
+
+        /** The scroll view is gone (deleted, its {@code nativeID} changed or its app stopped): its handle is dead. */
+        void onDetached();
+    }
+
+    /**
+     * Watches the app's {@code <Scroll>} whose {@code nativeID} is
+     * {@code nativeId}, for native UI of the host that follows or drives the
+     * app's scrolling in the frame of the scroll, without JS (a sheet under
+     * the content, say): {@code watcher} gets a {@link NshScrollHandle} when
+     * the scroll view is there. With several of the same {@code nativeID},
+     * the newest one is watched. One watcher per {@code nativeID}.
+     *
+     * @param nativeId the scroll view's {@code nativeID}
+     * @param watcher the watcher (UI thread), or null to stop watching
+     */
+    public void watchScroll(String nativeId, ScrollWatcher watcher) {
+        mounter.watchScroll(nativeId, watcher);
+    }
+
     /**
      * The launch parameters of the apps loaded from now on: what the app
      * reads synchronously at start as {@code host.params} ({@code nsh/host}),
@@ -559,7 +590,8 @@ public class NshView extends FrameLayout {
 
     /**
      * Hands the app a URL the system opened it with, as its {@code onLink} event (a scheme the app registered, nsh.json
-     * {@code schemes}). URLs given before the app listens are kept until it does. UI thread.
+     * {@code schemes}). URLs given before the app listens are kept until it does; given before an app loads, they are
+     * the address of the next one loaded when its code first runs ({@code UrlScheme.url()}). UI thread.
      *
      * @param url the URL
      */
@@ -1101,6 +1133,13 @@ public class NshView extends FrameLayout {
     void submit(byte[] ops, Object[] objects, long seq) {
         main.post(() -> {
             if (handle != 0) mounter.apply(ops, objects, seq);
+        });
+    }
+
+    /** The app's functions for the UI thread wait in Rust: run them after the batches before. */
+    void runMainThreadTasks() {
+        main.post(() -> {
+            if (handle != 0) Native.runMainThreadTasks(handle);
         });
     }
 

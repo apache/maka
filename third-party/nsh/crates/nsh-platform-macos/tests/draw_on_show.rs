@@ -4,7 +4,7 @@
 //! batch, input or animation). A host app makes the view and puts it in a
 //! window itself. AppKit views live on the main thread, so this test runs
 //! without libtest's harness, on the process's own. Its arguments pick the
-//! cases to run (`window`, `unhide`); none runs both.
+//! cases to run (`window`, `unhide`, `scaled`, `animated`); none runs all.
 
 #[cfg(target_os = "macos")]
 fn main() {
@@ -35,6 +35,9 @@ mod macos {
     /// The test sets it to change the text.
     static CHANGED: AtomicBool = AtomicBool::new(false);
 
+    /// Starts the native transform after the test checks deferred text.
+    static REVEAL: AtomicBool = AtomicBool::new(false);
+
     /// A text, in a view the test finds.
     #[component]
     fn Label() -> impl IntoElement {
@@ -53,6 +56,83 @@ mod macos {
         view().test_id("label").child(text(
             move || if changed.get() { "Trades" } else { "Orders" },
         ))
+    }
+
+    #[component]
+    fn Scaled() -> impl IntoElement {
+        view().flex_1().overflow_hidden().child(
+            view()
+                .w(px(500.0))
+                .h(px(250.0))
+                .origin_top_left()
+                .scale(0.8)
+                .children(
+                    [
+                        (20.0, "inside", "Inside"),
+                        (420.0, "outside", "Outside"),
+                        (520.0, "clipped", "Clipped"),
+                    ]
+                    .map(|(x, id, label)| {
+                        nsh_base::button()
+                            .absolute()
+                            .left(px(x))
+                            .top(px(40.0))
+                            .w(px(80.0))
+                            .h(px(24.0))
+                            .bg(|| nsh_base::theme().primary)
+                            .text_color(|| nsh_base::theme().primary_foreground)
+                            .child(text(label).test_id(id))
+                    }),
+                ),
+        )
+    }
+
+    #[component]
+    fn Animated() -> impl IntoElement {
+        let x = animated_value(0.0);
+        let reveal = stored(Animation::timing(
+            &x,
+            -100.0,
+            Timing::new(400.0, Easing::Linear),
+        ));
+        set_interval(Duration::from_millis(20), move || {
+            if REVEAL.swap(false, Ordering::SeqCst) {
+                reveal.with(|animation| animation.start());
+            }
+        });
+        view()
+            .flex_1()
+            .overflow_hidden()
+            .child(
+                view()
+                    .absolute()
+                    .left(px(420.0))
+                    .top(px(40.0))
+                    .w(px(80.0))
+                    .h(px(24.0))
+                    .bind_translate_x(&x)
+                    .child(text("Ancestor").test_id("ancestor")),
+            )
+            .child(
+                text("Target")
+                    .test_id("target")
+                    .absolute()
+                    .left(px(420.0))
+                    .top(px(80.0))
+                    .w(px(80.0))
+                    .h(px(24.0))
+                    .bind_translate_x(&x),
+            )
+            .child(
+                text("Clipped")
+                    .test_id("clipped")
+                    .absolute()
+                    .left(px(620.0))
+                    .top(px(120.0))
+                    .w(px(80.0))
+                    .h(px(24.0))
+                    .bind_translate_x(&x),
+            )
     }
 
     /// Runs the main run loop until `done` holds, for at most 5 s.
@@ -191,6 +271,63 @@ mod macos {
         println!("draw_on_show: unhide: ok");
     }
 
+    /// Ordinary window composition, not cacheDisplayInRect (which forces
+    /// drawing and can conceal deferred text). The fully clipped control
+    /// must keep its text deferred.
+    fn scaled_window(mtm: MainThreadMarker) {
+        let window = window(mtm);
+        window.setContentSize(NSSize::new(400.0, 200.0));
+        window.setTitle(&NSString::from_str("Scaled visibility"));
+        window.center();
+        let app = AppView::new(
+            mtm,
+            AppOptions {
+                size: (400, 200),
+                ..AppOptions::default()
+            },
+        );
+        let root = app.view();
+        window.setContentView(Some(&root));
+        window.orderFrontRegardless();
+        app.load(Root::of::<Scaled>().into());
+        until("the scaled mount", || find(&root, "clipped").is_some());
+        let inside = find(&root, "inside").unwrap();
+        let outside = find(&root, "outside").unwrap();
+        let clipped = find(&root, "clipped").unwrap();
+        until("the inside text", || drawn(&inside));
+        until("the outside text", || drawn(&outside));
+        assert!(!drawn(&clipped), "fully clipped text was drawn");
+        app.stop();
+        window.close();
+        println!("draw_on_show: scaled: ok");
+    }
+
+    /// A native transform must reveal deferred text on itself and below
+    /// it, without a layout change or a drawing-forcing screenshot.
+    fn animated_window(mtm: MainThreadMarker) {
+        let window = window(mtm);
+        let app = app_view(mtm);
+        let root = app.view();
+        window.setContentView(Some(&root));
+        window.orderFrontRegardless();
+        app.load(Root::of::<Animated>().into());
+        until("the animated mount", || find(&root, "clipped").is_some());
+        spin(0.2);
+        let ancestor = find(&root, "ancestor").unwrap();
+        let target = find(&root, "target").unwrap();
+        let clipped = find(&root, "clipped").unwrap();
+        assert!(!drawn(&ancestor), "ancestor text drew before it showed");
+        assert!(!drawn(&target), "target text drew before it showed");
+        REVEAL.store(true, Ordering::SeqCst);
+        until("the ancestor's revealed text", || drawn(&ancestor));
+        until("the target's revealed text", || drawn(&target));
+        spin(0.5);
+        assert!(!drawn(&clipped), "fully clipped text was drawn");
+        app.stop();
+        window.close();
+        println!("draw_on_show: animated: ok");
+    }
+
     pub(super) fn run() {
         let mtm = MainThreadMarker::new().expect("the main thread");
         let _app = NSApplication::sharedApplication(mtm);
@@ -201,6 +338,12 @@ mod macos {
         }
         if runs("unhide") {
             unhide(mtm);
+        }
+        if runs("scaled") {
+            scaled_window(mtm);
+        }
+        if runs("animated") {
+            animated_window(mtm);
         }
     }
 }

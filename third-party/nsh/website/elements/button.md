@@ -53,8 +53,8 @@ mount(App);
 ```
 
 `Button` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In TSX its look is `class` and
-`style`, with the state variants `active:`, `hover:`, `focus:`, `selected:` and `disabled:` (or the matching
-`activeStyle`, `hoverStyle`, `focusStyle`, `selectedStyle` and `disabledStyle`). In Rust, `button()` makes one as
+`style`, with the state variants `active:`, `hover:`, `focus-visible:`, `selected:` and `disabled:` (or the matching
+`activeStyle`, `hoverStyle`, `focusVisibleStyle`, `selectedStyle` and `disabledStyle`). In Rust, `button()` makes one as
 `view()` makes a view: a setter per prop (`.disabled(..)`, `.selected(..)`), a listener per event (`.on_press(..)`),
 the typed style methods (`.px_4()`, `.bg(..)`) for its look, the state methods (`.active(..)`, `.hover(..)`,
 `.focus(..)`, `.selected_style(..)`, `.disabled_style(..)`) for its states and `.child(..)` for its content.
@@ -258,7 +258,7 @@ fn close(open: Signal<bool>) -> impl IntoElement {
 - `disabled` and `selected` are announced as the platform announces them (VoiceOver, TalkBack, UI Automation, the
   browser's accessibility tree).
 - On macOS and the web a button is a stop of the keyboard focus: Tab reaches it, Return and Space press it, and
-  `focus:` styles show where the focus is.
+  `focus-visible:` styles show where the focus is.
 
 See [Accessibility](../docs/accessibility.md) for labels, roles and announcements in general.
 

@@ -219,6 +219,7 @@ async fn steering(prefix: bool) {
         assert_eq!(saved["kind"], "saved");
         let mut session_input = json!({"title":"Steering stream","automaticTitle":false,"labels":[],"tools":["Shell"],"workspace":{"kind":"directory","path":sandbox.workspace},"backend":{"kind":"model","connectionId":connection,"modelId":model,"thinkingLevel":null}});
         let created = call(&client, "agent", "create", session_input.clone(), Attachments::new()).await;
+        assert_eq!(created["kind"], "created", "{created}");
         let session = created["session"]["id"].as_str().unwrap();
         let sent = call(&client, "agent", "send", json!({"sessionId":session,"message":"steering-original","delivery":"queue"}), Attachments::new()).await;
         assert!(matches!(sent["kind"].as_str(), Some("started" | "queued")), "original send rejected: {sent}");
@@ -250,6 +251,7 @@ async fn steering(prefix: bool) {
 
             session_input["title"] = json!("Independent stream");
             let peer = call(&client, "agent", "create", session_input, Attachments::new()).await;
+            assert_eq!(peer["kind"], "created", "{peer}");
             let peer_session = peer["session"]["id"].as_str().unwrap();
             let peer_sent = call(&client, "agent", "send", json!({"sessionId":peer_session,"message":"independent-request","delivery":"queue"}), Attachments::new()).await;
             assert!(matches!(peer_sent["kind"].as_str(), Some("started" | "queued")), "independent send rejected: {peer_sent}");

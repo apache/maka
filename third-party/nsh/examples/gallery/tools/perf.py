@@ -3,7 +3,7 @@
 
 Opens the gallery in the platform's window (`nsh test --target
 <linux|macos|windows|ios> --fps`), visits every demo, lets it run idle and scrolls it, and reads the
-performance monitor's line of every second (`nsh::perf`). Prints a table per
+performance monitor's line of every second (`nsh::fps`). Prints a table per
 scenario and writes the readings as JSON:
 
     cargo build --release -p nsh-cli
@@ -37,7 +37,7 @@ DEMOS = [
     "Components", "Overlays", "Menus", "Controls", "WebView", "Video", "System", "Standard APIs", "Storage",
 ]
 
-# One second's `nsh::perf` line: the fields both desktops log, and between
+# One second's `nsh::fps` line: the fields both desktops log, and between
 # `over` and `commits` the platform's frame phases as `name mean/p50/p95/max`
 # (Linux: update, layout, paint, snapshot, canvas, drain; macOS: tick,
 # drain, canvas; Windows: tick, drain, paint, present, canvas).

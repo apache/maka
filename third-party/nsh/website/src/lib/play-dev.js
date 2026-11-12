@@ -7,7 +7,8 @@
 // the runtime of published apps, `nsh.wasm` next to the build's output),
 // read from the target directory (the built site's player loads the
 // gallery's copy, `play/gallery/nsh.<digest>.wasm`), as are the syntaxes it
-// fetches to highlight code (`nsh-syntaxes.bin`).
+// fetches to highlight code (`nsh-syntaxes.bin`); `EmojiPicker`'s emoji
+// (`nsh-emoji.bin`) are their source in nsh-base.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -51,6 +52,9 @@ export function playDev(base) {
           const file = join(root, 'target/wasm32-unknown-unknown/web', rest);
           if (!existsSync(file)) return next();
           return send(rest === 'nsh.wasm' ? 'application/wasm' : 'application/octet-stream', readFileSync(file));
+        }
+        if (rest === 'nsh-emoji.bin') {
+          return send('application/octet-stream', readFileSync(join(root, 'crates/nsh-base/src/emoji_picker/emoji.tsv')));
         }
         const demo = /^demos\/([\w-]+)\.js$/.exec(rest);
         if (!demo || !existsSync(nsh)) return next();

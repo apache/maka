@@ -1,6 +1,8 @@
 //! `Picker.pickImages`: an open panel filtered to images, as a sheet of the
-//! surface's window. The picked files are read and prepared as the request
-//! says ([`nsh_core::picker`]: ImageIO scales and encodes them, their
+//! surface's window while the user sees it, else in a window of its own
+//! ([`crate::window::panel_window`], as the panels of `file_requests.rs`).
+//! The picked files are read and prepared as the request says
+//! ([`nsh_core::picker`]: ImageIO scales and encodes them, their
 //! orientation applied, HEIC as JPEG) on a thread of their own, and go to
 //! the engine in one root `Pick` event, in the order the panel lists them.
 
@@ -87,7 +89,7 @@ pub(crate) fn pick_images(surface: &Rc<Surface>, id: u32, request: PickRequest) 
                 })
                 .ok();
         });
-        match crate::window::sheet_window(surface) {
+        match crate::window::panel_window(surface) {
             Some(window) => {
                 let _: () = msg_send![&panel, beginSheetModalForWindow: &*window, completionHandler: &*handler];
             }

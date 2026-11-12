@@ -3,6 +3,7 @@ name = "nsh-dev"
 description = "Development tooling: dev-server protocol, server (CLI side) and client (host side)."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true

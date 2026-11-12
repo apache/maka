@@ -3,6 +3,7 @@ name = "nsh-platform-ios"
 description = "UIKit backend: native view mounting, text measurement, input, app hosting and the embedding API (C ABI under the NativeShell Swift module)."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -12,12 +13,12 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["js", "shader", "editor", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
+default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
 # JS apps (bundles, signed packages, the embedding API's loaders); without
 # it, a Rust app links no QuickJS.
 js = ["nsh-engine/js-core"]
 # Development host support: dev-server client, log forwarding, error overlay.
-dev = ["js", "shader", "editor", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "dep:nsh-dev", "dep:nsh-testing"]
+dev = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "dep:nsh-dev", "dep:nsh-testing"]
 # The C ABI the NativeShell Swift module is built on (`embed`), exported for
 # the static library `cargo xtask dist` builds with `cargo rustc --crate-type
 # staticlib`. Off for nsh-ios-host / nsh-ios-app, so they export nothing.
@@ -40,6 +41,8 @@ highlight = ["nsh-base/highlight"]
 # `TextView`'s formulas typeset natively (RaTeX and the KaTeX fonts). Without
 # it a formula shows as its TeX, or as the app's `renderMath`.
 math = ["nsh-base/math"]
+# `EmojiPicker`, with Unicode's emoji and their English names (about 440 kB).
+emoji-picker = ["nsh-base/emoji-picker"]
 # The standard JS module `zlib`: deflate, gzip, brotli and zstd.
 zlib = ["js", "nsh-engine/zlib"]
 # The standard JS module `crypto` and the globals of Web Crypto.
@@ -56,6 +59,7 @@ nsh-testing = { workspace = true, features = ["agent"], optional = true }
 
 # UIKit exists on iOS, the iOS simulator and Mac Catalyst (all `target_os = "ios"`).
 [target.'cfg(target_os = "ios")'.dependencies]
+tokio.workspace = true
 nsh-platform-apple.workspace = true
 dispatch2.workspace = true
 objc2.workspace = true
@@ -63,6 +67,8 @@ objc2-core-foundation.workspace = true
 objc2-core-graphics.workspace = true
 objc2-core-text.workspace = true
 objc2-image-io.workspace = true
+# Shader frames on IOSurfaces (`shader::display_frame`).
+objc2-io-surface.workspace = true
 block2.workspace = true
 objc2-foundation.workspace = true
 objc2-quartz-core.workspace = true

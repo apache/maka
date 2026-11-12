@@ -59,6 +59,8 @@ pub(crate) struct Shared {
     pub(crate) system_filesystem:
         RefCell<Option<std::sync::Arc<dyn nsh_core::filesystem::FileSystem>>>,
     pub(crate) system_updater: RefCell<Option<std::sync::Arc<dyn nsh_core::runtime::UpdaterHost>>>,
+    /// The core's address (`UrlScheme.url()`).
+    pub(crate) system_app_url: RefCell<nsh_core::url_scheme::AppUrlCell>,
     pub(crate) system_data_dir: RefCell<Option<std::path::PathBuf>>,
     pub(crate) system_paths: RefCell<nsh_core::access::TrustedPaths>,
     /// The VM's counts of limited resources for Rust modules (`net`'s
@@ -651,6 +653,18 @@ impl Host {
         });
     }
 
+    /// Whether `<Each>` leaves the rows the core may cull unrendered, as
+    /// placeholders, until the core asks for them (`content_culling`);
+    /// off by default. Set before evaluating the bundle.
+    pub fn set_lazy_rows(&self, lazy: bool) {
+        self.cx.with(|cx| {
+            // SAFETY: the state of this host's context.
+            unsafe { &(*crate::state::state(cx.as_raw().as_ptr())).dom }
+                .lazy_rows
+                .set(lazy);
+        });
+    }
+
     /// Asks a `List` to render items into cells: `(slot, item index)`
     /// pairs.
     pub fn bind_list(&self, list: NodeId, binds: &[(u32, u32)]) {
@@ -684,13 +698,6 @@ impl Host {
 
     /// Moves the ops committed by JS since the last call into `out`.
     pub fn take_ops(&self, out: &mut Vec<Op>) {
-        if self.cx.is_live() {
-            self.cx.with(|cx| {
-                let raw = cx.as_raw().as_ptr();
-                // SAFETY: this host owns the registered context state.
-                unsafe { (*crate::state::state(raw)).lists.publish_sources(raw) };
-            });
-        }
         let mut ops = self.shared.ops.borrow_mut();
         if out.is_empty() {
             std::mem::swap(out, &mut ops);
@@ -737,6 +744,11 @@ impl Host {
     /// Installs what `nsh/updater` runs on.
     pub fn set_updater(&self, updater: Option<std::sync::Arc<dyn nsh_core::runtime::UpdaterHost>>) {
         *self.shared.system_updater.borrow_mut() = updater;
+    }
+
+    /// Shares the core's address with the VM's modules (`UrlScheme.url()`).
+    pub fn set_app_url(&self, app_url: nsh_core::url_scheme::AppUrlCell) {
+        *self.shared.system_app_url.borrow_mut() = app_url;
     }
 
     /// Installs the host WebSocket transport.
@@ -1192,6 +1204,15 @@ impl Host {
             .map_or(0, |rt| self.scheduler.ready(rt.memory_usage()).obj_count)
     }
 
+    /// The JS heap's size in bytes and its live objects (diagnostics: a
+    /// walk of the heap, so not for every frame).
+    pub fn heap_usage(&self) -> (u64, u64) {
+        self.rt.borrow().as_ref().map_or((0, 0), |rt| {
+            let m = self.scheduler.ready(rt.memory_usage());
+            (m.malloc_size.max(0) as u64, m.obj_count.max(0) as u64)
+        })
+    }
+
     /// Runs the cycle collector. Call when idle so released nodes are
     /// reported promptly.
     pub fn collect_garbage(&self) {
@@ -1287,6 +1308,30 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
                 Some(button) => obj.set("pressedButton", button.name())?,
                 None => obj.set("pressedButton", Value::new_null(cx.clone()))?,
             }
+            // The button that changed here (`onMouseUp`'s), or `null` on a
+            // move.
+            match e.button {
+                Some(button) => obj.set("button", button.name())?,
+                None => obj.set("button", Value::new_null(cx.clone()))?,
+            }
+        }
+        EventPayload::Wheel(e) => {
+            obj.set("position", point_object(cx, e.position)?)?;
+            obj.set("pagePosition", point_object(cx, e.page_position)?)?;
+            let (x, y) = e.delta.xy();
+            let delta = rquickjs::Object::new(cx.clone())?;
+            delta.set("x", x)?;
+            delta.set("y", y)?;
+            obj.set("delta", delta)?;
+            obj.set("deltaMode", e.delta.mode_name())?;
+            obj.set("modifiers", modifiers_object(cx, &e.modifiers)?)?;
+        }
+        EventPayload::Pinch(e) => {
+            obj.set("position", point_object(cx, e.position)?)?;
+            obj.set("pagePosition", point_object(cx, e.page_position)?)?;
+            obj.set("delta", e.delta.0)?;
+            obj.set("phase", e.phase.name())?;
+            obj.set("modifiers", modifiers_object(cx, &e.modifiers)?)?;
         }
         EventPayload::ContextMenu(e) => {
             obj.set("position", point_object(cx, e.position)?)?;
@@ -1300,10 +1345,13 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
         }
         EventPayload::FileDrop(uris) | EventPayload::FileDropAt { uris, .. } => {
             let list = rquickjs::Array::new(cx.clone())?;
+            let types = rquickjs::Array::new(cx.clone())?;
             for (index, uri) in uris.iter().enumerate() {
                 list.set(index, uri.as_str())?;
+                types.set(index, nsh_core::platform::file_mime_type(uri))?;
             }
             obj.set("uris", list)?;
+            obj.set("mimeTypes", types)?;
             if let EventPayload::FileDropAt { page_position, .. } = payload {
                 obj.set("pagePosition", point_object(cx, *page_position)?)?;
             }
@@ -2042,7 +2090,9 @@ const report = (v) => text(String(v));
             .expect("mounted fallback keymap");
         let stroke = Keystroke::parse("ctrl+c", nsh_core::platform::Os::Linux).unwrap();
         assert_eq!(table.find(stroke, true, false), KeyMatch::None);
-        let KeyMatch::Fire(id) = table.find_fallback_with(stroke, true, false, |_| false) else {
+        let KeyMatch::Fire(id) =
+            table.find_fallback_at_with(nsh_core::ROOT_ID, stroke, true, false, false, |_| false)
+        else {
             panic!("fallback did not match the unhandled input key");
         };
         host.dispatch_event(
@@ -2453,6 +2503,69 @@ const report = (v) => text(String(v));
             let value = payload_object(&cx, &EventPayload::Mouse(none)).unwrap();
             let pressed: Value = value.as_object().unwrap().get("pressedButton").unwrap();
             assert!(pressed.is_null());
+            let changed: Value = value.as_object().unwrap().get("button").unwrap();
+            assert!(changed.is_null());
+        });
+    }
+
+    #[test]
+    fn released_mouse_payload_has_its_button() {
+        let host = Host::new().unwrap();
+        let event = nsh_core::MouseEvent::released(
+            point(px(5.0), px(6.5)),
+            point(px(50.0), px(60.5)),
+            nsh_core::keymap::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+            nsh_core::MouseButton::Right,
+        );
+        host.cx.with(|cx| {
+            let value = payload_object(&cx, &EventPayload::Mouse(event)).unwrap();
+            let obj = value.as_object().unwrap();
+            let num = |o: &str, k: &str| {
+                let o: rquickjs::Object = obj.get(o).unwrap();
+                o.get::<_, f64>(k).unwrap()
+            };
+            let flag = |k: &str| {
+                let m: rquickjs::Object = obj.get("modifiers").unwrap();
+                m.get::<_, bool>(k).unwrap()
+            };
+            assert_eq!(
+                (
+                    num("position", "x"),
+                    num("position", "y"),
+                    num("pagePosition", "x"),
+                    num("pagePosition", "y")
+                ),
+                (5.0, 6.5, 50.0, 60.5)
+            );
+            assert!(flag("shift"));
+            assert_eq!(obj.get::<_, String>("button").unwrap(), "right");
+            let pressed: Value = obj.get("pressedButton").unwrap();
+            assert!(pressed.is_null());
+        });
+    }
+
+    #[test]
+    fn pinch_payload_is_as_declared() {
+        let host = Host::new().unwrap();
+        let event = nsh_core::PinchEvent::new(
+            point(px(1.0), px(2.0)),
+            point(px(11.0), px(22.0)),
+            nsh_core::geometry::Percentage(0.25),
+            nsh_core::PinchPhase::Start,
+            Default::default(),
+        );
+        host.cx.with(|cx| {
+            let value = payload_object(&cx, &EventPayload::Pinch(event)).unwrap();
+            let obj = value.as_object().unwrap();
+            assert_eq!(obj.get::<_, f64>("delta").unwrap(), 0.25);
+            assert_eq!(obj.get::<_, String>("phase").unwrap(), "start");
+            let page: rquickjs::Object = obj.get("pagePosition").unwrap();
+            assert_eq!(page.get::<_, f64>("y").unwrap(), 22.0);
+            let modifiers: rquickjs::Object = obj.get("modifiers").unwrap();
+            assert!(!modifiers.get::<_, bool>("shift").unwrap());
         });
     }
 
@@ -2501,6 +2614,47 @@ const report = (v) => text(String(v));
     }
 
     #[test]
+    fn file_drag_entry_delivers_metadata_before_drop_and_keeps_no_argument_handlers() {
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"
+            import { element, prop } from "nsh:rt";
+            globalThis.seen = [];
+            const target = element("view");
+            prop(target, "onFileDragEnter", (e) => seen.push("enter " + e.uris.join(";") + " " + e.mimeTypes.join(";")));
+            prop(target, "onFileDragLeave", () => seen.push("leave"));
+            prop(target, "onFileDrop", (e) => seen.push("drop " + e.uris.join(";")));
+            const old = element("view");
+            prop(old, "onFileDragEnter", () => seen.push("old"));
+        "#,
+        )
+        .unwrap();
+        let first = EventPayload::FileDrop(vec![
+            "file:///tmp/a%20b.png".into(),
+            "file:///tmp/%E4%B8%AD.txt".into(),
+        ]);
+        let next = EventPayload::FileDrop(vec!["file:///tmp/next.png".into()]);
+        host.dispatch_event(2, EventKind::FileDragEnter, &first);
+        host.dispatch_event(2, EventKind::FileDragLeave, &EventPayload::None);
+        host.dispatch_event(2, EventKind::FileDragEnter, &next);
+        host.dispatch_event(2, EventKind::FileDrop, &next);
+        host.dispatch_event(4, EventKind::FileDragEnter, &first);
+        host.cx.with(|cx| {
+            let seen: Vec<String> = cx.globals().get("seen").unwrap();
+            assert_eq!(
+                seen,
+                [
+                    "enter file:///tmp/a%20b.png;file:///tmp/%E4%B8%AD.txt image/png;text/plain",
+                    "leave",
+                    "enter file:///tmp/next.png image/png",
+                    "drop file:///tmp/next.png",
+                    "old"
+                ]
+            );
+        });
+    }
+
+    #[test]
     fn file_drop_payload_keeps_the_native_uri_list() {
         let host = Host::new().unwrap();
         let uris = vec![
@@ -2511,6 +2665,8 @@ const report = (v) => text(String(v));
             let value = payload_object(&cx, &EventPayload::FileDrop(uris.clone())).unwrap();
             let actual: Vec<String> = value.as_object().unwrap().get("uris").unwrap();
             assert_eq!(actual, uris);
+            let types: Vec<String> = value.as_object().unwrap().get("mimeTypes").unwrap();
+            assert_eq!(types, ["text/plain", ""]);
         });
     }
 

@@ -6,7 +6,8 @@
 //! Shown normally: warnings and errors, the app's own output (`js`, and
 //! a device's lines from other crates: the app's Rust code) and the timings
 //! of `--trace` (`nsh::perf`). nsh's own info lines (a device's "loading
-//! build 3") are for verbose runs; the CLI says what happens in its steps.
+//! build 3") and the performance monitor's line a second (`--fps`,
+//! `nsh::fps`) are for verbose runs; the CLI says what happens in its steps.
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use nsh_dev::protocol::LogLevel;

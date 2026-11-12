@@ -10,14 +10,26 @@ function App() {
   let gradient: CanvasGradient | undefined;
   const square = new Path2D("M0 0 h50 v50 h-50 Z");
   const report = signal("Not checked");
-  const check = () => {
+  // A complete 3x2 PNG: the web runtime decodes it in the browser.
+  const png = new Uint8Array([
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 3, 0, 0, 0, 2, 8, 6, 0, 0, 0, 157, 116,
+    102, 26, 0, 0, 0, 16, 73, 68, 65, 84, 120, 218, 99, 96, 96, 96, 248, 143, 132, 17, 28, 0, 68, 213, 5, 251, 151,
+    11, 223, 30, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+  ]);
+  const blobUrl = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+  const check = async () => {
     const cx = kept!;
+    const blob = await Image.getSize(blobUrl).then(
+      (size) => `${size.width}x${size.height}`,
+      () => "failed",
+    );
     report.set(
       [
         `functions ${typeof Image.getSize === "function" && typeof Image.prefetch === "function"}`,
         `context ${cx instanceof CanvasRenderingContext2D}`,
         `gradient ${gradient instanceof CanvasGradient}`,
         `path ${cx.isPointInPath(square, 25, 25)}`,
+        `blob ${blob}`,
       ].join(" "),
     );
   };

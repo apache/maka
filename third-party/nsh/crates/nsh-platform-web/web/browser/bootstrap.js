@@ -117,6 +117,7 @@
 			post(name, data) {
 				nameOf(name);
 				if (initial[0]) invoke(432, [name, data]);
+				else if (environment.host()) platform.post(name, data);
 			}
 		};
 		dom.rootProp("onHost", (value) => {
@@ -2246,6 +2247,7 @@
 		"keyExtractor",
 		"stickyHeaderIndices",
 		"initialScrollIndex",
+		"initialScrollAtEnd",
 		"onViewableItemsChange",
 		"viewabilityConfig",
 		"refreshing",
@@ -2424,7 +2426,12 @@
 				if (delay > 0) state.timer = setTimeout(report, delay);
 				else report();
 			});
-			if (typeof props.initialScrollIndex === "number") invoke(314, [
+			if (props.initialScrollAtEnd) invoke(314, [
+				id,
+				"scrollToEnd",
+				{ animated: false }
+			]);
+			else if (typeof props.initialScrollIndex === "number") invoke(314, [
 				id,
 				"scrollToIndex",
 				{
@@ -2519,6 +2526,8 @@
 	const MAX_GENERATION = 4095;
 	const EXCEPTION = 4294967295;
 	const COLLECT_MS = 100;
+	const COLLECT_COST_RATIO = 20;
+	const NUMBER_KEY_GENERATIONS = 2 ** 21;
 	const { setTimeout: collectLater, clearTimeout: cancelCollect } = globalThis;
 	const pageNow = globalThis.performance.now.bind(globalThis.performance);
 	var Values = class {
@@ -2554,6 +2563,7 @@
 			this.weakened = false;
 			this.collectTimer = 0;
 			this.lastCollect = 0;
+			this.lastCollectCost = 0;
 		}
 		put(value) {
 			if (this.closed) throw new Error("the app was disposed");
@@ -2619,16 +2629,22 @@
 			this.weakened = false;
 			for (const slot of this.slots) if (slot?.refs > 0 && slot.weak) slot.value = slot.weak.deref();
 		}
+		collectDelay(now) {
+			return Math.max(0, this.lastCollect + Math.max(COLLECT_MS, COLLECT_COST_RATIO * this.lastCollectCost) - now);
+		}
 		schedule(trace) {
 			this.trace ??= trace;
 			if (this.collectTimer) return;
-			const wait = Math.max(0, this.lastCollect + COLLECT_MS - pageNow());
+			const wait = this.collectDelay(pageNow());
 			this.collectTimer = collectLater(() => {
 				this.collectTimer = 0;
 				if (this.closed) return;
 				if (this.depth > 0) return this.schedule(trace);
 				this.collect(trace);
 			}, wait);
+		}
+		accessorKey(owner, generation) {
+			return generation < NUMBER_KEY_GENERATIONS ? generation * 4294967296 + owner : `${owner}:${generation}`;
 		}
 		collect(trace) {
 			this.lastCollect = pageNow();
@@ -2639,7 +2655,7 @@
 				trace();
 				const mirrors = /* @__PURE__ */ new WeakMap(), counts = /* @__PURE__ */ new Map();
 				for (const [kind, owner, generation, id] of this.edges) {
-					const peer = (kind === 0 ? this.classPeers.get(owner) : kind === 2 ? this.nodes.get(owner) : this.accessors.get(`${owner}:${generation}`))?.deref();
+					const peer = (kind === 0 ? this.classPeers.get(owner) : kind === 2 ? this.nodes.get(owner) : this.accessors.get(this.accessorKey(owner, generation)))?.deref();
 					if (!peer) continue;
 					const slot = this.slot(id);
 					if (slot.refs === Infinity || slot.weak && slot.value === void 0) continue;
@@ -2664,6 +2680,7 @@
 				this.edges = null;
 			} finally {
 				this.depth--;
+				this.lastCollectCost = pageNow() - this.lastCollect;
 			}
 		}
 		reconcile() {
@@ -3026,13 +3043,13 @@
 		};
 		const guarded = (fn) => (...args) => protect(() => fn(...args));
 		const finalizers = new FinalizationRegistry((handle) => {
-			values?.accessors.delete(`${handle[0]}:${handle[1]}`);
+			values?.accessors.delete(values.accessorKey(handle[0], handle[1]));
 			if (live()) call(114, handle);
 		});
 		const accessor = (handle) => {
 			const read = () => call(101, handle);
 			finalizers.register(read, handle);
-			values?.accessors.set(`${handle[0]}:${handle[1]}`, new WeakRef(read));
+			values?.accessors.set(values.accessorKey(handle[0], handle[1]), new WeakRef(read));
 			values?.reconcile();
 			return read;
 		};
@@ -3309,8 +3326,9 @@
 			refresh() {
 				if (live()) apply(invoke(200, []));
 			},
-			measure(node) {
-				return call(315, [], node, [], true, false);
+			/** `ref.measure()`, or with `"scrollPosition"` a list's `ref.measureScrollPosition()`. */
+			measure(node, what) {
+				return call(315, [], node, what ? [what] : [], true, false);
 			},
 			reply(id, ok, value) {
 				const waiter = pending.get(id);
@@ -3351,12 +3369,14 @@
 			"zoomTo",
 			"scrollToIndex",
 			"scrollToEnd",
+			"reveal",
 			"reload",
 			"goBack",
 			"goForward",
 			"stopLoading",
 			"injectJavaScript",
 			"postMessage",
+			"insertText",
 			"sendInput",
 			"load",
 			"seek"
@@ -3368,6 +3388,14 @@
 				name,
 				argument
 			]);
+		};
+		prototype.evaluate = async function(script, options) {
+			if (typeof script !== "string") throw new TypeError("evaluate expects a script string");
+			if (options !== void 0 && (options === null || typeof options !== "object")) throw new TypeError("evaluate's options must be an object");
+			if (!values.nodeIds.has(this)) throw new TypeError("nsh: not a node");
+			const error = /* @__PURE__ */ new Error("web views evaluate no scripts here");
+			error.code = "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
+			throw error;
 		};
 		prototype.setSelection = function(start, end = start) {
 			return call(314, [
@@ -3398,6 +3426,9 @@
 		};
 		prototype.measure = function() {
 			return measure(this);
+		};
+		prototype.measureScrollPosition = function() {
+			return measure(this, "scrollPosition");
 		};
 		const finalizers = new FinalizationRegistry((id) => {
 			if (live()) {
@@ -3639,6 +3670,14 @@
 				merge,
 				spread,
 				metaUrl: (path) => new URL(path, document.baseURI).href,
+				assetUrl: (uri, base) => {
+					if (base == null) return uri;
+					if (!uri.startsWith("asset:/")) throw new TypeError("imported asset must use a canonical asset:/ URI");
+					const url = new URL(base);
+					if (!url.pathname.startsWith("/")) throw new TypeError("module asset directory must be a hierarchical URL");
+					url.pathname = `${url.pathname.replace(/\/$/, "")}/${uri.slice(7).split("/").map(encodeURIComponent).join("/")}`;
+					return url.href;
+				},
 				ref
 			},
 			mount(App, props) {
@@ -3687,8 +3726,10 @@
 			"hoverStyle",
 			"focusStyle",
 			"focusWithinStyle",
+			"focusVisibleStyle",
 			"disabledStyle",
 			"testID",
+			"tooltip",
 			"onLayout"
 		];
 		const handler = (name) => "on" + name[0].toUpperCase() + name.slice(1);
@@ -4845,7 +4886,7 @@
 //#endregion
 //#region ../nsh-platform-web/web/browser/navigation.js
 	function createNavigation(reactive, dom, environment, animation) {
-		const { signal, computed, untracked, split, batch } = reactive;
+		const { signal, computed, effect, untracked, split, batch } = reactive;
 		const rt = dom.rt, pages = /* @__PURE__ */ new WeakSet(), popped = /* @__PURE__ */ new WeakMap();
 		const except = (props, keys) => split(props, keys)[1];
 		function createNavStack(routes) {
@@ -4952,7 +4993,20 @@
 		}
 		function NavStack(props) {
 			const node = rt.element("stack");
-			rt.spread(node, except(props, ["state", "children"]));
+			rt.spread(node, except(props, [
+				"state",
+				"children",
+				"onChange"
+			]));
+			let started = false;
+			effect(() => {
+				const routes = props.state.routes();
+				if (!started) {
+					started = true;
+					return;
+				}
+				untracked(() => props.onChange?.({ routes }));
+			});
 			const entries = props.state.__nshEntries;
 			const rows = rt.each(entries, (read, index) => {
 				const entry = untracked(read);
@@ -5140,6 +5194,22 @@
 		const keys = Object.keys(a);
 		return keys.length === Object.keys(b).length && keys.every((key) => same(a[key], b[key], depth - 1));
 	}
+	/** `appInfo()`'s object from the build's JSON, its fields typed as
+	* nsh-js's `AppInfo` reads them. */
+	function readAppInfo(json) {
+		let info = {};
+		try {
+			info = JSON.parse(json) ?? {};
+		} catch {}
+		const text = (value) => typeof value === "string" ? value : null;
+		return {
+			id: text(info.id),
+			name: text(info.name),
+			version: text(info.version),
+			build: Number.isFinite(info.build) ? info.build : null,
+			development: info.development === true
+		};
+	}
 	function createEnvironment(reactive, invoke, dom) {
 		const fields = Object.fromEntries(Object.entries({
 			window: {
@@ -5169,6 +5239,8 @@
 			screenReader: false,
 			host: false,
 			lifecycle: "active",
+			shaders: true,
+			wakeCount: 0,
 			localeSettings: {
 				languages: ["en-US"],
 				timeZone: "UTC",
@@ -5211,16 +5283,20 @@
 			localeSettings: () => fields.localeSettings(),
 			lifecycle: () => fields.lifecycle(),
 			platform,
+			shadersAvailable: () => fields.shaders(),
+			wakeCount: () => fields.wakeCount(),
 			fpsEnabled: () => false
 		};
 		const accessibility = {
 			reduceMotion: () => fields.reduceMotion(),
 			screenReaderEnabled: () => fields.screenReader()
 		};
+		let appInfo = readAppInfo("{}");
 		return {
 			api: {
 				...device,
 				...accessibility,
+				appInfo: () => appInfo,
 				safeArea: () => fields.safeArea(),
 				safeAreaInsets: () => insets(),
 				keyboardFrame: () => fields.keyboard(),
@@ -5269,7 +5345,7 @@
 					fields.locale.set(tag);
 				});
 			},
-			setup(tailwind, theme, scheme, statusBar) {
+			setup(tailwind, theme, scheme, statusBar, app) {
 				if (typeof tailwind === "string") dom.rootProp("tailwindTheme", tailwind);
 				if (typeof theme === "string") {
 					dom.rootProp("uiTheme", theme);
@@ -5282,6 +5358,7 @@
 					"system"
 				].includes(scheme)) setColorScheme(scheme);
 				if (typeof statusBar === "string") invoke(405, [statusBar]);
+				if (typeof app === "string") appInfo = readAppInfo(app);
 			}
 		};
 	}
@@ -5357,20 +5434,6 @@
 
 //#endregion
 //#region ../nsh-platform-web/web/browser/testing.js
-	const REDIRECTS = /* @__PURE__ */ new Set([
-		301,
-		302,
-		303,
-		307,
-		308
-	]);
-	const NULL_BODY = /* @__PURE__ */ new Set([
-		101,
-		103,
-		204,
-		205,
-		304
-	]);
 	const define = (target, name, value) => Object.defineProperty(target, name, {
 		value,
 		writable: true,
@@ -5453,151 +5516,6 @@
 		});
 		define(target, "cancelAnimationFrame", function cancelAnimationFrame(id) {
 			if (typeof id === "number") call(1006, [id]);
-		});
-	}
-	function installFetch(target, call, active, wake, network) {
-		const { Request, Response, ReadableStream, TypeError: RealmTypeError } = target;
-		const nativeFetch = target.fetch;
-		const failure = (message) => new RealmTypeError(`Network request failed: ${message}`);
-		const inflight = /* @__PURE__ */ new Map();
-		const finish = (id) => {
-			const entry = inflight.get(id);
-			if (!entry) return void 0;
-			inflight.delete(id);
-			entry.signal.removeEventListener("abort", entry.abort);
-			return entry;
-		};
-		const head = (id, entry, [status, statusText, url, redirected, headers]) => {
-			if (entry.redirectError && REDIRECTS.has(status)) {
-				finish(id);
-				call(1009, [id]);
-				entry.reject(failure("the response was a redirect and redirect is \"error\""));
-				return;
-			}
-			let body = null;
-			if (!entry.nullBody && !NULL_BODY.has(status)) body = new ReadableStream({
-				start(controller) {
-					entry.controller = controller;
-				},
-				cancel() {
-					if (finish(id)) call(1009, [id]);
-				}
-			});
-			let response;
-			try {
-				response = new Response(body, {
-					status,
-					statusText,
-					headers
-				});
-			} catch (error) {
-				finish(id);
-				call(1009, [id]);
-				entry.reject(error);
-				return;
-			}
-			Object.defineProperties(response, {
-				url: {
-					value: url,
-					configurable: true
-				},
-				redirected: {
-					value: redirected,
-					configurable: true
-				},
-				type: {
-					value: "basic",
-					configurable: true
-				}
-			});
-			entry.resolve(response);
-			entry.resolve = entry.reject = null;
-		};
-		call(1007, [(id, kind, ...data) => {
-			const entry = inflight.get(id);
-			if (!entry || !active()) return;
-			try {
-				switch (kind) {
-					case 0:
-						if (entry.resolve) head(id, entry, data);
-						break;
-					case 1:
-						entry.controller?.enqueue(data[0]);
-						break;
-					case 2:
-						finish(id);
-						if (entry.reject) entry.reject(failure("the response ended before its head"));
-						else entry.controller?.close();
-						break;
-					case 3: {
-						finish(id);
-						const error = failure(data[0]);
-						if (entry.reject) entry.reject(error);
-						else entry.controller?.error(error);
-						break;
-					}
-					case 4: {
-						finish(id);
-						const error = Object.assign(failure(data[0]), {
-							code: "ERR_ACCESS_DENIED",
-							permission: "network",
-							resource: data[1]
-						});
-						if (entry.reject) entry.reject(error);
-						else entry.controller?.error(error);
-						break;
-					}
-				}
-			} finally {
-				wake();
-			}
-		}]);
-		const schemeOf = (input) => {
-			try {
-				return new URL(input instanceof Request ? input.url : String(input), target.location?.href).protocol;
-			} catch {
-				return "";
-			}
-		};
-		define(target, "fetch", async function fetch(input, init) {
-			const protocol = schemeOf(input);
-			if (protocol !== "asset:" && !(network && (protocol === "http:" || protocol === "https:"))) return nativeFetch.call(target, input, init);
-			const request = new Request(input, init);
-			const { signal } = request;
-			if (signal.aborted) throw signal.reason;
-			const body = request.body ? new Uint8Array(await request.arrayBuffer()) : void 0;
-			if (signal.aborted) throw signal.reason;
-			const headers = [...request.headers];
-			if (!request.headers.has("accept")) headers.push(["accept", "*/*"]);
-			const url = request.url.split("#")[0];
-			return new Promise((resolve, reject) => {
-				const id = call(1008, [
-					request.method,
-					url,
-					headers,
-					body,
-					request.redirect === "follow"
-				]);
-				const entry = {
-					resolve,
-					reject,
-					signal,
-					controller: null,
-					nullBody: request.method === "HEAD",
-					redirectError: request.redirect === "error",
-					abort() {
-						if (!finish(id)) return;
-						call(1009, [id]);
-						const reason = signal.reason;
-						if (entry.reject) entry.reject(reason);
-						else entry.controller?.error(reason);
-						wake();
-					}
-				};
-				inflight.set(id, entry);
-				signal.addEventListener("abort", entry.abort);
-				wake();
-			});
 		});
 	}
 	const WEBSOCKET_SCHEMES = {
@@ -5705,21 +5623,193 @@
 		define(target, "WebSocket", WebSocket);
 	}
 	/**
-	* Puts the engine's clock and network in `target`'s place (the app realm's
+	* Puts the engine's clock and sockets in `target`'s place (the app realm's
 	* global object) where the session needs them: the clock when the
-	* engine's is manual, `fetch` for the app's files always, and for HTTP with
-	* `WebSocket` when `network` (a test session). `call` is the host's
-	* operation call; callbacks end with `wake` (a pump).
+	* engine's is manual, `WebSocket` when `network` (a test session). `call`
+	* is the host's operation call; callbacks end with `wake` (a pump).
 	*/
 	function installTesting(target, call, { active = () => true, wake = () => {}, network = false } = {}) {
 		const clock = call(1e3, []) === true;
 		if (clock) installClock(target, call, active, wake);
-		installFetch(target, call, active, wake, network);
 		if (network) installWebSocket(target, call, active, wake);
 		return {
 			clock,
 			network
 		};
+	}
+
+//#endregion
+//#region ../nsh-platform-web/web/browser/fetch.js
+	const REDIRECTS = /* @__PURE__ */ new Set([
+		301,
+		302,
+		303,
+		307,
+		308
+	]);
+	const NULL_BODY = /* @__PURE__ */ new Set([
+		101,
+		103,
+		204,
+		205,
+		304
+	]);
+	/**
+	* Puts the engine's network in the place of `target`'s `fetch` (the app
+	* realm's global object) for the requests that need it: the app's files
+	* always, HTTP when `network` (a test session). `call` is the host's
+	* operation call; callbacks end with `wake` (a pump).
+	*/
+	function installFetch(target, call, { active = () => true, wake = () => {}, network = false } = {}) {
+		const { Request, Response, ReadableStream, TypeError: RealmTypeError } = target;
+		const nativeFetch = target.fetch;
+		const failure = (message) => new RealmTypeError(`Network request failed: ${message}`);
+		const inflight = /* @__PURE__ */ new Map();
+		const finish = (id) => {
+			const entry = inflight.get(id);
+			if (!entry) return void 0;
+			inflight.delete(id);
+			entry.signal.removeEventListener("abort", entry.abort);
+			return entry;
+		};
+		const head = (id, entry, [status, statusText, url, redirected, headers]) => {
+			if (entry.redirectError && REDIRECTS.has(status)) {
+				finish(id);
+				call(1009, [id]);
+				entry.reject(failure("the response was a redirect and redirect is \"error\""));
+				return;
+			}
+			let body = null;
+			if (!entry.nullBody && !NULL_BODY.has(status)) body = new ReadableStream({
+				start(controller) {
+					entry.controller = controller;
+				},
+				cancel() {
+					if (finish(id)) call(1009, [id]);
+				}
+			});
+			let response;
+			try {
+				response = new Response(body, {
+					status,
+					statusText,
+					headers
+				});
+			} catch (error) {
+				finish(id);
+				call(1009, [id]);
+				entry.reject(error);
+				return;
+			}
+			Object.defineProperties(response, {
+				url: {
+					value: url,
+					configurable: true
+				},
+				redirected: {
+					value: redirected,
+					configurable: true
+				},
+				type: {
+					value: "basic",
+					configurable: true
+				}
+			});
+			entry.resolve(response);
+			entry.resolve = entry.reject = null;
+		};
+		call(1007, [(id, kind, ...data) => {
+			const entry = inflight.get(id);
+			if (!entry || !active()) return;
+			try {
+				switch (kind) {
+					case 0:
+						if (entry.resolve) head(id, entry, data);
+						break;
+					case 1:
+						entry.controller?.enqueue(data[0]);
+						break;
+					case 2:
+						finish(id);
+						if (entry.reject) entry.reject(failure("the response ended before its head"));
+						else entry.controller?.close();
+						break;
+					case 3: {
+						finish(id);
+						const error = failure(data[0]);
+						if (entry.reject) entry.reject(error);
+						else entry.controller?.error(error);
+						break;
+					}
+					case 4: {
+						finish(id);
+						const error = Object.assign(failure(data[0]), {
+							code: "ERR_ACCESS_DENIED",
+							permission: "network",
+							resource: data[1]
+						});
+						if (entry.reject) entry.reject(error);
+						else entry.controller?.error(error);
+						break;
+					}
+				}
+			} finally {
+				wake();
+			}
+		}]);
+		const schemeOf = (input) => {
+			try {
+				return new URL(input instanceof Request ? input.url : String(input), target.location?.href).protocol;
+			} catch {
+				return "";
+			}
+		};
+		async function fetch(input, init) {
+			const protocol = schemeOf(input);
+			if (protocol !== "asset:" && !(network && (protocol === "http:" || protocol === "https:"))) return nativeFetch.call(target, input, init);
+			const request = new Request(input, init);
+			const { signal } = request;
+			if (signal.aborted) throw signal.reason;
+			const body = request.body ? new Uint8Array(await request.arrayBuffer()) : void 0;
+			if (signal.aborted) throw signal.reason;
+			const headers = [...request.headers];
+			if (!request.headers.has("accept")) headers.push(["accept", "*/*"]);
+			const url = request.url.split("#")[0];
+			return new Promise((resolve, reject) => {
+				const id = call(1008, [
+					request.method,
+					url,
+					headers,
+					body,
+					request.redirect === "follow"
+				]);
+				const entry = {
+					resolve,
+					reject,
+					signal,
+					controller: null,
+					nullBody: request.method === "HEAD",
+					redirectError: request.redirect === "error",
+					abort() {
+						if (!finish(id)) return;
+						call(1009, [id]);
+						const reason = signal.reason;
+						if (entry.reject) entry.reject(reason);
+						else entry.controller?.error(reason);
+						wake();
+					}
+				};
+				inflight.set(id, entry);
+				signal.addEventListener("abort", entry.abort);
+				wake();
+			});
+		}
+		Object.defineProperty(target, "fetch", {
+			value: fetch,
+			writable: true,
+			configurable: true,
+			enumerable: false
+		});
 	}
 
 //#endregion
@@ -6007,10 +6097,40 @@
 	}
 
 //#endregion
+//#region ../nsh-platform-web/web/browser/address.js
+/** `nsh_core::url_scheme::MAX_URL_LEN`, in UTF-8 bytes. */
+	const MAX_ADDRESS_BYTES = 16384;
+	/** What `nsh_core::url_scheme::check_address` refuses: Rust's
+	* `char::is_whitespace` (White_Space) and `char::is_control` (Cc). */
+	const NOT_IN_AN_ADDRESS = /[\p{White_Space}\p{Cc}]/u;
+	/**
+	* Makes `urlScheme`'s `setUrl` (`nsh`'s `UrlScheme`) the page's. `page`:
+	* `base()`, what `history.replaceState` resolves against (the page's
+	* `document.baseURI`); `origin`, the page's. `url()` reads the core's
+	* address as it is, which has the page's from before the app's code runs.
+	* The options (`{ history }`) go to the core as they are, which checks them.
+	*/
+	function configureAddress(urlScheme, page) {
+		const { setUrl } = urlScheme;
+		urlScheme.setUrl = (to, ...options) => {
+			if (typeof to !== "string" || NOT_IN_AN_ADDRESS.test(to) || new TextEncoder().encode(to).length > MAX_ADDRESS_BYTES) return setUrl(to, ...options);
+			let resolved;
+			try {
+				resolved = new URL(to, page.base());
+			} catch {
+				throw new TypeError(`UrlScheme.setUrl: not a URL: ${to}`);
+			}
+			if (resolved.origin !== page.origin) throw new TypeError(`UrlScheme.setUrl: ${resolved.href} is not of the page's origin`);
+			setUrl(resolved.href, ...options);
+		};
+	}
+
+//#endregion
 //#region ../nsh-platform-web/web/browser/scope.js
 	var scope_exports = /* @__PURE__ */ __exportAll({
 		Values: () => Values,
 		configureAPIs: () => configureAPIs,
+		configureAddress: () => configureAddress,
 		createAnimation: () => createAnimation,
 		createCanvas: () => createCanvas,
 		createComponents: () => createComponents,
@@ -6027,6 +6147,7 @@
 		createReactive: () => createReactive,
 		createResource: () => createResource,
 		createStandard: () => createStandard,
+		installFetch: () => installFetch,
 		installTesting: () => installTesting
 	});
 	function configureAPIs(nsh, modules, dom, active, env) {

@@ -3,7 +3,7 @@ import { Button as BaseButton, Menu, MenuItem } from "nsh/base";
 import { keymap, platform } from "nsh";
 import { Icon, IconLabel, type IconName } from "../icons";
 import { play as sound } from "../../nsh-gallery-ui/sound";
-import { alpha, backdrop, Badge, Button, Caption, Card, colors, DemoPage, finish, focusRing, follow, iconButtonGlyph, iconButtonLook, menuItemLook, menuSheet, mono, motion, popupSurface, pressSink, radius, Spinner, terminal, TERMINAL_GAP, tints, Tip, Toggle } from "../ui";
+import { alpha, Badge, Button, buttonLook, Caption, Card, colors, DemoPage, finish, focusRing, follow, iconButtonGlyph, iconButtonLook, menuItemLook, mono, motion, radius, Spinner, splitButtonLook, terminal, TERMINAL_GAP, tints, Tip, Toggle, LabeledToggle, LastEvent, menuPopup } from "../ui";
 
 // `nsh/base`'s `Button` owns presses, the disabled state, keyboard focus and
 // the button role; the look is the gallery's (`buttonLook` of
@@ -95,9 +95,9 @@ function FillButton(props: {
   onLongPress?: () => void;
 }) {
   const glyph = follow(() => (props.busy || props.icon ? 1 : 0));
-  // The press sinks it natively (`activeStyle`); press down and up reach
-  // the app only for what a held press means (the hold's fill).
-  const press = pressSink(0.97, "background-color, border-color, box-shadow, opacity");
+  // `buttonLook`'s raised button: the press sinks it natively
+  // (`activeStyle`); press down and up reach the app only for what a held
+  // press means (the hold's fill).
   return (
     <View
       testID={props.testID}
@@ -109,24 +109,7 @@ function FillButton(props: {
       delayLongPress={props.delayLongPress}
       onPressDown={props.onPressDown}
       onPressUp={props.onPressUp}
-      hoverStyle={props.disabled ? undefined : finish.hover}
-      activeStyle={props.disabled ? undefined : press.activeStyle}
-      focusStyle={focusRing()}
-      style={{
-        alignSelf: "flex-start",
-        height: pointer ? 28 : 40,
-        paddingHorizontal: pointer ? 12 : 16,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: pointer ? 6 : 8,
-        overflow: "hidden",
-        borderRadius: radius.control,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        ...finish.raised,
-        opacity: props.disabled ? 0.4 : 1,
-        ...press.transition,
-      }}
+      {...buttonLook("secondary", { disabled: () => props.disabled, style: { alignSelf: "flex-start", overflow: "hidden" } })}
     >
       <View
         style={{
@@ -152,14 +135,6 @@ function FillButton(props: {
     </View>
   );
 }
-
-/** The menu's popup on desktops (one edge, a soft shadow), a sheet at the bottom on touch screens; in a terminal its frame alone, the items a Cell from it. */
-const menuSurface = () =>
-  terminal
-    ? { borderRadius: 10, borderWidth: 1, ...finish.menu }
-    : pointer
-    ? { ...popupSurface(), minWidth: 260 }
-    : menuSheet();
 
 type Strategy = { value: "merge" | "squash" | "rebase"; label: string; note: string; done: string };
 
@@ -196,7 +171,7 @@ export function ButtonDemo() {
             onPress={() => void openUrl("https://nsh.dev/docs/design-guides").then(({ opened }) => last.set(opened ? "opened the guidelines" : "No app opens links"))}
             hoverStyle={{ opacity: 0.8 }}
             activeStyle={{ opacity: 0.6 }}
-            focusStyle={focusRing()}
+            focusVisibleStyle={focusRing()}
             style={{ cursor: "pointer", flexDirection: "row", alignItems: "center", gap: 3, borderRadius: 4, transitionProperty: "opacity", transitionDuration: 120 }}
           >
             <Text style={{ fontSize: pointer ? 13 : 15, fontWeight: "500", color: colors.accent, textDecorationLine: "underline" }}>
@@ -221,7 +196,7 @@ export function ButtonDemo() {
         <Each of={[...sizes]}>
           {(s) => (
             <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-              <Text style={{ width: 64, fontSize: 12, color: colors.faint, fontFamily: mono }}>{s().size}</Text>
+              <Text style={{ width: 64, fontSize: pointer ? 12 : 13, color: colors.muted }}>{s().label}</Text>
               <Button size={s().size} label="Continue" onPress={() => last.set(`pressed ${s().label} Continue`)} />
               <Button size={s().size} label="Add" icon="plus" variant="secondary" onPress={() => last.set(`pressed ${s().label} Add`)} />
               <Button size={s().size} label="Skip" variant="ghost" onPress={() => last.set(`pressed ${s().label} Skip`)} />
@@ -284,65 +259,44 @@ export function ButtonDemo() {
       });
     };
     const label = () => (state() === "busy" ? "Merging…" : state() === "done" ? strategy().done : strategy().label);
-    // Each half sinks as it is pressed; the pair shares one silhouette.
-    const half = { height: pointer ? 28 : 40, flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "center" as const };
+    // One silhouette (`splitButtonLook`): each half shades under the
+    // pointer, deeper pressed; done, the pair turns the up tone.
+    const done = () => state() === "done";
+    const split = splitButtonLook("primary", { style: () => (done() ? { backgroundColor: tints.up, backgroundImage: "none", borderColor: alpha(colors.up, 0.4), boxShadow: "none" } : undefined) });
+    const ink = () => (done() ? colors.up : colors.onAccent);
     return (
       <Card
         title="Split button"
         subtitle="The main action, its variants in a menu"
-        right={<Badge label={state() === "done" ? "Merged" : "Open"} tone={state() === "done" ? "up" : "neutral"} />}
+        right={<Badge label={done() ? "Merged" : "Open"} tone={done() ? "up" : "neutral"} />}
       >
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "stretch",
-              borderRadius: radius.control,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              overflow: "hidden",
-              ...(state() === "done" ? { backgroundColor: tints.up, backgroundImage: "none", borderColor: alpha(colors.up, 0.4), boxShadow: "none" } : finish.accent),
-              transitionProperty: "background-color, border-color, box-shadow",
-              transitionDuration: reduceMotion() ? 0 : 200,
-            }}
-          >
-            <BaseButton
-              onPress={merge}
-              disabled={state() === "done"}
-              accessibilityLabel={label()}
-              hoverStyle={state() === "idle" ? { backgroundColor: alpha("#ffffff", 0.12) } : undefined}
-              activeStyle={state() === "idle" ? { backgroundColor: alpha("#000000", 0.08) } : undefined}
-              focusStyle={focusRing(-2)}
-              style={{ ...half, gap: pointer ? 6 : 8, paddingHorizontal: pointer ? 12 : 16 }}
-            >
+          <View {...split.frame}>
+            <BaseButton onPress={merge} disabled={done()} accessibilityLabel={label()} {...split.segment({ disabled: () => state() !== "idle" })}>
               <View style={{ transform: [{ scale: pop }] }}>
-                <If when={state() === "busy"} else={<Icon name={state() === "done" ? "check" : "merge"} size={pointer ? 14 : 16} tint={state() === "done" ? colors.up : colors.onAccent} />}>
+                <If when={state() === "busy"} else={<Icon name={done() ? "check" : "merge"} size={pointer ? 14 : 16} tint={ink()} />}>
                   <Spinner size={pointer ? 13 : 15} tint={colors.onAccent} />
                 </If>
               </View>
-              <Text style={{ fontSize: pointer ? 13 : 15, fontWeight: "500", color: state() === "done" ? colors.up : colors.onAccent }}>{label()}</Text>
+              <Text style={{ fontSize: pointer ? 13 : 15, fontWeight: "500", color: ink() }}>{label()}</Text>
             </BaseButton>
-            <View style={{ width: 1, backgroundColor: state() === "done" ? alpha(colors.up, 0.3) : alpha(colors.onAccent, 0.22) }} />
+            <View style={done() ? { ...split.divider, backgroundColor: alpha(colors.up, 0.3) } : split.divider} />
             <Menu
               align="end"
               offset={6}
               margin={8}
               open={open()}
               onOpenChange={({ open: o }) => open.set(o)}
-              popupStyle={menuSurface()}
-              backdropStyle={backdrop()}
+              {...menuPopup({ minWidth: 260 })}
               trigger={
                 <View
                   role="button"
                   accessibilityLabel="Merge options"
                   disabled={state() !== "idle"}
-                  hoverStyle={{ backgroundColor: alpha("#ffffff", 0.12) }}
-                  activeStyle={{ backgroundColor: alpha("#000000", 0.08) }}
-                  focusStyle={focusRing(-2)}
-                  style={{ ...half, ...(terminal ? { paddingHorizontal: 8 } : { width: pointer ? 26 : 40 }), backgroundColor: open() ? alpha("#000000", 0.1) : "transparent" }}
+                  {...split.segment({ selected: open, disabled: () => state() !== "idle", style: terminal ? undefined : { width: pointer ? 26 : 40, paddingHorizontal: 0 } })}
                 >
                   <View style={{ alignSelf: "stretch", flexGrow: 1, alignItems: "center", justifyContent: "center", transform: [{ rotate: open() ? "180deg" : "0deg" }], transitionProperty: "transform", transitionDuration: reduceMotion() ? 0 : 180 }}>
-                    <Icon name="chevron-down" size={pointer ? 12 : 14} tint={state() === "done" ? colors.up : colors.onAccent} weight={2} />
+                    <Icon name="chevron-down" size={pointer ? 12 : 14} tint={ink()} weight={2} />
                   </View>
                 </View>
               }
@@ -384,7 +338,7 @@ export function ButtonDemo() {
             />
           </If>
         </View>
-        <Caption label="The chevron's menu picks how the main action merges" note={strategy().value} />
+        <Caption label={strategy().note} />
       </Card>
     );
   }
@@ -434,7 +388,7 @@ export function ButtonDemo() {
       after(160, step);
     };
     return (
-      <Card title="Work that takes a while" subtitle="No second press while it runs; the result shows on the button">
+      <Card title="Work that takes a while" subtitle="One press while it runs; the result on the button">
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
           <Button
             label={save() === "busy" ? "Saving…" : save() === "done" ? "Saved" : "Save changes"}
@@ -453,7 +407,7 @@ export function ButtonDemo() {
             onPress={runUpload}
           />
         </View>
-        <Caption label="A spinner while waiting, a progress fill when the amount is known" note={save() === "busy" || progress() !== null ? "busy" : "idle"} />
+        <Caption label="A spinner while waiting, a progress fill when the amount is known" note={save() === "busy" || progress() !== null ? "Working…" : "Ready"} />
       </Card>
     );
   }
@@ -480,6 +434,7 @@ export function ButtonDemo() {
           borderWidth: 1,
           backgroundColor: colors.field,
           ...finish.field,
+          borderColor: colors.fieldBorder,
         }}
       >
         <Text style={{ flex: 1, numberOfLines: 1, fontSize: pointer ? 12 : 14, color: colors.text, fontFamily: mono }}>{props.text}</Text>
@@ -575,7 +530,7 @@ export function ButtonDemo() {
     const reason = () => (!title() ? "Add a title first" : !terms() ? "Accept the terms to publish" : null);
     const published = signal(false);
     return (
-      <Card title="Disabled, with its reason" subtitle="Say what to do, next to the button" right={<Toggle value={off()} onChange={(v) => off.set(v)} label="Disable all" />}>
+      <Card title="Disabled, with its reason" subtitle="Say what to do, next to the button" right={<LabeledToggle label="Disable all" value={off()} onChange={(v) => off.set(v)} />}>
         <View style={{ gap: 2 }}>
           <Row label="The post has a title" value={title()} onChange={(v) => {
             resize();
@@ -608,7 +563,7 @@ export function ButtonDemo() {
   function Last() {
     return (
       <Card title="Last event">
-        <Text style={{ fontSize: 13, color: colors.text, fontFamily: mono }}>{last()}</Text>
+        <LastEvent value={last()} hint="Press a button" />
       </Card>
     );
   }

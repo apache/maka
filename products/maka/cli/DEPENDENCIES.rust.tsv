@@ -638,21 +638,21 @@ nonmax@0.5.5		X										X
 normpath@1.5.2		X										X						
 notify-types@2.1.0		X										X						
 notify@8.2.1								X										
-nsh-base@0.4.0		X																
-nsh-bundler@0.4.0		X																
-nsh-core@0.4.0		X																
-nsh-engine@0.4.0		X																
-nsh-i18n@0.4.0		X																
-nsh-js@0.4.0		X																
-nsh-macros@0.4.0		X																
-nsh-package@0.4.0		X																
-nsh-platform-apple@0.4.0		X																
-nsh-platform-linux@0.4.0		X																
-nsh-platform-macos@0.4.0		X																
-nsh-platform-tui@0.4.0		X																
-nsh-platform-windows@0.4.0		X																
-nsh-terminal@0.4.0		X																
-nsh-updater@0.4.0		X																
+nsh-base@0.5.0		X																
+nsh-bundler@0.5.0		X																
+nsh-core@0.5.0		X																
+nsh-engine@0.5.0		X																
+nsh-i18n@0.5.0		X																
+nsh-js@0.5.0		X																
+nsh-macros@0.5.0		X																
+nsh-package@0.5.0		X																
+nsh-platform-apple@0.5.0		X																
+nsh-platform-linux@0.5.0		X																
+nsh-platform-macos@0.5.0		X																
+nsh-platform-tui@0.5.0		X																
+nsh-platform-windows@0.5.0		X																
+nsh-terminal@0.5.0		X																
+nsh-updater@0.5.0		X																
 ntapi@0.4.3		X										X						
 nu-ansi-term@0.50.3												X						
 num-bigint@0.4.8		X										X						
@@ -681,6 +681,7 @@ objc2-foundation@0.2.2												X
 objc2-foundation@0.3.2												X						
 objc2-image-io@0.3.2		X										X						X
 objc2-io-kit@0.3.2		X										X						X
+objc2-io-surface@0.3.2		X										X						X
 objc2-quartz-core@0.2.2												X						
 objc2-quartz-core@0.3.2		X										X						X
 objc2-screen-capture-kit@0.3.2		X										X						X
@@ -688,6 +689,8 @@ objc2@0.5.3												X
 objc2@0.6.5												X						
 object@0.39.1		X										X						
 once_cell@1.21.4		X										X						
+onig_sys@69.9.3												X						
+onig@6.5.3												X						
 open@5.4.5												X						
 openssl-macros@0.1.1		X										X						
 openssl-probe@0.2.1		X										X						

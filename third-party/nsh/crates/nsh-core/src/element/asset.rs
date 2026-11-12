@@ -141,6 +141,32 @@ impl ImageSrc {
         })
     }
 
+    /// A `width` × `height` pixel buffer as a source: straight (not
+    /// premultiplied) 8-bit RGBA, rows top to bottom with no padding,
+    /// `width * height * 4` bytes, held as they are (`Vec<u8>`,
+    /// `Arc<[u8]>`, ...; not copied). It lays out at `width` × `height`
+    /// points, as a `data:` image does. Frames made elsewhere (a renderer,
+    /// a camera, a thread drawing a preview) show without being encoded;
+    /// each buffer is an image of its own, which the caches drop once no
+    /// view shows it.
+    ///
+    /// ```ignore
+    /// let pixels: Arc<[u8]> = render_page(); // 1192 × 1684 × 4 bytes
+    /// image(ImageSrc::rgba(1192, 1684, pixels)).w_full()
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// When `pixels` is not `width * height * 4` bytes long, or a side is 0.
+    pub fn rgba(width: u32, height: u32, pixels: impl AsRef<[u8]> + Send + Sync + 'static) -> Self {
+        Self {
+            uri: crate::image::rgba_key().into(),
+            size: Some((width as f32, height as f32)),
+            scales: crate::ImageScales::NONE,
+            data: Some(crate::ImageData::from_rgba(width, height, pixels)),
+        }
+    }
+
     /// The SVG document `markup` itself as a source ([`super::svg`],
     /// [`super::image`]): its markup is the image, as an `<svg>` written
     /// inline in a web page is.

@@ -120,7 +120,7 @@ function App() {
                     onPress={() => area.closePanel(tab.panel)}
                     accessibilityLabel={`Close ${titles[tab.panel]}`}
                     class={dockTabCloseClass}
-                    focusStyle={focusRing()}
+                    focusVisibleStyle={focusRing()}
                   >
                     <Text class="text-[13px] text-muted-foreground">×</Text>
                   </Button>

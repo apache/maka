@@ -1,0 +1,6 @@
+{
+  "name": "Post Editor",
+  "id": "com.longbridge.nsh.posteditor",
+  "rust": "native",
+  "theme": "theme.json"
+}

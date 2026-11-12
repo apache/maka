@@ -144,6 +144,7 @@ input::VELOCITY_WINDOW                                           # time (millise
 input::VelocityTracker::add(time)                                # time (milliseconds)
 input::VelocityTracker::velocity ->                              # a rate or a physical constant of an animation
 input::WHEEL_LATCH                                               # time (milliseconds)
+input::WheelStep::Discrete.time                                  # time (milliseconds)
 input::ZOOM_STEP                                                 # a scale factor
 input::latch_holds(last)                                         # time (milliseconds)
 input::latch_holds(time)                                         # time (milliseconds)
@@ -207,10 +208,11 @@ platform::HostEnvironment.font_scale                             # a font scale 
 props::AccessibilityValue.max                                    # an app-defined value
 props::AccessibilityValue.min                                    # an app-defined value
 props::AccessibilityValue.now                                    # an app-defined value
-props::LayoutCurve::Spring.damping                               # a rate or a physical constant of an animation
+props::LayoutCurve::FittedSpring.damping_ratio                   # a rate or a physical constant of an animation
 props::LayoutTransition.delay_ms                                 # time
 props::LayoutTransition.duration_ms                              # time
 props::LayoutTransition::new(duration_ms)                        # time
+props::LayoutTransition::run_ms ->                               # time
 props::ViewProps.long_press_delay                                # time
 scroll::KeyMove::Pages.0                                         # a number of viewports
 scroll::KeyMove::sign ->                                         # a direction, -1 or 1
@@ -237,6 +239,8 @@ scroll::wheel_end(vy)                                            # a velocity, p
 shader::UniformValue::Number.0                                  # a uniform's value, whatever the app's program makes of it
 shader::TransitionKey::number(n)                                 # a transition's value: a key compared for equality, no quantity
 ops::Prop::TransitionDuration.0                                  # time (milliseconds, as JS gives it)
+ops::WheelDelta::Lines.0                                         # a count of wheel lines (notches)
+ops::WheelDelta::xy ->                                           # a delta in its own unit, lines or points
 shader::NavShaderSpec.duration                                   # time (milliseconds, as JS gives it)
 shader::builtins(scale)                                          # pixels per point, a ratio
 shader::builtins(time)                                           # time
@@ -327,6 +331,12 @@ element::animated::Animation::timing(to)                              # an anima
 element::animated::Spring.damping                                     # a rate or a physical constant of an animation
 element::animated::Spring.frame_rate                             # a frame rate (Hz)
 element::animated::Spring::frame_rate(hz)                        # a frame rate (Hz)
+element::animated::Spring::new(response_ms)                      # time
+element::animated::Spring::from_stiffness(stiffness)             # a rate or a physical constant of an animation
+element::animated::Spring::damping_ratio(ratio)                  # a rate or a physical constant of an animation
+element::animated::Spring::progress(ms)                          # time
+element::animated::Spring::progress ->                           # easing curve coordinates (unit square)
+element::animated::Spring::settle_ms ->                          # time
 element::animated::Spring.mass                                        # a rate or a physical constant of an animation
 element::animated::Spring.stiffness                                   # a rate or a physical constant of an animation
 element::animated::Spring.velocity                                    # a rate or a physical constant of an animation
