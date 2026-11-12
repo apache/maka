@@ -212,12 +212,6 @@ impl Owner {
             .model
             .as_ref()
             .ok_or("agent_continuation_requires_model")?;
-        let catalog = self.selected_tools(
-            &session_id,
-            &basis,
-            basis.tool_discovery,
-            accepted.editing_tools,
-        )?;
         let cancellation = parent.cancellation.child_token();
         let lease = self
             .auxiliary_lease(parent, &session_id)
@@ -260,7 +254,7 @@ impl Owner {
             original_model
                 .as_ref()
                 .expect("original preparation model")
-                .prepare_continuation(actual.run, basis.behavior.clone(), catalog)
+                .prepare_continuation(actual.run, basis.behavior.clone())
                 .await
         }
         .await;
