@@ -217,7 +217,7 @@ impl Directory {
                 || dunce::canonicalize(&anchor.path).map_err(|_| error("files_changed"))?
                     != anchor.path
                 || crate::directory::open(&anchor.path, &anchor.identity).is_err()
-                || crate::directory::identity(&anchor.directory)? != anchor.identity
+                || !anchor.identity.matches(&anchor.directory)?
                 || self.excluded(&anchor.path)
             {
                 return Err(error("files_changed"));

@@ -24,6 +24,11 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+cap-fs-ext.workspace = true
+cap-std.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 uuid.workspace = true
 globset = "0.4.20"
 schemars.workspace = true
@@ -48,11 +53,9 @@ uuid = { workspace = true, features = ["v5"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = { version = "0.5.0", default-features = false }
-serde_json.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]

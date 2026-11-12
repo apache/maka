@@ -18,7 +18,6 @@
  */
 
 // Keep this crash check in its own binary so fork cannot inherit other tests' Root leases.
-use cap_fs_ext::MetadataExt;
 use cap_std::{ambient_authority, fs::Dir};
 use maka_event_log::{
     ROOT_MIGRATIONS, RootStore, StoreError,
@@ -59,17 +58,7 @@ fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 fn directory_identity(directory: &Dir) -> DirectoryIdentity {
-    let metadata = directory.dir_metadata().unwrap();
-    let birth = metadata
-        .created()
-        .ok()
-        .and_then(|time| time.into_std().duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| (duration.as_secs(), duration.subsec_nanos()));
-    DirectoryIdentity::try_from(format!(
-        "sha256:{}",
-        digest(&serde_json::to_vec(&(metadata.dev(), metadata.ino(), birth)).unwrap())
-    ))
-    .unwrap()
+    DirectoryIdentity::capture(directory).unwrap()
 }
 async fn open(base: &Path, create: bool) -> RootStore {
     let owner = if create {
