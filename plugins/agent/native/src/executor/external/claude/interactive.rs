@@ -131,17 +131,9 @@ pub(in crate::executor::external) async fn execute(
         let observation = observation.clone();
         let stop = stop.clone();
         let settled = settled.clone();
-        let bridge = bridge.clone();
         tokio::spawn(async move {
-            let process = runtime::original_child_wait(
-                &mut child,
-                &observation,
-                &stop,
-                &settled,
-                false,
-                Some(&bridge),
-            )
-            .await;
+            let process =
+                runtime::original_child_wait(&mut child, &observation, &stop, &settled).await;
             let process = match process {
                 Ok(()) => Ok(()),
                 Err(_) => child

@@ -97,10 +97,9 @@ impl ProtocolSession {
         self.observation
             .binding
             .bound(NativeBinding {
-                adapter_version: if matches!(task, NativeTask::Antigravity { .. }) {
-                    AGY_ACTIVITY_VERSION
-                } else {
-                    PRESENTATION_VERSION
+                adapter_version: match task {
+                    NativeTask::AntigravityAcp { .. } => AGY_ACP_VERSION,
+                    _ => PRESENTATION_VERSION,
                 },
                 command_basis: self.command_basis.clone(),
                 resource: self.resource.clone(),
@@ -134,9 +133,6 @@ impl ProtocolSession {
             Some(update.map_or_else(|| instruction_digest(None), |update| update.digest));
         self.revision = Some(self.save(&self.session).await?);
         Ok(())
-    }
-    pub fn bootstrap_completed(&self) -> bool {
-        self.session.instructions_digest.is_some()
     }
     pub fn native_session(&self) -> Option<&str> {
         self.session.native_session.as_deref()

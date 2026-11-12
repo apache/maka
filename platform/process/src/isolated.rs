@@ -224,7 +224,6 @@ pub struct TaskOwner {
     home_capture: HomeCapture,
     home_seed: home::SeedState,
     step_annotation_hook: Option<PathBuf>,
-    input_cleanup: Vec<PathBuf>,
     snapshot: Option<SnapshotProof>,
     live_workspace: Option<PathBuf>,
     sandbox: Sandbox,
@@ -254,8 +253,6 @@ enum Manifest {
         cwd: Option<PathBuf>,
         #[serde(default)]
         step_annotation_hook: Option<PathBuf>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        input_cleanup: Vec<PathBuf>,
     },
 }
 
@@ -679,7 +676,6 @@ impl TaskOwner {
             home_capture,
             home_seed: home::SeedState::Fresh,
             step_annotation_hook: None,
-            input_cleanup: Vec::new(),
             snapshot,
             live_workspace: privacy.is_none().then_some(source),
             sandbox,
@@ -787,25 +783,19 @@ impl TaskOwner {
     pub fn tmp(&self) -> PathBuf {
         self.resource.join("tmp")
     }
-    fn relative_input(&self, path: &Path) -> io::Result<PathBuf> {
-        let relative = path.strip_prefix(self.inputs()).map_err(io::Error::other)?;
+    #[cfg(target_os = "macos")]
+    pub fn record_step_annotations(&mut self, hook: &Path) -> io::Result<&Path> {
+        let relative = hook.strip_prefix(self.inputs()).map_err(io::Error::other)?;
         if relative.as_os_str().is_empty()
             || !relative
                 .components()
                 .all(|part| matches!(part, std::path::Component::Normal(_)))
         {
-            return Err(io::Error::other("invalid private task input path"));
+            return Err(io::Error::other(
+                "invalid private step annotation hook path",
+            ));
         }
-        Ok(relative.to_owned())
-    }
-    /// The original helper removes a generated input after process exit and stream drain.
-    pub fn cleanup_input_on_exit(&mut self, path: &Path) -> io::Result<()> {
-        self.input_cleanup.push(self.relative_input(path)?);
-        Ok(())
-    }
-    #[cfg(target_os = "macos")]
-    pub fn record_step_annotations(&mut self, hook: &Path) -> io::Result<&Path> {
-        self.step_annotation_hook = Some(self.relative_input(hook)?);
+        self.step_annotation_hook = Some(relative.to_owned());
         Ok(&self.helper_executable)
     }
     pub fn descriptor(&self) -> Descriptor {
@@ -944,7 +934,6 @@ impl TaskOwner {
             size,
             cwd: self.live_workspace.clone(),
             step_annotation_hook: self.step_annotation_hook.clone(),
-            input_cleanup: self.input_cleanup.clone(),
         };
         // Protocol evidence must not become a credential/configuration store.
         // Argv can contain secrets too, so retain neither argv nor environment.

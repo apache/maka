@@ -168,11 +168,17 @@ pub(super) async fn parse(
     stream: &mut Stream,
     output: &dyn OutputSink,
 ) -> Result<Outcome, Error> {
-    let outcome = match binding.task {
+    let outcome = match &binding.task {
         NativeTask::Codex { .. } => codex::replay(request, binding, input, stream, output).await,
         NativeTask::Antigravity { .. } => {
             agy::replay(request, binding, input, stream, output).await
         }
+        NativeTask::AntigravityAcp { session, prompt_id }
+            if binding.adapter_version == AGY_ACP_VERSION =>
+        {
+            agy_acp::replay(session, *prompt_id, input, stream, output).await
+        }
+        NativeTask::AntigravityAcp { .. } => Err(Error::Unknown),
         NativeTask::ClaudeStream { .. } => {
             claude::replay(binding, admitted_steering_batches, input, stream, output).await
         }
@@ -181,7 +187,9 @@ pub(super) async fn parse(
     if matches!(outcome, Outcome::Completed { .. })
         && matches!(
             binding.task,
-            NativeTask::Codex { .. } | NativeTask::Antigravity { .. }
+            NativeTask::Codex { .. }
+                | NativeTask::Antigravity { .. }
+                | NativeTask::AntigravityAcp { .. }
         )
         && admitted_steering_batches != 0
     {

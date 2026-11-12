@@ -29,25 +29,6 @@ pub const ARG: &str = "--maka-agy-tool-hook";
 const TRANSCRIPT_TAIL_BYTES: u64 = 1024 * 1024;
 const THINKING_BYTES: usize = 128 * 1024;
 
-pub(super) fn configuration(executable: &Path, directory: &Path) -> io::Result<Vec<u8>> {
-    fn quote(path: &Path) -> io::Result<String> {
-        let path = path
-            .to_str()
-            .ok_or_else(|| io::Error::other("Antigravity hook path must be UTF-8"))?;
-        Ok(format!("'{}'", path.replace('\'', "'\"'\"'")))
-    }
-    let command = format!("{} {ARG} {}", quote(executable)?, quote(directory)?);
-    Ok(serde_json::to_vec(&serde_json::json!({
-        "maka-tool-summary": {
-            "PreToolUse": [{
-                "matcher": ".*",
-                "hooks": [{ "command": command, "timeout": 5 }],
-            }],
-            "PostInvocation": [{ "command": command, "timeout": 5 }]
-        }
-    }))?)
-}
-
 #[derive(Deserialize)]
 #[serde(tag = "hookEventName", rename_all_fields = "camelCase")]
 enum Hook {

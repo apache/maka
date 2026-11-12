@@ -22,319 +22,7 @@ use maka_agent_facts::{
     executor::{Output, ToolResultDetails, TurnUsage},
     model::ModelUsage,
 };
-#[cfg(unix)]
-use runtime::task_interruptible_pipe as native_pipe;
-#[cfg(not(unix))]
-use runtime::task_pipe as native_pipe;
-use runtime::{Pipe, string};
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one invocation owns native custody, protocol and Host tool settlement"
-)]
-pub(super) async fn execute(
-    config: &NativeCommand,
-    cwd: &str,
-    request: &Value,
-    journal: &mut journal::ProtocolSession,
-    output: Arc<dyn OutputSink>,
-    bridge: Arc<mcp::Bridge>,
-    cancellation: CancellationToken,
-    _steering: &mut steering::Steering,
-    owner: maka_process::isolated::TaskOwner,
-) -> Result<Outcome, Error> {
-    let mut submitted = false;
-    let result = prepare(
-        config,
-        cwd,
-        request,
-        journal,
-        output.as_ref(),
-        &bridge,
-        cancellation,
-        &mut submitted,
-        owner,
-    )
-    .await;
-    let result = if submitted
-        && matches!(
-            result,
-            Err(Error::Provider(_) | Error::Invalid(_) | Error::Cancelled)
-        ) {
-        Err(Error::Unknown)
-    } else {
-        result
-    };
-    bridge.close_admission();
-    if matches!(
-        result,
-        Err(Error::CleanupUnconfirmed | Error::ObservationRetired | Error::Persistence(_))
-    ) {
-        return result;
-    }
-    if !submitted && let Err(error) = &result {
-        match error {
-            Error::Unknown
-            | Error::ObservationRetired
-            | Error::CleanupUnconfirmed
-            | Error::Persistence(_)
-            | Error::IsolationUnavailable(_) => return result,
-            _ => {}
-        }
-        if !matches!(error, Error::Cancelled) {
-            return Ok(Outcome::Failed {
-                message: error.to_string(),
-                code: Some("native_preparation_failed".into()),
-                recoverable: false,
-            });
-        }
-    }
-    result
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "native resources have one physical settlement owner"
-)]
-async fn prepare(
-    config: &NativeCommand,
-    cwd: &str,
-    request: &Value,
-    journal: &mut journal::ProtocolSession,
-    output: &dyn OutputSink,
-    bridge: &Arc<mcp::Bridge>,
-    cancellation: CancellationToken,
-    submitted: &mut bool,
-    mut owner: maka_process::isolated::TaskOwner,
-) -> Result<Outcome, Error> {
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancelled);
-    }
-    let directory = bridge.directory();
-    let agents = directory.join(".agents");
-    let plugin = agents.join("plugins/maka");
-    let mcp_path = agents.join("mcp_config.json");
-    owner
-        .cleanup_input_on_exit(&mcp_path)
-        .map_err(|error| Error::Provider(error.to_string()))?;
-    #[cfg(target_os = "macos")]
-    let hook = {
-        let hook_path = plugin.join("hooks.json");
-        let tmp = owner.tmp();
-        let executable = owner
-            .record_step_annotations(&hook_path)
-            .map_err(|error| Error::Provider(error.to_string()))?;
-        let hook = super::super::agy_hook::configuration(executable, &tmp)
-            .map_err(|error| Error::Provider(error.to_string()))?;
-        (hook_path, hook)
-    };
-    tokio::fs::create_dir_all(&plugin)
-        .await
-        .map_err(|e| Error::Provider(e.to_string()))?;
-    tokio::fs::write(plugin.join("plugin.json"), b"{\"name\":\"maka\"}")
-        .await
-        .map_err(|e| Error::Provider(e.to_string()))?;
-    // A resumed agy conversation discovers its original workspace roots as well.
-    // Workspace MCP definitions override the legacy, bearer-bearing plugin config.
-    let mcp = serde_json::json!({"mcpServers":{"maka_maka":{"serverUrl":bridge.url,"headers":{"Authorization":format!("Bearer {}",bridge.bearer())}}}});
-    tokio::fs::write(
-        &mcp_path,
-        serde_json::to_vec(&mcp).expect("MCP config is JSON"),
-    )
-    .await
-    .map_err(|e| Error::Provider(e.to_string()))?;
-    let settings = directory.join("settings.json");
-    tokio::fs::write(&settings, b"{\"queuedMessages\":\"send-immediately\"}")
-        .await
-        .map_err(|e| Error::Provider(e.to_string()))?;
-    let mut plan = runtime::command(config, cwd).await?;
-    plan.arg("--print=")
-        .arg("--input-format")
-        .arg("stream-json")
-        .arg("--output-format")
-        .arg("stream-json")
-        .arg("--disable-slash-commands")
-        .arg("--dangerously-skip-permissions")
-        .arg("--add-dir")
-        .arg(directory)
-        .arg("--settings")
-        .arg(&settings);
-    let mut image_directories = std::collections::BTreeSet::new();
-    for image in request
-        .get("images")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let path = std::path::Path::new(string(image, "/path")?);
-        let parent = path
-            .parent()
-            .ok_or_else(|| Error::Invalid("agy image path has no parent".into()))?;
-        if image_directories.insert(parent) {
-            plan.arg("--add-dir").arg(parent);
-        }
-    }
-    if let Some(session) = journal.native_session() {
-        plan.arg("--conversation").arg(session);
-    }
-    if let Some(model) = request
-        .get("model")
-        .and_then(Value::as_str)
-        .filter(|model| *model != "default")
-    {
-        plan.arg("--model").arg(model);
-    }
-    if let Some(effort) = request.get("effort").and_then(Value::as_str) {
-        plan.arg("--effort").arg(effort);
-    }
-    #[cfg(target_os = "macos")]
-    tokio::fs::write(&hook.0, hook.1)
-        .await
-        .map_err(|error| Error::Provider(format!("Antigravity tool hook installation: {error}")))?;
-    let host = bridge.clone();
-    native_pipe(
-        owner,
-        journal.observation(),
-        plan,
-        runtime::Transport::JsonLines,
-        Some(bridge.clone()),
-        cancellation,
-        Protocol {
-            request,
-            journal,
-            output,
-            bridge: host,
-            submitted,
-        },
-    )
-    .await
-}
-
-struct Protocol<'a> {
-    request: &'a Value,
-    journal: &'a mut journal::ProtocolSession,
-    output: &'a dyn OutputSink,
-    bridge: Arc<mcp::Bridge>,
-    submitted: &'a mut bool,
-}
-impl runtime::PipeProtocol for Protocol<'_> {
-    type Output = Outcome;
-    fn run<'io>(self, io: &'io mut Pipe) -> BoxFuture<'io, Result<Outcome, Error>>
-    where
-        Self: 'io,
-    {
-        Box::pin(async move {
-            converse(
-                io,
-                self.request,
-                self.journal,
-                self.output,
-                &self.bridge,
-                self.submitted,
-            )
-            .await
-        })
-    }
-}
-
-async fn converse(
-    io: &mut Pipe,
-    request: &Value,
-    journal: &mut journal::ProtocolSession,
-    output: &dyn OutputSink,
-    bridge: &mcp::Bridge,
-    submitted: &mut bool,
-) -> Result<Outcome, Error> {
-    let stop = io.stop.clone();
-    let init = tokio::select! {
-        biased;
-        () = stop.cancelled() => return Err(Error::Cancelled),
-        init = tokio::time::timeout(runtime::SETUP_TIMEOUT, io.next()) =>
-            init.map_err(|_| Error::Provider("agy initialization timed out".into()))??,
-    };
-    if init.get("event").and_then(Value::as_str) != Some("init") {
-        return Err(Error::Invalid(
-            "agy did not emit its native init event".into(),
-        ));
-    }
-    if init
-        .pointer("/init/permission_mode")
-        .and_then(Value::as_str)
-        != Some("always-proceed")
-    {
-        return Err(Error::Invalid(
-            "agy did not confirm always-proceed permission mode".into(),
-        ));
-    }
-    let session = string(&init, "/conversation_id")?.to_owned();
-    if let Some(model) = request
-        .get("model")
-        .and_then(Value::as_str)
-        .filter(|model| *model != "default")
-        && init.pointer("/init/model").and_then(Value::as_str) != Some(model)
-    {
-        return Err(Error::Invalid(
-            "agy did not select the requested model".into(),
-        ));
-    }
-    journal.opened(session.clone())?;
-    bridge.admit()?;
-    let work = async {
-        if stop.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        *submitted = true;
-        let mut cursor = TurnCursor::default();
-        let update =
-            journal.instruction_update(request.get("instructions").and_then(Value::as_str));
-        if !journal.bootstrap_completed() || update.is_some() {
-            let bootstrap =
-                runtime::bootstrap_message(update.as_ref().map(|update| update.text.as_str()));
-            io.turn_started();
-            io.send(user_message(&bootstrap)).await?;
-            let bootstrap = observe(io, &session, &mut cursor, output, false, None).await?;
-            io.turn_finished();
-            if !matches!(bootstrap, Outcome::Completed { .. }) {
-                return Ok(bootstrap);
-            }
-            if stop.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            if !bridge.listed.is_cancelled() {
-                return Ok(Outcome::Failed {
-                    message: "agy did not confirm the captured Host MCP tool catalog".into(),
-                    code: Some("native_mcp_setup_failed".into()),
-                    recoverable: false,
-                });
-            }
-            journal.confirm_instructions(update).await?;
-        }
-        let prompt = user_message(&native_prompt(request)?);
-        io.turn_started();
-        io.send(prompt).await?;
-        observe(io, &session, &mut cursor, output, true, Some(journal)).await
-    };
-    work.await
-}
-
-fn native_prompt(request: &Value) -> Result<String, Error> {
-    let message = request
-        .get("message")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Invalid("agy request has no user message".into()))?;
-    let images = request
-        .get("images")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    if images.is_empty() {
-        return Ok(message.into());
-    }
-    let manifest = serde_json::to_string(images).expect("validated image paths are JSON");
-    Ok(format!(
-        "{message}\n\n<maka_image_attachments>\n{manifest}\n</maka_image_attachments>"
-    ))
-}
+use runtime::string;
 
 fn user_message(text: &str) -> Value {
     serde_json::json!({"event":"user","message":{"content":text}})
@@ -343,37 +31,6 @@ fn user_message(text: &str) -> Value {
 #[derive(Default)]
 struct TurnCursor {
     highest_step: Option<u64>,
-}
-async fn observe(
-    io: &mut Pipe,
-    session: &str,
-    cursor: &mut TurnCursor,
-    output: &dyn OutputSink,
-    show_text: bool,
-    journal: Option<&journal::ProtocolSession>,
-) -> Result<Outcome, Error> {
-    let mut turn = NativeTurn::new(
-        cursor.highest_step,
-        show_text,
-        cfg!(target_os = "macos"),
-        AGY_ACTIVITY_VERSION,
-    );
-    let deadline = tokio::time::Instant::now() + runtime::SETUP_TIMEOUT;
-    loop {
-        let event = if turn.user.is_none() {
-            tokio::time::timeout_at(deadline, io.next())
-                .await
-                .map_err(|_| Error::Provider("agy user input admission timed out".into()))??
-        } else {
-            io.next().await?
-        };
-        if let Some(outcome) = turn.event(event, session, cursor, output, journal).await? {
-            if let Some(journal) = journal {
-                journal.closed(outcome.clone()).await?;
-            }
-            return Ok(outcome);
-        }
-    }
 }
 struct NativeTurn {
     previous_step: Option<u64>,
@@ -419,7 +76,6 @@ impl NativeTurn {
         session: &str,
         cursor: &mut TurnCursor,
         output: &dyn OutputSink,
-        journal: Option<&journal::ProtocolSession>,
     ) -> Result<Option<Outcome>, Error> {
         match event.get("event").and_then(Value::as_str) {
             Some("step_update") => {
@@ -440,17 +96,6 @@ impl NativeTurn {
                         return Err(Error::Invalid(
                             "agy did not correlate the submitted user turn".into(),
                         ));
-                    }
-                    if self.user.is_none()
-                        && let Some(journal) = journal
-                    {
-                        journal
-                            .bind_task(NativeTask::Antigravity {
-                                conversation: session.into(),
-                                user_step: index,
-                                step_annotations: self.step_annotations,
-                            })
-                            .await?;
                     }
                     self.user = Some(index);
                     self.user_done |= state == "DONE";
@@ -779,7 +424,7 @@ fn result_usage(result: &Value) -> Option<TurnUsage> {
     })
 }
 
-fn command_output(raw: &str) -> (&str, Option<i32>) {
+pub(super) fn command_output(raw: &str) -> (&str, Option<i32>) {
     let mut body = raw;
     for label in ["Created At: ", "Completed At: "] {
         if body.starts_with(label) {
@@ -874,7 +519,7 @@ pub(super) async fn replay(
         loop {
             let event = stream.required().await?;
             if let Some(outcome) = bootstrap
-                .event(event, conversation, &mut cursor, output, None)
+                .event(event, conversation, &mut cursor, output)
                 .await?
             {
                 if !matches!(outcome, Outcome::Completed { .. }) {
@@ -904,10 +549,7 @@ pub(super) async fn replay(
         {
             return Err(Error::Unknown);
         }
-        if let Some(outcome) = turn
-            .event(event, conversation, &mut cursor, output, None)
-            .await?
-        {
+        if let Some(outcome) = turn.event(event, conversation, &mut cursor, output).await? {
             break outcome;
         }
     };
@@ -1249,7 +891,7 @@ mod tests {
             thought,
         ] {
             assert!(
-                turn.event(event, "session", &mut cursor, &output, None)
+                turn.event(event, "session", &mut cursor, &output)
                     .await
                     .unwrap()
                     .is_none()

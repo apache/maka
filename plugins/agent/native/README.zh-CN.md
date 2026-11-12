@@ -40,9 +40,9 @@
 
 服务工具通过 `target: { kind: "import", name: "files" }` 选择导入服务，通过 `target: { kind: "export", name: "agent" }` 选择当前 Agent 自身的 API。自身 export 不增加导入或启动依赖，发布成功后才可调用。两种目标共用 Host 准入、操作回执和可选的 `confirmation` 审批。Maka 通过这条路径开放 Session 浏览、历史、创建、分叉、元数据、归档／删除、消息、队列和执行控制；schema 直接来自已有的 [Agent 契约](../api/src/contract.rs)。
 
-内置 `external` 执行器通过 PTY 驱动交互式 Claude Code，通过 stream JSON 驱动 agy，通过 app-server 驱动 Codex。在 `external.runtimes` 中启用对应 CLI，也可用 `external.commands` 配置程序、参数和环境。请先在原生 CLI 登录。CLI 使用当前账户配置和原工作区，原生工具使用完整权限，回调 Maka 的 MCP 工具仍受会话授权约束。
+内置 `external` 执行器通过 PTY 驱动交互式 Claude Code，通过 ACP 驱动 agy，通过 app-server 驱动 Codex。在 `external.runtimes` 中启用对应 CLI，也可用 `external.commands` 配置程序、参数和环境。请先在原生 CLI 登录。CLI 使用当前账户配置和原工作区，原生工具使用完整权限，回调 Maka 的 MCP 工具仍受会话授权约束。
 
-原生 assistant 输出保留 agy 的 `step_index`、Codex item ID 和 Claude API 的 `message.id`（不是每行 JSONL UUID）。显式消息开始／结束边界让阶段说明、工具和后续回答在实时显示、刷新及取消后保持原生顺序。完成回执只指向最后完成的非空正文消息，不再用整轮聚合文本覆盖此前输出。Codex 推理正文／摘要和 Claude thinking 单独保留为思考内容，不抢占最终答复。当前已公开的 agy headless stream 未暴露思考文本，token 计数和 effort 设置不能替代它。
+原生 assistant 输出保留 agy ACP 的轮次和工具身份、Codex item ID 和 Claude API 的 `message.id`。显式消息开始／结束边界让阶段说明、工具和后续回答在实时显示、刷新及取消后保持原生顺序。完成回执只指向最后完成的非空正文消息，不再用整轮聚合文本覆盖此前输出。agy、Codex 和 Claude 的思考内容与最终答复分别保存。
 
 每次任务拥有自己的原生进程、协议流和 Host bridge。Codex 执行使用前台 app-server，发现使用 daemon/proxy。agy 每次 new/resume 都使用 `--dangerously-skip-permissions`；Codex 每次 open/resume 都必须确认 `never` 审批和 `dangerFullAccess`，每轮也传入相同策略。Claude 使用Maka 指定的会话 UUID 和 `--dangerously-skip-permissions`，先启动真正的空白读屏 PTY。Maka 自动处理原生主题、安全说明和绕过权限确认；仅当信任对话框明确指向本轮已获授权工作区的精确 canonical 路径时才确认信任，由 Claude 自己保存决定，不直接改写全局信任记录。登录仍由用户完成。交互提示和本轮 Host MCP 工具目录均就绪后，逐张粘贴 PNG/JPEG/GIF/WebP 上传的不可变临时文件路径，等待原生图片编号确认，再粘贴文字并只发送一次 Enter。JSONL 接纳必须匹配正文、原生图片标签及完整 image block 数量。终端控制字符转为可见形式，CRLF 归一化；Maka 说明通过独立普通 user 消息传入，不覆盖原生系统提示词；原生接入初始化只做一次，已交付说明摘要持久化，内容不变时不重复提交，变更或清空时明确替代旧说明。原生提问／计划回调仍须使用已捕获的 Host 对应工具；未识别的对话框显式失败，不猜测用户答案。当前提示游标之后的完整 JSONL `turn_duration` 记录仅证明轮次结束，还必须排除 `isApiErrorMessage` API 错误才能判成功；Stop hook、终端重绘、静默和进程退出均不能证明完成。
 
@@ -50,11 +50,9 @@
 
 三家都保留原生系统提示词。捕获的 Maka 说明用 `<maka_system_instructions>` 包裹，作为实际任务之前的一条独立普通 user 消息，不拼进任务正文。Codex 通过原生 `thread/inject_items` 追加该消息，不额外启动模型轮次；Claude 在同一 PTY 确认说明消息及其结果后再提交任务，初始化答复不作为用户任务答案。
 
-agy 发现直接读取原生 `agy models` TSV，保留 Gemini、Claude、GPT-OSS 的完整型号／effort ID；执行使用同一原生 CLI，不走 ACP 或另一套 gateway／账号。会话私有 `--add-dir` 插件携带捕获的 Host MCP 地址与本轮凭据，不修改用户配置或登录。MCP 在首条 user 消息后懒加载：首次先持久化 native ID、开放 Host admission，再发送独立初始化消息；确认目录与初始化结果后才发送实际任务。说明不变时，后续 invocation 直接提交实际任务，由新客户端发现 MCP，不增加初始化模型轮次。累计 `num_turns` 不作为本轮身份。图片按顺序附上临时路径和媒体类型，不指定工具或额外教 Agent 读图，直到物理结算后才清理；原生读图结果可进入模型上下文，但这不证明所选模型一定支持视觉或仍有额度。
+agy 从原生 `agy models` 读取模型目录，从 `/usage` 读取分组额度。执行通过 [agy ACP](https://antigravity.google/docs/ide/extensions/acp/) 新建或续接会话，使用当前登录的账号和原工作区。建连时直接注册本轮 Host MCP，续接时刷新凭据，工具命名空间保持一致，无需额外工作区或 hook。已有 headless 会话沿用原生 ID，旧任务日志仍可回放。Maka 说明在首次交付或变更时通过独立的 user 消息发送，图片通过 ACP image block 传入。工具摘要、思考片段和本轮用量随执行事件记录。
 
-每轮 agy 设置为 `queuedMessages: "send-immediately"`，但 1.5.0 print／stream 分派仍然串行。因此 Unix 上忙时 `SessionSend` 默认采用软中断续接：先持久化后续消息，只向本轮拥有的进程组发送 SIGINT，确认关联原生终态、已接受的 Host 操作结算和物理退出后，再用同一原生 conversation ID 启动排队的新 invocation。旧 invocation 如实标为取消，不冒充原地 steering。显式 `delivery: "queue"` 不中断；缺失终态或必须强制清理时保留未知栅栏，不启动替代执行。当前 Windows 管道没有可安全定向的独立控制台中断，忙时 steering 显式报不支持，可使用 `delivery: "queue"`。不保留 ACP 回退。
-
-[官方 headless 协议](https://antigravity.google/docs/cli/headless/#stream-prompts-from-stdin)定义了每轮结果、累计计数、只接受文本内容块及不支持的控制消息。关闭 stdin 会等待当前轮完成，不能代替中断。私有插件的 Host wrapper 使用原生服务器名 `maka_maka`；其他原生 MCP 工具仍投影活动，DONE 中的 `tool_info.error` 也保留失败状态。
+停止时向 agy 会话发送 `session/cancel`，等对应 prompt 返回终态后再结算任务。排队消息结算后沿用同一个原生会话。无法确认原始终态时，恢复仍按原任务绑定读取其协议日志。
 
 原生协议帧、Claude JSONL 行及经过认证的 Host MCP 请求共用 256 MiB 内存防护边界，不另外限制上传大小或图片张数。20 张各 5 MiB 的图片编码为同一行 base64 就已约 134 MiB。ACK 前事件不再按条数截断，保留预算同样为 256 MiB，每条至少按 1 KiB 计入对象开销。启动和 RPC 确认允许五分钟，Claude 文字确认和 JSONL 接纳还按每 32 KiB 增加一秒。这不是整轮执行时限；用户仍可取消，清理超时和不确定副作用栅栏独立保留。
 

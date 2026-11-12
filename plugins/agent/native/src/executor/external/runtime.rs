@@ -207,7 +207,9 @@ pub(super) fn validate_command(
             NativeRuntime::Antigravity => {
                 matches!(
                     key,
-                    "--approval-mode"
+                    "acp"
+                        | "--process-per-session"
+                        | "--approval-mode"
                         | "--sandbox"
                         | "--mode"
                         | "--yolo"
@@ -437,7 +439,7 @@ async fn execute_observed(
             .await
         }
         NativeRuntime::Antigravity => {
-            agy::execute(
+            agy_acp::execute(
                 config,
                 cwd,
                 &request,
@@ -445,7 +447,6 @@ async fn execute_observed(
                 output,
                 bridge,
                 cancellation.clone(),
-                steering,
                 owner,
             )
             .await
@@ -909,29 +910,6 @@ pub(super) async fn task_pipe<P: PipeProtocol>(
         transport,
         bridge,
         cancellation,
-        false,
-        (owner, observation),
-        protocol,
-    )
-    .await
-}
-
-#[cfg(unix)]
-pub(super) async fn task_interruptible_pipe<P: PipeProtocol>(
-    owner: TaskOwner,
-    observation: Observation,
-    command: maka_process::Command,
-    transport: Transport,
-    bridge: Option<Arc<mcp::Bridge>>,
-    cancellation: CancellationToken,
-    protocol: P,
-) -> Result<P::Output, Error> {
-    pipe_owned(
-        command,
-        transport,
-        bridge,
-        cancellation,
-        true,
         (owner, observation),
         protocol,
     )
@@ -943,7 +921,6 @@ async fn pipe_owned<P: PipeProtocol>(
     transport: Transport,
     bridge: Option<Arc<mcp::Bridge>>,
     cancellation: CancellationToken,
-    interruptible: bool,
     owner: (TaskOwner, Observation),
     protocol: P,
 ) -> Result<P::Output, Error> {
@@ -1013,18 +990,10 @@ async fn pipe_owned<P: PipeProtocol>(
         let observation = observation.clone();
         let settled = settled.clone();
         let cancellation = cancellation.clone();
-        let bridge = bridge.clone();
         tokio::spawn(async move {
             let mut child = process.child;
-            let bounded = original_child_wait(
-                &mut child,
-                &observation,
-                &cancellation,
-                &settled,
-                interruptible,
-                bridge.as_ref(),
-            )
-            .await;
+            let bounded =
+                original_child_wait(&mut child, &observation, &cancellation, &settled).await;
             // The observation may end; the same original child and group remain owned.
             let physical = match bounded {
                 Ok(()) => Ok(()),
@@ -1109,11 +1078,7 @@ async fn pipe_owned<P: PipeProtocol>(
                 parsing: None,
                 encoding: None,
                 events: Default::default(),
-                cancellation: if interruptible {
-                    CancellationToken::new()
-                } else {
-                    cancellation.clone()
-                },
+                cancellation: cancellation.clone(),
                 retired: retired.clone(),
                 stop: cancellation,
                 observation: Some(observation.clone()),
@@ -1231,32 +1196,10 @@ pub(super) async fn original_child_wait(
     observation: &Observation,
     stop: &CancellationToken,
     settled: &CancellationToken,
-    interruptible: bool,
-    bridge: Option<&Arc<mcp::Bridge>>,
 ) -> Result<(), Error> {
     tokio::select! {
         biased;
         status = child.wait() => status.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed),
-        () = stop.cancelled(), if interruptible => {
-            if let Some(bridge) = bridge { bridge.close_admission(); }
-            tokio::select! {
-                status = child.wait() => return status.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed),
-                allowed = observation.control_allowed(stop) => allowed?,
-            }
-            interrupt_original(child).await?;
-            tokio::select! {
-                biased;
-                status = child.wait() => return status.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed),
-                () = settled.cancelled() => {},
-                () = tokio::time::sleep(INTERRUPT_TIMEOUT) => {},
-            }
-            tokio::select! {
-                status = child.wait() => return status.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed),
-                allowed = observation.control_allowed(stop) => allowed?,
-            }
-            child.terminate().await.map_err(|_| Error::CleanupUnconfirmed)?;
-            tokio::time::timeout(Duration::from_secs(4), child.wait()).await.map_err(|_| Error::CleanupUnconfirmed)?.map(|_| ()).map_err(|_| Error::CleanupUnconfirmed)
-        }
         () = settled.cancelled() => {
             match tokio::time::timeout(Duration::from_millis(500), async {
                 tokio::select! {
@@ -1414,21 +1357,6 @@ async fn pipe_unowned<P: PipeProtocol>(
     status?;
     diagnostics?;
     result
-}
-async fn interrupt_original(child: &mut maka_process::pipe::Child) -> Result<(), Error> {
-    #[cfg(unix)]
-    {
-        child
-            .interrupt_group()
-            .await
-            .map(|_| ())
-            .map_err(|_| Error::CleanupUnconfirmed)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = child;
-        Err(Error::CleanupUnconfirmed)
-    }
 }
 pub(super) async fn private_wait(
     child: &mut maka_process::pipe::Child,

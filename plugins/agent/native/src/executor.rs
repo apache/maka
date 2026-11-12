@@ -80,7 +80,6 @@ pub(crate) struct Executors(BTreeMap<String, Backend>);
 pub(super) enum ActiveDelivery {
     Steer,
     InterruptResume,
-    InterruptUnsupported,
     Queue,
 }
 impl Executors {
@@ -185,8 +184,7 @@ impl Executors {
         }
         match accepted.selection.settings.runtime.as_deref() {
             Some("codex" | "claude") => ActiveDelivery::Steer,
-            Some("antigravity") if cfg!(unix) => ActiveDelivery::InterruptResume,
-            Some("antigravity") => ActiveDelivery::InterruptUnsupported,
+            Some("antigravity") => ActiveDelivery::InterruptResume,
             _ => ActiveDelivery::Queue,
         }
     }
