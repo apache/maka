@@ -48,7 +48,7 @@ Start it with the launcher:
 
 Opened directly, from Finder, the Dock or a file manager, the shell has none of these variables. It then runs `maka desktop` from the directory it was staged in, beside `Maka.app` on macOS or beside the shell elsewhere, and exits; that launcher opens the window for the default Root.
 
-Closing the window hides it and keeps its one UI engine and Host client; the tray's Open brings it back. On Linux without a panel that hosts the tray, closing quits instead, and a panel that leaves brings a hidden window back. Quit from the tray, the application menu or the quit key detaches from the Host and exits. The launcher detaches as well, so the Host finishes the work it accepted and stops once no client is left. Cancelling the launcher stops only its shell.
+Closing the window hides it and keeps its one UI engine and Host client; the tray's Open brings it back. On Linux without a panel that hosts the tray, closing quits instead, and a panel that leaves brings a hidden window back. Quit from the tray, the application menu or the quit key closes the desktop and launcher sessions. The last client to quit shuts down an ephemeral Host and settles the work it owns. A shared or managed Host continues serving its clients.
 
 The Linux GTK window restores its normal size and full-screen or maximized state from `clients/desktop-window.json` in the Root. The desktop compositor chooses its position and monitor. GTK provides native menus, file drops, clipboard access, folder dialogs and system notifications. UI reloads pause physical input, drain admitted edits, and resume input after cancellation or replacement. Build prerequisites are listed in [NSH’s Linux guide](../../../third-party/nsh/docs/dev/linux.md).
 

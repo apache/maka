@@ -4188,6 +4188,46 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
     result.unwrap();
 }
 
+#[tokio::test]
+async fn pending_completion_subscription_allows_idle_host_exit() {
+    let mut rig = Rig::new().unwrap();
+    let result: TestResult<()> = async {
+        let session = rig.start().await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        // An unavailable completion can remain durable across Host lifetimes.
+        owner
+            .store
+            .register_message_completion(
+                &owner.prefix,
+                &session,
+                "task",
+                &session,
+                json!({"unavailable": true}),
+            )
+            .await?;
+        rig.client.take().unwrap().close().await?;
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            rig.host
+                .as_ref()
+                .unwrap()
+                .wait_until_idle(Duration::ZERO, Duration::ZERO),
+        )
+        .await??;
+        assert!(
+            owner
+                .store
+                .has_message_completions(&owner.prefix, &session, &session)
+                .await?
+        );
+        Ok(())
+    }
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(result.is_ok(), "{result:?}; {cleanup:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completion_notification_survives_pending_message_edit() {
     use maka_agent_facts::message::{MessageOrigin, RootSourceMessage};

@@ -235,7 +235,7 @@ async fn follow(
         with_running_view(move |view| view.load_with_config(config));
     }
     if let Some(bindings) = bindings {
-        host::detach(bindings, &endpoint, epoch).await;
+        host::quit(bindings).await;
     }
 }
 

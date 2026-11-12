@@ -100,6 +100,9 @@ impl Child {
     }
     pub async fn terminate(&mut self) -> io::Result<()> {
         if let Some(owner) = &mut self.external {
+            if self.group.reaped() {
+                return Ok(());
+            }
             return owner.control(false).await;
         }
         self.group.terminate().map(|_| ())
@@ -154,30 +157,5 @@ impl Child {
                 .external
                 .as_ref()
                 .is_none_or(|owner| owner.io_settled())
-    }
-    /// Finish this external helper observation without waiting for or controlling its Task.
-    /// The caller must close its streams and drop this Child before acknowledging local closure.
-    pub async fn finish_observation(&mut self) -> io::Result<()> {
-        let owner = self.external.as_mut().ok_or_else(|| {
-            io::Error::other("only an original external helper observation can detach")
-        })?;
-        owner.finish_observation_io().await?;
-        if self.proxy.is_some() {
-            return Err(io::Error::other(
-                "original helper observation still owns a proxy",
-            ));
-        }
-        #[cfg(target_os = "linux")]
-        if !matches!(&self.mount_cleanup, crate::command::Cleanup::Complete) {
-            return Err(io::Error::other(
-                "original helper observation still owns mount cleanup",
-            ));
-        }
-        // A cancelled wait may already have reaped the root. Finish that same fence;
-        // Group::wait cannot signal once its original root has been reaped.
-        if self.group.reaped() && !self.group.cleaned() {
-            self.group.wait().await?;
-        }
-        Ok(())
     }
 }

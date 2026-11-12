@@ -417,6 +417,15 @@ impl Client {
     /// A separate epoch-pinned channel also works after losing a control observer;
     /// a partial frame on the original anchor must never receive another command.
     pub async fn quit(&mut self) -> Result<()> {
+        self.request_quit(false).await
+    }
+
+    /// Close a desktop session, retiring a local candidate when it is the last client.
+    pub async fn quit_ephemeral(&mut self) -> Result<()> {
+        self.request_quit(true).await
+    }
+
+    async fn request_quit(&mut self, ephemeral_only: bool) -> Result<()> {
         if self.phase == Phase::Closed {
             return Ok(());
         }
@@ -426,6 +435,7 @@ impl Client {
             Some(self.connected.epoch),
             Request::Quit {
                 session: self.connected.session,
+                ephemeral_only,
             },
         )
         .await?
