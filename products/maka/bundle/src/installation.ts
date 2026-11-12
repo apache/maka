@@ -53,7 +53,12 @@ export function installation(
     });
   add('files', 'readText', 'Read', 'Read text from a file in the selected workspace.');
   add('files', 'readImage', 'ReadImage', 'Read an image in the selected workspace.', 'image');
-  add('files', 'glob', 'Glob', 'Find files in the selected workspace.');
+  add(
+    'files',
+    'glob',
+    'Glob',
+    'Find matching paths in the selected workspace. Returns one sorted page. If complete is false and you need more, pass next_after as after with the same pattern and cwd.',
+  );
   add('files', 'grep', 'Grep', 'Search file contents in the selected workspace.');
   add('files', 'write', 'Write', 'Write a file in the selected workspace.');
   add('files', 'edit', 'Edit', 'Edit a file in the selected workspace.');

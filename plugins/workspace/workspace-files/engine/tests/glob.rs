@@ -36,6 +36,52 @@ fn reader(root: &Path) -> ReadExecutor {
 }
 
 #[tokio::test]
+async fn glob_pages_match_in_order_with_count_and_byte_limits() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let executor = reader(&root);
+    for (cwd, suffix) in [("short", String::new()), ("long", "x".repeat(160))] {
+        fs::create_dir(root.join(cwd)).unwrap();
+        let expected: Vec<_> = (0..270)
+            .map(|index| format!("file-{index:03}{suffix}.txt"))
+            .collect();
+        for path in expected.iter().rev() {
+            fs::write(root.join(cwd).join(path), "").unwrap();
+        }
+        let mut input = json!({"pattern":"*.txt","cwd":cwd});
+        let mut collected = Vec::new();
+        let mut complete = false;
+        for page_index in 0..10 {
+            let page = executor
+                .glob(input.clone(), CancellationToken::new())
+                .await
+                .unwrap();
+            let files = page["files"].as_array().unwrap();
+            assert!(!files.is_empty() && files.len() <= 128);
+            assert!(serde_json::to_vec(&page).unwrap().len() <= 16 * 1024);
+            if page_index == 0 {
+                if cwd == "short" {
+                    assert_eq!(files.len(), 128);
+                } else {
+                    assert!(files.len() < 128);
+                }
+                assert_eq!(page["complete"], false);
+            }
+            collected.extend(files.iter().map(|file| file.as_str().unwrap().to_owned()));
+            if page["complete"] == true {
+                assert!(page.get("next_after").is_none());
+                complete = true;
+                break;
+            }
+            assert_eq!(page.get("next_after"), files.last());
+            input["after"] = page["next_after"].clone();
+        }
+        assert!(complete);
+        assert_eq!(collected, expected);
+    }
+}
+
+#[tokio::test]
 #[cfg(unix)]
 async fn glob_keeps_captured_authority_and_cannot_walk_external_aliases_or_hide_failures() {
     let temp = tempfile::tempdir().unwrap();
