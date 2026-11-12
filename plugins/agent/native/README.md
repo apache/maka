@@ -158,8 +158,9 @@ results, progress, corrections, notification decisions and user feedback across 
 workers with the same Bot source boundary. A changed Bot, workspace, permission revision
 or Recall grant has a different record scope; references never grant source access.
 
-Each worker receives at most three 350-character previews, with record IDs and explicit
-truncation. `get` returns a complete record. `list` returns at most four short previews,
+The investigation opens with references to the previous record and up to six conversations
+from the authorized workspace catalog, when available. It includes IDs and times only.
+`get` returns a complete record. `list` returns at most four short previews,
 examines at most 32 positions per call, and supplies `next_before` even for an empty
 filtered page. Queries can filter by text or the original investigation ID. Correction
 records append to that original record instead of overwriting it. The outcome, completed

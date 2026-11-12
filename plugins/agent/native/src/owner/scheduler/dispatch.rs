@@ -338,7 +338,9 @@ impl Owner {
     ) -> Result<Option<Run>, String> {
         let active = plan.task.status == Status::Active;
         if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
-            return self.dispatch_discovery(fire, active, &plan.timezone).await;
+            return self
+                .dispatch_discovery(fire, active, &plan.timezone, plan.task.runs.first())
+                .await;
         }
         let Some(Approval::Execution { approval }) = &fire.authorization else {
             return Ok(Some(settlement(

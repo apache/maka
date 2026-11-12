@@ -493,6 +493,7 @@ impl Owner {
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
         enabled: bool,
         timezone: &str,
+        previous: Option<&Run>,
     ) -> Result<Option<Run>, String> {
         if let Some(record) = self
             .scheduler
@@ -512,6 +513,7 @@ impl Owner {
         if current.as_ref().is_some_and(|j| j.fire_id != fire.id) {
             return Ok(None);
         }
+        let new_job = current.is_none();
         let mut job = if let Some(job) = current {
             job
         } else {
@@ -539,7 +541,7 @@ impl Owner {
                 &approval.target.workspace.path,
                 timezone,
             ));
-            let job = Job {
+            Job {
                 fire_id: fire.id.clone(),
                 task_id: fire.task_id.clone(),
                 bot: approval.target.session_id.clone(),
@@ -552,15 +554,28 @@ impl Owner {
                 execution: None,
                 phase: Phase::Investigating { result: None },
                 checkpoint: None,
-            };
+            }
+        };
+        let authorized = self.discovery_authorized(&job).await;
+        if new_job {
+            if enabled
+                && authorized.is_ok()
+                && matches!(
+                    fire.authorization,
+                    Some(scheduler::Approval::Discovery { .. })
+                )
+            {
+                job.input
+                    .text
+                    .push_str(&self.discovery_opening(&job, previous).await?);
+            }
             revision = Some(
                 self.scheduler
                     .save_investigation(revision, &job)
                     .await
                     .map_err(reason)?,
             );
-            job
-        };
+        }
         if self.discovery_worker_retired(&job).await? {
             self.retract_discovery_report(&job).await?;
             job.phase = Phase::Stopping;
@@ -575,7 +590,6 @@ impl Owner {
                 .await
                 .map(Some);
         }
-        let authorized = self.discovery_authorized(&job).await;
         if matches!(job.phase, Phase::Stopping)
             || !enabled
             || matches!(

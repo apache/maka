@@ -20,7 +20,7 @@
 use super::*;
 use jiff::{Timestamp, tz::TimeZone};
 use maka_agent_ports::session::history::{Cursor, HistoryView, Role};
-use maka_agent_state::session_catalog::{Filter, Position};
+use maka_agent_state::session_catalog::{Filter, Page, Position};
 use maka_capabilities::call::Identity;
 use maka_event_log::sessions::{CatalogFilter, CatalogScope, CatalogSelection, MAX_SESSION_PAGE};
 
@@ -116,6 +116,46 @@ impl scheduler::Scheduler {
 }
 
 impl Owner {
+    pub(super) async fn discovery_opening(
+        &self,
+        job: &Job,
+        previous: Option<&Run>,
+    ) -> Result<String, String> {
+        let last_investigation = self.scheduler.opening_reference(job, previous).await?;
+        let mut recent = Vec::new();
+        if job.recall {
+            let page = self
+                .discovery_conversation_page(&job.approval.target, None)
+                .await?;
+            recent.extend(page.sessions.into_iter().filter_map(|record| {
+                let at = record.last_message?.recorded_at;
+                Some((at, record.metadata.id))
+            }));
+            recent.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        }
+        if last_investigation.is_none() && recent.is_empty() {
+            return Ok(String::new());
+        }
+        let recent_conversations: Vec<_> = recent.into_iter().take(6)
+            .map(|(at, session_id)| serde_json::json!({"session_id":session_id,"last_message_at":timestamp(at)}))
+            .collect();
+        let guidance = match job.approval.language {
+            Language::ZhCn => {
+                "调查开场引用。可用 DiscoveryMemory 和已获准的会话历史工具按需读取。近期会话仅提供调查入口，可以继续查找其他相关资料。"
+            }
+            Language::ZhTw => {
+                "調查開場引用。可用 DiscoveryMemory 和已獲准的對話歷史工具按需讀取。近期對話僅提供調查入口，可以繼續尋找其他相關資料。"
+            }
+            _ => {
+                "Discovery opening references. Use DiscoveryMemory and authorized conversation history as needed. Recent conversations are starting points. Continue exploring other relevant material."
+            }
+        };
+        Ok(format!(
+            "\n\n{guidance}\n{}",
+            serde_json::json!({"last_investigation":last_investigation,"recent_conversations":recent_conversations})
+        ))
+    }
+
     async fn discovery_context(
         &self,
         context: ToolCallContext,
@@ -188,12 +228,36 @@ impl Owner {
         job: &Job,
         after: Option<SessionCursor>,
     ) -> Result<Value, String> {
-        let target = &job.approval.target;
+        let page = self
+            .discovery_conversation_page(&job.approval.target, after)
+            .await?;
+        let sessions: Vec<_> = page.sessions.into_iter()
+            .map(|record| serde_json::json!({
+                "session_id": record.metadata.id,
+                "title": record.metadata.configuration["title"],
+                "last_message_at": record.last_message.and_then(|last| timestamp(last.recorded_at)),
+                "archived": record.metadata.archived,
+            }))
+            .collect();
+        let after = page.next_cursor.map(|cursor| {
+            serde_json::json!({
+                "revision": page.revision,
+                "cursor": cursor,
+            })
+        });
+        Ok(serde_json::json!({"sessions": sessions, "after": after}))
+    }
+
+    async fn discovery_conversation_page(
+        &self,
+        target: &ScheduledTarget,
+        after: Option<SessionCursor>,
+    ) -> Result<Page, String> {
         let (revision, position) = match after {
             None => (None, Position::Start),
             Some(after) => (Some(after.revision), Position::After(after.cursor)),
         };
-        let page = self
+        let mut page = self
             .canonical_catalog()?
             .page(
                 CatalogScope::Owned {
@@ -218,23 +282,14 @@ impl Owner {
             )
             .await
             .map_err(reason)?;
-        let sessions: Vec<_> = page.sessions.into_iter()
-            .filter(|record| record.metadata.workspace_binding.as_ref()
-                .is_some_and(|binding| binding.stamp() == target.binding))
-            .map(|record| serde_json::json!({
-                "session_id": record.metadata.id,
-                "title": record.metadata.configuration["title"],
-                "last_message_at": record.last_message.and_then(|last| timestamp(last.recorded_at)),
-                "archived": record.metadata.archived,
-            }))
-            .collect();
-        let after = page.next_cursor.map(|cursor| {
-            serde_json::json!({
-                "revision": page.revision,
-                "cursor": cursor,
-            })
+        page.sessions.retain(|record| {
+            record
+                .metadata
+                .workspace_binding
+                .as_ref()
+                .is_some_and(|binding| binding.stamp() == target.binding)
         });
-        Ok(serde_json::json!({"sessions": sessions, "after": after}))
+        Ok(page)
     }
 
     async fn discovery_history(

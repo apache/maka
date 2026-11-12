@@ -414,6 +414,8 @@ async fn discovery_uses_approved_session_tools_and_retains_progress_after_reopen
     let prompt = body.to_string();
     assert!(prompt.contains("+00:00") && prompt.contains("Workspace:"));
     assert!(!prompt.contains("In-scope project discussion") && !prompt.contains("workspaceFiles"));
+    assert!(prompt.contains("Discovery opening references") && prompt.contains(&sessions[0]));
+    assert!(!prompt.contains(&sessions[1]) && !prompt.contains("Venue access requires a badge."));
     let names: Vec<_> = body["tools"]
         .as_array()
         .unwrap()
@@ -504,11 +506,13 @@ async fn discovery_uses_approved_session_tools_and_retains_progress_after_reopen
     f.reopen().await;
     f.change(&task, "trigger_now").await;
     let (mut socket, body) = next(&listener).await;
-    assert!(body.to_string().contains("authorized broad exploration"));
-    assert!(!body.to_string().contains(&note));
+    let prompt = body.to_string();
+    assert!(prompt.contains("authorized broad exploration") && prompt.contains(&sessions[0]));
+    assert!(!prompt.contains(&note) && !prompt.contains(&sessions[1]));
     let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
     let preview = &page["records"][0];
     assert_eq!(preview["kind"], "investigation");
+    assert!(prompt.contains(preview["id"].as_str().unwrap()));
     assert_eq!(
         preview["preview"],
         note.chars().take(160).collect::<String>()
