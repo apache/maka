@@ -38,4 +38,4 @@ Agent 服务提供 `presets`、`preset`、`createPreset`、`updatePreset` 和 `d
 
 修改和删除必须提供 `expectedRevision`。修改时省略字段表示保留；`instruction: ""` 清空指令，`thinkingLevel: {"kind":"default"}` 恢复模型默认，`{"kind":"set","value":"high"}` 设置思考强度。修改模型或思考强度时校验原生模型；连接失效后仍可修改其他字段或删除。名称去除首尾空白，并在作用域内保证唯一。
 
-持久化变更与返回结果通过 Host 操作日志原子提交。丢失响应时恢复原操作引用，不重新提交变更。目前仅提供管理服务接口，尚未注册对话工具或将预设应用于会话。
+持久化变更与返回结果通过 Host 操作日志原子提交。丢失响应时恢复原操作引用，不重新提交变更。默认产品通过 `SubagentPresetList/Read/Create/Update/Delete` 暴露这些方法。`SessionCreate` 按 ID 应用预设，`SessionSend` 提供本次任务。

@@ -136,3 +136,11 @@ npm --workspace @maka-agent/product test
 ```
 
 The npm tests check complete Host/UI packages and tool presentation declarations using the lightweight compiler. `cargo test --locked -p maka-cli --test integration product_composition::` checks business composition through the actual CLI, without Node at runtime. Native rendering, focus and input changes belong to their shell tests.
+
+## Reusable subagents in conversation
+
+For example, ask: “Create a reusable Reviewer role for code review, using my local connection and llama3.2. Its instruction is: report defects with file and line references.” If the connection or model is ambiguous, resolve it with `ModelList` before saving. `SubagentPresetCreate` returns the actual saved configuration and stable ID; the initial catalog is empty. Only an explicit request to save or change a role persists configuration.
+
+Next ask: “Use Reviewer to review this branch; focus on cancellation for this task.” Discover the role through `SubagentPresetList`, select an available entry by name and description, and pass its ID as `SessionCreate.presetId` without `backend`. Send the current task and context through `SessionSend`, omitting `backend` to preserve the role model. Description helps select a role, instruction guides execution, and the task carries one-off requirements. Full instructions are read on demand with `SubagentPresetRead`, not injected into every parent turn. An unavailable explicit role produces a specific error; without an explicit role, ordinary delegation remains available.
+
+Finally ask: “For future Reviewer tasks, change only the output instruction to a Markdown defect list.” Read its revision and use `SubagentPresetUpdate` with only `id`, `expectedRevision` and `instruction`; an empty string clears it. Use `enabled` to disable/enable, or `SubagentPresetDelete` to delete the requested role. Existing sessions retain their snapshots. Disabled or invalid roles remain readable and repairable. On conflict, re-read and reconcile; only `saved`/`deleted` confirms a mutation. Recover unknown outcomes using the original operation receipt rather than issuing a new mutation or task. Presets do not grant tools, permissions or delegation capabilities.

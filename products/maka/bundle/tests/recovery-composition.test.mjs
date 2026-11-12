@@ -217,3 +217,26 @@ test('the built default installation nests service tools except computer REPL an
     assert.ok(nested.has(expected), `expected ${expected} to be nestable`);
   }
 });
+
+test('preset tools bind shared Agent methods and recoverable product grants', () => {
+  const tools = instances.agent.configuration.values.tools;
+  for (const [name, method] of [
+    ['SubagentPresetList', 'presets'],
+    ['SubagentPresetRead', 'preset'],
+    ['SubagentPresetCreate', 'createPreset'],
+    ['SubagentPresetUpdate', 'updatePreset'],
+    ['SubagentPresetDelete', 'deletePreset'],
+  ]) {
+    const selected = tools.filter((tool) => tool.name === name);
+    assert.equal(selected.length, 1);
+    assert.deepEqual(selected[0].target, { kind: 'export', name: 'agent' });
+    assert.equal(selected[0].method, method);
+    assert.equal(selected[0].nestable, true);
+    assert.ok(source.endpoints.agent.grant.methods.includes(method));
+    assert.deepEqual(
+      built.agent.manifest.application.host.exports.agent.contract.interface.methods[method],
+      contracts.agent.interface.methods[method],
+    );
+  }
+  assert.equal(source.endpoints.agent.grant.recovery, true);
+});

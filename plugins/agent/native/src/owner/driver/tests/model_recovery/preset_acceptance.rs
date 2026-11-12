@@ -247,7 +247,17 @@ async fn tool_round(
             "stop",
         ))
         .map_err(|_| "final response lost")?;
-    quiescent_message(client, session, &sent["messageId"]).await?;
+    match tokio::time::timeout(
+        Duration::from_secs(20),
+        quiescent_message(client, session, &sent["messageId"]),
+    )
+    .await
+    {
+        Ok(result) => {
+            result?;
+        }
+        Err(_) => return Err(format!("after {name}: {}", diagnostic(rig, session).await?).into()),
+    }
     Ok(output)
 }
 
@@ -867,4 +877,127 @@ async fn diagnostic(rig: &Rig, id: &str) -> TestResult<Value> {
         vec![]
     };
     Ok(json!({"observation":observed,"facts":history}))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn product_preset_tools_manage_and_delegate_directly() -> TestResult<()> {
+    product_preset_tools(false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn product_preset_tools_manage_and_delegate_in_code_mode() -> TestResult<()> {
+    product_preset_tools(true).await
+}
+
+async fn product_preset_tools(code: bool) -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(240), async {
+        let base = rig.directory.path().to_path_buf();
+        // Read the product declarations, so a renamed or unregistered tool breaks this route.
+        let root = std::env::current_dir()?.join("../../..");
+        let output = tokio::process::Command::new("node").current_dir(root)
+            .args(["--input-type=module", "-e", "import {installation} from './products/maka/bundle/src/installation.ts'; console.log(JSON.stringify(installation({workspace:process.cwd(),helper:'test'}).agent.tools.filter(t=>t.target.kind==='export' && t.target.name==='agent')))"])
+            .output().await?;
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let tools: Value = serde_json::from_slice(&output.stdout)?;
+        let boot = bootstrap_with(&base,provider.url.clone(),|config| {config["tools"] = tools; config["toolDiscovery"] = json!(true);}).await?;
+        attach(&mut rig,&boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model_options(client,&provider.url,code,json!({"contextWindow":128000,"compactionThreshold":100000})).await?;
+        let parent = create(client,&base,&model,None).await?;
+        let parent_id = parent["id"].as_str().unwrap();
+        for restricted in [false, true] {
+            let session = if restricted {
+                call(client,"agent","create",json!({"title":"No preset tools","labels":[],
+                    "tools":[],"backend":{"kind":"model","connectionId":model["connectionId"],"modelId":model["modelId"]},
+                    "workspace":{"kind":"session","sessionId":parent_id}})).await?["session"].clone()
+            } else { parent.clone() };
+            let id = session["id"].as_str().unwrap();
+            let sent = call(client,"agent","send",json!({"sessionId":id,"message":"Hello"})).await?;
+            let (request,reply) = provider.next().await?;
+            let system = request["messages"].as_array().unwrap().iter()
+                .filter(|m| m["role"] == "system" || m["role"] == "developer")
+                .filter_map(|m|m["content"].as_str()).collect::<Vec<_>>().join("\n");
+            assert_eq!(system.contains("SubagentPresetCreate"), !restricted, "{system}");
+            if !restricted { assert!(system.contains("ALL_TOOLS")); }
+            reply.send(completion(json!({"role":"assistant","content":"Hello"}),"stop")).map_err(|_|"reply lost")?;
+            quiescent_message(client,id,&sent["messageId"]).await?;
+        }
+        if code {
+            let output = tool_round(&rig,&mut provider,parent_id,false,"exec",json!({"code":"text(ALL_TOOLS.map(t => t.name));"})).await?;
+            for name in ["SubagentPresetList", "SubagentPresetRead", "SubagentPresetCreate", "SubagentPresetUpdate", "SubagentPresetDelete", "SessionCreate", "SessionSend"] {
+                assert!(output.contains(name),"{output}");
+            }
+        } else {
+            for query in ["SubagentPreset", "SessionCreate", "SessionSend"] {
+                tool_round(&rig,&mut provider,parent_id,false,"tool_search",json!({"query":query,"limit":20})).await?;
+            }
+        }
+        let input = json!({"name":"Reviewer","description":"Review code","instruction":"original","model":model});
+        let output = tool_round(&rig,&mut provider,parent_id,code,"SubagentPresetCreate",input.clone()).await?;
+        assert!(output.contains("saved"),"{output}");
+        let list = call(client,"agent","presets",json!({})).await?;
+        let id = list[0]["id"].clone();
+        assert_eq!(list.as_array().unwrap().len(),1);
+        assert!(list[0].get("instruction").is_none());
+        let duplicate = tool_round(&rig,&mut provider,parent_id,code,"SubagentPresetCreate",input).await?;
+        assert!(duplicate.contains("nameConflict"),"{duplicate}");
+        let output = tool_round(&rig,&mut provider,parent_id,code,"SubagentPresetList",json!({})).await?;
+        assert!(output.contains("Reviewer") && !output.contains("original"),"{output}");
+        let before = call(client,"agent","preset",json!({"id":id})).await?["preset"].clone();
+        let role = "# Product reviewer\nOnly analyze. **Keep full instructions**. 中文\n";
+        for (revision, patch) in [(1,json!({"instruction":role})),(2,json!({"enabled":false})),(3,json!({"enabled":true}))] {
+            let mut input = json!({"id":id,"expectedRevision":revision});
+            input.as_object_mut().unwrap().extend(patch.as_object().unwrap().clone());
+            let output = tool_round(&rig,&mut provider,parent_id,code,"SubagentPresetUpdate",input).await?;
+            assert!(output.contains("saved"),"{output}");
+            if revision == 1 {
+                let mut expected = before.clone(); expected["instruction"] = json!(role); expected["revision"] = json!(2);
+                assert_eq!(call(client,"agent","preset",json!({"id":id})).await?["preset"],expected);
+            }
+            if revision == 2 {
+                let output = tool_round(&rig,&mut provider,parent_id,code,"SessionCreate",json!({"presetId":id,"title":"Unavailable worker","labels":[],"workspace":{"kind":"session","sessionId":parent_id}})).await?;
+                assert!(output.contains("preset_disabled"),"{output}");
+            }
+        }
+        let output = tool_round(&rig,&mut provider,parent_id,code,"SubagentPresetUpdate",json!({"id":id,"expectedRevision":1,"instruction":"stale"})).await?;
+        assert!(output.contains("conflict"),"{output}");
+        let output = tool_round(&rig,&mut provider,parent_id,code,"SubagentPresetRead",json!({"id":id})).await?;
+        assert!(output.contains("Product reviewer"),"{output}");
+        let output = tool_round(&rig,&mut provider,parent_id,code,"SessionCreate",json!({"presetId":id,"title":"Product worker","labels":[],"workspace":{"kind":"session","sessionId":parent_id}})).await?;
+        assert!(output.contains("created"),"{output}");
+        let listed = call(client,"agent","list",json!({"filter":"all","position":{"kind":"start"},"scope":{"kind":"children","sessionId":parent_id}})).await?;
+        let child = listed["sessions"][0]["id"].as_str().ok_or_else(||format!("child missing: {listed}"))?;
+        let sent = call(client,"agent","send",json!({"sessionId":parent_id,"message":"Delegate this one-off task"})).await?;
+        let (_,reply) = provider.next().await?;
+        let input = json!({"sessionId":child,"message":"one-off product task"});
+        reply.send(if code {tool_response("exec",json!({"code":format!("text(await tools.SessionSend({input}));")}))} else {tool_response("SessionSend",input)}).map_err(|_|"send response lost")?;
+        let mut saw_child = false;
+        let mut saw_parent = false;
+        while !saw_child || !saw_parent {
+            let (request,reply) = provider.next().await?;
+            let text = text_messages(&request);
+            if text.contains(role) {
+                assert_eq!(text.matches(role).count(),1);
+                assert!(text.contains("one-off product task"));
+                assert_eq!(request["model"],model["modelId"]);
+                saw_child = true;
+            } else { saw_parent = true; }
+            reply.send(completion(json!({"role":"assistant","content":"Finished."}),"stop")).map_err(|_|"reply lost")?;
+        }
+        quiescent_message(client,parent_id,&sent["messageId"]).await?;
+        let output = tool_round(&rig,&mut provider,parent_id,code,"SubagentPresetUpdate",json!({"id":id,"expectedRevision":4,"instruction":""})).await?;
+        assert!(output.contains("saved"),"{output}");
+        assert_eq!(call(client,"agent","preset",json!({"id":id})).await?["preset"]["instruction"],"");
+        let output = tool_round(&rig,&mut provider,parent_id,code,"SubagentPresetDelete",json!({"id":id,"expectedRevision":5})).await?;
+        assert!(output.contains("deleted"),"{output}");
+        assert_eq!(call(client,"agent","preset",json!({"id":id})).await?,Value::Null);
+        Ok::<_,Box<dyn Error + Send + Sync>>(())
+    })).catch_unwind().await;
+    drop(provider);
+    let cleanup = rig.finish().await;
+    assert!(matches!(result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
 }
