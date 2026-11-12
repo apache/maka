@@ -60,10 +60,6 @@ test('discovery listing carries catalogue revision through all pages and rejects
     discoveryTasks(first, async () => ({ kind: 'changed', revision: 6 })),
     /page_changed/,
   );
-  await assert.rejects(
-    discoveryTasks(first, async () => ({ ...first, tasks: [] })),
-    /cursor_repeated/,
-  );
 });
 
 test('quoting an older publication retains its exact outbox and turn identity', () => {

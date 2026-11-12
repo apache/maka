@@ -421,6 +421,7 @@ impl Rig {
         let methods: &[&str] = if model_test {
             &[
                 "create",
+                "history",
                 "models",
                 "observe",
                 "predictNextMessage",

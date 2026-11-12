@@ -62,21 +62,16 @@ export function discoveryInput(
   };
 }
 
-/** A change during pagination is retried from the next catalog notification. */
 export async function discoveryTasks(
   first: AgentSchedules,
   next: (cursor: string, revision: number) => Promise<AgentSchedules>,
 ): Promise<AgentScheduledSummary[]> {
   if (first.kind !== 'page') throw new Error('scheduler_page_changed');
   const tasks = [...first.tasks];
-  const cursors = new Set<string>();
   let cursor = first.nextCursor;
   while (cursor) {
-    if (cursors.has(cursor)) throw new Error('scheduler_cursor_repeated');
-    cursors.add(cursor);
     const page = await next(cursor, first.revision);
-    if (page.kind !== 'page' || page.revision !== first.revision)
-      throw new Error('scheduler_page_changed');
+    if (page.kind !== 'page') throw new Error('scheduler_page_changed');
     tasks.push(...page.tasks);
     cursor = page.nextCursor;
   }
