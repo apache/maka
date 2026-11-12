@@ -34,9 +34,6 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(listener: &TcpListener) -> Self {
-        Self::new_bound(listener, false).await
-    }
-    async fn new_bound(listener: &TcpListener, project: bool) -> Self {
         let mut rig = Rig::new().unwrap();
         let base = rig.directory.path().to_path_buf();
         let mut boot = bootstrap(
@@ -60,8 +57,10 @@ impl Fixture {
             .unwrap()
             .configuration
             .values;
-        std::fs::create_dir_all(base.join("other-workspace")).unwrap();
-        config.insert("workspaceRoots".into(),json!([{"label":"source","path":base.join("workspace")},{"label":"destination","path":base.join("other-workspace")} ]));
+        config.insert(
+            "workspaceRoots".into(),
+            json!([{"label":"source","path":base.join("workspace")}]),
+        );
         config.insert("bot".into(), json!(true));
         config.insert("scheduledTasks".into(), json!(true));
         config.insert("recall".into(), json!(true));
@@ -94,21 +93,7 @@ impl Fixture {
         let connection=call(client,"settings","create",json!({"expectedCatalogRevision":catalog["revision"],"connection":{"slug":"discovery","name":"Discovery fixture","provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},"configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2"],"modelOverrides":{"llama3.2":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}})).await.unwrap();
         assert_eq!(connection["kind"], "committed");
         let model = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2","thinkingLevel":null});
-        let path = base.join("workspace");
-        let workspace = if project {
-            let registered = call(
-                client,
-                "agent",
-                "project",
-                json!({"kind":"register","path":path,"expected":null}),
-            )
-            .await
-            .unwrap();
-            assert_eq!(registered["kind"], "committed", "{registered}");
-            json!({"kind":"project","project":registered["project"]["reference"],"path":path})
-        } else {
-            json!({"kind":"directory","path":path})
-        };
+        let workspace = json!({"kind":"directory","path":base.join("workspace")});
         let opened = call(client, "agent", "openBot", json!({"workspace":workspace}))
             .await
             .unwrap();
@@ -717,32 +702,6 @@ async fn discovery_recovery_delivers_an_authorized_notification_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_completion_is_not_offered_to_an_ordinary_session() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let created=f.query("create",json!({"title":"Ordinary control","automaticTitle":false,"labels":[],"tools":["DiscoveryComplete"],"workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}})).await;
-    let session = created["session"]["id"].as_str().unwrap();
-    f.query(
-        "send",
-        json!({"sessionId":session,"message":"Hello","backend":f.model,"delivery":"queue"}),
-    )
-    .await;
-    let (mut socket, body) = next(&listener).await;
-    let names: Vec<_> = body["tools"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|t| t["function"]["name"].as_str().unwrap())
-        .collect();
-    assert!(!names.contains(&"DiscoveryComplete"), "{names:?}");
-    finish_text(&mut socket, "Ordinary answer").await;
-    tokio::time::timeout(Duration::from_secs(45), f.quiescent(session))
-        .await
-        .expect("ordinary Run did not settle before Host teardown");
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn disabled_bot_blocks_an_approved_discovery_without_calling_a_model() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
@@ -766,10 +725,17 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
     let proposal = json!({"request":{"mode":"create","title":"Proposed discovery","intentBody":"Check authorized documents","effect":"discovery","schedule":{"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000},"timezone":"UTC"}});
-    let created=f.query("create",json!({"title":"Ordinary proposer","automaticTitle":false,"labels":[],"tools":["ScheduledTask"],"workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}})).await;
+    let created=f.query("create",json!({"title":"Ordinary proposer","automaticTitle":false,"labels":[],"tools":["ScheduledTask","DiscoveryComplete"],"workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}})).await;
     let session = created["session"]["id"].as_str().unwrap();
     f.query("send",json!({"sessionId":session,"message":"Propose a discovery","backend":f.model,"delivery":"queue"})).await;
-    let (mut socket, _) = next(&listener).await;
+    let (mut socket, body) = next(&listener).await;
+    assert!(
+        body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tool| tool["function"]["name"] != "DiscoveryComplete")
+    );
     tool(&mut socket, "ScheduledTask", proposal.clone()).await;
     let (mut socket, body) = next(&listener).await;
     assert!(
@@ -777,6 +743,7 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
         "{body}"
     );
     finish_text(&mut socket, "Cannot propose discovery here").await;
+    f.quiescent(session).await;
     assert_eq!(
         f.query("schedules", json!({"kind":"list"})).await["tasks"],
         json!([])

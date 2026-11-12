@@ -148,6 +148,18 @@ impl scheduler::Scheduler {
         *self.investigation.write().unwrap() = Some(job.worker.clone());
         Ok(records[0].revision)
     }
+    async fn has_active_fire(&self, job: &Job) -> Result<bool, String> {
+        Ok(self.change_basis(&job.task_id).await?.is_some_and(|saved| {
+            saved.plan.task.status == maka_scheduler::task::Status::Active
+                && saved.plan.pending.as_ref().is_some_and(|fire| {
+                    fire.id == job.fire_id
+                        && matches!(
+                            fire.authorization,
+                            Some(scheduler::Approval::Discovery { .. })
+                        )
+                })
+        }))
+    }
     pub(super) fn discovery_tool(self: &Arc<Self>) -> ToolRegistration {
         ToolRegistration {
             definition: ToolDefinition {
@@ -212,20 +224,7 @@ impl Owner {
             return Ok(());
         };
         let authorized = self.discovery_authorized(&job).await;
-        let pending = self
-            .scheduler
-            .change_basis(&job.task_id)
-            .await?
-            .is_some_and(|saved| {
-                saved.plan.task.status == maka_scheduler::task::Status::Active
-                    && saved.plan.pending.as_ref().is_some_and(|fire| {
-                        fire.id == job.fire_id
-                            && matches!(
-                                fire.authorization,
-                                Some(scheduler::Approval::Discovery { .. })
-                            )
-                    })
-            });
+        let pending = self.scheduler.has_active_fire(&job).await?;
         if matches!(job.phase, Phase::Stopping)
             || !pending
             || authorization_revoked(&authorized)
@@ -328,14 +327,7 @@ impl Owner {
             return Err("discovery_execution_changed".into());
         }
         self.discovery_authorized(job).await?;
-        let catalog = self.scheduler.load().await?;
-        if !catalog.plans.get(&job.task_id).is_some_and(|p| {
-            p.plan.task.status == maka_scheduler::task::Status::Active
-                && p.plan.pending.as_ref().is_some_and(|f| {
-                    f.id == job.fire_id
-                        && matches!(f.authorization, Some(scheduler::Approval::Discovery { .. }))
-                })
-        }) {
+        if !self.scheduler.has_active_fire(job).await? {
             return Err("discovery_cancelled".into());
         }
         Ok(())
