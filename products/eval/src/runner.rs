@@ -55,8 +55,8 @@ pub enum RunnerError {
 pub struct RetryPolicy {
     /// Maximum automatic retries for `infra_failed` attempts within a single run (`0` = single try per invocation).
     pub max_infra_retries: u32,
-    /// When `true` (default), an `indeterminate` outcome with unconfirmed resource cleanup
-    /// blocks automatic resubmission in the same run until cleanup is confirmed.
+    /// Stop in-run retries for indeterminate outcomes even when cleanup was confirmed.
+    /// Unconfirmed cleanup always blocks admission, including in later runs.
     pub block_automatic_retry_on_indeterminate: bool,
 }
 
@@ -133,6 +133,7 @@ fn settle_interrupted_attempt(
                 verifier_outcome: VerifierOutcome::Skipped,
                 usage: unsettled.latest_usage.clone(),
                 metering_state: unsettled.latest_metering_state,
+                pricing: None,
                 cleanup_state: CleanupState::Confirmed,
                 audit_state: EgressAuditState::NotRequired,
                 critical_artifacts_state: CriticalArtifactsState::Present,
@@ -160,6 +161,7 @@ fn settle_interrupted_attempt(
                 verifier_outcome: VerifierOutcome::Skipped,
                 usage: unsettled.latest_usage.clone(),
                 metering_state: unsettled.latest_metering_state,
+                pricing: None,
                 cleanup_state: if confirmed {
                     CleanupState::Confirmed
                 } else {
@@ -191,6 +193,7 @@ fn settle_interrupted_attempt(
             verifier_outcome: VerifierOutcome::Skipped,
             usage: unsettled.latest_usage.clone(),
             metering_state: unsettled.latest_metering_state,
+            pricing: None,
             cleanup_state: CleanupState::Unconfirmed {
                 reason: "executor cleanup did not settle".into(),
             },
@@ -297,6 +300,8 @@ pub async fn run_experiment(
         subject.validate(cell)?;
     }
 
+    recover_unsettled_attempts(input.store, &ConservativeCleanupProbe, (input.now_ms)())?;
+
     input
         .environment
         .preflight(&credential_names, input.cancel.clone())
@@ -348,8 +353,8 @@ pub async fn run_experiment(
                         }
                         let (should_run, next_seq, started_at) = {
                             let _g = store_mutex.lock().await;
-                            let attempts = match store.list_v1(&cell.id) {
-                                Ok(a) => a,
+                            let mut state = match store.reconstruct_state() {
+                                Ok(state) => state,
                                 Err(e) => {
                                     let mut slot = err_slot.lock().await;
                                     if slot.is_none() {
@@ -361,6 +366,14 @@ pub async fn run_experiment(
                             if cancel.is_cancelled() {
                                 return;
                             }
+                            if state.settled_v2.get(&cell.id).is_some_and(|records| {
+                                records.iter().any(|record| {
+                                    matches!(record.cleanup_state, CleanupState::Unconfirmed { .. })
+                                })
+                            }) {
+                                return;
+                            }
+                            let attempts = state.settled_v1.remove(&cell.id).unwrap_or_default();
                             if select_cell_result(&attempts).is_some() {
                                 (false, 0, 0)
                             } else {
@@ -377,14 +390,20 @@ pub async fn run_experiment(
                                     return;
                                 }
                                 let trial_id = harbor_trial_name_for_attempt(&cell.id, seq);
-                                let _ = store.record_resource_tagged(
+                                if let Err(e) = store.record_resource_tagged(
                                     &cell.id,
                                     seq,
                                     env.kind(),
                                     &trial_id,
                                     None,
                                     None,
-                                );
+                                ) {
+                                    let mut slot = err_slot.lock().await;
+                                    if slot.is_none() {
+                                        *slot = Some(RunnerError::Store(e));
+                                    }
+                                    return;
+                                }
                                 (true, seq, started)
                             }
                         };
@@ -492,6 +511,20 @@ async fn execute_cell_v2(
                     let mut ctx = active_attempt.context();
                     ctx.cancel = cancel_for_inner.clone();
                     let subject_exec = subject.execute(&cell_for_inner, ctx).await;
+                    let pricing = match cell_for_inner.subject.kind {
+                        SubjectKind::Maka => cell_for_inner
+                            .subject
+                            .config
+                            .get("model")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|model| crate::contract::PricingEvidence::Model {
+                                model: model.to_owned(),
+                                cost_usd: subject_exec.cost_usd,
+                            }),
+                        SubjectKind::External => subject_exec.cost_usd.map(|cost_usd| {
+                            crate::contract::PricingEvidence::SubjectReported { cost_usd }
+                        }),
+                    };
 
                     if cancel_for_inner.is_cancelled()
                         || matches!(
@@ -516,6 +549,7 @@ async fn execute_cell_v2(
                             verifier_outcome: VerifierOutcome::Skipped,
                             usage: subject_exec.usage,
                             metering_state: subject_exec.metering_state,
+                            pricing: pricing.clone(),
                             cleanup_state: CleanupState::Confirmed,
                             audit_state: EgressAuditState::NotRequired,
                             critical_artifacts_state: CriticalArtifactsState::Present,
@@ -559,6 +593,7 @@ async fn execute_cell_v2(
                                 verifier_outcome,
                                 usage: subject_exec.usage,
                                 metering_state: subject_exec.metering_state,
+                                pricing: pricing.clone(),
                                 cleanup_state: CleanupState::Confirmed,
                                 audit_state,
                                 critical_artifacts_state: CriticalArtifactsState::Present,
@@ -584,6 +619,7 @@ async fn execute_cell_v2(
                             },
                             usage: subject_exec.usage,
                             metering_state: subject_exec.metering_state,
+                            pricing: pricing.clone(),
                             cleanup_state: CleanupState::Confirmed,
                             audit_state,
                             critical_artifacts_state: CriticalArtifactsState::Present,
@@ -623,6 +659,7 @@ async fn execute_cell_v2(
                 verifier_outcome: VerifierOutcome::Skipped,
                 usage: None,
                 metering_state: MeteringState::Unknown,
+                pricing: None,
                 cleanup_state: CleanupState::Confirmed,
                 audit_state: EgressAuditState::NotRequired,
                 critical_artifacts_state: CriticalArtifactsState::Present,
@@ -668,6 +705,7 @@ async fn execute_cell_v2(
                     verifier_outcome: VerifierOutcome::Skipped,
                     usage: None,
                     metering_state: MeteringState::Unknown,
+                    pricing: None,
                     cleanup_state: if cause == IndeterminateCause::CleanupUnconfirmed {
                         CleanupState::Unconfirmed {
                             reason: reason.into(),
@@ -696,6 +734,7 @@ async fn execute_cell_v2(
             verifier_outcome: VerifierOutcome::Skipped,
             usage: None,
             metering_state: MeteringState::Unknown,
+            pricing: None,
             cleanup_state: CleanupState::Confirmed,
             audit_state: EgressAuditState::NotRequired,
             critical_artifacts_state: CriticalArtifactsState::Present,

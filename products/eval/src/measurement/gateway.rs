@@ -19,10 +19,10 @@
 
 //! Local loopback HTTP metering and admission gateway for Maka Host and external subjects.
 //!
-//! Binds `127.0.0.1:0`, authenticates per-attempt `<GATEWAY_CREDENTIAL>`, strips disallowed
-//! web tools from model requests, forwards upstream using the real provider credential,
-//! parses streaming SSE and JSON usage/admission facts, writes atomic HMAC-signed checkpoints,
-//! and enforces a synchronous `stop_accepting()` cutoff while draining in-flight requests.
+//! Binds `127.0.0.1:0`, authenticates per-attempt `<GATEWAY_CREDENTIAL>`, forwards request
+//! payloads untouched using the real provider credential, parses streaming SSE and JSON
+//! usage/admission facts, writes atomic HMAC-signed checkpoints, and enforces a synchronous
+//! `stop_accepting()` cutoff while draining in-flight requests.
 
 use crate::contract::JsonObject;
 use crate::measurement::{
@@ -50,106 +50,34 @@ use url::Url;
 
 pub const PROVIDER_USAGE_CHECKPOINT_SCHEMA: &str = "maka.external_provider_usage.v2";
 
-const DISALLOWED_WEB_TOOL_NAMES: &[&str] = &["websearch", "webfetch", "fetchurl"];
-
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectedRequestBody {
-    pub body: Vec<u8>,
-    pub removed: u64,
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ObservedRequestMetadata {
     pub model: Option<String>,
     pub tool_names: Vec<String>,
 }
 
-/// Strips disallowed web tools (`WebSearch`, `WebFetch`, `FetchURL`) from an OpenAI or
-/// Anthropic JSON request payload and extracts the requested model and remaining tool names.
-pub fn remove_eval_web_tools(body: &[u8]) -> ProjectedRequestBody {
+/// Inspects an OpenAI or Anthropic JSON request payload to observe the requested model and
+/// exposed tool names without mutating or re-serializing the request body.
+pub fn inspect_request_body(body: &[u8]) -> ObservedRequestMetadata {
     if body.is_empty() {
-        return ProjectedRequestBody {
-            body: Vec::new(),
-            removed: 0,
-            model: None,
-            tool_names: Vec::new(),
-        };
+        return ObservedRequestMetadata::default();
     }
-    let Ok(Value::Object(mut obj)) = serde_json::from_slice::<Value>(body) else {
-        return ProjectedRequestBody {
-            body: body.to_vec(),
-            removed: 0,
-            model: None,
-            tool_names: Vec::new(),
-        };
+    let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(body) else {
+        return ObservedRequestMetadata::default();
     };
     let model = obj
         .get("model")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
-    let Some(Value::Array(tools)) = obj.get("tools").cloned() else {
-        return ProjectedRequestBody {
-            body: body.to_vec(),
-            removed: 0,
-            model,
-            tool_names: Vec::new(),
-        };
-    };
-    let original_len = tools.len();
-    let kept: Vec<Value> = tools
-        .into_iter()
-        .filter(|tool| !is_disallowed_web_tool(tool))
-        .collect();
-    let removed = (original_len - kept.len()) as u64;
-    let tool_names: Vec<String> = kept.iter().flat_map(extract_tool_name).collect();
-    if removed == 0 {
-        return ProjectedRequestBody {
-            body: body.to_vec(),
-            removed: 0,
-            model,
-            tool_names,
-        };
-    }
-    obj.insert("tools".into(), Value::Array(kept));
-    let projected_bytes = serde_json::to_vec(&Value::Object(obj)).unwrap_or_else(|_| body.to_vec());
-    ProjectedRequestBody {
-        body: projected_bytes,
-        removed,
-        model,
-        tool_names,
-    }
-}
-
-fn is_disallowed_web_tool(tool: &Value) -> bool {
-    let Some(obj) = tool.as_object() else {
-        return false;
-    };
-    let direct_name = obj.get("name").and_then(Value::as_str);
-    let fn_name = obj
-        .get("function")
-        .and_then(Value::as_object)
-        .and_then(|f| f.get("name"))
-        .and_then(Value::as_str);
-    for candidate in [direct_name, fn_name].into_iter().flatten() {
-        let norm = normalize_tool_identifier(candidate);
-        if DISALLOWED_WEB_TOOL_NAMES.contains(&norm.as_str()) {
-            return true;
-        }
-    }
-    let Some(tool_type) = obj.get("type").and_then(Value::as_str) else {
-        return false;
-    };
-    let norm_type = normalize_tool_identifier(tool_type);
-    DISALLOWED_WEB_TOOL_NAMES
-        .iter()
-        .any(|disallowed| norm_type == *disallowed || norm_type.starts_with(disallowed))
-}
-
-fn normalize_tool_identifier(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .map(|c| c.to_ascii_lowercase())
-        .collect()
+    let tool_names = obj
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(|tools| tools.iter().flat_map(extract_tool_name).collect())
+        .unwrap_or_default();
+    ObservedRequestMetadata { model, tool_names }
 }
 
 fn extract_tool_name(tool: &Value) -> Vec<String> {
@@ -360,11 +288,12 @@ pub fn join_upstream_url(base_url: &str, request_uri: &str) -> Result<String, St
     .map_err(|e| format!("invalid request URI: {e}"))?;
     let base_path = base.path().trim_end_matches('/');
     let req_path = req_url.path().trim_start_matches('/');
-    // Avoid duplicating `/v1` when base_url already ends with `/v1` and the client
-    // sends `/v1/chat/completions` (or when base_url is `http://host/v1` and client
-    // sends `/chat/completions`).
-    let combined_path = if base_path.ends_with("/v1") && req_path.starts_with("v1/") {
-        format!("{base_path}/{}", &req_path[3..])
+    // Avoid duplicating path prefixes (such as `/v1` or `/api/v1`) when `base_url`
+    // already carries that prefix and the client sends the full prefixed path.
+    let combined_path = if !base_path.is_empty()
+        && (req_url.path() == base_path || req_url.path().starts_with(&format!("{base_path}/")))
+    {
+        req_url.path().to_owned()
     } else if req_path.is_empty() {
         base_path.to_owned()
     } else {
@@ -392,7 +321,6 @@ struct GatewayCounters {
     in_flight_requests: u64,
     admitted_requests: u64,
     usage_requests: u64,
-    removed_web_tools: u64,
     settled: bool,
     models: BTreeSet<String>,
     tool_names: BTreeSet<String>,
@@ -411,7 +339,6 @@ impl GatewayCounters {
             in_flight_requests: self.in_flight_requests,
             admitted_requests: self.admitted_requests,
             usage_requests: self.usage_requests,
-            removed_web_tools: self.removed_web_tools,
             models: self.models.iter().cloned().collect(),
             tool_names: self.tool_names.iter().cloned().collect(),
         }
@@ -553,6 +480,16 @@ impl EvalMeteringGateway {
         format!("http://127.0.0.1:{}/v1", self.addr.port())
     }
 
+    /// Returns a loopback URL whose path matches `upstream_base_url` so provider route
+    /// normalization in Maka sees the exact same path structure as the upstream endpoint.
+    pub fn base_url_matching_upstream(&self, upstream_base_url: &str) -> String {
+        let suffix = Url::parse(upstream_base_url)
+            .ok()
+            .map(|u| u.path().trim_end_matches('/').to_owned())
+            .unwrap_or_else(|| "/v1".to_owned());
+        format!("http://127.0.0.1:{}{}", self.addr.port(), suffix)
+    }
+
     pub fn gateway_credential(&self) -> &str {
         &self.gateway_credential
     }
@@ -673,15 +610,14 @@ async fn handle_gateway_request(
         }
     };
 
-    let projected = remove_eval_web_tools(&body_bytes);
+    let observed = inspect_request_body(&body_bytes);
 
     {
         let mut counters = state.counters.lock().await;
-        counters.removed_web_tools += projected.removed;
-        if let Some(m) = &projected.model {
+        if let Some(m) = &observed.model {
             counters.models.insert(m.clone());
         }
-        for name in &projected.tool_names {
+        for name in &observed.tool_names {
             counters.tool_names.insert(name.clone());
         }
     }
@@ -700,11 +636,18 @@ async fn handle_gateway_request(
     let reqwest_method =
         reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::POST);
     let mut upstream_req = state.client.request(reqwest_method, &target_url);
+    let uses_x_api_key =
+        headers.contains_key("x-api-key") && !headers.contains_key(hyper::header::AUTHORIZATION);
     for (name, value) in &headers {
         let lower = name.as_str().to_ascii_lowercase();
         if matches!(
             lower.as_str(),
-            "host" | "content-length" | "connection" | "authorization" | "x-api-key"
+            "host"
+                | "content-length"
+                | "transfer-encoding"
+                | "connection"
+                | "authorization"
+                | "x-api-key"
         ) {
             continue;
         }
@@ -712,12 +655,16 @@ async fn handle_gateway_request(
             upstream_req = upstream_req.header(name.as_str(), val_str);
         }
     }
-    upstream_req = upstream_req.header(
-        "authorization",
-        format!("Bearer {}", state.config.upstream_api_key),
-    );
-    if !projected.body.is_empty() {
-        upstream_req = upstream_req.body(projected.body);
+    if uses_x_api_key {
+        upstream_req = upstream_req.header("x-api-key", &state.config.upstream_api_key);
+    } else {
+        upstream_req = upstream_req.header(
+            "authorization",
+            format!("Bearer {}", state.config.upstream_api_key),
+        );
+    }
+    if !body_bytes.is_empty() {
+        upstream_req = upstream_req.body(body_bytes.to_vec());
     }
 
     let mut upstream_resp = match upstream_req.send().await {
@@ -807,7 +754,7 @@ mod tests {
     use crate::measurement::recover_external_metering_checkpoint;
 
     #[test]
-    fn remove_web_tools_strips_disallowed_tools_and_keeps_others() {
+    fn inspect_request_body_observes_model_and_all_tools_without_pruning() {
         let input = serde_json::to_vec(&json!({
             "model": "deepseek-chat",
             "tools": [
@@ -818,16 +765,21 @@ mod tests {
             ]
         }))
         .unwrap();
-        let projected = remove_eval_web_tools(&input);
-        assert_eq!(projected.removed, 3);
-        assert_eq!(projected.model.as_deref(), Some("deepseek-chat"));
-        assert_eq!(projected.tool_names, vec!["ReadFile".to_owned()]);
-        let parsed: Value = serde_json::from_slice(&projected.body).unwrap();
-        assert_eq!(parsed["tools"].as_array().unwrap().len(), 1);
+        let observed = inspect_request_body(&input);
+        assert_eq!(observed.model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(
+            observed.tool_names,
+            vec![
+                "WebSearch".to_owned(),
+                "ReadFile".to_owned(),
+                "web_fetch".to_owned(),
+                "lookup".to_owned(),
+            ]
+        );
     }
 
     #[tokio::test]
-    async fn gateway_authenticates_strips_web_tools_streams_usage_and_enforces_cutoff() {
+    async fn gateway_authenticates_preserves_exact_payload_streams_usage_and_enforces_cutoff() {
         let mut parser = UsageStreamParser::new();
         parser.push(concat!(
             "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n",
@@ -848,6 +800,9 @@ mod tests {
             })
         );
 
+        let expected_raw_body = br#"{"model":"deepseek-chat","tools":[{"type":"function","function":{"name":"WebSearch"}},{"type":"function","function":{"name":"Bash"}}]}"#.to_vec();
+        let expected_for_server = expected_raw_body.clone();
+
         // Start a mock upstream OpenAI-compatible SSE server.
         let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let upstream_addr = upstream_listener.local_addr().unwrap();
@@ -861,33 +816,34 @@ mod tests {
                 let Ok((stream, _)) = upstream_listener.accept().await else {
                     break;
                 };
+                let expected_bytes = expected_for_server.clone();
                 tokio::spawn(async move {
-                    let service = service_fn(|req: Request<Incoming>| async move {
-                        assert_eq!(req.uri().path(), "/v1/chat/completions");
-                        assert_eq!(
-                            req.headers()
-                                .get("authorization")
-                                .and_then(|v| v.to_str().ok()),
-                            Some("Bearer real-upstream-secret")
-                        );
-                        let body = req.into_body().collect().await.unwrap().to_bytes();
-                        let json_body: Value = serde_json::from_slice(&body).unwrap();
-                        let tools = json_body["tools"].as_array().unwrap();
-                        assert_eq!(tools.len(), 1);
-                        assert_eq!(tools[0]["function"]["name"], "Bash");
+                    let service = service_fn(move |req: Request<Incoming>| {
+                        let expected_bytes = expected_bytes.clone();
+                        async move {
+                            assert_eq!(req.uri().path(), "/v1/chat/completions");
+                            assert_eq!(
+                                req.headers()
+                                    .get("authorization")
+                                    .and_then(|v| v.to_str().ok()),
+                                Some("Bearer real-upstream-secret")
+                            );
+                            let body = req.into_body().collect().await.unwrap().to_bytes();
+                            assert_eq!(body.as_ref(), expected_bytes.as_slice());
 
-                        let sse = concat!(
-                            "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n",
-                            "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":25,\"prompt_cache_hit_tokens\":60,\"completion_tokens_details\":{\"reasoning_tokens\":10},\"total_tokens\":125}}\n\n",
-                            "data: [DONE]\n\n"
-                        );
-                        Ok::<_, Infallible>(
-                            Response::builder()
-                                .status(StatusCode::OK)
-                                .header("content-type", "text/event-stream")
-                                .body(Full::new(Bytes::from(sse)))
-                                .unwrap(),
-                        )
+                            let sse = concat!(
+                                "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n",
+                                "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":25,\"prompt_cache_hit_tokens\":60,\"completion_tokens_details\":{\"reasoning_tokens\":10},\"total_tokens\":125}}\n\n",
+                                "data: [DONE]\n\n"
+                            );
+                            Ok::<_, Infallible>(
+                                Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header("content-type", "text/event-stream")
+                                    .body(Full::new(Bytes::from(sse)))
+                                    .unwrap(),
+                            )
+                        }
                     });
                     let _ = http1::Builder::new()
                         .serve_connection(TokioIo::new(stream), service)
@@ -926,21 +882,12 @@ mod tests {
             .unwrap();
         assert_eq!(unauth.status(), reqwest::StatusCode::UNAUTHORIZED);
 
-        // 2. Authorized request strips web tools, forwards upstream, and records SSE usage.
+        // 2. Authorized request preserves exact request bytes & tools, forwards upstream, and records SSE usage.
         let resp = client
             .post(format!("{}/chat/completions", gateway.openai_v1_base_url()))
             .header("authorization", "Bearer attempt-gateway-token")
             .header("content-type", "application/json")
-            .body(
-                serde_json::to_vec(&json!({
-                    "model": "deepseek-chat",
-                    "tools": [
-                        {"type": "function", "function": {"name": "WebSearch"}},
-                        {"type": "function", "function": {"name": "Bash"}}
-                    ]
-                }))
-                .unwrap(),
-            )
+            .body(expected_raw_body)
             .send()
             .await
             .unwrap();
@@ -967,9 +914,11 @@ mod tests {
         assert_eq!(counts.requests, 1);
         assert_eq!(counts.admitted_requests, 1);
         assert_eq!(counts.usage_requests, 1);
-        assert_eq!(counts.removed_web_tools, 1);
         assert_eq!(counts.models, vec!["deepseek-chat".to_owned()]);
-        assert_eq!(counts.tool_names, vec!["Bash".to_owned()]);
+        assert_eq!(
+            counts.tool_names,
+            vec!["Bash".to_owned(), "WebSearch".to_owned()]
+        );
         assert_eq!(
             counts.usage,
             Some(NormalizedUsage {

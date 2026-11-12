@@ -20,7 +20,7 @@
 //! Experiment specifications, orthogonal `v2` attempt records, strict `v1`
 //! projections, run fingerprinting, and the semantic difference registry.
 
-use crate::measurement::{MeteringState, NormalizedUsage, deepseek_cost_usd};
+use crate::measurement::{MeteringState, NormalizedUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -315,7 +315,11 @@ fn canonicalize_value(value: &Value) -> Value {
     }
 }
 
-/// Separates semantic comparability identity from execution-only knobs (like concurrency).
+/// Documents experimental and execution conditions for comparability checks.
+///
+/// Fingerprints record the declared configuration and parameters of a run; freezing an
+/// eval-only fingerprint does not establish product parity. M3 acceptance and M5 production
+/// delivery require a verified [`crate::parity::ParityVerificationReport`] alongside the run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunFingerprint {
@@ -557,6 +561,31 @@ pub enum CriticalArtifactsState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum PricingEvidence {
+    Model {
+        model: String,
+        cost_usd: Option<f64>,
+    },
+    SubjectReported {
+        cost_usd: f64,
+    },
+}
+
+impl PricingEvidence {
+    pub fn cost_usd(&self) -> Option<f64> {
+        match self {
+            Self::Model { cost_usd, .. } => *cost_usd,
+            Self::SubjectReported { cost_usd } => Some(*cost_usd),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct V2AttemptRecord {
     pub schema_version: SchemaVersion,
@@ -570,6 +599,8 @@ pub struct V2AttemptRecord {
     pub verifier_outcome: VerifierOutcome,
     pub usage: Option<NormalizedUsage>,
     pub metering_state: MeteringState,
+    #[serde(default)]
+    pub pricing: Option<PricingEvidence>,
     pub cleanup_state: CleanupState,
     pub audit_state: EgressAuditState,
     pub critical_artifacts_state: CriticalArtifactsState,
@@ -585,13 +616,22 @@ impl V2AttemptRecord {
     pub fn project_v1(&self) -> V1CellAttempt {
         let mut artifacts = self.artifacts.clone();
 
-        // Cost is reported only when usage is present AND metering_state is Complete.
-        // Under Adjudication #1 (Timeout with reward but incomplete usage), lower-bound
-        // usage is preserved in `usage` while `costUsd` is projected as `null`.
-        let cost_usd = match (&self.usage, self.metering_state) {
-            (Some(u), MeteringState::Complete) => Some(deepseek_cost_usd(u)),
-            _ => None,
+        let cost_usd = if self.usage.is_some() && self.metering_state == MeteringState::Complete {
+            self.pricing.as_ref().and_then(PricingEvidence::cost_usd)
+        } else {
+            None
         };
+
+        if self.execution_outcome == ExecutionOutcome::Cancelled
+            && self.cancelled_after_verification
+        {
+            artifacts.push(
+                serde_json::json!({"kind": "cancelled-after-verification"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+        }
 
         if self.recovered_post_hoc {
             let mut marker = Map::new();

@@ -172,7 +172,6 @@ pub struct ProviderMeteringCounts {
     pub in_flight_requests: u64,
     pub admitted_requests: u64,
     pub usage_requests: u64,
-    pub removed_web_tools: u64,
     pub models: Vec<String>,
     pub tool_names: Vec<String>,
 }
@@ -253,7 +252,6 @@ pub struct AdmissionBoundaryLedger {
     requests: BTreeMap<String, RequestLedgerEntry>,
     seen_checkpoint_digests: BTreeSet<String>,
     latest_checkpoint: Option<ProviderMeteringCounts>,
-    removed_web_tools: u64,
     tool_names: BTreeSet<String>,
 }
 
@@ -378,7 +376,6 @@ impl AdmissionBoundaryLedger {
             in_flight_requests,
             admitted_requests,
             usage_requests,
-            removed_web_tools: self.removed_web_tools,
             models: models.into_iter().collect(),
             tool_names: self.tool_names.iter().cloned().collect(),
         }
@@ -570,7 +567,6 @@ pub fn recover_external_metering_checkpoint(
             "inFlightRequests",
             "admittedRequests",
             "usageRequests",
-            "removedWebTools",
             "models",
             "toolNames",
             "mac",
@@ -596,8 +592,6 @@ pub fn recover_external_metering_checkpoint(
     let admitted_requests =
         nonnegative_u64(checkpoint.get("admittedRequests")?, "admittedRequests").ok()?;
     let usage_requests = nonnegative_u64(checkpoint.get("usageRequests")?, "usageRequests").ok()?;
-    let removed_web_tools =
-        nonnegative_u64(checkpoint.get("removedWebTools")?, "removedWebTools").ok()?;
     let models = checkpoint
         .get("models")?
         .as_array()?
@@ -618,7 +612,6 @@ pub fn recover_external_metering_checkpoint(
         in_flight_requests,
         admitted_requests,
         usage_requests,
-        removed_web_tools,
         models: models.clone(),
         tool_names: tool_names.clone(),
     };
@@ -657,10 +650,6 @@ pub fn recover_external_metering_checkpoint(
     artifact.insert(
         "tokenBasis".into(),
         serde_json::to_value(derived.token_basis).ok()?,
-    );
-    artifact.insert(
-        "removedWebTools".into(),
-        Value::from(counts.removed_web_tools),
     );
     artifact.insert(
         "models".into(),

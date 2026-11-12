@@ -537,6 +537,11 @@ impl TrialEnvironment for HarborTrialEnvironment {
             if cancel.is_cancelled() {
                 return Err(ContractError::Invalid("preflight cancelled".into()));
             }
+            if self.config.egress_proxy_required {
+                return Err(ContractError::Invalid(
+                    "egressProxy is not supported by the native Harbor/Pier executor".into(),
+                ));
+            }
             let _ = self.resolve_trials_root().map_err(ContractError::Invalid)?;
             let _ = self
                 .resolve_python_executable()
@@ -687,7 +692,8 @@ impl TrialEnvironment for HarborTrialEnvironment {
                 .current_dir(&self.spec_dir)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null());
+                .stderr(Stdio::null())
+                .kill_on_drop(true);
             cmd.env("PYTHONPATH", bundled_harbor_relay_root());
             if self.config.egress_proxy_required {
                 cmd.env("MAKA_EVAL_EGRESS_REQUIRED", "1");
@@ -882,9 +888,15 @@ impl TrialEnvironment for HarborTrialEnvironment {
                 finalization_confirmed: finalization_confirmed.clone(),
             };
 
-            let mut record = operation(&active).await;
-
-            let host_cancelled = cancel.is_cancelled();
+            let record = {
+                let operation = operation(&active);
+                tokio::pin!(operation);
+                tokio::select! {
+                    biased;
+                    record = &mut operation => Some(record),
+                    _ = cancel.cancelled() => None,
+                }
+            };
             if !decision_sent.load(Ordering::SeqCst)
                 || finalization_confirmed.lock().await.is_none()
             {
@@ -901,6 +913,18 @@ impl TrialEnvironment for HarborTrialEnvironment {
                 .await;
                 *finalization_confirmed.lock().await = Some(ok);
             }
+
+            let finalized_ok = finalization_confirmed.lock().await.unwrap_or(false);
+            let Some(mut record) = record else {
+                return Ok(TrialEnvironmentOutcome::Indeterminate {
+                    cause: if finalized_ok {
+                        IndeterminateCause::HostCancelled
+                    } else {
+                        IndeterminateCause::CleanupUnconfirmed
+                    },
+                    partial: None,
+                });
+            };
 
             if let Some(diag) = last_diagnostic.lock().await.clone()
                 && diag.category != SubjectProcessDiagnosticCategory::None
@@ -920,14 +944,6 @@ impl TrialEnvironment for HarborTrialEnvironment {
                 record.artifacts.push(art);
             }
 
-            if host_cancelled {
-                return Ok(TrialEnvironmentOutcome::Indeterminate {
-                    cause: IndeterminateCause::HostCancelled,
-                    partial: Some(record),
-                });
-            }
-
-            let finalized_ok = finalization_confirmed.lock().await.unwrap_or(false);
             if !finalized_ok {
                 return Ok(TrialEnvironmentOutcome::Indeterminate {
                     cause: IndeterminateCause::CleanupUnconfirmed,

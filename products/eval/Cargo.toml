@@ -27,6 +27,9 @@ name = "maka-eval"
 path = "src/main.rs"
 
 [dependencies]
+maka-app-client.workspace = true
+maka-host-runtime.workspace = true
+maka-plugin-core.workspace = true
 base64 = "0.23.1"
 clap.workspace = true
 futures-util.workspace = true

@@ -22,14 +22,17 @@
 
 use crate::contract::{
     DifferenceRegistry, DifferenceScenarioId, EvalResultStatus, ExperimentSpec, RunFingerprint,
-    V1CellAttempt, V2AttemptRecord, decode_v1_cell_attempt, expand_experiment, format_cell_id,
-    is_replaceable_attempt, select_cell_result,
+    SubjectKind, V1CellAttempt, V2AttemptRecord, decode_v1_cell_attempt, expand_experiment,
+    format_cell_id, is_replaceable_attempt, select_cell_result, sha256_hex,
 };
 use crate::measurement::{NormalizedUsage, costs_match_within_tolerance};
+use crate::parity::{PARITY_REPORT_SCHEMA_VERSION, ParityVerificationReport};
 use crate::store::{FileAttemptStore, ReconstructedStoreState, StoreError};
+use crate::subject::maka::MakaSubjectConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 /// Reconstructs all `v1` and `v2` attempt records deterministically from the append-only journal.
 pub fn rebuild_from_journal(
@@ -200,8 +203,9 @@ pub fn build_cohort_summary(
 pub struct DifferentialReport {
     /// 1. Whether the candidate JSON parses strictly as a valid `maka.eval.v1` attempt.
     pub v1_parses: bool,
-    /// 2. Whether the candidate matches the oracle (either byte/tolerance-exact or via an adjudicated difference scenario).
+    /// 2. Whether the candidate actually matches the oracle on compared result fields.
     pub v1_matches_oracle: bool,
+    pub adjudicated_difference: bool,
     /// 3. Whether the experimental conditions (semantic fingerprint and any adjudicated difference) remain comparable.
     pub conditions_comparable: bool,
     pub adjudicated_scenario: Option<DifferenceScenarioId>,
@@ -224,6 +228,7 @@ pub fn evaluate_differential_oracle(
             return DifferentialReport {
                 v1_parses: false,
                 v1_matches_oracle: false,
+                adjudicated_difference: false,
                 conditions_comparable: false,
                 adjudicated_scenario,
                 diagnostics,
@@ -243,18 +248,102 @@ pub fn evaluate_differential_oracle(
     }
 
     let direct_match = attempts_equivalent(&candidate, oracle, &mut diagnostics);
-    let matches_oracle = direct_match || scenario_entry.is_some();
+    let applicable = adjudicated_scenario.is_none_or(|id| scenario_applies(id, &candidate));
+    if !applicable {
+        diagnostics
+            .push("candidate does not establish the selected scenario's prerequisites".into());
+    }
+    let adjudicated_difference = !direct_match
+        && applicable
+        && scenario_entry.is_some()
+        && allowed_scenario_difference(adjudicated_scenario.unwrap(), &candidate, oracle);
     let conditions_comparable = fingerprint_comparable
-        && matches_oracle
+        && applicable
+        && (direct_match || adjudicated_difference)
         && scenario_entry.is_none_or(|entry| entry.conditions_comparable);
 
     DifferentialReport {
         v1_parses: true,
-        v1_matches_oracle: matches_oracle,
+        v1_matches_oracle: direct_match,
+        adjudicated_difference,
         conditions_comparable,
         adjudicated_scenario,
         diagnostics,
     }
+}
+
+fn has_artifact(attempt: &V1CellAttempt, kind: &str) -> bool {
+    attempt
+        .result
+        .artifacts
+        .iter()
+        .any(|a| a.get("kind").and_then(Value::as_str) == Some(kind))
+}
+
+fn scenario_applies(id: DifferenceScenarioId, candidate: &V1CellAttempt) -> bool {
+    let result = &candidate.result;
+    match id {
+        DifferenceScenarioId::TimeoutWithRewardIncompleteUsage => {
+            result.status == EvalResultStatus::SubjectFailed
+                && result.score.is_some()
+                && result.usage.is_some()
+                && result.cost_usd.is_none()
+                && result
+                    .failure_reason
+                    .as_deref()
+                    .is_some_and(|r| r.contains("timeout"))
+        }
+        DifferenceScenarioId::AuditTruncation => result.artifacts.iter().any(|a| {
+            a.get("kind").and_then(Value::as_str) == Some("egress-audit")
+                && a.get("truncated").and_then(Value::as_bool) == Some(true)
+        }),
+        DifferenceScenarioId::MissingCriticalArtifacts => {
+            result.status == EvalResultStatus::InfraFailed
+                && result.score.is_none()
+                && result
+                    .failure_reason
+                    .as_deref()
+                    .is_some_and(|r| r.starts_with("critical artifacts missing: "))
+        }
+        DifferenceScenarioId::LateCancellation => {
+            has_artifact(candidate, "cancelled-after-verification")
+                && matches!(
+                    result.status,
+                    EvalResultStatus::Completed | EvalResultStatus::SubjectFailed
+                )
+                && result.score.is_some()
+        }
+        DifferenceScenarioId::EvidenceRecoveredLater => {
+            has_artifact(candidate, "post-hoc-evidence-recovery")
+        }
+    }
+}
+
+fn allowed_scenario_difference(
+    id: DifferenceScenarioId,
+    candidate: &V1CellAttempt,
+    oracle: &V1CellAttempt,
+) -> bool {
+    // The first three scenarios preserve v1 result semantics. Post-hoc numeric
+    // changes require original checkpoint evidence, which this v1-only API lacks.
+    if id != DifferenceScenarioId::LateCancellation
+        || oracle.result.status != EvalResultStatus::Indeterminate
+        || oracle.result.score.is_some()
+        || oracle.result.failure_reason.as_deref()
+            != Some("executor cancelled before verification completed")
+    {
+        return false;
+    }
+    let mut expected = oracle.clone();
+    expected.result.status = candidate.result.status;
+    expected.result.score = candidate.result.score;
+    expected.result.failure_reason = candidate.result.failure_reason.clone();
+    let mut actual = candidate.clone();
+    actual
+        .result
+        .artifacts
+        .retain(|a| a.get("kind").and_then(Value::as_str) != Some("cancelled-after-verification"));
+    attempts_equivalent(&actual, &expected, &mut Vec::new())
 }
 
 fn attempts_equivalent(
@@ -302,6 +391,10 @@ fn attempts_equivalent(
         ));
         ok = false;
     }
+    if candidate.result.artifacts != oracle.result.artifacts {
+        diagnostics.push("artifacts mismatch".into());
+        ok = false;
+    }
     if candidate.result.failure_reason != oracle.result.failure_reason {
         diagnostics.push(format!(
             "failureReason mismatch: {:?} != {:?}",
@@ -310,4 +403,148 @@ fn attempts_equivalent(
         ok = false;
     }
     ok
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MilestoneGate {
+    M3Acceptance,
+    M5ProductionDelivery,
+}
+
+impl MilestoneGate {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "m3" | "m3_acceptance" => Some(Self::M3Acceptance),
+            "m5" | "m5_production_delivery" => Some(Self::M5ProductionDelivery),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MilestoneGateReport {
+    pub milestone: MilestoneGate,
+    pub passed: bool,
+    pub run_fingerprint: RunFingerprint,
+    pub parity_verified_subjects: Vec<String>,
+    pub violations: Vec<String>,
+}
+
+/// Evaluates whether an experiment satisfies the M3 acceptance or M5 production delivery gate.
+///
+/// Product parity is a mandatory prerequisite for both M3 and M5: every `maka` subject in `spec`
+/// must use valid public product interfaces and carry a passing `ParityVerificationReport` matching
+/// its declared public configuration digest (and binary digest when the executable is present).
+/// `RunFingerprint` documents run conditions only and never substitutes for parity verification.
+pub fn evaluate_milestone_gate(
+    milestone: MilestoneGate,
+    spec: &ExperimentSpec,
+    canonical_v1: &BTreeMap<String, V1CellAttempt>,
+    parity_reports: &[ParityVerificationReport],
+) -> MilestoneGateReport {
+    let mut violations = Vec::new();
+    let mut parity_verified_subjects = Vec::new();
+    let run_fingerprint = RunFingerprint::compute(spec);
+
+    let maka_subjects: Vec<_> = spec
+        .subjects
+        .iter()
+        .filter(|s| s.kind == SubjectKind::Maka)
+        .collect();
+    if maka_subjects.is_empty() {
+        violations.push("experiment contains no Maka subject to evaluate".into());
+    }
+
+    for subject in maka_subjects {
+        let decoded = match MakaSubjectConfig::decode(&subject.config, &subject.credentials) {
+            Ok(cfg) => cfg,
+            Err(err) => {
+                violations.push(format!(
+                    "subject '{}' violates public Maka configuration contract: {err}",
+                    subject.id
+                ));
+                continue;
+            }
+        };
+        let expected_cfg_sha = decoded.parity_config_sha256();
+        let Some(report) = parity_reports.iter().find(|r| r.subject_id == subject.id) else {
+            violations.push(format!(
+                "subject '{}' is missing a Product Parity verification report (RunFingerprint documents conditions only and does not establish parity)",
+                subject.id
+            ));
+            continue;
+        };
+        if report.schema_version != PARITY_REPORT_SCHEMA_VERSION {
+            violations.push(format!(
+                "subject '{}' parity report has unsupported schemaVersion '{}'",
+                subject.id, report.schema_version
+            ));
+            continue;
+        }
+        if !report.passed || !report.mismatches.is_empty() {
+            violations.push(format!(
+                "subject '{}' failed Product Parity verification ({} mismatch(es))",
+                subject.id,
+                report.mismatches.len()
+            ));
+            continue;
+        }
+        if report.declared_config_sha256 != expected_cfg_sha {
+            violations.push(format!(
+                "subject '{}' parity report config digest ({}) does not match declared public configuration ({})",
+                subject.id, report.declared_config_sha256, expected_cfg_sha
+            ));
+            continue;
+        }
+        let exe_path = Path::new(&decoded.maka_executable);
+        if exe_path.is_file()
+            && let Ok(bytes) = std::fs::read(exe_path)
+        {
+            let actual_exe_sha = sha256_hex(&bytes);
+            if actual_exe_sha != report.maka_executable_sha256 {
+                violations.push(format!(
+                    "subject '{}' Maka executable digest ({}) differs from parity-verified binary ({})",
+                    subject.id, actual_exe_sha, report.maka_executable_sha256
+                ));
+                continue;
+            }
+        }
+        parity_verified_subjects.push(subject.id.clone());
+    }
+
+    if milestone == MilestoneGate::M5ProductionDelivery {
+        let summary = build_cohort_summary(spec, canonical_v1);
+        if summary.incomplete_cells > 0 {
+            violations.push(format!(
+                "M5 production delivery requires all cells settled, but {} of {} cell(s) are incomplete",
+                summary.incomplete_cells, summary.total_cells
+            ));
+        }
+        for (cell_id, attempt) in canonical_v1 {
+            if attempt.result.status == EvalResultStatus::Indeterminate {
+                violations.push(format!(
+                    "M5 production delivery rejects indeterminate cell '{cell_id}'"
+                ));
+            } else if attempt.result.status == EvalResultStatus::InfraFailed {
+                let explicit_env_limit = attempt.result.artifacts.iter().any(|art| {
+                    art.get("kind").and_then(Value::as_str) == Some("environment-limitation")
+                });
+                if !explicit_env_limit {
+                    violations.push(format!(
+                        "M5 production delivery rejects unattributed infra_failed cell '{cell_id}'"
+                    ));
+                }
+            }
+        }
+    }
+
+    MilestoneGateReport {
+        milestone,
+        passed: violations.is_empty(),
+        run_fingerprint,
+        parity_verified_subjects,
+        violations,
+    }
 }

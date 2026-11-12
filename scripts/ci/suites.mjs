@@ -20,6 +20,7 @@
 import { readFileSync } from 'node:fs';
 
 export const taskHelperConsumers = [
+  'maka-eval',
   'maka-cli',
   'maka-agent-native',
   'maka-agent-engine',
@@ -82,7 +83,12 @@ export const suites = {
     packages: 'workspace',
     cargoArgs: ['--locked', '--workspace'],
     profile: 'ci',
-    extraInputs: [...embeddedInputs, ...distributionInputs, 'products/maka/workbench/tests/fonts'],
+    extraInputs: [
+      ...embeddedInputs,
+      ...distributionInputs,
+      'products/maka/workbench/tests/fonts',
+      'products/eval/tests/support',
+    ],
     affectedFilter: true,
   },
   bridge: {

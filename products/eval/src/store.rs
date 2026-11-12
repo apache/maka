@@ -57,7 +57,6 @@ pub enum StoreError {
 /// Exclusive single-writer lock guard held for the duration of a store write session.
 #[derive(Debug)]
 pub struct WriterGuard {
-    lock_path: PathBuf,
     _file: File,
 }
 
@@ -66,32 +65,20 @@ impl WriterGuard {
         fs::create_dir_all(dir)?;
         let lock_path = dir.join(".writer.lock");
         let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
+        options.read(true).write(true).create(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        match options.open(&lock_path) {
-            Ok(mut file) => {
-                let _ = writeln!(file, "{}", std::process::id());
-                let _ = file.sync_all();
-                Ok(Self {
-                    lock_path,
-                    _file: file,
-                })
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+        let file = options.open(&lock_path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self { _file: file }),
+            Err(std::fs::TryLockError::WouldBlock) => {
                 Err(StoreError::ActiveWriter(lock_path.display().to_string()))
             }
-            Err(err) => Err(StoreError::Io(err)),
+            Err(std::fs::TryLockError::Error(err)) => Err(StoreError::Io(err)),
         }
-    }
-}
-
-impl Drop for WriterGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.lock_path);
     }
 }
 
@@ -272,8 +259,7 @@ impl FileAttemptStore {
         })
     }
 
-    /// Atomically commits a settled `V2AttemptRecord`, writing its `v1` projection file,
-    /// `v2` native file, and `Settled` journal entry.
+    /// Commits a settled record to the sole durable authority: the journal.
     pub fn append_v2(&self, record: &V2AttemptRecord) -> Result<V1CellAttempt, StoreError> {
         let expected = self.next_settled_sequence(&record.cell_id)?;
         if record.sequence != expected {
@@ -283,15 +269,6 @@ impl FileAttemptStore {
         }
         let v1 = record.project_v1();
         let _ = decode_v1_cell_attempt(&serde_json::to_value(&v1)?)?;
-
-        let cell_dir = self.cell_directory(&record.cell_id);
-        fs::create_dir_all(&cell_dir)?;
-
-        let v1_final = cell_dir.join(format!("{:06}.json", record.sequence));
-        let v2_final = cell_dir.join(format!("{:06}.v2.json", record.sequence));
-
-        write_immutable_json(&v1_final, &v1)?;
-        write_immutable_json(&v2_final, record)?;
 
         self.append_journal_entry(&JournalEntry::Settled {
             attempt: Box::new(record.clone()),
@@ -310,14 +287,7 @@ impl FileAttemptStore {
                 "attempt sequence must be {expected}"
             )));
         }
-        let cell_dir = self.cell_directory(&validated.cell_id);
-        fs::create_dir_all(&cell_dir)?;
-        let v1_final = cell_dir.join(format!("{:06}.json", validated.sequence));
-        write_immutable_json(&v1_final, &validated)?;
-
         let v2 = v2_from_v1(&validated);
-        let v2_final = cell_dir.join(format!("{:06}.v2.json", validated.sequence));
-        let _ = write_immutable_json(&v2_final, &v2);
         self.append_journal_entry(&JournalEntry::Settled {
             attempt: Box::new(v2),
         })?;
@@ -347,45 +317,13 @@ impl FileAttemptStore {
         })
     }
 
-    /// Lists immutable `v1` attempt files for `cell_id`, verifying each file's identity against
-    /// its 6-digit sequence filename.
+    /// Projects only committed journal records, including post-hoc evidence.
     pub fn list_v1(&self, cell_id: &str) -> Result<Vec<V1CellAttempt>, StoreError> {
-        let dir = self.cell_directory(cell_id);
-        let entries = match fs::read_dir(&dir) {
-            Ok(rd) => rd,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => return Err(StoreError::Io(err)),
-        };
-
-        let mut names = Vec::new();
-        for entry in entries {
-            let entry = entry?;
-            let file_name = entry.file_name();
-            let Some(name) = file_name.to_str() else {
-                continue;
-            };
-            if is_six_digit_json_filename(name) {
-                names.push(name.to_owned());
-            }
-        }
-        names.sort();
-
-        let mut attempts = Vec::with_capacity(names.len());
-        for name in names {
-            let seq: u32 = name[..6].parse().map_err(|_| {
-                StoreError::Integrity("attempt file does not match its immutable identity".into())
-            })?;
-            let content = fs::read_to_string(dir.join(&name))?;
-            let parsed: Value = serde_json::from_str(&content)?;
-            let attempt = decode_v1_cell_attempt(&parsed)?;
-            if attempt.cell_id != cell_id || attempt.sequence != seq {
-                return Err(StoreError::Integrity(
-                    "attempt file does not match its immutable identity".into(),
-                ));
-            }
-            attempts.push(attempt);
-        }
-        Ok(attempts)
+        Ok(self
+            .reconstruct_state()?
+            .settled_v1
+            .remove(cell_id)
+            .unwrap_or_default())
     }
 
     pub fn read_journal_entries(&self) -> Result<Vec<JournalEntry>, StoreError> {
@@ -487,6 +425,17 @@ impl FileAttemptStore {
                         existing.recovered_post_hoc = true;
                         existing.phase = AttemptPhase::Recovered;
                         if usage.is_some() {
+                            if existing.usage != usage {
+                                if let Some(crate::contract::PricingEvidence::Model {
+                                    cost_usd,
+                                    ..
+                                }) = &mut existing.pricing
+                                {
+                                    *cost_usd = None;
+                                } else {
+                                    existing.pricing = None;
+                                }
+                            }
                             existing.usage = usage;
                             existing.metering_state = metering_state;
                         }
@@ -515,6 +464,7 @@ impl FileAttemptStore {
                                 verifier_outcome: VerifierOutcome::Skipped,
                                 usage: recovered_usage,
                                 metering_state,
+                                pricing: None,
                                 cleanup_state: if cleanup_confirmed {
                                     CleanupState::Confirmed
                                 } else {
@@ -575,10 +525,6 @@ impl FileAttemptStore {
             .max()
             .map_or(1, |s| s + 1);
         Ok(settled_next.max(max_journal_seq))
-    }
-
-    fn cell_directory(&self, cell_id: &str) -> PathBuf {
-        self.root.join(sha256_hex(cell_id.as_bytes()))
     }
 }
 
@@ -796,32 +742,6 @@ pub fn write_atomic_bytes(final_path: &Path, bytes: &[u8]) -> Result<(), StoreEr
     res
 }
 
-fn write_immutable_json<T: Serialize>(final_path: &Path, value: &T) -> Result<(), StoreError> {
-    let temp_path = final_path.with_extension(format!("json.{}.tmp", Uuid::new_v4()));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut temp_file = options.open(&temp_path)?;
-    let res = (|| -> Result<(), StoreError> {
-        let serialized = format!("{}\n", serde_json::to_string(value)?);
-        temp_file.write_all(serialized.as_bytes())?;
-        temp_file.sync_all()?;
-        drop(temp_file);
-        fs::hard_link(&temp_path, final_path)?;
-        Ok(())
-    })();
-    let _ = fs::remove_file(&temp_path);
-    res
-}
-
-fn is_six_digit_json_filename(name: &str) -> bool {
-    name.len() == 11 && name.ends_with(".json") && name[..6].bytes().all(|b| b.is_ascii_digit())
-}
-
 fn v2_from_v1(v1: &V1CellAttempt) -> V2AttemptRecord {
     use crate::contract::EvalResultStatus;
     let execution_outcome = match v1.result.status {
@@ -863,6 +783,10 @@ fn v2_from_v1(v1: &V1CellAttempt) -> V2AttemptRecord {
         verifier_outcome,
         usage: v1.result.usage.clone(),
         metering_state,
+        pricing: v1
+            .result
+            .cost_usd
+            .map(|cost_usd| crate::contract::PricingEvidence::SubjectReported { cost_usd }),
         cleanup_state: CleanupState::Confirmed,
         audit_state: EgressAuditState::NotRequired,
         critical_artifacts_state: CriticalArtifactsState::Present,
