@@ -860,12 +860,9 @@ impl LiveTurn<'_> {
             if !self.usage.is_empty() || self.duration_ms != 0 {
                 use maka_agent_facts::{executor::TurnUsage, model::ModelUsage};
                 let sum = |get: fn(&ModelUsage) -> Option<u64>| {
-                    self.usage
-                        .values()
-                        .filter_map(get)
-                        .fold(None::<u64>, |total, next| {
-                            Some(total.unwrap_or(0).saturating_add(next))
-                        })
+                    let mut samples = self.usage.values();
+                    let first = get(samples.next()?)?;
+                    samples.try_fold(first, |total, next| total.checked_add(get(next)?))
                 };
                 output
                     .emit(Output::TurnUsage {

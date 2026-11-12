@@ -1035,6 +1035,7 @@ mod tests {
                         protocol: serde_json::to_value(ModelClosureProtocol {
                             finish_reason: ModelFinishReason::Stop,
                             provider_options: None,
+                            cache_read_reported: None,
                             response_id: None,
                             model: None,
                             timestamp: None,
@@ -1086,6 +1087,7 @@ mod tests {
                         protocol: serde_json::to_value(ModelClosureProtocol {
                             finish_reason: ModelFinishReason::Stop,
                             provider_options: None,
+                            cache_read_reported: None,
                             response_id: None,
                             model: None,
                             timestamp: None,

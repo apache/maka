@@ -18,7 +18,10 @@
  */
 
 use super::*;
-use maka_agent_facts::{execution::ModelBinding, model::ModelUsage};
+use maka_agent_facts::{
+    execution::ModelBinding,
+    model::{ModelUsage, PromptCacheUsage},
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -139,6 +142,22 @@ pub struct ModelRequestContextTrace {
 }
 
 impl HistoryDataSource {
+    /// Usage of the main model attempts in a single live-history Run.
+    pub async fn main_prompt_cache(
+        &self,
+        run: RunId,
+    ) -> Result<Option<PromptCacheUsage>, StoreError> {
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(ReadPromptCache(history.namespace.clone(), cut.clone(), run))
+                    .await
+            }
+            Self::Snapshot(_) => Ok(None),
+        }
+    }
+
     /// A bounded page of original model attempts for one already scoped Run.
     pub async fn model_request_traces(
         &self,
@@ -151,6 +170,58 @@ impl HistoryDataSource {
             Self::Live { history, .. } => history.data.query(query).await,
             Self::Snapshot(snapshot) => snapshot.query_request_traces(query).await,
         }
+    }
+}
+
+struct ReadPromptCache(HistoryNamespace, HistoryCut, RunId);
+impl Query for ReadPromptCache {
+    type Output = Option<PromptCacheUsage>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let Self(history, cut, run) = self;
+        sql::validate_cut(c, &history.owner, &history.session, &cut)?;
+        let mut statement = c.prepare_cached(
+            "SELECT r.input,r.cache_read,
+                json_extract(CAST(b.payload AS TEXT),'$.fact.protocol.cacheReadReported')
+             FROM agent_session_history h INDEXED BY agent_session_history_run
+             JOIN agent_usage_calls u ON u.request='model:'||h.run||':'||h.attempt
+                  AND u.admission_sequence=h.sequence
+             LEFT JOIN agent_usage_results r ON r.request=u.request AND r.sequence=(
+                  SELECT v.sequence FROM agent_usage_results v
+                  WHERE v.request=u.request AND v.sequence<=?4 ORDER BY v.sequence DESC LIMIT 1)
+             LEFT JOIN agent_facts f ON r.cache_read=0 AND f.sequence=r.sequence
+             LEFT JOIN contents b ON b.id=f.body_content_id
+             WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.sequence<=?4
+               AND h.kind='model_attempt_prepared' AND u.purpose=?5",
+        )?;
+        let mut rows = statement.query(params![
+            serde_json::to_string(&history.owner)?,
+            history.session,
+            run.to_string(),
+            sql::bind_u64(cut.through_sequence)?,
+            serde_json::to_string(&ModelPurpose::Main)?,
+        ])?;
+        let (mut input, mut read) = (0u64, 0u64);
+        while let Some(row) = rows.next()? {
+            let Some(attempt_input) = counter(row.get(0)?)? else {
+                return Ok(None);
+            };
+            let Some(attempt_read) = counter(row.get(1)?)? else {
+                return Ok(None);
+            };
+            if attempt_read > attempt_input
+                || (attempt_read == 0 && row.get::<_, Option<bool>>(2)? != Some(true))
+            {
+                return Ok(None);
+            }
+            let Some(totals) = input
+                .checked_add(attempt_input)
+                .zip(read.checked_add(attempt_read))
+            else {
+                return Ok(None);
+            };
+            (input, read) = totals;
+        }
+        Ok(PromptCacheUsage::new(input, read))
     }
 }
 

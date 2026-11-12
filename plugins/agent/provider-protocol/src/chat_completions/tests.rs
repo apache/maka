@@ -22,6 +22,27 @@ use crate::output::{Event, Stop};
 use serde_json::json;
 
 #[test]
+fn usage_keeps_an_explicit_cache_miss_distinct_from_missing_accounting() {
+    for (raw, expected) in [
+        (json!({"prompt_tokens":100, "completion_tokens":10}), None),
+        (
+            json!({"prompt_tokens":100, "prompt_tokens_details":{"cached_tokens":0}}),
+            Some(0),
+        ),
+        (
+            json!({"prompt_tokens":100, "prompt_cache_hit_tokens":70}),
+            Some(70),
+        ),
+    ] {
+        let usage = response::usage(&serde_json::to_vec(&raw).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(usage.input, Some(100));
+        assert_eq!(usage.cache_read, expected);
+    }
+}
+
+#[test]
 fn done_stops_current_batch_and_finish_is_idempotent() {
     let wire = concat!(
         "data: {\"choices\":[{\"delta\":{\"content\":\"before\"},\"finish_reason\":\"stop\"}]}\n\n",
