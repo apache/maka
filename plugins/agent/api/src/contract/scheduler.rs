@@ -40,7 +40,7 @@ pub enum ScheduledEffect {
         model: ModelSelection,
         thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
     },
-    /// Read-only investigation in a fresh worker. The target is the current Bot.
+    /// Investigation in a fresh worker using approved Session permissions. The target is the current Bot.
     Discovery {
         target: ScheduledTarget,
         model: ModelSelection,
@@ -69,6 +69,9 @@ impl maka_scheduler::task::TaskEffect for ScheduledEffect {
     }
     fn is_notification(&self) -> bool {
         matches!(self, Self::Reminder)
+    }
+    fn allows_empty_intent(&self) -> bool {
+        matches!(self, Self::Reminder | Self::Discovery { .. })
     }
 }
 /// Exact observed source boundary. This data is checked against the original

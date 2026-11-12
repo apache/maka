@@ -54,10 +54,15 @@ pub(in crate::owner) enum Approval {
     Discovery {
         approval: super::notifications::BackgroundApproval,
         recall: bool,
+        // Existing approvals covered only the original read-only tool set.
+        #[serde(default)]
+        session_tools: bool,
     },
     CancelledDiscovery {
         approval: super::notifications::BackgroundApproval,
         recall: bool,
+        #[serde(default)]
+        session_tools: bool,
     },
 }
 fn pause_plan(plan: &Plan, at: i64) -> Plan {
@@ -66,9 +71,15 @@ fn pause_plan(plan: &Plan, at: i64) -> Plan {
         && matches!(fire.effect, ScheduledEffect::Discovery { .. })
     {
         fire.authorization = fire.authorization.take().map(|a| match a {
-            Approval::Discovery { approval, recall } => {
-                Approval::CancelledDiscovery { approval, recall }
-            }
+            Approval::Discovery {
+                approval,
+                recall,
+                session_tools,
+            } => Approval::CancelledDiscovery {
+                approval,
+                recall,
+                session_tools,
+            },
             other => other,
         });
     }

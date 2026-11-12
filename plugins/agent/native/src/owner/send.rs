@@ -145,8 +145,9 @@ impl Owner {
         let mcp_floor = self
             .capture_sandbox(&session.configuration, parent.sandbox_floor())
             .await?;
-        let discovery = self.scheduler.investigation.read().unwrap().as_deref() == Some(id);
-        let selected_catalog = if external || discovery {
+        let legacy_discovery = self.scheduler.investigation.read().unwrap().as_deref() == Some(id)
+            && super::discovery::legacy_tools(session.configuration.tools.as_deref());
+        let selected_catalog = if external || legacy_discovery {
             self.mcp_projects.base.clone()
         } else {
             match self
@@ -160,7 +161,7 @@ impl Owner {
                 }
             }
         };
-        let selected_catalog = if discovery {
+        let selected_catalog = if legacy_discovery {
             selected_catalog
         } else {
             self.mcp_projects.with_client(id, selected_catalog)?
@@ -210,7 +211,7 @@ impl Owner {
             )),
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Interactive,
-            tool_discovery: !external && !discovery && self.settings.tool_discovery,
+            tool_discovery: !external && !legacy_discovery && self.settings.tool_discovery,
             allowed_tools,
             background: None,
             internal_tools: if external && !host_bridge {

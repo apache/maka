@@ -1254,6 +1254,7 @@ impl Owner {
                 let bot_only = *name == bot::SEND_USER || *name == bot::SLEEP;
                 let memory = *name == discovery::MEMORY;
                 (*name == discovery::COMPLETE && !investigation)
+                    || (*name == discovery::CONTEXT && (!investigation || !self.settings.recall))
                     || (memory && (!self.settings.scheduled_tasks || !(bot || investigation)))
                     || (bot_only && !bot)
                     || (!(bot && (bot_only || memory))

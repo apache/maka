@@ -20,11 +20,6 @@
 use super::*;
 use maka_agent_state::queue::MessageResolution;
 impl CapturedRun {
-    fn is_discovery(&self) -> bool {
-        self.allowed_tools
-            .as_ref()
-            .is_some_and(|t| t.iter().any(|n| n == super::super::discovery::COMPLETE))
-    }
     pub(in crate::owner) fn validate_background_target(
         &self,
         session: &SessionRecord<ResolvedConfiguration>,
@@ -33,7 +28,7 @@ impl CapturedRun {
             && (session.archived
                 || session.configuration.workspace != boundary.workspace
                 || session.configuration.permissions
-                    != if self.is_discovery() {
+                    != if super::super::discovery::legacy_tools(self.allowed_tools.as_deref()) {
                         super::super::discovery::permissions()
                     } else {
                         boundary.permissions.clone()
@@ -132,6 +127,7 @@ impl Owner {
                 Approval::Discovery {
                     approval,
                     recall: self.settings.recall && self.tools.contains("Recall"),
+                    session_tools: true,
                 }
             } else {
                 Approval::Execution { approval }
@@ -305,10 +301,7 @@ impl Owner {
                 // A reminder remains durable until the user acknowledges it.
                 // No paint attempt or socket write is described as delivery.
                 if !matches!(fire.effect, ScheduledEffect::Reminder) {
-                    match self
-                        .dispatch_scheduled(&fire, plan.task.status == Status::Active)
-                        .await
-                    {
+                    match self.dispatch_scheduled(&fire, &plan).await {
                         Ok(Some(run)) => {
                             plan.settle(run).map_err(reason)?;
                             self.scheduler
@@ -341,10 +334,13 @@ impl Owner {
     async fn dispatch_scheduled(
         self: &Arc<Self>,
         fire: &maka_scheduler::plan::Fire<ScheduledEffect, Approval>,
-        active: bool,
+        plan: &Plan,
     ) -> Result<Option<Run>, String> {
+        let active = plan.task.status == Status::Active;
         if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
-            return self.dispatch_discovery(fire, active).await;
+            return self
+                .dispatch_discovery(fire, active, &plan.timezone, plan.task.runs.first())
+                .await;
         }
         let Some(Approval::Execution { approval }) = &fire.authorization else {
             return Ok(Some(settlement(

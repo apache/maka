@@ -88,7 +88,7 @@ async fn cut(history: &SessionHistory, through: Option<u64>) -> Result<HistoryCu
     .map_err(|e| e.to_string())
 }
 
-pub(super) async fn read(
+pub(crate) async fn read(
     owner: &Owner,
     scope: &Scope,
     input: ui::History,
