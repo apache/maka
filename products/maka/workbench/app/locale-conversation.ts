@@ -143,6 +143,7 @@ export const conversationMessages = {
     '請先核准工作區連線，再重試這則訊息。',
   ],
   'Message was not sent.': ['Message was not sent.', '消息尚未发送。', '訊息尚未傳送。'],
+  'Send failed: {reason}': ['Send failed: {reason}', '发送失败：{reason}', '傳送失敗：{reason}'],
   'Delivery not confirmed. Check status before retrying.': [
     'Delivery not confirmed. Check status before retrying.',
     '尚未确认送达，请先检查状态。',

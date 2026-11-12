@@ -38,7 +38,6 @@ mod authentication;
 mod discovery;
 mod effects;
 mod inventory;
-mod metadata;
 mod options;
 mod output;
 mod preferred;
@@ -195,14 +194,7 @@ impl ApiProvider {
     }
 
     fn model_metadata(&self, model: ModelInfo, overrides: Option<&ModelOverride>) -> ModelMetadata {
-        let reported = metadata::enrich(
-            &self.snapshot,
-            self.id,
-            model,
-            overrides.and_then(|value| value.catalog_model.as_ref()),
-        );
-        let info =
-            overrides.map_or_else(|| reported.clone(), |overrides| overrides.apply(&reported));
+        let info = self.snapshot.resolve(self.id, model, overrides);
         let thinking_levels = overrides
             .and_then(|o| o.thinking_levels.clone())
             .or_else(|| info.thinking_levels.clone())

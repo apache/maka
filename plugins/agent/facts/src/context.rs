@@ -47,12 +47,8 @@ pub fn effective_input_limit(context_window: Option<u64>, input_limit: Option<u6
     }
 }
 
-pub fn default_compaction_threshold(
-    context_window: Option<u64>,
-    input_limit: Option<u64>,
-) -> Option<u64> {
-    effective_input_limit(context_window, input_limit)
-        .map(|limit| ((u128::from(limit) * 85 / 100) as u64).max(1))
+pub fn default_compaction_threshold(input_limit: Option<u64>) -> Option<u64> {
+    input_limit.map(|limit| ((u128::from(limit) * 85 / 100) as u64).max(1))
 }
 
 pub fn effective_output_limit(configured: Option<u64>) -> u64 {

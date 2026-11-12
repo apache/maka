@@ -88,10 +88,7 @@ fn model_choice_from_metadata(
                 compaction_threshold: overrides.and_then(|value| value.compaction_threshold),
             },
             context_window: info.context_window,
-            input_limit: maka_agent_facts::context::effective_input_limit(
-                info.context_window,
-                info.input_limit,
-            ),
+            input_limit: info.input_limit,
             max_output_tokens: info.max_output_tokens,
         }),
         tools: Some(ModelToolPreferences {
@@ -124,7 +121,7 @@ async fn model_defaults(
     row: &ConnectionCatalogEntry,
     model: &str,
     overrides: Option<&ModelOverride>,
-    supported: &[maka_agent_facts::execution::ThinkingLevel],
+    current: &maka_providers::api::ModelMetadata,
     snapshot: Arc<maka_providers::catalog::Snapshot>,
 ) -> Option<ModelDefaults> {
     let catalog_matched = snapshot
@@ -152,8 +149,9 @@ async fn model_defaults(
             return None;
         }
     };
-    let mut output = overrides.cloned().unwrap_or_default();
-    output.max_output_tokens = None;
+    let mut inherited_limits = overrides.cloned().unwrap_or_default();
+    inherited_limits.input_limit = None;
+    inherited_limits.max_output_tokens = None;
     let definition = match maka_providers::definition(&row.provider, snapshot) {
         Ok(definition) => definition,
         Err(error) => {
@@ -162,7 +160,7 @@ async fn model_defaults(
         }
     };
     let resolved = match definition
-        .prepare(model_request(row, model, Some(output)))
+        .prepare(model_request(row, model, Some(inherited_limits)))
         .await
     {
         Ok(resolved) => resolved,
@@ -188,14 +186,10 @@ async fn model_defaults(
         catalog_matched,
         label: metadata.info.display_name.unwrap_or_else(|| model.into()),
         context_window: metadata.info.context_window,
-        input_limit: maka_agent_facts::context::effective_input_limit(
-            resolved.info.context_window,
-            metadata.info.input_limit,
-        ),
+        input_limit: resolved.info.input_limit,
         max_output_tokens: Some(max_output_tokens),
         compaction_threshold: maka_agent_facts::context::default_compaction_threshold(
-            resolved.info.context_window,
-            resolved.info.input_limit,
+            current.info.input_limit,
         ),
         code_mode: maka_agent_facts::execution::ToolMode::default()
             == maka_agent_facts::execution::ToolMode::CodeMode,
@@ -208,7 +202,7 @@ async fn model_defaults(
         thinking_levels: metadata.thinking_levels,
         default_thinking_level: metadata
             .default_thinking_level
-            .filter(|level| supported.contains(level)),
+            .filter(|level| current.thinking_levels.contains(level)),
     })
 }
 async fn resolved_model(
@@ -236,7 +230,7 @@ async fn resolved_model(
                 row,
                 &target.model_id,
                 overrides.as_ref(),
-                &metadata.thinking_levels,
+                &metadata,
                 snapshot,
             )
             .await;
