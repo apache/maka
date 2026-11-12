@@ -38,6 +38,7 @@ import {
   CommandSettings,
   createCommands,
   entryKey,
+  LAUNCHER_SHORTCUT,
   type Commands,
   type ToolEntry,
 } from './QuickCommands';
@@ -264,9 +265,10 @@ export function QuickToolsSettings(props: {
         </If>
         <SettingsSection>
           <SettingsSwitch
-            label={tr('Quick tools in the launcher')}
+            label={tr('Turn on quick tools')}
             description={tr(
-              'Symbols, clipboard history, screenshots and the other tools, with their commands and shortcuts. Still being refined.',
+              'Press {shortcut} anywhere to open the quick launcher, with its tools, commands and Maka Bot. Still being refined.',
+              { shortcut: keymap.label(LAUNCHER_SHORTCUT) },
             )}
             checked={quick.enabled()}
             onPress={() => quick.setEnabled(!quick.enabled())}

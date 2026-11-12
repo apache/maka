@@ -501,9 +501,7 @@ function Launcher(
   const placeholder = () =>
     props.scope() !== null
       ? tr('Search {tool}', { tool: props.scope()!.entry.title })
-      : quick.enabled()
-        ? tr('Search tools or ask Maka')
-        : tr('Ask Maka');
+      : tr('Search tools or ask Maka');
   const openSettings = (tool: UiContributionRef) => {
     failure.set(null);
     props.page.set(tool);
@@ -745,17 +743,24 @@ export function QuickLauncher(
     });
     cleanup(() => list.forEach(([shortcut]) => GlobalShortcut.unregister(shortcut)));
   });
-  void GlobalShortcut.register(LAUNCHER_SHORTCUT, toggle).then((registered) => {
-    if (!registered)
-      props.report(
-        new Error(
-          platform.os === 'macos'
-            ? tr('The Option+Space shortcut is unavailable')
-            : tr('The Alt+Space shortcut is unavailable'),
-        ),
-      );
-  }, props.report);
-  cleanup(() => GlobalShortcut.unregister(LAUNCHER_SHORTCUT));
+  // The whole launcher is off until the user turns it on: no shortcut, no popup.
+  effect(() => {
+    if (!quick.enabled()) {
+      if (untracked(props.opened)) void props.close();
+      return;
+    }
+    void GlobalShortcut.register(LAUNCHER_SHORTCUT, toggle).then((registered) => {
+      if (!registered)
+        props.report(
+          new Error(
+            platform.os === 'macos'
+              ? tr('The Option+Space shortcut is unavailable')
+              : tr('The Alt+Space shortcut is unavailable'),
+          ),
+        );
+    }, props.report);
+    cleanup(() => GlobalShortcut.unregister(LAUNCHER_SHORTCUT));
+  });
   return (
     <>
       <Each of={quick.enabled() ? tools() : []} key={(tool: UiContributionRef) => tool.key}>
@@ -777,7 +782,7 @@ export function QuickLauncher(
         closeOnBlur={!props.conversing() && page() === null}
         closeOnPress={!props.conversing()}
         onClosePress={() => void props.close()}
-        open={props.opened()}
+        open={props.opened() && quick.enabled()}
         onOpenChange={({ open }) => {
           if (open) return;
           page.set(null);
