@@ -142,6 +142,7 @@ pub fn compile(entry: &Path, output: &Path, asset_root: Option<&Path>) -> Result
         entry: entry.clone(),
         minify: false,
         split: false,
+        fail_on_unresolved_imports: true,
         ui_sets: vec![nsh_base::registry().into(), host.into()],
         asset_root_from: asset_root.map(Path::to_path_buf),
         ..Default::default()
@@ -311,6 +312,44 @@ mod tests {
         let restored: CompiledUi =
             serde_json::from_slice(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
         assert_label(&restored.module, "inline label");
+    }
+
+    #[test]
+    fn missing_package_fails_before_writing_outputs_and_rebuilds_after_install() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let entry = root.join("entry.ts");
+        let output = root.join("output");
+        fs::write(
+            &entry,
+            "import { signal } from 'nsh'; import { label as packageLabel } from 'pele'; export const label = signal(packageLabel)();",
+        )
+        .unwrap();
+
+        let error = compile_cached(&entry, &output, None, "compiler")
+            .err()
+            .expect("an unresolved package must fail the build");
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("UNRESOLVED_IMPORT"), "{diagnostic}");
+        assert!(diagnostic.contains("pele"), "{diagnostic}");
+        assert!(diagnostic.contains("entry.ts"), "{diagnostic}");
+        assert!(!output.exists());
+
+        let package = root.join("node_modules/pele");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{"name":"pele","type":"module","exports":"./index.js"}"#,
+        )
+        .unwrap();
+        fs::write(
+            package.join("index.js"),
+            "export const label = 'bundled package';",
+        )
+        .unwrap();
+
+        let compiled = compile_cached(&entry, &output, None, "compiler").unwrap();
+        assert_label(&compiled.module, "bundled package");
     }
 
     #[test]
