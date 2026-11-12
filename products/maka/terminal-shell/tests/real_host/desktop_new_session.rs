@@ -219,7 +219,8 @@ impl Desktop {
 
     fn pump(&self) {
         self.platform.pump_with_draw(true);
-        assert!(self.platform.take_error().is_none(), "native UI failed");
+        let error = self.platform.take_error();
+        assert!(error.is_none(), "native UI failed: {error:?}");
     }
 
     async fn until<T>(&self, stage: &str, mut read: impl FnMut() -> Option<T>) -> T {

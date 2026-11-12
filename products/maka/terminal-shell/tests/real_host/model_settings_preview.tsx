@@ -356,6 +356,7 @@ function Preview() {
   }
   const context = {
     runtime: {
+      contributions: () => [contribution],
       ready: () => true,
       settings: () => [contribution],
       render: (_: unknown, props: { input: SettingsPageInput }) => <Page input={props.input} />,
