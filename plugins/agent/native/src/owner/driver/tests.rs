@@ -198,6 +198,7 @@ struct Rig {
     directory: TestDirectory,
     socket_directory: TestDirectory,
     model_listener: std::net::TcpListener,
+    model_overrides: Value,
     store: Option<Arc<RootStore>>,
     host: Option<Arc<Host>>,
     serving: Option<JoinHandle<Result<(), String>>>,
@@ -231,6 +232,7 @@ impl Rig {
             directory: TestDirectory::Owned(tempfile::tempdir()?),
             socket_directory: TestDirectory::Owned(socket_directory),
             model_listener,
+            model_overrides: json!({}),
             store: None,
             host: None,
             serving: None,
@@ -536,7 +538,8 @@ impl Rig {
                 "slug":"wait-local", "name":"wait-local",
                 "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
                 "configuration":{"baseUrl":format!("http://{}/v1", self.model_listener.local_addr()?)},
-                "enabled":true, "enabledModelIds":["llama3.2"]
+                "enabled":true, "enabledModelIds":["llama3.2"],
+                "modelOverrides":self.model_overrides
             }
         }))?).await?;
         let CatalogMutationResult::Committed {
@@ -1361,6 +1364,270 @@ mod bounded_risk {
             )
             .await?;
         Ok((cell, parent))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn compaction_reuses_background_summary_after_late_cell_return() {
+        use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+        use maka_agent_facts::{
+            cells::{CellObservation, CellVmBinding, SessionPublication},
+            context::{CompactedContext, RequestContextEvidence},
+            tool_output::CellFinalEvidence,
+        };
+        use std::sync::atomic::AtomicUsize;
+
+        let mut rig = Rig::new().unwrap();
+        rig.model_overrides = json!({"llama3.2":{"contextWindow":5_000}});
+        let stop = CancellationToken::new();
+        let posts = Arc::new(AtomicUsize::new(0));
+        let listener =
+            tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
+        let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(model_recovery::serve(
+            listener,
+            posts.clone(),
+            stop.clone(),
+            Some(requests),
+        ));
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble_model(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let run = driver.access.execution().run_id;
+            let (_, main, _) = rig.record_model_request(Preparation::Initial).await?;
+            let (cell, parent) = start_original_cell(&rig, main).await?;
+            rig.finish_model_request(main, None).await?;
+            let completed = ContentBlob::json(&CellObservation::Completed {
+                cell_id: cell,
+                content: vec![],
+                result: json!("completed before the cut"),
+            })?;
+            let accepted = ContentBlob::json(&AcceptedToolResult::RecoveredCell {
+                cell,
+                evidence: CellFinalEvidence::Completed {
+                    result: completed.reference().clone(),
+                },
+            })?;
+            rig.append(
+                vec![
+                    Fact::Cell {
+                        event: CellEvent::VmBound {
+                            cell,
+                            binding: CellVmBinding {
+                                runtime: "fixture".into(),
+                                version: 1,
+                                descriptor: completed.reference().clone(),
+                            },
+                        },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::Completed {
+                            cell,
+                            result: completed.reference().clone(),
+                            publication: SessionPublication {
+                                values: Default::default(),
+                                loaded_tools: None,
+                            },
+                        },
+                    },
+                    Fact::Cell {
+                        event: CellEvent::ResultAccepted { cell },
+                    },
+                    Fact::ToolResultAccepted {
+                        tool: parent.clone(),
+                        result: accepted.reference().clone(),
+                        outcome: AcceptedResult::CellRecovered { cell },
+                    },
+                ],
+                vec![completed, accepted],
+            )
+            .await?;
+
+            // Snapshot the original tool acceptance before its callback returns.
+            let mut summary_cut = driver.state.frontier(run).await?;
+            summary_cut.current_step = None;
+            let mut summary = driver
+                .model()?
+                .prepare_step(&summary_cut, Preparation::Summary, driver)
+                .await?;
+            let summary_body = ContentBlob::json(&summary.request)?;
+            summary.contents.push(summary_body.clone());
+
+            let late_text = format!(
+                "Late result belongs after the checkpoint. {}",
+                "x".repeat(50_000)
+            );
+            let late = ContentBlob::json(&ToolReturn {
+                schema_version: SCHEMA_VERSION,
+                artifacts: vec![],
+                body: ReturnedToolResult {
+                    output: ToolOutput::Text(late_text.clone()),
+                    projection: DurableToolProjection::Text { text: late_text },
+                    is_error: false,
+                    loaded_tools: Default::default(),
+                },
+            })?;
+            rig.append(
+                vec![Fact::LocalToolReturned {
+                    tool: parent,
+                    settlement: ToolSettlement::Returned,
+                    result: late.reference().clone(),
+                    is_error: false,
+                    cell_observation: None,
+                }],
+                vec![late],
+            )
+            .await?;
+
+            let view = driver.state.frontier(run).await?;
+            let mut pending = driver
+                .model()?
+                .prepare_step(
+                    &view,
+                    Preparation::ToolContinuation { attempt: main },
+                    driver,
+                )
+                .await?;
+            let pending_body = ContentBlob::json(&pending.request)?;
+            pending.contents.push(pending_body.clone());
+            pending.contents.extend(summary.contents);
+            let background = ModelAttemptId::new();
+            rig.append(
+                vec![
+                    Fact::StepPrepared {
+                        step: pending.request.step,
+                        request: pending_body.reference().clone(),
+                        adjudications: vec![],
+                    },
+                    Fact::ProactiveSummaryPrepared {
+                        step: summary.request.step,
+                        request: summary_body.reference().clone(),
+                        attempt: background,
+                    },
+                    Fact::ModelAttemptAdmitted {
+                        attempt: background,
+                        upstream: json!({"fixture":"precomputed"}),
+                    },
+                ],
+                pending.contents,
+            )
+            .await?;
+            let provenance: RequestContextEvidence = serde_json::from_slice(
+                &driver
+                    .state
+                    .content(run, pending.request.provenance)
+                    .await?,
+            )?;
+            assert_eq!(
+                provenance.model_context.as_ref().unwrap().declared_window,
+                Some(4_250)
+            );
+            assert!(provenance.estimated_input_tokens >= 4_250, "{provenance:?}");
+            let summary_text = "Already prepared in the background.";
+            rig.finish_model_request(background, Some(summary_text))
+                .await?;
+
+            let engine = Engine::new(driver.state.clone());
+            let mut changes = driver.state.subscribe()?;
+            loop {
+                changes.borrow_and_update();
+                match engine
+                    .drive(
+                        driver.access.claim().clone(),
+                        driver.clone(),
+                        CancellationToken::new(),
+                    )
+                    .await?
+                {
+                    DriverExit::Waiting { .. } => changes.changed().await?,
+                    DriverExit::Terminal {
+                        terminal: Terminal::Completed,
+                        ..
+                    } => break,
+                    other => {
+                        let history = driver.state.history(run, 0, 128).await?;
+                        let failure = history.iter().rev().find_map(|fact| match &fact.fact {
+                            Fact::RunTerminated { diagnostic, .. }
+                            | Fact::ModelClosed { diagnostic, .. } => diagnostic.as_deref(),
+                            Fact::ModelInterrupted { diagnostic, .. } => Some(diagnostic.as_str()),
+                            _ => None,
+                        });
+                        return Err(format!(
+                            "compacted Run did not complete: {other:?}; {failure:?}"
+                        )
+                        .into());
+                    }
+                }
+            }
+            assert_eq!(posts.load(Ordering::SeqCst), 1);
+            let wire: Value = serde_json::from_slice(&received.try_recv()?)?;
+            let messages = wire["messages"]
+                .as_array()
+                .ok_or("missing provider messages")?;
+            let summary_position = messages
+                .iter()
+                .position(|message| message.to_string().contains(summary_text))
+                .ok_or("background summary missing")?;
+            let late_position = messages
+                .iter()
+                .position(|message| {
+                    message
+                        .to_string()
+                        .contains("Late result belongs after the checkpoint")
+                })
+                .ok_or("late tool result missing")?;
+            assert!(summary_position < late_position);
+
+            let history = driver.state.history(run, 0, 128).await?;
+            let [index]: [usize; 1] = history
+                .iter()
+                .enumerate()
+                .filter_map(|(index, fact)| {
+                    matches!(fact.fact, Fact::ContextCompacted { .. }).then_some(index)
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|indices: Vec<usize>| {
+                    format!("unexpected checkpoint count: {indices:?}")
+                })?;
+            let Fact::ContextCompacted { baseline } = &history[index].fact else {
+                unreachable!()
+            };
+            let checkpoint: CompactedContext =
+                serde_json::from_slice(&driver.state.content(run, baseline.clone()).await?)?;
+            assert_eq!(checkpoint.checkpoint.summary_step_id, summary.request.step);
+            let Fact::StepPrepared { step, .. } = history[index + 1].fact else {
+                return Err("compaction was not followed by prepared Main".into());
+            };
+            let main = driver.state.request(run, step).await?;
+            let provenance: RequestContextEvidence =
+                serde_json::from_slice(&driver.state.content(run, main.provenance).await?)?;
+            assert_eq!(
+                provenance.previous_checkpoint_id,
+                Some(history[index].id.to_string())
+            );
+            driver.state.rebuild(run).await?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        stop.cancel();
+        server.await.unwrap().unwrap();
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        match result {
+            Ok(result) => result.expect("compaction replay timed out").unwrap(),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
     }
 
     async fn running_cell_with_returned_parent(
@@ -4215,6 +4482,124 @@ async fn queued_admission_wakes_when_goal_or_session_lock_releases() -> TestResu
     result?;
     assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compaction_cancels_background_request_when_main_finishes() {
+    use axum::{
+        body::{Body, Bytes},
+        response::IntoResponse,
+    };
+    use futures_util::StreamExt;
+    use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+
+    let mut rig = Rig::new().unwrap();
+    rig.model_overrides = json!({"llama3.2":{"compactionThreshold":1_800}});
+    let stop = CancellationToken::new();
+    let main_ready = Arc::new(tokio::sync::Notify::new());
+    let listener =
+        tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
+    let release = main_ready.clone();
+    let shutdown = stop.clone();
+    let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(
+        move |request: axum::extract::Request| {
+            let release = release.clone();
+            let stop = shutdown.clone();
+            async move {
+                let bytes = axum::body::to_bytes(request.into_body(), 1024 * 1024).await.unwrap();
+                let request: Value = serde_json::from_slice(&bytes).unwrap();
+                let chunk = |delta: Value, finish: Value| format!("data: {}\n\n", json!({
+                    "id":"compaction-cancel","object":"chat.completion.chunk","created":1,"model":"llama3.2",
+                    "choices":[{"index":0,"delta":delta,"finish_reason":finish}]
+                }));
+                let body = if request["tools"].as_array().is_some_and(|tools| !tools.is_empty()) {
+                    release.notified().await;
+                    Body::from(chunk(json!({"role":"assistant","content":"Main completed."}), Value::Null)
+                        + &chunk(json!({}), json!("stop")) + "data: [DONE]\n\n")
+                } else {
+                    let first = chunk(json!({"role":"assistant","content":"Background summary still running."}), Value::Null);
+                    Body::from_stream(futures_util::stream::once(async { Ok::<_, std::io::Error>(Bytes::from(first)) })
+                        .chain(futures_util::stream::once(async move { stop.cancelled().await; Ok(Bytes::new()) })))
+                };
+                ([("content-type", "text/event-stream")], body).into_response()
+            }
+        }
+    ));
+    let shutdown = stop.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+    });
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let session = rig.start().await?;
+        rig.assemble_model(&session, Budget { tokens:None, retries:0, deadline:None }, false).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        rig.record_model_reply(Preparation::Initial, None).await?;
+        let view = driver.state.frontier(run).await?;
+        let mut main = driver.model()?.prepare_step(&view, Preparation::Initial, driver).await?;
+        let body = ContentBlob::json(&main.request)?;
+        main.contents.push(body.clone());
+        rig.append(vec![Fact::StepPrepared {
+            step: main.request.step, request: body.reference().clone(), adjudications: vec![],
+        }], main.contents).await?;
+        let context: maka_agent_facts::context::RequestContextEvidence =
+            serde_json::from_slice(&driver.state.content(run, main.request.provenance).await?)?;
+        assert!((1_530..1_800).contains(&context.estimated_input_tokens), "{context:?}");
+
+        let engine = Engine::new(driver.state.clone());
+        let mut changes = driver.state.subscribe()?;
+        let release_main = async {
+            loop {
+                changes.borrow_and_update();
+                if let Some(background) = driver.state.frontier(run).await?.proactive_summary
+                    && driver.state.history(run, 0, 128).await?.iter().any(|fact|
+                        matches!(fact.fact, Fact::ModelFirstTokenObserved { attempt } if attempt == background)
+                    )
+                {
+                    main_ready.notify_one();
+                    return Ok::<_, Box<dyn Error + Send + Sync>>(background);
+                }
+                changes.changed().await?;
+            }
+        };
+        let drive = async {
+            let mut changes = driver.state.subscribe()?;
+            loop {
+                changes.borrow_and_update();
+                let exit = engine.drive(driver.access.claim().clone(), driver.clone(), CancellationToken::new()).await?;
+                if !matches!(exit, DriverExit::Waiting { .. }) {
+                    return Ok::<_, Box<dyn Error + Send + Sync>>(exit);
+                }
+                changes.changed().await?;
+            }
+        };
+        let (background, exit) = tokio::try_join!(release_main, Box::pin(drive))?;
+        assert!(matches!(exit, DriverExit::Terminal { terminal: Terminal::Completed, .. }), "{exit:?}");
+        let history = driver.state.history(run, 0, 128).await?;
+        let interruption = history.iter().find_map(|fact| match &fact.fact {
+            Fact::ModelInterrupted { attempt, diagnostic } if *attempt == background => Some(diagnostic),
+            _ => None,
+        }).ok_or("background source was not interrupted")?;
+        assert!(interruption.contains("cancel"), "{interruption}");
+        assert!(history.iter().any(|fact| matches!(fact.fact,
+            Fact::ModelCleanupObserved { attempt, cleanup: OperationCleanup::Confirmed } if attempt == background
+        )));
+        assert!(!history.iter().any(|fact| matches!(fact.fact,
+            Fact::AttemptRecoveryRecorded { attempt, .. } if attempt == background
+        )));
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    })).catch_unwind().await;
+    stop.cancel();
+    main_ready.notify_one();
+    server.await.unwrap().unwrap();
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match result {
+        Ok(result) => result.expect("background cancellation timed out").unwrap(),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

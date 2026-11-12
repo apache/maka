@@ -309,9 +309,14 @@ impl DriverModel {
                 Ok(prepared)
             }
             .boxed(),
-            Preparation::AfterCompaction { attempt } => {
-                self.prepare_compacted_main(view, attempt, driver).boxed()
+            Preparation::AdoptCompaction(adoption) => async move {
+                self.prepare_compacted_main(view, adoption.origin.attempt, Some(&adoption), driver)
+                    .await
             }
+            .boxed(),
+            Preparation::AfterCompaction { attempt } => self
+                .prepare_compacted_main(view, attempt, None, driver)
+                .boxed(),
             mode => self.prepare_main_step(view, mode, driver).boxed(),
         }
     }
@@ -339,7 +344,7 @@ impl DriverModel {
         let (definitions, catalog) = if summary {
             (Vec::new(), None)
         } else {
-            let bound = driver.bind_step_tools(view, &model).await?;
+            let bound = driver.bind_step_tools(view, &model, false).await?;
             (bound.definitions, Some(bound.catalog))
         };
         let definitions: Vec<_> = definitions.into_iter().map(Arc::new).collect();
@@ -1087,7 +1092,6 @@ impl DriverModel {
                 through: knowledge.through,
             },
             knowledge.cell,
-            knowledge.through,
             &knowledge.children,
             view.spec.language,
             vision,
@@ -2038,7 +2042,6 @@ impl DriverModel {
                         through: knowledge.through,
                     },
                     cell,
-                    knowledge.through,
                     &knowledge.children,
                     language,
                     vision,
@@ -2263,6 +2266,7 @@ impl DriverModel {
         let executor = self.executor.clone();
         let conversation = self.conversation.clone();
         let retry_phase = view.retry_phase;
+        let proactive = view.proactive_summary == Some(attempt);
         let cancellation = work.cancellation.clone();
         let cleanup = self.cleanup.clone();
         let state = self.state.clone();
@@ -2658,7 +2662,7 @@ impl DriverModel {
             if let Err(error) = result {
                 cleanup.observe(&error);
                 // Preparation failure and lost local observation are not upstream closure.
-                if !stream_opened || !matches!(&error, RunError::Model(_)) {
+                if proactive || !stream_opened || !matches!(&error, RunError::Model(_)) {
                     emit(&send, &cancellation, Err(error)).await;
                     return;
                 }

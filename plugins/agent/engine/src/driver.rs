@@ -23,7 +23,11 @@ use crate::{
     reconcile::{self, Action, Live, WorkKey},
 };
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
-use maka_agent_facts::{context::SummaryOrigin, durable::*, tool_call::ToolRejection};
+use maka_agent_facts::{
+    context::{CheckpointMode, SummaryOrigin},
+    durable::*,
+    tool_call::ToolRejection,
+};
 use maka_agent_state::{
     Change, Commit, ContentBlob, DriverClaim, Head, Store,
     fold::{RunView, Tool, tool_key},
@@ -214,6 +218,12 @@ impl PendingPublication {
     }
 }
 
+struct CompactionCommit {
+    checkpoint: Change,
+    baseline: ContentBlob,
+    candidate: Option<SummaryOrigin>,
+}
+
 #[expect(
     clippy::large_enum_variant,
     reason = "Worker handoffs carry owned results inline rather than allocating a separate payload for every completion"
@@ -258,6 +268,7 @@ enum Completion {
     },
     Prepared {
         control: u64,
+        compaction: Option<Box<CompactionCommit>>,
         result: Result<PreparedStep, RunError>,
     },
     ProactiveSummaryPrepared {
@@ -557,7 +568,8 @@ impl Engine {
                             })
                         )
                     });
-                let reload = summary_key != Some((current_summary, overflow))
+                let key = (current_summary, overflow, live.rejected_summaries.len());
+                let reload = summary_key != Some(key)
                     || model_level.as_ref().is_none_or(|(step, baseline, _)| {
                         *step != view.current_step || *baseline != view.baseline
                     });
@@ -573,7 +585,7 @@ impl Engine {
                         }
                     };
                     model_level = Some((view.current_step, view.baseline.clone(), level));
-                    summary_key = Some((current_summary, overflow));
+                    summary_key = Some(key);
                 }
                 // A canonical closure is immutable for its attempt; presence identifies
                 // its one protocol body without cloning or hashing that body each loop.
@@ -696,35 +708,64 @@ impl Engine {
                     .await?;
                 }
                 action @ (Action::Compact(_) | Action::AdoptCandidate(_)) => {
-                    let origin = match action {
-                        Action::AdoptCandidate(origin) => {
-                            if !ports.proactive_summary_matches(&view, origin).await? {
-                                live.rejected_summaries.push(origin);
-                                model_level = None;
-                                continue;
-                            }
-                            origin
-                        }
-                        Action::Compact(attempt) => SummaryOrigin { run, attempt },
+                    let (origin, candidate) = match action {
+                        Action::AdoptCandidate(origin) => (origin, Some(origin)),
+                        Action::Compact(attempt) => (SummaryOrigin { run, attempt }, None),
                         _ => unreachable!(),
                     };
-                    if let Err(error) = self.complete_compaction(&claim, &view, origin, now).await {
-                        match error {
-                            RunError::CompactionFailed(diagnostic) => {
-                                self.publish(
-                                    Some(&claim),
-                                    &view,
-                                    vec![Fact::RunTerminated {
-                                        terminal: Terminal::Failed,
-                                        diagnostic: Some(diagnostic),
-                                    }],
-                                    vec![],
-                                    now,
-                                )
-                                .await?;
-                            }
-                            error => self.port_failure(&claim, &view, error, now).await?,
+                    let material = match self.compaction_checkpoint(&view, origin).await {
+                        Ok(Some(material)) => material,
+                        Ok(None) => continue,
+                        Err(RunError::CompactionFailed(diagnostic)) => {
+                            self.publish(
+                                Some(&claim),
+                                &view,
+                                termination_facts(&view, Terminal::Failed, Some(diagnostic)),
+                                vec![],
+                                now,
+                            )
+                            .await?;
+                            continue;
                         }
+                        Err(error) => {
+                            self.port_failure(&claim, &view, error, now).await?;
+                            continue;
+                        }
+                    };
+                    let baseline = ContentBlob::json(&material)?;
+                    let fact = Fact::ContextCompacted {
+                        baseline: baseline.reference().clone(),
+                    };
+                    if material.checkpoint.mode == CheckpointMode::Standalone {
+                        self.publish(Some(&claim), &view, vec![fact], vec![baseline], now)
+                            .await?;
+                    } else {
+                        let checkpoint = Change::new(fact, now);
+                        let preparation =
+                            Preparation::AdoptCompaction(Box::new(CompactionAdoption {
+                                origin,
+                                checkpoint: checkpoint.id,
+                                baseline: baseline.reference().clone(),
+                                material,
+                            }));
+                        let compaction = Box::new(CompactionCommit {
+                            checkpoint,
+                            baseline,
+                            candidate,
+                        });
+                        live.work.insert(WorkKey::Prepare);
+                        let ports = ports.clone();
+                        let snapshot = view.clone();
+                        work.push(
+                            async move {
+                                Completion::Prepared {
+                                    control: snapshot.control_version,
+                                    compaction: Some(compaction),
+                                    result: ports.prepare_step(&snapshot, preparation).await,
+                                }
+                            }
+                            .boxed(),
+                        );
                     }
                 }
                 Action::AcceptCellFinal(cell) => {
@@ -743,6 +784,7 @@ impl Engine {
                         async move {
                             Completion::Prepared {
                                 control: snapshot.control_version,
+                                compaction: None,
                                 result: ports.prepare_step(&snapshot, preparation).await,
                             }
                         }
@@ -1207,7 +1249,11 @@ impl Engine {
                 self.complete_external(claim, ports, live, work, completion, retiring)
                     .await?;
             }
-            Completion::Prepared { control, result } => {
+            Completion::Prepared {
+                control,
+                compaction,
+                result,
+            } => {
                 live.work.remove(&WorkKey::Prepare);
                 if retiring
                     || control != view.control_version
@@ -1220,6 +1266,26 @@ impl Engine {
                 }
                 let prepared = match result {
                     Ok(value) => value,
+                    Err(RunError::CompactionMismatch)
+                        if compaction
+                            .as_ref()
+                            .is_some_and(|commit| commit.candidate.is_some()) =>
+                    {
+                        live.rejected_summaries
+                            .extend(compaction.and_then(|commit| commit.candidate));
+                        return Ok(());
+                    }
+                    Err(error @ RunError::CompactionMismatch) => {
+                        self.publish(
+                            Some(claim),
+                            &view,
+                            termination_facts(&view, Terminal::Failed, Some(error.to_string())),
+                            vec![],
+                            now,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
                     Err(RunError::CompactionFailed(diagnostic)) => {
                         self.publish(
                             Some(claim),
@@ -1256,6 +1322,16 @@ impl Engine {
                     contents,
                     steering: prepared.steering,
                 };
+                if let Some(compaction) = compaction {
+                    let CompactionCommit {
+                        mut checkpoint,
+                        baseline,
+                        ..
+                    } = *compaction;
+                    checkpoint.at = now;
+                    publication.changes.insert(0, checkpoint);
+                    publication.contents.push(baseline);
+                }
                 for notice in prepared.notifications {
                     publication.changes.push(Change::new(
                         Fact::Cell {

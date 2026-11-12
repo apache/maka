@@ -19,9 +19,9 @@
 
 //! Append complete compacted material from its original bound source.
 use super::*;
+use maka_agent_engine::ports::CompactionAdoption;
 use maka_agent_facts::context::{
-    CheckpointContent, CompactedContext, RequestContextEvidence, SummaryOrigin,
-    codex_replay_allowed,
+    CheckpointContent, CompactedContext, RequestContextEvidence, codex_replay_allowed,
 };
 use maka_agent_facts::language::Language;
 use maka_model::prompt::AssistantPart;
@@ -148,80 +148,26 @@ impl DriverModel {
         }
     }
 
-    pub(in crate::owner) async fn proactive_summary_matches(
-        &self,
-        view: &RunView,
-        origin: SummaryOrigin,
-    ) -> Result<bool, RunError> {
-        let step = view
-            .current_step
-            .ok_or_else(|| unsupported("proactive-summary-pending-main-step"))?;
-        let reader = self.history_reader(view.run).await?;
-        let main = reader.request(view.run, step).await?;
-        let attempt = self.state.model_attempt(origin.run, origin.attempt).await?;
-        let summary = reader.request(origin.run, attempt.step).await?;
-        let main_input = self.frozen_input(&reader, view.run, &main).await?;
-        let summary_input = self.frozen_input(&reader, origin.run, &summary).await?;
-        if !summary_input
-            .accepted
-            .same_execution_route(&main_input.accepted)
-            || summary_input.route_identity != main_input.route_identity
-            || !same_adapter_revision(&main_input.adapter, &summary_input.adapter)
-        {
-            return Ok(false);
-        }
-        if summary_input.operation == ModelOperation::CodexCompaction {
-            let summary_context: RequestContextEvidence =
-                reader.decode(origin.run, &summary.provenance).await?;
-            let main_context: RequestContextEvidence =
-                reader.decode(view.run, &main.provenance).await?;
-            let (Some(source), Some(target)) = (
-                summary_context
-                    .model_context
-                    .and_then(|context| context.codex),
-                main_context.model_context.and_then(|context| context.codex),
-            ) else {
-                return Ok(false);
-            };
-            if !codex_replay_allowed(
-                main.accounting.model_id == summary.accounting.model_id,
-                source
-                    .compatibility
-                    .zip(target.compatibility)
-                    .map(|(source, target)| source.comp_hash == target.comp_hash),
-                main_input.operation,
-            ) {
-                return Ok(false);
-            }
-        }
-        let original = self
-            .restore_frozen(&reader, view.run, &main, &main_input)
-            .await?;
-        let result = self
-            .compaction_tail_start(&reader, &original, origin.run, &summary, &summary_input)
-            .await
-            .map(|end| end.is_some());
-        match original.close().await {
-            Ok(()) => result,
-            Err(close) => Err(match result {
-                Ok(_) => self.cleanup.preparation_failed(close),
-                Err(error) => preparation::preparation_cleanup_error(error, close),
-            }),
-        }
-    }
-
     pub(super) async fn prepare_compacted_main(
         &self,
         view: &RunView,
         summary: ModelAttemptId,
+        adoption: Option<&CompactionAdoption>,
         driver: &super::super::driver::NativeDriver,
     ) -> Result<PreparedStep, RunError> {
         use maka_agent_facts::model::prompt_source::source::MessageRecipe;
         let reader = self.history_reader(view.run).await?;
-        let baseline = view.baseline.as_ref().ok_or_else(|| {
-            RunError::ReconciliationRequired("adoption has no original baseline".into())
-        })?;
-        let compacted: CompactedContext = reader.decode(view.run, baseline).await?;
+        let recorded;
+        let (baseline, compacted) = match adoption {
+            Some(adoption) => (&adoption.baseline, &adoption.material),
+            None => {
+                let baseline = view.baseline.as_ref().ok_or_else(|| {
+                    RunError::ReconciliationRequired("adoption has no original baseline".into())
+                })?;
+                recorded = reader.decode(view.run, baseline).await?;
+                (baseline, &recorded)
+            }
+        };
         let producer = match compacted.summary_origin {
             Some(origin) if origin.attempt == summary => origin.run,
             Some(_) => {
@@ -270,6 +216,14 @@ impl DriverModel {
         if frozen.accepted != self.source.accepted {
             return Err(unsupported("adopted-main-model-changed"));
         }
+        if !summary_input
+            .accepted
+            .same_execution_route(&frozen.accepted)
+            || summary_input.route_identity != frozen.route_identity
+            || !same_adapter_revision(&summary_input.adapter, &frozen.adapter)
+        {
+            return Err(RunError::CompactionMismatch);
+        }
         let model = self.source.capture().await?;
         let adapter = self.executor.binding(&model.provider)?;
         if !same_adapter_revision(adapter.source(), &frozen.adapter)
@@ -277,36 +231,63 @@ impl DriverModel {
         {
             return Err(unsupported("adopted-main-route-changed"));
         }
-        let bound = driver.bind_step_tools(view, &model).await?;
-        let capture: RequestSource = reader.decode(view.run, &request.source_capture).await?;
-        let mut after = if producer == view.run {
-            let summary_capture: RequestSource = reader
-                .decode(producer, &summary_request.source_capture)
-                .await?;
-            summary_capture.current_revision
-        } else {
-            0
-        };
-        let mut checkpoint = None;
-        while after < view.revision {
-            let page = self.state.history(view.run, after, 256).await?;
-            if page.is_empty() {
-                break;
-            }
-            for fact in page {
-                if fact.revision > view.revision {
-                    break;
-                }
-                after = fact.revision;
-                if matches!(&fact.fact,Fact::ContextCompacted{baseline:original} if original==baseline)
-                {
-                    checkpoint = Some(fact.id.to_string());
-                }
+        if let Some(native) = &compacted.native {
+            let main_context: RequestContextEvidence =
+                reader.decode(view.run, &request.provenance).await?;
+            let compatible = main_context
+                .model_context
+                .and_then(|context| context.codex)
+                .is_some_and(|target| {
+                    codex_replay_allowed(
+                        request.accounting.model_id == summary_request.accounting.model_id,
+                        native
+                            .producer
+                            .compatibility
+                            .as_ref()
+                            .zip(target.compatibility.as_ref())
+                            .map(|(old, new)| old.comp_hash == new.comp_hash),
+                        frozen.operation,
+                    )
+                });
+            if !compatible {
+                return Err(RunError::CompactionMismatch);
             }
         }
-        let checkpoint = checkpoint.ok_or_else(|| {
-            RunError::ReconciliationRequired("adoption lost its original checkpoint fact".into())
-        })?;
+        let capture: RequestSource = reader.decode(view.run, &request.source_capture).await?;
+        let checkpoint = if let Some(adoption) = adoption {
+            adoption.checkpoint.to_string()
+        } else {
+            let mut after = if producer == view.run {
+                let summary_capture: RequestSource = reader
+                    .decode(producer, &summary_request.source_capture)
+                    .await?;
+                summary_capture.current_revision
+            } else {
+                0
+            };
+            let mut checkpoint = None;
+            while after < view.revision {
+                let page = self.state.history(view.run, after, 256).await?;
+                if page.is_empty() {
+                    break;
+                }
+                for fact in page {
+                    if fact.revision > view.revision {
+                        break;
+                    }
+                    after = fact.revision;
+                    if matches!(&fact.fact,Fact::ContextCompacted{baseline:original} if original==baseline)
+                    {
+                        checkpoint = Some(fact.id.to_string());
+                    }
+                }
+            }
+            checkpoint.ok_or_else(|| {
+                RunError::ReconciliationRequired(
+                    "adoption lost its original checkpoint fact".into(),
+                )
+            })?
+        };
         let original = self
             .restore_frozen(&reader, view.run, &request, &frozen)
             .await?;
@@ -314,9 +295,8 @@ impl DriverModel {
             let start = self
                 .compaction_tail_start(&reader, &original, producer, &summary_request, &summary_input)
                 .await?
-                .ok_or_else(|| RunError::CompactionFailed(
-                    "pending input no longer has the exact compacted logical prefix".into(),
-                ))?;
+                .ok_or(RunError::CompactionMismatch)?;
+            let bound = driver.bind_step_tools(view, &model, adoption.is_some()).await?;
             let directory=original.recipes().ok_or_else(||unsupported("pending-main-directory"))?;
             let mut provenance:Value=reader.decode(view.run,&request.provenance).await?;
             let context = current_context(&mut provenance, &model, frozen.operation)?;
@@ -328,7 +308,7 @@ impl DriverModel {
                     let mut system=directory.open(0);
                     while let Some(recipe)=system.next().await?{if matches!(recipe,MessageRecipe::System{..}){builder.append_recipe(&recipe).await?;}}
                 }
-                self.append_compacted(&reader,view.run,baseline,ReplayTarget::new(&model, frozen.operation),frozen.language,&mut builder).await?;
+                self.append_compacted_material(&reader,view.run,compacted,ReplayTarget::new(&model, frozen.operation),frozen.language,&mut builder).await?;
                 let mut tail=directory.open(start);
                 while let Some(recipe)=tail.next().await?{if !matches!(recipe,MessageRecipe::System{..})&& let Some(recipe)=ReplayTarget::new(&model,frozen.operation).recipe(recipe).await?{builder.append_recipe(&recipe).await?;}}
                 Ok::<(),RunError>(())
@@ -367,16 +347,16 @@ impl DriverModel {
                 Ok(contents)
             }.await;
             let contents=match prompt.close().await{Ok(())=>result,Err(close)=>Err(match result{Ok(_)=>self.cleanup.preparation_failed(close),Err(error)=>preparation::preparation_cleanup_error(error,close)})}?;
-            Ok(PreparedStep{request,contents,notifications:vec![],steering:None})
+            Ok((PreparedStep{request,contents,notifications:vec![],steering:None}, bound.catalog))
         }.await;
-        let prepared = match original.close().await {
+        let (prepared, catalog) = match original.close().await {
             Ok(()) => result,
             Err(close) => Err(match result {
                 Ok(_) => self.cleanup.preparation_failed(close),
                 Err(error) => preparation::preparation_cleanup_error(error, close),
             }),
         }?;
-        driver.install_step_tools(prepared.request.step, bound.catalog)?;
+        driver.install_step_tools(prepared.request.step, catalog)?;
         Ok(prepared)
     }
 
@@ -413,6 +393,19 @@ impl DriverModel {
         messages: &mut preparation::PromptBuilder,
     ) -> Result<RequestSource, RunError> {
         let body: CompactedContext = reader.decode(run, baseline).await?;
+        self.append_compacted_material(reader, run, &body, target, language, messages)
+            .await
+    }
+
+    async fn append_compacted_material(
+        &self,
+        reader: &HistorySource<'_>,
+        run: RunId,
+        body: &CompactedContext,
+        target: ReplayTarget<'_>,
+        language: Language,
+        messages: &mut preparation::PromptBuilder,
+    ) -> Result<RequestSource, RunError> {
         if matches!(
             &body.checkpoint.summary,
             CheckpointContent::CodexNative { .. }
