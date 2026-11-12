@@ -73,6 +73,7 @@ export function QuickRow(props: {
   badge?: string | undefined;
   icon: QuickIcon | 'maka';
   image?: string | undefined;
+  previewRow?: boolean;
   unread: boolean;
   selected: boolean;
   onPress(): void;
@@ -110,9 +111,9 @@ export function QuickRow(props: {
         style={{
           ...bodyTextStyle,
           flexShrink: 0,
-          maxWidth: '60%',
+          maxWidth: props.previewRow ? '86%' : '60%',
           fontWeight: '500',
-          color: C.text,
+          color: props.previewRow && props.selected ? C.accent : C.text,
           numberOfLines: 1,
           textOverflow: 'ellipsis',
         }}
@@ -167,7 +168,11 @@ export function QuickRow(props: {
   );
 }
 
-export function QuickFooter(props: { action: string; settings: boolean }) {
+export function QuickFooter(props: {
+  action: string;
+  settings: boolean;
+  onAction?: (() => void) | undefined;
+}) {
   const hint = { fontSize: 12, lineHeight: 18, color: C.muted } as const;
   return (
     <View
@@ -185,7 +190,15 @@ export function QuickFooter(props: { action: string; settings: boolean }) {
       <If when={props.settings}>
         <Text style={hint}>{`${tr('Settings')} ${keymap.label('mod+,')}`}</Text>
       </If>
-      <Text style={hint}>{`${props.action} ↵`}</Text>
+      <If when={props.onAction} else={<Text style={hint}>{`${props.action} ↵`}</Text>}>
+        <Button
+          accessibilityLabel={props.action}
+          onPress={() => props.onAction?.()}
+          style={{ paddingHorizontal: 8, height: 26, justifyContent: 'center' }}
+        >
+          <Text style={{ ...hint, color: C.accent }}>{`${props.action} ↵`}</Text>
+        </Button>
+      </If>
     </View>
   );
 }

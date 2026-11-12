@@ -59,7 +59,7 @@ export const entryKey = (tool: UiContributionRef, entry: QuickEntry) =>
 export type Commands = {
   /** Why the choices could not be read or saved. */
   failure(): unknown;
-  choices(): CommandChoices;
+  reserved(field: keyof CommandChoice, value: string): boolean;
   choice(key: string): CommandChoice | undefined;
   choose(key: string, patch: Partial<Record<keyof CommandChoice, string | null>>): void;
   /** The shortcut that opens the launcher, which no command may take. */
@@ -70,7 +70,7 @@ export type Commands = {
   registered(shortcut: string, taken: boolean): void;
 };
 
-export function createCommands(): Commands {
+export function createCommands(disabledCommand: (key: string) => boolean): Commands {
   const failure = signal<unknown>(null);
   const report = (reason: unknown) => failure.set(reason);
   const choices = signal<CommandChoices>({});
@@ -95,7 +95,10 @@ export function createCommands(): Commands {
   let saving: Promise<void> = Promise.resolve();
   return {
     failure,
-    choices,
+    reserved: (field, value) =>
+      Object.entries(choices()).some(
+        ([key, choice]) => choice[field] === value && disabledCommand(key),
+      ),
     choice: (key) => choices()[key],
     choose(key, patch) {
       chosen = true;
@@ -211,6 +214,7 @@ function CommandRow(props: {
       : undefined;
     if (other) return problem.set(tr('Used by {title}', { title: other.entry.title }));
     problem.set(null);
+    if (next && commands.reserved('alias', next)) return problem.set(tr('Used by a disabled tool'));
     commands.choose(item.key, { alias: next || null });
   };
   const record = (shortcut: string) => {
@@ -220,6 +224,7 @@ function CommandRow(props: {
       return problem.set(tr('Used by {title}', { title: tr('Quick launcher') }));
     if (other) return problem.set(tr('Used by {title}', { title: other.entry.title }));
     problem.set(null);
+    if (commands.reserved('shortcut', shortcut)) return problem.set(tr('Used by a disabled tool'));
     commands.choose(item.key, { shortcut });
   };
   const shortcut = () => commands.choice(item.key)?.shortcut;
@@ -298,6 +303,7 @@ export function LauncherShortcutRow(props: {
     const other = props.all.find((item) => commands.choice(item.key)?.shortcut === shortcut);
     if (other) return problem.set(tr('Used by {title}', { title: other.entry.title }));
     problem.set(null);
+    if (commands.reserved('shortcut', shortcut)) return problem.set(tr('Used by a disabled tool'));
     commands.setLauncher(shortcut);
   };
   return (
