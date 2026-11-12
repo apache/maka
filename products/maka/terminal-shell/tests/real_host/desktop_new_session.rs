@@ -1659,6 +1659,79 @@ async fn desktop_presents_session_tools_in_chat_and_trajectory() {
     fixture.finish().await;
 }
 
+async fn desktop_previews_an_incoming_session_message() {
+    let mut fixture = Fixture::open_with_configuration(
+        Options {
+            session_tools: true,
+            ..Options::default()
+        },
+        |configuration, _| configuration["agent"]["toolDiscovery"] = json!(false),
+    )
+    .await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1440),
+            nsh_terminal::DevicePixels(800),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    let roots = desktop
+        .client
+        .query("agent", "directories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    let backend = json!({
+        "kind": "model",
+        "connectionId": fixture.selection["connectionId"],
+        "modelId": fixture.selection["modelId"],
+    });
+    let recipient = mutate(
+        &desktop.client,
+        "create",
+        json!({
+            "title": "Build review", "labels": [],
+            "backend": backend,
+            "workspace": {"kind":"directory", "path":roots["roots"][0]["path"]}
+        }),
+    )
+    .await;
+    mutate(
+        &desktop.client,
+        "send",
+        json!({"sessionId": fixture.session, "backend": backend, "message": "Tell the build reviewer what to check."}),
+    )
+    .await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call(
+            "SessionSend",
+            json!({
+                "sessionId": recipient["session"]["id"],
+                "message": "**The build passed.**\nPlease review the compiler warnings."
+            }),
+        )
+        .await;
+    desktop.press("Open conversation Build review").await;
+    let summary = "From NSH real Agent · The build passed. Please review the compiler warnings.";
+    desktop.control(summary).await;
+    desktop.artifact("incoming-session-message-collapsed");
+    desktop.press(summary).await;
+    desktop.control("From NSH real Agent").await;
+    desktop.artifact("incoming-session-message-expanded");
+    desktop
+        .press("Open source conversation beside this one")
+        .await;
+    desktop.control("Close side pane").await;
+    desktop.request(&mut fixture).await.finish().await;
+    desktop.request(&mut fixture).await.finish().await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_folds_work_when_responses_starts_the_final_answer() {
     let mut fixture = Fixture::configured(Options {
         responses: true,
@@ -3187,6 +3260,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_edits_a_message_in_place_and_forks_only_when_sent",
     "desktop_lists_a_scripts_tool_calls_in_place_of_the_script",
     "desktop_presents_session_tools_in_chat_and_trajectory",
+    "desktop_previews_an_incoming_session_message",
     "desktop_folds_work_when_responses_starts_the_final_answer",
     "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
@@ -3242,6 +3316,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_presents_session_tools_in_chat_and_trajectory" => {
             runtime.block_on(desktop_presents_session_tools_in_chat_and_trajectory())
+        }
+        "desktop_previews_an_incoming_session_message" => {
+            runtime.block_on(desktop_previews_an_incoming_session_message())
         }
         "desktop_folds_work_when_responses_starts_the_final_answer" => {
             runtime.block_on(desktop_folds_work_when_responses_starts_the_final_answer())
