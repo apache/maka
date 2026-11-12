@@ -237,6 +237,100 @@ async fn history_shows_only_the_final_model_failure() -> TestResult<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn history_exposes_only_reported_prompt_cache_usage() -> TestResult<()> {
+    use maka_agent_engine::DriverExit;
+
+    for reported in [Some(60), Some(0), None] {
+        let mut rig = Rig::new()?;
+        let mut usage = json!({"prompt_tokens": 100, "completion_tokens": 5});
+        if let Some(read) = reported {
+            usage["prompt_tokens_details"] = json!({"cached_tokens": read});
+        }
+        let event = json!({
+            "id":"cache-reply",
+            "choices":[{"index":0,"delta":{"role":"assistant","content":"Cached turn."},"finish_reason":"stop"}],
+            "usage":usage,
+        });
+        let body = format!("data: {event}\n\ndata: [DONE]\n\n");
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(
+                move || async move { ([("content-type", "text/event-stream")], body) },
+            ),
+        );
+        let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+        let stop = CancellationToken::new();
+        let server_stop = stop.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(server_stop.cancelled_owned())
+                .await
+        });
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig.start().await?;
+            rig.assemble_model(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let engine = maka_agent_engine::Engine::new(driver.state.clone());
+            let mut changes = driver.state.subscribe()?;
+            loop {
+                changes.borrow_and_update();
+                let exit = engine
+                    .drive(
+                        driver.access.claim().clone(),
+                        driver.clone(),
+                        CancellationToken::new(),
+                    )
+                    .await?;
+                if matches!(exit, DriverExit::Waiting { due_at: None, .. }) {
+                    changes.changed().await?;
+                    continue;
+                }
+                assert!(
+                    matches!(
+                        exit,
+                        DriverExit::Terminal {
+                            terminal: Terminal::Completed,
+                            ..
+                        }
+                    ),
+                    "{exit:?}"
+                );
+                break;
+            }
+            let page = live(&rig, &session, wire::Position::Tail).await?;
+            let reply = page["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|chunk| chunk["finalOutput"] == true)
+                .expect("completed reply");
+            assert_eq!(reply["text"], "Cached turn.");
+            assert_eq!(
+                reply["timing"].get("promptCache").cloned(),
+                reported.map(|read| json!({"inputTokens":100,"readTokens":read})),
+            );
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        stop.cancel();
+        server.await??;
+        assert_eq!(rig.finish().await, Vec::<String>::new());
+        result.expect("prompt cache history assertion failed")??;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn named_cell_tools_survive_receipt_only_pages_and_frozen_history() {
     let mut rig = Rig::new().unwrap();
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
@@ -1245,8 +1339,11 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
             .await?;
         let mut spec = original.spec.clone();
         let selection = Selection {
-            executor: "fixture".into(),
-            settings: Settings::default(),
+            executor: "external".into(),
+            settings: Settings {
+                runtime: Some("antigravity".into()),
+                ..Settings::default()
+            },
         };
         let descriptor = ContentBlob::json(&json!({
             "selection":selection,"import":"fixture","member":0,"basis":"fixture"
@@ -1324,9 +1421,10 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
                         input_tokens: Some(150),
                         output_tokens: Some(25),
                         cache_read_tokens: Some(50),
+                        cache_write_tokens: Some(25),
                         ..Default::default()
                     },
-                    total_tokens: Some(175),
+                    total_tokens: Some(250),
                     duration_ms: Some(700),
                 },
             },
@@ -1465,7 +1563,12 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
             .iter()
             .find_map(|chunk| chunk["timing"].get("executorUsage"))
             .unwrap();
-        assert_eq!(usage["totalTokens"], 175);
+        assert_eq!(usage["totalTokens"], 250);
+        assert_eq!(usage["tokens"]["input_tokens"], 225);
+        assert_eq!(
+            reply["timing"]["promptCache"],
+            json!({"inputTokens":225,"readTokens":50})
+        );
         assert_eq!(usage["tokens"]["cache_read_tokens"], 50);
         assert!(
             page["chunks"]

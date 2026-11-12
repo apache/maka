@@ -8142,10 +8142,18 @@ export interface HistoryTurnTiming {
   startedAt: number;
   finished: HistoryTurnFinished | null;
   executorUsage?: ExecutorTurnUsage | null;
+  promptCache?: PromptCacheUsage | null;
 }
 export interface HistoryTurnFinished {
   at: number;
   outcome: HistoryTurnOutcome;
+}
+/**
+ * Reported cache reads and their share of total prompt input.
+ */
+export interface PromptCacheUsage {
+  inputTokens: number;
+  readTokens: number;
 }
 /**
  * Canonical references at the requested fence, never execution authority.

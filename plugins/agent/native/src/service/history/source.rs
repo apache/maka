@@ -18,7 +18,11 @@
  */
 
 use super::*;
-use maka_agent_facts::history_snapshot::SnapshotId;
+use maka_agent_facts::{
+    executor::{Selection, TurnUsage},
+    history_snapshot::SnapshotId,
+    model::PromptCacheUsage,
+};
 use projection::Field;
 use std::io::Write;
 use wire::{SourceField, SourceFormat, SourcePosition, SourceSegment};
@@ -91,7 +95,7 @@ async fn unpaired(
                 let mut timing = timing(&data, &source).await?;
                 cache.views.clear();
                 cache.executor = None;
-                if matches!(source.spec.backend, BackendSpec::Executor { .. }) {
+                if let BackendSpec::Executor { selection, .. } = &source.spec.backend {
                     let (view, transcript) = data
                         .executor_view(source.run)
                         .await
@@ -101,6 +105,12 @@ async fn unpaired(
                         .as_ref()
                         .and_then(|task| task.turn_usage.clone())
                         .map(Box::new);
+                    if let Some(usage) = timing.executor_usage.as_deref_mut()
+                        && let Some(cache) = executor_prompt_cache(selection, usage)
+                    {
+                        usage.tokens.input_tokens = Some(cache.input_tokens);
+                        timing.prompt_cache = Some(cache);
+                    }
                     cache.views.insert(source.run, view);
                     cache.executor = Some(transcript);
                 }
@@ -178,11 +188,34 @@ async fn timing(
             })
         })
         .transpose()?;
+    let prompt_cache =
+        if finished.is_some() && matches!(&source.spec.backend, BackendSpec::Model { .. }) {
+            data.main_prompt_cache(source.run)
+                .await
+                .map_err(|error| error.to_string())?
+        } else {
+            None
+        };
     Ok(wire::TurnTiming {
+        prompt_cache,
         started_at: millis(source.admission.at)?,
         finished,
         executor_usage: None,
     })
+}
+fn executor_prompt_cache(selection: &Selection, usage: &TurnUsage) -> Option<PromptCacheUsage> {
+    let read = usage.tokens.cache_read_tokens?;
+    let input = usage.tokens.input_tokens?;
+    let total = match (
+        selection.executor.as_str(),
+        selection.settings.runtime.as_deref(),
+    ) {
+        ("external", Some("antigravity" | "claude")) => input
+            .checked_add(read)?
+            .checked_add(usage.tokens.cache_write_tokens?)?,
+        _ => input,
+    };
+    PromptCacheUsage::new(total, read)
 }
 pub(super) async fn search_anchor(
     tree: &SourceTree,

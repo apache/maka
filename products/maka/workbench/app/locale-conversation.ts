@@ -367,6 +367,8 @@ export const conversationMessages = {
     '浏览器来源：{origin}',
     '瀏覽器來源：{origin}',
   ],
+  'Cache hit {rate}': ['Cache hit {rate}', '缓存命中 {rate}', '快取命中 {rate}'],
+  'Cache hit rate': ['Cache hit rate', '缓存命中率', '快取命中率'],
   'Cache read tokens': ['Cache read tokens', '缓存读取 Token', '快取讀取 Token'],
   'Cache write tokens': ['Cache write tokens', '缓存写入 Token', '快取寫入 Token'],
   'Cancel queued message edit': [
