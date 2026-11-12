@@ -185,6 +185,16 @@ impl Desktop {
         for pixel in frame.pixels().as_chunks::<4>().0 {
             ppm.extend_from_slice(&pixel[..3]);
         }
+        let name = match std::env::var("NEXTEST_TEST_NAME") {
+            Ok(test) => {
+                let test = test
+                    .rsplit("::")
+                    .next()
+                    .expect("a test name has a final component");
+                format!("{test}-{name}")
+            }
+            Err(_) => name.to_owned(),
+        };
         std::fs::write(directory.join(format!("{name}.ppm")), ppm).unwrap();
     }
 
@@ -224,10 +234,7 @@ impl Desktop {
             }
         })
         .await
-        .unwrap_or_else(|_| {
-            self.artifact("failure");
-            panic!("{stage}; observed: {:?}", self.outcome.lock().unwrap());
-        })
+        .unwrap_or_else(|_| self.timed_out(stage))
     }
 
     /// Acts until `done`, slowly enough that a repeat does not undo what the
@@ -259,10 +266,36 @@ impl Desktop {
             }
         })
         .await
-        .unwrap_or_else(|_| {
-            self.artifact("failure");
-            panic!("{stage}; observed: {:?}", self.outcome.lock().unwrap());
-        })
+        .unwrap_or_else(|_| self.timed_out(stage))
+    }
+
+    fn timed_out(&self, stage: &str) -> ! {
+        self.artifact("failure");
+        let rendered = [
+            "Focus message composer",
+            "Send message",
+            "Stop response",
+            "Add to queue",
+            "Edit queued message 1",
+            "Retry message",
+            "Continue response",
+            "Messages",
+        ]
+        .map(|label| (label, self.controls(label)));
+        let frame = self
+            .frame
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|frame| (frame.token(), frame.size()));
+        panic!(
+            "{stage}; native target: {:?}; native editor text: {:?}; native pending: {}; native active: {}; captured frame: {frame:?}; rendered controls: {rendered:?}; preview outcome: {:?}",
+            self.platform.text_input_target(),
+            self.platform.editor_text(),
+            self.platform.has_pending(),
+            self.platform.is_active(),
+            self.outcome.lock().unwrap(),
+        );
     }
 
     fn key(&self, name: &str, control: bool) {
@@ -1669,7 +1702,12 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         .type_text("Review the current implementation.")
         .await;
     desktop.submit().await;
-    let original = desktop.request(&mut fixture).await;
+    let original = desktop
+        .wait(
+            "initial submission did not reach the provider",
+            fixture.next_request(),
+        )
+        .await;
     let session = desktop
         .sessions()
         .await
@@ -1697,7 +1735,12 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop.key("right", false);
     desktop.artifact(&format!("steering-{theme}-{width_name}-sending"));
     gate.release();
-    let second = desktop.request(&mut fixture).await;
+    let second = desktop
+        .wait(
+            "frozen steering did not reach the provider after releasing the send reply",
+            fixture.next_request(),
+        )
+        .await;
     let sent = second.body["messages"].to_string();
     assert!(
         sent.contains("Review the current implementation.")
@@ -1796,7 +1839,12 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     );
     desktop.type_text("Check keyboard focus too.").await;
     desktop.submit().await;
-    let third = desktop.request(&mut fixture).await;
+    let third = desktop
+        .wait(
+            "steering after queue and IME did not reach the provider",
+            fixture.next_request(),
+        )
+        .await;
     let sent = third.body["messages"].to_string();
     assert!(
         sent.contains("Check keyboard focus too."),
