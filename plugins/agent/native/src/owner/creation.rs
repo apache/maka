@@ -69,6 +69,7 @@ impl Owner {
         scope: &maka_capabilities::call::Scope,
         caller: Option<maka_agent_state::CallerFence>,
         purpose: Purpose,
+        preset: Option<presets::CreationFence>,
         configuration: F,
     ) -> Result<PreparedCreation, String>
     where
@@ -117,6 +118,7 @@ impl Owner {
                 };
                 Ok(Creation {
                     creation,
+                    preset,
                     extra,
                     planned,
                     source,
@@ -132,6 +134,7 @@ impl Owner {
 
 struct Creation<S, B> {
     creation: S,
+    preset: Option<presets::CreationFence>,
     extra: Option<(Option<usize>, B)>,
     planned: maka_agent_state::session_catalog::PlannedCatalog,
     source: DataSource,
@@ -196,6 +199,18 @@ where
         connection: &rusqlite::Connection,
     ) -> Result<Prepared<Self::Value>, StoreError> {
         let is_bot = self.guard.is_some();
+        if let Some(fence) = &self.preset
+            && let Some(reason) = fence.check(connection)?
+        {
+            return Ok(Prepared {
+                value: CreationResult {
+                    reply: creation_reply(is_bot, reason)?,
+                    success: None,
+                },
+                changed: false,
+                notification: maka_event_log::writeback::Notification::NONE,
+            });
+        }
         if let Some(caller) = &self.caller {
             let reason = match caller.status(connection)? {
                 maka_agent_state::CallerStatus::Current => None,
