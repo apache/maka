@@ -41,7 +41,7 @@ pub use store::{
     Commit, ContentBlob, DriverClaim, DriverDomain, DriverPurpose, Head, ImmutableContentBody,
     LocalResult, ModelCleanupItem, NotificationAttention, NotificationState, PublicationRead,
     ReadyCause, ReadyRun, RunObservation, SessionObligation, SessionQuiescence,
-    SessionQuiescenceGuard, Store,
+    SessionQuiescenceGuard, StopOutcome, StopRun, Store,
 };
 
 pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[

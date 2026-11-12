@@ -219,10 +219,10 @@ impl Handler for Agent {
                                     requested: false,
                                 })?));
                             }
-                            let (requested, change) = owner
+                            owner
                                 .prepare_stop_run(&input.session_id, input.run_id, operation)
-                                .await?;
-                            complete_control(&context, encode(Stopped { requested })?, change)
+                                .await?
+                                .complete(&context)
                         }
                         "stopComputerApp" => {
                             let (value, change) = owner
