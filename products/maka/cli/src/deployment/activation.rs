@@ -40,9 +40,6 @@ pub(crate) struct Activate {
     root_id: RootId,
     #[arg(long)]
     framed: bool,
-    /// Confirm the same Linux filesystem was remounted, preserving root identity.
-    #[arg(long)]
-    repair_root_after_remount: bool,
 }
 
 #[derive(Serialize)]
@@ -107,10 +104,8 @@ impl Activate {
     async fn activate(&self) -> Result<(), HostError> {
         crate::operation::check()?;
         crate::operation::progress(crate::operation::Phase::Activate, None, None);
-        if !self.repair_root_after_remount {
-            super::update::recover_pending(&self.root_id).await?;
-        }
-        let (deployment, lease) = prepare(&self.root_id, self.repair_root_after_remount).await?;
+        super::update::recover_pending(&self.root_id).await?;
+        let (deployment, lease) = prepare(&self.root_id).await?;
         let (client, live) = connect_or_launch(&deployment, lease.clone()).await?;
         let anchor = client.anchor().await?;
         lease.validate()?;
@@ -137,10 +132,7 @@ impl Activate {
     }
 }
 
-pub(super) async fn prepare(
-    root_id: &RootId,
-    repair: bool,
-) -> Result<(Deployment, Arc<FileLease>), HostError> {
+pub(super) async fn prepare(root_id: &RootId) -> Result<(Deployment, Arc<FileLease>), HostError> {
     let directory = directory(&root_id.0)?;
     // Activation never creates a deployment database.
     if !directory.is_dir() {
@@ -154,20 +146,6 @@ pub(super) async fn prepare(
     deployment.require_active()?;
     if deployment.root_id != root_id.0 {
         return Err("deployment root identity changed".into());
-    }
-    if repair {
-        let path = deployment.root_path.clone();
-        let expected = root_id.0.clone();
-        let lease = lease.clone();
-        tokio::task::spawn_blocking(move || {
-            lease.validate()?;
-            if path.canonicalize()? != path {
-                return Err(std::io::Error::other("deployment root path was rebound"));
-            }
-            root::repair_after_remount(&path, &expected, &RootNamespaces::for_current_account()?)?;
-            lease.validate()
-        })
-        .await??;
     }
     let root = root::resolve(&deployment.root_path)?;
     if root.root_id() != root_id.0 {

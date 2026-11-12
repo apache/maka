@@ -20,8 +20,6 @@
 //! Durable workspace references and immutable permission evidence. Concrete
 //! Workspace selections belong to the native API, not this dependency layer.
 mod directory;
-#[cfg(target_os = "macos")]
-pub use directory::volume_uuid;
 
 use serde::{Deserialize, Serialize};
 

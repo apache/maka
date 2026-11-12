@@ -25,6 +25,8 @@ pub use lock::{FileLease, private_directory};
 #[cfg(windows)]
 pub mod windows;
 
+use cap_std::fs::Dir;
+use maka_sandbox::workspace::DirectoryIdentity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -37,7 +39,7 @@ pub const ROOT_MARKER: &str = ".maka-storage-root.json";
 pub const RUST_ROOT_MARKER: &str = ".maka-rust-runtime.json";
 pub const ROOT_DATABASE: &str = "runtime-rust.sqlite";
 const PROTOTYPE: &[u8] = b"{\"schemaVersion\":1,\"runtime\":\"rust-prototype\"}\n";
-const REMOUNT_STAGING: &str = ".maka-storage-root.next";
+const ROOT_SCHEMA_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -68,22 +70,15 @@ impl RootNamespaces {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Marker {
     schema_version: u8,
     kind: String,
     root_id: String,
-    root_identity: Identity,
-    #[cfg(target_os = "macos")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    volume_uuid: Option<uuid::Uuid>,
+    root_identity: DirectoryIdentity,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct Identity {
-    dev: String,
-    ino: String,
-}
+type MountedIdentity = (u64, u64);
 
 /// Owns the durable root lease. It cannot be cloned or fabricated.
 pub struct RootOwner {
@@ -91,9 +86,9 @@ pub struct RootOwner {
     pub(crate) operation_live: std::sync::Arc<crate::applications::operations::LiveOperations>,
     canonical_path: PathBuf,
     marker: Marker,
-    mounted_identity: Identity,
+    mounted_identity: MountedIdentity,
     control_directory: PathBuf,
-    control_identity: Identity,
+    control_identity: MountedIdentity,
     lock_path: PathBuf,
     durable_lease: File,
 }
@@ -124,91 +119,14 @@ pub fn resolve(path: &Path) -> io::Result<RootLocation> {
     })
 }
 
-/// Explicitly confirm a legacy Unix Root after a remount. Equal inode numbers
-/// alone do not establish identity across volumes.
-/// A matching root is a read-only no-op, including while its Host is running.
-pub fn repair_after_remount(
-    path: &Path,
-    expected_root_id: &str,
-    namespaces: &RootNamespaces,
-) -> io::Result<()> {
-    let canonical_path = path.canonicalize()?;
-    let identity = directory_identity(&canonical_path)?;
-    check_layout(&canonical_path)?;
-    let previous = read_marker(&canonical_path)?;
-    if previous.root_id != expected_root_id
-        || directory_identity(&canonical_path)? != identity
-        || canonical_path.canonicalize()? != canonical_path
-    {
-        return Err(io::Error::other("root changed before remount confirmation"));
-    }
-    #[cfg(target_os = "macos")]
-    let volume_uuid = root_volume(&canonical_path, &identity)?;
-    #[cfg(target_os = "macos")]
-    if let Some(recorded) = previous.volume_uuid {
-        return if Some(recorded) == volume_uuid && previous.root_identity.ino == identity.ino {
-            Ok(())
-        } else {
-            Err(io::Error::other("Root volume or directory changed"))
-        };
-    }
-    if previous.root_identity == identity {
-        return Ok(());
-    }
-    if !cfg!(unix) || previous.root_identity.ino != identity.ino {
-        return Err(io::Error::other("root is not an unchanged Unix remount"));
-    }
-    let mut next = previous.clone();
-    next.root_identity = identity.clone();
-    #[cfg(target_os = "macos")]
-    {
-        next.volume_uuid = volume_uuid;
-    }
-    let mut owner = RootOwner::acquire(canonical_path, previous, identity, namespaces, false)?;
-    owner.replace_marker(next)
-}
-
-fn replace_marker(owner: &RootOwner, next: &Marker) -> io::Result<()> {
-    owner.validate_current()?;
-    let staging = owner.canonical_path.join(REMOUNT_STAGING);
-    match staging.symlink_metadata() {
-        Ok(metadata) if metadata.is_file() => fs::remove_file(&staging)?,
-        Ok(_) => return Err(io::Error::other("remount staging is not a regular file")),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&staging)?;
-    file.write_all(&serde_json::to_vec(next)?)?;
-    file.sync_all()?;
-    lock::stable(&file, &staging)?;
-    owner.validate_current()?;
-    fs::rename(&staging, owner.canonical_path.join(ROOT_MARKER))?;
-    // On an uncertain rename/fsync result, stop. The next call re-reads the
-    // official marker; it never promotes or trusts an abandoned staging file.
-    File::open(&owner.canonical_path)?.sync_all()
-}
-
-fn inspect(path: &Path) -> io::Result<(PathBuf, Marker, Identity)> {
+fn inspect(path: &Path) -> io::Result<(PathBuf, Marker, MountedIdentity)> {
     let canonical_path = path.canonicalize()?;
     let identity = directory_identity(&canonical_path)?;
     check_layout(&canonical_path)?;
     let marker = read_marker(&canonical_path)?;
-    let matches = marker.root_identity == identity;
-    #[cfg(target_os = "macos")]
-    let matches = if let Some(volume) = marker.volume_uuid {
-        marker.root_identity.ino == identity.ino
-            && root_volume(&canonical_path, &identity)? == Some(volume)
-    } else {
-        matches
-    };
-    if !matches
+    if !marker
+        .root_identity
+        .matches(&open_directory(&canonical_path, identity)?)?
         || directory_identity(&canonical_path)? != identity
         || canonical_path.canonicalize()? != canonical_path
     {
@@ -257,12 +175,10 @@ impl RootOwner {
         lock::private_directory(&path)?;
         let identity = directory_identity(&path)?;
         let marker = Marker {
-            schema_version: 1,
+            schema_version: ROOT_SCHEMA_VERSION,
             kind: "interactive".into(),
             root_id: hex::encode(Sha256::digest(uuid::Uuid::new_v4().as_bytes())),
-            #[cfg(target_os = "macos")]
-            volume_uuid: root_volume(&path, &identity)?,
-            root_identity: identity,
+            root_identity: DirectoryIdentity::capture(&open_directory(&path, identity)?)?,
         };
         publish(&path, ROOT_MARKER, &serde_json::to_vec(&marker)?)?;
         publish(&path, RUST_ROOT_MARKER, PROTOTYPE)?;
@@ -274,18 +190,6 @@ impl RootOwner {
         let (canonical_path, marker, identity) = inspect(path)?;
         let owner = Self::acquire(canonical_path, marker, identity, namespaces, false)?;
         owner.validate_current()?;
-        #[cfg(target_os = "macos")]
-        let owner = {
-            let mut owner = owner;
-            if owner.marker.volume_uuid.is_none()
-                && let Some(volume) = root_volume(&owner.canonical_path, &owner.mounted_identity)?
-            {
-                let mut next = owner.marker.clone();
-                next.volume_uuid = Some(volume);
-                owner.replace_marker(next)?;
-            }
-            owner
-        };
         Ok(owner)
     }
 
@@ -298,16 +202,10 @@ impl RootOwner {
         Ok(owner)
     }
 
-    fn replace_marker(&mut self, next: Marker) -> io::Result<()> {
-        replace_marker(self, &next)?;
-        self.marker = next;
-        self.validate_current()
-    }
-
     fn acquire(
         canonical_path: PathBuf,
         marker: Marker,
-        mounted_identity: Identity,
+        mounted_identity: MountedIdentity,
         namespaces: &RootNamespaces,
         existing_only: bool,
     ) -> io::Result<Self> {
@@ -380,18 +278,7 @@ impl RootOwner {
         if !metadata.is_dir() {
             return Err(io::Error::other("State Root handle must be a directory"));
         }
-        #[cfg(not(windows))]
-        let (dev, ino) = lock::identity(&metadata)?;
-        #[cfg(windows)]
-        let (dev, ino) = {
-            let identity = windows::file_identity(directory)?;
-            (identity.volume, identity.index)
-        };
-        let identity = Identity {
-            dev: dev.to_string(),
-            ino: ino.to_string(),
-        };
-        if identity != self.mounted_identity {
+        if file_identity(directory, &metadata)? != self.mounted_identity {
             return Err(io::Error::other(
                 "State Root directory handle identity changed",
             ));
@@ -419,37 +306,43 @@ impl RootOwner {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn root_volume(path: &Path, mounted: &Identity) -> io::Result<Option<uuid::Uuid>> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let directory = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
-        .open(path)?;
-    let (dev, ino) = lock::identity(&directory.metadata()?)?;
-    if mounted.dev != dev.to_string() || mounted.ino != ino.to_string() {
+fn open_directory(path: &Path, mounted: MountedIdentity) -> io::Result<Dir> {
+    #[cfg(unix)]
+    let directory = {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(path)?
+    };
+    #[cfg(windows)]
+    let directory = windows::open_nofollow(path, false)?;
+    let metadata = directory.metadata()?;
+    if !metadata.is_dir() || file_identity(&directory, &metadata)? != mounted {
         return Err(io::Error::other("root directory identity changed"));
     }
-    maka_sandbox::workspace::volume_uuid(&directory)
+    Ok(Dir::from_std_file(directory))
 }
 
-fn directory_identity(path: &Path) -> io::Result<Identity> {
+fn file_identity(_file: &File, _metadata: &fs::Metadata) -> io::Result<MountedIdentity> {
+    #[cfg(unix)]
+    return lock::identity(_metadata);
+    #[cfg(windows)]
+    {
+        let identity = windows::file_identity(_file)?;
+        Ok((identity.volume, identity.index))
+    }
+}
+
+fn directory_identity(path: &Path) -> io::Result<MountedIdentity> {
     let metadata = path.symlink_metadata()?;
     if !metadata.is_dir() {
         return Err(io::Error::other("State Root must be a directory"));
     }
-    #[cfg(not(windows))]
-    let (dev, ino) = lock::identity(&metadata)?;
+    #[cfg(unix)]
+    return lock::identity(&metadata);
     #[cfg(windows)]
-    let (dev, ino) = {
-        let file = windows::open_nofollow(path, false)?;
-        let identity = windows::file_identity(&file)?;
-        (identity.volume, identity.index)
-    };
-    Ok(Identity {
-        dev: dev.to_string(),
-        ino: ino.to_string(),
-    })
+    file_identity(&windows::open_nofollow(path, false)?, &metadata)
 }
 
 fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
@@ -471,7 +364,7 @@ fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
 
 fn read_marker(path: &Path) -> io::Result<Marker> {
     let marker: Marker = serde_json::from_slice(&read_bounded(&path.join(ROOT_MARKER))?)?;
-    if marker.schema_version != 1
+    if marker.schema_version != ROOT_SCHEMA_VERSION
         || marker.kind != "interactive"
         || marker.root_id.len() != 64
         || !marker
@@ -497,7 +390,6 @@ fn check_layout(path: &Path) -> io::Result<()> {
             name.to_str(),
             Some(
                 ROOT_MARKER
-                    | REMOUNT_STAGING
                     | RUST_ROOT_MARKER
                     | ROOT_DATABASE
                     | "runtime-rust.sqlite-wal"
