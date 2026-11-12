@@ -164,20 +164,33 @@ export function ComputerStage(props: {
                 {(target) => {
                   const size = () => layout().items.get(target().id);
                   const selected = () => presented() === target().id;
+                  const laidOut = signal(false);
+                  let entranceFrame: number | undefined;
+                  const startEntrance = () => {
+                    if (laidOut() || entranceFrame !== undefined) return;
+                    // Layout may run within the initial commit; keep its blur style for one frame.
+                    entranceFrame = requestAnimationFrame(() => laidOut.set(true));
+                  };
+                  const visible = () =>
+                    (reduceMotion() || laidOut()) &&
+                    presented() !== null &&
+                    props.frameReady(target().id);
                   const scale = createAnimatedValue(0.72);
                   effect(() => {
-                    if (presented() !== null && props.frameReady(target().id)) {
+                    if (visible()) {
                       if (reduceMotion()) scale.set(1);
                       else void scale.spring(1, { mass: 1, stiffness: 185, damping: 18 });
                     } else scale.set(0.72);
                   });
                   cleanup(() => {
+                    cancelAnimationFrame(entranceFrame);
                     void scale.stop();
                   });
                   return (
                     <If when={size() !== undefined}>
                       <Button
                         accessibilityLabel={target().title}
+                        onLayout={startEntrance}
                         onPress={inputAction(stage.select, target().id)}
                         style={{
                           position: 'absolute',
@@ -186,9 +199,8 @@ export function ComputerStage(props: {
                           width: size()?.width,
                           height: size()?.height,
                           zIndex: 5 - (size()?.depth ?? 0),
-                          opacity: presented() !== null && props.frameReady(target().id) ? 1 : 0,
-                          pointerEvents:
-                            presented() !== null && props.frameReady(target().id) ? 'auto' : 'none',
+                          opacity: visible() ? 1 : 0,
+                          pointerEvents: visible() ? 'auto' : 'none',
                           transformOrigin: 'top right',
                           transform: [{ scale }],
                           padding: 0,
@@ -202,7 +214,17 @@ export function ComputerStage(props: {
                         hoverStyle={{ opacity: 0.95 }}
                         focusStyle={controlFocusStyle()}
                       >
-                        {untracked(() => props.renderFrame(target, selected))}
+                        <View
+                          style={{
+                            flexGrow: 1,
+                            filter: visible() || reduceMotion() ? 'blur(0px)' : 'blur(18px)',
+                            transitionProperty: 'filter',
+                            transitionDuration: reduceMotion() ? 0 : 280,
+                            transitionTimingFunction: 'ease-out',
+                          }}
+                        >
+                          {untracked(() => props.renderFrame(target, selected))}
+                        </View>
                       </Button>
                     </If>
                   );

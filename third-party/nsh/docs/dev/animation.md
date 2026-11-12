@@ -183,3 +183,7 @@ bound as `AnimationProp::CanvasArg`, as a canvas drawing's are, so they move it 
 
 Layered CSS gradients, `filter: blur()`, `maskImage` and `mixBlendMode` moved by motions and animated values, and
 Canvas drawings bound to animated values, remain the tools for fills built from shapes.
+
+Foreground blur transitions use the same style timing on macOS; see
+[macos.md](macos.md#foreground-blur-transitions-on-macos) for the wrapper View
+contract, layer implementation and validation limits.

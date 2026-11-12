@@ -151,6 +151,7 @@ fn stage_waits_for_native_state_and_retires_old_sources() {
     .unwrap();
     let area = rect(0., 24., 1200., 776.);
     let mut parent = state(rect(100., 100., 800., 600.));
+    parent.content_bounds = rect(110., 130., 780., 570.);
     parent.focused = true;
     let mut capabilities = nsh_engine::Capabilities::all();
     capabilities.host = vec!["*".into()];
@@ -193,7 +194,7 @@ fn stage_waits_for_native_state_and_retires_old_sources() {
     );
     let initial = state(rect(500., 400., 1., 1.));
     report(&engine, old, initial.clone());
-    resized(&drain(&engine, &rx), old, rect(627., 212., 257., 472.));
+    resized(&drain(&engine, &rx), old, rect(625., 138., 257., 472.));
     // Old bounds and focus reports must not re-run placement.
     for focused in [true, false] {
         let mut feedback = initial.clone();
@@ -203,6 +204,13 @@ fn stage_waits_for_native_state_and_retires_old_sources() {
     }
     report(&engine, old, state(rect(300., 200., 257., 472.)));
     assert!(commands(&drain(&engine, &rx)).is_empty());
+    // Desired content can shrink and return before native acknowledges either resize.
+    host.send("size", serde_json::json!({"width":160,"height":72}))
+        .unwrap();
+    resized(&drain(&engine, &rx), old, rect(300., 200., 160., 72.));
+    host.send("size", serde_json::json!({"width":257,"height":472}))
+        .unwrap();
+    resized(&drain(&engine, &rx), old, rect(300., 200., 257., 472.));
     host.send("size", serde_json::json!({"width":300.2,"height":400.1}))
         .unwrap();
     resized(&drain(&engine, &rx), old, rect(300., 200., 301., 401.));
@@ -219,7 +227,7 @@ fn stage_waits_for_native_state_and_retires_old_sources() {
         .unwrap();
     assert!(commands(&drain(&engine, &rx)).is_empty());
     report(&engine, next, initial.clone());
-    resized(&drain(&engine, &rx), next, rect(583., 283., 301., 401.));
+    resized(&drain(&engine, &rx), next, rect(581., 138., 301., 401.));
     host.send("binding", serde_json::json!("binding-2"))
         .unwrap();
     let rebound = drain(&engine, &rx);
@@ -228,7 +236,13 @@ fn stage_waits_for_native_state_and_retires_old_sources() {
     status(&rebound, "disposed:2;visible:true");
     removed(&rebound, next);
     report(&engine, last, initial);
-    resized(&drain(&engine, &rx), last, rect(583., 283., 301., 401.));
+    resized(&drain(&engine, &rx), last, rect(581., 138., 301., 401.));
+    // Keep a dragged panel inside the display when its content grows.
+    report(&engine, last, state(rect(1150., 790., 301., 401.)));
+    assert!(commands(&drain(&engine, &rx)).is_empty());
+    host.send("size", serde_json::json!({"width":400,"height":500}))
+        .unwrap();
+    resized(&drain(&engine, &rx), last, rect(800., 300., 400., 500.));
     host.send("owner", serde_json::Value::Null).unwrap();
     let closed = drain(&engine, &rx);
     status(&closed, "disposed:3;visible:true");

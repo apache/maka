@@ -274,6 +274,10 @@ mod tests {
         use serde_json::json;
 
         fn start() -> nsh_testing::Headless {
+            start_with_reduce_motion(true)
+        }
+
+        fn start_with_reduce_motion(reduce_motion: bool) -> nsh_testing::Headless {
             let mut registry = crate::bindings::ui_registry();
             registry.value("host", || Instance::new(CompletionHost));
             let sets = vec![nsh_base::registry(), registry];
@@ -296,7 +300,7 @@ mod tests {
                 viewport: Size::new(px(900.0), px(720.0)),
                 environment: Environment {
                     os: Os::MacOs,
-                    reduce_motion: true,
+                    reduce_motion,
                     ..Environment::default()
                 },
                 ui_sets: sets,
@@ -385,6 +389,60 @@ mod tests {
         }
 
         #[test]
+        fn stage_blurs_decoded_frames_on_entrance_and_clears_the_filter() {
+            use nsh_core::transition::{Live, restyle};
+            use std::sync::{Arc, Mutex};
+            let radius = |style: &nsh_core::ViewStyle| {
+                style
+                    .effects
+                    .as_ref()
+                    .map_or(0., |effects| nsh_core::blur_radius(&effects.filters).0)
+            };
+            for cached_ready in [false, true] {
+                let mut app = start_with_reduce_motion(false);
+                send(
+                    &mut app,
+                    json!({"kind":"cached-ready", "value":cached_ready}),
+                );
+                let samples = Arc::new(Mutex::new(Vec::new()));
+                let observed = samples.clone();
+                app.observe(move |_, batch| {
+                    for item in &batch.items {
+                        if let nsh_core::MountItem::ViewStyle { id, style } = item {
+                            observed.lock().unwrap().push((*id, style.clone()));
+                        }
+                    }
+                });
+                stage(&mut app, "session-1", "binding", 1, &["a"], Some("a"), 1);
+                streams(&mut app, 1, 1);
+                load(&mut app, "a", 0, 800, 600);
+                decode(&mut app, "a", true);
+                app.next_frame(std::time::Duration::from_secs(1)).unwrap();
+                let samples = samples.lock().unwrap();
+                let (card, initial) = samples
+                    .iter()
+                    .find(|(_, style)| radius(style) == 18.)
+                    .expect("entrance starts blurred");
+                let mut target = samples
+                    .iter()
+                    .rev()
+                    .find(|(id, style)| id == card && radius(style) == 0.)
+                    .expect("ready screenshot clears the same layer")
+                    .1
+                    .clone();
+                // Native backends receive styles, then sample this transition themselves.
+                let mut live = Live::default();
+                live.restyle(restyle(initial, &mut target, false).expect("entrance must animate"));
+                let mut frame = nsh_core::Bounds::default();
+                live.step(0., &mut frame, &mut target);
+                live.step(140., &mut frame, &mut target);
+                assert!(radius(&target) > 0. && radius(&target) < 18.);
+                assert!(live.step(280., &mut frame, &mut target).finished);
+                assert_eq!(radius(&target), 0.);
+            }
+        }
+
+        #[test]
         fn stage_auto_shows_stable_targets_and_user_pin_follow_hide_do_not_send_input() {
             let mut app = start();
             assert!(!app.shows("Computer"));
@@ -463,7 +521,7 @@ mod tests {
 
         #[test]
         fn stage_latest_frames_are_bounded_and_revocation_source_visibility_and_owner_fence_late_work()
-        {
+         {
             let mut app = start();
             stage(
                 &mut app,
@@ -718,7 +776,8 @@ mod tests {
         }
 
         #[test]
-        fn stage_faults_expose_reason_and_explicit_retry_but_empty_and_normal_close_are_not_errors() {
+        fn stage_faults_expose_reason_and_explicit_retry_but_empty_and_normal_close_are_not_errors()
+        {
             let mut app = start();
             app.wait_for("text:Content 0x0").unwrap();
             assert!(!app.shows("Live view unavailable"));

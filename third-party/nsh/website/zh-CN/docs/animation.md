@@ -313,6 +313,8 @@ mount(App);
 
 可过渡的属性按组划分：**颜色**（背景、边框、轮廓、阴影和文字的颜色，渐变色标）、**不透明度**、**变换**、**阴影**（`box-shadow`）以及**形状**（圆角和边框宽度）。CSS 名称及其驼峰形式都可以用（`background-color`、`backgroundColor`、`transform`、`scale` 等）。布局的变化用[布局动画](#layoutanimation)来呈现。
 
+在 macOS 上，可用稳定挂载的外层 View 给 Image 或 LiveImage 添加前景模糊揭示动画：filter 设为 "blur(18px)"，transitionProperty 设为 "filter"，transitionDuration 设为 280，transitionTimingFunction 设为 "ease-out"。初始样式挂载后，内容就绪时把同一个 View 的 filter 改为 "blur(0px)" 或 "none"。单一 blur 从屏幕上的当前半径开始过渡，并遵循减少动态效果设置。外层 View 对 layer tree 应用模糊，图片继续复用已解码像素。直接设置在 Image 上的 filter 仍走原有的图片烘焙路径；这种入场动画应放在外层 View 上。
+
 用 Tailwind 时对应的是 `transition`（颜色、不透明度、阴影和变换）、`transition-all`、`transition-colors`、`transition-opacity`、`transition-transform`、`transition-shadow`，再配合 `duration-*`、`delay-*` 和 `ease-*`。与按下状态（`.active(..)`、`active:`）结合，就得到带动画的按下状态：
 
 ```rust tabs

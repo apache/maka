@@ -95,12 +95,13 @@ type Command =
   | { kind: 'end'; method: 'watchStage' | 'watchFrames' }
   | { kind: 'unavailable'; index: number; reason: string }
   | { kind: 'source'; sessionId: string }
-  | { kind: 'visible' | 'mounted'; value: boolean }
+  | { kind: 'visible' | 'mounted' | 'cached-ready'; value: boolean }
   | { kind: 'hold'; method: 'watchStage' | 'watchFrames' }
   | { kind: 'release' };
 
 mount(() => {
   const mounted = signal(true);
+  const cachedReady = signal(false);
   const visible = signal(true);
   const tick = signal(0);
   const fault = signal('none');
@@ -259,6 +260,9 @@ mount(() => {
       case 'visible':
         visible.set(command.value);
         break;
+      case 'cached-ready':
+        cachedReady.set(command.value);
+        break;
       case 'mounted':
         mounted.set(command.value);
         break;
@@ -331,7 +335,9 @@ mount(() => {
             return frame && target?.revision === frame.revision ? frame : undefined;
           }}
           frameError={(id) => live.errors().get(id)}
-          frameReady={(id) => decoded().has(id) && decoded().get(id) === identity(id)}
+          frameReady={(id) =>
+            cachedReady() || (decoded().has(id) && decoded().get(id) === identity(id))
+          }
           contentSize={(size) => contentSize.set(`${size.width}x${size.height}`)}
           renderFrame={(target, presented) => {
             const id = target().id;

@@ -31,7 +31,7 @@
 use std::sync::Arc;
 
 use crate::{
-    AttributedText, Bounds, BoxShadow, Color, Corners, Edges, KeyframeAnimation, Keyframes,
+    AttributedText, Bounds, BoxShadow, Color, Corners, Edges, Filter, KeyframeAnimation, Keyframes,
     LayoutCurve, LayoutProperty, LayoutTransition, Points, Transform, TransitionProps, ViewStyle,
     geometry::{Percentage, Point, Radians, Size, deg},
 };
@@ -919,7 +919,20 @@ fn box_shadows(s: &ViewStyle) -> &[BoxShadow] {
     s.effects.as_deref().map_or(&[], |e| &e.box_shadows)
 }
 
-/// True if `a` and `b` differ in what `props` animates.
+// Only a lone blur has a scalar contract here. Other filter lists apply at once.
+fn blur_radius(style: &ViewStyle) -> Option<Points> {
+    match style
+        .effects
+        .as_deref()
+        .map_or(&[][..], |e| e.filters.as_slice())
+    {
+        [] => Some(Points::ZERO),
+        [Filter::Blur(radius)] => Some(*radius),
+        _ => None,
+    }
+}
+
+/// Whether the selected property groups have an interpolable change.
 fn differs(a: &ViewStyle, b: &ViewStyle, props: TransitionProps) -> bool {
     (props.has(TransitionProps::COLORS)
         && (a.background_color != b.background_color
@@ -929,6 +942,8 @@ fn differs(a: &ViewStyle, b: &ViewStyle, props: TransitionProps) -> bool {
         || (props.has(TransitionProps::OPACITY) && a.opacity != b.opacity)
         || (props.has(TransitionProps::TRANSFORM) && a.transform != b.transform)
         || (props.has(TransitionProps::SHADOW) && box_shadows(a) != box_shadows(b))
+        || (props.has(TransitionProps::FILTER)
+            && matches!((blur_radius(a), blur_radius(b)), (Some(a), Some(b)) if a != b))
         || (props.has(TransitionProps::SHAPE)
             && (a.border_radius != b.border_radius
                 || a.corner_radius != b.corner_radius
@@ -972,6 +987,14 @@ fn lerp_style(
             out.effects = Some(Arc::new(effects));
         }
     }
+    if props.has(TransitionProps::FILTER)
+        && let (Some(a), Some(b)) = (blur_radius(from), blur_radius(to))
+        && a != b
+    {
+        // Preserve other effects already interpolated, including box shadows.
+        let effects = Arc::make_mut(out.effects.get_or_insert_with(Default::default));
+        effects.filters = vec![Filter::Blur(lerp_points(a, b, t).max(Points::ZERO))];
+    }
     if props.has(TransitionProps::SHAPE) {
         out.border_radius = lerp_points(from.border_radius, to.border_radius, t).max(Points::ZERO);
         let (ca, cb) = (from.corner_radius.to_array(), to.corner_radius.to_array());
@@ -1014,6 +1037,71 @@ mod tests {
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-3
+    }
+
+    fn foreground_style(filter: &str) -> Box<ViewStyle> {
+        let mut style = crate::Style::default();
+        style.set("filter", crate::StyleValue::Str(filter)).unwrap();
+        style
+            .set("transitionProperty", crate::StyleValue::Str("filter"))
+            .unwrap();
+        style
+            .set("transitionDuration", crate::StyleValue::Number(280.0))
+            .unwrap();
+        style
+            .set("transitionTimingFunction", crate::StyleValue::Str("linear"))
+            .unwrap();
+        Box::new(style.view)
+    }
+
+    #[test]
+    fn foreground_blur_reaches_none_in_280ms() {
+        let old = foreground_style("blur(18px)");
+        let mut style = foreground_style("none");
+        let mut live = Live::default();
+        live.restyle(restyle(&old, &mut style, false).unwrap());
+        let mut frame = Bounds::default();
+        assert_eq!(blur_radius(&style), Some(Points(18.0)));
+        live.step(0.0, &mut frame, &mut style);
+        live.step(140.0, &mut frame, &mut style);
+        assert!(close(blur_radius(&style).unwrap().0, 9.0));
+        assert!(live.step(280.0, &mut frame, &mut style).finished);
+        assert!(style.effects.is_none());
+    }
+
+    #[test]
+    fn foreground_blur_reverses_from_the_displayed_radius() {
+        let old = foreground_style("blur(18px)");
+        let mut style = foreground_style("blur(0px)");
+        let mut live = Live::default();
+        live.restyle(restyle(&old, &mut style, false).unwrap());
+        let mut frame = Bounds::default();
+        live.step(0.0, &mut frame, &mut style);
+        live.step(140.0, &mut frame, &mut style);
+        let mut reversed = foreground_style("blur(18px)");
+        live.restyle(restyle(&style, &mut reversed, false).unwrap());
+        assert!(close(blur_radius(&reversed).unwrap().0, 9.0));
+        live.step(140.0, &mut frame, &mut reversed);
+        live.step(280.0, &mut frame, &mut reversed);
+        assert!(close(blur_radius(&reversed).unwrap().0, 13.5));
+        assert!(live.step(420.0, &mut frame, &mut reversed).finished);
+        assert_eq!(blur_radius(&reversed), Some(Points(18.0)));
+    }
+
+    #[test]
+    fn foreground_blur_skips_motion_when_reduced_or_unchanged() {
+        let mut initial = foreground_style("blur(18px)");
+        assert!(restyle(&ViewStyle::default(), &mut initial, false).is_none());
+        assert_eq!(blur_radius(&initial), Some(Points(18.0)));
+        let old = foreground_style("blur(18px)");
+        let mut style = foreground_style("none");
+        assert!(restyle(&old, &mut style, true).is_none());
+        assert_eq!(blur_radius(&style), Some(Points::ZERO));
+        let old = foreground_style("none");
+        let mut style = foreground_style("blur(0px)");
+        assert!(restyle(&old, &mut style, false).is_none());
+        let mut style = foreground_style("brightness(0.5) blur(18px)");
+        assert!(restyle(&old, &mut style, false).is_none());
     }
 
     #[test]

@@ -143,8 +143,9 @@ export function createComputerStageWindow(props: {
       placed === opened
         ? nativeState.bounds.origin
         : {
-            x: state.bounds.origin.x + state.bounds.size.width - nativeSize.width - 16,
-            y: state.bounds.origin.y + state.bounds.size.height - nativeSize.height - 16,
+            // Content inset 24, less the stage’s transparent padding 16.
+            x: state.contentBounds.origin.x + state.contentBounds.size.width - nativeSize.width - 8,
+            y: state.contentBounds.origin.y + 8,
           };
     const bounds = {
       origin: {
@@ -159,13 +160,8 @@ export function createComputerStageWindow(props: {
       },
       size: nativeSize,
     };
-    if (
-      nativeState.bounds.origin.x !== bounds.origin.x ||
-      nativeState.bounds.origin.y !== bounds.origin.y ||
-      nativeState.bounds.size.width !== bounds.size.width ||
-      nativeState.bounds.size.height !== bounds.size.height
-    )
-      opened.setBounds(bounds);
+    // Native state may precede an in-flight resize; always send the latest desired size.
+    opened.setBounds(bounds);
     placed = opened;
   });
 }

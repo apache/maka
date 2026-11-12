@@ -480,3 +480,28 @@ taken only when what they show changed:
   that animates or a scroll pictures every frame that runs;
 - a page's or a dialog's overlay pictures both sides once, the live side on the next three frames and after a view
   under its host changed. Before, it pictured the whole stack on every frame of the run.
+
+## Foreground blur transitions on macOS
+
+Use a stable wrapper View around an Image or LiveImage with a single
+filter blur, transitionProperty "filter", transitionDuration 280 and
+transitionTimingFunction "ease-out". Commit blur(18px) first, then change
+the same View to blur(0px) or none when its content becomes ready. The first
+style applies immediately; readiness must change after that style reaches
+the native view. A change in the same initial commit is also a first style.
+
+The shared transition interpolator handles one blur and the empty list,
+starts interruptions from the displayed radius, and snaps under reduced
+motion. Other filter lists apply immediately. The macOS Visual owns one
+CIGaussianBlur on the wrapper's CALayer.filters; frame ticks update its
+inputRadius and zero removes it. This is foreground content, including image
+child layers. The wrapper keeps animated blur out of Image's baked effect
+variants and does not decode images on animation frames. Views without blur
+allocate no filter or animation track. Image nodes retain their existing baked
+blur-before-color pipeline and reload when their own filters change; they do
+not receive an additional layer blur. No other backend's renderer changes.
+
+Verification: run the foreground_blur unit tests in nsh-core and
+nsh-platform-macos. Native acceptance still needs compositor output at
+18 points, midway and zero, with a changing LiveImage source and no backdrop
+blur; in-process renderInContext/cacheDisplay screenshots omit layer filters.
