@@ -219,8 +219,6 @@ pub(crate) struct Owner {
     todo: Arc<todo::Todo>,
     bot: Arc<bot::Bot>,
     goals: Arc<goal::Goals>,
-    completion_epoch: std::sync::atomic::AtomicU64,
-    completion_drained: std::sync::atomic::AtomicU64,
     recap_storage: Arc<maka_host_runtime::storage::Storage>,
     auxiliary: auxiliary::Auxiliary,
     titles: title::Registry,
@@ -593,8 +591,6 @@ impl Owner {
             auxiliary,
             todo,
             bot,
-            completion_epoch: std::sync::atomic::AtomicU64::new(1),
-            completion_drained: std::sync::atomic::AtomicU64::new(0),
             recap_storage,
             scheduler,
             recall,
@@ -1263,14 +1259,9 @@ impl Owner {
     ) -> Option<Box<dyn maka_host_runtime::application::NativeRetirement>> {
         let producer = self.producer_gate.clone().try_lock_owned().ok()?;
         let runs = self.runs.clone().try_lock_owned().ok()?;
-        // Close makes the final probe of retained cleanup and reports any failure.
-        if self
-            .completion_epoch
-            .load(std::sync::atomic::Ordering::SeqCst)
-            != self
-                .completion_drained
-                .load(std::sync::atomic::Ordering::SeqCst)
-            || !runs.controls.is_empty()
+        // The producer gate fences actual completion delivery. Durable
+        // subscriptions can wait for work or authority across Host lifetimes.
+        if !runs.controls.is_empty()
             || !runs.preparing.is_empty()
             || !self.workers.is_empty()
             || !self.cleanup_workers.is_empty()

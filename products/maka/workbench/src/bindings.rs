@@ -228,8 +228,19 @@ impl Bindings {
 
     /// Fence new native tasks, close the original Host session and finish admitted IO.
     pub async fn close(&self) -> Result<(), String> {
+        self.close_with(self.owner.client.close()).await
+    }
+
+    pub async fn quit_ephemeral(&self) -> Result<(), String> {
+        self.close_with(self.owner.client.quit_ephemeral()).await
+    }
+
+    async fn close_with(
+        &self,
+        close: impl std::future::Future<Output = Result<(), String>>,
+    ) -> Result<(), String> {
         let tasks = self.owner.tasks.lock().unwrap().take();
-        let (closed, ()) = tokio::join!(self.owner.client.close(), async move {
+        let (closed, ()) = tokio::join!(close, async move {
             if let Some(tasks) = tasks {
                 tasks.close();
                 tasks.wait().await;

@@ -49,6 +49,7 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
     enum End {
         OwnerLoss,
         ReleasedIdle,
+        DesktopQuit,
         Retirement,
         Standalone,
         Takeover,
@@ -57,6 +58,7 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
     for end in [
         End::OwnerLoss,
         End::ReleasedIdle,
+        End::DesktopQuit,
         End::Retirement,
         End::Standalone,
         End::Takeover,
@@ -192,8 +194,21 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
         let status: Value = serde_json::from_slice(&status.stdout).unwrap();
         assert_eq!(status["epoch"], registration["hostEpoch"]);
         assert_eq!(status["closing"], false);
+        if matches!(end, End::DesktopQuit) {
+            runtime.block_on(async {
+                let mut desktop = connect(&fixture.root).await;
+                let endpoint = discovery::read(&fixture.root).unwrap().endpoint;
+                desktop.quit_ephemeral().await.unwrap();
+                let status = Client::status(&endpoint, Some(client.epoch()))
+                    .await
+                    .unwrap();
+                assert_eq!(status.sessions, 1);
+                assert!(!status.closing);
+                client.quit_ephemeral().await.unwrap();
+            });
+        }
         if matches!(end, End::Standalone) {
-            runtime.block_on(client.close()).unwrap();
+            runtime.block_on(client.quit_ephemeral()).unwrap();
             let stale = Command::new(crate::maka_executable())
                 .args(["host", "retire", "--root"])
                 .arg(&fixture.root)

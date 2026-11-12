@@ -22,7 +22,7 @@ use maka_agent_facts::{
     message::MessageOrigin,
 };
 use maka_agent_state::{NotificationAttention, NotificationState, queue::MessageResolution};
-use maka_event_log::root_store::completions::Completion;
+use maka_event_log::root_store::completions::{Completion, RegisterCompletion};
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct CompletionRequest {
@@ -132,20 +132,17 @@ impl Owner {
         }))
     }
     pub(super) fn completion_statement(
-        self: &Arc<Self>,
+        &self,
         session: &str,
         message: &str,
         request: CompletionRequest,
-    ) -> Result<CompletionStatement, String> {
-        Ok(CompletionStatement {
-            owner: self.clone(),
-            registration: maka_event_log::root_store::completions::RegisterCompletion {
-                owner: self.prefix.clone(),
-                session: session.into(),
-                message: message.into(),
-                recipient: request.source.session_id.clone(),
-                request: serde_json::to_value(request).map_err(|e| e.to_string())?,
-            },
+    ) -> Result<RegisterCompletion, String> {
+        Ok(RegisterCompletion {
+            owner: self.prefix.clone(),
+            session: session.into(),
+            message: message.into(),
+            recipient: request.source.session_id.clone(),
+            request: serde_json::to_value(request).map_err(|e| e.to_string())?,
         })
     }
     pub(super) async fn retire_caller_completions(&self, recipient: &str) -> Result<(), String> {
@@ -196,9 +193,6 @@ impl Owner {
         });
     }
     pub(super) async fn deliver_completions(self: &Arc<Self>) -> Result<(), String> {
-        let epoch = self
-            .completion_epoch
-            .load(std::sync::atomic::Ordering::SeqCst);
         let mut after = None;
         loop {
             let entries = self
@@ -207,16 +201,6 @@ impl Owner {
                 .await
                 .map_err(|e| e.to_string())?;
             if entries.is_empty() {
-                if self
-                    .store
-                    .message_completions(&self.prefix, None)
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .is_empty()
-                {
-                    self.completion_drained
-                        .store(epoch, std::sync::atomic::Ordering::SeqCst);
-                }
                 return Ok(());
             }
             let mut pending = Vec::with_capacity(entries.len());
@@ -454,33 +438,5 @@ impl Owner {
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
-    }
-}
-
-pub(super) struct CompletionStatement {
-    owner: Arc<Owner>,
-    registration: maka_event_log::root_store::completions::RegisterCompletion,
-}
-impl maka_event_log::writeback::Statement for CompletionStatement {
-    type Value = Arc<Owner>;
-    type Output = ();
-    fn execute(
-        self,
-        connection: &rusqlite::Connection,
-    ) -> Result<maka_event_log::writeback::Prepared<Self::Value>, maka_event_log::StoreError> {
-        let registered = self.registration.execute(connection)?;
-        Ok(maka_event_log::writeback::Prepared {
-            value: self.owner,
-            changed: registered.changed,
-            notification: registered.notification,
-        })
-    }
-    fn committed(owner: Self::Value) {
-        owner
-            .completion_epoch
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    }
-    fn isolated_rejection(_: &maka_event_log::StoreError) -> bool {
-        false
     }
 }
