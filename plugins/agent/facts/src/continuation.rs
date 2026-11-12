@@ -46,7 +46,7 @@ pub struct ContinuationClaim {
     pub id: String,
     pub source: RunBoundary,
     pub base: SessionBase,
-    /// Engine-owned replay evidence over canonical input and registered tools.
+    /// Engine-owned replay evidence over the inherited prompt and model route.
     /// ModelRequested records the actual request after live tool binding.
     pub replay: ReplayEvidence,
 }
@@ -59,11 +59,15 @@ pub struct ReplayEvidence {
     pub route_identity: String,
 }
 
-pub const REPLAY_VERSION: u32 = 1;
+pub const REPLAY_VERSION: u32 = 2;
 
 impl ReplayEvidence {
+    pub fn uses_logical_prompt(&self) -> bool {
+        self.version == REPLAY_VERSION
+    }
+
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
-        if self.version != REPLAY_VERSION
+        if !matches!(self.version, 1 | REPLAY_VERSION)
             || !valid_projection_digest(&self.digest)
             || !valid_projection_digest(&self.route_identity)
         {

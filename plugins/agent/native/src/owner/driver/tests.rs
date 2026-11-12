@@ -43,7 +43,7 @@ use maka_host_runtime::{
     application::{
         Handler, NativeActivation, NativeRegistry,
         host::{Client as HostClient, Configuration as HostConfiguration, Host, LocalCall},
-        transport::{Grant, HostEndpoint, gateway_native, wire::Reply},
+        transport::{Grant, HostEndpoint, NativeGrant, gateway_native, wire::Reply},
     },
     ipc::LocalListener,
 };
@@ -199,6 +199,7 @@ struct Rig {
     socket_directory: TestDirectory,
     model_listener: std::net::TcpListener,
     model_overrides: Value,
+    native_grants: Vec<NativeGrant>,
     store: Option<Arc<RootStore>>,
     host: Option<Arc<Host>>,
     serving: Option<JoinHandle<Result<(), String>>>,
@@ -233,6 +234,7 @@ impl Rig {
             socket_directory: TestDirectory::Owned(socket_directory),
             model_listener,
             model_overrides: json!({}),
+            native_grants: vec![],
             store: None,
             host: None,
             serving: None,
@@ -383,6 +385,7 @@ impl Rig {
         let mut registry = NativeRegistry::default();
         if model_test {
             maka_settings_native::provide(&mut registry, catalog.clone())?;
+            maka_web::provide(&mut registry)?;
         }
         let capture = self.captured.clone();
         let helper = std::env::current_exe()?;
@@ -428,6 +431,7 @@ impl Rig {
                 "updatePreset",
                 "deletePreset",
                 "create",
+                "continueRun",
                 "models",
                 "observe",
                 "predictNextMessage",
@@ -491,7 +495,7 @@ impl Rig {
             None,
             HostConfiguration::PublicHost {
                 endpoints,
-                native: vec![],
+                native: self.native_grants.clone(),
                 product_methods: Default::default(),
             },
         )
@@ -2292,6 +2296,8 @@ mod model_recovery {
         agent: Uuid,
         settings: Uuid,
         gateway: Uuid,
+        #[serde(default)]
+        web: Option<Uuid>,
         source: Value,
         base_url: String,
         #[serde(default)]
@@ -2340,17 +2346,33 @@ mod model_recovery {
         base_url: String,
         configure: impl FnOnce(&mut Value),
     ) -> TestResult<Boot> {
+        bootstrap_deployment(base, base_url, false, configure).await
+    }
+    async fn bootstrap_deployment(
+        base: &Path,
+        base_url: String,
+        with_web: bool,
+        configure: impl FnOnce(&mut Value),
+    ) -> TestResult<Boot> {
         let mut configuration = json!({
             "permissions": {"access": "read_only", "requestPermissions": false},
             "workspaceRoots": [{"label": "model test", "path": base.join("workspace")}],
             "tools": [],
         });
         configure(&mut configuration);
+        if with_web {
+            configuration["tools"] = json!([{
+                "input":"web","result":"json","confirmation":"preapproved",
+                "name":"WebFetch","description":"Fetch a web page.",
+                "target":{"kind":"import","name":"web"},"method":"fetch"
+            }]);
+        }
         let mut boot = Boot {
             deployment: Uuid::new_v4(),
             agent: Uuid::new_v4(),
             settings: Uuid::new_v4(),
             gateway: Uuid::new_v4(),
+            web: with_web.then(Uuid::new_v4),
             source: Value::Null,
             base_url,
             replay: false,
@@ -2358,7 +2380,18 @@ mod model_recovery {
         let agent = package(
             "maka.tests.model-agent",
             maka_agent_api::native(),
-            BTreeMap::new(),
+            boot.web
+                .into_iter()
+                .map(|_| {
+                    (
+                        "web".into(),
+                        Import {
+                            contract: maka_web_api::contract(),
+                            cardinality: Cardinality::One,
+                        },
+                    )
+                })
+                .collect(),
         )?;
         let settings = package(
             "maka.tests.model-settings",
@@ -2385,7 +2418,7 @@ mod model_recovery {
                 ),
             ]),
         )?;
-        let input = Input {
+        let mut input = Input {
             base: None,
             ui: None,
             instances: BTreeMap::from([
@@ -2395,7 +2428,18 @@ mod model_recovery {
                         boot.agent,
                         agent.application_ref(),
                         configuration,
-                        BTreeMap::new(),
+                        boot.web
+                            .into_iter()
+                            .map(|_| {
+                                (
+                                    "web".into(),
+                                    vec![Target::Instance {
+                                        path: vec!["web".into()],
+                                        export: maka_web_api::EXPORT.into(),
+                                    }],
+                                )
+                            })
+                            .collect(),
                     ),
                 ),
                 (
@@ -2433,15 +2477,27 @@ mod model_recovery {
                 ),
             ]),
         };
+        let mut packages = vec![agent, settings, client];
+        if let Some(web_id) = boot.web {
+            let web = package(
+                "maka.tests.model-web",
+                maka_web_api::native(),
+                BTreeMap::new(),
+            )?;
+            input.instances.insert(
+                "web".into(),
+                node(
+                    web_id,
+                    web.application_ref(),
+                    json!({"network":"denied"}),
+                    BTreeMap::new(),
+                ),
+            );
+            packages.push(web);
+        }
         let store = root(base, true).await?;
         store
-            .commit_application(
-                boot.deployment,
-                0,
-                input,
-                vec![],
-                vec![agent, settings, client],
-            )
+            .commit_application(boot.deployment, 0, input, vec![], packages)
             .await?;
         let loaded = store
             .load_application(boot.deployment)
@@ -2461,6 +2517,16 @@ mod model_recovery {
             serde_json::to_value(loaded.source())? == boot.source,
             "reopen changed original deployment or instance keys"
         );
+        if let Some(web) = boot.web {
+            rig.native_grants.push(NativeGrant {
+                origin: InstanceId(vec![boot.agent]),
+                consumer: InstanceId(vec![boot.agent]),
+                provider: InstanceId(vec![web]),
+                export: maka_web_api::EXPORT.into(),
+                methods: ["capture".into()].into(),
+                recovery: false,
+            });
+        }
         rig.attach_host(
             store,
             boot.deployment,
@@ -2685,6 +2751,122 @@ mod model_recovery {
             joined??;
         }
         Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn continue_run_with_web_tools_reaches_the_model() -> TestResult<()> {
+        let mut rig = Rig::new()?;
+        let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+        let boot = bootstrap_deployment(
+            rig.directory.path(),
+            format!("http://{}/v1", listener.local_addr()?),
+            true,
+            |_| {},
+        )
+        .await?;
+        attach(&mut rig, &boot).await?;
+        let (requests, mut received) = tokio::sync::mpsc::channel(4);
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post({
+                let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                move |request: axum::extract::Request| {
+                    let requests = requests.clone();
+                    let index = count.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        let body = axum::body::to_bytes(request.into_body(), 1024 * 1024)
+                            .await
+                            .unwrap();
+                        let request: Value = serde_json::from_slice(&body).unwrap();
+                        requests.send(request).await.unwrap();
+                        let (delta, finish) = if index == 0 {
+                            (json!({"role":"assistant"}), "length")
+                        } else {
+                            (json!({"role":"assistant","content":"Continued"}), "stop")
+                        };
+                        let chunk = json!({
+                            "id":format!("continuation-{index}"),"object":"chat.completion.chunk",
+                            "created":1,"model":"llama3.2","choices":[{"index":0,"delta":delta,
+                            "finish_reason":finish}],
+                            "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}
+                        });
+                        (
+                            [("content-type", "text/event-stream")],
+                            format!("data: {chunk}\n\ndata: [DONE]\n\n"),
+                        )
+                    }
+                }
+            }),
+        );
+        let stop = CancellationToken::new();
+        let shutdown = stop.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await
+        });
+        let result = tokio::time::timeout(Duration::from_secs(25), async {
+            let client = rig.client.as_ref().unwrap();
+            let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+            let connection = call(client, "settings", "create", json!({
+                "expectedCatalogRevision":catalog["revision"],
+                "connection":{"slug":"continuation","name":"Continuation",
+                    "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                    "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2"],
+                    "modelOverrides":{"llama3.2":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
+            })).await?;
+            assert_eq!(connection["kind"], "committed");
+            let connection_id = &connection["connection"]["connectionId"];
+            let created = call(client, "agent", "create", json!({
+                "title":"Continue a stopped request","automaticTitle":false,"labels":[],
+                "workspace":{"kind":"directory","path":rig.directory.path().join("workspace")}
+            })).await?;
+            let session = created["session"]["id"].as_str().ok_or("session missing")?;
+            let sent = call(client, "agent", "send", json!({
+                "sessionId":session,"message":"Remember the original prompt.",
+                "backend":{"kind":"model","connectionId":connection_id,"modelId":"llama3.2"}
+            })).await?;
+            assert_eq!(sent["kind"], "queued");
+            let _ = received.recv().await.ok_or("original request missing")?;
+            let target = json!({"kind":"message","messageId":sent["messageId"]});
+            loop {
+                let readiness = call(client, "agent", "workReadiness",
+                    json!({"sessionId":session,"target":target})).await?;
+                match readiness["kind"].as_str() {
+                    Some("ready") => break,
+                    Some("pending") => tokio::task::yield_now().await,
+                    _ => return Err(format!("source Run unavailable: {readiness}").into()),
+                }
+            }
+            let original = call(client, "agent", "work", json!({"sessionId":session,"target":target})).await?;
+            let original = &original["execution"];
+            assert_eq!(original["state"]["kind"], "failed", "{original}");
+            let continued = call(client, "agent", "continueRun", json!({
+                "sessionId":session,"sourceRunId":original["runId"],"sourceHighWater":original["highWater"],
+                "model":{"connectionId":connection_id,"modelId":"llama3.2"}
+            })).await?;
+            assert_eq!(continued["kind"], "started", "{continued}");
+            assert_ne!(continued["execution"]["runId"], original["runId"]);
+            let request = received.recv().await.ok_or("continued model request missing")?;
+            assert!(request["messages"].as_array().unwrap().iter().any(|message|
+                message["role"] == "user" && message["content"].to_string().contains("Remember the original prompt.")
+            ), "{request}");
+            let continued_target = json!({"kind":"run","runId":continued["execution"]["runId"]});
+            loop {
+                let work = call(client, "agent", "work", json!({"sessionId":session,"target":continued_target})).await?;
+                match work["execution"]["state"]["kind"].as_str() {
+                    Some("completed") => break,
+                    Some("failed" | "cancelled") => return Err(format!("continuation failed: {work}").into()),
+                    _ => tokio::task::yield_now().await,
+                }
+            }
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }).await;
+        stop.cancel();
+        server.await??;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        result?
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

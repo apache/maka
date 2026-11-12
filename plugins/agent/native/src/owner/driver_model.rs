@@ -563,7 +563,16 @@ impl DriverModel {
             None,
         )
         .await?;
+        let continuation = match &input {
+            RunInput::Continuation { claim, .. } if view.steps.is_empty() => Some(claim),
+            _ => None,
+        };
         let prepared = Box::pin(async {
+            // The replay digest covers the logical prompt before tool-dependent wire preparation.
+            let logical_prompt_digest = continuation
+                .filter(|claim| claim.replay.uses_logical_prompt())
+                .map(|_| maka_agent_engine::digest(&prompt.model().identity()))
+                .transpose()?;
             let covered_prefix=if purpose==ModelPurpose::Summary{
                 let covered=CoveredPrefix::capture(&prompt).await?;
                 prompt.initialize_overlays(Some(rendered),true,instruction).await?;
@@ -605,9 +614,7 @@ impl DriverModel {
                 purpose,
                 calibration,
             )?;
-            if view.steps.is_empty()
-                && let RunInput::Continuation { claim, .. } = &input
-            {
+            if let Some(claim) = continuation {
                 maka_agent_engine::preparation::validate_continuation(
                     &self.state,
                     &self.execution,
@@ -616,6 +623,7 @@ impl DriverModel {
                     &view.spec.workspace,
                     &prompt,
                     &request,
+                    logical_prompt_digest.as_deref(),
                 )
                 .await?;
             }
@@ -1314,7 +1322,6 @@ impl DriverModel {
         &self,
         source_run: RunId,
         mut system: Option<SystemPrompt>,
-        catalog: maka_tools::ToolCatalog,
     ) -> Result<PreparedContinuation, RunError> {
         let reader = &self.history_reader(source_run).await?;
         use maka_agent_facts::continuation::{
@@ -1353,40 +1360,6 @@ impl DriverModel {
             digest: capture.cut.digest.clone(),
         };
         let model = self.source.capture().await?;
-        let availability = maka_tools::availability::Availability::new(
-            catalog,
-            maka_tools::availability::LoadedTools::new(self.state.cells().reader(
-                self.execution.session_id.clone(),
-                tokio::runtime::Handle::current(),
-            )),
-        )
-        .capture(
-            Some(model.provider.tool_context()),
-            self.execution.clone(),
-            Some(
-                self.log
-                    .work_custody()
-                    .map_err(|error| RunError::Internal(error.to_string()))?,
-            ),
-            original.spec.workspace.clone(),
-            self.cancellation.clone(),
-        )
-        .await
-        .map_err(RunError::Tool)?;
-        let visible_defs =
-            if self.source.accepted.tool_mode == maka_agent_facts::execution::ToolMode::CodeMode {
-                maka_tools::CodeCells::definitions_for(
-                    &availability,
-                    self.source.accepted.code_language,
-                )
-            } else {
-                let visible = availability.snapshot().await.map_err(RunError::Tool)?;
-                let mut definitions: Vec<_> = visible.definitions().cloned().collect();
-                if let Some(search) = availability.definition() {
-                    definitions.push(search);
-                }
-                definitions
-            };
         let target = ReplayTarget::new(&model, ModelOperation::Inference);
         let mut messages = preparation::PromptBuilder::new(
             self.preparation_io()?,
@@ -1430,7 +1403,6 @@ impl DriverModel {
                 .and_then(|context| context.model_context_window),
             tool_choice: ToolChoiceMode::Auto,
         };
-        let definitions: Vec<_> = visible_defs.into_iter().map(Arc::new).collect();
         let mut rendered = system.map(|system| system.text).unwrap_or_default();
         if !rendered.is_empty() {
             rendered.push_str("\n\n");
@@ -1444,7 +1416,7 @@ impl DriverModel {
             },
             json!({"cwd":original.spec.workspace,"sessionId":original.spec.session_id})
         ));
-        let mut prompt = preparation::prepare_prompt(
+        let prompt = preparation::prepare_prompt(
             messages,
             &settings,
             &self.cancellation,
@@ -1454,22 +1426,6 @@ impl DriverModel {
         )
         .await?;
         let result = async {
-            preparation::prepare_wire(
-                &settings,
-                &mut prompt,
-                &definitions,
-                model.main_output_limit,
-                &self.cancellation,
-            )
-            .await?;
-            let request = preparation::prepare_request(
-                &settings,
-                prompt.clone(),
-                definitions,
-                model.main_output_limit,
-                ModelPurpose::Main,
-                None,
-            )?;
             preparation::validate_replay_boundary(&prompt).await?;
             Ok(PreparedContinuation {
                 source: RunBoundary {
@@ -1484,8 +1440,8 @@ impl DriverModel {
                 base,
                 replay: ReplayEvidence {
                     version: REPLAY_VERSION,
-                    digest: request.input_digest,
-                    route_identity: request.route_identity,
+                    digest: maka_agent_engine::digest(&prompt.model().identity())?,
+                    route_identity: preparation::route_identity(&model.provider)?,
                 },
             })
         }
