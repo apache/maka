@@ -456,6 +456,7 @@ impl Rig {
                 "fork",
                 "list",
                 "execution",
+                "stop",
                 "metadata",
             ]
         };
@@ -4316,6 +4317,7 @@ mod replay_origin_regressions {
 
 mod tool_history;
 
+mod goals;
 mod permission_boundary;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

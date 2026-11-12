@@ -19,6 +19,7 @@
 
 //! Goal owns its objective and outbox; the original Agent queue owns every execution.
 mod dispatch;
+mod stop;
 pub(super) mod tools;
 use super::*;
 use maka_event_log::{
