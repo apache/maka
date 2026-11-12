@@ -59,7 +59,7 @@ pub(super) async fn read(
     request: UsageLimitsRequest,
     context: Context,
 ) -> Result<Vec<UsageLimit>, Error> {
-    super::configuration(&request.connection)?;
+    super::configuration(&request.connection.configuration)?;
     let UsageCredential::Provider {
         credential,
         request_headers,

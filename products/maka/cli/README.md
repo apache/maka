@@ -31,6 +31,23 @@ Run `maka` or `maka terminal-shell` for the [NSH terminal workbench](../terminal
 
 `maka --help` lists the CLI commands and default terminal options; `maka terminal-shell --help` shows the terminal options alone. The interactive entry requires terminal stdin and stdout. When either is redirected it exits with an error before opening or creating a Host; use explicit Host, application, Code or ACP commands for automation.
 
+`host init --settings-stdin` initializes a new State Root and applies optional proxy settings, model connections, credentials and default target JSON from stdin before returning `rootId`. For example:
+
+```json
+{
+  "connections": [{
+    "slug": "gateway",
+    "provider": "openai-compatible",
+    "configuration": { "baseUrl": "http://127.0.0.1:8080/v1" },
+    "apiKey": "<API_KEY>",
+    "enabledModelIds": ["my-model"]
+  }],
+  "defaultTarget": { "slug": "gateway", "modelId": "my-model" }
+}
+```
+
+Connections also accept `name`, `enabled`, `requestHeaders`, `modelOverrides` and `requestBodyOverlay`. Input and default model preparation are validated before creating the Root. An existing Root cannot be reconfigured through this command; secrets stay in stdin.
+
 `host serve` and `application serve` emit a JSON `ready` line with `rootId`, `hostEpoch` and `socketPath`. Use that epoch when connecting and verify the live Host identity. On Unix, sockets live in a private temporary child directory selected by the system; set `TMPDIR` for a different parent. The canonical socket path must fit the portable 100-byte limit; choose a shorter parent if startup reports that limit.
 
 Headless commands (`host`, `application serve`, `code` and `acp`) install process logging before runtime initialization. Warnings and errors, including SQLx slow-query warnings, go to stderr without ANSI styling; stdout remains available for command results and protocol frames. Ordinary DEBUG query logs are disabled. Interactive products keep control of their terminal output.

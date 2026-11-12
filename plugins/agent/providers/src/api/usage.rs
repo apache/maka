@@ -58,7 +58,7 @@ pub(super) async fn read(
     context: Context,
 ) -> Result<Vec<UsageLimit>, Error> {
     let source = source(provider.id).ok_or(Error::Unavailable)?;
-    let configuration = Configuration::read(&request.connection)?;
+    let configuration = Configuration::read(&request.connection.configuration)?;
     let base = Url::parse(&configuration.base_url).map_err(|_| Error::InvalidEndpoint)?;
     // A named provider can also be configured to use a relay. Never send the
     // relay's key to the named provider's usage endpoint.

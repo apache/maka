@@ -42,7 +42,7 @@ pub(super) async fn verify(
     request: Verification,
     context: Context,
 ) -> Result<(), Error> {
-    let configuration = Configuration::read(&request.connection)?;
+    let configuration = Configuration::read(&request.connection.configuration)?;
     let route = route::resolve(
         &Selection {
             provider: provider.id,

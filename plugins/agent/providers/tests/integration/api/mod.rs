@@ -58,6 +58,34 @@ fn request(binding: &Definition, id: &str, overrides: ModelOverride) -> Resolve 
     }
 }
 
+#[test]
+fn configuration_admission_checks_provider_constraints() {
+    let api = binding("openai");
+    assert_eq!(
+        api.configure(json!({})).unwrap()["baseUrl"],
+        "https://api.openai.com/v1"
+    );
+    for base_url in [
+        "ftp://relay.test/v1",
+        "https://user:private-secret@relay.test/v1",
+        "https://relay.test/v1?key=private-secret",
+    ] {
+        assert!(api.configure(json!({"baseUrl":base_url})).is_err());
+    }
+    let subscription = maka_providers::codex::Codex::new(snapshot())
+        .definition()
+        .unwrap();
+    assert_eq!(
+        subscription.configure(json!({})).unwrap()["baseUrl"],
+        "https://chatgpt.com/backend-api/codex"
+    );
+    assert!(
+        subscription
+            .configure(json!({"baseUrl":"https://relay.test/v1"}))
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn public_provider_binding_preserves_protocol_contracts_and_explicit_policy() {
     for name in ["ollama", "localai"] {
