@@ -166,6 +166,13 @@ export type RuntimeHostCliCommand =
       expectedTarget?: RuntimeHostManagedServiceTarget;
     }
   | {
+      kind: 'runtime-host-service-repair-root';
+      clientDataRoot?: string;
+      managedRootId?: string;
+      operatorDeploymentId?: string;
+      rootPath?: string;
+    }
+  | {
       kind: 'runtime-host-service-manage';
       action:
         | 'install'
@@ -896,6 +903,51 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
         : {}),
       ...(finalize ? { finalize: true } : {}),
       expectedTarget: options.expectedTarget,
+    };
+  }
+  if (action === 'repair-root') {
+    const values = new Map<string, string>();
+    const allowed = new Set([
+      '--root',
+      '--client-data-root',
+      '--managed-root-id',
+      '--operator-deployment-id',
+    ]);
+    for (let index = 1; index < argv.length; index += 2) {
+      const option = argv[index] ?? '';
+      if (!allowed.has(option)) return error(`Unexpected argument: ${option}`);
+      if (values.has(option)) return error(`Duplicate ${option}`);
+      const value = optionValue(argv, index, option);
+      if (typeof value !== 'string') return value;
+      if ((option === '--root' || option === '--client-data-root') && !isSafeAbsolutePath(value)) {
+        return error(`${option} must be an absolute path`);
+      }
+      if (option === '--managed-root-id' && !/^[a-f0-9]{64}$/u.test(value)) {
+        return error('--managed-root-id must be a Runtime Host State Root identity');
+      }
+      if (
+        option === '--operator-deployment-id' &&
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)
+      ) {
+        return error('--operator-deployment-id must be a Runtime Host deployment identity');
+      }
+      values.set(option, value);
+    }
+    if (values.has('--operator-deployment-id') && !values.has('--managed-root-id')) {
+      return error('--operator-deployment-id requires --managed-root-id');
+    }
+    return {
+      kind: 'runtime-host-service-repair-root',
+      ...(values.has('--root') ? { rootPath: values.get('--root') } : {}),
+      ...(values.has('--client-data-root')
+        ? { clientDataRoot: values.get('--client-data-root') }
+        : {}),
+      ...(values.has('--managed-root-id')
+        ? { managedRootId: values.get('--managed-root-id') }
+        : {}),
+      ...(values.has('--operator-deployment-id')
+        ? { operatorDeploymentId: values.get('--operator-deployment-id') }
+        : {}),
     };
   }
   if (

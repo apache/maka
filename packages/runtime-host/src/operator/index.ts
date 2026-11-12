@@ -161,6 +161,7 @@ export {
   readRuntimeHostManagedDeploymentAuthorityRecord,
   assertRuntimeHostManagedDeploymentAuthorityDurablyAbsent,
   readRuntimeHostManagedDeploymentConfig,
+  readRuntimeHostManagedDeploymentRecoveryTarget,
   resolveRuntimeHostManagedDeployment,
   resolveRuntimeHostManagedDeploymentAuthority,
   resolveRuntimeHostManagedDeploymentAuthorityRoot,

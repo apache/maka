@@ -562,6 +562,28 @@ export async function resolveRuntimeHostManagedDeployment(
   return { capability, config: record };
 }
 
+/**
+ * Read the deployment's recovery target without granting authority over its root.
+ * A stale root cannot be resolved yet; callers must still obtain exact-candidate
+ * user intent and revalidate this record before repairing the storage marker.
+ */
+export async function readRuntimeHostManagedDeploymentRecoveryTarget(
+  rootId: string,
+  options: RuntimeHostManagedDeploymentAuthorityOptions = {},
+): Promise<RuntimeHostManagedDeploymentAuthorityRecord | undefined> {
+  const path = resolveRuntimeHostManagedDeploymentConfigPath(rootId, options);
+  const value = await readBoundedJson(path);
+  if (value === undefined) return undefined;
+  const record = decodeRuntimeHostManagedDeploymentAuthorityRecord(value);
+  if (record.root.id !== rootId) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_config',
+      'The Runtime Host managed deployment record has an invalid Root identity',
+    );
+  }
+  return record;
+}
+
 export async function resolveRuntimeHostManagedDeploymentAuthority(
   rootId: string,
   options: RuntimeHostManagedDeploymentAuthorityOptions = {},

@@ -18,6 +18,7 @@
  */
 
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { runtimeHostRootRepairError } from './runtime-host-root-repair-command.js';
 import { release } from 'node:os';
 import {
   assertRuntimeHostManagedDeploymentAuthorityDurablyAbsent,
@@ -218,7 +219,12 @@ export async function runManagedRuntimeHostServiceCli(
   } catch (error) {
     const code =
       error instanceof RuntimeHostServiceManagerError ? error.code : 'internal_service_error';
-    const message = error instanceof Error ? error.message : String(error);
+    const failure = runtimeHostRootRepairError(error, {
+      clientDataRoot: options.clientDataRoot,
+      ...(options.managedRootId ? { rootId: options.managedRootId } : {}),
+      ...(options.rootPath ? { rootPath: options.rootPath } : {}),
+    });
+    const message = failure instanceof Error ? failure.message : String(failure);
     if (options.framed) {
       deps.writeOutput(
         encodeRuntimeHostServiceManagementFrame({

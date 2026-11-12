@@ -18,7 +18,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deriveMakaDataRoots, resolveMakaDataRoots } from './workspace-root.js';
 import {
@@ -243,72 +243,91 @@ export async function runMakaCli(
       });
     }
     case 'runtime-host-serve': {
-      const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
-      if (command.managedDeployment) {
-        const {
-          resolveRuntimeHostManagedDeployment,
-          resolveRuntimeHostNpmDeploymentLayout,
-          resolveRuntimeHostWebRtcStunUrls,
-        } = await import('@maka/runtime-host/operator');
-        const { config } = await resolveRuntimeHostManagedDeployment(
-          command.managedDeployment.rootId,
-        );
-        const peer = config.listeners.directPeer?.enabled ? config.listeners.directPeer : undefined;
-        const packageLayout = resolveRuntimeHostNpmDeploymentLayout(
-          config.deploymentRoot,
-          config.launch.package.integrity,
-        );
-        if (process.platform === 'win32') {
-          const { ownWindowsRuntimeHostProcessTree } = await import(
-            './runtime-host-windows-service.js'
+      let serviceRootPath = command.rootPath ?? dataRoots.workspaceRoot;
+      try {
+        const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
+        if (command.managedDeployment) {
+          const {
+            resolveRuntimeHostManagedDeployment,
+            resolveRuntimeHostNpmDeploymentLayout,
+            resolveRuntimeHostWebRtcStunUrls,
+          } = await import('@maka/runtime-host/operator');
+          const { config } = await resolveRuntimeHostManagedDeployment(
+            command.managedDeployment.rootId,
           );
-          await ownWindowsRuntimeHostProcessTree(packageLayout.cliPath);
+          const peer = config.listeners.directPeer?.enabled
+            ? config.listeners.directPeer
+            : undefined;
+          const packageLayout = resolveRuntimeHostNpmDeploymentLayout(
+            config.deploymentRoot,
+            config.launch.package.integrity,
+          );
+          if (process.platform === 'win32') {
+            const { ownWindowsRuntimeHostProcessTree } = await import(
+              './runtime-host-windows-service.js'
+            );
+            await ownWindowsRuntimeHostProcessTree(packageLayout.cliPath);
+          }
+          return await runRuntimeHostServiceCli({
+            rootPath: config.root.path,
+            json: command.json,
+            managedLaunchClaim: {
+              deploymentId: command.managedDeployment.deploymentId,
+              configRevision: command.managedDeployment.configRevision,
+            },
+            projectDirectoryRoots: config.projectDirectoryRoots,
+            ...(config.listeners.websocket ? { websocket: config.listeners.websocket } : {}),
+            ...(peer
+              ? {
+                  peer: {
+                    nativePath: await resolveRuntimeHostNativePath(packageLayout.cliPath),
+                    keyPath: peer.keyPath,
+                    expectedPeerId: peer.peerId,
+                    listenAddresses: peer.listenAddresses,
+                    coordinationRelays: peer.coordinationRelays,
+                    automaticRelayDiscovery: peer.automaticRelayDiscovery,
+                    webRtcStunUrls: resolveRuntimeHostWebRtcStunUrls(peer.webRtcStunPolicy),
+                    meshDataRoot: join(config.deploymentRoot, 'peer-mesh'),
+                  },
+                }
+              : {}),
+          });
         }
-        return runRuntimeHostServiceCli({
-          rootPath: config.root.path,
+        if (command.managedServiceConfigPath) {
+          const { effectiveRuntimeHostProjectDirectoryRoots, readRuntimeHostManagedServiceConfig } =
+            await import('./runtime-host-service-manager.js');
+          const config = await readRuntimeHostManagedServiceConfig(
+            command.managedServiceConfigPath,
+          );
+          serviceRootPath = config.rootPath;
+          return await runRuntimeHostServiceCli({
+            rootPath: config.rootPath,
+            json: command.json,
+            projectDirectoryRoots: effectiveRuntimeHostProjectDirectoryRoots(config),
+            websocket: config.websocket,
+          });
+        }
+        return await runRuntimeHostServiceCli({
+          rootPath: command.rootPath ?? dataRoots.workspaceRoot,
           json: command.json,
-          managedLaunchClaim: {
-            deploymentId: command.managedDeployment.deploymentId,
-            configRevision: command.managedDeployment.configRevision,
-          },
-          projectDirectoryRoots: config.projectDirectoryRoots,
-          ...(config.listeners.websocket ? { websocket: config.listeners.websocket } : {}),
-          ...(peer
-            ? {
-                peer: {
-                  nativePath: await resolveRuntimeHostNativePath(packageLayout.cliPath),
-                  keyPath: peer.keyPath,
-                  expectedPeerId: peer.peerId,
-                  listenAddresses: peer.listenAddresses,
-                  coordinationRelays: peer.coordinationRelays,
-                  automaticRelayDiscovery: peer.automaticRelayDiscovery,
-                  webRtcStunUrls: resolveRuntimeHostWebRtcStunUrls(peer.webRtcStunPolicy),
-                  meshDataRoot: join(config.deploymentRoot, 'peer-mesh'),
-                },
-              }
+          ...(command.projectDirectoryRoots
+            ? { projectDirectoryRoots: command.projectDirectoryRoots }
             : {}),
+          ...(command.websocket ? { websocket: command.websocket } : {}),
+          ...(command.peer ? { peer: command.peer } : {}),
+        });
+      } catch (error) {
+        const { runtimeHostRootRepairError } = await import(
+          './runtime-host-root-repair-command.js'
+        );
+        throw runtimeHostRootRepairError(error, {
+          ...(command.managedDeployment ? { rootId: command.managedDeployment.rootId } : {}),
+          rootPath: serviceRootPath,
+          clientDataRoot: command.managedServiceConfigPath
+            ? dirname(command.managedServiceConfigPath)
+            : dataRoots.clientDataRoot,
         });
       }
-      if (command.managedServiceConfigPath) {
-        const { effectiveRuntimeHostProjectDirectoryRoots, readRuntimeHostManagedServiceConfig } =
-          await import('./runtime-host-service-manager.js');
-        const config = await readRuntimeHostManagedServiceConfig(command.managedServiceConfigPath);
-        return runRuntimeHostServiceCli({
-          rootPath: config.rootPath,
-          json: command.json,
-          projectDirectoryRoots: effectiveRuntimeHostProjectDirectoryRoots(config),
-          websocket: config.websocket,
-        });
-      }
-      return runRuntimeHostServiceCli({
-        rootPath: command.rootPath ?? dataRoots.workspaceRoot,
-        json: command.json,
-        ...(command.projectDirectoryRoots
-          ? { projectDirectoryRoots: command.projectDirectoryRoots }
-          : {}),
-        ...(command.websocket ? { websocket: command.websocket } : {}),
-        ...(command.peer ? { peer: command.peer } : {}),
-      });
     }
     case 'runtime-host-installed-update': {
       const { runRuntimeHostInstalledUpdateBootstrap } = await import(
@@ -404,6 +423,18 @@ export async function runMakaCli(
         ...(command.websocketPath ? { websocketPath: command.websocketPath } : {}),
         ...(command.directPeer ? { directPeer: command.directPeer } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+      });
+    }
+    case 'runtime-host-service-repair-root': {
+      const { runRuntimeHostRootRepairCli } = await import('./runtime-host-root-repair-command.js');
+      const serviceDataRoots = command.clientDataRoot
+        ? deriveMakaDataRoots(command.clientDataRoot)
+        : dataRoots;
+      return runRuntimeHostRootRepairCli({
+        ...command,
+        clientDataRoot: serviceDataRoots.clientDataRoot,
+        defaultRootPath: serviceDataRoots.workspaceRoot,
+        cliPath: process.argv[1] ?? '',
       });
     }
     case 'runtime-host-service-manage': {
