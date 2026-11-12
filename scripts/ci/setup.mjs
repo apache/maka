@@ -369,7 +369,7 @@ async function main(action) {
             'libwayland-dev',
           ]
         : [...shared, ...headless];
-    await command('sudo', ['apt-get', 'update']);
+    await command('sudo', ['apt-get', '-o', 'APT::Update::Error-Mode=any', 'update']);
     await command('sudo', ['apt-get', 'install', '-y', ...packages]);
     if (dependencies !== 'computer-use')
       await command('sudo', ['sysctl', '-w', 'kernel.apparmor_restrict_unprivileged_userns=0']);

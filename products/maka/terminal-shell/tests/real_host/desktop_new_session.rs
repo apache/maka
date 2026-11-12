@@ -179,7 +179,9 @@ impl Desktop {
         std::fs::create_dir_all(&directory).unwrap();
         self.pump();
         let guard = self.frame.lock().unwrap();
-        let frame = guard.as_ref().unwrap();
+        let Some(frame) = guard.as_ref() else {
+            return;
+        };
         let size = frame.size();
         let mut ppm = format!("P6\n{} {}\n255\n", size.width.0, size.height.0).into_bytes();
         for pixel in frame.pixels().as_chunks::<4>().0 {
