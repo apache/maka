@@ -139,6 +139,10 @@ pub struct ComboboxProps {
     /// too (`color`, `fontSize`, `placeholderColor`).
     #[prop(default)]
     pub input_style: Prop<InputPartStyle>,
+    /// The id UI tests find the input by (TS `inputTestID`, as `testID`
+    /// names the combobox's own view).
+    #[prop(rename = "inputTestID")]
+    pub input_test_id: Prop<Option<SharedString>>,
     /// The classes of the footer, below the rows.
     pub footer_class: Prop<Option<SharedString>>,
     /// The inline style of the footer, over its classes.
@@ -561,6 +565,11 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
         .disabled(props.disabled)
         .role(AccessibilityRole::Combobox)
         .optional_label(props.accessibility_label)
+        // The input keeps the keyboard focus while the list is open: the
+        // highlighted row is its active descendant.
+        .accessibility_active_descendant(move || if open.get() { lb.active_row() } else { None })
+        .accessibility_controls(move || open.get().then_some(lb.listbox))
+        .when_some(props.input_test_id.get_untracked(), |f, id| f.test_id(&id))
         .accessibility_state(move || AccessibilityState {
             expanded: Some(open.get()),
             has_popup: true,

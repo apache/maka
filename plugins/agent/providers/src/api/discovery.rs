@@ -41,7 +41,7 @@ pub(super) async fn discover(
     request: Discovery,
     context: Context,
 ) -> Result<Vec<ModelInfo>, Error> {
-    let configuration = Configuration::read(&request.connection)?;
+    let configuration = Configuration::read(&request.connection.configuration)?;
     let declaration = &provider.facts.model_discovery;
     if matches!(declaration, ModelDiscovery::Fallback { .. }) {
         return Ok(provider

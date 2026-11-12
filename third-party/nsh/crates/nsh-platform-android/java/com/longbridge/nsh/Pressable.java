@@ -108,6 +108,13 @@ final class Pressable {
         return true;
     }
 
+    /** A responder inside took the touch: the press ends with no long press or press (`Box.cancelPress`). */
+    void cancel() {
+        if (!tracking) return;
+        tracking = false;
+        pressOut();
+    }
+
     /** An accessibility click (TalkBack's double tap). */
     void click() {
         if (mounter.wants(id, Native.PRESS)) mounter.event(id, Native.PRESS);

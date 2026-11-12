@@ -127,7 +127,8 @@ export function createModules(invoke, values, live, wake, makeComponent) {
     exports,
     /** Adds what gates registered since the last call to `exports`' namespaces (in place). */
     refresh() { if (live()) apply(invoke(200, [])); },
-    measure(node) { return call(315, [], node, [], true, false); },
+    /** `ref.measure()`, or with `"scrollPosition"` a list's `ref.measureScrollPosition()`. */
+    measure(node, what) { return call(315, [], node, what ? [what] : [], true, false); },
     reply(id, ok, value) {
       const waiter = pending.get(id);
       if (!waiter) return;

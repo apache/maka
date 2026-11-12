@@ -36,12 +36,13 @@ export function progressRail(height = 6): ViewStyle {
 }
 
 /** A bar's fill, `height` points tall (default 6): the slider's citrus run
- * (`finish.fill`), or a tone's color (`up` for done, `warn`, `danger`; `accent`
- * is the run). */
+ * (`finish.fill`'s gradient), or a tone's color (`up` for done, `warn`,
+ * `danger`; `accent` is the run). Neither has an edge, so a tone's bar and
+ * the run read as one kind of bar. */
 export function progressFill(height = 6, tone?: Tone): ViewStyle {
   return tone && tone !== "accent"
     ? { height, borderRadius: height / 2, backgroundColor: toneColor(tone) }
-    : { height, borderRadius: height / 2, backgroundImage: finish.fill.backgroundImage, borderWidth: 1, borderColor: finish.fill.borderColor };
+    : { height, borderRadius: height / 2, backgroundImage: finish.fill.backgroundImage };
 }
 
 /** An indeterminate bar's sweep (`progressSweep()`), for `progressLook`'s `sweep`. */

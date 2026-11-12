@@ -721,11 +721,20 @@ pub struct KeyBinding {
     /// ([`KeyMatch::Notify`]): Tab still moves the focus, a text input
     /// still types. Else the platform consumes the key.
     pub pass_through: bool,
-    /// Runs only after native controls leave the key unhandled.
+    /// Runs after native controls leave the key unhandled.
     pub fallback: bool,
-    /// Fires only while focus is on this node or one of its descendants.
-    /// Platforms without native scope matching skip it.
+    /// Fires while focus is on this node or one of its descendants.
     pub within: Option<NodeId>,
+    /// The window it belongs to, as its root node ([`crate::ROOT_ID`] for
+    /// the main window, a dialog root for a window of the app's own): it
+    /// fires only for keys pressed there. `None`: in any window.
+    pub window: Option<crate::NodeId>,
+    /// It is the keys of the view with the keyboard focus (a component's,
+    /// bound while its part has the focus or its popup is open): Return
+    /// and Space reach it while the focus is on a control they press
+    /// ([`Keymap::find_at`]). Other bindings of those keys give way to the
+    /// focused control.
+    pub for_focus: bool,
 }
 
 impl KeyBinding {
@@ -745,13 +754,29 @@ impl KeyBinding {
             pass_through: false,
             fallback: false,
             within: None,
+            window: None,
+            for_focus: false,
         }
+    }
+
+    /// The binding firing only in the window of root node `window`
+    /// ([`Self::window`]).
+    pub fn in_window(mut self, window: crate::NodeId) -> KeyBinding {
+        self.window = Some(window);
+        self
     }
 
     /// The binding firing without consuming the key when `pass_through`
     /// ([`Self::pass_through`]).
     pub fn passing_through(mut self, pass_through: bool) -> KeyBinding {
         self.pass_through = pass_through;
+        self
+    }
+
+    /// The binding being the keys of the view with the keyboard focus when
+    /// `for_focus` ([`Self::for_focus`]).
+    pub fn focus_keys(mut self, for_focus: bool) -> KeyBinding {
+        self.for_focus = for_focus;
         self
     }
 }
@@ -819,49 +844,89 @@ impl Keymap {
     /// focus) takes it; `repeat` is an auto-repeat of a held key, which only
     /// fires bindings that ask for it. A binding that passes the key
     /// through gives [`KeyMatch::Notify`], and its held key's auto-repeats
-    /// go on ([`KeyMatch::None`]) unless it repeats. Scoped bindings are
-    /// skipped: a platform supporting them uses [`Self::find_with`].
+    /// go on ([`KeyMatch::None`]) unless it repeats.
+    /// The key is pressed in the main window ([`Self::find_in`]).
     pub fn find(&self, keystroke: Keystroke, editing: bool, repeat: bool) -> KeyMatch {
-        self.find_with(keystroke, editing, repeat, |_| false)
+        self.find_in(crate::ROOT_ID, keystroke, editing, repeat)
     }
 
-    /// Matches a key with the platform's current native focus predicate.
-    /// A rejected scope leaves older bindings and native defaults eligible.
-    pub fn find_with(
+    /// [`Self::find`] for a key pressed in the window of root node
+    /// `window`: only that window's bindings and those of no window
+    /// ([`KeyBinding::window`]) take it.
+    pub fn find_in(
         &self,
+        window: crate::NodeId,
         keystroke: Keystroke,
         editing: bool,
         repeat: bool,
-        within: impl Fn(NodeId) -> bool,
     ) -> KeyMatch {
-        self.find_in_phase(keystroke, editing, repeat, within, false)
+        self.find_at(window, keystroke, editing, false, repeat)
     }
 
-    /// Matches a fallback binding after the focused native control, editing,
-    /// selection and navigation have left the key unhandled.
-    pub fn find_fallback_with(
+    /// [`Self::find_in`] with the control that has the keyboard focus.
+    /// Return and Space press that control before shortcuts elsewhere;
+    /// only its own bindings ([`KeyBinding::for_focus`]) take those keys first.
+    pub fn find_at(
         &self,
+        window: NodeId,
         keystroke: Keystroke,
         editing: bool,
+        control: bool,
+        repeat: bool,
+    ) -> KeyMatch {
+        self.find_at_with(window, keystroke, editing, control, repeat, |_| false)
+    }
+
+    /// Matches ordinary bindings against the window and native focus path,
+    /// giving Return and Space to a focused control as [`Self::find_at`] does.
+    pub fn find_at_with(
+        &self,
+        window: NodeId,
+        keystroke: Keystroke,
+        editing: bool,
+        control: bool,
         repeat: bool,
         within: impl Fn(NodeId) -> bool,
     ) -> KeyMatch {
-        self.find_in_phase(keystroke, editing, repeat, within, true)
+        self.find_matching(window, keystroke, editing, control, repeat, |binding| {
+            !binding.fallback && binding.within.is_none_or(&within)
+        })
     }
 
-    fn find_in_phase(
+    /// Matches fallback bindings after native controls leave the key unhandled,
+    /// respecting the same focused-control priority as [`Self::find_at`].
+    pub fn find_fallback_at_with(
         &self,
+        window: NodeId,
         keystroke: Keystroke,
         editing: bool,
+        control: bool,
         repeat: bool,
         within: impl Fn(NodeId) -> bool,
-        fallback: bool,
     ) -> KeyMatch {
+        self.find_matching(window, keystroke, editing, control, repeat, |binding| {
+            binding.fallback && binding.within.is_none_or(&within)
+        })
+    }
+
+    fn find_matching(
+        &self,
+        window: NodeId,
+        keystroke: Keystroke,
+        editing: bool,
+        control: bool,
+        repeat: bool,
+        eligible: impl Fn(&KeyBinding) -> bool,
+    ) -> KeyMatch {
+        let pressing = control
+            && !editing
+            && crate::input::presses_focused_control(keystroke.key, keystroke.modifiers);
         let found = self.bindings.iter().rev().find(|b| {
-            b.fallback == fallback
-                && b.keystroke == keystroke
+            b.keystroke == keystroke
                 && (b.in_text || !editing)
-                && b.within.is_none_or(&within)
+                && b.window.is_none_or(|w| w == window)
+                && (b.for_focus || !pressing)
+                && eligible(b)
         });
         match found {
             None => KeyMatch::None,
@@ -876,6 +941,117 @@ impl Keymap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoped_bindings_respect_focused_controls_in_both_phases() {
+        for fallback in [false, true] {
+            for name in ["enter", "space", "shift+enter"] {
+                let stroke = Keystroke::parse_with(name, true).unwrap();
+                let mut binding = KeyBinding::new(1, stroke, When::Always, false).in_window(7);
+                binding.fallback = fallback;
+                binding.within = Some(9);
+                let find = |table: &Keymap, window, control, within| {
+                    if fallback {
+                        table.find_fallback_at_with(window, stroke, false, control, false, |id| {
+                            within && id == 9
+                        })
+                    } else {
+                        table.find_at_with(window, stroke, false, control, false, |id| {
+                            within && id == 9
+                        })
+                    }
+                };
+                let table = Keymap::new(vec![binding]);
+                assert_eq!(find(&table, 7, false, true), KeyMatch::Fire(1));
+                assert_eq!(find(&table, 7, true, true), KeyMatch::None);
+                let table = Keymap::new(vec![binding.focus_keys(true)]);
+                assert_eq!(find(&table, 7, true, true), KeyMatch::Fire(1));
+                assert_eq!(find(&table, 7, true, false), KeyMatch::None);
+                assert_eq!(find(&table, 8, true, true), KeyMatch::None);
+            }
+        }
+    }
+
+    #[test]
+    fn scoped_fallback_bindings_stay_in_their_window_and_phase() {
+        let escape = Keystroke::parse_with("escape", true).unwrap();
+        let ordinary = KeyBinding::new(1, escape, When::Always, false).in_window(7);
+        let mut fallback = KeyBinding::new(2, escape, When::Always, false).in_window(7);
+        fallback.fallback = true;
+        fallback.within = Some(9);
+        let table = Keymap::new(vec![ordinary, fallback]);
+        assert_eq!(
+            table.find_at_with(7, escape, false, false, false, |id| id == 9),
+            KeyMatch::Fire(1)
+        );
+        assert_eq!(
+            table.find_fallback_at_with(7, escape, false, false, false, |id| id == 9),
+            KeyMatch::Fire(2)
+        );
+        assert_eq!(
+            table.find_fallback_at_with(7, escape, false, false, false, |_| false),
+            KeyMatch::None
+        );
+        assert_eq!(
+            table.find_fallback_at_with(8, escape, false, false, false, |_| true),
+            KeyMatch::None
+        );
+    }
+
+    #[test]
+    fn a_windows_binding_takes_only_its_windows_keys() {
+        let escape = Keystroke::parse_with("escape", true).unwrap();
+        let k = |id| KeyBinding::new(id, escape, When::Always, false);
+        // JS's (any window), the main window's, then window 7's.
+        let table = Keymap::new(vec![
+            k(1),
+            k(2).in_window(crate::ROOT_ID),
+            k(3).in_window(7),
+        ]);
+        assert_eq!(table.find_in(7, escape, false, false), KeyMatch::Fire(3));
+        assert_eq!(
+            table.find_in(crate::ROOT_ID, escape, false, false),
+            KeyMatch::Fire(2)
+        );
+        assert_eq!(table.find(escape, false, false), KeyMatch::Fire(2));
+        // A window with none of its own: the one of no window.
+        assert_eq!(table.find_in(9, escape, false, false), KeyMatch::Fire(1));
+        let only = Keymap::new(vec![k(3).in_window(7)]);
+        assert_eq!(only.find_in(9, escape, false, false), KeyMatch::None);
+    }
+
+    #[test]
+    fn return_and_space_on_a_control_fire_only_the_focus_bindings() {
+        let key = |s| Keystroke::parse_with(s, true).unwrap();
+        let (enter, space, cmd_enter) = (key("enter"), key("space"), key("cmd+enter"));
+        // A dialog's Return, Space and Command+Return, then a menu button's
+        // Return while it has the focus.
+        let mut bindings = vec![
+            KeyBinding::new(1, enter, When::NotEditing, false),
+            KeyBinding::new(2, space, When::NotEditing, false),
+            KeyBinding::new(3, cmd_enter, When::Always, false),
+        ];
+        let table = Keymap::new(bindings.clone());
+        let at = |t: &Keymap, k, control| t.find_at(crate::ROOT_ID, k, false, control, false);
+        // The focus on no control: they fire.
+        assert_eq!(at(&table, enter, false), KeyMatch::Fire(1));
+        assert_eq!(at(&table, space, false), KeyMatch::Fire(2));
+        // On a control: they are its, but with Command held.
+        assert_eq!(at(&table, enter, true), KeyMatch::None);
+        assert_eq!(at(&table, space, true), KeyMatch::None);
+        assert_eq!(at(&table, key("shift+enter"), true), KeyMatch::None);
+        assert_eq!(at(&table, cmd_enter, true), KeyMatch::Fire(3));
+        // The focus' own binding takes Return first.
+        bindings.push(KeyBinding::new(4, enter, When::NotEditing, false).focus_keys(true));
+        let table = Keymap::new(bindings);
+        assert_eq!(at(&table, enter, true), KeyMatch::Fire(4));
+        assert_eq!(at(&table, space, true), KeyMatch::None);
+        // In a text field the control is not focused: as before.
+        assert_eq!(
+            table.find_at(crate::ROOT_ID, cmd_enter, true, true, false),
+            KeyMatch::Fire(3)
+        );
+    }
 
     #[test]
     fn shift_types_the_us_layouts_characters() {
@@ -1144,11 +1320,17 @@ mod tests {
         scoped.within = Some(10);
         let map = Keymap::new(vec![KeyBinding::new(5, e, When::Always, true), scoped]);
         assert_eq!(
-            map.find_with(e, true, false, |id| id == 10),
+            map.find_at_with(crate::ROOT_ID, e, true, false, false, |id| id == 10),
             KeyMatch::Fire(6)
         );
-        assert_eq!(map.find_with(e, true, true, |id| id == 10), KeyMatch::Held);
-        assert_eq!(map.find_with(e, true, true, |_| false), KeyMatch::Fire(5));
+        assert_eq!(
+            map.find_at_with(crate::ROOT_ID, e, true, false, true, |id| id == 10),
+            KeyMatch::Held
+        );
+        assert_eq!(
+            map.find_at_with(crate::ROOT_ID, e, true, false, true, |_| false),
+            KeyMatch::Fire(5)
+        );
         assert_eq!(map.find(e, true, false), KeyMatch::Fire(5));
         assert_eq!(
             Keymap::new(vec![scoped]).find(e, false, false),
@@ -1158,17 +1340,20 @@ mod tests {
         // A newer fallback cannot steal the ordinary binding's earlier phase.
         scoped.fallback = true;
         let map = Keymap::new(vec![KeyBinding::new(5, e, When::Always, true), scoped]);
-        assert_eq!(map.find_with(e, true, false, |_| true), KeyMatch::Fire(5));
         assert_eq!(
-            map.find_fallback_with(e, true, false, |id| id == 10),
+            map.find_at_with(crate::ROOT_ID, e, true, false, false, |_| true),
+            KeyMatch::Fire(5)
+        );
+        assert_eq!(
+            map.find_fallback_at_with(crate::ROOT_ID, e, true, false, false, |id| id == 10),
             KeyMatch::Fire(6)
         );
         assert_eq!(
-            map.find_fallback_with(e, true, true, |id| id == 10),
+            map.find_fallback_at_with(crate::ROOT_ID, e, true, false, true, |id| id == 10),
             KeyMatch::Held
         );
         assert_eq!(
-            map.find_fallback_with(e, true, false, |_| false),
+            map.find_fallback_at_with(crate::ROOT_ID, e, true, false, false, |_| false),
             KeyMatch::None
         );
     }

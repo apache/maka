@@ -5,7 +5,7 @@
 import type { AnimatedValue, ViewStyle } from "nsh";
 import { reduceMotion, View } from "nsh";
 import { Icon } from "../icons";
-import { colors, finish, focusRing, follow, radius, terminal, TERMINAL_ROW, tints } from "../theme";
+import { alpha, colors, finish, focusRing, follow, isDark, radius, terminal, TERMINAL_ROW, tints } from "../theme";
 import { pressSink } from "./press";
 import { controlSize } from "./surface";
 
@@ -18,6 +18,8 @@ export interface ChoiceOptions {
   scale?: number;
   /** A round box (a task's, as reminders draw it). */
   round?: boolean;
+  /** Disabled, as the control is (`checkboxLook`): its edge stays drawn under the row's half opacity in dark. */
+  disabled?: boolean | (() => boolean);
 }
 
 /** A box's or ring's size: `scale` times the page's; one row high in the
@@ -30,10 +32,17 @@ const dims = (scale = 1) => ({
   dot: Math.round(controlSize.dot * scale),
 });
 
-/** The fill of a box or ring that is off, the field's well: spread it after
- * the box's `borderWidth` (a quick setting's icon lights up from it too,
- * under a `ChoiceLight`). */
-export const choiceWell = (): ViewStyle => ({ backgroundColor: colors.field, backgroundImage: "none", borderColor: colors.fieldBorder, boxShadow: finish.field.boxShadow });
+/** The fill of a box or ring that is off: spread it after the box's
+ * `borderWidth` (a quick setting's icon lights up from it too, under a
+ * `ChoiceLight`). Light, the field's well; dark, a step above the card
+ * (shadcn's `dark:bg-input/30`) inside an edge a step brighter than a
+ * field's, so an empty box still stands out, dimmed too: `disabled`, its
+ * edge twice as strong, so the row's half opacity leaves it as strong as an
+ * enabled box's (the mark and the label fade, the box stays drawn). */
+export const choiceWell = (o?: { disabled?: boolean }): ViewStyle =>
+  isDark()
+    ? { backgroundColor: alpha(colors.fieldBorder, 0.3), backgroundImage: "none", borderColor: alpha(colors.text, o?.disabled ? 0.4 : 0.2), boxShadow: finish.field.boxShadow }
+    : { backgroundColor: colors.field, backgroundImage: "none", borderColor: colors.fieldBorder, boxShadow: finish.field.boxShadow };
 
 /** A layer over the whole of its parent, its content centered: layers that cross over in place. */
 const centered = { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, alignItems: "center", justifyContent: "center" } as const;
@@ -54,7 +63,7 @@ export interface CheckboxLook {
 /**
  * A checkbox's box, as the props of `Checkbox`'s indicator (spread them:
  * `<Checkbox class="group" {...checkboxLook()} indicator={<CheckboxMark mark={..} />}>`):
- * sunk like a field (the field's color and edge), 16 points with a pointer,
+ * sunk like a field (`choiceWell`), 16 points with a pointer,
  * 22 on a touch screen, its corners 5 / 7 (`round`: a circle), sinking to
  * 90% while its row (the `group`) is pressed. `CheckboxMark` fills it.
  */
@@ -70,7 +79,7 @@ export function checkboxLook(o?: ChoiceOptions): CheckboxLook {
         alignItems: "center",
         justifyContent: "center",
         borderWidth: 1,
-        ...choiceWell(),
+        ...choiceWell({ disabled: !!read(o?.disabled) }),
       };
     },
   };
@@ -139,13 +148,13 @@ export function CheckboxMark(props: { mark: CheckboxMarkKind } & ChoiceOptions) 
  * once checked, with a dot of the ink on the citrus growing in from half
  * its size; 16 points with a pointer, 22 on a touch screen.
  */
-export function RadioRing(props: { on: boolean; scale?: number }) {
+export function RadioRing(props: { on: boolean; scale?: number; disabled?: boolean }) {
   const d = dims(props.scale);
   const on = follow(() => (props.on ? 1 : 0));
   return (
     <View
       class={choiceSink}
-      style={{ width: d.control, height: d.height, borderRadius: d.control / 2, alignItems: "center", justifyContent: "center", borderWidth: 1, ...choiceWell() }}
+      style={{ width: d.control, height: d.height, borderRadius: d.control / 2, alignItems: "center", justifyContent: "center", borderWidth: 1, ...choiceWell({ disabled: props.disabled }) }}
     >
       <ChoiceLight on={on} radius={d.control / 2} />
       <View
@@ -169,7 +178,7 @@ const read = <T,>(v: Live<T> | undefined): T | undefined => (typeof v === "funct
 
 /** Options of `choiceTileLook`. */
 export interface ChoiceTileOptions {
-  /** No hover and no press; dimmed to 40%. Pass the same value to the control's `disabled`. */
+  /** No hover and no press; dimmed to half. Pass the same value to the control's `disabled`. */
   disabled?: Live<boolean | undefined>;
   /** More style (a width, a gap), over the card's. */
   style?: Live<ViewStyle | undefined>;
@@ -180,7 +189,7 @@ export interface ChoiceTileLook {
   readonly style: ViewStyle;
   readonly hoverStyle: ViewStyle | undefined;
   readonly activeStyle: ViewStyle;
-  readonly focusStyle: ViewStyle;
+  readonly focusVisibleStyle: ViewStyle;
   readonly disabledStyle: ViewStyle;
 }
 
@@ -221,9 +230,9 @@ export function choiceTileLook(on: Live<boolean>, o?: ChoiceTileOptions): Choice
     get activeStyle(): ViewStyle {
       return sink.activeStyle;
     },
-    get focusStyle(): ViewStyle {
+    get focusVisibleStyle(): ViewStyle {
       return focusRing();
     },
-    disabledStyle: { opacity: 0.4 },
+    disabledStyle: { opacity: 0.5 },
   };
 }

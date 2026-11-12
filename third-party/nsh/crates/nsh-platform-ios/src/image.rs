@@ -12,7 +12,7 @@
 //! SVG images (sniffed from their bytes) are drawn by [`nsh_core::svg`] at
 //! the requested pixel size instead, then blurred, filtered, tinted and
 //! cached as bitmaps; their size is their intrinsic size in points.
-//! Canvases draw bitmaps only.
+//! Canvases draw the rasterized bitmap, as for any other image.
 
 use dispatch2::{DispatchQueue, DispatchQueueGlobalPriority, GlobalQueueIdentifier};
 use nsh_core::{
@@ -53,13 +53,6 @@ pub(crate) struct DecodedImage {
     pub(crate) image: Retained<UIImage>,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    /// An SVG, which canvases do not draw.
-    pub(crate) vector: bool,
-}
-
-/// Why a canvas leaves out the SVG image `uri`.
-pub(crate) fn not_a_bitmap(uri: &str) -> String {
-    format!("{uri} is an SVG image: canvases draw bitmaps (PNG, JPEG, ...)")
 }
 
 define_class!(
@@ -946,7 +939,6 @@ fn decode_svg(bytes: &[u8], d: Decoding) -> Option<DecodedImage> {
         ),
         width,
         height,
-        vector: true,
     })
 }
 
@@ -1035,7 +1027,6 @@ fn decode(data: &CFData, d: Decoding) -> Option<DecodedImage> {
             image,
             width,
             height,
-            vector: false,
         };
         let count = source.count().min(MAX_FRAMES);
         if count <= 1 {
@@ -1224,7 +1215,6 @@ mod tests {
         // SAFETY: a plain property of an immutable image.
         assert_eq!(unsafe { icon.image.scale() }, 3.0);
         let logo = decode(&CFData::from_bytes(LOGO), decoding(144, 2.0)).unwrap();
-        assert!(logo.vector);
         let image = cg(&logo);
         assert_eq!(
             (CGImage::width(Some(&image)), CGImage::height(Some(&image))),

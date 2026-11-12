@@ -23,8 +23,10 @@ const DISABLE_ALTERNATE_SCROLL: &str = "\x1b[?1007l";
 const DECODE_POLL: Duration = Duration::from_micros(50);
 /// How long startup waits for the terminal to answer its queries. Every terminal
 /// answers the primary device attributes (DA1), which ends the wait earlier.
+/// Remote terminals can answer after a network round trip; an answer that arrives
+/// after the host stops reading reaches the app as typed input.
 #[cfg(unix)]
-const QUERY_TIMEOUT: Duration = Duration::from_millis(100);
+const QUERY_TIMEOUT: Duration = Duration::from_secs(1);
 /// The default foreground (OSC 10) and background (OSC 11), the kitty keyboard
 /// protocol's flags (`CSI ? u`), synchronized output (DECRQM 2026) and DA1 last:
 /// its answer closes the replies.
@@ -393,7 +395,8 @@ fn parse_color(value: &str) -> Option<[u8; 3]> {
 
 /// The capabilities from the startup answers and the environment: `NSH_TUI_COLORS`
 /// (`truecolor`, `256`, `16` or `mono`) wins, then `NO_COLOR` (no colors at
-/// all, as no-color.org asks), then `COLORTERM`, then `TERM`.
+/// all, as no-color.org asks), then `COLORTERM`, then `TERM`. Hyperlinks are
+/// drawn everywhere but the Linux console (`TERM=linux`).
 pub(crate) fn capabilities(
     replies: &Replies,
     var: impl Fn(&str) -> Option<String>,
@@ -418,6 +421,8 @@ pub(crate) fn capabilities(
         };
     }
     let lower = |name| var(name).map(|value| value.to_ascii_lowercase());
+    // The Linux console prints an OSC 8 sequence instead of ignoring it.
+    capabilities.hyperlinks = !lower("TERM").is_some_and(|term| term.starts_with("linux"));
     capabilities.colors = match lower("NSH_TUI_COLORS").as_deref() {
         Some("truecolor" | "24bit") => ColorDepth::TrueColor,
         Some("256") => ColorDepth::Ansi256,
@@ -704,6 +709,8 @@ mod tests {
         let dark = capabilities(&Replies::default(), env(&[("TERM", "xterm-256color")]));
         assert_eq!(dark.background, nsh_core::platform::ColorScheme::Dark);
         assert_eq!(dark.colors, ColorDepth::Ansi256);
+        assert!(dark.hyperlinks);
+        assert!(!capabilities(&Replies::default(), env(&[("TERM", "linux")])).hyperlinks);
         assert_eq!(
             capabilities(&Replies::default(), env(&[("TERM", "xterm")])).colors,
             ColorDepth::Ansi16

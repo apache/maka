@@ -324,7 +324,7 @@ function Chat() {
           placeholder="Message"
           returnKeyType="send"
           style={{
-            placeholderColor: colors.faint,
+            placeholderColor: colors.muted,
             caretColor: colors.accent,
             selectionColor: colors.accent,
             flex: 1,

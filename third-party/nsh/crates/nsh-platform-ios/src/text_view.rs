@@ -115,6 +115,68 @@ fn draw_decorations(cx: &CGContext, line: &LaidLine) {
     }
 }
 
+/// Clips `cx` to all but the hidden runs of `line` (y-up text space), if
+/// it has some, saving the state first; returns whether it did. CoreText
+/// draws a color emoji in its own colors whatever its run's color, so a
+/// hidden run's glyphs are clipped out, with their shadow and decorations.
+fn clip_hidden(cx: &CGContext, line: &LaidLine, text: &AttributedText) -> bool {
+    let mut hidden: Vec<(CGFloat, CGFloat)> = Vec::new();
+    // SAFETY: the line's own run array (of CTRuns); one position (the run
+    // has a glyph) into a one-point buffer; null out pointers are allowed.
+    unsafe {
+        let runs = line.line.glyph_runs();
+        for i in 0..runs.count() {
+            let run = &*runs.value_at_index(i).cast::<CTRun>();
+            let range = run.string_range();
+            if range.length <= 0 || run.glyph_count() <= 0 || !text.hidden_at(range.location as u32)
+            {
+                continue;
+            }
+            // The run's own left edge, whichever way it goes (a right to
+            // left run's first character is at its right).
+            let mut origin = CGPoint::new(0.0, 0.0);
+            run.positions(
+                CFRange {
+                    location: 0,
+                    length: 1,
+                },
+                std::ptr::NonNull::from(&mut origin),
+            );
+            let x = line.origin.x + origin.x;
+            let width = run.typographic_bounds(
+                CFRange {
+                    location: 0,
+                    length: 0,
+                },
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            hidden.push((x, x + width));
+        }
+    }
+    if hidden.is_empty() {
+        return false;
+    }
+    hidden.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let c = Some(cx);
+    CGContext::save_g_state(c);
+    // Far past the line's own extent: only the hidden runs' edges clip.
+    let (bottom, height) = (line.origin.y - 1.0e4, 2.0e4);
+    let mut from = line.origin.x - 1.0e4;
+    for (left, right) in hidden.into_iter().chain([(line.origin.x + 1.0e5, 0.0)]) {
+        if left > from {
+            CGContext::add_rect(
+                c,
+                CGRect::new(CGPoint::new(from, bottom), CGSize::new(left - from, height)),
+            );
+        }
+        from = from.max(right);
+    }
+    CGContext::clip(c);
+    true
+}
+
 /// One decoration line centered on `y` (y-up), `style` as encoded by the
 /// text engine: solid, double, dotted, dashed, wavy.
 fn stroke_decoration(
@@ -201,7 +263,7 @@ define_class!(
         fn is_accessibility_element(&self) -> bool {
             // SAFETY: calling the superclass implementation.
             let explicit: bool = unsafe { msg_send![super(self), isAccessibilityElement] };
-            explicit || (!self.hidden_from_accessibility() && self.has_text())
+            explicit || (!self.hidden_from_accessibility() && self.has_visible_text())
         }
 
         #[unsafe(method_id(accessibilityLabel))]
@@ -209,7 +271,8 @@ define_class!(
             // SAFETY: calling the superclass implementation (the explicit label).
             let explicit: Option<Retained<NSString>> = unsafe { msg_send![super(self), accessibilityLabel] };
             explicit.or_else(|| {
-                self.ivars().text.borrow().as_ref().map(|t| NSString::from_str(&t.text))
+                // Hidden runs are not read.
+                self.ivars().text.borrow().as_ref().map(|t| NSString::from_str(&t.visible_text()))
             })
         }
 
@@ -346,12 +409,19 @@ define_class!(
                 // SAFETY: no auxiliary info.
                 unsafe { CGContext::begin_transparency_layer(c, None) };
             }
+            let attributed = self.ivars().text.borrow();
+            let hidden = attributed.as_ref().filter(|t| t.has_hidden());
             for line in &text.lines {
+                // Nothing of a hidden run is drawn.
+                let clipped = hidden.is_some_and(|t| clip_hidden(&cx, line, t));
                 CGContext::set_text_position(c, line.origin.x, line.origin.y);
                 // SAFETY: a valid line and context.
                 unsafe { line.line.draw(&cx) };
                 if text.strikethrough {
                     draw_decorations(&cx, line);
+                }
+                if clipped {
+                    CGContext::restore_g_state(c);
                 }
             }
             if let Some(color) = color {
@@ -712,6 +782,15 @@ impl TextView {
             .borrow()
             .as_ref()
             .is_some_and(|t| !t.text.is_empty())
+    }
+
+    /// Whether some of the text is not hidden: what a screen reader reads.
+    fn has_visible_text(&self) -> bool {
+        self.ivars()
+            .text
+            .borrow()
+            .as_ref()
+            .is_some_and(|t| !t.visible_text().is_empty())
     }
 
     fn hidden_from_accessibility(&self) -> bool {

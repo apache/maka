@@ -24,7 +24,7 @@
 //! The panel lets the mouse through. It measures nothing while hidden: the
 //! surface's monitor is removed with it.
 //!
-//! While it shows it also logs one `nsh::perf` line a second, in the shape
+//! While it shows it also logs one `nsh::fps` line a second, in the shape
 //! of the Linux backend's (`examples/gallery/tools/perf.py` reads both):
 //!
 //! `fps 120/120 frame 1.21/1.10/2.40/3.90 gap 8.33/8.33/8.40/16.70 over 0%
@@ -302,7 +302,7 @@ impl Hud {
                     drain_stat(&mut p.canvas),
                 ]
             });
-            log::info!(target: "nsh::perf", "{}", log_line(&snapshot, &phases));
+            log::info!(target: nsh_engine::perf::LOG_TARGET, "{}", log_line(&snapshot, &phases));
         }
         self.label
             .setStringValue(&NSString::from_str(&readings(&snapshot)));
@@ -411,7 +411,7 @@ fn log_line(s: &PerfSnapshot, phases: &[Stat; 3]) -> String {
     let percent = |v: Option<f32>| v.map_or_else(|| "-".to_owned(), |v| format!("{v:.0}%"));
     format!(
         "fps {:.0}/{:.0} frame {} gap {} over {:.0}% tick {} drain {} canvas {} commits {:.0} js {} core {} \
-         items {:.0} engine {:.0}% cpu {} gpu {} mem {}",
+         items {:.0} engine {:.0}% cpu {} gpu {} mem {} {}",
         s.fps,
         s.refresh_rate.unwrap_or(0.0),
         st(&s.frame),
@@ -430,7 +430,26 @@ fn log_line(s: &PerfSnapshot, phases: &[Stat; 3]) -> String {
         s.process
             .memory
             .map_or_else(|| "-".to_owned(), |m| format!("{:.1} MB", m as f64 / 1e6)),
+        s.memory.map_or_else(
+            || "heap - objects - nodes - ids -".to_owned(),
+            |m| format!(
+                "heap {:.1} MB objects {} nodes {} ids {}",
+                m.js_heap as f64 / 1e6,
+                m.js_objects,
+                m.nodes,
+                m.node_ids
+            ),
+        ),
     )
+}
+
+/// A count, short: `950`, `12.3k`, `4.1M`.
+fn count(n: u64) -> String {
+    match n {
+        0..1_000 => n.to_string(),
+        1_000..1_000_000 => format!("{:.1}k", n as f64 / 1e3),
+        _ => format!("{:.1}M", n as f64 / 1e6),
+    }
 }
 
 /// The panel's text.
@@ -443,6 +462,20 @@ fn readings(s: &PerfSnapshot) -> String {
         .process
         .memory
         .map_or_else(|| "-".to_owned(), |m| format!("{:.0} MB", m as f64 / 1e6));
+    // The JS heap, then the nodes alive and the ids their table has room
+    // for (far apart: the ids of gone nodes still take room).
+    let heap = s.memory.map_or_else(
+        || "-".to_owned(),
+        |m| {
+            format!(
+                "{:.0} MB  {} obj  NODES {}/{}",
+                m.js_heap as f64 / 1e6,
+                count(m.js_objects),
+                count(m.nodes),
+                count(m.node_ids)
+            )
+        },
+    );
     format!(
         "{:4.0} FPS   max {:.0} · {rate}\n\
          TICK {}  gap {:.1}\n\
@@ -450,7 +483,8 @@ fn readings(s: &PerfSnapshot) -> String {
          JS   {}  {:.0}/s\n\
          CORE {}  {:.0} items\n\
          HOP  {}  eng {:.0}%\n\
-         CPU {}  GPU {}  MEM {memory}",
+         CPU {}  GPU {}  MEM {memory}\n\
+         HEAP {heap}",
         s.fps,
         s.max_fps,
         stat(&s.tick_interval),
@@ -477,5 +511,25 @@ mod tests {
         let text = readings(&PerfSnapshot::default());
         assert!(text.starts_with("   0 FPS   max 0 · -"));
         assert!(text.contains("CPU -  GPU -  MEM -"));
+        assert!(text.ends_with("HEAP -"));
+    }
+
+    #[test]
+    fn readings_show_what_the_app_holds() {
+        let snapshot = PerfSnapshot {
+            memory: Some(nsh_engine::perf::MemorySample {
+                js_heap: 85_000_000,
+                js_objects: 640_000,
+                nodes: 6_100,
+                node_ids: 2_097_152,
+            }),
+            ..PerfSnapshot::default()
+        };
+        assert!(readings(&snapshot).ends_with("HEAP 85 MB  640.0k obj  NODES 6.1k/2.1M"));
+        let line = log_line(&snapshot, &Default::default());
+        assert!(
+            line.ends_with("heap 85.0 MB objects 640000 nodes 6100 ids 2097152"),
+            "{line}"
+        );
     }
 }

@@ -19,11 +19,11 @@ function App() {
           {", "}
           <Text style={{ fontStyle: "italic", color: ui().violet }}>italic</Text>
           {", and "}
-          <Text style={link()} onPress={() => tapped.set("the first link")} hoverStyle={{ opacity: 0.88 }} focusStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
+          <Text style={link()} onPress={() => tapped.set("the first link")} hoverStyle={{ opacity: 0.88 }} focusVisibleStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
             links
           </Text>
           {" that take presses of "}
-          <Text style={link()} onPress={() => tapped.set("the second link")} hoverStyle={{ opacity: 0.88 }} focusStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
+          <Text style={link()} onPress={() => tapped.set("the second link")} hoverStyle={{ opacity: 0.88 }} focusVisibleStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
             their own
           </Text>
           .

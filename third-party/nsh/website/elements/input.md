@@ -78,7 +78,7 @@ view styles apply):
 | `placeholder` | `.placeholder(..)` | `string` | | Shown while the input is empty. |
 | `multiline` | `.multiline(..)` | `boolean` | `false` | Several lines; return inserts a line break unless `submitBehavior` says otherwise. |
 | `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | A multiline input's scroll bar: the platform's indicator, or the app's built-in bar once it set one ([Scrollbar](./scrollbar.md#built-in-bars)); an object is a theme of its own, `false` none. |
-| `maxLength` | `.max_length(..)` | `number` | | The most characters the user can enter. |
+| `maxLength` | `.max_length(..)` | `number` | | The most characters the user can enter. A longer paste goes in cut to what fits, as in a browser. |
 | `readonly` | `.readonly(..)` | `boolean` | `false` | The user can select and copy the text but not change it. |
 | `masked` | `.masked(..)` | `boolean` | `false` | The text is hidden (passwords). |
 | `allowFontScaling` | | `boolean` | `true` | Follow the system text size. |
@@ -195,6 +195,7 @@ const height = signal(40);
 | `focus()` | `focus()` | Focuses the input and shows the keyboard. |
 | `blur()` | `blur()` | Unfocuses it. |
 | `setSelection(start, end?)` | `set_selection(start, end)` | Selects `start..end` (UTF-16 units); a caret when they are equal. |
+| `insertText(text)` | `insert_text(text)` | Inserts `text` in place of the selection as the user's edit: `maxLength` and the line rules apply, `onChange` reports it, and it is one step of the input's undo history. Linux, the web and headless tests only; other platforms do nothing yet and log a warning. |
 
 Moving focus to the next field on return:
 

@@ -568,6 +568,12 @@ impl<H: Host> Graph<H> {
         Some(cleanups.remove(at))
     }
 
+    /// The number of cleanups node `id` holds.
+    #[cfg(test)]
+    pub(crate) fn cleanup_count(&self, id: u32) -> usize {
+        self.nodes.get(id as usize).map_or(0, |n| n.cleanups.len())
+    }
+
     /// Whether a round is running (its end reports errors).
     pub fn in_round(&self) -> bool {
         self.updates.is_some()

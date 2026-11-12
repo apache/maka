@@ -1,0 +1,12 @@
+{
+  "name": "Focus",
+  "id": "com.example.focus",
+  "window": {
+    "title": "Focus",
+    "defaultSize": { "width": 300, "height": 280 },
+    "resizable": false,
+    "maximizable": false,
+    "closeOnPress": false,
+    "defaultVisible": false
+  }
+}

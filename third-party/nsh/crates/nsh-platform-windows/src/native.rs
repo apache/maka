@@ -343,6 +343,12 @@ impl NativeState {
         *self.access.borrow_mut() = Some(access);
     }
 
+    /// What the running app may reach (all before an app starts): what
+    /// its image loads check their redirects against.
+    pub(crate) fn access(&self) -> Arc<Access> {
+        self.access.borrow().clone().unwrap_or_default()
+    }
+
     /// The application id ([`crate::AppOptions::app_id`]): web views keep
     /// their profile in `%LOCALAPPDATA%\<app id>\WebView2`.
     pub(crate) fn set_app_id(&self, app_id: &str) {

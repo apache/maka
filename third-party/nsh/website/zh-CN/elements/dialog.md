@@ -103,6 +103,9 @@ function Example() {
 | `closeOnBackdropPress` | `.close_on_backdrop_press(..)` | `boolean` | `true` | 按下背景层时关闭它。 |
 | `closeOnSwipe` | `.close_on_swipe(..)` | `boolean` | `true` | 下滑 sheet（iOS、手机浏览器）时在原生侧关闭它。 |
 | `statusBar` | `.status_bar(..)` | `{ foreground?, hidden?, animated? }` | 无 | iOS 和 Android：对话框打开期间的状态栏，位于页面的设置之上（[状态栏](../modules/nsh-base.md#status-bar)）。 |
+| `accessibilityLabel` | `.label(..)` | `string` | 无 | 焦点进入对话框时读屏软件读出的名字：它的标题。 |
+| `accessibilityDescription` | `.accessibility_description(..)` | `string` | 无 | 读屏软件在名字之后读出的内容：它的说明文字。 |
+| `role` | `.role(AccessibilityRole::AlertDialog)` | `"dialog" \| "alertdialog"` | `"dialog"` | 对读屏软件而言它是什么：请用户确认某件事、或告诉用户紧急情况的对话框用 `"alertdialog"`。 |
 | `onOpen` | `.on_open(..)` | `() => void` | | 已完全出现。 |
 | `onClose` | `.on_close(..)` | `() => void` | | 已离开：用户关闭了它，或应用移除了它。 |
 | `onCancel` | `.on_cancel(..)` | `() => void` | | 用户尝试关闭它（Escape、返回、按下背景层、下滑），无论 `closeOn*` 是否允许关闭。 |
@@ -118,6 +121,35 @@ function Example() {
 | `android` 键 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `statusBarTranslucent` | `.status_bar_translucent(..)` | `boolean` | `false` | 内容延伸到状态栏下方；否则从状态栏下方开始。 |
+
+## 无障碍
+
+读屏软件把对话框当作一个整体：焦点进入时先说出这是一个对话框和它的名字，再读里面的内容。把标题作为它的名字：TSX 中是
+`accessibilityLabel`，Rust 中是 `.label(..)`；把说明文字作为它的描述：`accessibilityDescription`、
+`.accessibility_description(..)`，读屏软件紧接着名字读出它，用户在走到按钮之前就知道对话框说的是什么。请用户确认某件事（例如删除）的对话框是警示对话框：`role="alertdialog"`、
+`.role(AccessibilityRole::AlertDialog)`。各平台按自己的对话框呈现这个角色：macOS 上是 VoiceOver 的对话框，iOS 上是以标题命名的语义分组，
+Windows 上是 UI Automation 的对话框窗格，Linux 上是 AT-SPI 的对话框，Web 上是带 `aria-modal` 的 dialog。
+
+```rust tabs
+dialog()
+    .role(AccessibilityRole::AlertDialog)
+    .label("Delete this item?")
+    .accessibility_description("This can't be undone.")
+    .on_cancel(move || confirm.set(false))
+    .child(card())
+```
+
+```tsx tabs
+<Dialog
+  open={confirm()}
+  role="alertdialog"
+  accessibilityLabel="Delete this item?"
+  accessibilityDescription="This can't be undone."
+  onOpenChange={(e) => confirm.set(e.open)}
+>
+  …
+</Dialog>
+```
 
 ## 打开与关闭
 

@@ -12,6 +12,10 @@
 use std::rc::Rc;
 
 use super::task::AnswerSlot;
+use crate::{
+    desktop::Shortcut,
+    geometry::{Bounds, Points},
+};
 
 /// A menu item's handler.
 pub(crate) type MenuHandler = Rc<dyn Fn()>;
@@ -34,6 +38,26 @@ pub(crate) struct ViewMenus {
     pub(crate) popup_generation: u64,
     /// Settles the context menu shown, once the platform reports it closed.
     pub(crate) closed: Option<AnswerSlot<()>>,
+    /// The tray's menu handlers.
+    pub(crate) tray: Vec<(u32, MenuHandler)>,
+    /// The tray click's id and handler.
+    pub(crate) tray_click: Option<(u32, TrayClickHandler)>,
+    /// Counts the trays set, as `app_generation`.
+    pub(crate) tray_generation: u64,
+    /// The global shortcuts registered.
+    pub(crate) globals: Vec<Global>,
+}
+
+/// The tray click's handler, given the icon's frame on the screen.
+pub(crate) type TrayClickHandler = Rc<dyn Fn(Option<Bounds<Points>>)>;
+
+/// A global shortcut a view registered.
+pub(crate) struct Global {
+    pub(crate) id: u32,
+    pub(crate) shortcut: Shortcut,
+    pub(crate) on_press: MenuHandler,
+    /// Settled with whether the system took it, once it says.
+    pub(crate) registered: Option<AnswerSlot<bool>>,
 }
 
 impl ViewMenus {
@@ -49,8 +73,37 @@ impl ViewMenus {
         self.app
             .iter()
             .chain(&self.popup)
+            .chain(&self.tray)
             .find(|(i, _)| *i == id)
             .map(|(_, h)| h.clone())
+            .or_else(|| {
+                self.globals
+                    .iter()
+                    .find(|g| g.id == id)
+                    .map(|g| g.on_press.clone())
+            })
+    }
+
+    /// The tray click's handler, when `id` is its.
+    pub(crate) fn tray_click(&self, id: u32) -> Option<TrayClickHandler> {
+        self.tray_click
+            .as_ref()
+            .filter(|(i, _)| *i == id)
+            .map(|(_, h)| h.clone())
+    }
+
+    /// Settles global shortcut `id`'s registration; one the system refused
+    /// is forgotten.
+    pub(crate) fn registered(&mut self, id: u32, registered: bool) {
+        let Some(index) = self.globals.iter().position(|g| g.id == id) else {
+            return;
+        };
+        if let Some(slot) = self.globals[index].registered.take() {
+            slot.borrow_mut().deliver(registered);
+        }
+        if !registered {
+            self.globals.remove(index);
+        }
     }
 
     /// Settles the context menu shown, if there is one.

@@ -5,24 +5,18 @@
 
 use nsh_core::{
     AccessibilityState,
-    element::{LayoutCurve, LayoutTransition, Style},
+    element::{LayoutTransition, Spring, Style},
     prelude::*,
 };
 
 use crate::roving::{Pattern, Roving, member};
 
-/// How long the indicator takes to travel to another tab, in milliseconds:
-/// as long as `gpui-component`'s `spring_move` (a 280 ms response, a damping
-/// ratio of 0.85: `theme/motion.rs`) takes to come within a thousandth of
-/// its end, which is where a layout spring of that damping fitted into
-/// this duration does too (`nsh_core::transition`).
-/// `ln 1000 / (0.85 · 2π / 0.28 s)`.
-const INDICATOR_MS: f32 = 362.0;
-
 /// The indicator's travel to another tab: `gpui-component`'s tab bar
-/// indicator's `spring_move`, a little springy.
-const INDICATOR: LayoutTransition =
-    LayoutTransition::new(LayoutCurve::Spring { damping: 0.85 }, INDICATOR_MS);
+/// indicator's `spring_move` (a 280 ms response, a damping ratio of 0.85:
+/// `theme/motion.rs`), a little springy.
+fn indicator_motion() -> LayoutTransition {
+    LayoutTransition::spring(Spring::new(280.0).damping_ratio(0.85))
+}
 
 /// What a [`Tab`] finds of its [`Tabs`] through context.
 #[derive(Clone)]
@@ -125,7 +119,8 @@ pub struct TabsProps {
 /// previous and next tab, around the ends, Home and End to the first and
 /// last, past disabled tabs. The tab the focus moves to reports `onPress`,
 /// so the app selects it as the focus moves (automatic activation); Space
-/// and Return press the focused tab.
+/// and Return press the focused tab. Its tabs are its children, or inside
+/// the app's views among them (a tab with a hover frame or a badge).
 ///
 /// Its indicator (`gpui-component`'s tab bar's: an underline, a pill or a
 /// segmented highlight) is a part the app styles with `indicatorClass` and
@@ -176,7 +171,7 @@ fn indicator(list: Roving, class: Prop<Option<SharedString>>, style: Prop<Style>
         .accessibility_elements_hidden(true)
         .follow(move || list.current())
         .style_when(move || none.current().is_none(), |s| s.hidden())
-        .follow_transition(move || (!reduce_motion()).then_some(INDICATOR))
+        .follow_transition(move || (!reduce_motion()).then_some(indicator_motion()))
         .app_class(class)
         .inline_style(style)
 }

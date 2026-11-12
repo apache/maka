@@ -82,7 +82,7 @@ Ten thousand pages show the same seven items. An odd `visiblePages` centers the 
 ## Items
 
 Each item takes the app's `itemClass` and `itemStyle`: the current page is `selected:`, an item that takes no press
-`disabled:`, the item with the keyboard focus `focus:`. The row is the app's to lay out with `class` (a row by
+`disabled:`, the item with the keyboard focus `focus-visible:`. The row is the app's to lay out with `class` (a row by
 default; `gap-*`, `justify-*`).
 
 Without `renderItem` a page shows its number, an ellipsis `…`, and Previous and Next their accessibility labels (`‹` and

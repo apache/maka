@@ -35,10 +35,10 @@ pub(crate) enum Request {
 impl Request {
     pub(crate) fn resolve(self, language: Language) -> Result<ComputerAppTarget, ToolError> {
         super::require_desktop_blocking()?;
-        let (app, binding) = match self {
+        let app = match self {
             Self::RawApp(name) => {
                 let selected = raw_app_candidate(&name, &apps::list_all_apps())?;
-                let app = match selected {
+                match selected {
                     Some((application_id, path)) => {
                         let name = path.to_str().ok_or_else(|| {
                             failed("application bundle path is not valid Unicode")
@@ -60,8 +60,7 @@ impl Request {
                         app
                     }
                     None => apps::resolve_app_info(&name).map_err(failed)?,
-                };
-                (app, None)
+                }
             }
             Self::Name(name) => {
                 let requested_path = Path::new(&name)
@@ -88,7 +87,7 @@ impl Request {
                     .filter(|window| matches.iter().any(|app| app.pid == window.pid))
                     .collect();
                 match windows.len() {
-                    0 => (apps::resolve_app_info(&name).map_err(failed)?, None),
+                    0 => apps::resolve_app_info(&name).map_err(failed)?,
                     1 => {
                         return Self::Window {
                             window_id: u64::from(windows[0].window_id),
@@ -118,18 +117,7 @@ impl Request {
                 {
                     return Err(failed("stale_target: application process changed"));
                 }
-                let application_id = apps::bundle_id_for_pid(window.pid).ok_or_else(|| {
-                    failed("window owner has no resolved application bundle identity")
-                })?;
-                let mut matches = apps::list_all_apps().into_iter().filter(|app| {
-                    app.pid == window.pid && app.bundle_id.as_deref() == Some(&application_id)
-                });
-                let app = matches.next().ok_or_else(|| {
-                    failed("window owner has no resolved application bundle metadata")
-                })?;
-                if matches.next().is_some() {
-                    return Err(failed("window owner application metadata is ambiguous"));
-                }
+                let mut target = window_owner(window.pid, &apps::list_all_apps(), language)?;
                 if crate::identity::process(pid)? != process
                     || platform_macos::windows::window_info_by_id(window_id)
                         .is_none_or(|current| current.pid != window.pid)
@@ -138,20 +126,35 @@ impl Request {
                         "stale_target: window owner changed during app resolution",
                     ));
                 }
-                (
-                    app,
-                    Some(ComputerAppBinding {
-                        pid,
-                        window_id: u64::from(window_id),
-                        process_generation: process,
-                    }),
-                )
+                target.binding = Some(ComputerAppBinding {
+                    pid,
+                    window_id: u64::from(window_id),
+                    process_generation: process,
+                });
+                return Ok(target);
             }
         };
-        let mut target = subject(app, language)?;
-        target.binding = binding;
-        Ok(target)
+        subject(app, language)
     }
+}
+
+pub(crate) fn window_owner(
+    pid: i32,
+    inventory: &[AppInfo],
+    language: Language,
+) -> Result<ComputerAppTarget, ToolError> {
+    let application_id = apps::bundle_id_for_pid(pid)
+        .ok_or_else(|| failed("window owner has no resolved application bundle identity"))?;
+    let mut matches = inventory
+        .iter()
+        .filter(|app| app.pid == pid && app.bundle_id.as_deref() == Some(&application_id));
+    let app = matches
+        .next()
+        .ok_or_else(|| failed("window owner has no resolved application bundle metadata"))?;
+    if matches.next().is_some() {
+        return Err(failed("window owner application metadata is ambiguous"));
+    }
+    subject(app.clone(), language)
 }
 
 // Check app identity ambiguity without turning the number of open windows

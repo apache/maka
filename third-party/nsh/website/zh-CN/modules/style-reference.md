@@ -307,7 +307,7 @@ view().p_4().rounded(px(12.0)).bg(white()).shadow([
 | 键 | 类型 | Rust | 说明 |
 |---|---|---|---|
 | `opacity` | `number \| AnimatedNode` | `.opacity(o)`、`.bind_opacity(&value)` | 0（不可见）到 1。接受原生动画值。 |
-| `visibility` | `"visible" \| "hidden" \| "collapse"` | | 隐藏的视图仍占据布局空间（与 `display: "none"` 不同）。 |
+| `visibility` | `"visible" \| "hidden" \| "collapse"` | | 隐藏的视图仍占据布局空间（与 `display: "none"` 不同）。用在 span 上时，它的字符原地占位，复制和屏幕阅读器都会略过。 |
 | `overflow` | `"visible" \| "hidden"` | `.overflow_hidden()` | `"hidden"` 将子元素裁剪到视图边界（含圆角）。 |
 | `backfaceVisibility` | `"visible" \| "hidden"` | `.backface_hidden()`、`.backface_visible()` | `"hidden"`：3D 旋转转到背面时不可见。 |
 | `verticalAlign` | `"baseline" \| "text-top" \| "text-bottom" \| "middle"` | `.align_baseline()`、`.align_text_top()`、`.align_text_bottom()`、`.align_middle()` | `<Text>` 中的视图或图片在所在行中的位置，与 CSS 的 `vertical-align` 一致：底边落在基线上（默认）、顶边或底边对齐文本字体的顶部或底部，或中心位于基线上方半个 x 高度处。所在行会撑高以容纳它。 |

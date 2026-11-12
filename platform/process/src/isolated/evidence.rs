@@ -264,17 +264,19 @@ pub enum EvidenceInterest {
 }
 pub enum CleanupEvidence {
     NeverLaunched {
-        snapshot: SnapshotProof,
+        snapshot: Option<SnapshotProof>,
     },
     GroupClosed {
-        snapshot: SnapshotProof,
+        snapshot: Option<SnapshotProof>,
         receipt: TaskReceipt,
     },
 }
 impl CleanupEvidence {
-    pub fn snapshot(&self) -> &SnapshotProof {
+    pub fn snapshot(&self) -> Option<&SnapshotProof> {
         match self {
-            Self::NeverLaunched { snapshot } | Self::GroupClosed { snapshot, .. } => snapshot,
+            Self::NeverLaunched { snapshot } | Self::GroupClosed { snapshot, .. } => {
+                snapshot.as_ref()
+            }
         }
     }
 }
@@ -303,9 +305,12 @@ pub(super) fn pin(path: &std::path::Path) -> io::Result<Pinned> {
     })
 }
 #[cfg(target_os = "macos")]
-fn snapshot(pinned: &Pinned) -> io::Result<SnapshotProof> {
-    let proof: SnapshotProof = read_json(open_regular(&pinned.owner, "snapshot.json")?)?;
-    if proof.resource_ref() != pinned.path {
+fn snapshot(pinned: &Pinned) -> io::Result<Option<SnapshotProof>> {
+    let proof: Option<SnapshotProof> = read_json(open_regular(&pinned.owner, "snapshot.json")?)?;
+    if proof
+        .as_ref()
+        .is_some_and(|proof| proof.resource_ref() != pinned.path)
+    {
         return Err(invalid("original snapshot resource affinity changed"));
     }
     Ok(proof)
@@ -422,7 +427,7 @@ pub struct ClosedEvidence {
     pub stdout: File,
     /// A PTY merges stderr into stdout; there is no independent stderr resource.
     pub stderr: Option<File>,
-    pub snapshot: SnapshotProof,
+    pub snapshot: Option<SnapshotProof>,
     pub receipt: TaskReceipt,
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
@@ -432,7 +437,12 @@ impl ClosedEvidence {
     /// Call on a blocking worker. Only the immutable original baseline is
     /// opened; the possibly still changing working tree is not observed here.
     pub fn baseline_reader(&self) -> io::Result<BaselineReader> {
-        BaselineReader::from_resource(&self.resource, self.snapshot.clone())
+        BaselineReader::from_resource(
+            &self.resource,
+            self.snapshot
+                .clone()
+                .ok_or_else(|| invalid("live task has no baseline"))?,
+        )
     }
 }
 
@@ -490,8 +500,11 @@ fn read_closed(resource: PathBuf) -> io::Result<Option<ClosedEvidence>> {
         return Err(invalid("invalid original owner receipt"));
     }
     let receipt: TaskReceipt = read_json(open_regular(&owner, "task.json")?)?;
-    let snapshot: SnapshotProof = read_json(open_regular(&owner, "snapshot.json")?)?;
-    if snapshot.resource_ref() != resource {
+    let snapshot: Option<SnapshotProof> = read_json(open_regular(&owner, "snapshot.json")?)?;
+    if snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.resource_ref() != resource)
+    {
         return Err(invalid("original snapshot resource affinity changed"));
     }
     let TaskReceipt::Task { terminal_size, .. } = &receipt;
@@ -519,7 +532,7 @@ fn read_closed(resource: PathBuf) -> io::Result<Option<ClosedEvidence>> {
 #[cfg(unix)]
 pub(super) fn open_resource(resource: &std::path::Path) -> io::Result<File> {
     use rustix::fs::{Mode, OFlags, open, openat};
-    let namespace = super::protected_namespace()?;
+    let namespace = maka_sandbox::native_task_namespace()?;
     let name = resource
         .file_name()
         .and_then(|s| s.to_str())
@@ -612,7 +625,6 @@ pub(super) fn open_regular(owner: &File, name: &str) -> io::Result<File> {
 pub(super) fn read_json<T: serde::de::DeserializeOwned>(file: File) -> io::Result<T> {
     serde_json::from_reader(file).map_err(io::Error::other)
 }
-#[cfg(unix)]
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }

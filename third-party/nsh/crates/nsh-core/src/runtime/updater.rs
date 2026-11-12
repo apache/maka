@@ -693,6 +693,10 @@ mod native {
             JsError::Error("nothing is downloaded: call downloadUpdate first".into())
         })?;
         let installation = pending.installation.clone();
+        // The restart starts the app at the path the user knows: once the
+        // directory or `.app` is swapped, this process' executable is the
+        // old one, moved aside and deleted.
+        crate::restart::remember_program();
         blocking(move || {
             installation.install(&archive).map_err(|e| e.to_string())?;
             let _ = std::fs::remove_file(&archive);

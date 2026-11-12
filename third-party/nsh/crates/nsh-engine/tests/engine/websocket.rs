@@ -46,6 +46,7 @@ mount(() => <Text>{{shown()}}</Text>);
         minify: false,
         split: false,
         ui_sets: Vec::new(),
+        ..Default::default()
     })
     .unwrap();
     let _ = std::fs::remove_dir_all(&dir);
@@ -57,6 +58,7 @@ mount(() => <Text>{{shown()}}</Text>);
         app: nsh_engine::App::Js(bundle),
         viewport: Size::new(nsh_core::geometry::px(400.0), nsh_core::geometry::px(300.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -103,6 +105,14 @@ fn a_connection_round_trips_text_and_bytes_with_its_headers() {
             |request: &tungstenite::handshake::server::Request,
              response: tungstenite::handshake::server::Response| {
                 assert_eq!(request.headers().get("x-shell-test").unwrap(), "yes");
+                assert_eq!(
+                    request.headers().get("authorization").unwrap(),
+                    "Bearer shell-token"
+                );
+                assert_eq!(
+                    request.headers().get("cookie").unwrap(),
+                    "session=shell; theme=dark"
+                );
                 Ok(response)
             },
         )
@@ -125,7 +135,9 @@ fn a_connection_round_trips_text_and_bytes_with_its_headers() {
         &format!(
             r#"(async () => {{
   if (Object.keys(namespace).sort().join(",") !== "WebSocketConnection,connect,default" || websocket.connect !== connect) throw Error("module exports " + Object.keys(namespace));
-  const socket = await connect("ws://{address}/", {{ headers: {{ "X-Shell-Test": "yes" }} }});
+  const socket = await connect("ws://{address}/", {{ headers: {{
+    "X-Shell-Test": "yes", "aUtHoRiZaTiOn": "Bearer shell-token", "cOoKiE": "session=shell; theme=dark"
+  }} }});
   const pending = socket.read();
   const refused = (p) => p.then(() => "done", (e) => `${{e.constructor.name}}:${{e.code}}`);
   if (await refused(socket.read()) !== "TypeError:undefined") throw Error("a second read rejects");
@@ -164,22 +176,33 @@ fn bad_urls_options_and_grants_reject() {
     try { promise = connect(url, options); } catch { return "threw"; }
     return promise.then(() => "connected", (e) => e instanceof TypeError ? "TypeError" : `${e.code} ${e.permission} ${e.resource}`);
   };
-  const results = [];
-  for (const options of [42, { protocols: ["chat"] }, { headers: 42 }, { headers: { Authorization: "secret" } },
-      { headers: { Cookie: "secret" } }, { headers: { "Sec-WebSocket-Key": "evil" } }, { headers: { "x-test": 1 } }]) {
-    results.push(await refused("ws://127.0.0.1:9/", options));
+  for (const options of [
+    42, { protocols: ["chat"] }, { headers: 42 },
+    { headers: { "pRoXy-AuThOrIzAtIoN": "secret" } },
+    { headers: { hOsT: "evil" } }, { headers: { cOnNeCtIoN: "evil" } }, { headers: { uPgRaDe: "evil" } },
+    { headers: { "sEc-WeBsOcKeT-kEy": "evil" } }, { headers: { "sEc-WeBsOcKeT-fUtUrE": "evil" } },
+    { headers: { "x-test": 1 } }, { headers: { "bad name": "value" } },
+    { headers: { Authorization: "Bearer token\r\nX-Injected: yes" } },
+    { headers: { Cookie: "session=token\nX-Injected: yes" } },
+  ]) {
+    const result = await refused("ws://127.0.0.1:9/", options);
+    if (result !== "TypeError") throw Error(`options ${JSON.stringify(options)}: ${result}`);
   }
+  const results = [];
   results.push(await refused("https://127.0.0.1/"));
   for (const url of ["ws://user:secret@127.0.0.1:9/", "ws://127.0.0.1:9/#part"]) results.push(await refused(url));
   results.push(await refused("ws://example.com/"));
+  results.push(await refused("ws://example.com/", {
+    headers: { Authorization: "Bearer token", Cookie: "session=token" },
+  }));
   report(results.join("|"));
 })().catch((e) => report(String(e)));"#,
         LOOPBACK,
     );
     assert_eq!(
         shown(&rx, "done"),
-        "done TypeError|TypeError|TypeError|TypeError|TypeError|TypeError|TypeError|TypeError|\
-         TypeError|TypeError|ERR_ACCESS_DENIED network ws://example.com/"
+        "done TypeError|TypeError|TypeError|ERR_ACCESS_DENIED network ws://example.com/|\
+         ERR_ACCESS_DENIED network ws://example.com/"
     );
 }
 
@@ -273,7 +296,9 @@ fn a_handshake_redirect_fails_without_contacting_its_target() {
     });
     let (_engine, rx) = start(
         &format!(
-            r#"connect("ws://{address}/redirect").then(() => report("opened"), (e) => report(`${{e.code}} ${{e.status}}`));"#
+            r#"connect("ws://{address}/redirect", {{
+  headers: {{ Authorization: "Bearer token", Cookie: "session=token" }},
+}}).then(() => report("opened"), (e) => report(`${{e.code}} ${{e.status}}`));"#
         ),
         LOOPBACK,
     );

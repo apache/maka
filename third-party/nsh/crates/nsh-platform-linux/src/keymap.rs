@@ -7,7 +7,8 @@
 //! GTK matches the triggers, also on the keys of the layout's Latin group
 //! under other layouts, as it does the application's accelerators. A
 //! binding's action decides on the spot whether it fires (where the focus
-//! is: `KeyBinding::in_text`), reports it to JS with the root's
+//! is: `KeyBinding::in_text`; Return and Space on a focused control only
+//! when `KeyBinding::for_focus`), reports it to JS with the root's
 //! `KeyCommand` event and stops the key; JS runs the handler afterwards.
 //! A binding that does not fire, or fires and passes the key through
 //! (`KeyBinding::pass_through`), lets GTK try the next shortcut and then
@@ -106,8 +107,10 @@ pub(crate) fn attach(surface: &Rc<Surface>, root: &NshView) {
     controller.set_propagation_phase(gtk::PropagationPhase::Capture);
     let keys_ref = controller.downgrade();
     let display = root.display();
+    // Only the window's own bindings (and JS's, of no window).
+    let window = root.id();
     for binding in keymap.bindings().iter().rev() {
-        if skipped(binding) || binding.fallback {
+        if skipped(binding) || binding.fallback || binding.window.is_some_and(|w| w != window) {
             continue;
         }
         let Some(trigger) = trigger(&binding.keystroke, |key| shifted(&display, key))
@@ -187,8 +190,15 @@ fn fire(surface: &Rc<Surface>, root: &NshView, binding: &KeyBinding) {
 }
 
 fn fires_binding(surface: &Surface, root: &NshView, binding: &KeyBinding) -> bool {
-    !(binding.keystroke.key == Key::Escape && crate::text_input::composing_focused(surface))
-        && fires(surface, root, binding.in_text, binding.within)
+    binding.window.is_none_or(|window| window == root.id())
+        && !crate::text_input::composing_focused(surface)
+        && fires(
+            surface,
+            root,
+            binding.in_text,
+            binding.within,
+            gives_way(binding),
+        )
 }
 
 /// Replays capture-phase shortcut matching for a held GDK key event.
@@ -270,20 +280,24 @@ fn press_in_phase(surface: &Rc<Surface>, stroke: Keystroke, fallback: bool) -> b
     if cfg!(feature = "dev") && stroke.reloads(Os::Linux) {
         return false;
     }
-    if stroke.key == Key::Escape && crate::text_input::composing_focused(surface) {
+    if crate::text_input::composing_focused(surface) {
         return false;
     }
     let Some(keymap) = surface.keymap.keymap.borrow().clone() else {
         return false;
     };
     let root = crate::window::key_root(surface);
-    let Some((editing, path)) = focus_context(surface, &root) else {
+    let Some((editing, control, path)) = focus_context(surface, &root) else {
         return false;
     };
     let found = if fallback {
-        keymap.find_fallback_with(stroke, editing, false, |id| path.contains(&id))
+        keymap.find_fallback_at_with(root.id(), stroke, editing, control, false, |id| {
+            path.contains(&id)
+        })
     } else {
-        keymap.find_with(stroke, editing, false, |id| path.contains(&id))
+        keymap.find_at_with(root.id(), stroke, editing, control, false, |id| {
+            path.contains(&id)
+        })
     };
     if let Some(id) = found.fired() {
         surface.event(
@@ -341,27 +355,47 @@ fn watch_releases(surface: &Surface, window: &gtk::Window) {
     releases.push((window.downgrade(), keys));
 }
 
-fn focus_context(surface: &Surface, root: &NshView) -> Option<(bool, Vec<NodeId>)> {
+fn focus_context(surface: &Surface, root: &NshView) -> Option<(bool, bool, Vec<NodeId>)> {
     let root_widget = root.upcast_ref::<gtk::Widget>();
     let Some(focus) = root_widget.root().and_then(|r| r.focus()) else {
-        return Some((false, Vec::new()));
+        return Some((false, false, Vec::new()));
     };
     if !(focus.is_ancestor(root_widget) || &focus == root_widget) {
         return None;
     }
     // A field's text widget, or a hosted widget (a web view).
     let editing = !focus.is::<crate::view::NshView>();
+    let control = crate::key_focus::is_control(surface, &focus);
     let path = crate::input::focus_path(surface, root, Some(focus));
-    Some((editing, path))
+    Some((editing, control, path))
 }
 
 /// Whether a binding fires where the focus is: never while it is in
 /// another surface, in a text field or hosted widget only when the binding
 /// may (`in_text`), and inside `within` when scoped.
-fn fires(surface: &Surface, root: &NshView, in_text: bool, within: Option<NodeId>) -> bool {
-    focus_context(surface, root).is_some_and(|(editing, path)| {
-        (in_text || !editing) && within.is_none_or(|scope| path.contains(&scope))
+fn fires(
+    surface: &Surface,
+    root: &NshView,
+    in_text: bool,
+    within: Option<NodeId>,
+    gives_way: bool,
+) -> bool {
+    focus_context(surface, root).is_some_and(|(editing, control, path)| {
+        (in_text || !editing)
+            && !(control && gives_way)
+            && within.is_none_or(|scope| path.contains(&scope))
     })
+}
+
+/// Whether `binding` gives way to a focused control that its key presses:
+/// Return and Space, unless it is the focus' own
+/// ([`nsh_core::keymap::Keymap::find_at`]).
+fn gives_way(binding: &nsh_core::keymap::KeyBinding) -> bool {
+    !binding.for_focus
+        && nsh_core::input::presses_focused_control(
+            binding.keystroke.key,
+            binding.keystroke.modifiers,
+        )
 }
 
 /// The keyval that `key` types with Shift on the display's layout (`slash`

@@ -1,0 +1,23 @@
+[package]
+name = "post-editor-native"
+description = "The short post editor's schema (security tags, mentions, hashtags) and its weighted length (examples/post-editor)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+nsh-core.workspace = true
+nsh-base = { workspace = true, features = ["rich-editor"] }
+regex.workspace = true
+serde_json.workspace = true
+unicode-segmentation.workspace = true
+
+[dev-dependencies]
+# The headless test runs `App.tsx` against this crate's set.
+nsh-core = { workspace = true, features = ["declarations"] }
+nsh-engine.workspace = true
+nsh-testing = { workspace = true, features = ["bundle"] }

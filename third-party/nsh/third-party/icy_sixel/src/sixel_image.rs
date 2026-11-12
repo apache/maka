@@ -1,6 +1,6 @@
 //! The `SixelImage` type and related definitions.
 
-use crate::{decoder::DcsSettings, Result, SixelError};
+use crate::{Result, SixelError, decoder::DcsSettings};
 
 /// Background color mode for SIXEL (P2 parameter).
 ///
@@ -174,11 +174,13 @@ impl SixelImage {
             (self.width, self.height)
         } else if self.aspect_ratio.pan() > self.aspect_ratio.pad() {
             // Wider pixels: stretch horizontally
-            let new_width = (self.width * self.aspect_ratio.pan() as usize) / self.aspect_ratio.pad() as usize;
+            let new_width =
+                (self.width * self.aspect_ratio.pan() as usize) / self.aspect_ratio.pad() as usize;
             (new_width, self.height)
         } else {
             // Taller pixels: stretch vertically
-            let new_height = (self.height * self.aspect_ratio.pad() as usize) / self.aspect_ratio.pan() as usize;
+            let new_height =
+                (self.height * self.aspect_ratio.pad() as usize) / self.aspect_ratio.pan() as usize;
             (self.width, new_height)
         }
     }
@@ -218,7 +220,10 @@ impl SixelImage {
             return Err(SixelError::InvalidDimensions { width, height });
         }
 
-        let expected = width.checked_mul(height).and_then(|v| v.checked_mul(4)).ok_or(SixelError::IntegerOverflow)?;
+        let expected = width
+            .checked_mul(height)
+            .and_then(|v| v.checked_mul(4))
+            .ok_or(SixelError::IntegerOverflow)?;
 
         if pixels.len() != expected {
             return Err(SixelError::BufferSizeMismatch {
@@ -234,10 +239,10 @@ impl SixelImage {
     ///
     /// # Example
     /// ```rust
-    /// use icy_sixel::{SixelImage, PixelAspectRatio};
+    /// use icy_sixel::{PixelAspectRatio, SixelImage};
     ///
-    /// let image = SixelImage::from_rgba(vec![255; 4], 1, 1)
-    ///     .with_aspect_ratio(PixelAspectRatio::Ratio2To1);
+    /// let image =
+    ///     SixelImage::from_rgba(vec![255; 4], 1, 1).with_aspect_ratio(PixelAspectRatio::Ratio2To1);
     /// ```
     #[must_use]
     pub fn with_aspect_ratio(mut self, aspect_ratio: PixelAspectRatio) -> Self {
@@ -249,10 +254,10 @@ impl SixelImage {
     ///
     /// # Example
     /// ```rust
-    /// use icy_sixel::{SixelImage, BackgroundMode};
+    /// use icy_sixel::{BackgroundMode, SixelImage};
     ///
-    /// let image = SixelImage::from_rgba(vec![255; 4], 1, 1)
-    ///     .with_background_mode(BackgroundMode::Opaque);
+    /// let image =
+    ///     SixelImage::from_rgba(vec![255; 4], 1, 1).with_background_mode(BackgroundMode::Opaque);
     /// ```
     #[must_use]
     pub fn with_background_mode(mut self, background_mode: BackgroundMode) -> Self {
@@ -287,17 +292,27 @@ impl SixelImage {
     ///
     /// # Example
     /// ```rust
-    /// use icy_sixel::{SixelImage, EncodeOptions};
+    /// use icy_sixel::{EncodeOptions, SixelImage};
     ///
     /// let pixels = vec![255, 0, 0, 255]; // 1 red pixel
     /// let image = SixelImage::from_rgba(pixels, 1, 1);
-    /// let opts = EncodeOptions { max_colors: 16, ..Default::default() };
+    /// let opts = EncodeOptions {
+    ///     max_colors: 16,
+    ///     ..Default::default()
+    /// };
     /// let sixel = image.encode_with(&opts)?;
     /// # Ok::<(), icy_sixel::SixelError>(())
     /// ```
     #[must_use = "this returns the encoded SIXEL string"]
     pub fn encode_with(&self, opts: &crate::encoder::EncodeOptions) -> Result<String> {
-        crate::encoder::sixel_encode_impl(&self.pixels, self.width, self.height, opts, self.aspect_ratio, self.background_mode)
+        crate::encoder::sixel_encode_impl(
+            &self.pixels,
+            self.width,
+            self.height,
+            opts,
+            self.aspect_ratio,
+            self.background_mode,
+        )
     }
 
     /// Returns the image dimensions as a tuple (width, height).

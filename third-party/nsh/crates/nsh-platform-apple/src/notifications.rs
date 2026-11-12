@@ -6,8 +6,7 @@
 //! The framework ends an executable without a bundle identifier that
 //! touches it (the macOS development host run from a terminal), so there
 //! the permission is `unavailable` and nothing shows; the Dock's badge still
-//! works. A bundle that macOS does not trust (no signature) gets an error
-//! from the framework, reported as `unavailable` too.
+//! works. When asking errs, the permission is the one the settings hold.
 //!
 //! On macOS the process's notifications are the app's only when it owns
 //! them ([`enable`]: `AppOptions::notifications`, which `run_app` sets): an
@@ -184,14 +183,14 @@ fn ask_permission(center: &Retained<AnyObject>, control: EngineControl, id: u32)
     install();
     let (center_again, control_again) = (center.clone(), control);
     let done = RcBlock::new(move |_granted: Bool, error: *mut NSError| {
+        // The framework errs for a permission the user turned off as well:
+        // the settings hold the answer.
         // SAFETY: an error of the call or nil.
         if let Some(error) = unsafe { error.as_ref() } {
-            log::warn!(
-                "notifications: cannot ask for the permission: {}",
+            log::info!(
+                "notifications: asking for the permission: {}",
                 error.localizedDescription()
             );
-            answer_permission(&control_again, id, NotificationPermission::Unavailable);
-            return;
         }
         report_permission(&center_again, control_again.clone(), id);
     });

@@ -29,7 +29,7 @@ use crossbeam_channel::{Receiver, Sender};
 use nsh_core::host_channel::HostBridge;
 use nsh_core::{
     JsonValue,
-    host_channel::{HostInbox, check_name},
+    host_channel::{HostInbox, ModuleFake, check_name},
 };
 
 use crate::Message;
@@ -79,6 +79,12 @@ struct Inner {
     next_engine: u64,
     /// Events sent while no app ran, for the next one.
     pending: HostInbox,
+    /// The stand-ins for native modules' exports: specifier, export (or
+    /// `Export.member`), stand-in.
+    module_fakes: Vec<(String, String, ModuleFake)>,
+    /// The handlers of the stand-ins' calls, apart from the embedding
+    /// app's: they configure nothing and `host.call` never reaches them.
+    fake_handlers: HashMap<String, Handler>,
 }
 
 impl std::fmt::Debug for HostChannel {
@@ -172,9 +178,58 @@ impl HostChannel {
         self.lock().handlers.remove(name);
     }
 
+    /// Puts `fake` in the place of export `path` of native module
+    /// `specifier` (`"Keychain"`, or a member of an export,
+    /// `"Keychain.get"`) in the apps started from now on, as `nsh test`'s
+    /// `open` does for the app a test opens: their imports of the module
+    /// get the stand-in. A [`ModuleFake::Call`] is answered by the
+    /// handler of its name [`HostChannel::handle_module_fake`] registers.
+    /// `nsh test`'s hook, not part of the embedding API.
+    #[doc(hidden)]
+    pub fn fake_module_export(
+        &self,
+        specifier: impl Into<String>,
+        path: impl Into<String>,
+        fake: ModuleFake,
+    ) {
+        self.lock()
+            .module_fakes
+            .push((specifier.into(), path.into(), fake));
+    }
+
+    /// Handles the calls of the stand-ins whose [`ModuleFake::Call`] is
+    /// `name`, as [`HostChannel::handle`] does the app's `host.call`s, but
+    /// apart from them: the app's `host.call` never reaches it, and the
+    /// channel stays as the embedding app configured it (`host.available()`).
+    /// `nsh test`'s hook, not part of the embedding API.
+    #[doc(hidden)]
+    pub fn handle_module_fake(
+        &self,
+        name: impl Into<String>,
+        handler: impl Fn(HostCall) + Send + Sync + 'static,
+    ) {
+        self.lock()
+            .fake_handlers
+            .insert(name.into(), Arc::new(handler));
+    }
+
     #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
     fn handler(&self, name: &str) -> Option<Handler> {
         self.lock().handlers.get(name).cloned()
+    }
+
+    #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
+    fn fake_handler(&self, name: &str) -> Option<Handler> {
+        self.lock().fake_handlers.get(name).cloned()
+    }
+
+    /// Asks the engine to stop without interrupting JS, so its quit
+    /// listeners run ([`HostChannel::shutdown`] follows): events sent
+    /// meanwhile follow the shutdown message, kept for the next app.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn request_shutdown(&self, tx: &Sender<Message>) {
+        let _inner = self.lock();
+        let _ = tx.send(Message::Shutdown);
     }
 
     /// Events sent once JS is interrupted must follow the shutdown
@@ -243,11 +298,14 @@ impl HostChannel {
     }
 
     /// The bridge an app's `nsh/host` reaches this channel through, from
-    /// the engine whose queue is `tx`: its parameters as they are now.
+    /// the engine whose queue is `tx`: its parameters and module stand-ins
+    /// as they are now.
     #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
     pub(crate) fn bridge(&self, tx: Sender<Message>) -> EngineBridge {
+        let inner = self.lock();
         EngineBridge {
-            params: JsonValue::Object(self.params()),
+            params: JsonValue::Object(inner.params.clone()),
+            module_fakes: inner.module_fakes.clone(),
             channel: self.clone(),
             tx,
         }
@@ -297,6 +355,8 @@ impl Drop for HostAttachment {
 #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
 pub(crate) struct EngineBridge {
     params: JsonValue,
+    // A copy, so making a module's exports takes no lock.
+    module_fakes: Vec<(String, String, ModuleFake)>,
     channel: HostChannel,
     tx: Sender<Message>,
 }
@@ -311,6 +371,21 @@ impl EngineBridge {
         if ran.is_err() {
             log::error!("nsh/host: the embedding app's handler of \"{name}\" panicked");
         }
+    }
+
+    /// Runs `handler` with call `id` of `name`, answered back to this
+    /// engine.
+    fn start(&self, handler: &Handler, id: u64, name: &str, data: JsonValue) {
+        let call = HostCall {
+            name: name.to_owned(),
+            data,
+            reply: Some(HostReply {
+                id,
+                name: name.to_owned(),
+                tx: Some(self.tx.clone()),
+            }),
+        };
+        Self::run(handler, call);
     }
 }
 
@@ -330,16 +405,23 @@ impl HostBridge for EngineBridge {
                 "host.call(\"{name}\"): the embedding app handles no \"{name}\""
             ));
         };
-        let call = HostCall {
-            name: name.to_owned(),
-            data,
-            reply: Some(HostReply {
-                id,
-                name: name.to_owned(),
-                tx: Some(self.tx.clone()),
-            }),
+        self.start(&handler, id, name, data);
+        Ok(())
+    }
+
+    fn module_fakes(&self, specifier: &str) -> Vec<(String, ModuleFake)> {
+        self.module_fakes
+            .iter()
+            .filter(|(s, _, _)| s == specifier)
+            .map(|(_, path, fake)| (path.clone(), fake.clone()))
+            .collect()
+    }
+
+    fn call_module_fake(&self, id: u64, name: &str, data: JsonValue) -> Result<(), String> {
+        let Some(handler) = self.channel.fake_handler(name) else {
+            return Err(format!("no stand-in answers \"{name}\""));
         };
-        Self::run(&handler, call);
+        self.start(&handler, id, name, data);
         Ok(())
     }
 
@@ -621,6 +703,61 @@ mod tests {
             );
         }
         assert!(seen_rx.try_recv().is_err());
+        drop(engine);
+    }
+
+    fn start(channel: &HostChannel, source: &str) -> Engine {
+        let mut config = EngineConfig::new(Bundle::source(source.to_owned()));
+        if let crate::App::Js(bundle) = &mut config.app {
+            bundle.policy.declared =
+                Some(nsh_core::access::Capabilities::from_json(&json!({ "host": true })).unwrap());
+        }
+        config.host = channel.clone();
+        Engine::start(config, || ApproxTextEngine, Sink).unwrap()
+    }
+
+    #[test]
+    fn a_stand_in_leaves_the_app_without_an_embedding_app() {
+        let channel = HostChannel::new();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        channel.handle_module_fake("probe", move |mut call| {
+            tx.send(call.take_data()).unwrap();
+            call.resolve(JsonValue::Null);
+        });
+        channel.fake_module_export("nsh", "Image.prefetch", ModuleFake::Call("probe".into()));
+        let engine = start(
+            &channel,
+            "import { host, Image } from 'nsh'; Image.prefetch(host.available());",
+        );
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            json!([false])
+        );
+        drop(engine);
+    }
+
+    #[test]
+    fn the_app_s_calls_never_reach_a_stand_in() {
+        let channel = HostChannel::new();
+        let (faked_tx, faked_rx) = crossbeam_channel::unbounded();
+        channel.handle_module_fake("probe", move |call| {
+            faked_tx.send(()).unwrap();
+            call.resolve(json!("faked"));
+        });
+        channel.fake_module_export("nsh", "Image.prefetch", ModuleFake::Call("probe".into()));
+        let (seen_tx, seen_rx) = crossbeam_channel::unbounded();
+        channel.handle("seen", move |mut call| {
+            seen_tx.send(call.take_data()).unwrap();
+        });
+        let engine = start(
+            &channel,
+            "import { host } from 'nsh'; host.call('probe').then((v) => host.post('seen', v), (e) => host.post('seen', e.message));",
+        );
+        assert_eq!(
+            seen_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            json!("host.call(\"probe\"): the embedding app handles no \"probe\"")
+        );
+        assert!(faked_rx.try_recv().is_err());
         drop(engine);
     }
 

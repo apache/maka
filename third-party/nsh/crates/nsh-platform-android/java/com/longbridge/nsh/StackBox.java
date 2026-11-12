@@ -121,7 +121,7 @@ final class StackBox extends FrameLayout implements Node {
     /**
      * `upper` comes over `lower` (`push`) or goes from it through its
      * `transitionShader`, once the screens are laid out; false where none
-     * runs (no shader, Android 9, less motion).
+     * runs (no shader, before Android 10, less motion).
      */
     private boolean shaderAnimate(ScreenBox lower, ScreenBox upper, boolean push, List<ScreenBox> leaving) {
         if (!NavTransition.wanted(mounter, upper.id)) return false;

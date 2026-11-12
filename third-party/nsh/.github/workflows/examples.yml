@@ -10,12 +10,11 @@ name: Examples
 # `crates/**`, so a change to the examples alone was never built.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "examples/**"
-      - ".github/workflows/examples.yml"
-      - ".github/actions/cargo/**"
+  # Pull requests test every change before it merges; main runs every three
+  # hours when it moved, instead of on every push, which only tested again what its pull request
+  # had, and saves the dependencies' caches pull requests restore.
+  schedule:
+    - cron: "0 */3 * * *"
   pull_request:
     # `closed` runs nothing, but it takes the pull request's concurrency group
     # and so cancels its runs still queued or running once it merges or closes.
@@ -44,9 +43,18 @@ env:
   RUSTUP_TOOLCHAIN: stable
 
 jobs:
+  # Scheduled runs: only when main moved since the last one.
+  changed:
+    if: github.event_name == 'schedule'
+    permissions:
+      actions: read
+    uses: ./.github/workflows/changed.yml
+
   check:
-    # Nothing for drafts or a pull request being closed.
-    if: github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
     # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
     # push cancels this run before it takes one.
     environment:

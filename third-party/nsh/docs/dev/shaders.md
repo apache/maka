@@ -15,6 +15,14 @@ Rust apps and embedders; the prebuilt runners an app without Rust crates ships h
 by what the app imports (`docs/dev/browser-js-size.md`), and GPUI always has it. A crate with `default-features = false`
 names the feature to keep shaders: `features = ["shader"]`. The other optional parts are in [features.md](features.md).
 
+Apps learn whether shaders draw from `Environment::shaders` (TS `shadersAvailable()`, Rust `shaders_available()`),
+which `Shader::compile` cannot tell: it only says a source is valid. Each platform starts it at
+`nsh_engine::shader::LINKED` (`true` on the web, whose page reports `shaders: false` once its WebGL 2 context fails);
+when its `Renderer::new` finds no GPU it calls
+`EngineControl::shaders_unavailable`, and the engine keeps it `false` from then on, for later environments and for
+engines started after it in the same process. The engine also reports `false` on a grid surface. Headless runs keep the
+default, `true`.
+
 ## The contract
 
 An app writes one function and whatever helpers and constants it needs:
@@ -108,15 +116,22 @@ changes) or an animated value (`&AnimatedValue`, `&AnimatedNode`), whose node it
 `nsh_engine::shader::Renderer` holds a wgpu device and queue, two bind group layouts (built-ins alone; built-ins and
 uniforms) and the render pipelines by source hash (`None` for one the device refused, reported once with a `js`
 warning). A backend opens it the first time a shader is mounted on a surface (Android: on the `NshView`, kept across
-app loads), so an app without shaders opens no device. `Renderer::new` requests a low-power adapter on the primary
-backends and GL (`WGPU_BACKEND` overrides) with WebGL 2's downlevel limits; where no adapter or device is found it is
-`None` and shader views show their background and children. Uncaptured device errors are warnings, never panics.
+app loads), so an app without shaders opens no device. `Renderer::new` requests a low-power adapter with WebGL 2's
+downlevel limits backend by backend (Linux: GL, then the primary ones; elsewhere the primary ones and GL at once;
+no setting chooses one) and keeps the first whose device opens, so an adapter that refuses its device gives the
+next backend its turn; where none opens it is `None` and shader views show their background and children. Uncaptured device errors are warnings, never panics.
 
 `nsh_engine::shader::ShaderView` is one view's state on the main thread: the layer, its uniforms, size and scale, the
 clock of `nsh.time` (kept while paused), and its frames.
 
 - **Rendering never waits for the GPU.** Frames are read back asynchronously; a slow GPU drops frames instead of
   stalling the main thread.
+- **Frames on IOSurfaces (Apple).** After `show_on_surfaces`, a view renders into one of three IOSurfaces of its frame's
+  size (`shader_surfaces.rs`), tagged sRGB, instead of reading pixels back: `surface()` is the frame to show, which the
+  backend sets as its layer's `contents`, and the window server matches its colours to the display on the GPU. A
+  surface the window server still uses is not rendered into again (`IOSurfaceIsInUse`); with none free the frame is
+  skipped. `frame()` stays empty; `set_input_from_frame` copies the frame shown on the GPU (a transition that starts
+  over a running one). Where the device is not Metal's, frames are read back.
 - **Frame pacing.** `wants_frame` is true while something it reads changed, while it is animated and not paused, or
   while a frame is on its way back. Backends call `render` on their frame clock only while it is true, at most once
   per display frame.
@@ -132,8 +147,8 @@ is. Views out of sight stop rendering until they show again.
 | Platform | Ticks on | Shows a frame as | Out of sight |
 |---|---|---|---|
 | Linux (GTK 4) | each view's tick callback | a `GdkMemoryTexture` appended in the view's snapshot, after the background, under text, images and children | `reveal` on the frame clock's layout, for views outside a clipping ancestor or the window |
-| macOS (AppKit) | one frame callback of the surface's display link, at the window's backing scale | a `CGImage`, the contents of a sublayer under the children (`decor.rs` shapes it) | `shown`, from `Mounter::revisit` (rows scrolled away, screens under another) |
-| iOS | a `CADisplayLink` of its own, at the screen's scale | a `CGImage` in a sublayer under the children | views outside any window render once back in one |
+| macOS (AppKit) | one frame callback of the surface's display link while frames change with time, pictures are due or anything else wants frames; a view that only changed renders after the batch and shows its frame when the GPU says it is done (`Renderer::when_done`), without the display link; at the window's backing scale | an IOSurface (`show_on_surfaces`), the contents of a sublayer under the children (`decor.rs` shapes it); a `CGImage` without Metal | `shown`, from `Mounter::revisit` (rows scrolled away, screens under another) |
+| iOS | a `CADisplayLink` of its own, at the screen's scale | an IOSurface (`show_on_surfaces`), the contents of a sublayer under the children; a `CGImage` without Metal | views outside any window render once back in one |
 | Android | the UI-thread animator's `Choreographer`, kept ticking by `UiAnimation::outputs` while a view wants a frame | a bitmap of `Box.java`, filled by `NshView.shaderFrame` | — |
 | Windows | the surface's frame ticker (`Surface::on_frame`), at the window's scale | a Direct2D bitmap drawn under the children (made again after a device loss) | `reveal`: hidden, concealed or detached views |
 | GPUI | a frame client of its surface | a GPUI image (BGRA, straight, the view's opacity multiplied in, as canvases' pixmaps), whose replaced image leaves GPUI's atlases | views not drawn in the last frame |
@@ -148,7 +163,7 @@ each platform that draws them does it; the others ignore `MountItem::ShaderTrans
 
 | Platform | Pictures | Hides the children, keeps their input | Over them | Pages and dialogs |
 |---|---|---|---|---|
-| macOS (AppKit) | `renderInContext:` of the children's container (`NshView::ensure_container`) without its mask, at the window's backing scale (a screen's: all the root shows but the frames over it); the backdrop: the root with the view's layer hidden | an empty `mask` on the container's layer (AppKit hit-tests views), which the decoration's clipping leaves in place until they show again (`decor::hide_children`); the root's while any screen shader hides it | the frames' sublayer at `zPosition` 1e6, `overflow` points beyond the box; a screen's on the root, which it leaves when its view is deleted or the app stops | the motion drawn through a layer over the stack (the root for a dialog) from pictures of it without and with the upper side (a page or dialog that left: its last image), taken on the first display frame, the live side again on the next three and after a view under it changed; the views at rest under it until it ends (`navigation::Motion::Shader`); popping and dismissing run backwards |
+| macOS (AppKit) | `renderInContext:` of the children's container (`NshView::ensure_container`) without its mask, at the window's backing scale (a screen's: all the root shows but the frames over it); the backdrop: the root without the view's layer and the layers that draw over it (after it and after each ancestor by `zPosition`, then order: later views, effects' frames, borders in front) and the trees that draw nothing in the box and `overflow` (`shader::cull`: a list's rows away from it), hidden while it draws (`renderInContext:` rasterizes every layer it is given), only the box and `overflow` drawn | an empty `mask` on the container's layer (AppKit hit-tests views), which the decoration's clipping leaves in place until they show again (`decor::hide_children`); the root's while any screen shader hides it | the frames' sublayer at `zPosition` 1e6, `overflow` points beyond the box; a screen's on the root, which it leaves when its view is deleted or the app stops | the motion drawn through a layer over the stack (the root for a dialog) from pictures of it without and with the upper side (a page or dialog that left: its last image), taken on the first display frame, the live side again on the next three and after a view under it changed; the views at rest under it until it ends (`navigation::Motion::Shader`); popping and dismissing run backwards |
 | iOS | `renderInContext:` of a view holding the children (`Decor::set_effect`, the view children are added to) without its mask, at the screen's scale; the backdrop: the window with the view's layer at opacity 0 | an empty `mask` on that view's layer (UIKit hit-tests views); the root view's while any screen shader hides it | the frames' sublayer at `zPosition` 1e6, `overflow` points beyond the box; a screen's on the root view (dialogs, presented by UIKit above it, are outside) | the screens change and the dialog is presented or dismissed at once, under a layer over the window's part where the surface (the stack) is, from pictures before the change (taken when the app removes the page or the dialog, before its views go: `Shaders::hold`) and after it (the first tick, the window laid out first), every other overlay left out of both; it stays until the frames on their way when the run ends have shown; a change of the same stack (of the surface, for a dialog) that starts while one runs ends that one first; popping and dismissing run backwards |
 
 macOS retakes an effect's pictures on the display frame after the core says they changed (`MountItem::ShaderInput`) or
@@ -161,7 +176,11 @@ pictures both sides on its first display frame; its live side (the upper one com
 three, while AppKit lays out and draws what navigation just showed, and after that only when a view under its host
 changed (`Mark`, set by `ui_changed`, which looks only at the surface the changed view is in). Its run is the shader's
 own clock; the motion under it ends `LINGER` (50 ms) later, so the frames still on their way back from the GPU show
-before it goes. A view that comes back into sight takes the pictures that fell due while it was out of it (`shown`).
+before it goes. A backdrop reader's picture is taken again when the core marks it or a view that draws under
+it changed where it reads (`shader::behind`: an ancestor or a layer before it, not one in it or over it, whose tree,
+clipped by its ancestors that clip, with its shadow, meets the box and `overflow`; looked at before a move or restyle
+and after it), or a shader's frame showed there; one with the pixels of the last is not given to the shader again
+(`picture_hash`). A view that comes back into sight takes the pictures that fell due while it was out of it (`shown`).
 What pictures cost on the main thread is in [macos.md](macos.md) "Shader pictures". `renderInContext:` draws no video or
 web page, nor backdrop blur or glass. The pictures of views AppKit has just shown again (navigation hides the screens
 under the top one) wait for the next display frame: until AppKit displays the window their layers are out of the tree,
@@ -240,8 +259,11 @@ Effects, transitions and page shaders sit on the same program, layer and rendere
 - **Marks.** `Core::pictured` holds the views whose layers read pictures or cover the screen. After a commit,
   `mark_shader_inputs` sends `MountItem::ShaderInput` for every effect or transition with a view of the batch in its
   subtree (`MountItem::view`) or a parent a view left (`Core::unlinked_from`, as a removed view has no parent left to
-  walk up from), and for every backdrop reader and screen layer once anything changed; the platforms
-  take those pictures again, and notice what changes on their UI thread themselves.
+  walk up from); for every backdrop reader once a view that draws before it changed (`Core::draws_before`: an
+  ancestor, or a view earlier in the order views draw in, siblings by `zIndex` then in order; never the reader, what
+  it holds or what draws over it, which are not in its backdrop), or an item that shows everywhere (`shown_by`: the
+  appearance, the tree's order, any item it does not know); and for every screen layer once anything changed. The
+  platforms take those pictures again, and notice what changes on their UI thread themselves.
 - **Pages and dialogs.** `transitionShader` (`NavShaderSpec`) compiles into a `Transition` layer sent as
   `MountItem::NavShader { id, shader }` (350 ms by default); the platform draws a push, pop, presentation or dismissal
   through it, the lower side `from` and the upper `to`.
@@ -425,7 +447,17 @@ dialog's `transitionShader`) take their pictures from the DOM. `shader.rs` also 
 - **A first frame is not an end.** A run's first frame comes back one or two display frames after it starts, and
   `ShaderView::frame()` is empty until then: a page's or a dialog's run ends on its clock, never on an empty frame.
 - **Readback latency.** Native frames arrive one or two display frames after `render`; a backend must keep ticking
-  while `ShaderView::pending()` is true, or the last frame of a change never shows.
+  while `ShaderView::pending()` is true, or be told when they are back (`Renderer::when_done`, on Apple's GPUs), or
+  the last frame of a change never shows.
+- **A display frame for one shader frame on macOS.** Resuming the surface's display link for a frame or two wakes
+  the process about as often as keeping it running at the screen's rate. A view that only changed
+  (`ShaderView::animates` false, no pictures) renders after the batch and is collected when the GPU tells, so the
+  display link stays paused.
+- **A CGImage per frame on macOS and iOS.** Read back, a frame became a `CGImage` in sRGB; Core Animation converted each one to
+  the display's colour space (Display P3) on the main thread at commit (`CA::Render::copy_image`, vImage), and with
+  the copy out of the read-back buffer a window-sized animated shader took 70 % of a core at 120 Hz. macOS and iOS
+  show frames on IOSurfaces instead. `renderInContext:` draws an IOSurface `contents`, so pictures of what is under a
+  backdrop or a transition still have the frames.
 - **One frame callback on the web.** `shaderFrame` clears `shaderFrameQueued` before it draws, so a view marked while
   it draws (a screen effect another shader drew under) queues the next frame then; a second request at its end would
   run the next frame twice, each of those twice again, and so on: the Shaders page stalled within a second of turning

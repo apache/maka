@@ -95,6 +95,7 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .multiple(props.multiple)
         .placeholder("Search")
         .accessibility_label("Tags")
+        .input_test_id("tags-input")
         .cleanable(props.cleanable)
         .clear_button(text("Clear"))
         .clear_button_accessibility_label("Clear tags")
@@ -419,6 +420,38 @@ fn screen_readers_hear_the_selected_titles() {
     assert!(!app.screen().selected("role:option[Ruby]").unwrap());
 }
 
+/// The input keeps the keyboard focus while the list is open: it names
+/// the highlighted row as its active descendant and the listbox as what it
+/// controls, as the highlight moves, and nothing once the list closes.
+#[test]
+fn the_input_names_the_highlighted_row_as_its_active_descendant() {
+    let mut app = start(multiple());
+    assert_eq!(app.screen().active_descendant("role:combobox"), Ok(None));
+    app.type_text("role:combobox", "r").unwrap();
+    app.wait_for("role:listbox").unwrap();
+    app.see_row(">Rust");
+    let rust = app.screen().id("role:option[Rust]").unwrap();
+    let listbox = app.screen().id("role:listbox").unwrap();
+    app.wait_until("the input naming Rust", Duration::from_secs(5), |s| {
+        s.active_descendant("role:combobox") == Ok(Some(rust))
+    })
+    .unwrap();
+    assert_eq!(
+        app.screen().accessibility_controls("role:combobox"),
+        Ok(Some(listbox))
+    );
+    app.key("down");
+    app.see_row(">Ruby");
+    let ruby = app.screen().id("role:option[Ruby]").unwrap();
+    app.wait_until("the input naming Ruby", Duration::from_secs(5), |s| {
+        s.active_descendant("role:combobox") == Ok(Some(ruby))
+    })
+    .unwrap();
+    app.key("escape");
+    app.gone("role:listbox");
+    assert_eq!(app.screen().active_descendant("role:combobox"), Ok(None));
+}
+
 #[test]
 fn typing_in_the_input_opens_the_list_and_filters_it() {
     let mut app = start(multiple());
@@ -432,6 +465,15 @@ fn typing_in_the_input_opens_the_list_and_filters_it() {
     app.see_row(">Swift");
     app.key("enter");
     app.log_ends("change:swift");
+}
+
+#[test]
+fn ui_tests_find_the_input_by_its_test_id() {
+    let mut app = start(multiple());
+    assert_eq!(app.screen().count("id:tags-input"), Ok(1));
+    app.type_text("id:tags-input", "sw").unwrap();
+    app.wait_for("role:option[Swift]").unwrap();
+    assert_eq!(app.screen().count("role:option").unwrap(), 1);
 }
 
 #[test]

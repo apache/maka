@@ -274,6 +274,7 @@ pub(crate) fn model_closure(
     let protocol = serde_json::to_value(ModelClosureProtocol {
         finish_reason,
         provider_options: None,
+        cache_read_reported: None,
         response_id: None,
         model: None,
         timestamp: None,
@@ -296,6 +297,35 @@ pub(crate) fn model_closure(
         },
     );
     (view, request, attempt)
+}
+
+#[test]
+fn closed_attempt_waits_for_its_in_flight_recovery_assessment() {
+    use maka_agent_facts::{accounting::Outcome, context::ModelPurpose, model::ModelFinishReason};
+
+    let mut view = policy_view(None);
+    let spec = ContentBlob::json(&view.spec).unwrap();
+    apply_policy_fact(
+        &mut view,
+        Fact::RunAdmitted {
+            spec: spec.reference().clone(),
+        },
+    );
+    let (view, _, attempt) = model_closure(
+        view,
+        ModelPurpose::Main,
+        ModelFinishReason::Stop,
+        Outcome::Aborted,
+        false,
+    );
+    let now = UnixMillis(1);
+    let mut live = Live::default();
+    // The closed stream may still be settling independently of its assessment.
+    live.work.insert(WorkKey::Model(attempt));
+    assert!(matches!(next(&view, &live, now, None, false), Action::Assess(id) if id == attempt));
+
+    live.work.insert(WorkKey::Assess(attempt));
+    assert!(matches!(next(&view, &live, now, None, false), Action::Idle));
 }
 
 #[test]
@@ -652,9 +682,12 @@ fn known_publication_failure_only_fences_followup_until_original_cleanup() {
     view.external = Some(ExternalTask {
         task,
         descriptor: view.spec.input.clone(),
+        live_workspace: false,
         admitted: true,
         binding: None,
         observed: 0,
+        active_tools: Default::default(),
+        turn_usage: None,
         closed: Some(ExternalClosure {
             outcome: Terminal::Completed,
             diagnostic: None,

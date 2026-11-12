@@ -71,7 +71,7 @@ pub struct ModelOverride {
     )]
     #[schemars(with = "String")]
     pub adapter: Option<String>,
-    /// Omitted means model-specific defaults; false is an explicit opt-out.
+    /// Code Mode is enabled by default. Set false to select direct tool calls.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

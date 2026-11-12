@@ -98,15 +98,15 @@ maka-mcp = { path = "plugins/agent/mcp" }
 hex = "0.4.3"
 maka-app-client = { path = "products/maka/client" }
 nsh-terminal = { path = "third-party/nsh/crates/nsh-terminal" }
-nsh-platform-linux = { path = "third-party/nsh/crates/nsh-platform-linux", default-features = false, features = ["js", "zlib", "crypto", "editor", "highlight", "math", "plot", "rich-editor", "term"] }
+nsh-platform-linux = { path = "third-party/nsh/crates/nsh-platform-linux", default-features = false, features = ["js", "zlib", "crypto", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term"] }
 nsh-core = { path = "third-party/nsh/crates/nsh-core" }
 nsh-engine = { path = "third-party/nsh/crates/nsh-engine" }
 nsh-js = { path = "third-party/nsh/crates/nsh-js" }
 nsh-platform-tui = { path = "third-party/nsh/crates/nsh-platform-tui" }
-nsh-platform-windows = { path = "third-party/nsh/crates/nsh-platform-windows", default-features = false, features = ["js", "zlib", "crypto", "editor", "highlight", "math", "plot", "rich-editor", "term"] }
-nsh-platform-macos = { path = "third-party/nsh/crates/nsh-platform-macos", default-features = false, features = ["js", "zlib", "crypto", "editor", "highlight", "math", "plot", "rich-editor", "term"] }
+nsh-platform-windows = { path = "third-party/nsh/crates/nsh-platform-windows", default-features = false, features = ["js", "zlib", "crypto", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term"] }
+nsh-platform-macos = { path = "third-party/nsh/crates/nsh-platform-macos", default-features = false, features = ["js", "zlib", "crypto", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term"] }
 nsh-bundler = { path = "third-party/nsh/crates/nsh-bundler", default-features = false }
-nsh-base = { path = "third-party/nsh/crates/nsh-base", features = ["math"] }
+nsh-base = { path = "third-party/nsh/crates/nsh-base", features = ["math", "emoji-picker"] }
 maka-ui-build = { path = "tools/ui-build" }
 maka-agent-facts = { path = "plugins/agent/facts" }
 maka-agent-state = { path = "plugins/agent/state" }

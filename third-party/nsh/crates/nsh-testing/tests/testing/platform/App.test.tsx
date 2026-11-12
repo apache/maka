@@ -1,3 +1,4 @@
+import { Image } from "nsh";
 import { expect, open, test } from "nsh/test";
 
 test("back pops the screen pushed last", async () => {
@@ -61,6 +62,23 @@ test("an image's size is answered as a failed load", async () => {
   const app = await open("./App.tsx");
   await app.press("Measure");
   await app.waitFor("Size: not loaded");
+});
+
+test("an image the test fails reports the failure", async () => {
+  const app = await open("./App.tsx");
+  await app.waitFor("text:Avatar: picture");
+  await app.failImages("https://cdn.test/avatars/*");
+  await app.waitFor("text:Avatar: initials (failed to load https://cdn.test/avatars/ada.png)");
+});
+
+test("the test file's own Image.getSize reads a blob's size and fails other loads", async () => {
+  // A PNG's signature and header: 3x2 pixels.
+  const png = new Uint8Array([
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 3, 0, 0, 0, 2, 8, 6, 0, 0, 0,
+  ]);
+  const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+  expect(await Image.getSize(url)).toEqual({ width: 3, height: 2 });
+  await expect(() => Image.getSize("asset:/missing.png")).rejects.toThrow("load no images");
 });
 
 test("focus() gives a view that takes presses the keyboard focus where Tab stops at it", async () => {

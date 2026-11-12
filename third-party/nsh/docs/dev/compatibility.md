@@ -7,7 +7,7 @@ starting after an NSH update is a bug in NSH, never in the app.
 
 This page is the contract and how it is enforced. It holds from the first release recorded in
 `nsh-compat` ("Releasing") on, and for good, whatever the version number says; earlier versions made no promises.
-No release is recorded yet, 0.3.0 and 0.4.0 included: the first one recorded starts the contract.
+No release is recorded yet, 0.3.0, 0.4.0 and 0.5.0 included: the first one recorded starts the contract.
 
 ## What apps depend on
 
@@ -68,7 +68,9 @@ good, whatever the version number says. Between releases, and before the first c
    `from_json_lenient` of `tailwind::Theme`, `nsh_base::Theme` and `StatusBarSetting`,
    `url_scheme::schemes_from_json_lenient`, the bundler's `resolve`, `Capabilities::from_json_lenient` (a capability or `http` grant it cannot read is not granted, so
    nothing left out widens access). Only text that is no JSON object, a file `nsh.json` names that is missing,
-   NSH's own `Info.plist` keys and an Android `targetSdk` below the minimum are errors.
+   NSH's own `Info.plist` keys, a minimum system version (`MinimumOSVersion`, `LSMinimumSystemVersion`) that is no
+   version string or is below the runtime's, and an Android `targetSdk` below the minimum are errors: a package
+   declaring a lower system than the one its app needs would install where it cannot run.
 7. **The only exception is security**: a capability that cannot be kept safe may be closed. A pull request of
    `nsh-compat` adds what it removes to that repository's `closed.txt`, each with its reason (`<entry> -- <reason>`,
    the entry as the checks report the break: `[<module>] <path>`, `<file>: <Name>`, `<file>: <Name>.<member>` or
@@ -189,7 +191,9 @@ handler reads them (`event id:video onProgress currentTime=3.25 duration=12.5`),
 `touch move|end|cancel [<x> <y>]` move one finger through the touch handlers and the responder system,
 `type <selector> <text>` types into an input (`onKeyPress`, `onChange` and `onSelectionChange` per character),
 `key <selector> <key>` presses a key, `scroll <selector> <x> <y>` scrolls a scroll view (`onScroll`),
-`keyboard <height> <duration>` shows the software keyboard (at height 0, hides it), `pixelratio <ratio>` moves the
+`keyboard <height> <duration>` shows the software keyboard (at height 0, hides it), `tray click [<x> <y> <width>
+<height>]` clicks the app's tray icon (its `onClick`, with the icon's frame on the screen when given, else `null`
+as on Linux), `pixelratio <ratio>` moves the
 surface to a screen of that pixel ratio (1 at the start) as a window moved to another screen does, and
 `state <selector> pressed|hovered|focused|none...` reports a view's interaction states as a platform does
 (`activeStyle`, `hover:`, ...), failing when the core did not ask the platform to track them. Props and style keys

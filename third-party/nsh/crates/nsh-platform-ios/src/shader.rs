@@ -156,6 +156,12 @@ impl Shaders {
         self.views.values().any(|s| is_screen(s.role))
     }
 
+    /// The device was looked for and there is none: shader views draw
+    /// nothing.
+    pub(crate) fn without_device(&self) -> bool {
+        matches!(self.renderer.get(), Some(None))
+    }
+
     /// Mounts `layer` on `host`, view `id` (`None`: it shows nothing of
     /// its own). `children` holds the children an effect or a transition
     /// draws (the root's, for a screen's).
@@ -196,7 +202,7 @@ impl Shaders {
                 host: host.retain(),
                 layer: shown,
                 mask: None,
-                view: ShaderView::default(),
+                view: surface_view(),
                 role,
                 children: None,
                 scale,
@@ -276,12 +282,13 @@ impl Shaders {
         let Some(s) = self.views.get_mut(&id) else {
             return;
         };
-        let frame = s.view.frame();
-        let frame = (s.masked && frame.width > 0)
-            .then(|| (frame.tight().to_vec(), frame.width, frame.height));
-        let from = match &frame {
-            Some((rgba, w, h)) => Some((&rgba[..], *w, *h, *w * 4)),
-            None => children_picture(&mut s.canvas, &s.children, &s.host, &s.view, s.scale),
+        // The running transition's frame (copied on the GPU), or the
+        // children.
+        let from_frame = s.masked && s.view.set_input_from_frame(renderer, ShaderInput::From);
+        let from = if from_frame {
+            None
+        } else {
+            children_picture(&mut s.canvas, &s.children, &s.host, &s.view, s.scale)
         };
         if let Some(from) = from {
             s.view.set_input(renderer, ShaderInput::From, Some(from));
@@ -683,7 +690,34 @@ impl ShaderState {
 
     /// Shows the last frame collected.
     fn show(&self) {
-        set_image(&self.layer, rgba_image(self.view.frame()).as_deref());
+        display_frame(&self.layer, &self.view);
+    }
+}
+
+/// A shader view whose frames go to IOSurfaces ([`display_frame`]).
+fn surface_view() -> ShaderView {
+    let mut view = ShaderView::default();
+    view.show_on_surfaces();
+    view
+}
+
+/// Shows `view`'s last frame in `layer`: its IOSurface, which the render
+/// server shows as it is and matches from sRGB to the display on the GPU;
+/// else (no Metal device, or one that makes no IOSurface textures) the
+/// pixels read back, as a CGImage, whose colours Core Animation matches on
+/// the main thread.
+fn display_frame(layer: &CALayer, view: &ShaderView) {
+    match view.surface() {
+        Some(surface) => quiet(|| {
+            // SAFETY: an IOSurfaceRef is an Objective-C object (`IOSurface`,
+            // toll-free bridged), a valid `contents` object.
+            unsafe {
+                layer.setContents(Some(
+                    &*(surface as *const objc2_io_surface::IOSurfaceRef as *const AnyObject),
+                ))
+            }
+        }),
+        None => set_image(layer, rgba_image(view.frame()).as_deref()),
     }
 }
 
@@ -995,7 +1029,7 @@ impl NavOverlay {
         });
         // Until the first frame comes back: what showed.
         set_image(&layer, image.as_deref());
-        let mut view = ShaderView::default();
+        let mut view = surface_view();
         view.set_layer(Some(shader.layer.clone()));
         view.set_size(
             size(
@@ -1063,7 +1097,7 @@ impl NavOverlay {
             self.view.collect_frame(renderer)
         };
         if shown {
-            set_image(&self.layer, rgba_image(self.view.frame()).as_deref());
+            display_frame(&self.layer, &self.view);
         }
         // A frame shown on this tick is on screen at the next.
         running || shown || self.view.pending()
@@ -1105,6 +1139,63 @@ mod tests {
         let mut view = ShaderView::default();
         view.set_layer(Some(Arc::new(layer)));
         view
+    }
+
+    #[test]
+    fn a_frame_on_a_surface_shows_and_draws_in_pictures() {
+        use objc2_core_graphics::{
+            CGBitmapContextCreate, CGBitmapContextGetData, CGColorSpace, CGImageAlphaInfo,
+            CGImageByteOrderInfo, kCGColorSpaceSRGB,
+        };
+        let Some(renderer) = Renderer::new(PixelFormat::Rgba) else {
+            eprintln!("no GPU: skipped");
+            return;
+        };
+        let shader =
+            Shader::compile("fn shade(uv: vec2f) -> vec4f { return vec4f(1.0, 0.0, 0.0, 1.0); }")
+                .expect("a shader");
+        let mut view = surface_view();
+        view.set_layer(Some(Arc::new(ShaderLayer::new(
+            shader,
+            &[],
+            &mut Vec::new(),
+        ))));
+        view.set_size(size(Points(4.0), Points(4.0)), 1.0);
+        let start = Instant::now();
+        while !view.render(&renderer, Instant::now()) {
+            assert!(start.elapsed() < Duration::from_secs(5), "no frame");
+        }
+        if view.surface().is_none() {
+            eprintln!("no IOSurface textures on this device: read back");
+            return;
+        }
+        let layer = CALayer::new();
+        layer.setFrame(CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(4.0, 4.0)));
+        display_frame(&layer, &view);
+        // SAFETY: reading the contents the line above set.
+        assert!(
+            unsafe { layer.contents() }.is_some(),
+            "the surface is the contents"
+        );
+        // SAFETY: a 4 × 4 RGBA context CoreGraphics allocates, read while
+        // it lives.
+        unsafe {
+            let space = CGColorSpace::with_name(Some(kCGColorSpaceSRGB)).unwrap();
+            let context = CGBitmapContextCreate(
+                std::ptr::null_mut(),
+                4,
+                4,
+                8,
+                16,
+                Some(&space),
+                CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0,
+            )
+            .unwrap();
+            layer.renderInContext(&context);
+            let data = CGBitmapContextGetData(Some(&context)).cast::<u8>();
+            let pixel = std::slice::from_raw_parts(data, 4);
+            assert_eq!(pixel, [255, 0, 0, 255], "the frame is in the picture");
+        }
     }
 
     #[test]

@@ -44,7 +44,6 @@ import {
   inputTextStyle,
   captionTextStyle,
   compact,
-  controlFocusStyle,
   controlStyle,
   floatingStyle,
   menuDetailTextStyle,
@@ -711,7 +710,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     </If>
                     <View
                       style={{
-                        minHeight: hero() && !compact() ? 40 : 24,
+                        minHeight:
+                          platform.idiom === 'terminal'
+                            ? hero() && !compact()
+                              ? 40
+                              : 24
+                            : 2 * bodyTextStyle.lineHeight,
                         maxHeight: compact() ? 64 : 144,
                       }}
                     >
@@ -841,37 +845,25 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           accessibilityLabel={tr('Suggested message: {message}', {
                             message: suggestedMessage()!.text,
                           })}
-                          style={[
-                            { ...bodyTextStyle, color: `${C.muted}80`, minHeight: 24 },
-                            { pointerEvents: 'box-none' },
-                          ]}
+                          onPress={inputAction(focusEditor, null)}
+                          style={{ ...bodyTextStyle, color: `${C.muted}80`, minHeight: 24 }}
                         >
                           {suggestedMessage()!.text}{' '}
-                          <Button
+                          <Text
                             accessibilityLabel={tr('Use suggested message')}
-                            tooltip={textTooltip(() => tr('Tab to use · Esc to dismiss'))}
                             onPress={inputAction(acceptSuggestedMessage, {
                               sessionId: owner!.sessionId,
                               sourceTurnId: suggestedMessage()!.sourceTurnId,
                               text: suggestedMessage()!.text,
                             })}
                             style={{
-                              height: 24,
-                              paddingHorizontal: 8,
+                              fontSize: captionTextStyle.fontSize,
                               borderRadius: 4,
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              backgroundColor: `${C.text}08`,
-                              verticalAlign: 'middle',
-                              pointerEvents: 'auto',
+                              backgroundColor: `${C.text}0f`,
                             }}
-                            hoverStyle={{ backgroundColor: C.cardRaised }}
-                            focusStyle={controlFocusStyle()}
                           >
-                            <Text style={{ ...captionTextStyle, color: `${C.muted}80` }}>
-                              {tr('Press Tab to accept')}
-                            </Text>
-                          </Button>
+                            {`\u00a0\u00a0${tr('Press Tab to accept')}\u00a0\u00a0`}
+                          </Text>
                         </Text>
                       </If>
                     </View>

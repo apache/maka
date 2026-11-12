@@ -55,6 +55,7 @@ The upstream MIT license is preserved in the root `LICENSE`. No upstream tests a
 - `website/src/assets/social.en.png`: English website preview rendered by `website/scripts/social-preview.mjs`; includes the product mark and self-hosted OFL-1.1 fonts.
 - `website/src/assets/social.zh-CN.png`: Chinese website preview rendered by the same source and toolchain.
 - `third-party/nsh/crates/nsh-base/fonts/katex.pack.zst`: Zstandard-compressed KaTeX math fonts (`KaTeX_*.ttf`); source and revision are recorded in `third-party/nsh/upstream.json`, and the SIL OFL-1.1 license is preserved alongside it in `katex.LICENSE.txt`.
+- `third-party/nsh/crates/nsh-platform-macos/tests/host/clip.mp4`: Unmodified NSH native video test fixture from the pinned upstream snapshot; Apache-2.0.
 - `third-party/nsh/crates/nsh-testing/tests/testing/fonts/Pacifico-Regular.woff2`: Unmodified Pacifico WOFF2 test font from the NSH source snapshot; its SIL OFL-1.1 notice is preserved in `examples/gallery/fonts/OFL.txt`.
 - `third-party/nsh/examples/gallery-rs/icon.png`: Unmodified NSH example application artwork; source and revision are recorded in `third-party/nsh/upstream.json`.
 - `third-party/nsh/examples/gallery-rs/native/assets/bounce.gif`: Unmodified NSH gallery animation fixture from the same source snapshot.

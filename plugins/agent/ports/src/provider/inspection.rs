@@ -79,6 +79,10 @@ pub enum UsageLimit {
         #[serde(skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
+    Disabled {
+        label: String,
+        period: UsagePeriod,
+    },
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -128,6 +132,9 @@ impl UsageLimit {
                 unit,
             } => valid_text(label.as_deref()) && amount.is_finite() && valid_text(unit.as_deref()),
             Self::Unlimited { label } => valid_text(label.as_deref()),
+            Self::Disabled { label, period } => {
+                valid_text(Some(label)) && !matches!(period, UsagePeriod::Duration { seconds: 0 })
+            }
         };
         if !valid {
             return Err(Error::Invalid("invalid provider usage limit".into()));

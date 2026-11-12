@@ -8,6 +8,12 @@
 import { Text, View, cleanup, setColorScheme, setTheme, signal, token } from "nsh";
 
 const brand = { cssVars: { light: { up: "#2563eb" }, dark: { up: "#93c5fd" } } };
+const malformed = [
+  ["bad-structure", '{"cssVars":null}'],
+  ["bad-function", '{"cssVars":{"light":{"up":"rgb(255 0 0"}}}'],
+  ["bad-length", '{"cssVars":{"light":{"up":"#zz"},"dark":{"up":"12px"}}}'],
+  ["bad-suffix", '{"cssVars":{"light":{"up":"rgb(255 0 0)garbage"}}}'],
+] as const;
 
 function BaseSetTheme() {
   const result = signal("none");
@@ -51,6 +57,21 @@ function BaseSetTheme() {
       >
         <Text>Set a theme with a bad value</Text>
       </View>
+      {malformed.map(([id, json]) => (
+        <View
+          testID={id}
+          onPress={() => {
+            try {
+              setTheme(JSON.parse(json));
+              result.set(`${id} taken`);
+            } catch (e) {
+              result.set(`${id} refused ${(e as Error).name}`);
+            }
+          }}
+        >
+          <Text>{id}</Text>
+        </View>
+      ))}
       <View
         testID="built"
         onPress={() => {

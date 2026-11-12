@@ -793,9 +793,11 @@ async fn body(
         for iteration in 1..=2usize {
             let client = &clients[iteration - 1];
             let message = format!("m_goal-{id}-{iteration}");
+            let mut last_goal = Value::Null;
             let settled = phase("finite Goal reaches its cumulative budget", async {
                 loop {
                     let goal = query(client, "goal", json!({"sessionId":parent})).await?;
+                    last_goal = goal.clone();
                     assert_eq!(goal["enabled"], true);
                     let current = &goal["current"];
                     assert!(matches!(
@@ -808,7 +810,10 @@ async fn body(
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
             })
-            .await?;
+            .await.map_err(|error| format!(
+                "{error}; iteration={iteration}; lastGoal={last_goal}; requests={}; producerRequests={}",
+                model.requests.load(Ordering::SeqCst), model.producer_requests.load(Ordering::SeqCst)
+            ))?;
             let budget = 110 * iteration;
             assert_eq!(settled["id"], id);
             assert_eq!(settled["objective"], model.marker);

@@ -100,6 +100,7 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 | `empty` | `.empty(el)` | `ListSlot` | | `each` 为空时代替条目显示。 |
 | `separator` | `.separator(\|\| el)` | `ListSlot` | | 条目之间的分隔（单列）。 |
 | `initialScrollIndex` | `.initial_scroll_index(i)` | `number` | | 第一帧之前先滚动到该条目。 |
+| `initialScrollAtEnd` | `.initial_scroll_at_end()` | `boolean` | `false` | 首帧前滚动到末尾并在行高测量时保持末尾位置。短内容从顶部排列；TSX 中优先于 `initialScrollIndex`；Rust 中最后调用的初始滚动方法生效。 |
 | `keyExtractor` | `.keys(\|\| ids)` | `(item: T, index: number) => string` | `item.key`、`item.id` 或索引 | 条目在可见性 token 中的 key。在 Rust 中是各行的标识，前面的行增删时，行保留自己的单元格和尺寸。在 TSX 中，key 相同的行就算 `each` 换成了新对象也视为同一行，因此重建行数据（例如在 `computed` 里）不会丢掉行高和阅读位置；不设置时按对象是否相同比较。 |
 | `onLoadMore` | `.on_load_more(..)` | `() => void` | | 快到末端了：加载更多。 |
 | `loadMoreThreshold` | `.load_more_threshold(viewports)` | `number` | `1` | 距末端多近（以视口为单位）时触发 `onLoadMore`。 |
@@ -153,6 +154,7 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 | `scrollToOffset({ offset, animated? })` | `scroll_to_offset(px(..), animated)` | 沿列表方向滚动到某个偏移。 |
 | `scrollToEnd({ animated? })` | `scroll_to_end(animated)` | 滚动到内容末端（倒序列表则是起始端）。 |
 | `scrollTo({ x?, y?, animated? })` | `scroll_to(point(..), animated)` | 滚动到某个偏移。 |
+| `measureScrollPosition()` | `measure_scroll_position()` | 本轮改动排版后，视口起点落在哪一行：`{ index, offset }`，即那一行和视口起点在行内多深，与列表排行时一致；没有条目时为 `null`。见[记住阅读位置](../docs/lists.md#keeping-a-reading-position)。 |
 
 ## 示例
 
@@ -222,6 +224,6 @@ virtual_list(move || messages.with(|m| m.len()), move |at| bubble(messages, at))
 
 ## 平台说明
 
-- 在可见行之上插入条目时，两个平台都会保持可见行不动。
+- 列表滚动离开起点后，在可见行之上插入条目时，两个平台都会保持可见行不动；停在起点时，新条目直接显示，和浏览器一致。带 `onLoadMoreAtStart` 的列表在起点也保持可见行不动，前置的一页留在它们上方。
 - 从右到左布局中的横向列表在原生侧镜像。
 - 吸顶标题在每一帧滚动时于原生侧固定。

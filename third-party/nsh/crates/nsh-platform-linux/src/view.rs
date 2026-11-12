@@ -625,6 +625,11 @@ impl NshView {
         self.imp().state.borrow()
     }
 
+    /// Read-only native queries can arrive while a batch is changing this view.
+    pub(crate) fn try_state(&self) -> Result<Ref<'_, ViewState>, std::cell::BorrowError> {
+        self.imp().state.try_borrow()
+    }
+
     /// Its state, to change. Call [`NshView::changed`] or
     /// [`NshView::moved`] afterwards.
     pub(crate) fn state_mut(&self) -> RefMut<'_, ViewState> {

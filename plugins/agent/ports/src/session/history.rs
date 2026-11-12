@@ -279,6 +279,22 @@ pub struct ToolCall {
     pub pending: bool,
     /// A unique original Host dispatch is recorded at this fence; not liveness.
     pub dispatched: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_target: Option<Box<ExternalToolTarget>>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExternalToolTarget {
+    Command {
+        command: String,
+        cwd: Option<String>,
+    },
+    File {
+        path: String,
+    },
+    Search {
+        query: String,
+    },
 }
 /// Who made a call: a model step, a script the model wrote, a tool's own work
 /// through the Host SDK, or a foreign record.
@@ -287,6 +303,7 @@ pub struct ToolCall {
 #[schemars(rename = "HistoryToolCallOrigin")]
 pub enum ToolCallOrigin {
     Provider,
+    Executor,
     CodeMode,
     HostSdk,
     Imported,
@@ -306,6 +323,8 @@ pub struct ToolResult {
     pub image: bool,
     /// Images the model received beside non-image content, readable by index.
     pub images: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<maka_agent_facts::executor::ToolResultDetails>,
 }
 
 /// An explicitly selected canonical transcript field, never an execution grant.
@@ -420,7 +439,7 @@ pub struct HistorySource {
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<Tool>")]
     pub tool: Option<Tool>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelPartIdentity {
     pub step_id: maka_agent_facts::durable::StepId,
@@ -453,10 +472,13 @@ pub struct Chunk {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quotes: Vec<HistoryQuote>,
     /// This body belongs to the final output of a successfully completed native
-    /// Turn at the page's fence. Includes every text part and source citation;
+    /// Turn at the page's fence. Includes body text and source citations;
     /// absence does not establish liveness or identify an imported final answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub final_output: bool,
+    /// The provider identified this text as final before the Turn completed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub final_answer: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<HistoryModel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -500,6 +522,10 @@ pub struct TurnTiming {
     pub started_at: u64,
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<TurnFinished>")]
     pub finished: Option<TurnFinished>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor_usage: Option<Box<maka_agent_facts::executor::TurnUsage>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<maka_agent_facts::model::PromptCacheUsage>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

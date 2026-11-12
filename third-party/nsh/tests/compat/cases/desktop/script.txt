@@ -1,5 +1,15 @@
 # What a user does and sees (compat/apps.rs): each case after its tap.
 platform macos
+# A title supplements the destination instead of hiding it.
+tap id:case-link-hover
+event id:destination onMouseEnter
+wait 600
+expect Documentation reference
+expect https://example.com
+expect /docs
+event id:destination onMouseLeave
+wait 20
+absent Documentation reference
 # window-open
 tap id:case-window-open
 expect Windows: main
@@ -76,3 +86,14 @@ prop id:edge desktop.windowResize right
 prop id:corner desktop.windowResize bottomRight
 covers [props] desktop.windowControl
 covers [props] desktop.windowResize
+# tray-click
+tap id:case-tray-click
+expect Tray clicks: none
+# A click where the system says where the icon is (macOS, Windows): its
+# frame on the screen, in points.
+tray click 1180 0 32 24
+expect Tray clicks: 1180 0 32 24
+# Where it does not (Linux): null.
+tray click
+expect Tray clicks: 1180 0 32 24, null
+covers [nsh/desktop] Tray

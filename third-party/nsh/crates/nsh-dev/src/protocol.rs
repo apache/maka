@@ -520,6 +520,15 @@ pub enum TestStep {
     },
     /// Lets go of the pointer `DragAndHold` left down (`app.drop`).
     Drop,
+    /// An input method composes `text` in the input (`app.compose`):
+    /// marked text at the caret, in place of what it composed; empty, the
+    /// composition ends with nothing committed.
+    Compose {
+        /// Which input.
+        selector: String,
+        /// What it composes.
+        text: String,
+    },
     /// Drops local files on a view (`app.dropFiles`).
     DropFiles {
         /// Where.
@@ -529,6 +538,9 @@ pub enum TestStep {
     },
     /// Goes back as the user does (`app.back`).
     Back,
+    /// Goes forward in the browser's history (`app.forward`): the web's
+    /// alone, the other platforms have no forward.
+    Forward,
     /// Lets the app run (`app.wait`).
     Wait {
         /// Milliseconds.

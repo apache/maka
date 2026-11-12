@@ -221,8 +221,9 @@ pub struct SliderProps {
     pub range_style: Prop<Style>,
     /// The Tailwind classes of each thumb, centered on its value on the
     /// indicator (`size-4 rounded-full bg-background`); `hover:` under the
-    /// pointer, `active:` while it is dragged, `focus:` with the keyboard
-    /// focus, `disabled:` with the slider.
+    /// pointer, `active:` while it is dragged, `focus-visible:` with the
+    /// keyboard focus (`focus:` after a press or a drag too), `disabled:`
+    /// with the slider.
     pub thumb_class: Prop<Option<SharedString>>,
     /// The style of each thumb, over `thumbClass`.
     #[prop(default)]
@@ -558,7 +559,7 @@ impl Ctl {
 /// range and the thumbs on the indicator, then its children; the app's
 /// `class` and `style` style the slider, `<part>Class` / `<part>Style` the
 /// parts, whose `disabled:` follow the slider and whose thumbs show
-/// `hover:`, `active:` and `focus:`.
+/// `hover:`, `active:` and `focus-visible:`.
 ///
 /// In a terminal it shows the terminal's slider in place of the parts: a
 /// row of `─` as wide as the slider, `━` from `min` to the value (a range:

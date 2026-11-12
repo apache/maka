@@ -262,8 +262,7 @@ impl Stream {
                 })?;
                 self.usage.cache_creation_input_tokens =
                     Some(patch.cache_creation_input_tokens.unwrap_or(0));
-                self.usage.cache_read_input_tokens =
-                    Some(patch.cache_read_input_tokens.unwrap_or(0));
+                self.usage.cache_read_input_tokens = patch.cache_read_input_tokens;
                 self.raw_usage = message.usage;
                 self.lifecycle = Lifecycle::Open(message.id.clone());
                 if let Some(reason) = message.stop_reason {

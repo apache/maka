@@ -25,8 +25,19 @@ use std::{
     path::Path,
 };
 
-pub(crate) fn has_entry(path: &Path) -> io::Result<bool> {
-    Ok(repository_directory(path)?.is_some())
+pub(crate) fn has_repository(path: &Path) -> io::Result<bool> {
+    let Some(directory) = repository_directory(path)? else {
+        return Ok(false);
+    };
+    Ok(!is_empty_metadata_directory(&directory.join(".git"))?)
+}
+
+// Empty metadata carries no Git indirection. It can be an uninitialized
+// repository or a live native sandbox's mount target, and must not make
+// discovery select a different enclosing repository.
+pub(crate) fn is_empty_metadata_directory(entry: &Path) -> io::Result<bool> {
+    Ok(entry.symlink_metadata()?.is_dir()
+        && std::fs::read_dir(entry)?.next().transpose()?.is_none())
 }
 
 /// Resolve metadata for ordinary repositories and linked worktrees without
@@ -36,12 +47,7 @@ pub fn metadata(path: &Path) -> io::Result<Vec<std::path::PathBuf>> {
         return Ok(Vec::new());
     };
     let entry = directory.join(".git");
-    // An empty metadata directory carries no Git indirection. It can be an
-    // uninitialized repository or a live native sandbox's mount target. Protect
-    // it as-is; do not reject unrelated operations or discover an enclosing repo.
-    if entry.symlink_metadata()?.is_dir()
-        && std::fs::read_dir(&entry)?.next().transpose()?.is_none()
-    {
+    if is_empty_metadata_directory(&entry)? {
         return Ok(vec![dunce::canonicalize(entry)?]);
     }
     let repository = discover(directory)?;

@@ -1417,37 +1417,6 @@ async fn discovery_search_continues_past_an_empty_bounded_page() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn discovery_tools_are_not_offered_to_an_ordinary_session() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut f = Fixture::new(&listener).await;
-    let created=f.query("create",json!({"title":"Ordinary control","automaticTitle":false,"labels":[],"tools":["DiscoveryComplete","DiscoveryMemory","DiscoveryContext"],"workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}})).await;
-    let session = created["session"]["id"].as_str().unwrap();
-    f.query(
-        "send",
-        json!({"sessionId":session,"message":"Hello","backend":f.model,"delivery":"queue"}),
-    )
-    .await;
-    let (mut socket, body) = next(&listener).await;
-    let names: Vec<_> = body["tools"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|t| t["function"]["name"].as_str().unwrap())
-        .collect();
-    assert!(
-        ["DiscoveryComplete", "DiscoveryMemory", "DiscoveryContext"]
-            .iter()
-            .all(|name| !names.contains(name)),
-        "{names:?}"
-    );
-    finish_text(&mut socket, "Ordinary answer").await;
-    tokio::time::timeout(Duration::from_secs(45), f.quiescent(session))
-        .await
-        .expect("ordinary Run did not settle before Host teardown");
-    f.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn disabled_bot_blocks_an_approved_discovery_without_calling_a_model() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
@@ -1508,10 +1477,20 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
     let proposal = json!({"request":{"mode":"create","title":"Proposed discovery","intentBody":"Check authorized documents","effect":"discovery","schedule":{"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000},"timezone":"UTC"}});
-    let created=f.query("create",json!({"title":"Ordinary proposer","automaticTitle":false,"labels":[],"tools":["ScheduledTask"],"workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}})).await;
+    let created=f.query("create",json!({"title":"Ordinary proposer","automaticTitle":false,"labels":[],"tools":["ScheduledTask","DiscoveryComplete","DiscoveryMemory","DiscoveryContext"],"workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}})).await;
     let session = created["session"]["id"].as_str().unwrap();
     f.query("send",json!({"sessionId":session,"message":"Propose a discovery","backend":f.model,"delivery":"queue"})).await;
-    let (mut socket, _) = next(&listener).await;
+    let (mut socket, body) = next(&listener).await;
+    assert!(
+        body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tool| !matches!(
+                tool["function"]["name"].as_str(),
+                Some("DiscoveryComplete" | "DiscoveryMemory" | "DiscoveryContext")
+            ))
+    );
     tool(&mut socket, "ScheduledTask", proposal.clone()).await;
     let (mut socket, body) = next(&listener).await;
     assert!(
@@ -1519,6 +1498,7 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
         "{body}"
     );
     finish_text(&mut socket, "Cannot propose discovery here").await;
+    f.quiescent(session).await;
     assert_eq!(
         f.query("schedules", json!({"kind":"list"})).await["tasks"],
         json!([])

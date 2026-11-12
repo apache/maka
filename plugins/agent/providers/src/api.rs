@@ -38,7 +38,6 @@ mod authentication;
 mod discovery;
 mod effects;
 mod inventory;
-mod metadata;
 mod options;
 mod output;
 mod preferred;
@@ -134,9 +133,9 @@ struct Configuration {
     base_url: String,
 }
 impl Configuration {
-    fn read(connection: &Connection) -> Result<Self, Error> {
-        let mut configuration: Self = serde_json::from_value(connection.configuration.clone())
-            .map_err(|_| Error::InvalidConfiguration)?;
+    fn read(value: &serde_json::Value) -> Result<Self, Error> {
+        let mut configuration: Self =
+            serde_json::from_value(value.clone()).map_err(|_| Error::InvalidConfiguration)?;
         configuration.base_url = maka_agent_facts::configuration::validation::normalize_base_url(
             &configuration.base_url,
         )
@@ -195,14 +194,7 @@ impl ApiProvider {
     }
 
     fn model_metadata(&self, model: ModelInfo, overrides: Option<&ModelOverride>) -> ModelMetadata {
-        let reported = metadata::enrich(
-            &self.snapshot,
-            self.id,
-            model,
-            overrides.and_then(|value| value.catalog_model.as_ref()),
-        );
-        let info =
-            overrides.map_or_else(|| reported.clone(), |overrides| overrides.apply(&reported));
+        let info = self.snapshot.resolve(self.id, model, overrides);
         let thinking_levels = overrides
             .and_then(|o| o.thinking_levels.clone())
             .or_else(|| info.thinking_levels.clone())
@@ -218,7 +210,7 @@ impl ApiProvider {
     }
 
     fn prepare(&self, request: Resolve) -> Result<Model, Error> {
-        let configuration = Configuration::read(&request.connection)?;
+        let configuration = Configuration::read(&request.connection.configuration)?;
         let ModelMetadata {
             mut info,
             thinking_levels,
@@ -277,6 +269,10 @@ impl ApiProvider {
 }
 
 impl Provider for ApiProvider {
+    fn validate_configuration(&self, configuration: &serde_json::Value) -> Result<(), Error> {
+        Configuration::read(configuration).map(|_| ())
+    }
+
     fn resolve(&self, request: Resolve) -> BoxFuture<'_, Result<Model, Error>> {
         Box::pin(async move { self.prepare(request) })
     }
@@ -288,7 +284,7 @@ impl Provider for ApiProvider {
         _: String,
     ) -> BoxFuture<'_, Result<maka_agent_ports::model::Credentials, Error>> {
         Box::pin(async move {
-            Configuration::read(&connection)?;
+            Configuration::read(&connection.configuration)?;
             authentication::authorize(self.facts.auth_kind, credential)
         })
     }
@@ -299,7 +295,7 @@ impl Provider for ApiProvider {
         _: maka_agent_ports::provider::Context,
     ) -> BoxFuture<'_, Result<maka_agent_facts::provider::Credential, Error>> {
         Box::pin(async move {
-            Configuration::read(&request.connection)?;
+            Configuration::read(&request.connection.configuration)?;
             authentication::authenticate(request)
         })
     }

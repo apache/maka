@@ -107,7 +107,7 @@ async fn activate(context: NativeContext, configuration: Value) -> NativeActivat
 struct Library {
     bundled: bool,
     sources: Vec<CapturedSource>,
-    projects: Vec<Arc<maka_fs_tools::workspace::directory::PublishedDirectory>>,
+    projects: Vec<maka_workspace_support::Root>,
     private: PathBuf,
     workspace: Option<maka_agent_api::contract::Workspace>,
     policy: Arc<maka_sandbox::filesystem::Compiled>,
@@ -161,7 +161,8 @@ impl Library {
             standard.append(&mut sources);
             sources = standard;
         }
-        let projects = sources::projects(configuration.project_roots, &managed)?;
+        let projects = maka_workspace_support::open_projects(configuration.project_roots, &managed)
+            .map_err(|_| "skills_configuration_invalid")?;
         Ok(Self {
             projects,
             private: managed,
@@ -561,11 +562,7 @@ impl NativeOwner for Library {
         let projects = self
             .projects
             .iter()
-            .map(|project| {
-                project
-                    .identity()
-                    .map(|identity| (project.path(), identity))
-            })
+            .map(maka_workspace_support::Root::execution_basis)
             .collect::<std::io::Result<Vec<_>>>()
             .ok()?;
         let managed = match &self.managed {

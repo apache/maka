@@ -6,13 +6,24 @@ export function createDom(invoke, values, reactive, live, wake) {
   const handlers = new WeakMap(), owners = new WeakMap(), heldProps = new WeakMap();
   let touches, measure, hot, platform;
   const prototype = Object.create(null);
-  for (const name of ["focus", "blur", "scrollTo", "zoomTo", "scrollToIndex", "scrollToEnd", "reload", "goBack", "goForward", "stopLoading", "injectJavaScript", "postMessage", "sendInput", "load", "seek"]) {
+  for (const name of ["focus", "blur", "scrollTo", "zoomTo", "scrollToIndex", "scrollToEnd", "reveal", "reload", "goBack", "goForward", "stopLoading", "injectJavaScript", "postMessage", "insertText", "sendInput", "load", "seek"]) {
     prototype[name] = function (argument) { const id = values.nodeIds.get(this); if (id === undefined) throw new TypeError("nsh: not a node"); return call(314, [id, name, argument]); };
   }
+  // A page's web view is an iframe whose document the app may not read:
+  // `evaluate` rejects here, as `WebView.evaluateAvailable()` says.
+  prototype.evaluate = async function (script, options) {
+    if (typeof script !== "string") throw new TypeError("evaluate expects a script string");
+    if (options !== undefined && (options === null || typeof options !== "object")) throw new TypeError("evaluate's options must be an object");
+    if (!values.nodeIds.has(this)) throw new TypeError("nsh: not a node");
+    const error = new Error("web views evaluate no scripts here");
+    error.code = "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
+    throw error;
+  };
   prototype.setSelection = function (start, end = start) { return call(314, [values.nodeIds.get(this), "setSelection", { start: Number(start), end: Number(end) }]); };
   prototype.command = function (name, args) { return call(314, [values.nodeIds.get(this), "native", { name, args }]); };
   prototype.scrollToOffset = function (options) { return this.scrollTo({ x: options?.offset, y: options?.offset, animated: options?.animated }); };
   prototype.measure = function () { return measure(this); };
+  prototype.measureScrollPosition = function () { return measure(this, "scrollPosition"); };
   const finalizers = new FinalizationRegistry(id => {
     if (live()) { invoke(307, [id]); values.nodes.delete(id); wake(); }
   });
@@ -172,6 +183,14 @@ export function createDom(invoke, values, reactive, live, wake) {
     rt: { element: tag => call(300, [tag]), text: value => call(301, [String(value)]),
       prop, bindProp, insert, append, component, cond, each, merge, spread,
       metaUrl: path => new URL(path, document.baseURI).href,
+      assetUrl: (uri, base) => {
+        if (base == null) return uri;
+        if (!uri.startsWith("asset:/")) throw new TypeError("imported asset must use a canonical asset:/ URI");
+        const url = new URL(base);
+        if (!url.pathname.startsWith("/")) throw new TypeError("module asset directory must be a hierarchical URL");
+        url.pathname = `${url.pathname.replace(/\/$/, "")}/${uri.slice(7).split("/").map(encodeURIComponent).join("/")}`;
+        return url.href;
+      },
       ref,
     },
     mount(App, props) {

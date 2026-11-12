@@ -31,6 +31,8 @@ ICONS = [
     "clock", "coffee", "copy", "download", "file-plus", "folder-input", "globe", "inbox", "info",
     "list-filter", "loader-circle", "lock", "mail", "map-pin", "refresh-cw", "rotate-ccw", "scissors",
     "send", "share-2", "sunrise", "upload", "user-plus",
+    # The settings menu's appearance: the system's, light, dark.
+    "monitor",
 ]
 
 # Icons Lucide lacks, drawn here on its grid and stroke: a table's row or

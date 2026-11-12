@@ -3,6 +3,7 @@ name = "nsh-linux-app"
 description = "Release app runner on Linux: the executable of packaged nsh apps (no development features)."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -12,7 +13,7 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["js", "shader", "editor", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "webview"]
+default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "webview"]
 # JS apps (the bundle in the package). Without it the runner runs a Rust
 # app only (`run_rust`) and links no QuickJS.
 js = ["nsh-platform-linux/js", "nsh-engine/js-core"]
@@ -26,6 +27,7 @@ plot = ["nsh-platform-linux/plot"]
 term = ["nsh-platform-linux/term"]
 highlight = ["nsh-platform-linux/highlight"]
 math = ["nsh-platform-linux/math"]
+emoji-picker = ["nsh-platform-linux/emoji-picker"]
 zlib = ["nsh-platform-linux/zlib"]
 crypto = ["nsh-platform-linux/crypto"]
 # Web views (WebKitGTK 6.0): `libwebkitgtk-6.0-dev` to build, and packaged

@@ -104,7 +104,7 @@ export function StorageDemo() {
               paddingBottom: 12,
               fontSize: 15,
               color: colors.text,
-              placeholderColor: colors.faint,
+              placeholderColor: colors.muted,
               selectionColor: colors.accent,
             }}
           />

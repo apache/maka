@@ -447,7 +447,7 @@ export function Scrolling() {
             <Input
               placeholder={hint("Type here, then tap the button", "Type here, then click the button")}
               style={{
-                placeholderColor: colors.faint,
+                placeholderColor: colors.muted,
                 caretColor: colors.accent,
                 selectionColor: colors.accent,
                 height: desk ? 32 : 44,

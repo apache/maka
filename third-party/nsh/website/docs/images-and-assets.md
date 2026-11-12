@@ -53,7 +53,7 @@ Supported files: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.heic`, and `.svg` (
 
 **Natural size.** An image from an asset lays out at its natural size when its style leaves the width or height open, so `image(LOGO)` and `<Image src={logo} />` need no style. Set one dimension and the aspect ratio, or both, to size it differently.
 
-In Rust, a missing or broken file fails the build, and a changed one builds the crate again. In TSX, assets are resolved relative to the importing module, and their `url` is relative to the app's root (the entry's directory). `nsh build` copies them to `out/assets/`, `nsh package` puts them in the app, and during development the dev server serves them.
+In Rust, a missing or broken file fails the build, and a changed one builds the crate again. In TSX, assets are resolved relative to the importing module, and their `url` is their path in the app's directory (where its `nsh.json` is, or without one, its `App.tsx`), so an entry below the app that a test opens (`tests/SubApp.tsx`) names them as the app does. Imported files live in the app's directory: a build stops at an import from outside it and names the file. `nsh build` copies them to `out/assets/`, `nsh package` puts them in the app, and during development the dev server serves them.
 
 > [!TIP]
 > In TSX, `src` also accepts `asset:/path` strings, and imported files are the ones guaranteed to ship. A path that is never imported works with the dev server for images, fonts, audio and video in the app's directory (outside hidden directories), and is missing from packaged apps. Import every image you use. A Rust crate ships its whole `assets/` directory through `assets!()`.
@@ -106,11 +106,22 @@ logo; // { url: "asset:/assets/logo.svg", size: { width: 120, height: 40 } }
 
 An SVG is sharp at the size it is shown. The browser draws it as vectors; iOS, macOS and Android draw it at the size the view shows it, in pixels, when the image loads (as they downsample bitmaps; a view that grows afterwards scales that drawing, until the image loads again); Windows, Linux and GPUI draw it once at four pixels per point (up to 2048 pixels a side) and scale it to each view. Everything else works as for bitmaps: `objectFit`, `tintColor` (through the SVG's opaque shapes, so one-color icons follow the theme), filters, `blurRadius`, placeholders, the load events, `Image.getSize` and `Image.prefetch`. `onLoad` and `Image.getSize` report an SVG's size in whole points; the image lays out at its exact size. Remote SVG files load the same way, through the same downloads and [capability](./sandbox-and-capabilities.md) checks; NSH recognizes an SVG by its content (also gzip-compressed, `.svgz`), whatever its URL ends with.
 
-**What native platforms draw.** iOS, macOS, Android, Windows, Linux and GPUI draw SVGs with one renderer (resvg), so a drawing looks the same on each: shapes and paths, fills and strokes, gradients and patterns, clip paths and masks, opacity, filters and transforms. Text (`<text>`), animation (SMIL and CSS), embedded images (`<image>`) and HTML (`<foreignObject>`) show in the browser; native platforms draw the rest of the SVG, still, and `nsh build` names the files that use them. Export text as outlines (paths) for the same result everywhere.
+**What native platforms draw.** iOS, macOS, Android, Windows, Linux and GPUI draw SVGs with one renderer (resvg), so a drawing looks the same on each: shapes and paths, fills and strokes, gradients and patterns, clip paths and masks, opacity, filters and transforms. Text (`<text>`) and inline raster `data:` images (`<image>`) draw natively, with the system fonts and decoder; animation (SMIL and CSS) and HTML (`<foreignObject>`) show only in the browser, and an `<image>` naming a file, a URL or another SVG document is left out. `nsh build` names the files that use features only browsers draw. Export text as outlines (paths) for the same result everywhere.
 
-**A self-contained picture.** On native platforms an SVG draws only what it holds: files, URLs, `data:` images and other documents it references are left out. Native platforms draw SVGs, remote ones included, within bounds that keep memory in check: a document of up to 16 MiB (a compressed one once inflated), a drawing of up to 8192 pixels a side and 4096 × 4096 pixels in all (64 MiB; a larger one is drawn smaller), and layers (groups with opacity, masks, clip paths and filters, which the renderer draws apart) of up to 256 MiB at once. An SVG over the document or layer bound fails to load, with `onError`.
+**A self-contained picture.** On native platforms an SVG draws only what it holds: files, URLs and nested SVG documents it references are left out, while inline raster `data:` images are drawn and count toward the layer bound. Native platforms draw SVGs, remote ones included, within bounds that keep memory in check: a document of up to 16 MiB (a compressed one once inflated), text of up to 64 Ki characters, a drawing of up to 8192 pixels a side and 4096 × 4096 pixels in all (64 MiB; a larger one is drawn smaller), and layers (groups with opacity, masks, clip paths and filters, which the renderer draws apart) of up to 256 MiB at once. An SVG over the document or layer bound fails to load, with `onError`.
 
 **Reported sizes on the web.** The browser measures SVGs itself, imported or remote: `onLoad` and `Image.getSize` report an SVG's `width` and `height` when it has them, and otherwise the size the browser gives it, which browsers typically derive from a default of 300 × 150 and the `viewBox`'s aspect ratio. Imported SVGs lay out at the bundler's size on every platform. Give SVGs a `width` and `height` for the same reported size everywhere.
+
+## Pixel buffers
+
+A Rust component that draws pixels itself (a renderer, a camera, a preview made on another thread) shows them with `ImageSrc::rgba(width, height, pixels)`: straight (not premultiplied) 8-bit RGBA, rows top to bottom with no padding, `width * height * 4` bytes in any owner (`Vec<u8>`, `Arc<[u8]>`). Nothing is encoded and nothing is copied when the source is made.
+
+```rust
+let page: Arc<[u8]> = render_page(); // 1192 × 1684 pixels
+image(ImageSrc::rgba(1192, 1684, page)).w_full()
+```
+
+The image lays out at `width` × `height` points, as a `data:` image does; style it to size it. Each buffer is an image of its own: give the view a new source for a new frame, and the caches drop the old one once no view shows it. Windows, macOS, Linux and GPUI draw the pixels as they are; iOS, Android and the browser load images from encoded bytes, so there the buffer becomes an uncompressed PNG the first time it is shown (a copy, no compression). TSX has `Blob` URLs for bytes it holds.
 
 ## Remote images
 
@@ -131,7 +142,7 @@ image(move || user.with(|u| u.avatar_url.clone()))
 - **A background color** shows while the image loads, or use a placeholder (below).
 - Downloads are shared: several views showing the same URL download it once, also when they decode it at different sizes. A download nobody waits for any more is cancelled.
 - Decoded images are cached in memory (the cache is purged under memory pressure), keyed by URL, decode size and blur radius.
-- When the app declares [capabilities](./sandbox-and-capabilities.md), the image's host must be allowed under `network`; a refused image fails with its error event.
+- When the app declares [capabilities](./sandbox-and-capabilities.md), the image's host must be allowed under `network`; a refused image fails with its error event. A local file (an absolute path or a `file:` URL, as `onFileDrop`, the clipboard and `import.meta.url` give on the desktops) needs an `fs.read` root that holds it, and loads only on the desktops.
 
 ### Kept on disk
 
@@ -149,6 +160,8 @@ The cache follows the server's HTTP caching headers:
   `Last-Modified`): an unchanged image (`304`) is used again without downloading it, a changed one replaces it.
 - When the request fails (no network) or the server has an error (`5xx`), the kept copy is shown, unless the response
   said `must-revalidate` or `no-cache`.
+- When a request for the image is redirected to an address the app's `network` capability does not allow, the image
+  fails and the kept copy is dropped.
 
 Each app has its own cache of 256 MiB; past that, the images used least recently are dropped first. Several views,
 surfaces and processes of one app share it safely. Embedding apps choose where it is and how large, or turn it off:
@@ -360,9 +373,23 @@ function RemoteImage(props: { url: string }) {
 |---|---|---|---|
 | `.ttf`, `.otf`, `.woff`, `.woff2` | A `FontAsset` with its family name | The font's family name | [Fonts](./fonts.md) |
 | `.wav`, `.m4a`, `.aac`, `.mp3` | A `FileAsset` with its URI | The file's `asset:/` URL | [Sound](../modules/nsh.md#sound) |
-| `.json` and other files | A `FileAsset` with its URI | `.json`: the parsed value, bundled into the script | [Project structure](./project-structure.md#modules) |
+| `.mp4`, `.mov`, `.m4v`, `.webm` | A `FileAsset` with its URI | The file's `asset:/` URL | [Video](../modules/nsh-video.md) |
+| `.json` and other files | A `FileAsset` with its URI | `.json`: the parsed value, bundled into the script; any file with `?url`: its `asset:/` URL | [Project structure](./project-structure.md#modules) |
 
 Fonts are registered before the first frame in both.
+
+In TSX, `?url` at the end of an import path gives any file's `asset:/` URL, and the file ships with the app. The path
+is relative to the importing module:
+
+```tsx
+import model from "./data/model.bin?url";
+import cities from "./data/cities.json?url";
+
+const bytes = await (await fetch(model)).bytes();
+const list = await (await fetch(cities)).json();
+```
+
+A `.json` imported with `?url` stays a file the app reads when it needs it, instead of a value in the script.
 
 ### Reading a file at run time
 
@@ -396,7 +423,7 @@ The engine reads the file from the app's files off its thread (from the dev serv
 
 In TSX, `import.meta.url` is the URL of the module it is written in, so `new URL("./data.json", import.meta.url)` names a file beside it. A local or packaged desktop app's modules have `file:` URLs in the app's directory, which `fs/promises` reads under a `${pluginDir}` grant; a web app's are the page's; a packaged mobile app's are `asset:/` URLs like those of imported images. Import an image to ship it: a URL made this way names the file, it does not package it.
 
-Bitmap images are also drawn on a canvas with `draw_image` / `drawImage` ([Canvas](./canvas.md)), and gradients replace many decorative images ([Styling](./styling.md#gradients)).
+Bitmap and SVG images are also drawn on a canvas with `draw_image` / `drawImage` ([Canvas](./canvas.md)), and gradients replace many decorative images ([Styling](./styling.md#gradients)).
 
 ## Related
 

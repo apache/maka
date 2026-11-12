@@ -27,13 +27,21 @@ struct Args {
     entry: PathBuf,
     #[arg(long, value_name = "DIRECTORY")]
     output: PathBuf,
+    /// Root containing every imported asset; defaults to the NSH app directory.
+    #[arg(long, value_name = "DIRECTORY")]
+    asset_root: Option<PathBuf>,
 }
 
 fn main() -> std::process::ExitCode {
     let args = Args::parse();
-    match maka_ui_build::compiler_identity()
-        .and_then(|identity| maka_ui_build::compile_cached(&args.entry, &args.output, &identity))
-    {
+    match maka_ui_build::compiler_identity().and_then(|identity| {
+        maka_ui_build::compile_cached(
+            &args.entry,
+            &args.output,
+            args.asset_root.as_deref(),
+            &identity,
+        )
+    }) {
         Ok(manifest) => {
             println!(
                 "{}",

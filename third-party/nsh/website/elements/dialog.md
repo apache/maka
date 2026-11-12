@@ -112,6 +112,9 @@ and the explicit import takes its place. For the system's alert or action sheet,
 | `closeOnBackdropPress` | `.close_on_backdrop_press(..)` | `boolean` | `true` | A press on the backdrop closes it. |
 | `closeOnSwipe` | `.close_on_swipe(..)` | `boolean` | `true` | Swiping a sheet down (iOS, phone browsers) closes it natively. |
 | `statusBar` | `.status_bar(..)` | `{ foreground?, hidden?, animated? }` | none | iOS and Android: the status bar while the dialog is open, over the pages' ([Status bar](../modules/nsh-base.md#status-bar)). |
+| `accessibilityLabel` | `.label(..)` | `string` | none | What screen readers call the dialog as the focus enters it: its title. |
+| `accessibilityDescription` | `.accessibility_description(..)` | `string` | none | What screen readers read after its name: its message. |
+| `role` | `.role(AccessibilityRole::AlertDialog)` | `"dialog" \| "alertdialog"` | `"dialog"` | What it is for screen readers: `"alertdialog"` for one that asks the user to confirm something or tells them something urgent. |
 | `onOpen` | `.on_open(..)` | `() => void` | | It finished appearing. |
 | `onClose` | `.on_close(..)` | `() => void` | | It went away: the user closed it, or the app removed it. |
 | `onCancel` | `.on_cancel(..)` | `() => void` | | The user tried to close it (Escape, back, a backdrop press, a swipe down), whether or not a `closeOn*` flag let it close. |
@@ -127,6 +130,38 @@ and the explicit import takes its place. For the system's alert or action sheet,
 | `android` key | Rust | Type | Default | Description |
 |---|---|---|---|---|
 | `statusBarTranslucent` | `.status_bar_translucent(..)` | `boolean` | `false` | The content reaches under the status bar; otherwise it starts below it. |
+
+## Accessibility
+
+Screen readers hear a dialog as one: as the focus enters it they say that it is a dialog and its name, then read
+what is inside. Give it its title as its name, `accessibilityLabel` in TSX and `.label(..)` in Rust, and its message
+as its description, `accessibilityDescription` and `.accessibility_description(..)`, which screen readers read right
+after the name, so the user hears what the dialog is about before reaching its buttons. A dialog that asks
+the user to confirm something, such as a deletion, is an alert dialog: `role="alertdialog"`,
+`.role(AccessibilityRole::AlertDialog)`. Each platform presents the role as its own dialogs: VoiceOver's dialog on
+macOS, a semantic group named by the title on iOS, UI Automation's dialog pane on Windows, AT-SPI's dialog on Linux,
+a dialog with `aria-modal` on the web.
+
+```rust tabs
+dialog()
+    .role(AccessibilityRole::AlertDialog)
+    .label("Delete this item?")
+    .accessibility_description("This can't be undone.")
+    .on_cancel(move || confirm.set(false))
+    .child(card())
+```
+
+```tsx tabs
+<Dialog
+  open={confirm()}
+  role="alertdialog"
+  accessibilityLabel="Delete this item?"
+  accessibilityDescription="This can't be undone."
+  onOpenChange={(e) => confirm.set(e.open)}
+>
+  …
+</Dialog>
+```
 
 ## Opening and closing
 

@@ -1,6 +1,9 @@
 package com.longbridge.nsh;
 
-/** What a component tells its app: its events and its own size. Any thread. */
+/**
+ * What a component gets from its app: the context to make its views with, and
+ * a way to tell the app its events and its own size. Any thread.
+ */
 public final class NshComponentContext {
     private final NshView view;
     private final int id;
@@ -8,6 +11,18 @@ public final class NshComponentContext {
     NshComponentContext(NshView view, int id) {
         this.view = view;
         this.id = id;
+    }
+
+    /**
+     * The context of the {@link NshView} the component is in (its activity's):
+     * for the component's views, resources and system services. Its
+     * {@code getApplicationContext()} is the one to keep in what outlives the
+     * component.
+     *
+     * @return the context
+     */
+    public android.content.Context getContext() {
+        return view.getContext();
     }
 
     /**

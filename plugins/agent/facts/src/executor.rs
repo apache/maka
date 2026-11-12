@@ -19,7 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 mod output;
-pub use output::Output;
+pub use output::{Output, ToolResultDetails, TurnUsage};
 
 /// Executor-owned model selection, independent of Host model connections.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

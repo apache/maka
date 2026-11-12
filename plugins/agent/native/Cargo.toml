@@ -40,6 +40,7 @@ maka-goal.workspace = true
 maka-session-recap.workspace = true
 maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
+maka-external-agent.workspace = true
 maka-tool-catalog.workspace = true
 maka-capabilities.workspace = true
 maka-files-native.workspace = true
@@ -77,6 +78,7 @@ maka-session-title.workspace = true
 maka-tools.workspace = true
 maka-web.workspace = true
 futures-util.workspace = true
+jiff.workspace = true
 jsonschema.workspace = true
 libc.workspace = true
 schemars.workspace = true
@@ -92,7 +94,6 @@ uuid.workspace = true
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
-maka-external-agent.workspace = true
 maka-packages.workspace = true
 sqlx.workspace = true
 maka-host-js.workspace = true

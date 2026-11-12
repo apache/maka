@@ -70,6 +70,20 @@ export function tr(key: MessageKey, values?: Readonly<Record<string, string | nu
       );
 }
 
+/** A plugin's name and description in the interface's language, as its manifest translates them. */
+export function localizedPresentation<T extends { displayName: string; description: string }>(
+  presentation: T & { localizations?: { [locale: string]: T | undefined } },
+): T {
+  const locale = currentLocale();
+  const translations = presentation.localizations;
+  return (
+    translations?.[locale] ??
+    translations?.[locale.split('-')[0]!] ??
+    translations?.[(['en', 'zh-CN', 'zh-TW'] as const)[languageIndex(locale)]] ??
+    presentation
+  );
+}
+
 /** Honor authored DisplayText translations; opaque custom titles keep their fallback. */
 export function displayText(text: DisplayText): string {
   const locale = currentLocale();

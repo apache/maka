@@ -443,6 +443,8 @@ pub enum Fact {
     ExternalTaskPrepared {
         task: ExternalTaskId,
         descriptor: ContentRef,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        live_workspace: bool,
     },
     ExternalTaskAdmitted {
         task: ExternalTaskId,
@@ -483,9 +485,17 @@ pub enum Fact {
         attempt: ModelAttemptId,
         step: StepId,
     },
+    ProactiveSummaryPrepared {
+        step: StepId,
+        request: ContentRef,
+        attempt: ModelAttemptId,
+    },
     ModelAttemptAdmitted {
         attempt: ModelAttemptId,
         upstream: Value,
+    },
+    ModelFirstTokenObserved {
+        attempt: ModelAttemptId,
     },
     ModelTransportSelected {
         attempt: ModelAttemptId,
@@ -629,6 +639,7 @@ impl Fact {
                 | Self::ExternalTaskAdmitted { .. }
                 | Self::StepPrepared { .. }
                 | Self::ModelAttemptPrepared { .. }
+                | Self::ProactiveSummaryPrepared { .. }
                 | Self::ModelAttemptAdmitted { .. }
                 | Self::ModelTransportSelected { .. }
                 | Self::ToolAdmitted { .. }
@@ -665,6 +676,7 @@ impl Fact {
                 | Self::ToolPreventedBeforeHostAdmission { .. }
                 | Self::LocalToolReturned { .. }
                 | Self::HostToolResultRecorded { .. }
+                | Self::ModelFirstTokenObserved { .. }
                 | Self::ModelObserved { .. }
                 | Self::ModelClosed { .. }
                 | Self::ModelPrivatePartialCaptured { .. }
@@ -689,7 +701,9 @@ impl Fact {
             | Self::ExternalTaskBound { descriptor, .. } => vec![descriptor],
             Self::ContextCompacted { baseline } => vec![baseline],
             Self::RunAdmitted { spec } => vec![spec],
-            Self::StepPrepared { request, .. } => vec![request],
+            Self::StepPrepared { request, .. } | Self::ProactiveSummaryPrepared { request, .. } => {
+                vec![request]
+            }
             Self::ModelObserved { continuation, .. } => continuation.iter().collect(),
             Self::ModelPrivatePartialCaptured { partial, .. } => vec![partial],
             Self::ModelSourceFailureCaptured { failure, .. } => vec![failure],

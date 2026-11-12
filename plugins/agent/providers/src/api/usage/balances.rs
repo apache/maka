@@ -166,14 +166,15 @@ async fn get<T: DeserializeOwned>(
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Amount {
-    Number(f64),
+    // Not `f64`; see `plans::Number`.
+    Number(serde_json::Number),
     Decimal(String),
 }
 
 impl Amount {
     fn value(self) -> Result<f64, Error> {
         let value = match self {
-            Self::Number(value) => value,
+            Self::Number(value) => value.as_f64().ok_or_else(invalid)?,
             Self::Decimal(value) => value.parse().map_err(|_| invalid())?,
         };
         value.is_finite().then_some(value).ok_or_else(invalid)
@@ -326,4 +327,20 @@ fn balance(amount: f64, unit: &str) -> UsageLimit {
 
 fn invalid() -> Error {
     Error::Invalid("invalid provider balance response".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_limits_accept_decimals() {
+        let read = |text| match serde_json::from_str::<KeyLimit>(text).unwrap() {
+            KeyLimit::Limited(amount) => Some(amount.value().unwrap()),
+            KeyLimit::Unlimited(()) => None,
+        };
+        assert_eq!(read("12.5"), Some(12.5));
+        assert_eq!(read(r#""3.25""#), Some(3.25));
+        assert_eq!(read("null"), None);
+    }
 }

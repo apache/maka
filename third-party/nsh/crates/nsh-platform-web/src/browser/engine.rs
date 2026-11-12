@@ -166,6 +166,9 @@ impl Host for Runtime {
                     ])
                 })(),
             ),
+            // Only for a lazy `<Each>`, which the web's renderer never is
+            // (it culls no content).
+            JsEvent::Rows(_) => {}
             JsEvent::Unrender { host, prop, key } => self.event(
                 "unrender",
                 (|| {
@@ -217,6 +220,7 @@ impl Host for Runtime {
             "colorScheme":if e.color_scheme==nsh_engine::ColorScheme::Dark {"dark"}else{"light"},
             "fontScale":e.font_scale,"rtl":e.rtl,"reduceMotion":e.reduce_motion,"pixelRatio":e.pixel_ratio,
             "screenReader":e.screen_reader,"locale":e.locale.as_str(),"host":e.host,"lifecycle":e.lifecycle.name(),
+            "shaders":e.shaders,"wakeCount":e.wake_count,
             "localeSettings":{
                 "languages":e.locale_settings.languages.iter().map(|l| l.as_str().to_owned()).collect::<Vec<_>>(),
                 "timeZone":e.locale_settings.time_zone.as_str(),

@@ -20,6 +20,10 @@ function App() {
   const bar = scale.diffClamp(0, 56, { snap: true });
   const fade = Animated.timing(opacity, { toValue: 1, duration: 200, easing: Easing.out(Easing.cubic) });
   const spring = Animated.sampleSpring({ toValue: 1, damping: 40 });
+  // Parameters that cannot move the value jump to the target, and a
+  // strongly overdamped spring stays a number on the way.
+  const stiffless = Animated.sampleSpring({ toValue: 1, stiffness: 0 });
+  const overdamped = Animated.sampleSpring({ toValue: 1, stiffness: 100, damping: 200 });
   const decay = Animated.sampleDecay({ velocity: 1000, from: 0 });
   const custom = LayoutAnimation.create(250, LayoutAnimation.Types.linear, LayoutAnimation.Properties.opacity);
   const keyboard = LayoutAnimation.create(250, LayoutAnimation.Types.keyboard);
@@ -59,6 +63,9 @@ function App() {
         {String(Animated.diffClamp(scale, 0, 56, { snap: true }) === bar)}{" "}
         {String(scale.diffClamp(0, 56) !== bar)}
       </Text>
+      <Text>Spring without stiffness rests at: {stiffless[stiffless.length - 1].toFixed(2)}</Text>
+      <Text>Overdamped spring stays finite: {overdamped.every(Number.isFinite) ? "yes" : "no"}</Text>
+      <Text>Overdamped spring rests at: {overdamped[overdamped.length - 1].toFixed(2)}</Text>
     </View>
   );
 }

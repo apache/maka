@@ -49,7 +49,7 @@ view()
 ## How classes combine
 
 - **Later wins.** Among utilities of the same variant level, the one later in the string wins: `"p-4 p-2"` is `p-2`. A component can take a `class` prop and append it to its own classes without `tailwind-merge`.
-- **Variants apply after plain utilities**, in Tailwind's variant order: `group-*:` (by their state, then by group name), `selection:`, `placeholder:`, position (`first:` ...), `checked:`, `indeterminate:`, `selected:`, `focus-within:`, `hover:`, `focus:`, `focus-visible:`, `active:`, `enabled:`, `disabled:`, `aria-busy:`, `aria-checked:`, `aria-expanded:`, `aria-pressed:`, `aria-selected:`, `data-*:` (by name), motion, `max-*:` breakpoints widest first, then breakpoints ascending, orientation, direction, `dark:`, then platform. A class's highest variant decides, then its next highest, and one more variant comes later (`dark:hover:` after `dark:`), as Tailwind sorts them. So `"active:bg-red-500 bg-blue-500"` is red while pressed.
+- **Variants apply after plain utilities**, in Tailwind's variant order: `group-*:` (by their state, then by group name), `selection:`, `placeholder:`, position (`first:` ...), `checked:`, `indeterminate:`, `selected:`, `focus-within:`, `hover:`, `focus:`, `focus-visible:`, `active:`, `enabled:`, `disabled:`, `aria-busy:`, `aria-checked:`, `aria-expanded:`, `aria-pressed:`, `aria-selected:`, `data-*:` (by name), motion, `max-*:` breakpoints widest first, then breakpoints ascending, orientation, direction, `dark:`, `pointer-coarse:`, `pointer-fine:`, then platform (`terminal:` last). A class's highest variant decides, then its next highest, and one more variant comes later (`dark:hover:` after `dark:`), as Tailwind sorts them. So `"active:bg-red-500 bg-blue-500"` is red while pressed.
 - **`style` wins over classes.** The inline `style` is applied on top of the resolved classes. A style key is the CSS property of its name, the one the utilities set, so it replaces that property and nothing else: `style={{ paddingLeft: 8 }}` beats `pl-4` and keeps `pr-4`. An important utility (`!p-4` or `p-4!`) wins over the inline style too.
 - **Text styles inherit.** Text utilities on a view (`text-white`, `font-bold`, `text-center`, ...) pass to the `<Text>` and `<Input>` elements inside it, as in CSS.
 - **Display is CSS's.** `flex` and `inline-flex` make a row unless a direction utility says otherwise, wherever it is in the string (`flex-col flex` is a column). A style's `display: "flex"` is a row in the same way; views that set no display keep NSH's column default.
@@ -447,6 +447,8 @@ Variants make a utility conditional: `dark:bg-zinc-900`, `md:flex-row`, `active:
 | `dark:` | the appearance is dark | `.dark(\|s\| …)` |
 | `ios:` | running on iOS or Mac Catalyst | `.when(os() == Os::Ios, …)` |
 | `android:` | running on Android | `.when(os() == Os::Android, …)` |
+| `terminal:` | drawn in a terminal | `.when(idiom() == Idiom::Terminal, …)` |
+| `pointer-fine:`, `pointer-coarse:` | the primary pointer is a mouse or trackpad (the desktops, a desktop browser, a terminal) / a finger | `.when(is_desktop(), …)` |
 | `portrait:`, `landscape:` | the window is taller than wide / wider than tall | `.style_when(move \|\| window().height > window().width, …)` |
 | `ltr:`, `rtl:` | the layout direction | `.style_when(rtl, …)` |
 | `motion-safe:`, `motion-reduce:` | the user has not / has asked for reduced motion | `.style_when(reduce_motion, …)` |
@@ -480,7 +482,8 @@ States are tracked by the platform only for elements whose classes use them, and
 |---|---|---|
 | `active:` | the element is pressed | `.active(\|s\| …)` |
 | `hover:` | a pointer is over it (iPad pointer, Mac Catalyst, Android mouse) | `.hover(\|s\| …)` |
-| `focus:`, `focus-visible:` | the input has focus | `.focus(\|s\| …)` |
+| `focus:` | the element has focus | `.focus(\|s\| …)` |
+| `focus-visible:` | the element has focus and shows it (the keyboard moved it there; a text input whenever it has focus) | `.focus_visible(\|s\| …)` |
 | `focus-within:` | the element or a descendant has focus (an `Overlay`'s content is a descendant of the element it is in) | `.focus_within(…)` |
 | `disabled:` | the element has the `disabled` prop | `.disabled_style(\|s\| …)` |
 | `enabled:` | the element does not have the `disabled` prop |  |
@@ -494,7 +497,7 @@ States are tracked by the platform only for elements whose classes use them, and
 | `aria-selected:` | the element is selected: `accessibilityState.selected` is `true`, as `selected:` |  |
 | `data-<name>:` | the element has the boolean `data-*` attribute `name` (Tailwind's `&[data-<name>]`; names of lower case letters, digits and `-`): what a component's part shows beyond its states, a calendar's day at the start of a range `data-range-start` | `Interactive::project_data(name, …)` sets one |
 
-The same states as style objects are the `activeStyle`, `hoverStyle`, `focusStyle`, `disabledStyle`, `checkedStyle`, `indeterminateStyle`, `expandedStyle` and `pressedStyle` props of every element (and a `Button`'s `selectedStyle`); they go over the element's style and classes.
+The same states as style objects are the `activeStyle`, `hoverStyle`, `focusStyle`, `focusVisibleStyle`, `focusWithinStyle`, `disabledStyle`, `checkedStyle`, `indeterminateStyle`, `expandedStyle` and `pressedStyle` props of every element (and a `Button`'s `selectedStyle`); they go over the element's style and classes.
 
 `disabled` works on any element: it applies `disabled:` and removes the element's press handlers, so it shows no press feedback either.
 
@@ -530,7 +533,8 @@ Mark an ancestor with `group` and style descendants by its state with `group-<st
 |---|---|---|
 | `group-active:` | pressed | `.group_active(…)`, `.group_active_named(name, …)` |
 | `group-hover:` | hovered | `.group_hover(…)`, `.group_hover_named(name, …)` |
-| `group-focus:`, `group-focus-visible:` | focused |  |
+| `group-focus:` | focused |  |
+| `group-focus-visible:` | focused, showing it | `.group_focus_visible(…)`, `.group_focus_visible_named(name, …)` |
 | `group-focus-within:` | focused or containing focus | `.group_focus_within(…)`, `.group_focus_within_named(name, …)` |
 | `group-disabled:` | disabled |  |
 | `group-selected:` | selected |  |

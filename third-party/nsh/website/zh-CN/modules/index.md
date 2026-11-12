@@ -28,7 +28,7 @@ NSH 的界面分为三层，与 GPUI Kit 的分层（`gpui`、`gpui-base`、`gpu
 
 应用的外观由应用自己决定。它的组件库就是第三层：用[宿主元素](../elements/index.md)和 `nsh/base` 写成的组件，通过 `style`、[Tailwind](../docs/tailwind.md) 类和主题设置样式；或者是它在[自己的 crate](../docs/rust.md) 中提供的 Rust 组件；也可以是社区基于同一基础发布的组件库。
 
-NSH 没有“大而全”的汇总模块：每个 API 只存在于一个地方。移动平台的 API 位于 `nsh/mobile`（iOS 和 Android），桌面的 API 位于 `nsh/desktop`（macOS、Windows、Linux）；两者在所有平台上都可以导入，因此同一个 bundle 可以在所有平台运行（在其他平台上调用它们会立即返回，`platform.os` 告诉你当前在哪个平台上）。
+NSH 没有“大而全”的汇总模块：每个 API 只存在于一个地方。移动平台的 API 位于 `nsh/mobile`（iOS 和 Android），桌面的 API 位于 `nsh/desktop`（macOS、Windows、Linux），Web 应用所在页面的 API 位于 `nsh/web`；它们在所有平台上都可以导入，因此同一个 bundle 可以在所有平台运行（在其他平台上调用它们会立即返回，`platform.os` 告诉你当前在哪个平台上）。
 
 类型声明由运行时生成：`nsh init`、`nsh build`、`nsh dev` 和 `nsh test` 会在应用旁边写出 `.nsh/types`，所以 TypeScript 声明始终与你所用的运行时一致（见[项目结构](../docs/project-structure.md)）。
 
@@ -40,6 +40,7 @@ NSH 没有“大而全”的汇总模块：每个 API 只存在于一个地方�
 | `nsh/base` | `Button`、`Input`；`TextView`；`createNavStack`、`NavStack`、`NavPage`、`Dialog`；`AlertDialog` | [nsh/base](./nsh-base.md) |
 | `nsh/mobile` | `isAvailable`、`TabBar`（系统标签栏，iOS 和 Android）、`InputAccessoryView`（iOS）、`BackHandler`（Android） | [nsh/mobile](./nsh-mobile.md) |
 | `nsh/desktop` | `isAvailable`、`Window`（标题、标题栏、最大化、全屏）、`titleBar`、`Menu`（应用菜单、右键菜单） | [nsh/desktop](./nsh-desktop.md) |
+| `nsh/web` | `Head`（页面的标题、描述和元数据，供搜索引擎和链接预览使用） | [nsh/web](./nsh-web.md) |
 | `nsh/i18n` | `t`、`setLocale`、`availableLocales`（应用的翻译和它显示的语言） | [nsh/i18n](./nsh-i18n.md) |
 | `nsh/updater` | `checkForUpdate`、`downloadUpdate`、`installAndRestart`（打包后的应用自我更新） | [nsh/updater](./nsh-updater.md) |
 | Standard modules | `buffer`, `console`, `crypto`, `fs/promises`, `net`, `os`, `path`, `process`, `url`, `websocket`, `zlib` | [标准模块](./standard-modules.md) |

@@ -37,6 +37,9 @@ pub(crate) struct Java {
     pub(crate) view_report_error: JMethodID,
     pub(crate) view_read_asset: JMethodID,
     pub(crate) view_request_frame: JMethodID,
+    /// `runMainThreadTasks()`: posts `Native.runMainThreadTasks` to the UI
+    /// thread, after the batches before it.
+    pub(crate) view_run_main_thread_tasks: JMethodID,
     /// `shaderFrame(int, ByteBuffer, int, int, boolean, float)`: a shader
     /// view's new frame, whether it replaces the view's children and the
     /// pixels it overflows by (UI thread).
@@ -125,6 +128,7 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
         view_report_error: env.get_method_id(view_class, "reportError", "(Ljava/lang/String;)V")?,
         view_read_asset: env.get_method_id(view_class, "readAsset", "(Ljava/lang/String;)[B")?,
         view_request_frame: env.get_method_id(view_class, "requestJsFrame", "()V")?,
+        view_run_main_thread_tasks: env.get_method_id(view_class, "runMainThreadTasks", "()V")?,
         view_shader_frame: env.get_method_id(
             view_class,
             "shaderFrame",

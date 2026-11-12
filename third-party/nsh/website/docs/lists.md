@@ -173,6 +173,7 @@ A list takes every scrolling prop of the scroll view that makes sense for a list
 | `empty` | `.empty(..)` | component or element | | Shown instead of the items while there are none. |
 | `separator` | `.separator(\|\| ..)` | component or element | | Between items (one column). |
 | `initialScrollIndex` | `.initial_scroll_index(i)` | `number` | | Scrolls to this item before the first frame. |
+| `initialScrollAtEnd` | `.initial_scroll_at_end()` | `boolean` | `false` | Opens at the end before the first frame and follows it while rows measure. Short content stays at the top. In TSX this takes precedence over `initialScrollIndex`; in Rust the last initial-scroll builder wins. |
 | `onLoadMore` | `.on_load_more(..)` | `() => void` | | The end is near (see below). |
 | `loadMoreThreshold` | `.load_more_threshold(..)` | `number` | `1` | How close to the end, in viewports, `onLoadMore` fires. |
 | `onLoadMoreAtStart` | `.on_load_more_at_start(..)` | `() => void` | | The start is near, after a scroll (see below). |
@@ -183,7 +184,7 @@ A list takes every scrolling prop of the scroll view that makes sense for a list
 | `refreshing` / `onRefresh` | `.refreshing(..)` / `.on_refresh(..)` | `boolean` / `() => void` | | Pull to refresh. |
 | `refreshIndicator` | `.refresh_indicator(..)` | `{ height: number }` | | The app's own pull-to-refresh indicator, in place of the platform's spinner (see [Scrolling](./scrolling.md#an-indicator-of-your-own)). |
 | `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | The scroll indicator shows: the platform's, or the app's [built-in bar](../elements/scrollbar.md#built-in-bars) once it set a theme; an object is a theme of the view's own. |
-| `ref` | `.element_ref(&list)` | `ListRef` | | `scrollToIndex`, `scrollToOffset`, `scrollToEnd`, `scrollTo`. |
+| `ref` | `.element_ref(&list)` | `ListRef` | | `scrollToIndex`, `scrollToOffset`, `scrollToEnd`, `scrollTo`, `measureScrollPosition`. |
 
 The header, footer and empty slots take an element (in TSX also a component: `header={Header}`). They are cells of their own, never recycled, and they are reactive like any other element: a slot that is one `<If>` or `<Each>` follows its condition or its items, and a component is called once.
 
@@ -779,7 +780,46 @@ let list!: ListRef;
 list.scrollToIndex({ index: 120, viewPosition: 0.5 });
 ```
 
-Scrolling to an index (and to the end) is resolved natively with the sizes known at that moment: measured rows where they have been measured, the estimated size elsewhere. The list then follows its target while the rows around it are measured, so it lands exactly, until the user scrolls or the items change. To open a list at an item, use `initialScrollIndex` (`.initial_scroll_index(..)`) rather than scrolling after the first frame.
+Scrolling to an index (and to the end) is resolved natively with the sizes known at that moment: measured rows where they have been measured, the estimated size elsewhere. The list then follows its target while the rows around it are measured, so it lands exactly, until the user scrolls or the items change. To open a list at an item, use `initialScrollIndex` (`.initial_scroll_index(..)`), and at its end `initialScrollAtEnd` (`.initial_scroll_at_end()`), rather than scrolling after the first frame.
+
+### Keeping a reading position
+
+`measureScrollPosition()` (`measure_scroll_position()`) tells where the viewport starts among the rows once this turn's changes are laid out: `{ index, offset }`, the row there and how far into it, in the positions the list itself lays its rows out at (measured rows at their sizes, the others at their estimates). Read it as the list scrolls and keep it; `scrollToIndex({ index, viewOffset: -offset })` puts the viewport's start back there, in the same list or in one made anew, which follows the row as it is measured. A list without items answers `null`. It counts along the list's axis from the side item 0 is on (the bottom of an inverted list); in a header before the first row, `index` is 0 and `offset` negative.
+
+```rust tabs
+let list = element_ref();
+let reading = signal(None::<ListScrollPosition>);
+
+virtual_list(count, row)
+    .estimated_item_size(px(48.0))
+    .on_scroll(move |_| {
+        spawn(async move { reading.set(list.measure_scroll_position().await) });
+    })
+    .element_ref(&list)
+
+// Later, in a list made anew:
+if let Some(at) = reading.get() {
+    list.scroll_to_index(at.index, percentage(0.0), -at.offset, false);
+}
+```
+
+```tsx tabs
+let list!: ListRef;
+let reading: { index: number; offset: number } | null = null;
+
+<List
+  ref={list}
+  each={items}
+  estimatedItemSize={48}
+  onScroll={async () => (reading = await list.measureScrollPosition())}
+  style={{ flex: 1 }}
+>
+  …
+</List>;
+
+// Later, in a list made anew:
+if (reading) list.scrollToIndex({ index: reading.index, viewOffset: -reading.offset, animated: false });
+```
 
 ## A settings-style list
 

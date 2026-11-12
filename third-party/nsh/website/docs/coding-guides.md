@@ -27,13 +27,15 @@ Use this development order:
 1. Identify the app's Desktop, Mobile, Web and TUI targets and their input, navigation and density requirements.
 2. Define the app's semantic color roles and light/dark values in its theme file (`nsh.json` `"theme"`), together
    with the typography, spacing, radius and size scales the components use.
-3. Wrap and compose `nsh/base` into the app's styled controls, including visible parts, variants and interaction
+3. Create the app's `ui` module (`src/ui/`) and wrap and compose `nsh/base` into its core set of styled controls
+   ([The app's `ui` layer](./design-guides.md#the-apps-ui-layer)): each takes `variant`, `size`, states and slots,
+   never colors or radii. Build them including visible parts, variants and interaction
    states. Verify a representative composition on the supported targets before replicating it across pages.
 4. Compose pages from that layer. Add a missing token or shared variant in its owning layer first, then use it in
    pages; changes to a shared control should update all its consumers consistently.
 
-NSH provides the unstyled `nsh-base` crate (`nsh/base` in TSX), analogous to [`gpui-base`](https://gpui-kit.com/base). The app or a community
-library owns the styled layer analogous to [`gpui-component`](https://gpui-kit.com/component); `nsh-core` is the underlying GPUI counterpart. App code
+NSH provides the primitives (`nsh-core`, `nsh` in TSX) and the unstyled `nsh-base` crate (`nsh/base` in TSX). The app
+or a community library owns the styled layer above them. App code
 should import its own styled controls for ordinary UI, keeping base-component assembly and styling in the shared
 layer. Preserve base behavior, focus and accessibility while adapting presentation for each supported platform.
 
@@ -663,8 +665,10 @@ Rules:
   `unknown class` warning is a finding to fix;
 - use semantic tokens for meaning, not palette position;
 - keep state-independent geometry in the ordinary builder chain or class string;
-- use `active:`, `hover:` and `focus:` (`.active(..)`, `.hover(..)`, `.focus(..)`) for runtime interaction states;
-  they apply natively, with no round trip to app code;
+- use `active:`, `hover:` and `focus-visible:` (`.active(..)`, `.hover(..)`, `.focus_visible(..)`) for runtime
+  interaction states; they apply natively, with no round trip to app code. `focus-visible:` is the keyboard's ring:
+  it shows when the keyboard moved the focus, not after a click or a tap; keep `focus:` for any focus (an input's
+  edge, a list's highlighted row);
 - use a component's semantic state styles (`selected:`, `checked:`, `disabled:`) for checked, selected, pressed, or
   disabled appearance;
 - keep popup ownership in explicit state (`open` with `onOpenChange`) so its trigger can render the open or pressed
@@ -770,7 +774,7 @@ Make focus ownership explicit:
   than on bare views;
 - move focus with a ref's `focus()` from an event or an effect that follows a state change, and move the screen
   reader's with `set_accessibility_focus()` (Rust) or `setAccessibilityFocus` from `nsh` (TSX);
-- render a visible `focus:` state;
+- render a visible `focus-visible:` state;
 - do not request focus unconditionally while rendering.
 
 Composite widgets should implement the complete navigation model (arrow movement, Home / End or page movement where
@@ -1016,7 +1020,7 @@ its `permission` naming the capability and its `resource` what was asked for.
 ### Vocabulary is part of the API
 
 Use the same word for the same concept across components. Before naming a prop or an event, look for the term in
-NSH's own API, then in GPUI Kit's [`gpui-base`](https://gpui-kit.com/base), GPUI and [`gpui-component`](https://gpui-kit.com/component), then in the platforms' controls. What a
+NSH's own API, then in the platforms' controls. What a
 primitive shows and the global APIs take their names from HTML, the DOM and CSS (`src`, `html`, `placeholder`). Rust
 names are `snake_case` and translate to `camelCase` in TSX (`on_open_change` is `onOpenChange`); one word stays one
 word (`readonly`, `multiline`).
@@ -1041,6 +1045,7 @@ word (`readonly`, `multiline`).
 | Any other event | `on<Event>`, present tense, one object | `onPress()`, `onSubmit({ text })` |
 | A phase | `<act>Start`, `<act>End` | `onPanStart`, `onLoadStart` |
 | The mouse over a view | `Enter` / `Move` / `Leave`, the DOM's | `onMouseEnter`, `onMouseMove`, `onMouseLeave` |
+| A mouse button's release | `Up`, the DOM's | `onMouseUp` |
 | Starting to listen | `on(event, listener)`, returns `() => void` | `host.on(name, l)`, `BackHandler.on("press", l)` |
 | A value of the environment | An accessor, `set<Value>` beside it | `colorScheme()`, `setColorScheme` |
 | A read-only boolean | `is<Adjective>`, `has<Noun>` | `isAvailable` |
@@ -1204,7 +1209,7 @@ Avoid these patterns:
 
 Before editing, an agent must read the nearest implementation, its tests, the module's public exports, and the
 relevant reference page. It must search the current source and `.nsh/types` for signatures instead of translating a
-React, React Native, CSS or GPUI example by analogy: NSH components run once, and bindings follow the signals they
+React, React Native or CSS example by analogy: NSH components run once, and bindings follow the signals they
 read.
 
 For each change, the agent should be able to name:

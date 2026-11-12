@@ -358,6 +358,70 @@ fn a_backend_transport_downloads_within_the_loaders_limits() {
     assert!(next(&rx).unwrap_err().contains("larger than"));
 }
 
+/// A transport whose every GET ends at a redirect the app may not load.
+struct Refusing;
+
+impl Transport for Refusing {
+    fn get(&self, _get: Get<'_>) -> Result<crate::image::Fetched, String> {
+        Ok(crate::image::Fetched::refused(
+            302,
+            "redirect to `http://b.org/x.png` is not granted by capabilities.network",
+        ))
+    }
+}
+
+/// A fresh directory under the system's temporary one, removed on drop.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("nsh-loader-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Self(dir)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A redirect the transport refused fails the load with why: the copy the
+/// disk cache held for the URL is neither served nor kept, so the network
+/// failing later does not serve it either.
+#[test]
+fn a_refused_redirect_is_not_answered_from_the_disk_cache() {
+    let dir = TempDir::new("refused");
+    let disk = DiskCache::open(&dir.0, crate::ByteSize::from_bytes(1 << 20)).unwrap();
+    let url = "https://a.org/a.png";
+    // A copy from before, with nothing said about freshness: stale.
+    disk.complete(
+        url,
+        Ok(crate::image::Fetched::new(
+            200,
+            Default::default(),
+            b"old".to_vec(),
+        )),
+    )
+    .unwrap();
+    let context = Context {
+        transport: Some(Arc::new(Refusing)),
+        disk: Some(disk.clone()),
+        ..Context::default()
+    };
+    let error = fetch(url, &context, &AtomicBool::new(false), &mut |_, _| {}).unwrap_err();
+    assert!(error.contains("is not granted"), "{error}");
+    assert!(matches!(disk.lookup(url), crate::image::Lookup::Miss));
+    // Without a disk cache, the refusal is the error too.
+    let bare = Context {
+        transport: Some(Arc::new(Refusing)),
+        ..Context::default()
+    };
+    let error = fetch(url, &bare, &AtomicBool::new(false), &mut |_, _| {}).unwrap_err();
+    assert!(error.contains("is not granted"), "{error}");
+}
+
 #[test]
 fn redirects_never_go_from_https_to_http() {
     let access = Access::default();
@@ -385,6 +449,45 @@ fn encoded_bytes_are_kept_least_recently_used_out() {
 }
 
 #[test]
+fn a_new_encoded_limit_drops_what_no_longer_fits() {
+    let mut l3 = Encoded::new(100);
+    for key in ["a", "b", "c", "d"] {
+        l3.insert(key, vec![0; 20].into());
+    }
+    assert!(l3.get("a").is_some(), "a is now the most recently used");
+    // 40 bytes: the two most recently used stay, and an entry over a
+    // quarter of the new limit (10) goes however recent.
+    l3.set_limit(40);
+    assert!(
+        l3.get("b").is_none()
+            && l3.get("c").is_none()
+            && l3.get("a").is_none()
+            && l3.get("d").is_none()
+    );
+    assert_eq!(l3.used, 0);
+    // Five of 10 bytes (each within a quarter of 40): one too many, and
+    // the least recently used goes.
+    l3.set_limit(100);
+    for key in ["e", "f", "g", "h", "i"] {
+        l3.insert(key, vec![0; 10].into());
+    }
+    assert!(l3.get("e").is_some(), "e is now the most recently used");
+    l3.set_limit(40);
+    assert!(l3.get("f").is_none(), "the least recently used went");
+    assert!(
+        l3.get("e").is_some()
+            && l3.get("g").is_some()
+            && l3.get("h").is_some()
+            && l3.get("i").is_some()
+    );
+    assert_eq!(l3.used, 40);
+    l3.set_limit(0);
+    assert_eq!(l3.used, 0);
+    l3.insert("j", vec![0; 1].into());
+    assert!(l3.get("j").is_none(), "0 keeps none");
+}
+
+#[test]
 fn asset_directories_take_the_first_that_has_the_file() {
     let root = std::env::temp_dir().join(format!("nsh-asset-dirs-{}", std::process::id()));
     let (app, host) = (root.join("app"), root.join("host"));
@@ -406,6 +509,42 @@ fn asset_directories_take_the_first_that_has_the_file() {
     );
     // In none: the first's, which fails to read naming it.
     assert_eq!(file("asset:/c.png"), app.join("c.png"));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn bundled_files_load_whatever_fs_read_roots_are_declared() {
+    let root = std::env::temp_dir().join(format!("nsh-asset-fs-read-{}", std::process::id()));
+    let (bundle, data) = (root.join("bundle"), root.join("data"));
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(bundle.join("logo.png"), b"logo").unwrap();
+    std::fs::write(root.join("outside.png"), b"outside").unwrap();
+    let declared = crate::access::Capabilities::from_json(&serde_json::json!({
+        "fs": { "read": [data.to_str().unwrap()] }
+    }))
+    .unwrap();
+    let access = Access {
+        declared,
+        granted: None,
+    };
+    let context = Context {
+        asset_base: Some(AssetBase::Directory(bundle.clone())),
+        media_files: Arc::new(crate::access::MediaFiles::new(
+            &access,
+            None,
+            &Default::default(),
+            true,
+        )),
+        ..Context::default()
+    };
+    let read = |uri: &str| read_now(&context.resolve(uri).unwrap(), &context);
+    assert_eq!(&*read("asset:/logo.png").unwrap(), b"logo");
+    // Out of the bundle by `..`: an `fs.read` read, outside the roots.
+    assert!(read("asset:/../outside.png").is_err());
+    let outside = root.join("outside.png");
+    assert!(read(outside.to_str().unwrap()).is_err());
     std::fs::remove_dir_all(&root).unwrap();
 }
 
@@ -612,4 +751,78 @@ fn wanted_sizes_pick_buckets_by_natural_size() {
         Want::natural(2.0).longest(Natural::Pixels(4000, 3000), 1.0, None),
         4000
     );
+}
+
+#[cfg(feature = "loader")]
+#[test]
+fn loopback_urls_skip_the_environment_proxy() {
+    use super::http::is_loopback;
+    assert!(is_loopback("http://127.0.0.1:8790/assets/logo.svg"));
+    assert!(is_loopback("http://localhost:8790/assets/a.ttf"));
+    assert!(is_loopback("http://[::1]:8790/assets/a.png"));
+    assert!(!is_loopback("http://10.0.0.2:8790/assets/a.png"));
+    assert!(!is_loopback("https://pbs.twimg.com/media/a?format=jpg"));
+}
+
+/// The loader's own downloads (ureq) end at a redirect the app may not load
+/// without requesting it, and the disk cache's copy of the URL goes: a
+/// server on this machine redirects a granted URL to a host the app is not
+/// granted, then goes away.
+#[cfg(feature = "loader")]
+#[test]
+fn ureq_downloads_end_at_a_refused_redirect() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let requested = Arc::new(Mutex::new(Vec::new()));
+    let server = std::thread::spawn({
+        let requested = requested.clone();
+        move || {
+            // One request: the granted URL's.
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            requested.lock().unwrap().push(line.trim().to_owned());
+            let reply = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://localhost:{port}/private/b.png\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(reply.as_bytes()).unwrap();
+        }
+    });
+    let access = Access {
+        declared: crate::access::Capabilities::from_json(&serde_json::json!({
+            "network": { "http": [{ "host": "127.0.0.1", "pathPrefix": "/public" }] }
+        }))
+        .unwrap(),
+        granted: None,
+    };
+    let dir = TempDir::new("ureq-refused");
+    let disk = DiskCache::open(&dir.0, crate::ByteSize::from_bytes(1 << 20)).unwrap();
+    let url = format!("http://127.0.0.1:{port}/public/a.png");
+    disk.complete(
+        &url,
+        Ok(crate::image::Fetched::new(
+            200,
+            Default::default(),
+            b"old".to_vec(),
+        )),
+    )
+    .unwrap();
+    let context = Context {
+        access: Arc::new(access),
+        disk: Some(disk.clone()),
+        ..Context::default()
+    };
+    let error = fetch(&url, &context, &AtomicBool::new(false), &mut |_, _| {}).unwrap_err();
+    server.join().unwrap();
+    assert!(error.contains("is not granted"), "{error}");
+    assert_eq!(*requested.lock().unwrap(), ["GET /public/a.png HTTP/1.1"]);
+    assert!(matches!(disk.lookup(&url), crate::image::Lookup::Miss));
+    // The server is gone: the network fails, and nothing stale is served.
+    fetch(&url, &context, &AtomicBool::new(false), &mut |_, _| {}).unwrap_err();
+    assert!(matches!(disk.lookup(&url), crate::image::Lookup::Miss));
 }

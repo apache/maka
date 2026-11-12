@@ -74,9 +74,13 @@ function App() {
       <View
         testID="application"
         onPress={() => {
+          const stop = Application.on("quit", async () => {});
+          stop();
+          const stopRequests = Application.on("quitRequest", () => {});
+          stopRequests();
           Application.quit();
           Application.restart();
-          calls.set(`application done, quit ${typeof Application.quit}, restart ${typeof Application.restart}`);
+          calls.set(`application done, quit ${typeof Application.quit}, restart ${typeof Application.restart}, stop ${typeof stop}`);
         }}
       >
         <Text>Application calls</Text>

@@ -31,7 +31,9 @@ use maka_workbench::{
     reload::{Request, UiReload},
 };
 use nsh_engine::JsonValue;
-use nsh_platform_macos::{AppOptions, quit_app, run_app_with_config, with_running_view};
+use nsh_platform_macos::{
+    AppOptions, objc2::MainThreadMarker, quit_app, run_app_with_config, with_running_view,
+};
 use std::{
     sync::{
         Arc,
@@ -84,20 +86,21 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     );
     let (quit, quitting) = watch::channel(false);
     let following = runtime.spawn(follow(first, root, shell, windows, quitting));
-    run_app_with_config(
-        config,
-        AppOptions {
-            app_id: APP_ID.into(),
-            title: TITLE.into(),
-            size: SIZE,
-            min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
-            frame_autosave_name,
-            ..Default::default()
-        },
-        move |is_active| {
-            active.send_replace(is_active);
-        },
+    let options = AppOptions {
+        app_id: APP_ID.into(),
+        title: TITLE.into(),
+        size: SIZE,
+        min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
+        frame_autosave_name,
+        ..Default::default()
+    };
+    crate::screenshot::register(
+        &options.components,
+        MainThreadMarker::new().expect("the desktop shell runs on AppKit's main thread"),
     );
+    run_app_with_config(config, options, move |is_active| {
+        active.send_replace(is_active);
+    });
     permissions::close_all();
     quit.send_replace(true);
     runtime

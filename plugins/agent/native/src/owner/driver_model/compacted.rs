@@ -19,7 +19,11 @@
 
 //! Append complete compacted material from its original bound source.
 use super::*;
-use maka_agent_facts::context::{CheckpointContent, CompactedContext};
+use maka_agent_facts::context::{
+    CheckpointContent, CompactedContext, RequestContextEvidence, SummaryOrigin,
+    codex_replay_allowed,
+};
+use maka_agent_facts::language::Language;
 use maka_model::prompt::AssistantPart;
 use sha2::{Digest, Sha256};
 
@@ -55,11 +59,6 @@ impl CoveredPrefix {
                 break;
             }
         }
-        if count == 0 {
-            return Err(RunError::CompactionFailed(
-                "compaction has no original logical messages".into(),
-            ));
-        }
         Ok((
             Self {
                 message_count: count,
@@ -71,12 +70,18 @@ impl CoveredPrefix {
     pub(super) async fn capture(
         prompt: &maka_agent_engine::prepared_prompt::PreparedPrompt,
     ) -> Result<Self, RunError> {
-        Ok(Self::read(prompt, None).await?.0)
+        let (covered, _) = Self::read(prompt, None).await?;
+        if covered.message_count == 0 {
+            return Err(RunError::CompactionFailed(
+                "compaction has no original logical messages".into(),
+            ));
+        }
+        Ok(covered)
     }
-    async fn tail_start(
+    async fn matching_tail_start(
         &self,
         prompt: &maka_agent_engine::prepared_prompt::PreparedPrompt,
-    ) -> Result<usize, RunError> {
+    ) -> Result<Option<usize>, RunError> {
         if self.message_count == 0
             || !maka_agent_facts::archive::valid_projection_digest(&self.digest)
         {
@@ -85,16 +90,126 @@ impl CoveredPrefix {
             ));
         }
         let (actual, end) = Self::read(prompt, Some(self.message_count)).await?;
-        if actual != *self {
-            return Err(RunError::ReconciliationRequired(
-                "pending input no longer has the exact compacted logical prefix".into(),
-            ));
-        }
-        Ok(end)
+        Ok((actual == *self).then_some(end))
     }
 }
 
 impl DriverModel {
+    async fn compaction_tail_start(
+        &self,
+        reader: &HistorySource<'_>,
+        main: &maka_agent_engine::prepared_prompt::PreparedPrompt,
+        summary_run: RunId,
+        summary: &RequestSpec,
+        summary_input: &FrozenInput,
+    ) -> Result<Option<usize>, RunError> {
+        use maka_agent_facts::model::prompt_source::source::MessageRole;
+
+        let covered = summary_input
+            .covered_prefix
+            .as_ref()
+            .ok_or_else(|| unsupported("compaction-covered-prefix"))?;
+        if let Some(end) = covered.matching_tail_start(main).await? {
+            return Ok(Some(end));
+        }
+        // Media projection preserves original metadata until the prompt is
+        // frozen. Compare the actual fitted Summary prefix in that case.
+        let frozen = self
+            .restore_frozen(reader, summary_run, summary, summary_input)
+            .await?;
+        let result = async {
+            let (original, end) = CoveredPrefix::read(&frozen, Some(covered.message_count)).await?;
+            if original.message_count != covered.message_count {
+                return Ok(None);
+            }
+            let directory = frozen
+                .recipes()
+                .ok_or_else(|| unsupported("compaction-covered-directory"))?;
+            let mut suffix = directory.open_metadata(end);
+            // Text Summary appends one user-role instruction. It cannot
+            // count as a source message even if the same text occurs in Main.
+            if summary_input.operation != ModelOperation::CodexCompaction
+                && suffix.next().await?.map(|message| message.role) != Some(MessageRole::User)
+            {
+                return Ok(None);
+            }
+            if suffix.next().await?.is_some() {
+                return Ok(None);
+            }
+            original.matching_tail_start(main).await
+        }
+        .await;
+        match frozen.close().await {
+            Ok(()) => result,
+            Err(close) => Err(match result {
+                Ok(_) => self.cleanup.preparation_failed(close),
+                Err(error) => preparation::preparation_cleanup_error(error, close),
+            }),
+        }
+    }
+
+    pub(in crate::owner) async fn proactive_summary_matches(
+        &self,
+        view: &RunView,
+        origin: SummaryOrigin,
+    ) -> Result<bool, RunError> {
+        let step = view
+            .current_step
+            .ok_or_else(|| unsupported("proactive-summary-pending-main-step"))?;
+        let reader = self.history_reader(view.run).await?;
+        let main = reader.request(view.run, step).await?;
+        let attempt = self.state.model_attempt(origin.run, origin.attempt).await?;
+        let summary = reader.request(origin.run, attempt.step).await?;
+        let main_input = self.frozen_input(&reader, view.run, &main).await?;
+        let summary_input = self.frozen_input(&reader, origin.run, &summary).await?;
+        if !summary_input
+            .accepted
+            .same_execution_route(&main_input.accepted)
+            || summary_input.route_identity != main_input.route_identity
+            || !same_adapter_revision(&main_input.adapter, &summary_input.adapter)
+        {
+            return Ok(false);
+        }
+        if summary_input.operation == ModelOperation::CodexCompaction {
+            let summary_context: RequestContextEvidence =
+                reader.decode(origin.run, &summary.provenance).await?;
+            let main_context: RequestContextEvidence =
+                reader.decode(view.run, &main.provenance).await?;
+            let (Some(source), Some(target)) = (
+                summary_context
+                    .model_context
+                    .and_then(|context| context.codex),
+                main_context.model_context.and_then(|context| context.codex),
+            ) else {
+                return Ok(false);
+            };
+            if !codex_replay_allowed(
+                main.accounting.model_id == summary.accounting.model_id,
+                source
+                    .compatibility
+                    .zip(target.compatibility)
+                    .map(|(source, target)| source.comp_hash == target.comp_hash),
+                main_input.operation,
+            ) {
+                return Ok(false);
+            }
+        }
+        let original = self
+            .restore_frozen(&reader, view.run, &main, &main_input)
+            .await?;
+        let result = self
+            .compaction_tail_start(&reader, &original, origin.run, &summary, &summary_input)
+            .await
+            .map(|end| end.is_some());
+        match original.close().await {
+            Ok(()) => result,
+            Err(close) => Err(match result {
+                Ok(_) => self.cleanup.preparation_failed(close),
+                Err(error) => preparation::preparation_cleanup_error(error, close),
+            }),
+        }
+    }
+
     pub(super) async fn prepare_compacted_main(
         &self,
         view: &RunView,
@@ -102,23 +217,30 @@ impl DriverModel {
         driver: &super::super::driver::NativeDriver,
     ) -> Result<PreparedStep, RunError> {
         use maka_agent_facts::model::prompt_source::source::MessageRecipe;
-        let attempt = self.state.model_attempt(view.run, summary).await?;
         let reader = self.history_reader(view.run).await?;
-        let summary_request = reader.request(view.run, attempt.step).await?;
         let baseline = view.baseline.as_ref().ok_or_else(|| {
             RunError::ReconciliationRequired("adoption has no original baseline".into())
         })?;
         let compacted: CompactedContext = reader.decode(view.run, baseline).await?;
+        let producer = match compacted.summary_origin {
+            Some(origin) if origin.attempt == summary => origin.run,
+            Some(_) => {
+                return Err(RunError::InvalidInput(
+                    "adoption names another original Summary attempt".into(),
+                ));
+            }
+            None => view.run,
+        };
+        let attempt = self.state.model_attempt(producer, summary).await?;
+        let summary_request = reader.request(producer, attempt.step).await?;
         if compacted.checkpoint.summary_step_id != attempt.step {
             return Err(RunError::InvalidInput(
                 "adoption names another original Summary".into(),
             ));
         }
-        let covered = self
-            .frozen_input(&reader, view.run, &summary_request)
-            .await?
-            .covered_prefix
-            .ok_or_else(|| unsupported("compaction-covered-prefix"))?;
+        let summary_input = self
+            .frozen_input(&reader, producer, &summary_request)
+            .await?;
         let current = view
             .current_step
             .ok_or_else(|| RunError::InvalidInput("adoption lost its pending request".into()))?;
@@ -157,11 +279,15 @@ impl DriverModel {
         }
         let bound = driver.bind_step_tools(view, &model).await?;
         let capture: RequestSource = reader.decode(view.run, &request.source_capture).await?;
-        let summary_capture: RequestSource = reader
-            .decode(view.run, &summary_request.source_capture)
-            .await?;
+        let mut after = if producer == view.run {
+            let summary_capture: RequestSource = reader
+                .decode(producer, &summary_request.source_capture)
+                .await?;
+            summary_capture.current_revision
+        } else {
+            0
+        };
         let mut checkpoint = None;
-        let mut after = summary_capture.current_revision;
         while after < view.revision {
             let page = self.state.history(view.run, after, 256).await?;
             if page.is_empty() {
@@ -185,7 +311,12 @@ impl DriverModel {
             .restore_frozen(&reader, view.run, &request, &frozen)
             .await?;
         let result=async{
-            let start=covered.tail_start(&original).await?;
+            let start = self
+                .compaction_tail_start(&reader, &original, producer, &summary_request, &summary_input)
+                .await?
+                .ok_or_else(|| RunError::CompactionFailed(
+                    "pending input no longer has the exact compacted logical prefix".into(),
+                ))?;
             let directory=original.recipes().ok_or_else(||unsupported("pending-main-directory"))?;
             let mut provenance:Value=reader.decode(view.run,&request.provenance).await?;
             let context = current_context(&mut provenance, &model, frozen.operation)?;
@@ -197,7 +328,7 @@ impl DriverModel {
                     let mut system=directory.open(0);
                     while let Some(recipe)=system.next().await?{if matches!(recipe,MessageRecipe::System{..}){builder.append_recipe(&recipe).await?;}}
                 }
-                self.append_compacted(&reader,view.run,baseline,ReplayTarget::new(&model, frozen.operation),&mut builder).await?;
+                self.append_compacted(&reader,view.run,baseline,ReplayTarget::new(&model, frozen.operation),frozen.language,&mut builder).await?;
                 let mut tail=directory.open(start);
                 while let Some(recipe)=tail.next().await?{if !matches!(recipe,MessageRecipe::System{..})&& let Some(recipe)=ReplayTarget::new(&model,frozen.operation).recipe(recipe).await?{builder.append_recipe(&recipe).await?;}}
                 Ok::<(),RunError>(())
@@ -225,7 +356,11 @@ impl DriverModel {
                 fields.insert("inputDigest".into(),json!(prepared.input_digest));fields.insert("routeIdentity".into(),json!(prepared.route_identity));fields.insert("breakdown".into(),json!(prepared.context_breakdown));fields.insert("estimatedInputTokens".into(),json!(prepared.estimated_input_tokens));fields.insert("previousCheckpointId".into(),json!(checkpoint));
                 let provenance=ContentBlob::json(&provenance)?;
                 request.step=StepId::new();request.summary_repair_of=None;
-                request.compaction_recovery=Some(request.compaction_recovery.or(summary_request.compaction_recovery).unwrap_or(summary));
+                if producer == view.run && view.proactive_summary != Some(summary) {
+                    request.compaction_recovery = Some(
+                        request.compaction_recovery.or(summary_request.compaction_recovery).unwrap_or(summary),
+                    );
+                }
                 request.adjudications.clear();request.request=body.reference().clone();request.request_contents=frozen.content_refs();request.recovery_contract=recovery.reference().clone();request.provenance=provenance.reference().clone();request.projection=Some(projection.reference().clone());request.effective_source_digest=projection.reference().digest.clone();request.composition.tool_catalog_digest=maka_agent_engine::digest(&definitions)?;request.composition.tools=definitions;request.composition.max_output_tokens=prepared.request.max_output_tokens;
                 let mut contents=vec![body,recovery,projection,provenance];
                 contents.extend(layout_chunks);
@@ -274,6 +409,7 @@ impl DriverModel {
         run: RunId,
         baseline: &ContentRef,
         target: ReplayTarget<'_>,
+        language: Language,
         messages: &mut preparation::PromptBuilder,
     ) -> Result<RequestSource, RunError> {
         let body: CompactedContext = reader.decode(run, baseline).await?;
@@ -287,7 +423,8 @@ impl DriverModel {
         body.validate().map_err(|reason| {
             RunError::InvalidInput(format!("invalid compacted context: {reason}"))
         })?;
-        let capture: RequestSource = reader.decode(run, &body.source_capture).await?;
+        let producer = body.summary_origin.map_or(run, |origin| origin.run);
+        let capture: RequestSource = reader.decode(producer, &body.source_capture).await?;
         if body.checkpoint.covered_through != capture.current.through_sequence
             || body.checkpoint.source_digest != capture.cut.digest
         {
@@ -298,10 +435,19 @@ impl DriverModel {
         }
         match &body.checkpoint.summary {
             CheckpointContent::Text(text) => {
+                let guidance = match language {
+                    Language::En => {
+                        "Session checkpoint snapshot (not a new user request). If messages follow this snapshot, first reconcile it with their tool results, state changes, and latest user instructions so launched or completed work is not replayed; if compressed earlier details need exact verification, check the source via Recall (when available) or Read (including preserved resource_ref handles and workspace files), then continue the remaining work:\n\n"
+                    }
+                    Language::ZhCn => {
+                        "以下是会话历史检查点快照（非新的用户请求）。若此快照之后附有后续消息，请先结合后续消息中的工具结果、状态变化和用户最新指示更新认知，避免重复执行已启动或已完成的操作；若快照中早期细节被压缩，可通过 Recall（若可用）或 Read（含已保留的 resource_ref 与工作区文件）核实原文，然后继续推进剩余工作：\n\n"
+                    }
+                    Language::ZhTw => {
+                        "以下是工作階段歷史檢查點快照（非新的使用者請求）。若此快照之後附有後續訊息，請先結合後續訊息中的工具結果、狀態變化和使用者最新指示更新認知，避免重複執行已啟動或已完成的操作；若快照中早期細節被壓縮，可透過 Recall（若可用）或 Read（含已保留的 resource_ref 與工作區檔案）核實原文，然後繼續推進剩餘工作：\n\n"
+                    }
+                };
                 messages
-                    .append(Message::user(format!(
-                        "Context summary (historical data):\n{text}"
-                    )))
+                    .append(Message::user(format!("{guidance}{text}")))
                     .await?;
             }
             CheckpointContent::CodexNative { .. } => {
@@ -309,7 +455,9 @@ impl DriverModel {
                     .native
                     .as_ref()
                     .ok_or_else(|| unsupported("native-compaction-item"))?;
-                let request = reader.request(run, body.checkpoint.summary_step_id).await?;
+                let request = reader
+                    .request(producer, body.checkpoint.summary_step_id)
+                    .await?;
                 if !target.encrypted_allowed(&request.accounting.model_id, Some(&native.producer)) {
                     return Err(RunError::InvalidInput(
                         "native Codex checkpoint requires compatible ChatGPT state or re-compaction".into(),

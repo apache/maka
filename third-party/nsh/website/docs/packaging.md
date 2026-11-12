@@ -8,7 +8,7 @@ group: platforms
 # Packaging
 
 `nsh package` turns an app into something you can install: a `.app` for the iOS simulator, a signed `.ipa` for iOS
-devices, a signed `.apk` or `.aab` (Android App Bundle, for Google Play) for Android, an ad hoc signed `.app` for macOS, a directory and `.tar.gz` for Linux, a directory and `.zip` for Windows, or a static site for the web. It needs no Xcode project and no Gradle.
+devices, a signed `.apk` or `.aab` (Android App Bundle, for Google Play) for Android, an ad hoc signed `.app` for macOS, a directory and `.tar.gz` for Linux, a directory, `.zip` and installer (`<Name>-setup.exe`, with Inno Setup) for Windows, or a static site for the web. It needs no Xcode project and no Gradle.
 
 - **A Rust app** (`nsh.json` names its `"root"`) is packaged from its directory. `nsh` builds the target's runner in
   release mode with your crate compiled in and the root mounted, with no QuickJS: Cargo, the Rust target of the
@@ -59,12 +59,12 @@ TSX app adds its entry (`nsh package App.tsx --target …`).
 | `id` | string | required | The bundle identifier / Android package name, in reverse-DNS form under a domain you own. It also names where the app keeps its [storage](../modules/nsh.md#storage), so each app has its own. `nsh package` and `nsh publish` warn about the `com.example.` placeholder. |
 | `version` | string | `"1.0.0"` | The user-visible version (`CFBundleShortVersionString`, `versionName`). |
 | `build` | number | `1` | The build number (`CFBundleVersion`, `versionCode`). Raise it for every release you upload. |
-| `icon` | string | none | A square PNG, ideally 1024×1024, relative to `nsh.json`. |
+| `icon` | string \| object | none | A square PNG, ideally 1024×1024, relative to `nsh.json`, or one per platform ([Icons](#icons)). |
 
 `nsh.json` also holds `rust` and `root` (the app's crates and its root component, [Building with Rust](./rust.md)),
 `theme` and `appearance`, `tailwind` (see [Tailwind](./tailwind.md)), `capabilities` (see
-[Sandbox and capabilities](./sandbox-and-capabilities.md)), `android` (`targetSdk`, [below](#target-api-level)), `ios` and `macos` (the `Info.plist` keys and entitlements
-of their packages, [below](#infoplist-keys-and-entitlements)) and `updater`, which makes desktop packages update themselves
+[Sandbox and capabilities](./sandbox-and-capabilities.md)), `android` (`targetSdk` and `usesCleartextTraffic`, [below](#target-api-level)), `ios` and `macos` (the `Info.plist` keys and entitlements
+of their packages, [below](#infoplist-keys-and-entitlements); `macos.activationPolicy`, a [menu bar app](./macos.md#menu-bar-apps)) and `updater`, which makes desktop packages update themselves
 (see [App Updates](./app-updates.md)) and every native package take [OTA updates](./ota-updates.md); [Project structure](./project-structure.md#nshjson) lists
 every key. A key or value NSH cannot read is reported as a warning and left out, so an app written for a newer NSH
 still builds with an older one, and the warning catches a typo.
@@ -93,6 +93,7 @@ nsh package --target android --app-version 1.4.0 --build 42
 | `--keystore-password <password>` | Android: the keystore password; also read from `NSH_KEYSTORE_PASSWORD`. |
 | `--abi <abi>` | Android: the ABIs of the APK, repeated or separated by commas (default: `arm64-v8a` and `armeabi-v7a`). |
 | `--format <apk \| aab>` | Android: an APK (default), installed directly, or an Android App Bundle for Google Play ([below](#google-play-app-bundles)). |
+| `--arch <arm64 \| x86_64 \| universal>` | macOS: the processors the app runs on: Apple silicon, Intel, or both in one universal executable ([below](#macos)). Default: this Mac's. |
 | `--run` | Install and launch afterwards: in the iOS simulator, or on the Android device or emulator `adb` sees; macOS, Linux and Windows apps are launched on this machine; a web site is served on this machine and opened in the browser. Not for `--target ios`. |
 | `--asset-url <URL>` | Web: the http(s) URL the site's files are served from, a CDN, as the page names them; `index.html` and `manifest.webmanifest` stay at the page's address (named relatively, as without the flag), and the CDN answers with `Access-Control-Allow-Origin`. Default: next to the page, named relatively. `--run` serves the site from this machine as it is, so it goes without it. |
 
@@ -132,7 +133,7 @@ Without `--sign` and `--profile`, NSH writes an unsigned `.nsh/out/<Name>.app` a
 device as it is.
 
 The app supports iPhone and iPad, portrait and landscape (portrait upside down on iPad only), and needs iOS 15.0 or
-newer.
+newer, or the later version it names ([Minimum system version](#minimum-system-version)).
 
 ## Android
 
@@ -150,7 +151,7 @@ without Gradle. Requirements:
   `libnsh.so`.
 
 The app targets API 35 (`targetSdkVersion`, what Google Play requires) unless `nsh.json` names another level, and
-needs API 28 (Android 9) or newer. It contains native code for the ABIs of phones,
+needs API 26 (Android 8) or newer. It contains native code for the ABIs of phones,
 `arm64-v8a` and `armeabi-v7a`; with `--run`, also the device's, such as an emulator's `x86_64`. `--abi` picks them
 yourself, for example `--abi arm64-v8a` for 64-bit phones only, the smallest APK:
 
@@ -183,6 +184,20 @@ against that level, so the SDK needs its platform (`sdkmanager "platforms;androi
 }
 ```
 
+### Plain HTTP
+
+Packaged apps make requests over HTTPS. For servers without TLS, such as one on the local network,
+`android.usesCleartextTraffic` lets the app make plain `http://` requests as well
+([`android:usesCleartextTraffic`](https://developer.android.com/guide/topics/manifest/application-element#usesCleartextTraffic)):
+
+```json
+{
+  "android": { "usesCleartextTraffic": true }
+}
+```
+
+Development builds (`nsh run --target android`) always allow plain HTTP: they load the app from the dev server over it.
+
 ### Google Play: App Bundles
 
 Google Play takes Android App Bundles, not APKs. `--format aab` writes `.nsh/out/<Name>.aab` instead of the APK, from
@@ -205,8 +220,18 @@ nsh package --target macos --run
 ```
 
 Writes `.nsh/out/<Name>.app`: the executable in `Contents/MacOS/`, and `nsh/assets/…`, `nsh/app.json` (the window
-title and the app's appearance) and a TSX app's `nsh/bundle.nshc` in `Contents/Resources/`. The app is signed ad hoc and needs macOS 14 or
-later; to distribute it, sign it with a Developer ID and notarize it. See [macOS](./macos.md#packaging).
+title, the app's appearance, its activation policy and nsh.json's window options) and a TSX app's `nsh/bundle.nshc` in
+`Contents/Resources/`. The app is signed ad hoc and needs macOS 14 or
+later, or the later version it names ([Minimum system version](#minimum-system-version)); to distribute it, sign it
+with a Developer ID and notarize it. See [macOS](./macos.md#packaging).
+
+The app runs on this Mac's processor. `--arch` picks another: `x86_64` for Intel Macs, `arm64` for Apple silicon, or
+`universal` for both in one executable. A runner for another processor needs its Rust target:
+
+```sh
+rustup target add x86_64-apple-darwin
+nsh package --target macos --arch universal
+```
 
 ## Linux
 
@@ -214,9 +239,9 @@ later; to distribute it, sign it with a Developer ID and notarize it. See [macOS
 nsh package --target linux --run
 ```
 
-Writes `.nsh/out/<Name>/` (the executable `<Name>`, `nsh/assets/…`, `nsh/app.json` with the window title and the
-application id, a TSX app's `nsh/bundle.nshc`, `<id>.desktop` and the icon `<id>.png`) and the same as
-`.nsh/out/<Name>.tar.gz`. Package on
+Writes `.nsh/out/<Name>/` (the executable `<Name>`, `nsh/assets/…`, `nsh/app.json` with the window title, the
+application id and nsh.json's window options, a TSX app's `nsh/bundle.nshc`, `<id>.desktop` and the icon
+`<id>.png`) and the same as `.nsh/out/<Name>.tar.gz`. Package on
 Linux: the runner is built for the machine it is built on. GTK 4 (4.14 or later), Pango and WebKitGTK 6.0 (for web
 views) must be installed where the app runs. Installing it and the desktop entry: [Linux](./linux.md#packaging).
 
@@ -227,9 +252,12 @@ nsh package --target windows --run
 ```
 
 Writes `.nsh\out\<Name>\` (the executable `<Name>.exe` with the app's icon, `nsh\assets\…`, `nsh\app.json` with the
-window title, the app id, the version and the appearance, and a TSX app's `nsh\bundle.nshc`) and the same as
-`.nsh\out\<Name>.zip`. A TSX app needs no tools; a Rust app's runner is built with Visual Studio Build Tools. Package on Windows: the runner is built for the machine it is built on, and only Windows can
-embed the icon. The app runs from wherever its directory is copied; nothing is installed. See
+window title, the app id, the version, the appearance and nsh.json's window options, and a TSX app's `nsh\bundle.nshc`)
+and the same as `.nsh\out\<Name>.zip`. A TSX app needs no tools; a Rust app's runner is built with Visual Studio Build
+Tools. Package on Windows: the runner is built for the machine it is built on, and only Windows can
+embed the icon. The app runs from wherever its directory is copied. `nsh package` also writes the Inno Setup script
+`.nsh\out\<Name>.iss` and, when Inno Setup 6 is installed, compiles it to `.nsh\out\<Name>-setup.exe`: a per-user
+installer (no administrator rights) with a Start menu shortcut, an Installed apps entry, and in-place upgrades. See
 [Windows](./windows.md#packaging).
 
 ## Web
@@ -273,7 +301,8 @@ under `ios` and `macos` in `nsh.json`:
 
 Values are written as property list values: strings, numbers (integers or reals), booleans, arrays and objects
 (dictionaries); `null` is an error. A key the app sets replaces NSH's default, so an app may also reword the usage
-descriptions NSH adds or narrow the orientations.
+descriptions NSH adds, narrow the orientations or raise the minimum system version
+([below](#minimum-system-version)).
 
 NSH keeps the keys it sets from other `nsh.json` keys or that the packaged app depends on. Setting one is an error that
 says what to set instead:
@@ -284,10 +313,12 @@ says what to set instead:
 | `CFBundleName`, `CFBundleDisplayName` | `name` |
 | `CFBundleShortVersionString`, `CFBundleVersion` | `version`, `build` |
 | `CFBundleURLTypes` | `schemes` |
+| `CFBundleDocumentTypes` | `fileTypes` ([Opening files](../modules/nsh-desktop.md#opening-files)) |
 | iOS: `CFBundleIcons`, `CFBundleIcons~ipad`, `CFBundleIconName`; macOS: `CFBundleIconFile` | `icon` |
 | iOS: `UIUserInterfaceStyle` | `appearance` |
 | iOS: `UIStatusBarStyle`, `UIStatusBarHidden` | `statusBar` |
-| `CFBundleExecutable`, `CFBundlePackageType`, `CFBundleSupportedPlatforms`; iOS: `MinimumOSVersion`, `LSRequiresIPhoneOS`, `UIApplicationSceneManifest`, `UIApplicationSupportsMultipleScenes`; macOS: `LSMinimumSystemVersion`, `NSPrincipalClass` | the package itself |
+| macOS: `LSUIElement` | `macos.activationPolicy` ([Menu bar apps](./macos.md#menu-bar-apps)) |
+| `CFBundleExecutable`, `CFBundlePackageType`, `CFBundleSupportedPlatforms`; iOS: `LSRequiresIPhoneOS`, `UIApplicationSceneManifest`, `UIApplicationSupportsMultipleScenes`; macOS: `NSPrincipalClass` | the package itself |
 | Entitlements: `application-identifier`, `com.apple.application-identifier`, `com.apple.developer.team-identifier` | `id` and the provisioning profile |
 
 Entitlements:
@@ -300,6 +331,24 @@ Entitlements:
 - **macOS** packages are signed ad hoc with the app's entitlements. macOS launches an app with
   `com.apple.developer.*` entitlements or keychain access groups only under a provisioning profile that grants them:
   `nsh package` warns about them, and the app is signed again with a Developer ID and such a profile before it runs.
+
+### Minimum system version
+
+Packages run on iOS 15.0 and macOS 14 or later, the systems NSH's runtime runs on. An app that uses the APIs of a
+later system, through its own [Rust crate](./rust.md) for example, raises its minimum with the key the system reads:
+`MinimumOSVersion` in `ios.infoPlist`, `LSMinimumSystemVersion` in `macos.infoPlist`.
+
+```json
+{
+  "ios": { "infoPlist": { "MinimumOSVersion": "16.4" } },
+  "macos": { "infoPlist": { "LSMinimumSystemVersion": "15.2" } }
+}
+```
+
+The value is a string of one to three numbers joined by dots (`"15"`, `"15.2"`, `"15.2.1"`) from NSH's minimum up:
+`"15.0"` on iOS, `"14.0"` on macOS. The package declares it as written, and the iOS app icon is compiled for it. A
+lower version, or a value of another form, is an error that names NSH's minimum, reported as soon as `nsh.json` is
+read.
 
 ## Icons
 
@@ -316,22 +365,47 @@ Give one square PNG, ideally 1024×1024, in `nsh.json` (`"icon": "icon.png"`) or
   `nsh run --target windows` and `nsh test --target windows` show it too.
 - **Web:** resized to 32 pixels (the favicon), 180 (`apple-touch-icon`), 192 and 512 (the web app manifest).
 
+Platforms draw icons differently: macOS artwork sits inset on a transparent canvas (824 of 1024 pixels), while
+Windows, Linux and Android fill it. Give `icon` an object to use a PNG per platform; its keys are `macos`, `windows`,
+`linux`, `ios`, `android` and `web`, and a platform left out gets the system's default:
+
+```json
+{
+  "icon": {
+    "macos": "icon-macos.png",
+    "windows": "icon.png",
+    "linux": "icon.png"
+  }
+}
+```
+
+`--icon` replaces it for the target being packaged.
+
 Without an icon, the system shows its default.
 
 ## Camera, Bluetooth and other hardware
 
-NSH has no API for the camera, video recording, Bluetooth or location, and `nsh package` cannot make an app that uses
-them: NSH's runtime has no code that reaches this hardware, `nsh.json` adds keys to `Info.plist`
-([above](#infoplist-keys-and-entitlements)) but none to the Android manifest, and a packaged Android app cannot add Java
-code. Its own [Rust crate](./rust.md) does not change this. iOS ends an app that reaches
-protected hardware without a usage description in `Info.plist`, and the Android manifest of a packaged app declares
-only `INTERNET`.
+A packaged app declares the hardware NSH's own features use, from its `nsh.json`:
 
-An app that needs them embeds NSH in its own Xcode or Gradle project ([iOS](./ios.md#embedding-in-an-ios-app),
-[Android](./android.md#embedding-in-an-android-app)). That project owns `Info.plist` and `AndroidManifest.xml`, so it
-declares what it uses there and writes the platform code itself: a camera preview is a
-[native component](./native-components.md), and the app reaches everything else through
-[`host.call`](./ios.md#talking-to-the-app) ([on Android](./android.md#talking-to-the-app)).
+| Feature | iOS and macOS | Android |
+|---|---|---|
+| [`Speech`](../modules/nsh.md#speech), when the app grants `speech` or declares no capabilities | `NSMicrophoneUsageDescription`, `NSSpeechRecognitionUsageDescription` | |
+| Web pages that capture media ([`capabilities.webview.media`](./sandbox-and-capabilities.md#webview)) | `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`; on macOS the entitlements `com.apple.security.device.audio-input` and `com.apple.security.device.camera` | `RECORD_AUDIO`, `CAMERA` |
+| [`Notifications`](../modules/nsh.md#notifications), when the app grants `notifications` or declares no capabilities | | `POST_NOTIFICATIONS` |
+
+Every Android package also declares `INTERNET`. A usage description is what the system shows when the app first asks;
+the app's `infoPlist` words it its own way ([above](#infoplist-keys-and-entitlements)).
+
+On iOS and macOS, an app's own [Rust crate](./rust.md) reaches other hardware through the system's frameworks, with the
+usage descriptions it needs in `infoPlist` and, on macOS, the entitlements in `entitlements`: the system ends an app
+that reaches protected hardware without its usage description.
+
+An Android app that uses other hardware embeds NSH in its own Gradle project
+([Android](./android.md#embedding-in-an-android-app)), and an iOS app may do the same in its Xcode project
+([iOS](./ios.md#embedding-in-an-ios-app)). That project owns `AndroidManifest.xml` and `Info.plist`, so it declares
+what it uses there and writes the platform code itself: a camera preview is a [native component](./native-components.md),
+and the app reaches everything else through [`host.call`](./ios.md#talking-to-the-app)
+([on Android](./android.md#talking-to-the-app)).
 
 ## What is inside
 
@@ -349,6 +423,13 @@ assets it imports, next to the prebuilt runtime:
 | Web | `nsh.<digest>.wasm`, `nsh.<digest>.js` | `<Name>/app.<digest>.js`, `assets/…`, `index.html` |
 
 A packaged app registers no [native components](./native-components.md); for those, embed NSH in your own app.
+
+## Logs
+
+A packaged app logs its warnings, its errors and its `console.log` and `console.info` lines to the platform's log: the
+unified log on macOS and iOS, under the app's id (Console, or `log stream --predicate 'subsystem == "com.example.notes"'`),
+logcat on Android, the debugger's output on Windows, standard error on Linux and the browser console on the web. See
+[A packaged app's logs](./dev-server-and-debugging.md#a-packaged-apps-logs).
 
 ## Finding the runtime
 

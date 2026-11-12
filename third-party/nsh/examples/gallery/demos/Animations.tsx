@@ -379,7 +379,7 @@ function Keyframes() {
   });
 
   return (
-    <Card icon="animation" title="Keyframes" subtitle="Steps, frames as the Web Animations API writes them, chained motions">
+    <Card icon="animation" title="Keyframes" subtitle="Steps, Web Animations frames and chained motions">
       <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-around" }}>
         <View style={{ alignItems: "center", gap: 8 }}>
           <View style={{ width: MOON, height: MOON, borderRadius: MOON / 2, overflow: "hidden", backgroundColor: colors.raised }}>
@@ -1226,7 +1226,7 @@ function Layout() {
     fn();
   };
   return (
-    <Card icon="mobile" title="Layout animation" subtitle="Frames, inserts and removals of the next commit" right={<Badge label={`${items().length} views`} />}>
+    <Card icon="mobile" title="Layout animation" subtitle="The next commit's frames, inserts, removals" right={<Badge label={`${items().length} views`} />}>
       <Segmented
         size="small"
         options={[

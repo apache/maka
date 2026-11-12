@@ -34,6 +34,9 @@ pub(in crate::session_history) enum ModelMetadata {
     Admitted {
         at: UnixMillis,
     },
+    FirstToken {
+        at: UnixMillis,
+    },
     Closed {
         outcome: Outcome,
         at: UnixMillis,
@@ -115,8 +118,17 @@ pub(super) fn classify(
     let metadata = match &record.fact {
         // The immutable inventory writes Facts before Payload pins. Only its
         // completed producer may open the request referenced by StepPrepared.
-        Fact::StepPrepared { .. } if matches!(phase, IndexPhase::Inventory) => None,
+        Fact::StepPrepared { .. } | Fact::ProactiveSummaryPrepared { .. }
+            if matches!(phase, IndexPhase::Inventory) =>
+        {
+            None
+        }
         Fact::StepPrepared {
+            step: actual,
+            request,
+            ..
+        }
+        | Fact::ProactiveSummaryPrepared {
             step: actual,
             request,
             ..
@@ -145,6 +157,12 @@ pub(super) fn classify(
                 ));
             }
             Some(ModelMetadata::Admitted { at: record.at })
+        }
+        Fact::ModelFirstTokenObserved { attempt: actual } => {
+            if *attempt != Some(*actual) {
+                return Err(invalid("snapshot metrics first token attempt differs"));
+            }
+            Some(ModelMetadata::FirstToken { at: record.at })
         }
         Fact::ModelClosed {
             attempt: actual,
@@ -218,7 +236,7 @@ impl Statement for Backfill {
     fn execute(self, c: &Connection) -> Result<Prepared<Self::Value>, StoreError> {
         read::Header(self.snapshot.clone()).execute(c)?;
         let after = self.after.map(bind_u64).transpose()?;
-        let rows: Vec<(u64, String, String, u64)> = c.prepare_cached("SELECT ordinal,entry_json,run,sequence FROM agent_history_snapshot_entries WHERE snapshot=? AND kind='fact' AND (fact_kind IS NULL OR (fact_kind='step_prepared' AND model_json IS NULL) OR fact_kind IN ('model_private_partial_captured','model_source_failure_captured')) AND (? IS NULL OR ordinal>?) ORDER BY ordinal LIMIT 128")?
+        let rows: Vec<(u64, String, String, u64)> = c.prepare_cached("SELECT ordinal,entry_json,run,sequence FROM agent_history_snapshot_entries WHERE snapshot=? AND kind='fact' AND (fact_kind IS NULL OR (fact_kind IN ('step_prepared','proactive_summary_prepared') AND model_json IS NULL) OR fact_kind IN ('model_private_partial_captured','model_source_failure_captured')) AND (? IS NULL OR ordinal>?) ORDER BY ordinal LIMIT 128")?
             .query_map(params![self.snapshot.id.to_string(), after, after], |row| Ok((read_u64(row,0)?, row.get(1)?, row.get(2)?, read_u64(row,3)?)))?
             .collect::<Result<_,_>>()?;
         for (ordinal, raw, run, sequence) in &rows {

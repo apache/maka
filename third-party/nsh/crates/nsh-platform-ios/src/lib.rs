@@ -39,6 +39,7 @@ mod navigation;
 mod net;
 mod picker;
 mod press;
+mod scroll_watch;
 mod selectable_view;
 mod shader;
 // Sound (`Sound`, `AudioPlayer`), the Speech framework's recognizer and the
@@ -134,6 +135,7 @@ pub use crate::{
     app::{AppOptions, AppSource, in_app_bundle, run_app},
     component::{ComponentContext, ComponentFactory, Components, NativeComponent},
     image::AssetBase,
+    scroll_watch::{ScrollHandle, ScrollWatcher, ScrollWatchers},
     surface::{Surface, SurfaceOptions},
     system::{preferred_status_bar_style, prefers_status_bar_hidden, status_bar_animation},
     text::CoreTextEngine,

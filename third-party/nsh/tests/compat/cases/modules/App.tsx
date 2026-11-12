@@ -6,12 +6,14 @@ import { type JSX, View, mount, signal } from "nsh";
 import ModStandardAccess from "./mod-standard-access";
 import ModAccessibility from "./mod-accessibility";
 import ModAndroid from "./mod-android";
+import ModAppInfo from "./mod-app-info";
 import ModAudio from "./mod-audio";
 import ModClipboard from "./mod-clipboard";
 import ModFps from "./mod-fps";
 import ModUrlScheme from "./mod-url-scheme";
 import ModDesktop from "./mod-desktop";
 import ModDevice from "./mod-device";
+import ModHaptics from "./mod-haptics";
 import ModHost from "./mod-host";
 import ModHostChannel from "./mod-host-channel";
 import ModI18n from "./mod-i18n";
@@ -22,12 +24,14 @@ import ModPicker from "./mod-picker";
 import ModNotifications from "./mod-notifications";
 import ModSpeech from "./mod-speech";
 import ModStorage from "./mod-storage";
+import ModWeb from "./mod-web";
 import ModUpdater from "./mod-updater";
 
 const cases: Record<string, () => JSX.Element> = {
   "mod-standard-access": ModStandardAccess,
   "mod-accessibility": ModAccessibility,
   "mod-android": ModAndroid,
+  "mod-app-info": ModAppInfo,
   "mod-audio": ModAudio,
   "mod-clipboard": ModClipboard,
   "mod-fps": ModFps,
@@ -36,6 +40,7 @@ const cases: Record<string, () => JSX.Element> = {
   "mod-device": ModDevice,
   "mod-host": ModHost,
   "mod-host-channel": ModHostChannel,
+  "mod-haptics": ModHaptics,
   "mod-i18n": ModI18n,
   "mod-ios": ModIos,
   "mod-keymap": ModKeymap,
@@ -44,6 +49,7 @@ const cases: Record<string, () => JSX.Element> = {
   "mod-notifications": ModNotifications,
   "mod-speech": ModSpeech,
   "mod-storage": ModStorage,
+  "mod-web": ModWeb,
   "mod-updater": ModUpdater,
 };
 const shown = signal("");

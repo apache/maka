@@ -48,7 +48,7 @@ nsh package --target web       # or ios, ios-simulator, android, macos, linux, w
 
 Build with [huacnlee/cargo](https://github.com/huacnlee/cargo), the Cargo NSH is developed with: a drop-in fork that builds each dependency once for all your
 projects and Git worktrees and keeps its build directory under a size limit on its own, with nothing to configure
-([Installation](./installation.md#building-from-a-checkout)).
+([Installation](./installation.md#for-apps-written-in-rust)).
 
 `src/lib.rs` holds the app: components, state, handlers, tasks.
 
@@ -140,7 +140,12 @@ Windows, Linux, GPUI and iOS.
 Code for every platform, the web included, uses NSH's services: `fetch` for HTTP
 ([Networking](./networking.md#from-rust-components)), `timer`, `set_timeout` and `set_interval` for waiting,
 `nsh_core::time::Instant` and `nsh_core::time::unix_ms()` for the clock. `background` and `blocking` run work on the
-native targets' threads.
+native targets' threads. `run_on_main_thread(f)` runs `f` on the platform's main thread, for APIs that only work there
+(AppKit's status items, UIKit): after the views of the current turn are mounted, and its result is a future to await
+on the engine thread. A module function that is not `async` calls `cx.run_on_main_thread(f)`. On the web and in
+headless tests `f` runs on the engine thread at the end of the commit, and on the native platforms later, while the
+engine goes on: await the result to know that `f` ran. `f` returns a value, and the code that awaits it writes signals
+and calls NSH's functions with it.
 
 ## Desktop title bars
 
@@ -366,8 +371,8 @@ prop keeps its value and the rest of the component renders.
 A function or a member runs the way its Rust signature says. One that is not `async` runs inside the TSX call and
 returns its value (`Portfolio.total()` is a number, `ledger.balance` a property): it computes and keeps state. An
 `async fn` returns a Promise and runs as a task with NSH's services (`fetch`, `timer`, dialogs). A module function
-taking `cx: &mut ModuleCx` reaches the platform in order with the UI (a toast, the status bar), and so does a
-component's ref method; their return type decides what TSX gets: one returning `()` gives `void`, with no reply
+taking `cx: &mut ModuleCx` reaches the platform in order with the UI (a toast, the status bar) and may `spawn` a
+task, which runs to its end. A component's ref method also reaches the platform in order with the UI; their return type decides what TSX gets: one returning `()` gives `void`, with no reply
 (TSX calls it and moves on); one returning `Result<(), E>` gives `Promise<void>`, which rejects with the `Err`'s
 message (the call runs with the UI's changes, after the TSX call returned, so the Promise carries its error; one
 nobody awaits or catches is logged as an [unhandled rejection](./dev-server-and-debugging.md#logs)); one
@@ -490,6 +495,15 @@ test("a tap counts", async () => {
   expect(app.texts()).toContain("Count: 1");
 });
 ```
+
+Text is laid out with an estimate of its width (every character `0.55 ×` the font size) unless the test starts the
+app with `Headless::start_with_text_engine`, which takes a function making the platform's text engine on the engine's
+thread (`nsh_platform_macos::CoreTextEngine`, `nsh_platform_windows::DWriteTextEngine`), so text measures as it does on
+screen. `app.screen().layout_nodes()` returns the views on screen in tree order as layout placed them (`LayoutNode`:
+kind, test id, parent, bounds in the root's points before transforms, whether it is hidden or clips, a scroll view's
+axis and content size in `scroll`, a text view's text and the box it was laid out in in `text`), so a test can check
+that nothing passes its parent, is cut by a view that clips, or is too wide for its text. Both are Rust API of
+`nsh_testing`, for `cargo test`.
 
 A TSX entry is built with `nsh-testing`'s feature `bundle` as `nsh run` builds it, against the UI sets its hosts
 serve: NSH's, and each crate's `registry()`, which `#[native_module]` makes:

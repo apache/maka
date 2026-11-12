@@ -25,7 +25,7 @@ function Library() {
             onPress={() => play(sound.name)}
             accessibilityLabel={`Play ${sound.name}`}
             focusable
-            focusStyle={focusRing()}
+            focusVisibleStyle={focusRing()}
             hoverStyle={hovered()}
             activeStyle={{ backgroundColor: alpha(colors.text, 0.08) }}
             style={{ flexDirection: "row", alignItems: "center", gap: 12, marginHorizontal: -8, paddingHorizontal: 8, paddingVertical: 8, borderRadius: radius.inset }}

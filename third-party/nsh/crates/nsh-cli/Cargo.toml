@@ -3,6 +3,7 @@ name = "nsh-cli"
 description = "The nsh command line tool: build, package and run apps."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -25,7 +26,7 @@ nsh-i18n = { workspace = true, features = ["build"] }
 nsh-engine = { workspace = true, features = ["js"] }
 nsh-dev = { workspace = true, features = ["server"] }
 nsh-js = { workspace = true, features = ["zlib", "crypto"] }
-nsh-base = { workspace = true, features = ["editor", "highlight", "plot", "rich-editor", "term"] }
+nsh-base = { workspace = true, features = ["editor", "emoji-picker", "highlight", "plot", "rich-editor", "term"] }
 nsh-package.workspace = true
 nsh-testing = { workspace = true, features = ["agent", "bundle"] }
 crossbeam-channel.workspace = true

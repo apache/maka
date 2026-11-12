@@ -17,12 +17,18 @@
  * under the License.
  */
 
-import { Canvas, Path2D, Text, type JSX } from 'nsh';
+import { Canvas, Image, keymap, Path2D, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
-import { C, bodyTextStyle, controlFocusStyle, controlHoverStyle } from './ui';
+import type { QuickIcon } from '../../../../packages/plugin-sdk/src/workbench-views.js';
+import { Icon } from './Icon';
+import { tr } from './locale';
+import { C, bodyTextStyle, controlFocusStyle, controlHoverStyle, textTooltip } from './ui';
 
 /** The height controls in the bar center on, however tall its input grows. */
 export const QUICK_BAR_SLOT = 40;
+/** Fixed, so the launcher can place the selection without measuring rows. */
+export const QUICK_ROW_HEIGHT = 40;
+export const QUICK_SECTION_HEIGHT = 28;
 
 export const quickBarStyle = {
   flexDirection: 'row',
@@ -42,45 +48,180 @@ export const quickRowStyle = {
   paddingHorizontal: 16,
 } as const;
 
-/** A launcher row; without an icon its title lines up with the input's text. */
+export function QuickSectionTitle(props: { title: string }) {
+  return (
+    <Text
+      style={{
+        height: QUICK_SECTION_HEIGHT,
+        lineHeight: QUICK_SECTION_HEIGHT,
+        paddingHorizontal: 16,
+        fontSize: 12,
+        color: C.muted,
+      }}
+    >
+      {props.title}
+    </Text>
+  );
+}
+
 export function QuickRow(props: {
   label: string;
   title: string;
-  hint?: string;
-  icon?: JSX.Element;
+  detail?: string | undefined;
+  trailing?: string | undefined;
+  /** What to type for the row, such as a command's alias, shown before `trailing`. */
+  badge?: string | undefined;
+  icon: QuickIcon | 'maka';
+  image?: string | undefined;
+  unread: boolean;
   selected: boolean;
   onPress(): void;
+  /** Opens the settings of the tool behind the row, shown while it is selected or hovered. */
+  onSettings?: (() => void) | undefined;
 }) {
+  const hovered = signal(false);
+  const gear = () => props.onSettings !== undefined && (props.selected || hovered());
   return (
-    <Button
-      accessibilityLabel={props.label}
-      selected={props.selected}
-      onPress={props.onPress}
-      style={props.icon ? quickRowStyle : { ...quickRowStyle, paddingLeft: 42 }}
-      selectedStyle={{ backgroundColor: C.raised }}
-      hoverStyle={controlHoverStyle()}
-      focusStyle={controlFocusStyle()}
+    <View
+      onMouseEnter={() => hovered.set(true)}
+      onMouseLeave={() => hovered.set(false)}
+      style={{ flexDirection: 'row', alignItems: 'center' }}
     >
-      {props.icon}
-      <Text
-        style={{
-          ...bodyTextStyle,
-          flex: 1,
-          minWidth: 0,
-          fontWeight: '500',
-          color: C.text,
-          numberOfLines: 1,
-          textOverflow: 'ellipsis',
-        }}
+      <Button
+        accessibilityLabel={props.label}
+        selected={props.selected}
+        onPress={props.onPress}
+        style={[
+          quickRowStyle,
+          { flex: 1, minWidth: 0, height: QUICK_ROW_HEIGHT, paddingVertical: 0 },
+          gear() ? { paddingRight: 44 } : {},
+        ]}
+        selectedStyle={{ backgroundColor: C.raised }}
+        hoverStyle={controlHoverStyle()}
+        focusStyle={controlFocusStyle()}
       >
-        {props.title}
-      </Text>
-      <If when={props.hint !== undefined}>
-        <Text style={{ fontSize: 12, lineHeight: 18, flexShrink: 0, color: C.muted }}>
-          {props.hint}
+        <If
+          when={props.image !== undefined}
+          else={
+            <If
+              when={props.icon === 'maka'}
+              else={<Icon name={props.icon as QuickIcon} color={C.secondary} size={16} />}
+            >
+              <MakaMark />
+            </If>
+          }
+        >
+          <Image
+            src={props.image!}
+            style={[
+              { width: 20, height: 20, marginHorizontal: -2, flexShrink: 0 },
+              { objectFit: 'contain' },
+            ]}
+          />
+        </If>
+        <Text
+          style={{
+            ...bodyTextStyle,
+            flexShrink: 0,
+            maxWidth: '60%',
+            fontWeight: '500',
+            color: C.text,
+            numberOfLines: 1,
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {props.title}
         </Text>
+        <Text
+          style={{
+            ...bodyTextStyle,
+            flex: 1,
+            minWidth: 0,
+            color: C.muted,
+            numberOfLines: 1,
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {props.detail ?? ''}
+        </Text>
+        <If when={props.unread}>
+          <View
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: 3,
+              flexShrink: 0,
+              backgroundColor: C.accent,
+            }}
+          />
+        </If>
+        <If when={props.badge !== undefined}>
+          <Text
+            style={{
+              fontSize: 12,
+              lineHeight: 18,
+              flexShrink: 0,
+              paddingHorizontal: 6,
+              borderRadius: 4,
+              borderWidth: 1,
+              borderColor: C.line,
+              color: C.secondary,
+            }}
+          >
+            {props.badge}
+          </Text>
+        </If>
+        <If when={props.trailing !== undefined}>
+          <Text style={{ fontSize: 12, lineHeight: 18, flexShrink: 0, color: C.muted }}>
+            {props.trailing}
+          </Text>
+        </If>
+      </Button>
+      <If when={gear()}>
+        <Button
+          accessibilityLabel={tr('Settings')}
+          tooltip={textTooltip(() => tr('Settings'))}
+          onPress={() => props.onSettings?.()}
+          style={{
+            position: 'absolute',
+            top: (QUICK_ROW_HEIGHT - 28) / 2,
+            right: 8,
+            width: 28,
+            height: 28,
+            borderRadius: 6,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          hoverStyle={{ backgroundColor: C.line }}
+        >
+          <Icon name="settings" color={C.secondary} size={15} />
+        </Button>
       </If>
-    </Button>
+    </View>
+  );
+}
+
+export function QuickFooter(props: { action: string; settings: boolean }) {
+  const hint = { fontSize: 12, lineHeight: 18, color: C.muted } as const;
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        alignItems: 'center',
+        gap: 16,
+        height: 32,
+        paddingHorizontal: 16,
+        borderTopWidth: 1,
+        borderTopColor: C.line,
+      }}
+    >
+      <If when={props.settings}>
+        <Text style={hint}>{`${tr('Settings')} ${keymap.label('mod+,')}`}</Text>
+      </If>
+      <Text style={hint}>{`${props.action} ↵`}</Text>
+      <Text style={hint}>{`${tr('Navigate')} ↑↓`}</Text>
+    </View>
   );
 }
 

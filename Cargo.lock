@@ -3186,6 +3186,7 @@ checksum = "457e789b3d1202543297a350643cf459f836cade38934e7a4cf6a39e7cde2905"
 dependencies = [
  "fontconfig-parser",
  "log",
+ "memmap2",
  "slotmap",
  "tinyvec",
  "ttf-parser",
@@ -6671,6 +6672,7 @@ dependencies = [
  "maka-plugin-core",
  "maka-process",
  "maka-product-native",
+ "maka-providers",
  "maka-sandbox",
  "maka-schema",
  "maka-settings-native",
@@ -6887,6 +6889,8 @@ dependencies = [
 name = "maka-desktop-shell"
 version = "0.2.0"
 dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
  "embed-resource",
  "maka-event-log",
  "maka-host-runtime",
@@ -6896,6 +6900,10 @@ dependencies = [
  "nsh-platform-macos",
  "nsh-platform-windows",
  "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "objc2-screen-capture-kit",
  "serde",
  "serde_json",
  "tokio",
@@ -7444,8 +7452,11 @@ dependencies = [
 name = "maka-sandbox"
 version = "0.2.0"
 dependencies = [
+ "cap-fs-ext",
+ "cap-std",
  "flatbuffers",
  "globset",
+ "hex",
  "libc",
  "mxc-sdk",
  "regex-syntax",
@@ -7453,6 +7464,7 @@ dependencies = [
  "seccompiler",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tracelogging",
@@ -7758,6 +7770,7 @@ dependencies = [
  "nsh-base",
  "nsh-bundler",
  "nsh-core",
+ "nsh-js",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -7853,6 +7866,9 @@ dependencies = [
  "nsh-engine",
  "nsh-js",
  "nsh-testing",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "open",
  "percent-encoding",
  "regex",
@@ -8434,7 +8450,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-base"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "html5ever 0.27.0",
@@ -8463,7 +8479,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-bundler"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "dunce",
@@ -8481,7 +8497,6 @@ dependencies = [
  "rolldown_error",
  "rolldown_sourcemap",
  "serde_json",
- "sha2 0.10.9",
  "string_wizard",
  "tokio",
  "ttf-parser",
@@ -8489,12 +8504,13 @@ dependencies = [
 
 [[package]]
 name = "nsh-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cap-std",
  "crc32fast",
  "flate2",
  "futures-util",
+ "gif",
  "httpdate",
  "imagesize 0.15.0",
  "libc",
@@ -8507,9 +8523,11 @@ dependencies = [
  "rust-i18n",
  "rustc-hash 2.1.3",
  "rustls",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "simplecss",
  "slab",
  "taffy",
  "tokio",
@@ -8526,7 +8544,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-engine"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "crossbeam-channel",
  "libc",
@@ -8535,6 +8553,7 @@ dependencies = [
  "nsh-js",
  "nsh-package",
  "nsh-updater",
+ "objc2-io-surface",
  "oxc_sourcemap",
  "rustc-hash 2.1.3",
  "serde_json",
@@ -8545,7 +8564,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-i18n"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "rust-i18n-support",
  "serde_json",
@@ -8553,7 +8572,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-js"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "futures-util",
  "getrandom 0.4.3",
@@ -8575,7 +8594,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-macros"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "imagesize 0.15.0",
  "proc-macro2",
@@ -8587,7 +8606,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-package"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -8601,9 +8620,10 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-apple"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "block2 0.6.2",
+ "cc",
  "dispatch2",
  "libc",
  "log",
@@ -8613,11 +8633,12 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "objc2-ui-kit",
+ "serde_json",
 ]
 
 [[package]]
 name = "nsh-platform-linux"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "crossbeam-channel",
  "gstreamer",
@@ -8638,7 +8659,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-macos"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "block2 0.6.2",
  "crossbeam-channel",
@@ -8658,6 +8679,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-image-io",
  "objc2-io-kit",
+ "objc2-io-surface",
  "objc2-quartz-core 0.3.2",
  "rustc-hash 2.1.3",
  "serde_json",
@@ -8665,7 +8687,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-tui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "crossbeam-channel",
  "icy_sixel",
@@ -8682,7 +8704,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-windows"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "crossbeam-channel",
  "image",
@@ -8703,7 +8725,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-terminal"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -8715,7 +8737,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-testing"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "crossbeam-channel",
  "log",
@@ -8726,7 +8748,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-updater"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -9114,6 +9136,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
 dependencies = [
  "bitflags 2.13.2",
+ "libc",
  "objc2 0.6.5",
  "objc2-core-foundation",
 ]
@@ -9150,6 +9173,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f"
 dependencies = [
  "bitflags 2.13.2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
+name = "objc2-screen-capture-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74b7c5390f477482f001bc354d6571a70db7e4f8d5288e860c45521fbce11394"
+dependencies = [
+ "block2 0.6.2",
+ "libc",
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -9201,6 +9238,28 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "onig"
+version = "6.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc3cbf698f9438986c11a880c90a6d04b9de27575afd28bbf45b154b6c709e2"
+dependencies = [
+ "bitflags 2.13.2",
+ "libc",
+ "once_cell",
+ "onig_sys",
+]
+
+[[package]]
+name = "onig_sys"
+version = "69.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e68317604e77e53b85896388e1a803c1d21b74c899ec9e5e1112db90735edd7"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
 
 [[package]]
 name = "open"
@@ -11415,12 +11474,15 @@ version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b563218631706d614e23059436526d005b50ab5f2d506b55a17eb65c5eb83419"
 dependencies = [
+ "gif",
+ "image-webp",
  "log",
  "pico-args",
  "rgb",
  "svgtypes",
  "tiny-skia 0.11.4",
  "usvg",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -13594,6 +13656,7 @@ dependencies = [
  "flate2",
  "fnv",
  "once_cell",
+ "onig",
  "regex-syntax",
  "serde",
  "serde_derive",
@@ -14788,6 +14851,7 @@ dependencies = [
  "percent-encoding",
  "rustls",
  "rustls-pki-types",
+ "rustls-platform-verifier",
  "ureq-proto",
  "utf8-zero",
  "webpki-roots 1.0.11",

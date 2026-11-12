@@ -73,7 +73,14 @@ colored with the theme's tokens; the app restyles each part over it.
   under the `openUrl` capability and the embedding app's URL handler), never an anchor (`#…`): `Cx::link_press`.
   Each link (and footnote reference) is a pressable span, so it is a stop of the keyboard focus where the platform
   walks links (`elements.md` "Keyboard focus": `TextLink::focus_stop`): Tab reaches it, Return presses it, and the
-  press goes through `onLinkPress` and `links` as a pointer's does.
+  press goes through `onLinkPress` and `links` as a pointer's does. Every link (a URL, a path, an `#anchor`) holds a
+  hint overlay of `nsh-base`'s `link_hint` (outside a terminal): its title over its destination below the pointer
+  resting on it, on the desktops (`elements.md` "A link's hint"). One overlay per link: a document with many links has
+  as many (shown natively only while one is up). HTML `<a href title>` and Markdown links (inline, reference,
+  autolinks) all become `Inline::Link`, where the hint is made; a link holds no link (GFM): a bare URL in a link's
+  text (`[https://a.dev](https://b.dev)`) stays text of the outer link. An image in a link carries the same hint (the link's
+  URL and title, `Cx::link`) as its tooltip, anchored to the image that takes the link's press (below it), or to the
+  view around an app's `renderImage` element.
 
 ## Parts and their default styles
 
@@ -117,7 +124,8 @@ last: the app's `renderCodeBlock` (TS and Rust: the whole block is the app's), t
 (`provide_context`, Rust: `tree-sitter`, a theme of its own, ...), the built-in one.
 
 The built-in highlighter (`highlight.rs`, on the tokens, palette and syntaxes of `syntax.rs`, which the `Editor` shares; `nsh-base`'s feature `highlight`, on by default) is syntect 5 with pure-Rust
-regexes (`regex-fancy`, so it builds for WebAssembly; no Oniguruma) and two-face's syntaxes (bat's set: syntect's own
+regexes on the web (`regex-fancy`; no C there) and Oniguruma's on the native runtimes (`regex-onig`: its regexes
+compile about 20 times faster and match 3 to 4 times faster; syntect takes it when both are on), and two-face's syntaxes (bat's set: syntect's own
 plus TypeScript / TSX, TOML, Dockerfile, ...). A block's language is found by extension or name, case-insensitive
 (`ts`, `tsx`, `rs`, `py`, `sh`, `yml`, `md`, `Rust`, ...) plus the other names fences use (`jsx`, `shell`, `golang`,
 `c++`, `csharp`, `jsonc`, ...); no language, `text` or one syntect does not know leaves the block plain.
@@ -149,9 +157,10 @@ palette, so the site's code looks as an app's does. These colors are the one loo
 typography and the `Editor`'s look, which colors its text with the same tokens (`crate::syntax`, `editor.md`); an app
 with its own palette provides its own `CodeHighlighter`.
 
-Cost (release, x86-64, 500 lines of real files): a fresh block takes 22 ms in Rust, 139 ms in TSX (TypeScript's
-grammar is the heaviest), 2-3x that for the first block of a language, which compiles its regexes; loading the
-syntaxes takes tens of milliseconds more. So the engine thread parses only what is cheap:
+Cost (release, x86-64, 500 lines of real files, Oniguruma): a fresh block takes 7 ms in Rust, 32 ms in TSX
+(TypeScript's grammar is the heaviest), 4 / 6 ms in Python, about 1.5x that for the first block of a language, which
+compiles its regexes (with fancy-regex: 22 and 139 ms, 2-3x for the first block); loading the syntaxes takes about a
+millisecond more. So the engine thread parses only what is cheap:
 
 - The last 64 blocks are kept (one cache for the process, behind a mutex) with the parser's state at the start of their
   last line: a block shown again costs a few µs, and a block that grew (an AI reply streaming its code) is parsed only
@@ -202,9 +211,13 @@ build without syntect. Without the feature, code blocks the app does not highlig
 With `options.streaming`, `markdown/streaming.rs` repairs the last block of the text before parsing (the blocks before
 it are complete; a text ending inside a fenced code or `$$` block needs nothing): emphasis, strong, strikethrough
 (`**`, `*`, `__`, `_`, `~~`), inline code and formulas left open are closed in the reverse order they opened, a marker
-with nothing after it yet is removed; `[text` and `[text](partial` show as their text, `![alt` and `![alt](partial`
+with nothing after it yet is removed (so is half a formula closer, `\[1\` reads as `\[1\]`, which escaped brackets
+around a reference number keep as text); `[text` and `[text](partial` show as their text, `![alt` and `![alt](partial`
 are removed; an HTML tag being typed (`<di`, `<a href="x`) is removed; a table's header followed by the start of its
-delimiter row is completed to a table (and a lone `-` under it is no heading). So a reply never flashes literal `**`
+delimiter row is completed to a table (and a lone `-` under it is no heading). A last line not yet ended whose meaning the next
+characters decide is held back: a list marker alone, digits that may become one, a line of `-` or `=` (an underline
+now, a rule, an item or text later), a fence's opening line and the start of its closer; a lone `*` inside a word
+(`a*b`) is never closed. So a reply never flashes literal `**`
 or `[` while the next chunk is on its way. The repair is a `Cow`: text with nothing open is parsed as it is.
 
 ## HTML
@@ -227,7 +240,8 @@ with a `─` rule under h1 only (`terminal_heading`); a quote is `▎` in the ac
 formulas are bands as wide as their longest line plus a Cell each side (`terminal_band`), a code block under its
 language label; an alert is one band across the body text's width, its icon and text a Cell in, and keeps a `│` in its
 tint where the terminal draws no bands; tables fit the view by narrowing their widest column, never below
-`MIN_COLUMN` Cells (`fit_columns`, recomputed from the table's laid-out width), their cells wrapping; tasks show
+`MIN_COLUMN` Cells (`fit_columns`, cached in one `computed` from the table's laid-out width, with cells and rules
+borrowing its column widths through `Memo::with`), their cells wrapping; tasks show
 `☐` / `☑`. The tests are `nsh-base`'s `tests/base/terminal.rs`.
 
 ## Accessibility
@@ -254,7 +268,9 @@ module, which has everything.
 - Rows are made again only when their value changes (`Each` with the position and kind as the key, the block as the
   value), and render functions only when their value changes.
 - A disclosure makes its content only while open.
-- Images default to their natural size (one `image_size` read each), at most the width of the text.
+- Images default to their natural size (one `image_size` read each), at most the width of the text. An app's
+  `renderImage` element on its own (a paragraph or a cell of images) sits in a view as wide as the text, so its own
+  `w-full` fills the text's width and its `max-w-full` holds it there; in a line of text it keeps the size it asks for.
 
 ## From gpui-kit
 

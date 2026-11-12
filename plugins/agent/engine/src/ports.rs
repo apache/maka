@@ -119,6 +119,13 @@ pub enum DispatchOutcome {
 /// Native fences replaced activations before returning a new driver claim. These
 /// methods execute/observe the Engine's decision; they do not select another action.
 pub trait DriverPorts: Send + Sync {
+    /// Check the candidate against the frozen Main before publishing its checkpoint.
+    fn proactive_summary_matches<'a>(
+        &'a self,
+        view: &'a RunView,
+        origin: maka_agent_facts::context::SummaryOrigin,
+    ) -> BoxFuture<'a, Result<bool, RunError>>;
+
     fn model_admission(
         &self,
         _run: RunId,
@@ -241,10 +248,12 @@ pub trait ExternalCleanupPorts: Send + Sync {
 
 /// External executors have an original task, not an LLM ModelAttempt.
 pub struct PreparedExternal {
+    pub live_workspace: bool,
     pub descriptor: ContentBlob,
     pub contents: Vec<ContentBlob>,
 }
 pub type ExternalConnection = BoxStream<'static, Result<FactId, RunError>>;
+#[derive(Clone)]
 pub struct PendingExternalPublication {
     pub publication: ExternalPublicationId,
     pub source: ContentBlob,

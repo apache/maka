@@ -141,7 +141,7 @@ pub(super) async fn authenticate(
     if request.method != "chatgpt" {
         return Err(Error::Invalid("unknown authentication method".into()));
     }
-    super::configuration(&request.connection)?;
+    super::configuration(&request.connection.configuration)?;
     let interaction = context.interaction.as_ref().ok_or(Error::Unavailable)?;
     if context.cancellation.is_cancelled() {
         return Err(Error::Cancelled);

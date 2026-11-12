@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::{
     ImageSource,
+    color::Hsla,
     element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropEnum, PropError, TsTypes},
     geometry::{Point, Points},
     keymap::{self, Keystroke, Modifiers, When},
@@ -529,7 +530,7 @@ fn parse_key(text: &str, key: &str) -> Result<Key, ShortcutError> {
 
 /// A standard menu item: the platform carries it out (and labels it when
 /// the item has no label of its own).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PropEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PropEnum)]
 pub enum MenuRole {
     /// The about panel (macOS).
     About,
@@ -658,6 +659,73 @@ impl MenuRole {
                 | MenuRole::Paste
                 | MenuRole::SelectAll
         )
+    }
+}
+
+/// The translated labels sent by the core to desktop backends for the
+/// menus NSH builds. These follow the app's language (`nsh/i18n`); apps
+/// override individual menu items through their existing `label` field.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct MenuLabels {
+    /// Role labels; `%{app}` is replaced with the app name on macOS.
+    pub roles: std::collections::HashMap<MenuRole, String>,
+    /// The title of the standard menu bar's Edit menu (`"Edit"`).
+    pub edit_menu: Option<String>,
+    /// The title of the standard menu bar's Window menu (`"Window"`).
+    pub window_menu: Option<String>,
+    /// The Delete item of a text field's edit menu, where NSH shows its own
+    /// (`"Delete"`).
+    pub delete: Option<String>,
+}
+
+impl MenuLabels {
+    pub(crate) fn for_locale(locale: crate::platform::Locale, mac: bool) -> Self {
+        static TEXTS: std::sync::OnceLock<crate::i18n::Translations> = std::sync::OnceLock::new();
+        let texts = TEXTS.get_or_init(|| {
+            crate::i18n::Translations::from_json(include_str!("desktop/menu.json"))
+                .expect("the built-in menu translations are valid")
+        });
+        // Region-only Chinese tags select the traditional script there.
+        let language = match locale.as_str() {
+            "zh-TW" | "zh-HK" | "zh-MO" => "zh-Hant",
+            language => language,
+        };
+        let text = |key: &str| texts.lookup(language, key).map(|text| text.into_owned());
+        Self {
+            roles: MenuRole::ALL
+                .iter()
+                .filter_map(|role| {
+                    let key = match (role, mac) {
+                        (MenuRole::About, true) => "About App",
+                        (MenuRole::Hide, true) => "Hide App",
+                        (MenuRole::Quit, true) => "Quit App",
+                        (MenuRole::ToggleFullScreen, true) => "Enter Full Screen",
+                        _ => role.label(),
+                    };
+                    let label = if mac {
+                        text(key)
+                    } else {
+                        text(&format!("Windows {key}")).or_else(|| text(key))
+                    };
+                    label.map(|label| (*role, label))
+                })
+                .collect(),
+            edit_menu: text("Edit"),
+            window_menu: text("Window"),
+            delete: text("Delete"),
+        }
+    }
+
+    /// NSH's translated label of `role`, when available.
+    pub fn role(&self, role: MenuRole) -> Option<&str> {
+        self.roles.get(&role).map(String::as_str)
+    }
+
+    /// The label of an item with `role` and no label of its own: the
+    /// translated label, else [`MenuRole::label`].
+    pub fn label(&self, role: MenuRole) -> &str {
+        self.role(role).unwrap_or(role.label())
     }
 }
 
@@ -797,12 +865,23 @@ pub enum DesktopCommand {
     /// ([`crate::restart`]). A view embedded in another app leaves the
     /// app's lifecycle to that app: nothing happens there.
     Restart,
+    /// Whether the user's quit requests quit the app: its Quit item and
+    /// the platform's quit key (Command-Q, Ctrl+Q). `false` while the app
+    /// listens to them ([`crate::element::desktop::on_quit_request`]): the
+    /// platform reports them on the root ([`WindowEvent::QuitRequest`])
+    /// instead, and the app sends [`DesktopCommand::Quit`] when it is
+    /// ready. The system ending the app (logging out, shutting down) quits
+    /// either way. Sent when it changes; `true` until the first.
+    SetQuitOnRequest(bool),
     /// The application menu (macOS's menu bar, the window's menu bar on
     /// Windows and Linux; not shown there while the title bar is hidden,
     /// its shortcuts still work); `None` restores the platform's default.
     SetMenu(Option<Arc<[MenuItem]>>),
     /// When the menu bar the window draws for the application menu shows.
     SetMenuBar(MenuBarMode),
+    /// The core translated the labels of NSH's menus for the language
+    /// the app shows. Native backends update their menus at once.
+    SetMenuLabels(Box<MenuLabels>),
     /// Shows a context menu at `at` (root coordinates, points) or at the
     /// pointer.
     PopupMenu {
@@ -853,6 +932,45 @@ impl DesktopCommand {
     }
 }
 
+/// A run of a tray's title ([`Tray::title`]): text in one color, as GPUI's
+/// `TextRun`s are.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct TrayTitleRun {
+    /// The text.
+    pub text: String,
+    /// Its color; `None`: the panel's text color (on macOS the menu bar's,
+    /// which follows its appearance).
+    pub color: Option<Hsla>,
+}
+
+impl TrayTitleRun {
+    /// A run of `text` in the panel's text color.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            color: None,
+        }
+    }
+
+    /// The run in `color`.
+    pub fn color(mut self, color: impl Into<Hsla>) -> Self {
+        self.color = Some(color.into());
+        self
+    }
+}
+
+/// Which side of the tray's icon its title shows on ([`Tray::title_placement`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
+pub enum TrayTitlePlacement {
+    /// Right of the icon, as menu bar apps usually show it.
+    #[default]
+    Right,
+    /// Left of the icon. macOS only: Linux's panels draw the title right of
+    /// the icon.
+    Left,
+}
+
 /// The app's icon in the system tray ([`DesktopCommand::SetTray`]).
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
@@ -863,11 +981,22 @@ pub struct Tray {
     pub icon: Option<ImageSource>,
     /// Shown when the pointer rests on it; `""` for the app's name.
     pub tooltip: String,
+    /// Text beside the icon, in runs each of its own color: what the app
+    /// keeps in sight (a price, a count). macOS's menu bar shows it in its
+    /// colors; Linux's panels that show AppIndicator labels (GNOME's
+    /// AppIndicator extension, Unity, MATE, Budgie) show its text right of
+    /// the icon; Windows' notification area shows the icon alone. Empty: the
+    /// icon alone.
+    pub title: Vec<TrayTitleRun>,
+    /// Which side of the icon the title shows on.
+    pub title_placement: TrayTitlePlacement,
     /// Its menu: opened by a secondary click (a primary one too when
     /// [`Self::click`] is 0); empty for none.
     pub menu: Arc<[MenuItem]>,
     /// Reported as [`crate::EventKind::Menu`] when the icon is clicked
-    /// (primary button); 0: the click opens the menu.
+    /// (primary button), with `bounds`: the icon's frame in screen points
+    /// (as [`WindowState::bounds`]), left out where the platform does not
+    /// know it; 0: the click opens the menu.
     pub click: u32,
 }
 
@@ -879,6 +1008,35 @@ pub(crate) fn title_bar_height(height: Option<Points>) -> Option<Points> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn built_in_menu_labels_follow_locale_fallbacks_and_platform_titles() {
+        for (locale, copy, quit) in [
+            ("en", "Copy", "Quit"),
+            ("ja-JP", "コピー", "終了"),
+            ("zh-CN", "复制", "退出"),
+            ("zh-Hant-TW", "複製", "結束"),
+            ("zh-TW", "複製", "結束"),
+            ("zh-MO", "複製", "結束"),
+            ("fr-FR", "Copy", "Quit"),
+        ] {
+            let locale = crate::platform::Locale::parse(locale).unwrap();
+            let labels = MenuLabels::for_locale(locale, false);
+            assert_eq!(labels.label(MenuRole::Copy), copy);
+            assert_eq!(labels.label(MenuRole::Quit), quit);
+            for role in MenuRole::ALL {
+                assert!(!labels.label(*role).contains("%{app}"));
+            }
+        }
+        let japanese = crate::platform::Locale::parse("ja").unwrap();
+        let labels = MenuLabels::for_locale(japanese, true);
+        assert_eq!(labels.label(MenuRole::Quit), "%{app}を終了");
+        assert_eq!(labels.delete.as_deref(), Some("削除"));
+        assert_eq!(
+            MenuLabels::for_locale(japanese, false).label(MenuRole::Paste),
+            "貼り付け"
+        );
+    }
+
     use super::*;
     use crate::geometry::px;
 

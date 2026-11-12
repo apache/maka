@@ -34,7 +34,8 @@ export function ToggleGroup<T extends string>(props: {
   return (
     <BaseToggleGroup
       testID={props.testID}
-      style={{ flexDirection: "row", padding: 2, gap: TOOL_GAP, borderRadius: 9, backgroundColor: colors.inset, borderWidth: 1, borderColor: colors.border }}
+      // No box of its own: the toolbar's separators already part the groups, as shadcn's toolbar does.
+      style={{ flexDirection: "row", gap: TOOL_GAP }}
     >
       <Each of={props.items}>
         {(item) => {
@@ -75,7 +76,7 @@ export function IconButton(props: { icon: LucideIconName; label: string; short?:
         accessibilityLabel={props.label}
         onPress={props.onPress}
         hoverStyle={props.disabled ? undefined : { backgroundColor: colors.raised }}
-        focusStyle={focusRing(1)}
+        focusVisibleStyle={focusRing(1)}
         style={{ width: terminal ? undefined : 32, height: terminal ? undefined : 32, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: terminal ? undefined : ghostFill(), opacity: props.disabled ? 0.35 : 1 }}
       >
         <If when={terminal} else={<LucideIcon name={props.icon} size={16} tint={colors.text} />}>

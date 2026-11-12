@@ -147,7 +147,7 @@ pub(crate) struct ConnectOptions {
 impl JsValue for ConnectOptions {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("WebSocketConnectOptions", |_| {
-            "/** `connect`'s options. */\nexport interface WebSocketConnectOptions {\n  /** Extra handshake headers; credentials and handshake-control headers are refused. */\n  headers?: Record<string, string>;\n}".into()
+            "/** `connect`'s options. */\nexport interface WebSocketConnectOptions {\n  /** Extra handshake headers, including explicit Cookie and Authorization on native hosts. Proxy-Authorization and handshake-control headers are refused; browsers reject all custom headers. */\n  headers?: Record<string, string>;\n}".into()
         })
     }
 
@@ -175,16 +175,11 @@ impl JsValue for ConnectOptions {
             let normalized = name.to_ascii_lowercase();
             if matches!(
                 normalized.as_str(),
-                "authorization"
-                    | "proxy-authorization"
-                    | "cookie"
-                    | "host"
-                    | "connection"
-                    | "upgrade"
+                "proxy-authorization" | "host" | "connection" | "upgrade"
             ) || normalized.starts_with("sec-websocket-")
             {
                 return Err(PropError(format!(
-                    "headers may not set handshake-control or credential header `{name}`"
+                    "headers may not set handshake-control or proxy authorization header `{name}`"
                 )));
             }
             if normalized.is_empty()
@@ -932,20 +927,42 @@ mod tests {
 
     #[test]
     fn host_checks_grants_headers_and_shared_quota_before_connecting() {
+        EVENTS.with(|events| events.borrow_mut().take());
         let mut denied = system();
         denied.access = Arc::new(Access {
             declared: crate::access::Capabilities::default(),
             granted: None,
         });
-        let Err(error) = WebSocket::connect("ws://example.com".into(), None, denied) else {
+        let credentials = ConnectOptions {
+            headers: vec![
+                ("authorization".into(), "Bearer token".into()),
+                ("cookie".into(), "session=token".into()),
+            ],
+        };
+        let Err(error) = WebSocket::connect("ws://example.com".into(), Some(credentials), denied)
+        else {
             panic!("an ungranted URL connected")
         };
         assert_eq!(error.code(), Some(codes::ACCESS_DENIED));
         let sys = system();
-        let headers = ConnectOptions {
-            headers: vec![("x-test".into(), "test".into())],
-        };
-        assert!(WebSocket::connect("ws://example.com".into(), Some(headers), sys.clone()).is_err());
+        for name in ["x-test", "authorization", "cookie"] {
+            let headers = ConnectOptions {
+                headers: vec![(name.into(), "test".into())],
+            };
+            let Err(error) =
+                WebSocket::connect("ws://example.com".into(), Some(headers), sys.clone())
+            else {
+                panic!("a browser connection accepted `{name}`")
+            };
+            assert_eq!(
+                error,
+                JsError::Type(
+                    "The browser WebSocket API does not support custom handshake headers".into()
+                )
+            );
+            assert_eq!(sys.quotas.held(WEBSOCKETS), 0);
+        }
+        EVENTS.with(|events| assert!(events.borrow().is_none()));
         let _held = sys
             .quotas
             .reserve(WEBSOCKETS, MAX_WEBSOCKETS, MAX_WEBSOCKETS)

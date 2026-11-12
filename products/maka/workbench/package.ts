@@ -45,7 +45,16 @@ export default {
         additionalProperties: false,
       },
       imports: {},
-      contributions: { root: { kind: 'root' } },
+      contributions: {
+        root: { kind: 'root' },
+        quickTools: {
+          kind: 'settings',
+          title: {
+            fallback: 'Quick tools',
+            translations: { 'zh-CN': '快捷工具', 'zh-TW': '快速工具' },
+          },
+        },
+      },
     },
   },
 };

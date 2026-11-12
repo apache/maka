@@ -148,6 +148,7 @@ pub(crate) fn decode_command<'js>(
         "stopLoading" => Command::StopLoading,
         "injectJavaScript" => Command::InjectJavaScript(string(&arg)?),
         "postMessage" => Command::PostMessage(string(&arg)?),
+        "insertText" => Command::InsertText(string(&arg)?),
         "sendInput" => match web_input(&arg) {
             Some(input) => Command::SendInput(input),
             None => return Ok(None),
@@ -207,6 +208,15 @@ pub(crate) fn decode_command<'js>(
                 .and_then(|o| o.get::<_, Option<bool>>("animated").ok().flatten())
                 .unwrap_or(true),
         },
+        "reveal" => Command::Reveal(
+            <nsh_core::RevealOptions as HostValue>::decode(&Js(arg.clone()), &mut HostCx::default())
+                .ok_or_else(|| {
+                    Exception::throw_type(
+                        arg.ctx(),
+                        "reveal: vertical and horizontal must be \"start\", \"center\", \"end\" or \"nearest\"",
+                    )
+                })?,
+        ),
         "layoutAnimation" => Command::LayoutAnimation(
             <LayoutAnimation as HostValue>::decode(&Js(arg), &mut HostCx::default())
                 .unwrap_or_default(),
@@ -1451,7 +1461,7 @@ mod tests {
         );
         assert_eq!(
             a.update.map(|u| u.curve),
-            Some(LayoutCurve::Spring { damping: 0.7 })
+            Some(LayoutCurve::FittedSpring { damping_ratio: 0.7 })
         );
         assert_eq!(a.delete, None);
         // Damping is held to 0.01..1; without a duration, 300 ms.
@@ -1459,7 +1469,7 @@ mod tests {
         assert_eq!(
             b.update,
             Some(LayoutTransition {
-                curve: LayoutCurve::Spring { damping: 1.0 },
+                curve: LayoutCurve::FittedSpring { damping_ratio: 1.0 },
                 property: LayoutProperty::Opacity,
                 duration_ms: 300.0,
                 delay_ms: 0.0,

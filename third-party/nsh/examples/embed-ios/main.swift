@@ -14,9 +14,13 @@
 import NativeShell
 import UIKit
 
-final class EmbedController: UIViewController {
+final class EmbedController: UIViewController, NshScrollWatcher {
     private let app = NshAppView()
     private let status = UILabel()
+    /// Follows the app's page (`embedded.scroll`) in the frame of its scroll.
+    private let offset = UILabel()
+    /// The app's scroll view while it is there.
+    private var scroll: NshScrollHandle?
     private var count = 0
     private var branded = false
     private lazy var trust: NshTrust? = {
@@ -47,9 +51,16 @@ final class EmbedController: UIViewController {
         let brand = UIButton(type: .system)
         brand.setTitle("Brand", for: .normal)
         brand.addTarget(self, action: #selector(toggleBrand), for: .touchUpInside)
+        let top = UIButton(type: .system)
+        top.setTitle("Top", for: .normal)
+        top.addTarget(self, action: #selector(backToTop), for: .touchUpInside)
+        offset.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        offset.text = "the app's page is not there yet"
         let buttons = UIStackView(arrangedSubviews: [reload, update, message, brand])
         buttons.spacing = 16
-        let header = UIStackView(arrangedSubviews: [title, buttons, status])
+        let follow = UIStackView(arrangedSubviews: [offset, top])
+        follow.spacing = 12
+        let header = UIStackView(arrangedSubviews: [title, buttons, status, follow])
         header.axis = .vertical
         header.alignment = .leading
         header.spacing = 6
@@ -63,6 +74,8 @@ final class EmbedController: UIViewController {
         app.clipsToBounds = true
         app.onError = { [weak self] message in self?.status.text = "nsh error: \(message)" }
         app.register(component: "embed.badge") { context in Badge(context) }
+        // The app's page, followed without JS (`watchScroll`).
+        app.watchScroll("embedded.scroll", self)
         // The channel with the app (`nsh/host`): what it reads at start, the
         // call it makes and the posts it sends.
         app.params = ["user": "Ada"]
@@ -100,6 +113,19 @@ final class EmbedController: UIViewController {
         }
     }
 
+    /// Scrolls the app's page back to the top from here, also mid-fling.
+    @objc private func backToTop() {
+        guard let scroll else { return }
+        scroll.stopScrolling()
+        scroll.scrollBy(dx: 0, dy: -scroll.scrollY, animated: true)
+    }
+
+    private func showOffset() {
+        guard let scroll else { return }
+        let range = max(scroll.contentHeight - scroll.viewportHeight, 0)
+        offset.text = "the app's page: \(Int(scroll.scrollY.rounded())) of \(Int(range.rounded())) pt scrolled"
+    }
+
     /// An event the app hears with `host.on("message", ...)`.
     @objc private func sendMessage() {
         let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
@@ -122,6 +148,18 @@ final class EmbedController: UIViewController {
         } catch {
             status.text = "\(error)"
         }
+    }
+
+    func onAttached(_ handle: NshScrollHandle) {
+        scroll = handle
+        handle.onScroll { [weak self] _, _, _, _ in self?.showOffset() }
+        handle.onContentSizeChange { [weak self] _, _ in self?.showOffset() }
+        showOffset()
+    }
+
+    func onDetached() {
+        scroll = nil
+        offset.text = "the app's page is gone"
     }
 
     @objc private func loadUpdate() {

@@ -24,6 +24,7 @@ fn config(app: App) -> EngineConfig {
         app,
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         refuse_connections: None,
         websocket: None,
@@ -511,6 +512,7 @@ fn js_reads_the_files_the_app_ships_with_fetch() {
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     // SAFETY: compiled just now by this runtime.

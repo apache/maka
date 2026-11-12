@@ -194,7 +194,7 @@ pub struct AccordionTriggerProps {
 /// `onChange`. It is a button that says whether its item is expanded, and
 /// is disabled while its item or the accordion is. Its look is the app's:
 /// `class` and `style`, `aria-expanded:` classes (or `expandedStyle`) while
-/// open, `hover:`, `active:`, `focus:` and `disabled:`; its children are
+/// open, `hover:`, `active:`, `focus-visible:` and `disabled:`; its children are
 /// the title and the chevron. In a terminal it starts with the terminal's
 /// own disclosure, `▸ ` closed and `▾ ` open, in a row with its children
 /// (an app that draws a chevron of its own leaves it out there)

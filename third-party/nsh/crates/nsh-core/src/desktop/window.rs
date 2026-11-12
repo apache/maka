@@ -679,11 +679,12 @@ impl WindowOptions {
 /// shows the window as the app wants it. The same keys as `WindowOptions`
 /// without `id`, `kind`, `parent` and `modal`: every attribute,
 /// `defaultSize`, `defaultPosition`, `display`, `defaultMode` and
-/// `restoreBounds`. At run time the app changes it with
-/// `currentWindow().set()`; the engine also sends its attributes to the
-/// main window with the first frame ([`crate::Core::set_main_window`]), so
-/// a window made before the app was known (a development host's) follows
-/// them too.
+/// `restoreBounds`; and `defaultVisible`, which only the main window takes
+/// (the app opens its other windows when it wants them). At run time the
+/// app changes it with `currentWindow().set()`; the engine also sends its
+/// attributes to the main window with the first frame
+/// ([`crate::Core::set_main_window`]), so a window made before the app was
+/// known (a development host's) follows them too.
 ///
 /// Only standalone builds read it (their `app.json`). Signed packages
 /// (`.nshpkg`) carry none: they run in host apps, which own the main
@@ -699,6 +700,13 @@ pub struct MainWindowOptions {
     pub display: Option<DisplayId>,
     /// The mode it opens in.
     pub default_mode: Option<WindowMode>,
+    /// Whether it shows when the app starts (`None`: it does). With `false`
+    /// the window is made and the app runs in it, unseen and unfocused,
+    /// until the app shows it (`show()`, `focus()`), a link of one of its
+    /// URL schemes opens it, or the user opens it again on macOS (its Dock
+    /// icon, the Finder): a tray app starts with only its tray icon. Read
+    /// at launch only.
+    pub default_visible: Option<bool>,
     /// Opens where the user left it (the runner keeps its placement).
     pub restore_bounds: bool,
     /// The attributes the app sets (the platform's main window keeps its
@@ -731,12 +739,20 @@ impl MainWindowOptions {
         Some(placement.fit_on_displays(displays))
     }
 
+    /// Whether the main window shows when the app starts: unless
+    /// `defaultVisible` is `false`. For the runners, as they launch the app.
+    #[doc(hidden)]
+    pub fn visible_at_launch(&self) -> bool {
+        self.default_visible != Some(false)
+    }
+
     /// The keys `"window"` takes besides the attributes.
     const KEYS: &'static [&'static str] = &[
         "defaultSize",
         "defaultPosition",
         "display",
         "defaultMode",
+        "defaultVisible",
         "restoreBounds",
     ];
 
@@ -769,6 +785,7 @@ impl MainWindowOptions {
             default_position: typed("defaultPosition", read("defaultPosition"))?,
             display: typed("display", read("display"))?,
             default_mode: typed("defaultMode", read("defaultMode"))?,
+            default_visible: typed("defaultVisible", read("defaultVisible"))?,
             restore_bounds: typed("restoreBounds", read("restoreBounds"))?.unwrap_or(false),
             attributes: own,
         };
@@ -1046,6 +1063,11 @@ pub enum WindowEvent {
         /// Which policy.
         cause: WindowCloseCause,
     },
+    /// The user asked to quit the app (its Quit item, the platform's quit
+    /// key) while the app listens to quit requests
+    /// ([`super::DesktopCommand::SetQuitOnRequest`]): the platform did not
+    /// quit. Reported on the root only.
+    QuitRequest,
 }
 
 /// The record the core keeps of one window's attributes: what it last sent
@@ -1186,6 +1208,29 @@ mod tests {
                 Bounds::new(point(px(320.0), px(162.5)), size(px(800.0), px(600.0)))
             ))
         );
+    }
+
+    #[test]
+    fn the_main_window_may_start_hidden() {
+        let read = |json: &str| {
+            MainWindowOptions::from_json(&serde_json::from_str::<crate::JsonValue>(json).unwrap())
+        };
+        // Shown unless the app says otherwise.
+        assert!(MainWindowOptions::default().visible_at_launch());
+        let shown = read(r#"{"title":"Mail"}"#).unwrap();
+        assert_eq!(shown.default_visible, None);
+        assert!(shown.visible_at_launch());
+        assert!(
+            read(r#"{"defaultVisible":true}"#)
+                .unwrap()
+                .visible_at_launch()
+        );
+        let hidden = read(r#"{"defaultVisible":false,"title":"Mail"}"#).unwrap();
+        assert_eq!(hidden.default_visible, Some(false));
+        assert!(!hidden.visible_at_launch());
+        assert_eq!(hidden.attributes.title.as_deref(), Some("Mail"));
+        // A value of another form is an error, as every key's.
+        assert!(read(r#"{"defaultVisible":"no"}"#).is_err());
     }
 
     #[test]

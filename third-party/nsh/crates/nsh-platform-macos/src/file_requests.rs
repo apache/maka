@@ -1,10 +1,18 @@
-//! Local paths ([`nsh_core::file_dialog`]): an open or save panel as a
-//! sheet of the surface's window (`NSOpenPanel`, `NSSavePanel`), opening a
-//! file in its app (`NSWorkspace openURL:`), showing it selected in Finder
+//! Local paths ([`nsh_core::file_dialog`]): an open or save panel
+//! (`NSOpenPanel`, `NSSavePanel`), opening a file in its app (`NSWorkspace
+//! openURL:`), showing it selected in Finder
 //! (`activateFileViewerSelectingURLs:`) and the trash (`NSFileManager
 //! trashItemAtURL:resultingItemURL:error:`, which says where the item
 //! went). The panels answer as a root `FileRequest` event when they close,
 //! the rest at once.
+//!
+//! A panel is a sheet of the surface's window while the user sees that
+//! window. One hidden (a tray app's main window, `defaultVisible: false`),
+//! minimized or kept off every screen would keep the sheet out of sight,
+//! so the panel then shows in a window of its own, the app activated first
+//! ([`crate::window::panel_window`]). `Picker.pickFiles` shows the same
+//! open panel; `Picker.pickImages` (`picker.rs`) shows one of its own the
+//! same way.
 
 use std::{cell::Cell, path::PathBuf, rc::Rc};
 
@@ -128,8 +136,9 @@ unsafe fn configure(
     }
 }
 
-/// Shows `panel` as a sheet of the surface's window (a window of its own
-/// without one); `handler` gets the panel's response.
+/// Shows `panel` as a sheet of the surface's window while the user sees it,
+/// else in a window of its own ([`crate::window::panel_window`]);
+/// `handler` gets the panel's response.
 ///
 /// # Safety
 ///
@@ -138,7 +147,7 @@ unsafe fn begin(surface: &Surface, panel: &AnyObject, handler: impl Fn(isize) + 
     let handler = RcBlock::new(handler);
     // SAFETY: AppKit's documented NSSavePanel API, as the caller promises.
     unsafe {
-        match crate::window::sheet_window(surface) {
+        match crate::window::panel_window(surface) {
             Some(window) => {
                 let _: () = msg_send![panel, beginSheetModalForWindow: &*window, completionHandler: &*handler];
             }

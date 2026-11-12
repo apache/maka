@@ -4,7 +4,7 @@ import { Clipboard } from "nsh";
 import { platform } from "nsh";
 import { Picker } from "nsh";
 import { Input } from "nsh/base";
-import { keyboardFrame, safeAreaInsets } from "nsh";
+import { keyboardFrame, safeAreaInsets, windowSize } from "nsh";
 import { Icon, type IconName } from "../icons";
 import { alpha, Appear, backdrop, Badge, colors, desktop, finish, IconTile, motion, Press, radius, RoundButton, Segmented, toneTint } from "../ui";
 import { play as sound } from "../../nsh-gallery-ui/sound";
@@ -708,7 +708,8 @@ export function Chat() {
                 ...finish.menu,
                 borderWidth: 1,
                 paddingVertical: 6,
-                maxHeight: 460,
+                // 460 at most, and short of a low window's chat area (above the composer, under the header): its rows scroll.
+                maxHeight: Math.min(460, windowSize().height * 0.6),
                 overflow: "hidden",
               }}
             >
@@ -803,7 +804,7 @@ export function Chat() {
               placeholder={`Message ${native ? provider() : model()}`}
               onFocus={() => menu.set(false)}
               onContentSizeChange={({ size }) => inputHeight.set(Math.min(100, Math.max(20, size.height)))}
-              style={{ placeholderColor: colors.faint, caretColor: colors.accent, selectionColor: colors.accent, height: inputHeight() + 20, fontSize: 15, lineHeight: 20, color: colors.text, paddingHorizontal: 10, paddingVertical: 10 }}
+              style={{ placeholderColor: colors.muted, caretColor: colors.accent, selectionColor: colors.accent, height: inputHeight() + 20, fontSize: 15, lineHeight: 20, color: colors.text, paddingHorizontal: 10, paddingVertical: 10 }}
             />
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <View

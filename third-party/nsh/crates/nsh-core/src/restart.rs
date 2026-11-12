@@ -17,9 +17,34 @@
 use std::{
     ffi::OsString,
     io,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::Mutex,
 };
+
+/// The program a restart starts, when it was taken before the app on disk
+/// changed ([`remember_program`]).
+static PROGRAM: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Takes the running program's path for a later restart, before something
+/// replaces the app on disk (an update swapping its directory or `.app`).
+/// Afterwards the process' own executable is the one moved aside and
+/// deleted: Linux then reports `<old path> (deleted)` and macOS the moved
+/// bundle, and starting either would fail or run what is gone.
+pub fn remember_program() {
+    if let Ok(exe) = std::env::current_exe() {
+        *PROGRAM.lock().unwrap_or_else(|e| e.into_inner()) = Some(exe);
+    }
+}
+
+/// The program to start again: the remembered one, else this process'
+/// executable.
+fn program_path() -> io::Result<PathBuf> {
+    match PROGRAM.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        Some(exe) => Ok(exe),
+        None => std::env::current_exe(),
+    }
+}
 
 /// The environment variable that names the process a restarted app
 /// replaces (its id, in decimal). Set by [`spawn_after_exit`] on Windows;
@@ -37,7 +62,7 @@ pub const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// because the app asked to restart; the new process inherits the
 /// environment and the working directory.
 pub fn spawn_after_exit() -> io::Result<()> {
-    let exe = std::env::current_exe()?;
+    let exe = program_path()?;
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let mut command = command(&exe, &args, std::process::id());
     command
@@ -127,6 +152,12 @@ pub fn wait_for_pid() -> Option<u32> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remembered_program_is_started_again() {
+        remember_program();
+        assert_eq!(program_path().unwrap(), std::env::current_exe().unwrap());
+    }
 
     fn strings(program: Vec<OsString>) -> Vec<String> {
         program

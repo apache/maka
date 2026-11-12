@@ -97,6 +97,7 @@ impl Platform {
             app: App::Rust(Root::of::<Jumper>()),
             viewport: Size::new(px(390.0), px(844.0)),
             trace: false,
+            content_culling: false,
             network: None,
             websocket: None,
             refuse_connections: None,

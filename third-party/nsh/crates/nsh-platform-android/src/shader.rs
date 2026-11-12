@@ -77,6 +77,8 @@ pub(crate) struct Shaders {
     /// The running page and dialog transitions (by stack or dialog id),
     /// whose views are dropped once they end.
     navs: FxHashMap<u32, NavRun>,
+    /// The engine was told there is no device ([`Shaders::take_unavailable`]).
+    told_unavailable: bool,
 }
 
 /// A page or a dialog coming or going: when its view's transition clock
@@ -128,6 +130,15 @@ impl Shaders {
         self.told.clear();
         self.nav.clear();
         self.navs.clear();
+        self.told_unavailable = false;
+    }
+
+    /// `true` once, after the device was looked for and there is none: the
+    /// engine is to be told (`shadersAvailable()` turns false).
+    pub(crate) fn take_unavailable(&mut self) -> bool {
+        let unavailable = matches!(self.renderer, Some(None)) && !self.told_unavailable;
+        self.told_unavailable |= unavailable;
+        unavailable
     }
 
     fn renderer(&mut self) -> Option<&Renderer> {

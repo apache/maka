@@ -1,4 +1,5 @@
-# Keep the distribution together: nsh finds its runtimes next to bin/nsh.
+# Keep the distribution together: nsh finds its runtimes next to bin/nsh and
+# installs the components it needs (`nsh component`) there.
 class Nsh < Formula
   desc "Native UI from TSX modules, with a CLI and prebuilt runtimes"
   homepage "https://nsh.dev"
@@ -28,9 +29,12 @@ class Nsh < Formula
   test do
     assert_match "nsh #{version}", shell_output("#{bin}/nsh --version")
     system bin/"nsh", "init", "hello"
-    system bin/"nsh", "package", "hello", "--target", "web"
-    assert_path_exists testpath/".nsh/out/hello/index.html"
-    refute_empty (testpath/".nsh/out/hello").glob("nsh.*.wasm")
-    refute_empty (testpath/".nsh/out/hello").glob("nsh.*.js")
+    system bin/"nsh", "build", "hello", "-o", testpath/"out", "--release"
+    assert_path_exists testpath/"out/bundle.nshc"
+    # Other platforms' runtimes are components, added when first needed.
+    # Releases before `nsh component` (0.4.0 and older) bundle them instead.
+    if shell_output("#{bin}/nsh --help").include?("component")
+      assert_match "android", shell_output("#{bin}/nsh component list")
+    end
   end
 end

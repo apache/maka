@@ -88,7 +88,8 @@ pub use self::{
     runner::{PROTOCOL, Reply, RunnerMessage, TestRequest, runner},
 };
 pub use self::{
-    screen::{Pick, Screen},
+    failure::{SCREEN_TEXT_LIMIT, screen_texts},
+    screen::{LayoutNode, LayoutScroll, LayoutText, Pick, Screen},
     storage::MemoryStorage,
 };
 
@@ -106,16 +107,22 @@ pub fn test_sets() -> Vec<Registry> {
 /// once for several tests and clone it.
 #[cfg(feature = "bundle")]
 pub fn compile_tsx(entry: impl AsRef<Path>, ui_sets: &[Registry]) -> Result<Bundle, String> {
-    let (app, map) = build(entry.as_ref(), ui_sets)?;
+    let (app, map, _) = build(entry.as_ref(), ui_sets, None)?;
     Ok(match map {
         Some(map) => app.with_source_map(map),
         None => app,
     })
 }
 
-/// `entry` built against `ui_sets`: its bytecode and source map.
+/// `entry` built against `ui_sets`: its bytecode, its source map and the
+/// directory its assets are named from (`nsh_bundler::Bundle::asset_root`:
+/// the app's of `asset_root_from` when given, else the entry's).
 #[cfg(feature = "bundle")]
-fn build(entry: &Path, ui_sets: &[Registry]) -> Result<(Bundle, Option<String>), String> {
+fn build(
+    entry: &Path,
+    ui_sets: &[Registry],
+    asset_root_from: Option<std::path::PathBuf>,
+) -> Result<(Bundle, Option<String>, std::path::PathBuf), String> {
     let sets: Vec<SetDescription> = ui_sets
         .iter()
         .flat_map(Registry::sets)
@@ -126,6 +133,9 @@ fn build(entry: &Path, ui_sets: &[Registry]) -> Result<(Bundle, Option<String>),
         minify: false,
         split: false,
         ui_sets: sets.clone(),
+        development: true,
+        asset_root_from,
+        ..Default::default()
     })
     .map_err(|e| format!("{}: {e}", entry.display()))?;
     let bytecode = nsh_js::compile_bytecode_with(&bundle.code, false, &sets)
@@ -136,9 +146,11 @@ fn build(entry: &Path, ui_sets: &[Registry]) -> Result<(Bundle, Option<String>),
     let app = unsafe { Bundle::bytecode(bytecode) }
         .with_capabilities_json(capabilities.as_deref())
         .map_err(|e| format!("{}: {e}", entry.display()))?
-        // The schemes it claims, as a packaged app's runner reads them.
-        .with_url_schemes(bundle.url_schemes);
-    Ok((app, bundle.source_map))
+        // The schemes it claims and its main window's launch options, as a
+        // packaged app's runner reads them.
+        .with_url_schemes(bundle.url_schemes)
+        .with_main_window(bundle.main_window.as_deref());
+    Ok((app, bundle.source_map, bundle.asset_root))
 }
 
 /// Builds the entries of `nsh test` ([`TestRun::compile`]) in this
@@ -152,15 +164,22 @@ pub fn compiler(ui_sets: Vec<Registry>) -> Compile {
         } else {
             entry.to_owned()
         };
-        let (bundle, map) = match kind {
-            Entry::App => build(entry, &ui_sets)?,
+        let (bundle, source_map, asset_root) = match kind {
+            Entry::App => build(entry, &ui_sets, None)?,
             Entry::TestFile => {
                 let mut sets = ui_sets.clone();
                 sets.extend(test_sets());
-                build(entry, &sets)?
+                // The entry is in the run's work directory, which may be
+                // outside the app: what the test file imports is named
+                // from the test file's app.
+                build(entry, &sets, run::test_file_of(entry))?
             }
         };
-        Ok(Built::Js(Box::new(bundle), map))
+        Ok(Built::Js {
+            bundle: Box::new(bundle),
+            source_map,
+            asset_root,
+        })
     })
 }
 

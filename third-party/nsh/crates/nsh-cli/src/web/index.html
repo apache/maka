@@ -36,7 +36,9 @@
   // with it. A Rust app (`app.rust`) has no code: its runtime mounts its
   // root. The page's host (`app.host`, nsh.json `web.host`) answers the
   // app's `nsh/host` calls: its `createHost(player)` runs once the player
-  // exists, before the app starts, so no call comes earlier.
+  // exists, before the app starts, so no call comes earlier. Its pages
+  // and dialogs are browser history entries as nsh.json `web.history`
+  // says.
   import { createPlayer } from "{{runtime}}";
 
   const app = {{app}};
@@ -92,10 +94,12 @@
       createPlayer(document.getElementById("app"), {
         wasm: take(app.wasm),
         glue: app.glue,
-        host: app.host ? { call: (name, args) => host.call(name, args) } : undefined,
+        host: app.host ? { call: (name, args) => host.call(name, args), post: (name, args) => (host.post ?? host.call).call(host, name, args) } : undefined,
         assets: app.assets,
         data: app.data,
         sides: app.sides,
+        // nsh.json `web.history`; without it the player's default.
+        history: app.history,
         readAsset: (uri) => fonts.get(path(uri)) ?? null,
         // The chunk's fonts and the side modules of the runtime it needs.
         prepareChunk: (id) => Promise.all([
@@ -122,8 +126,13 @@
       if (typeof host?.call !== "function") throw new Error("nsh.json web.host: createHost(player) returned no call(name, args)");
     }
     status.hidden = true;
+    // What the page was served with for the app (`#nsh-params`, JSON: data
+    // the server already had, so the app need not ask for it again): its
+    // `host.params`.
+    const served = document.getElementById("nsh-params");
+    const params = served ? JSON.parse(served.textContent) : undefined;
     if (app.rust) player.runRust();
-    else await player.runModule(app.code, { capabilities: app.capabilities ?? "", appId: app.id ?? "", chunks: app.chunks, nativeExports: app.nativeExports });
+    else await player.runModule(app.code, { capabilities: app.capabilities ?? "", appId: app.id ?? "", chunks: app.chunks, nativeExports: app.nativeExports, params });
     player.preloadSides(app.sides);
   } catch (err) {
     fail("This app could not be loaded.", String(err?.message ?? err));

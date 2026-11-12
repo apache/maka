@@ -51,6 +51,8 @@ The composer shares one collapsible detail area for Goal, Todo, computer access 
 
 Use **Pin** in a conversation’s action menu to keep it in the **Pinned** group at the top of the browser. **Unpin** returns it to the ordinary list. The Host stores the choice and orders pages consistently across interfaces and restarts.
 
+**Trajectory** shows the conversation's execution records in order, including model attempts that produced only tool calls or failed before emitting text. Select a record to inspect it. Model requests show recorded times, first token latency when available, usage, and context limits. Tool details show the original arguments and results. Click the timeline to jump to a turn or request, drag to filter by time, and zoom in to see shorter spans. Search covers loaded records, including collapsed turns and subcalls, and **Load older records** extends the window.
+
 On the desktop, editing a user message opens an editor in its place and creates nothing until the edit is sent. Sending forks the conversation before that message's turn, opens the fork and sends the edited text there; the original conversation is unchanged. Escape or Cancel closes the editor, and a failed fork keeps the edited text. A message with attachments or references forks at once and puts its text in the fork's composer, where they can be added again.
 
 **Child conversations** in the sidebar action menu opens a separate outline, so deep ancestry does not consume the sidebar. Expand a disclosure arrow to load children, including archived conversations and children in other workspaces; click a title to open that conversation. Branches page through the existing session directory and the outline scrolls horizontally when needed. Creation ancestry comes from `parentSessionId`, independently of fork-source history.
@@ -113,7 +115,7 @@ equivalent.
 
 ## External agents
 
-Open **Settings → External agents**, or use **External agents** in the model picker. Only Antigravity, Codex and Claude Code are offered; all are off by default. Listing disabled runtimes does not probe them. Each enable requires fresh acknowledgement of native full-access permissions and updates the conversation Agent. Cancellation changes nothing; disabling preserves native launch settings and does not uninstall or sign out.
+Open **Settings → External agents**, or use **External agents** in the model picker. Only Antigravity, Codex and Claude Code are offered; all are off by default. Listing disabled runtimes does not probe them. Each enable requires fresh acknowledgement of native full-access permissions and updates the conversation Agent. Disabling preserves native launch settings and login. With Antigravity enabled, Maka installs its command-title hook in each private invocation and removes it when that invocation closes.
 
 These CLIs retain native tools, accounts and full-access permissions outside Maka’s sandbox. Maka Host tools still use their existing authorization and receipts. Install, initialize and sign in using each native CLI, then **Refresh**. There is no SDK installer or automatic update. Claude runs in an interactive PTY, never print mode.
 

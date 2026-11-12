@@ -1744,6 +1744,15 @@ export function createConversationUi(
         try {
           const reply = await host.recoverControl(original.id);
           if (!alive) return;
+          if (original.method === 'stop' && reply?.receipt?.kind === 'recorded') {
+            // Stop is idempotent for this Run. Keep the original receipt and let the user retry.
+            await host.dismissControl(original.id);
+            if (reply.receipt.outcome?.kind !== 'returned') {
+              failed = true;
+              report(new UiError('Maka could not confirm that the run stopped. Try Stop again.'));
+              continue;
+            }
+          }
           if (reply?.receipt?.kind === 'recorded' && reply.receipt.outcome?.kind === 'unresolved')
             continue;
           if (

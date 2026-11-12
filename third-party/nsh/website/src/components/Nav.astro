@@ -44,10 +44,11 @@ const currentLanguage = menu.find((l) => l.code === locale)?.name ?? locale;
 const pagePath = versionPath(currentPath, BASE).replace(isMachinePage ? new RegExp(`^/${locale}(?=/|$)`) : /$^/, '');
 const currentLabel = siteVersions.find((version) => version.id === currentVersion)?.label ?? currentVersion;
 const appsHref = isLatestVersion ? url(isZh ? 'zh-CN/apps' : 'apps') : isZh ? '/zh-CN/apps' : '/apps';
+const directoryHref = isLatestVersion ? url(isZh ? 'zh-CN/directory' : 'directory') : isZh ? '/zh-CN/directory' : '/directory';
 const releasesHref = isLatestVersion ? url(isZh ? 'zh-CN/releases' : 'releases') : isZh ? '/zh-CN/releases' : '/releases';
 // App Stories and the release notes are the same in every version: the menu
 // there stays on them.
-const onRootPage = /^\/(zh-CN\/)?(apps|releases)(\/|$)/.test(pagePath);
+const onRootPage = /^\/(zh-CN\/)?(apps|directory|releases)(\/|$)/.test(pagePath);
 ---
 
 <header class="site-nav">
@@ -107,12 +108,21 @@ const onRootPage = /^\/(zh-CN\/)?(apps|releases)(\/|$)/.test(pagePath);
         {isZh ? '应用案例' : 'App Stories'}
       </a>
       <a
-        href={releasesHref}
-        class:list={['site-nav__link', { active: activeSection === 'releases' }]}
-        aria-current={activeSection === 'releases' ? 'true' : undefined}
+        href={directoryHref}
+        class:list={['site-nav__link', { active: activeSection === 'directory' }]}
+        aria-current={activeSection === 'directory' ? 'true' : undefined}
       >
-        {isZh ? '版本发布' : 'Releases'}
+        {isZh ? '社区生态' : 'Directory'}
       </a>
+      {siteVersions.length <= 1 && (
+        <a
+          href={releasesHref}
+          class:list={['site-nav__link', { active: activeSection === 'releases' }]}
+          aria-current={activeSection === 'releases' ? 'true' : undefined}
+        >
+          {isZh ? '版本发布' : 'Releases'}
+        </a>
+      )}
     </nav>
 
     <div class="site-nav__actions">
@@ -135,6 +145,13 @@ const onRootPage = /^\/(zh-CN\/)?(apps|releases)(\/|$)/.test(pagePath);
                 {version.id === latestVersion && <span>{isZh ? '最新' : 'latest'}</span>}
               </a>
             ))}
+            <a
+              href={releasesHref}
+              class:list={['site-nav__versions-releases', { 'is-current': activeSection === 'releases' }]}
+              aria-current={activeSection === 'releases' ? 'page' : undefined}
+            >
+              {isZh ? '版本发布' : 'Release notes'}
+            </a>
           </div>
         </details>
       )}

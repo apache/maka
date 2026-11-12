@@ -8,7 +8,7 @@ import test from "node:test";
 
 const source = await readFile(new URL("nsh.js", import.meta.url), "utf8");
 // `Player` is not exported; the page only gets it from `createPlayer`.
-const { Player, keyCode } = await import(
+const { Player, keyCode, elementTag } = await import(
   `data:text/javascript,${encodeURIComponent(`${source}\nexport { Player, keyCode };`)}`
 );
 
@@ -95,6 +95,43 @@ test("keyboard context menus have no pointer even when Chromium names a mouse", 
   }
 });
 
+test("views are drawn as headings and links by their role, else the element they name", () => {
+  // Headings: `role="header"`, by level, `h2` without one, levels clamped.
+  assert.equal(elementTag({ role: "header", level: 1 }), "h1");
+  assert.equal(elementTag({ role: "header" }), "h2");
+  assert.equal(elementTag({ role: "header", level: 9 }), "h6");
+  // Links: `role="link"` with the `href` `Link` sets; without one, a view.
+  assert.equal(elementTag({ role: "link", href: "/notes/q3" }), "a");
+  assert.equal(elementTag({ role: "link" }), "div");
+  // `web={{ element }}` names the rest, and wins over the role.
+  assert.equal(elementTag({ element: "nav" }), "nav");
+  assert.equal(elementTag({ role: "header", element: "p" }), "p");
+  assert.equal(elementTag({}), "div");
+});
+
+test("links the app shows no menu for keep the browser's context menu", () => {
+  const { player } = fakePlayer();
+  const link = {
+    _id: 4,
+    _events: new Set(),
+    localName: "a",
+    hasAttribute: (name) => name === "href",
+    matches: () => false,
+  };
+  const text = { _id: 6, _events: new Set(), localName: "span", hasAttribute: () => false, matches: () => false };
+  player.viewOf = () => text;
+  player.ancestors = () => [text, link];
+  player.event = failing;
+  let prevented = false;
+  const e = { target: text, button: 2, pointerType: "mouse", preventDefault() { prevented = true; } };
+  // Handled: the listener leaves the event to the browser, which shows its menu.
+  assert.equal(player.contextMenu(e), true);
+  assert.equal(prevented, false);
+  // A link without an href is a view like any other: no menu of the browser's.
+  link.hasAttribute = () => false;
+  assert.equal(player.contextMenu(e), false);
+});
+
 test("input autofill hints are set, changed and cleared on both field kinds", () => {
   const { player } = fakePlayer();
   const attrs = new Map();
@@ -122,6 +159,89 @@ test("input autofill hints are set, changed and cleared on both field kinds", ()
   }
 });
 
+test("an invalid view is aria-invalid, and so is the field of an input", () => {
+  const { player } = fakePlayer();
+  const element = () => {
+    const attrs = new Map();
+    return {
+      attrs,
+      setAttribute: (name, value) => attrs.set(name, value),
+      removeAttribute: (name) => attrs.delete(name),
+    };
+  };
+  const el = { ...element(), _props: { invalid: true } };
+  const field = element();
+  player.updateAria(el);
+  assert.equal(el.attrs.get("aria-invalid"), "true");
+  // The field made after the props takes them too: it is what screen readers read.
+  field.classList = { toggle() {} };
+  field.tagName = "INPUT";
+  el._field = field;
+  player.view = () => el;
+  player.op_in(["in", 1, { multiline: false }, null]);
+  assert.equal(field.attrs.get("aria-invalid"), "true");
+  el._props.invalid = false;
+  player.updateAria(el);
+  assert.equal(el.attrs.has("aria-invalid"), false);
+  assert.equal(field.attrs.has("aria-invalid"), false);
+  el._props.invalid = true;
+  player.updateAria(el);
+  assert.equal(field.attrs.get("aria-invalid"), "true");
+});
+
+test("a combo box's field names its highlighted row and its list by DOM id", () => {
+  const { player } = fakePlayer();
+  player.classPrefix = "nsh-p1-";
+  const element = (extra = {}) => {
+    const attrs = new Map();
+    return {
+      attrs,
+      id: "",
+      setAttribute: (name, value) => attrs.set(name, value),
+      removeAttribute: (name) => attrs.delete(name),
+      ...extra,
+    };
+  };
+  const views = new Map();
+  player.view = (id) => views.get(id);
+  const field = element({ classList: { toggle() {} }, tagName: "INPUT" });
+  const el = element({ _field: field, _props: { role: "combobox", label: "Tags", expanded: true, hasPopup: true, activeDescendant: 6, controls: 4 } });
+  const list = element();
+  views.set(2, el);
+  views.set(4, list);
+  // The row named is made after the field's props: linked after the
+  // batch (`apply` ends with `linkRelations`).
+  player.updateAria(el);
+  player.linkRelations();
+  assert.equal(field.attrs.get("aria-controls"), "nsh-p1-v4");
+  assert.equal(list.id, "nsh-p1-v4");
+  assert.equal(field.attrs.has("aria-activedescendant"), false, "not made yet");
+  const row = element();
+  views.set(6, row);
+  player.linkRelations();
+  assert.equal(field.attrs.get("aria-activedescendant"), "nsh-p1-v6");
+  assert.equal(row.id, "nsh-p1-v6");
+  // The field is the combo box: the wrapper has no role of its own.
+  assert.equal(field.attrs.get("role"), "combobox");
+  assert.equal(field.attrs.get("aria-label"), "Tags");
+  assert.equal(field.attrs.get("aria-expanded"), "true");
+  assert.equal(field.attrs.get("aria-haspopup"), "listbox");
+  assert.equal(el.attrs.has("role"), false);
+  assert.equal(el.attrs.has("aria-activedescendant"), false);
+  // The highlight moves, then the list closes.
+  el._props = { ...el._props, activeDescendant: 8 };
+  views.set(8, element());
+  player.updateAria(el);
+  player.linkRelations();
+  assert.equal(field.attrs.get("aria-activedescendant"), "nsh-p1-v8");
+  el._props = { role: "combobox", expanded: false, hasPopup: true };
+  player.updateAria(el);
+  player.linkRelations();
+  assert.equal(field.attrs.has("aria-activedescendant"), false);
+  assert.equal(field.attrs.has("aria-controls"), false);
+  assert.equal(field.attrs.get("aria-expanded"), "false");
+});
+
 test("events sent before the app runs reach it in order once it starts, later ones at once", () => {
   const { player, sent } = fakePlayer();
   player.hostEvent("a", 1);
@@ -134,6 +254,24 @@ test("events sent before the app runs reach it in order once it starts, later on
   ]);
   player.hostEvent("c");
   assert.deepEqual(events(sent), ["a", "b", "c"]);
+});
+
+test("posts go to the page host's post, else its call, and nothing comes back", async () => {
+  const posted = [];
+  const { player, sent } = fakePlayer({ host: { call: () => 1, post: (...args) => posted.push(args) } });
+  player.begin(390, started);
+  player.hostPost("note", { a: 1 });
+  assert.deepEqual(posted, [["note", { a: 1 }]]);
+  const called = [];
+  const fallback = fakePlayer({ host: { call: async (...args) => { called.push(args); throw new Error("boom"); } } });
+  fallback.player.begin(390, started);
+  fallback.player.hostPost("note", 2);
+  const throwing = fakePlayer({ host: { call() {}, post() { throw new Error("boom"); } } });
+  throwing.player.hostPost("note", 3);
+  fakePlayer().player.hostPost("note", 4);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(called, [["note", 2]]);
+  assert.deepEqual([...sent, ...fallback.sent, ...throwing.sent], []);
 });
 
 test("events for an app that failed to start reach neither it nor the next app", () => {
@@ -416,6 +554,35 @@ test("Tab stops are the pressables and the focusable views, pressable or not", (
   delete globalThis.document;
 });
 
+test("a touch whose press focused a field leaves the focus there", () => {
+  const { player } = fakePlayer();
+  player.editable = (target) => target.field === true;
+  const field = { focus() {} };
+  const pressable = {};
+  player.view = () => ({ _field: field });
+  globalThis.window = { focus() {} };
+  // Whether the mouse events of a press of `pointer` leave the focus alone.
+  const kept = (pointer, target, focused, focuses) => {
+    globalThis.document = { activeElement: focused, hasFocus: () => true };
+    player.lastPointer = pointer;
+    player.pressFocus = null;
+    if (focuses) player.op_cmd([0, 1, "focus"]);
+    let prevented = false;
+    player.mouseDown({ target, preventDefault: () => (prevented = true) });
+    return prevented;
+  };
+  assert.equal(kept("mouse", pressable, field, false), true, "a click moves no focus");
+  assert.equal(kept("mouse", { field: true }, null, false), false, "a click in a field is the field's");
+  // A tap outside a field leaves it, and the keyboard closes.
+  assert.equal(kept("touch", pressable, field, false), false, "a tap elsewhere");
+  // The app focused the field for this press (an editor's text): it stays.
+  assert.equal(kept("touch", pressable, field, true), true, "a tap that focused the field");
+  // The focus moved on since (the app focused something else).
+  assert.equal(kept("touch", pressable, {}, true), false, "the field no longer has the focus");
+  delete globalThis.document;
+  delete globalThis.window;
+});
+
 test("Return presses a focused pressable, not a focused stop that takes no presses", () => {
   const { player } = fakePlayer();
   player.wasm.nsh_key = () => -1;
@@ -442,6 +609,60 @@ test("Return presses a focused pressable, not a focused stop that takes no press
   assert.deepEqual(pressed, [button]);
   assert.equal(key(chart), false);
   assert.deepEqual(pressed, [button]);
+});
+
+test("Return and Space press the focused control unless the focus binds them", () => {
+  const { player } = fakePlayer();
+  // The app binds Return, Space and Mod+Return everywhere but text fields
+  // (binding 7), as the native match answers: on a control (focus bit 2)
+  // plain Return and Space fire only the focus' own bindings (binding 9,
+  // while `own`).
+  let own = false;
+  player.wasm.nsh_key = (code, mods, focus) => {
+    const pressing = (code === keyCode({ key: "Enter" }) || code === keyCode({ key: " " })) && !(mods & 11);
+    if (focus & 2 && pressing) return own ? 9 : -1;
+    return 7;
+  };
+  const fired = [];
+  player.call = (f) => f({ nsh_key_command: (id) => fired.push(id) });
+  player.modifiersChanged = () => {};
+  player.takesKeys = () => true;
+  player.selectionKey = () => false;
+  player.scrollKey = () => false;
+  player.back = () => false;
+  player.ancestors = () => [];
+  const pressed = [];
+  player.pressIn = (p) => pressed.push(p.press);
+  player.pressOut = () => {};
+  player.root = { contains: () => true };
+  const key = (focus, e) => {
+    globalThis.document = { activeElement: focus };
+    player.keyDown({ preventDefault() {}, stopPropagation() {}, ...e });
+    if (e.key === " ") player.keyUp({ key: " " });
+    delete globalThis.document;
+  };
+  const button = focusView(true, {});
+  const chart = focusView(false, { focusable: true });
+  // On a button: the button takes them, the app's binding never fires.
+  key(button, { key: "Enter" });
+  key(button, { key: " " });
+  key(button, { key: "Enter", shiftKey: true });
+  assert.deepEqual(pressed, [button, button, button]);
+  assert.deepEqual(fired, []);
+  // With Control or Command held the binding fires, as it does with the
+  // focus on no control or on a stop that takes no presses.
+  key(button, { key: "Enter", ctrlKey: true });
+  key(button, { key: "Enter", metaKey: true });
+  key(null, { key: "Enter" });
+  key(chart, { key: "Enter" });
+  assert.deepEqual(pressed, [button, button, button]);
+  assert.deepEqual(fired, [7, 7, 7, 7]);
+  // The focus' own binding (a menu button opening its menu) takes them
+  // before the press.
+  own = true;
+  key(button, { key: "Enter" });
+  assert.deepEqual(pressed, [button, button, button]);
+  assert.deepEqual(fired, [7, 7, 7, 7, 9]);
 });
 
 /**
@@ -1602,6 +1823,133 @@ test("a mouse makes a desktop at any width, a touch screen a tablet or a phone (
   }
 });
 
+test("UrlScheme.setUrl gives its address to the entry of the page pushed with it, after a traversal lands", () => {
+  const calls = [];
+  const saved = { history: globalThis.history, location: globalThis.location, document: globalThis.document };
+  globalThis.location = { href: "https://a.test/debugger/", origin: "https://a.test" };
+  globalThis.document = { baseURI: "https://a.test/debugger/" };
+  const warn = console.warn;
+  console.warn = (m) => calls.push(["warn", m]);
+  globalThis.history = {
+    state: null,
+    pushState(state, _title, url) { calls.push(["push", state.nsh, url ?? null]); this.state = state; },
+    replaceState(state, _title, url) { calls.push(["replace", state?.nsh, url]); },
+    go(n) { calls.push(["go", n]); },
+  };
+  try {
+    let depth = 0;
+    const player = Object.create(Player.prototype);
+    Object.assign(player, {
+      history: true, historyDepth: 0, historyIndex: 0, historyDepths: [0], ignoredPops: 0, historySession: "s", pageUrl: null,
+      backDepth: () => depth, syncHistorySoon() {}, showError: (m) => calls.push(["error", m]),
+    });
+    // A page pushed and its address set in one turn: the entry first.
+    depth = 1;
+    player.setPageUrl("/debugger/logs/3");
+    player.syncHistory();
+    assert.deepEqual(calls.splice(0), [["push", 1, null], ["replace", 1, "https://a.test/debugger/logs/3"]]);
+    // A page popped: the address waits for the traversal's popstate.
+    depth = 0;
+    player.setPageUrl("/debugger");
+    player.syncHistory();
+    assert.deepEqual(calls.splice(0), [["go", -1]]);
+    player.syncHistorySoon = () => player.syncHistory();
+    player.popState({ state: { nsh: 0, nshSession: "s" } });
+    assert.deepEqual(calls.splice(0), [["replace", 1, "https://a.test/debugger"]]);
+    assert.equal(player.firstUrl, "https://a.test/debugger");
+    // Another origin's address (from Rust; TS's `setUrl` throws first) is
+    // dropped with a warning.
+    player.setPageUrl("https://b.test/x");
+    assert.equal(player.pageUrl, null);
+    assert.equal(calls.splice(0)[0][0], "warn");
+    // Without a history (an iframe) nothing is written.
+    const framed = Object.create(Player.prototype);
+    Object.assign(framed, { history: false, syncHistorySoon() { calls.push(["sync"]); } });
+    framed.setPageUrl("/x");
+    assert.deepEqual(calls, []);
+  } finally {
+    Object.assign(globalThis, saved);
+    console.warn = warn;
+  }
+});
+
+test("the browser's back gives the core the entry's address with no open, and a kept page keeps its own", () => {
+  const calls = [];
+  const saved = { history: globalThis.history, location: globalThis.location };
+  globalThis.location = { href: "https://a.test/inbox" };
+  globalThis.history = {
+    state: null,
+    pushState(state, _title, url) { calls.push(["push", state.nsh, url ?? null]); this.state = state; },
+    replaceState(state, _title, url) { calls.push(["replace", state?.nsh, url]); },
+    go(n) { calls.push(["go", n]); },
+  };
+  try {
+    let depth = 1;
+    let lets = true;
+    const player = Object.create(Player.prototype);
+    Object.assign(player, {
+      history: true, historyDepth: 1, historyIndex: 1, historyDepths: [0, 1], ignoredPops: 0, historySession: "s", pageUrl: null,
+      shownUrl: "https://a.test/inbox?message=a",
+      backDepth: () => depth, showError: (m) => calls.push(["error", m]),
+      back: () => lets && (depth--, true),
+      event: (id, name, payload) => calls.push(["event", name, payload]),
+    });
+    player.syncHistorySoon = () => player.syncHistory();
+    // The app keeps its page: its entry again, at the address it showed.
+    lets = false;
+    player.popState({ state: { nsh: 0, nshSession: "s" } });
+    assert.deepEqual(calls.splice(0), [["push", 1, null], ["replace", 1, "https://a.test/inbox?message=a"]]);
+    // The app goes back: the entry's address, quietly, as the stack went
+    // back already (a page opened at a deep link is not pushed again).
+    lets = true;
+    player.popState({ state: { nsh: 0, nshSession: "s" } });
+    assert.deepEqual(calls.splice(0), [["event", "onUrlScheme", { url: "https://a.test/inbox", page: true, quiet: true }]]);
+    assert.equal(player.firstUrl, "https://a.test/inbox");
+    // A forward to a page the stack no longer has: handed to the app as a
+    // link (`open`); an app that shows nothing for it goes back where it was,
+    // and once that lands the core has that entry's address again.
+    location.href = "https://a.test/inbox?message=a";
+    player.popState({ state: { nsh: 1, nshSession: "s" } });
+    assert.deepEqual(calls.splice(0), [
+      ["event", "onUrlScheme", { url: "https://a.test/inbox?message=a", page: true }],
+      ["go", -1],
+    ]);
+    location.href = "https://a.test/inbox";
+    player.popState({ state: { nsh: 0, nshSession: "s" } });
+    assert.deepEqual(calls.splice(0), [["event", "onUrlScheme", { url: "https://a.test/inbox", page: true, quiet: true }]]);
+  } finally {
+    Object.assign(globalThis, saved);
+  }
+});
+
+test("a run starts at its first entry's address, which the core has before the app's code runs", () => {
+  const calls = [];
+  const saved = { history: globalThis.history, location: globalThis.location, window: globalThis.window };
+  globalThis.location = { href: "https://a.test/inbox?message=a" };
+  globalThis.window = { addEventListener() {} };
+  globalThis.history = {
+    state: null,
+    replaceState(state) { this.state = state; },
+    go(n) { calls.push(["go", n]); },
+  };
+  try {
+    const player = Object.create(Player.prototype);
+    Object.assign(player, { history: true, pageUrl: null });
+    player.installHistory();
+    assert.equal(player.firstUrl, "https://a.test/inbox?message=a");
+    // A new run goes back to the first entry; its address is known at once,
+    // with the traversal still on its way.
+    player.historyDepth = player.historyIndex = 2;
+    player.resetHistory();
+    assert.deepEqual(calls.splice(0), [["go", -2]]);
+    assert.equal(player.firstUrl, "https://a.test/inbox?message=a");
+    // `begin` hands it to the runtime before it starts the app.
+    assert.match(source, /withStrings\(\[this\.firstUrl\], \(p, l\) => this\.wasm\.nsh_set_page_url\?\.\(p, l\)\);\n    try \{\n      this\.call\(\(\) => start\(environment\)\);/);
+  } finally {
+    Object.assign(globalThis, saved);
+  }
+});
+
 test("a view laid out at no size draws nothing of its own, its border overlay included", () => {
   const { player } = fakePlayer();
   const classes = new Set();
@@ -1624,9 +1972,535 @@ test("a view laid out at no size draws nothing of its own, its border overlay in
   assert.match(source, /\.nsh-v\.nsh-empty \{ outline: none; box-shadow: none; \}/);
 });
 
+test("an address the app sets while the browser's back pops its page wins over the entry's", () => {
+  const calls = [];
+  const saved = { history: globalThis.history, location: globalThis.location, document: globalThis.document };
+  // Opened at a deep link: the first entry has its address.
+  globalThis.location = { href: "https://a.test/inbox?message=42", origin: "https://a.test" };
+  globalThis.document = { baseURI: "https://a.test/inbox?message=42" };
+  globalThis.history = {
+    state: null,
+    pushState(state, _title, url) { calls.push(["push", state.nsh, url ?? null]); this.state = state; },
+    replaceState(state, _title, url) { calls.push(["replace", state?.nsh, url]); },
+    go(n) { calls.push(["go", n]); },
+  };
+  try {
+    let depth = 1;
+    const player = Object.create(Player.prototype);
+    Object.assign(player, {
+      history: true, historyDepth: 1, historyIndex: 1, historyDepths: [0, 1], ignoredPops: 0, historySession: "s", pageUrl: null,
+      backDepth: () => depth, showError: (m) => calls.push(["error", m]),
+      event: (id, name, payload) => calls.push(["event", name, payload]),
+    });
+    player.syncHistorySoon = () => player.syncHistory();
+    // A pop with no motion: the app's `onChange` sets the address at once.
+    player.back = () => { depth--; player.setPageUrl("."); return true; };
+    player.popState({ state: { nsh: 0, nshSession: "s" } });
+    assert.deepEqual(calls.splice(0), [["replace", undefined, "https://a.test/"]]);
+  } finally {
+    Object.assign(globalThis, saved);
+  }
+});
+
+test("an earlier load's entry is handed to the app as a link and becomes its first", () => {
+  const calls = [];
+  const saved = { history: globalThis.history, location: globalThis.location };
+  globalThis.location = { href: "https://a.test/inbox?message=3" };
+  globalThis.history = {
+    state: null,
+    replaceState(state) { calls.push(["replace", state.nsh, state.nshSession]); this.state = state; },
+    back() { calls.push(["back"]); },
+  };
+  try {
+    const player = Object.create(Player.prototype);
+    Object.assign(player, {
+      history: true, historyDepth: 0, ignoredPops: 0, historySession: "now", pageUrl: null,
+      event: (id, name, payload) => calls.push(["event", name, payload]),
+    });
+    player.popState({ state: { nsh: 2, nshSession: "earlier" } });
+    // In a session of its own: this load's entries after it are earlier
+    // ones too, so a forward to them is a link as well.
+    assert.notEqual(player.historySession, "now");
+    assert.deepEqual(calls.splice(0), [
+      ["replace", 0, player.historySession],
+      ["event", "onUrlScheme", { url: "https://a.test/inbox?message=3", page: true }],
+    ]);
+    assert.equal(player.firstUrl, "https://a.test/inbox?message=3");
+    location.href = "https://a.test/inbox";
+    player.popState({ state: { nsh: 0, nshSession: "now" } });
+    assert.deepEqual(calls.splice(0), [
+      ["replace", 0, player.historySession],
+      ["event", "onUrlScheme", { url: "https://a.test/inbox", page: true }],
+    ]);
+    // An entry from before the app's own: the app stays at its start.
+    player.popState({ state: null });
+    assert.deepEqual(calls, []);
+  } finally {
+    Object.assign(globalThis, saved);
+  }
+});
+
+test("a forward the app shows goes on from the entry the browser is at", () => {
+  const calls = [];
+  const saved = { history: globalThis.history, location: globalThis.location };
+  globalThis.location = { href: "https://a.test/inbox" };
+  globalThis.history = {
+    state: null,
+    pushState(state) { calls.push(["push", state.nsh]); this.state = state; },
+    replaceState(state, _title, url) { calls.push(["replace", state?.nsh, url]); },
+    go(n) { calls.push(["go", n]); },
+  };
+  try {
+    let depth = 0;
+    const player = Object.create(Player.prototype);
+    Object.assign(player, {
+      history: true, historyDepth: 0, historyIndex: 0, historyDepths: [0], ignoredPops: 0, historySession: "s", pageUrl: null,
+      backDepth: () => depth, showError: (m) => calls.push(["error", m]),
+      // The app takes the link: its stack shows the page again.
+      event: (id, name, payload) => { calls.push(["event", name, payload]); if (!payload.quiet) depth = 1; },
+    });
+    player.syncHistorySoon = () => player.syncHistory();
+    location.href = "https://a.test/inbox?message=a";
+    player.popState({ state: { nsh: 1, nshSession: "s" } });
+    // No traversal and no new entry: the browser is at the page's already.
+    assert.deepEqual(calls.splice(0), [["event", "onUrlScheme", { url: "https://a.test/inbox?message=a", page: true }]]);
+    assert.equal(player.historyDepth, 1);
+  } finally {
+    Object.assign(globalThis, saved);
+  }
+});
+
+/** A player over a fake browser history whose entries `popState` gets as
+ * the browser gives them: `go(n)` lands at once (the player's own pops are
+ * ignored), `user(n)` is the browser's back (-1) or forward (1). `depth` is
+ * the app's back depth; `calls` what reaches the history and the core. */
+/** `before`: the page's own state-less entries before the app's first (a
+ * `#fragment` followed while the app loaded, the host page's `pushState`).
+ * `navigation`: whether the browser has the Navigation API. */
+function historyPlayer(t, { href = "https://a.test/inbox", before = [], navigation = true } = {}) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const calls = [];
+  const saved = {
+    history: globalThis.history,
+    location: globalThis.location,
+    window: globalThis.window,
+    document: globalThis.document,
+    navigation: globalThis.navigation,
+  };
+  t.after(() => Object.assign(globalThis, saved));
+  const entries = [...before.map((url) => ({ state: null, url })), { state: null, url: href }];
+  globalThis.document = { baseURI: href };
+  let at = entries.length - 1;
+  globalThis.navigation = navigation ? { get currentEntry() { return { index: at }; } } : undefined;
+  globalThis.location = { href, origin: "https://a.test" };
+  globalThis.window = { addEventListener() {} };
+  const land = () => {
+    location.href = entries[at].url;
+    player.popState({ state: entries[at].state });
+  };
+  globalThis.history = {
+    get state() { return entries[at].state; },
+    pushState(state, _title, url) {
+      entries.length = ++at;
+      entries.push({ state, url: url ?? location.href });
+      if (url != null) location.href = url;
+      calls.push(["push", state.nsh, state.nshIndex, ...(url == null ? [] : [url])]);
+    },
+    replaceState(state, _title, url) {
+      entries[at] = { state, url: url ?? location.href };
+      if (url != null) location.href = url;
+      calls.push(["replace", state?.nsh, state?.nshIndex, ...(url == null ? [] : [url])]);
+    },
+    go(n) {
+      calls.push(["go", n]);
+      at += n;
+      land();
+    },
+  };
+  const app = { depth: 0, lets: true };
+  const player = Object.create(Player.prototype);
+  Object.assign(player, {
+    history: true, pageUrl: null,
+    backDepth: () => app.depth, showError: (m) => calls.push(["error", m]),
+    back: () => app.lets && app.depth > 0 && (app.depth--, true),
+    event: (id, name, payload) => calls.push(["event", name, payload]),
+  });
+  player.syncHistorySoon = () => player.syncHistory();
+  player.installHistory();
+  calls.length = 0;
+  const user = (n) => {
+    at += n;
+    land();
+  };
+  // An address the user types: a new entry with no state.
+  const type = (url) => {
+    entries.length = ++at;
+    entries.push({ state: null, url });
+    land();
+  };
+  return { player, calls, app, user, type, entries: () => entries, at: () => at };
+}
+
+test("an address the user types is an entry of the app's, and back and forward between such entries move the app (change)", (t) => {
+  const { player, calls, user, type } = historyPlayer(t);
+  type("https://a.test/inbox#archive");
+  assert.deepEqual(calls.splice(0), [
+    ["replace", 0, 1],
+    ["event", "onUrlScheme", { url: "https://a.test/inbox#archive", page: true, change: "address" }],
+  ]);
+  user(-1);
+  assert.deepEqual(calls.splice(0), [["event", "onUrlScheme", { url: "https://a.test/inbox", page: true, change: "back" }]]);
+  assert.equal(player.firstUrl, "https://a.test/inbox");
+  user(1);
+  assert.deepEqual(calls.splice(0), [["event", "onUrlScheme", { url: "https://a.test/inbox#archive", page: true, change: "forward" }]]);
+  // Its pages stayed: the app's back from a page pushed there goes back to it.
+  assert.equal(player.historyDepth, 0);
+});
+
+test("a back to the page's own entry before the app's first is a back past the first entry, not a typed address", (t) => {
+  const { player, calls, app, user } = historyPlayer(t, { before: ["https://a.test/inbox#intro"] });
+  app.depth = 1;
+  player.syncHistory();
+  calls.splice(0);
+  // Back twice from the page: past the app's first entry, to the page's own.
+  user(-2);
+  // The app goes back to its start, and hears no change.
+  assert.equal(app.depth, 0);
+  assert.deepEqual(calls.splice(0), []);
+  assert.equal(player.historyIndex, 0);
+});
+
+test("a forward from the page's own entry back to the app's first is no back", (t) => {
+  const { calls, user } = historyPlayer(t, { before: ["https://a.test/inbox#intro"] });
+  user(-1);
+  assert.deepEqual(calls.splice(0), []);
+  user(1);
+  assert.ok(
+    calls.every(([kind, , payload]) => kind !== "event" || payload?.change !== "back"),
+    JSON.stringify(calls),
+  );
+});
+
+test("without the Navigation API a state-less entry is an address the user typed", (t) => {
+  const { calls, type } = historyPlayer(t, { navigation: false });
+  type("https://a.test/inbox#archive");
+  assert.deepEqual(calls.splice(0), [
+    ["replace", 0, 1],
+    ["event", "onUrlScheme", { url: "https://a.test/inbox#archive", page: true, change: "address" }],
+  ]);
+});
+
+test("an address typed over a pushed page stays at its depth, and the app's own back goes over it", (t) => {
+  const { player, calls, app, type, at } = historyPlayer(t);
+  app.depth = 1;
+  player.syncHistory();
+  type("https://a.test/inbox#reply");
+  calls.splice(0);
+  // The app pops its page itself: back to the first entry, past the typed one.
+  app.depth = 0;
+  player.syncHistory();
+  assert.deepEqual(calls.splice(0), [["go", -2], ["event", "onUrlScheme", { url: "https://a.test/inbox", page: true, quiet: true }]]);
+  assert.equal(at(), 0);
+  assert.equal(player.historyIndex, 0);
+});
+
+test("an address the app sets on an entry the user typed is not its first entry's", (t) => {
+  const { player, type } = historyPlayer(t);
+  type("https://a.test/inbox#archive");
+  player.setPageUrl("https://a.test/inbox#archive?sort=new");
+  assert.equal(player.firstUrl, "https://a.test/inbox");
+});
+
+test("a back that pops a page whose address the app does not set moves the app's address once the page is dismissed", (t) => {
+  const { player, calls, app, user, type } = historyPlayer(t);
+  type("https://a.test/inbox?tab=b");
+  app.depth = 1;
+  player.syncHistory();
+  calls.splice(0);
+  // Back twice at once (the back button's menu): the page pops, and the
+  // address below it is another tab's.
+  player.dismissing = 1;
+  user(-2);
+  assert.deepEqual(calls.splice(0), [["event", "onUrlScheme", { url: "https://a.test/inbox", page: true, quiet: true }]]);
+  t.mock.timers.tick(0);
+  assert.deepEqual(calls, [], "the page is still going");
+  player.dismissing = 0;
+  player.settlePop();
+  assert.deepEqual(calls.splice(0), [["event", "onUrlScheme", { url: "https://a.test/inbox", page: true, change: "back" }]]);
+});
+
+test("a back that pops a page the app gives an address to is the stack's alone, and an app that never answers is not waited for", (t) => {
+  const { player, calls, app, user, type } = historyPlayer(t);
+  type("https://a.test/inbox?tab=b");
+  app.depth = 1;
+  player.syncHistory();
+  calls.splice(0);
+  player.dismissing = 1;
+  user(-2);
+  calls.splice(0);
+  // `onChange` answers the dismissal with the address.
+  player.dismissing = 0;
+  player.setPageUrl("https://a.test/inbox?tab=b");
+  t.mock.timers.tick(0);
+  assert.deepEqual(calls.splice(0), [["replace", 0, 0, "https://a.test/inbox?tab=b"]]);
+  // A page whose dismissal never comes: its address is the app's after a while.
+  type("https://a.test/inbox?tab=c");
+  app.depth = 1;
+  player.syncHistory();
+  player.dismissing = 1;
+  user(-2);
+  calls.splice(0);
+  t.mock.timers.tick(1499);
+  assert.deepEqual(calls, []);
+  t.mock.timers.tick(1);
+  assert.deepEqual(calls.splice(0), [["event", "onUrlScheme", { url: "https://a.test/inbox?tab=b", page: true, change: "back" }]]);
+});
+
+test("a forward to a page the stack no longer has is still a link (open), not a change", (t) => {
+  const { player, calls, app, user } = historyPlayer(t);
+  app.depth = 1;
+  player.syncHistory();
+  app.depth = 0;
+  player.syncHistory();
+  calls.splice(0);
+  // Its entry is still the browser's forward one.
+  app.depth = 0;
+  user(1);
+  assert.equal(calls[0][2].change, undefined);
+  assert.deepEqual(calls[0], ["event", "onUrlScheme", { url: "https://a.test/inbox", page: true }]);
+});
+
+/** Runs `turn` as one engine turn of the app's: what it sets is synced
+ * once, after it. */
+function inOneTurn(player, turn) {
+  const soon = player.syncHistorySoon;
+  player.syncHistorySoon = () => {};
+  try {
+    turn();
+  } finally {
+    player.syncHistorySoon = soon;
+  }
+  player.syncHistory();
+}
+
+test("UrlScheme.setUrl with history push makes an entry of its own at the pages shown, which the browser's back goes back from", (t) => {
+  const { player, calls, user } = historyPlayer(t);
+  player.setPageUrl("?tab=live", true);
+  assert.deepEqual(calls.splice(0), [["push", 0, 1, "https://a.test/inbox?tab=live"]]);
+  assert.equal(player.historyDepth, 0);
+  assert.equal(player.firstUrl, "https://a.test/inbox", "the first entry keeps its address");
+  user(-1);
+  assert.deepEqual(calls.splice(0), [["event", "onUrlScheme", { url: "https://a.test/inbox", page: true, change: "back" }]]);
+  user(1);
+  assert.deepEqual(calls.splice(0), [["event", "onUrlScheme", { url: "https://a.test/inbox?tab=live", page: true, change: "forward" }]]);
+});
+
+test("in one turn, pushes make one entry with the last address, and a push wins over a replace", (t) => {
+  const { player, calls } = historyPlayer(t);
+  inOneTurn(player, () => {
+    player.setPageUrl("?tab=live", true);
+    player.setPageUrl("?tab=all", true);
+    player.setPageUrl("?tab=mine");
+  });
+  assert.deepEqual(calls.splice(0), [["push", 0, 1, "https://a.test/inbox?tab=mine"]]);
+  // A replace in a later turn is the pushed entry's.
+  player.setPageUrl("?tab=mine&sort=new");
+  assert.deepEqual(calls.splice(0), [["replace", 0, 1, "https://a.test/inbox?tab=mine&sort=new"]]);
+});
+
+test("a push in the turn that pushes a page gives the page's entry its address, with no entry of its own", (t) => {
+  const { player, calls, app } = historyPlayer(t);
+  inOneTurn(player, () => {
+    app.depth = 1;
+    player.setPageUrl("?message=42", true);
+  });
+  assert.deepEqual(calls.splice(0), [["push", 1, 1], ["replace", 1, 1, "https://a.test/inbox?message=42"]]);
+});
+
+test("a push in the turn that pops a page waits for the back over its entry, then makes its own", (t) => {
+  const { player, calls, app, at } = historyPlayer(t);
+  app.depth = 1;
+  player.syncHistory();
+  calls.splice(0);
+  inOneTurn(player, () => {
+    app.depth = 0;
+    player.setPageUrl("?tab=all", true);
+  });
+  assert.deepEqual(calls.splice(0), [["go", -1], ["push", 0, 1, "https://a.test/inbox?tab=all"]]);
+  assert.equal(at(), 1);
+  assert.equal(player.historyDepth, 0);
+});
+
+test("a push drops the browser's forward entries, and the address shown makes none", (t) => {
+  const { player, calls, user, entries } = historyPlayer(t);
+  player.setPageUrl("?tab=live", true);
+  player.setPageUrl("?tab=all", true);
+  user(-2);
+  calls.splice(0);
+  player.setPageUrl("?tab=mine", true);
+  assert.deepEqual(calls.splice(0), [["push", 0, 1, "https://a.test/inbox?tab=mine"]]);
+  assert.equal(entries().length, 2);
+  assert.deepEqual(player.historyDepths, [0, 0]);
+  // The address the entry has already: no entry.
+  player.setPageUrl("?tab=mine", true);
+  assert.deepEqual(calls.splice(0), [["replace", 0, 1, "https://a.test/inbox?tab=mine"]]);
+});
+
+test("a new run drops a push waiting for its turn", (t) => {
+  const { player, calls } = historyPlayer(t);
+  player.syncHistorySoon = () => {};
+  player.setPageUrl("?tab=live", true);
+  player.resetHistory();
+  player.syncHistory();
+  assert.deepEqual(calls, []);
+  assert.equal(player.pageUrlPush, false);
+});
+
 test("a key event without `key` falls back to its physical key instead of throwing", () => {
   assert.equal(keyCode({ code: "KeyA" }), 97);
   assert.equal(keyCode({ key: null, code: "Digit3" }), 51);
   assert.equal(keyCode({}), -1);
   assert.equal(keyCode({ key: "a", code: "KeyA" }), 97);
+});
+
+/** A browser clipboard that keeps what is written and image codecs that
+ * record their work; `failWrite` makes `navigator.clipboard.write` reject. */
+function fakeClipboard(t, { failWrite } = {}) {
+  const log = { items: [], decoded: [], closed: 0, warnings: [] };
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const { ClipboardItem, createImageBitmap, OffscreenCanvas } = globalThis;
+  const warn = console.warn;
+  t.after(() => {
+    Object.defineProperty(globalThis, "navigator", saved);
+    Object.assign(globalThis, { ClipboardItem, createImageBitmap, OffscreenCanvas });
+    console.warn = warn;
+  });
+  console.warn = (m) => log.warnings.push(m);
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      clipboard: {
+        write(items) {
+          log.items.push(...items);
+          return failWrite ? Promise.reject(new Error(failWrite)) : Promise.resolve();
+        },
+      },
+    },
+  });
+  globalThis.ClipboardItem = class {
+    constructor(data) {
+      this.data = data;
+    }
+  };
+  globalThis.createImageBitmap = async (blob) => {
+    log.decoded.push(blob.type);
+    return { width: 3, height: 2, close: () => log.closed++ };
+  };
+  globalThis.OffscreenCanvas = class {
+    constructor(width, height) {
+      Object.assign(this, { width, height });
+    }
+    getContext() {
+      return { drawImage() {} };
+    }
+    async convertToBlob({ type }) {
+      return new Blob([`${this.width}x${this.height}`], { type });
+    }
+  };
+  return log;
+}
+
+test("an image that is not a PNG goes on the clipboard as a PNG", async (t) => {
+  const log = fakeClipboard(t);
+  const { player } = fakePlayer();
+  const done = player.writeClipboardImage("data:image/jpeg;base64,/9j/");
+  // Written at once: Safari only writes within the user's gesture.
+  assert.equal(log.items.length, 1);
+  await done;
+  assert.deepEqual(Object.keys(log.items[0].data), ["image/png", "text/html"]);
+  const png = await log.items[0].data["image/png"];
+  assert.equal(png.type, "image/png");
+  assert.equal(await png.text(), "3x2");
+  assert.deepEqual(log.decoded, ["image/jpeg"]);
+  assert.equal(log.closed, 1);
+  assert.deepEqual(log.warnings, []);
+});
+
+test("a PNG goes on the clipboard as it is", async (t) => {
+  const log = fakeClipboard(t);
+  const { player } = fakePlayer();
+  await player.writeClipboardImage(`data:image/png;base64,${btoa("png bytes")}`);
+  const png = await log.items[0].data["image/png"];
+  assert.equal(await png.text(), "png bytes");
+  assert.deepEqual(log.decoded, []);
+});
+
+test("a data: URI's image is decoded without fetch, which a page's CSP may refuse", async (t) => {
+  const log = fakeClipboard(t);
+  const { player } = fakePlayer();
+  const fetched = await withFetch(() => {
+    throw new TypeError("Failed to fetch");
+  }, () => player.writeClipboardImage(`data:image/png;base64,${btoa("png bytes")}`));
+  assert.deepEqual(fetched, []);
+  assert.equal(await (await log.items[0].data["image/png"]).text(), "png bytes");
+  assert.deepEqual(log.warnings, []);
+});
+
+test("a GIF goes on beside its PNG as it is, as HTML and as Chromium's web format", async (t) => {
+  const log = fakeClipboard(t);
+  globalThis.ClipboardItem.supports = (type) => type === "web image/gif";
+  const { player } = fakePlayer();
+  const uri = `data:image/gif;base64,${btoa("GIF89a frames")}`;
+  await player.writeClipboardImage(uri);
+  const { data } = log.items[0];
+  assert.deepEqual(Object.keys(data), ["image/png", "text/html", "web image/gif"]);
+  assert.equal(await data["text/html"].text(), `<img src="${uri}">`);
+  assert.equal(await (await data["web image/gif"]).text(), "GIF89a frames");
+  assert.equal((await data["image/png"]).type, "image/png");
+});
+
+test("reading the clipboard's image takes the original kept beside its PNG", async (t) => {
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const { FileReader, Image } = globalThis;
+  t.after(() => {
+    Object.defineProperty(globalThis, "navigator", saved);
+    Object.assign(globalThis, { FileReader, Image });
+  });
+  const item = {
+    types: ["image/png", "web image/gif"],
+    getType: async (type) => new Blob([type === "image/png" ? "png" : "GIF89a"], { type }),
+  };
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { clipboard: { read: async () => [item] } } });
+  globalThis.FileReader = class {
+    async readAsDataURL(blob) {
+      this.result = `data:${blob.type};base64,${btoa(await blob.text())}`;
+      this.onload();
+    }
+  };
+  globalThis.Image = class {
+    naturalWidth = 1;
+    naturalHeight = 1;
+    set src(_) {
+      this.onload();
+    }
+  };
+  const { player, sent } = fakePlayer();
+  await player.readClipboardImage(7, false);
+  await new Promise((resolve) => setTimeout(resolve));
+  assert.deepEqual(sent, [["onClipboard", { id: 7, has: true, uri: `data:image/gif;base64,${btoa("GIF89a")}`, width: 1, height: 1 }]]);
+});
+
+test("an image the clipboard does not take is reported with a warning", async (t) => {
+  const log = fakeClipboard(t, { failWrite: "Document is not focused." });
+  const { player } = fakePlayer();
+  await player.writeClipboardImage("data:image/png;base64,");
+  assert.deepEqual(log.warnings, ["[nsh] Clipboard.writeImage: Document is not focused."]);
+});
+
+test("a page without the async clipboard reports a write with a warning", async (t) => {
+  const log = fakeClipboard(t);
+  globalThis.navigator.clipboard = undefined;
+  const { player } = fakePlayer();
+  await player.writeClipboardImage("data:image/png;base64,");
+  assert.equal(log.warnings.length, 1);
 });

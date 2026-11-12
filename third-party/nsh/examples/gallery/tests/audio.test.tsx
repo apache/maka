@@ -17,6 +17,19 @@ test("a sound loads ahead and plays at once, overlapping", async () => {
   expect(calls[1].rate).toBe(1);
 });
 
+test("a sound loads from bytes, once for equal bytes, and plays overlapping", async () => {
+  await app.press("label:Play bytes");
+  await app.waitFor("text:sound: bytes 0.1s");
+  const calls = app.audio().filter(c => c.command !== "open");
+  expect(calls.map(c => c.command)).toEqual(["load", "play", "play"]);
+  // Named by its format and a digest of its bytes.
+  expect(calls[0].src.startsWith("data:audio/wav;nsh-key=")).toBe(true);
+  expect(calls.map(c => c.src)).toEqual([calls[0].src, calls[0].src, calls[0].src]);
+  expect(calls.map(c => c.volume)).toEqual([null, 1, 0.3]);
+  await app.press("label:Stop bytes");
+  expect(app.audio().filter(c => c.command === "stop").length).toBe(2);
+});
+
 test("a sound longer than five seconds is refused", async () => {
   await app.press("label:Load long");
   await app.waitFor("text:sound: failed ERR_NSH_QUOTA_EXCEEDED");

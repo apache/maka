@@ -107,6 +107,10 @@ impl Shell {
                 _ => call.reject("expected a finite positive text scale"),
             },
         );
+        #[cfg(target_os = "macos")]
+        config
+            .host
+            .handle("screenshot.chooseFolder", crate::screenshot::choose_folder);
         let notify = self.notify.clone();
         config.host.handle("notification.show", move |call| {
             if let Err(error) = notify.send(call) {

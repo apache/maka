@@ -166,6 +166,7 @@ mount(App);
 | `itemClass`、`itemStyle` | `.item_class(..)`、`.item_style(..)` | `string`、`StyleProp<TextStyle>` | 无 | 每个条目的行：高亮时应用 `focus:`，已选时应用 `selected:`，不可选时应用 `disabled:`。 |
 | `groupClass`、`groupStyle` | `.group_class(..)`、`.group_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 每个分组的标题。 |
 | `inputClass`、`inputStyle` | `.input_class(..)`、`.input_style(..)` | `string`、`StyleProp<InputStyle>` | 无 | 输入框：编辑时应用 `focus:`，组合框禁用时应用 `disabled:`。 |
+| `inputTestID` | `.input_test_id(..)` | `string` | 无 | UI 测试查找输入框所用的 id（`nsh/test` 的 `id:`），与 `testID` 指向组合框自己的视图一样。 |
 | `footerClass`、`footerStyle` | `.footer_class(..)`、`.footer_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 行下方的底部区域。 |
 | `clearButtonClass`、`clearButtonStyle` | `.clear_button_class(..)`、`.clear_button_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 清除按钮（`cleanable`）。 |
 | `clearButton` | `.clear_button(..)` | `JSX.Element` | 无 | 清除按钮的内容。 |
@@ -202,7 +203,7 @@ mount(App);
 |---|---|---|
 | 字段 | 组合框的视图，一行 | `class`、`style` |
 | 前缀 | 字段中的第一个 | 应用自己的元素（`prefix`） |
-| 输入框 | 字段中，前缀之后 | `inputClass`、`inputStyle`、`placeholder` |
+| 输入框 | 字段中，前缀之后 | `inputClass`、`inputStyle`、`placeholder`、`inputTestID` |
 | 清除按钮 | 字段中，输入框之后（`cleanable`，有已选条目时） | `clearButtonClass`、`clearButtonStyle`；内容 `clearButton` |
 | 触发按钮 | 字段中，清除按钮之后 | 应用自己的元素（`triggerButton`） |
 | 后缀 | 字段中的最后一个 | 应用自己的元素（`suffix`） |

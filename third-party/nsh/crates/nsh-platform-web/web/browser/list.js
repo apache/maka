@@ -1,6 +1,6 @@
 // The core chooses the visible indices and recycles slots. This facade owns
 // only app render closures and their reactive owners, as the QuickJS host does.
-export const itemsProps = ["each", "children", "keyExtractor", "stickyHeaderIndices", "initialScrollIndex", "onViewableItemsChange", "viewabilityConfig", "refreshing", "onRefresh", "onLoadMore", "loadMoreThreshold", "header", "footer", "empty"];
+export const itemsProps = ["each", "children", "keyExtractor", "stickyHeaderIndices", "initialScrollIndex", "initialScrollAtEnd", "onViewableItemsChange", "viewabilityConfig", "refreshing", "onRefresh", "onLoadMore", "loadMoreThreshold", "header", "footer", "empty"];
 const own = new Set([...itemsProps.filter(k => !["stickyHeaderIndices", "viewabilityConfig", "refreshing", "onRefresh", "onLoadMore"].includes(k)), "ref", "estimatedItemSize", "loadMoreAtStartThreshold", "separator"]);
 export function createLists(invoke, values, reactive, dom, live, wake) {
   const lists = new Map(), rt = dom.rt;
@@ -87,7 +87,8 @@ export function createLists(invoke, values, reactive, dom, live, wake) {
       const delay = props.viewabilityConfig?.minimumViewTime ?? 0;
       if (delay > 0) state.timer = setTimeout(report, delay); else report();
     });
-    if (typeof props.initialScrollIndex === "number") invoke(314, [id, "scrollToIndex", { index: Math.max(0, props.initialScrollIndex), animated: false }]);
+    if (props.initialScrollAtEnd) invoke(314, [id, "scrollToEnd", { animated: false }]);
+    else if (typeof props.initialScrollIndex === "number") invoke(314, [id, "scrollToIndex", { index: Math.max(0, props.initialScrollIndex), animated: false }]);
     if (typeof props.ref === "function") reactive.untracked(() => props.ref(node));
     return node;
   };

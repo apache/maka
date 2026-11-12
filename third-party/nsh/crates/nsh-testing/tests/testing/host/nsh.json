@@ -1,5 +1,5 @@
 {
   "capabilities": {
-    "host": ["echo", "fail", "big", "slow", "later"]
+    "host": ["echo", "fail", "big", "slow", "later", "note"]
   }
 }

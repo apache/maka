@@ -1,12 +1,12 @@
-import { effect, type JSX, Scroll, signal, Text, View } from "nsh";
+import { effect, type JSX, List, Scroll, signal, Text, UrlScheme, View } from "nsh";
 import { createAnimatedValue } from "nsh";
 import { BackHandler } from "nsh/mobile";
 import { platform } from "nsh";
-import { AlertDialog, Dialog, NavPage, Input } from "nsh/base";
+import { AlertDialog, Dialog, NavPage, NavStack, Input, createNavStack } from "nsh/base";
 import { safeAreaInsets } from "nsh";
 import { Icon, type IconName } from "../icons";
 import { nav } from "../nav";
-import { Appear, backdrop, Badge, Button, Card, colors, DemoPage, density, dialogCard, dialogText, dialogTitle, Figure, finish, header, hint, hovered, IconTile, Inset, isDark, mono, motion, PageHeader, Press, radius, Section, Stat, tints, Toggle } from "../ui";
+import { Appear, backdrop, Badge, Button, Card, colors, DemoPage, density, dialogCard, dialogText, dialogTitle, Figure, finish, header, hint, hovered, IconTile, Inset, motion, PageHeader, Press, radius, Section, Stat, tints, LabeledToggle } from "../ui";
 import { TitleBar } from "../TitleBar";
 
 const edges = ["top", "bottom", "left", "right"] as const;
@@ -50,10 +50,11 @@ function LinkRow(props: { icon: IconName; title: string; note: string; first?: b
   );
 }
 
-/** The body of a pushed screen: what it shows, then where its safe area is. */
-function Page(props: { intro: string; children?: JSX.Element }) {
+/** The body of a pushed screen: what it shows, then where its safe area is;
+ * pulled down, `refresh`'s. */
+function Page(props: { intro: string; refresh?: Refresh; children?: JSX.Element }) {
   return (
-    <Scroll style={{ flex: 1, backgroundColor: colors.background }}>
+    <Scroll style={{ flex: 1, backgroundColor: colors.background }} refreshing={props.refresh?.refreshing()} onRefresh={props.refresh?.start}>
       <View style={{ padding: 16, paddingBottom: 40, gap: 16 }}>
         <Appear>
           <Text style={{ fontSize: 15, lineHeight: 21, color: colors.muted, paddingHorizontal: 4 }}>{props.intro}</Text>
@@ -71,32 +72,80 @@ function Page(props: { intro: string; children?: JSX.Element }) {
   );
 }
 
-function LargeTitle() {
+/** A pull to refresh that takes a second, and how many it has done. */
+interface Refresh {
+  refreshing: () => boolean;
+  count: () => number;
+  start: () => void;
+}
+
+function createRefresh(): Refresh {
+  const refreshing = signal(false);
+  const count = signal(0);
+  const start = () => {
+    refreshing.set(true);
+    setTimeout(() => {
+      count.update((n) => n + 1);
+      refreshing.set(false);
+    }, 1000);
+  };
+  return { refreshing, count, start };
+}
+
+const largeTitleIntro = (refresh: Refresh) =>
+  `iOS: the title shrinks into the bar as the content scrolls. Pull down to refresh${refresh.count() ? ` (refreshed ${refresh.count()}×)` : ""}.`;
+
+/** A row of the large title pages: its number and where it starts. */
+function OffsetRow(props: { n: number; inset?: number }) {
   return (
-    <NavPage title="Large title" {...header} headerLargeTitle header={<PageHeader title="Large title" />}>
-      <Page intro="iOS: the title shrinks into the bar as the content scrolls.">
+    <View
+      style={{
+        height: 48,
+        flexDirection: "row",
+        alignItems: "center",
+        paddingHorizontal: props.inset ?? 10,
+        borderTopWidth: props.n === 1 ? 0 : 1,
+        borderTopColor: colors.line,
+      }}
+    >
+      <Text style={{ flex: 1, fontSize: 15, color: colors.text }}>Row {props.n}</Text>
+      <Text style={{ fontSize: 13, color: colors.faint, fontVariant: ["tabular-nums"] }}>{`${props.n * 48} pt`}</Text>
+    </View>
+  );
+}
+
+function LargeTitle() {
+  const refresh = createRefresh();
+  return (
+    <NavPage title="Large title" {...header} headerLargeTitle headerTransparent header={<PageHeader title="Large title" />}>
+      <Page intro={largeTitleIntro(refresh)} refresh={refresh}>
         <Card flush>
           <Inset padding={0} gap={0}>
-            <Each of={Array.from({ length: 20 }, (_, i) => i + 1)}>
-              {(i) => (
-                <View
-                  style={{
-                    height: 48,
-                    flexDirection: "row",
-                    alignItems: "center",
-                    paddingHorizontal: 10,
-                    borderTopWidth: i() === 1 ? 0 : 1,
-                    borderTopColor: colors.line,
-                  }}
-                >
-                  <Text style={{ flex: 1, fontSize: 15, color: colors.text }}>Row {i()}</Text>
-                  <Text style={{ fontSize: 13, color: colors.faint, fontVariant: ["tabular-nums"] }}>{`${i() * 48} pt`}</Text>
-                </View>
-              )}
-            </Each>
+            <Each of={Array.from({ length: 20 }, (_, i) => i + 1)}>{(i) => <OffsetRow n={i()} />}</Each>
           </Inset>
         </Card>
       </Page>
+    </NavPage>
+  );
+}
+
+/** A large title over a virtualized list, refreshed by a pull. */
+function LargeTitleList() {
+  const refresh = createRefresh();
+  const rows = Array.from({ length: 200 }, (_, i) => i + 1);
+  return (
+    <NavPage title="Large title list" {...header} headerLargeTitle headerTransparent header={<PageHeader title="Large title list" />}>
+      <List
+        each={rows}
+        estimatedItemSize={48}
+        style={{ flex: 1, backgroundColor: colors.background }}
+        contentStyle={{ paddingBottom: 40 }}
+        refreshing={refresh.refreshing()}
+        onRefresh={refresh.start}
+        header={<Text style={{ fontSize: 15, lineHeight: 21, color: colors.muted, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 12 }}>{largeTitleIntro(refresh)}</Text>}
+      >
+        {(i) => <OffsetRow n={i()} inset={20} />}
+      </List>
     </NavPage>
   );
 }
@@ -109,7 +158,7 @@ function Transparent() {
       headerStyle={{ tintColor: colors.text, color: colors.text }}
       header={<PageHeader title="Transparent" transparent tint={colors.text} />}
     >
-      <View style={{ flex: 1, backgroundColor: isDark() ? "#11170c" : "#eef3e2", overflow: "hidden", padding: 16, paddingBottom: 56, justifyContent: "flex-end", gap: 16 }}>
+      <View style={{ flex: 1, backgroundColor: colors.background, overflow: "hidden", padding: 16, paddingBottom: 56, justifyContent: "flex-end", gap: 16 }}>
         <View style={{ position: "absolute", top: -90, right: -70, width: 320, height: 320, borderRadius: 160, backgroundColor: tints.accent }} />
         <View style={{ position: "absolute", top: 150, left: -110, width: 260, height: 260, borderRadius: 130, backgroundColor: tints.info }} />
         <Appear>
@@ -229,7 +278,7 @@ function Unsaved() {
             onBlur={() => focused.set(false)}
             placeholder="A draft"
             style={{
-              placeholderColor: colors.faint,
+              placeholderColor: colors.muted,
               caretColor: colors.accent,
               selectionColor: colors.accent,
               height: 48,
@@ -375,6 +424,71 @@ function ModalBody(props: { title: string; note: string; body: string; fullScree
   );
 }
 
+/** A stack's pages and the app's address, the same code on every
+ * platform: the app maps its own routes to an address
+ * (`#/messages/Invoice`), opens at `UrlScheme.url()`, gives each page its
+ * address as the stack changes (`onChange` → `UrlScheme.setUrl`, the
+ * browser's back included, which pops the stack) and hears links
+ * (`UrlScheme.on("open")`) and the moves the stack does not account for
+ * (`UrlScheme.on("change")`). Only the web shows the address. */
+function Addressed() {
+  const prefix = "#/messages/";
+  const opened = (UrlScheme.url() ?? "").split("#")[1] ?? "";
+  const start = `#${opened}`.startsWith(prefix) ? ["Inbox", decodeURIComponent(`#${opened}`.slice(prefix.length))] : ["Inbox"];
+  const messages = createNavStack<string>(start);
+  const changes = signal(0);
+  const opens = signal(0);
+  const address = signal(UrlScheme.url() ?? "");
+  UrlScheme.on("open", ({ url }) => {
+    opens.set(opens() + 1);
+    address.set(url);
+  });
+  // A back or forward between entries of the same pages, or an address the
+  // user typed (the web): the stack stays, the address shown follows.
+  UrlScheme.on("change", ({ url }) => address.set(url));
+  // The address without the app's part, then the open message's.
+  const addressOf = (top: string) => `${(UrlScheme.url() ?? "").split("#")[0]}${top === "Inbox" ? "" : prefix + encodeURIComponent(top)}`;
+  // The app's part of an address: the same on the web (the page's address
+  // before it) and elsewhere.
+  const shown = (url: string) => (url.includes("#") ? `#${url.split("#")[1]}` : "");
+  return (
+    <View style={{ gap: 8 }}>
+      <View style={{ height: 200, borderRadius: radius.inset, overflow: "hidden", borderWidth: 1, borderColor: colors.line }}>
+        <NavStack
+          state={messages}
+          style={{ flex: 1 }}
+          onChange={({ routes }) => {
+            changes.set(changes() + 1);
+            UrlScheme.setUrl(addressOf(routes[routes.length - 1]));
+            address.set(UrlScheme.url() ?? "");
+          }}
+        >
+          {(route) => (
+            // The card's surface, not the system's page color, under each page.
+            <NavPage
+              header={<Text style={{ padding: 12, fontSize: 15, fontWeight: "600", color: colors.text }}>{route}</Text>}
+              style={{ backgroundColor: colors.surface }}
+            >
+              <View style={{ padding: 12, gap: 8 }}>
+                {route === "Inbox" ? (
+                  <Each of={["Welcome", "Invoice", "Travel"]}>
+                    {(name) => <Button label={`Open ${name()}`} variant="secondary" onPress={() => messages.push(name())} />}
+                  </Each>
+                ) : (
+                  <Button label="Back to the inbox" variant="secondary" onPress={() => messages.pop()} />
+                )}
+              </View>
+            </NavPage>
+          )}
+        </NavStack>
+      </View>
+      <Text style={{ fontSize: 13, lineHeight: 18, color: colors.muted }}>
+        {`${changes()} changes, ${opens()} opens: ${shown(address()) || "no address"}`}
+      </Text>
+    </View>
+  );
+}
+
 export function Navigation() {
   const sheet = signal<Sheet>(null);
   const intercept = signal(false);
@@ -413,12 +527,13 @@ export function Navigation() {
           <Card title="Pages" subtitle="Page options, pushed with nav.push" flush>
             <View>
               <LinkRow first icon="text" title="Large title" note="headerLargeTitle" onPress={push(LargeTitle)} />
+              <LinkRow icon="lists" title="Large title list" note="headerLargeTitle, List" onPress={push(LargeTitleList)} />
               <LinkRow icon="styles" title="Transparent header" note="headerTransparent" onPress={push(Transparent)} />
               <LinkRow icon="star" title="Custom header items" note="headerLeft / Title / Right" onPress={push(CustomHeader)} />
               <LinkRow icon="mobile" title="No header" note="headerVisible={false}" onPress={push(Headerless)} />
               <LinkRow icon="spark" title="Fade in" note='animation="fade"' onPress={push(Faded)} />
-              <LinkRow icon="play" title="No animation" note='animation="none"' onPress={push(Instant)} />
-              <LinkRow icon="gestures" title="No swipe back" note="popOnSwipe={false}" onPress={push(Locked)} />
+              <LinkRow icon="animation" title="No animation" note='animation="none"' onPress={push(Instant)} />
+              <LinkRow icon="back" title="No swipe back" note="popOnSwipe={false}" onPress={push(Locked)} />
               <LinkRow icon="form" title="Unsaved changes" note="popOnBack + onBackPress" onPress={push(Unsaved)} />
               <LinkRow icon="lists" title="A deep stack" note="push / popToRoot" onPress={push(() => <Deep depth={1} />)} />
             </View>
@@ -432,11 +547,16 @@ export function Navigation() {
           </Card>
         ),
         () => (
+          <Card title="Address" subtitle="onChange, UrlScheme.setUrl">
+            <Addressed />
+          </Card>
+        ),
+        () => (
           <Card
             icon="system"
             title="Back button"
             subtitle={hint("Android: BackHandler", "BackHandler: Escape, Alt+Left")}
-            right={<Toggle value={intercept()} onChange={(v) => intercept.set(v)} label="Intercept the back button" />}
+            right={<LabeledToggle label="Intercept" value={intercept()} onChange={(v) => intercept.set(v)} />}
           >
             <Figure value={String(backs())} unit={backs() === 1 ? "press" : "presses"} note={intercept() ? "caught" : "popped"} tone={intercept() ? "warn" : "accent"} />
             <Text style={{ fontSize: 13, lineHeight: 18, color: colors.muted }}>
@@ -452,6 +572,7 @@ export function Navigation() {
         open={sheet() === "fullScreen" || sheet() === "pageSheet" || sheet() === "formSheet" || sheet() === "fade"}
         presentation={sheet() === "pageSheet" ? "pageSheet" : sheet() === "formSheet" ? "formSheet" : "fullScreen"}
         animation={sheet() === "fade" ? "fade" : "slide"}
+        accessibilityLabel={current()?.title ?? ""}
         onOpenChange={({ open }) => !open && close()}
         style={{ flex: 1 }}
       >
@@ -469,6 +590,7 @@ export function Navigation() {
       <Dialog
         open={sheet() === "kept"}
         presentation="pageSheet"
+        accessibilityLabel="Kept open"
         closeOnEscape={false}
         closeOnBackdropPress={false}
         closeOnSwipe={false}
@@ -486,6 +608,9 @@ export function Navigation() {
       <Dialog
         open={sheet() === "dialog"}
         animation="fade"
+        role="alertdialog"
+        accessibilityLabel="Delete “Launch notes”?"
+        accessibilityDescription="The note and its 14 comments go for everyone it is shared with. This cannot be undone."
         onOpenChange={({ open }) => !open && close()}
         backdropStyle={backdrop()}
         style={{ margin: "auto", width: platform.desktop ? 360 : 340, maxWidth: "90%" }}

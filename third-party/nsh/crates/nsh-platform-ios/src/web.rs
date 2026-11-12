@@ -2,7 +2,7 @@
 //! rather than linked, so apps without web views do not pay for it at
 //! launch.
 
-use std::{ffi::CStr, sync::OnceLock};
+use std::{ffi::CStr, rc::Rc, sync::OnceLock};
 
 use nsh_core::{EventKind, EventPayload, NodeId, PayloadValue, WebProps, WebSource};
 use nsh_engine::EngineControl;
@@ -42,6 +42,7 @@ pub(crate) struct WebIvars {
     control: EngineControl,
     /// What the app may show (its `webview` capability).
     access: std::sync::Arc<nsh_engine::Access>,
+    evaluations: Rc<nsh_platform_apple::web_evaluation::Evaluations>,
 }
 
 define_class!(
@@ -94,11 +95,57 @@ define_class!(
             decide.call((allowed as isize,));
         }
 
+        /// The page's `getUserMedia` gets what the app's `webview.media`
+        /// capability grants; the system still asks the user.
+        #[unsafe(method(webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:))]
+        fn media_capture(
+            &self,
+            _web: &AnyObject,
+            _origin: &AnyObject,
+            _frame: &AnyObject,
+            kind: isize,
+            decide: &block2::Block<dyn Fn(isize)>,
+        ) {
+            use nsh_core::access::WebMedia;
+            // WKMediaCaptureTypeCamera = 0, Microphone = 1, CameraAndMicrophone = 2.
+            let wanted: &[WebMedia] = match kind {
+                0 => &[WebMedia::Camera],
+                1 => &[WebMedia::Microphone],
+                _ => &[WebMedia::Camera, WebMedia::Microphone],
+            };
+            let granted = wanted.iter().all(|m| self.ivars().access.allows_web_media(*m));
+            if !granted {
+                log::warn!(target: "js", "web view media capture is not granted: add it to capabilities.webview.media");
+            }
+            // WKPermissionDecisionGrant = 1, Deny = 2.
+            decide.call((if granted { 1 } else { 2 },));
+        }
+
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
         fn did_start(&self, web: &AnyObject, _navigation: Option<&AnyObject>) {
+            self.ivars().evaluations.navigated();
             let state = navigation_state(web, true);
             self.send(EventKind::LoadStart, state.clone());
             self.send(EventKind::NavigationStateChange, state);
+        }
+
+        #[unsafe(method(webViewWebContentProcessDidTerminate:))]
+        fn process_terminated(&self, _web: &AnyObject) {
+            self.ivars().evaluations.process_terminated();
+            // The app keeps running; the page comes back on its next reload.
+            self.send(
+                EventKind::Error,
+                EventPayload::Map(vec![
+                    (
+                        "message",
+                        PayloadValue::Str("The web content process terminated".into()),
+                    ),
+                    (
+                        "code",
+                        PayloadValue::Str(nsh_core::element::codes::WEBVIEW_TERMINATED.into()),
+                    ),
+                ]),
+            );
         }
 
         #[unsafe(method(webView:didFinishNavigation:))]
@@ -126,11 +173,13 @@ impl WebHandler {
         id: NodeId,
         control: EngineControl,
         access: std::sync::Arc<nsh_engine::Access>,
+        evaluations: Rc<nsh_platform_apple::web_evaluation::Evaluations>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(WebIvars {
             id,
             control,
             access,
+            evaluations,
         });
         // SAFETY: NSObject's designated initializer.
         unsafe { msg_send![super(this), init] }
@@ -212,6 +261,7 @@ pub(crate) struct WebHost {
     /// [`Self::make`] ran.
     made: bool,
     handler: Retained<WebHandler>,
+    evaluations: Rc<nsh_platform_apple::web_evaluation::Evaluations>,
     /// Serves the URL schemes of the first props while the web view is
     /// here.
     schemes: Option<nsh_platform_apple::web_scheme::SchemeServer>,
@@ -226,12 +276,20 @@ impl WebHost {
         access: std::sync::Arc<nsh_engine::Access>,
     ) -> Self {
         let view = NshView::new(mtm);
-        let handler = WebHandler::new(mtm, id, control, access);
+        let evaluations = {
+            let control = control.clone();
+            nsh_platform_apple::web_evaluation::Evaluations::new(
+                id,
+                Box::new(move |id, kind, payload| control.dispatch_event(id, kind, payload)),
+            )
+        };
+        let handler = WebHandler::new(mtm, id, control, access, evaluations.clone());
         Self {
             view,
             web: None,
             made: false,
             handler,
+            evaluations,
             schemes: None,
             props: WebProps {
                 // Forces the first `configure` to load.
@@ -246,6 +304,20 @@ impl WebHost {
     fn make(&mut self, p: &WebProps) {
         self.made = true;
         if !webkit() {
+            // No WKWebView: the app hears it and shows what it has instead.
+            self.handler.send(
+                EventKind::Error,
+                EventPayload::Map(vec![
+                    (
+                        "message",
+                        PayloadValue::Str("WebKit cannot be loaded".into()),
+                    ),
+                    (
+                        "code",
+                        PayloadValue::Str(nsh_core::element::codes::UNAVAILABLE.into()),
+                    ),
+                ]),
+            );
             return;
         }
         let handler = &self.handler;
@@ -263,8 +335,10 @@ impl WebHost {
             let content: Retained<AnyObject> = msg_send![&config, userContentController];
             let _: () = msg_send![&content, addScriptMessageHandler: &**handler, name: &*NSString::from_str("nsh")];
             let alloc: Allocated<AnyObject> = msg_send![class(c"WKWebView"), alloc];
-            let web: Retained<AnyObject> = msg_send![alloc, initWithFrame: CGRect::new(CGPoint::ZERO, CGSize::ZERO), configuration: &*config];
+            let web: Option<Retained<AnyObject>> = msg_send![alloc, initWithFrame: CGRect::new(CGPoint::ZERO, CGSize::ZERO), configuration: &*config];
+            let Some(web) = web else { return };
             let _: () = msg_send![&web, setNavigationDelegate: &**handler];
+            let _: () = msg_send![&web, setUIDelegate: &**handler];
             let ui: &UIView = &*(Retained::as_ptr(&web) as *const UIView);
             ui.setAutoresizingMask(
                 UIViewAutoresizing::FlexibleWidth | UIViewAutoresizing::FlexibleHeight,
@@ -273,6 +347,7 @@ impl WebHost {
             self.view.addSubview(ui);
             web
         };
+        self.evaluations.set_web(Some(&web));
         self.web = Some(web);
     }
 
@@ -282,7 +357,13 @@ impl WebHost {
             // once it is made.
             self.make(&p);
         }
-        let Some(web) = &self.web else { return };
+        let Some(web) = &self.web else {
+            self.props = p;
+            return;
+        };
+        if !p.javascript_enabled {
+            self.evaluations.scripts_disabled();
+        }
         // SAFETY: WebKit's documented API.
         unsafe {
             let scripts_changed = p.injected_js != self.props.injected_js
@@ -320,6 +401,9 @@ impl WebHost {
             let _: () =
                 msg_send![&prefs, setAllowsContentJavaScript: Bool::new(p.javascript_enabled)];
             if p.source != self.props.source || scripts_changed {
+                if p.source != WebSource::None {
+                    self.evaluations.navigated();
+                }
                 match &p.source {
                     WebSource::Uri(uri) => {
                         if let Some(url) = NSURL::URLWithString(&NSString::from_str(uri)) {
@@ -345,6 +429,24 @@ impl WebHost {
     /// `reload()`, `goBack()`, `goForward()`, `stopLoading()`,
     /// `injectJavaScript()`, `postMessage()` and `load()`.
     pub(crate) fn command(&self, command: &nsh_core::Command) {
+        match command {
+            nsh_core::Command::Evaluate { request, script } => {
+                self.evaluations
+                    .start(*request, script, self.props.javascript_enabled);
+                return;
+            }
+            nsh_core::Command::CancelEvaluate { request } => {
+                self.evaluations.cancel(*request);
+                return;
+            }
+            nsh_core::Command::Reload
+            | nsh_core::Command::GoBack
+            | nsh_core::Command::GoForward
+            | nsh_core::Command::Load(_) => {
+                self.evaluations.navigated();
+            }
+            _ => {}
+        }
         let Some(web) = &self.web else { return };
         let script = match command {
             nsh_core::Command::InjectJavaScript(js) => Some(js.clone()),
@@ -397,10 +499,12 @@ impl WebHost {
 
 impl Drop for WebHost {
     fn drop(&mut self) {
+        self.evaluations.dispose();
         let Some(web) = &self.web else { return };
         // SAFETY: breaks the cycle web view -> controller -> handler.
         unsafe {
             let _: () = msg_send![web, setNavigationDelegate: std::ptr::null::<AnyObject>()];
+            let _: () = msg_send![web, setUIDelegate: std::ptr::null::<AnyObject>()];
             let config: Retained<AnyObject> = msg_send![web, configuration];
             let content: Retained<AnyObject> = msg_send![&config, userContentController];
             let _: () =

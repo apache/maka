@@ -11,6 +11,8 @@
 //! has the design.
 
 mod app_highlight;
+#[cfg(all(test, feature = "highlight"))]
+mod bench;
 mod buffer;
 mod commands;
 mod completion;

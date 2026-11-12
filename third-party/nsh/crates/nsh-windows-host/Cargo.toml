@@ -3,6 +3,7 @@ name = "nsh-windows-host"
 description = "Development host app (Win32) that runs a nsh bundle on Windows."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true

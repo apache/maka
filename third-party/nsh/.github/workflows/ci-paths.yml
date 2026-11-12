@@ -9,12 +9,6 @@ name: CI paths
 # `crates/gpui`) would otherwise never report. It takes seconds.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "**/Cargo.toml"
-      - ".github/workflows/**"
-      - ".github/ci/**"
   pull_request:
     # `closed` runs nothing, but it takes the pull request's concurrency group
     # and so cancels its runs still queued or running once it merges or closes.

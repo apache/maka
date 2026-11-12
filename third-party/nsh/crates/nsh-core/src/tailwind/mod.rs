@@ -79,10 +79,20 @@ pub mod state {
     /// The view is busy (`aria-busy:`): its `accessibilityState.busy`.
     /// Set by the core, never reported by the platform.
     pub const BUSY: u16 = 1024;
+    /// The view has the keyboard focus and shows it (`focus-visible:`):
+    /// the keyboard moved it there, or it is an input that edits, as CSS's
+    /// `:focus-visible`. Set by the core from [`FOCUSED`] and the surface's
+    /// input modality (`Core::set_input_modality`), never reported by the
+    /// platform.
+    pub const FOCUS_VISIBLE: u16 = 2048;
+    /// The view's content does not pass the app's checks
+    /// (`aria-invalid:`): its `accessibilityState.invalid`. Set by the
+    /// core, never reported by the platform.
+    pub const INVALID: u16 = 4096;
     /// The states the core sets from the accessibility state, which the
     /// platforms never report.
     pub(crate) const ACCESSIBILITY: u16 =
-        SELECTED | CHECKED | INDETERMINATE | EXPANDED | ARIA_PRESSED | BUSY;
+        SELECTED | CHECKED | INDETERMINATE | EXPANDED | ARIA_PRESSED | BUSY | INVALID;
 }
 
 /// The view's place among its siblings (`first:`, `odd:`, ...).
@@ -129,6 +139,9 @@ pub mod deps {
     /// The view's own `data-*` attributes (`data-range-start:`); a group's
     /// are [`GROUP`].
     pub const DATA: u16 = 2048;
+    /// The pointer's precision and the terminal (`pointer-fine:`,
+    /// `pointer-coarse:`, `terminal:`).
+    pub const DEVICE: u16 = 4096;
 }
 
 /// CSS's `ch` where no font is known ([`ClassList::apply`]): half a `rem`,
@@ -158,6 +171,18 @@ pub enum Platform {
     Web,
 }
 
+/// How precise the primary pointer is (`pointer-fine:`, `pointer-coarse:`),
+/// as CSS's `pointer` media feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Pointer {
+    /// A finger on a touch screen.
+    #[default]
+    Coarse,
+    /// A mouse or a trackpad: desktop behavior (a desktop OS, a desktop
+    /// browser, a terminal).
+    Fine,
+}
+
 /// The environment variants depend on, set by the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ClassEnvironment {
@@ -167,6 +192,10 @@ pub struct ClassEnvironment {
     pub platform: Platform,
     /// The user asked for less motion.
     pub reduce_motion: bool,
+    /// The primary pointer's precision.
+    pub pointer: Pointer,
+    /// Drawn in a terminal (`terminal:`).
+    pub terminal: bool,
 }
 
 /// What a node's classes are matched against: the core builds it per
@@ -209,6 +238,8 @@ pub(crate) struct Condition {
     platform: Option<Platform>,
     rtl: Option<bool>,
     reduce_motion: Option<bool>,
+    pointer: Option<Pointer>,
+    terminal: Option<bool>,
     /// Required [`state`] bits.
     states: u16,
     /// [`state`] bits that must be off (`enabled:`).
@@ -232,6 +263,8 @@ impl Condition {
     fn matches(&self, cx: &Context<'_>, data: Data<'_>) -> bool {
         if self.dark.is_some_and(|d| d != cx.env.dark)
             || self.platform.is_some_and(|p| p != cx.env.platform)
+            || self.pointer.is_some_and(|p| p != cx.env.pointer)
+            || self.terminal.is_some_and(|t| t != cx.env.terminal)
             || self.rtl.is_some_and(|r| r != cx.rtl)
             || self
                 .reduce_motion
@@ -282,8 +315,11 @@ impl Condition {
     /// Applies only while the view (or its group) is pressed, hovered or
     /// focused: press feedback.
     fn interactive(&self) -> bool {
-        const INTERACTION: u16 =
-            state::PRESSED | state::HOVERED | state::FOCUSED | state::FOCUS_WITHIN;
+        const INTERACTION: u16 = state::PRESSED
+            | state::HOVERED
+            | state::FOCUSED
+            | state::FOCUS_WITHIN
+            | state::FOCUS_VISIBLE;
         self.states & INTERACTION != 0
             || self
                 .group
@@ -307,6 +343,9 @@ impl Condition {
         }
         if self.reduce_motion.is_some() {
             d |= deps::MOTION;
+        }
+        if self.pointer.is_some() || self.terminal.is_some() {
+            d |= deps::DEVICE;
         }
         if self.states != 0 || self.not_states != 0 {
             d |= deps::STATE;
@@ -437,13 +476,14 @@ pub(crate) mod rank {
     pub(crate) const ARIA_BUSY: Key = Key::new(40);
     pub(crate) const ARIA_CHECKED: Key = Key::new(41);
     pub(crate) const EXPANDED: Key = Key::new(42);
-    pub(crate) const ARIA_PRESSED: Key = Key::new(43);
-    pub(crate) const ARIA_SELECTED: Key = Key::new(44);
+    pub(crate) const ARIA_INVALID: Key = Key::new(43);
+    pub(crate) const ARIA_PRESSED: Key = Key::new(44);
+    pub(crate) const ARIA_SELECTED: Key = Key::new(45);
     /// `data-*`, after `aria-*` as Tailwind registers them, in the order
     /// of their names ([`Key::data`]).
-    pub(crate) const DATA: u16 = 45;
-    pub(crate) const MOTION_SAFE: Key = Key::new(46);
-    pub(crate) const MOTION_REDUCE: Key = Key::new(47);
+    pub(crate) const DATA: u16 = 46;
+    pub(crate) const MOTION_SAFE: Key = Key::new(47);
+    pub(crate) const MOTION_REDUCE: Key = Key::new(48);
     /// `max-*` breakpoints, widest first.
     pub(crate) const MAX: u16 = 50;
     /// Breakpoints and `min-*`, narrowest first.
@@ -453,10 +493,14 @@ pub(crate) mod rank {
     pub(crate) const LTR: Key = Key::new(62);
     pub(crate) const RTL: Key = Key::new(63);
     pub(crate) const DARK: Key = Key::new(64);
+    /// Tailwind's pointer variants, after `dark:` as it registers them.
+    pub(crate) const POINTER_COARSE: Key = Key::new(65);
+    pub(crate) const POINTER_FINE: Key = Key::new(66);
     /// NSH's platform variants, after Tailwind's.
     pub(crate) const IOS: Key = Key::new(70);
     pub(crate) const ANDROID: Key = Key::new(71);
     pub(crate) const WEB: Key = Key::new(72);
+    pub(crate) const TERMINAL: Key = Key::new(73);
 }
 
 impl Rule {
@@ -1181,7 +1225,7 @@ fn variant(theme: &Theme, v: &str, cond: &mut Condition) -> Option<Key> {
             rank::FOCUS
         }
         "focus-visible" => {
-            states(cond, FOCUSED);
+            states(cond, FOCUS_VISIBLE);
             rank::FOCUS_VISIBLE
         }
         "active" => {
@@ -1207,6 +1251,10 @@ fn variant(theme: &Theme, v: &str, cond: &mut Condition) -> Option<Key> {
         "aria-expanded" => {
             states(cond, EXPANDED);
             rank::EXPANDED
+        }
+        "aria-invalid" => {
+            states(cond, INVALID);
+            rank::ARIA_INVALID
         }
         "aria-pressed" => {
             states(cond, ARIA_PRESSED);
@@ -1256,6 +1304,18 @@ fn variant(theme: &Theme, v: &str, cond: &mut Condition) -> Option<Key> {
             cond.platform = Some(Platform::Web);
             rank::WEB
         }
+        "pointer-coarse" => {
+            cond.pointer = Some(Pointer::Coarse);
+            rank::POINTER_COARSE
+        }
+        "pointer-fine" => {
+            cond.pointer = Some(Pointer::Fine);
+            rank::POINTER_FINE
+        }
+        "terminal" => {
+            cond.terminal = Some(true);
+            rank::TERMINAL
+        }
         v => {
             // `data-range-start`: Tailwind 4's boolean form, `[data-range-start]`.
             if let Some(name) = v.strip_prefix("data-").filter(|n| data_name(n)) {
@@ -1286,7 +1346,7 @@ fn variant(theme: &Theme, v: &str, cond: &mut Condition) -> Option<Key> {
                     "hover" => (HOVERED, rank::HOVER),
                     "active" => (PRESSED, rank::ACTIVE),
                     "focus" => (FOCUSED, rank::FOCUS),
-                    "focus-visible" => (FOCUSED, rank::FOCUS_VISIBLE),
+                    "focus-visible" => (FOCUS_VISIBLE, rank::FOCUS_VISIBLE),
                     "focus-within" => (FOCUS_WITHIN, rank::FOCUS_WITHIN),
                     "disabled" => (DISABLED, rank::DISABLED),
                     "selected" => (SELECTED, rank::SELECTED),
@@ -1295,6 +1355,7 @@ fn variant(theme: &Theme, v: &str, cond: &mut Condition) -> Option<Key> {
                     "aria-busy" => (BUSY, rank::ARIA_BUSY),
                     "aria-checked" => (CHECKED, rank::ARIA_CHECKED),
                     "aria-expanded" => (EXPANDED, rank::EXPANDED),
+                    "aria-invalid" => (INVALID, rank::ARIA_INVALID),
                     "aria-pressed" => (ARIA_PRESSED, rank::ARIA_PRESSED),
                     "aria-selected" => (SELECTED, rank::ARIA_SELECTED),
                     _ => return None,

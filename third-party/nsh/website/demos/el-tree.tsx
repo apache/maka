@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Button, Tree, type TreeItem, type TreeRef } from "nsh/base";
-import { button, buttonText, desktop, Log, Panel, Split, TreeRow, treeItemClass, ui, wide } from "./palette";
+import { button, buttonText, desktop, Log, Panel, sectionSurface, Split, TreeRow, treeItemClass, ui, wide } from "./palette";
 
 // A project's files: folders that open with their chevron, files, sizes at
 // the end, a folder the app keeps out of reach (`disabled`). The tree owns
@@ -112,7 +112,7 @@ function App() {
             selected={selected()}
             reveal
             accessibilityLabel="Project files"
-            style={{ height: desktop ? 320 : 360, borderRadius: 12, ...ui().card }}
+            style={{ ...sectionSurface(), height: desktop ? 320 : 360 }}
             listStyle={{ padding: 6 }}
             itemClass={treeItemClass}
             onExpandedChange={({ expanded: next }) => expanded.set(next)}

@@ -9,12 +9,13 @@
 //! root per view.
 //!
 //! What a view's visibility depends on (frames, hidden views, windows,
-//! scroll offsets) changes at a few places, which call [`moved`]; the
+//! scroll offsets, transforms) changes at a few places, which call [`moved`]; the
 //! display link's frames revisit only when that counter moved, while an
 //! endless animation elsewhere keeps the frames coming.
 
 use std::cell::Cell;
 
+use nsh_core::Matrix;
 use objc2_foundation::NSRect;
 use rustc_hash::FxHashMap;
 
@@ -36,7 +37,7 @@ thread_local! {
 }
 
 /// Something views' visibility depends on changed: a frame, a view hidden
-/// or shown, a view attached or detached, a scroll offset.
+/// or shown, a view attached or detached, a scroll offset or a transform.
 pub(crate) fn moved() {
     MOVES.with(|m| m.set(m.get().wrapping_add(1)));
 }
@@ -62,17 +63,29 @@ pub(crate) enum Sight {
 /// What can be seen of a view's content space, from `outer`, what can be
 /// seen of its parent's: `frame` is its placed frame (in the parent's
 /// content space), `origin` the point its content shows from (a scroll
-/// view's offset, (0, 0) otherwise) and `clips` whether it clips its
+/// view's offset, (0, 0) otherwise), `transform` its layer transform about
+/// the frame's top left, and `clips` whether it clips its
 /// children. An ancestor that does not clip only moves what can be seen
 /// into its own space: what overflows it shows, as in CSS.
-pub(crate) fn inner(outer: Sight, frame: Span, origin: (f32, f32), clips: bool) -> Sight {
+pub(crate) fn inner(
+    outer: Sight,
+    frame: Span,
+    origin: (f32, f32),
+    clips: bool,
+    transform: Option<Matrix>,
+) -> Sight {
     let (ox, oy) = origin;
-    // The frame's origin shows the content at `origin`.
-    let (dx, dy) = (ox - frame.0, oy - frame.1);
     let moved = match outer {
         Sight::Hidden => return Sight::Hidden,
         Sight::All => None,
-        Sight::Within(r) => Some((r.0 + dx, r.1 + dy, r.2 + dx, r.3 + dy)),
+        Sight::Within(r) => {
+            let local = (r.0 - frame.0, r.1 - frame.1, r.2 - frame.0, r.3 - frame.1);
+            let local = match transform {
+                None => Some(local),
+                Some(m) => untransform(local, &m),
+            };
+            local.map(|r| (r.0 + ox, r.1 + oy, r.2 + ox, r.3 + oy))
+        }
     };
     if !clips {
         return moved.map_or(Sight::All, Sight::Within);
@@ -87,6 +100,44 @@ pub(crate) fn inner(outer: Sight, frame: Span, origin: (f32, f32), clips: bool) 
             r.3.min(own.3),
         )),
     }
+}
+
+/// Enclose the inverse image of the visible rectangle. Rotation and skew
+/// can draw early in the corners of this box, never defer visible content.
+/// For depth, perspective or singular transforms, keep the ancestor's own
+/// clip but do not narrow it by an unsafe inverse projection.
+fn untransform(r: Span, m: &Matrix) -> Option<Span> {
+    if !m.is_2d() {
+        return None;
+    }
+    let m = &m.0;
+    let det = m[0] * m[5] - m[1] * m[4];
+    if det == 0.0 || !det.is_finite() {
+        return None;
+    }
+    let mut bounds = (
+        f32::INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+    );
+    for (x, y) in [(r.0, r.1), (r.2, r.1), (r.0, r.3), (r.2, r.3)] {
+        let (x, y) = (x as f64 - m[12], y as f64 - m[13]);
+        let (x, y) = (
+            ((x * m[5] - y * m[4]) / det) as f32,
+            ((y * m[0] - x * m[1]) / det) as f32,
+        );
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        bounds = (
+            bounds.0.min(x),
+            bounds.1.min(y),
+            bounds.2.max(x),
+            bounds.3.max(y),
+        );
+    }
+    Some(bounds)
 }
 
 /// `r` if it is not empty.
@@ -128,6 +179,9 @@ pub(crate) trait Tree {
     /// Its placed frame, in its parent's content space.
     fn frame(&self, node: &Self::Node) -> Span;
 
+    /// Its layer transform about the placed frame's top left.
+    fn transform(&self, node: &Self::Node) -> Option<Matrix>;
+
     /// The point its content shows from and whether it clips its
     /// children.
     fn content(&self, node: &Self::Node) -> ((f32, f32), bool);
@@ -166,7 +220,20 @@ impl<N> Sights<N> {
             None => tree.top_shown(node),
             Some(parent) => match self.sight(tree, parent) {
                 Sight::Hidden => false,
-                sight => !tree.hidden(node) && admits(sight, tree.frame(node)),
+                sight => {
+                    if tree.hidden(node) {
+                        return false;
+                    }
+                    let frame = tree.frame(node);
+                    match tree.transform(node) {
+                        None => admits(sight, frame),
+                        transform => {
+                            // Clip the inverse-mapped sight to the local box:
+                            // a nonempty box conservatively admits the frame.
+                            inner(sight, frame, (0.0, 0.0), true, transform) != Sight::Hidden
+                        }
+                    }
+                }
             },
         }
     }
@@ -198,7 +265,13 @@ impl<N> Sights<N> {
         while let Some(view) = chain.pop() {
             if outer != Sight::Hidden {
                 let (origin, clips) = tree.content(&view);
-                outer = inner(outer, tree.frame(&view), origin, clips);
+                outer = inner(
+                    outer,
+                    tree.frame(&view),
+                    origin,
+                    clips,
+                    tree.transform(&view),
+                );
             }
             self.known.insert(tree.key(&view), outer);
         }
@@ -246,7 +319,7 @@ mod tests {
             .iter()
             .rev()
             .fold(Sight::All, |outer, &(frame, origin, clips)| {
-                inner(outer, frame, origin, clips)
+                inner(outer, frame, origin, clips, None)
             });
         let shows = admits(sight, rect);
         assert_eq!(
@@ -340,6 +413,7 @@ mod tests {
     struct Fake {
         parent: Vec<Option<usize>>,
         frame: Vec<Span>,
+        transform: Vec<Option<Matrix>>,
         origin: Vec<(f32, f32)>,
         clips: Vec<bool>,
         hidden: Vec<bool>,
@@ -357,6 +431,7 @@ mod tests {
         ) -> usize {
             self.parent.push(parent);
             self.frame.push(frame);
+            self.transform.push(None);
             self.origin.push(origin);
             self.clips.push(clips);
             self.hidden.push(false);
@@ -398,6 +473,69 @@ mod tests {
         fn content(&self, node: &usize) -> ((f32, f32), bool) {
             (self.origin[*node], self.clips[*node])
         }
+
+        fn transform(&self, node: &usize) -> Option<Matrix> {
+            self.transform[*node]
+        }
+    }
+
+    #[test]
+    fn transformed_views_and_their_children_keep_culling() {
+        let mut t = Fake {
+            top_shown: true,
+            ..Fake::default()
+        };
+        let root = t.add(None, (0.0, 0.0, 400.0, 200.0), (0.0, 0.0), true);
+        let scaled = t.add(Some(root), (0.0, 0.0, 500.0, 250.0), (0.0, 0.0), false);
+        t.transform[scaled] = Some(Matrix::of(nsh_core::TransformKind::Scale, 0.8));
+        let label = t.add(Some(scaled), (420.0, 40.0, 500.0, 64.0), (0.0, 0.0), false);
+        let clipped = t.add(Some(scaled), (520.0, 40.0, 600.0, 64.0), (0.0, 0.0), false);
+        let mut sights = Sights::default();
+        assert!(sights.shows(&t, &label));
+        assert!(!sights.shows(&t, &clipped));
+        // A transform on the leaf itself matters as well.
+        t.transform[clipped] = Some(Matrix::of(nsh_core::TransformKind::TranslateX, -100.0));
+        assert!(Sights::default().shows(&t, &clipped));
+        // Reflection about x=500, with a nonzero scroll origin.
+        t.transform[scaled] = Some(
+            Matrix::of(nsh_core::TransformKind::ScaleX, -1.0)
+                .mul(&Matrix::of(nsh_core::TransformKind::TranslateX, 500.0)),
+        );
+        t.origin[scaled] = (100.0, 0.0);
+        assert!(Sights::default().shows(&t, &label));
+        t.origin[scaled] = (1000.0, 0.0);
+        assert!(!Sights::default().shows(&t, &label));
+    }
+
+    #[test]
+    fn rotation_keeps_visible_content_and_distant_content_deferred() {
+        let outer = Sight::Within((0.0, 0.0, 400.0, 200.0));
+        let m = Matrix::of(nsh_core::TransformKind::Rotate, 90.0)
+            .mul(&Matrix::of(nsh_core::TransformKind::TranslateX, 400.0));
+        let sight = inner(outer, (0.0, 0.0, 500.0, 500.0), (0.0, 0.0), false, Some(m));
+        assert!(!admits(sight, (40.0, 420.0, 64.0, 500.0)));
+        assert!(admits(sight, (40.0, 320.0, 64.0, 400.0)));
+        assert!(!admits(sight, (240.0, 40.0, 264.0, 80.0)));
+        let m = Matrix::of(nsh_core::TransformKind::Rotate, 30.0);
+        let sight = inner(outer, (0.0, 0.0, 500.0, 500.0), (0.0, 0.0), false, Some(m));
+        // (450, -100) rotates to about (440, 138), outside the window.
+        assert!(!admits(sight, (450.0, -100.0, 460.0, -90.0)));
+        // (420, -120) rotates to about (424, 106). This is inside the
+        // conservative box, so it may draw early, but not be culled late.
+        assert!(admits(sight, (420.0, -120.0, 430.0, -110.0)));
+        assert!(admits(sight, (300.0, -80.0, 310.0, -70.0)));
+        // Unsafe inverse projections remain conservative, not invisible.
+        let perspective = Matrix::of(nsh_core::TransformKind::Perspective, 500.0);
+        assert_eq!(
+            inner(
+                outer,
+                (0.0, 0.0, 500.0, 500.0),
+                (0.0, 0.0),
+                false,
+                Some(perspective)
+            ),
+            Sight::All
+        );
     }
 
     /// A screen, a list scrolled `offset` points and `rows` rows of 40

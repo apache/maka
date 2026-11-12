@@ -81,7 +81,7 @@ view 用 flexbox 布局子元素，默认值为：`flexDirection: "column"`、`f
 
 ## 属性
 
-`View` 有一个自己的属性 `selectable`（Rust 中为 `.selectable(true)`）：视图中的文字作为一个选区一起选择（[文字选择](./text-selection.md)）。其余是[通用属性](./index.md#通用属性)：样式（`style`、`class`、`classList`；Rust 中为 `Styled` 方法）、`disabled`，按压属性（`onPress`、`onLongPress`、`onPressDown`、`onPressUp`、`delayLongPress`、`hitSlop`），状态样式（`activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle`、`checkedStyle`），`onMouseEnter` / `onMouseMove` / `onMouseLeave`、`onContextMenu`，`onFileDragEnter` / `onFileDragLeave` / `onFileDrop`，`focusable`、`onLayout`、`ref`、`nativeID`、`testID`，手势属性（`pan`、`pinch`、`rotation` 及其事件），触摸与响应者属性，无障碍属性，以及 `ios` / `android` / `desktop`。
+`View` 有一个自己的属性 `selectable`（Rust 中为 `.selectable(true)`）：视图中的文字作为一个选区一起选择（[文字选择](./text-selection.md)）。其余是[通用属性](./index.md#通用属性)：样式（`style`、`class`、`classList`；Rust 中为 `Styled` 方法）、`disabled`，按压属性（`onPress`、`onLongPress`、`onPressDown`、`onPressUp`、`delayLongPress`、`hitSlop`），状态样式（`activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle`、`checkedStyle`），`onMouseEnter` / `onMouseMove` / `onMouseLeave`、`onWheel`、`onPinch`、`onMouseUp`、`onContextMenu`，`onFileDragEnter` / `onFileDragLeave` / `onFileDrop`，`focusable`、`onLayout`、`ref`、`nativeID`、`testID`，Web 上页面的标记（`web={{ element }}`），手势属性（`pan`、`pinch`、`rotation` 及其事件），触摸与响应者属性，无障碍属性，以及 `ios` / `android` / `desktop`。
 
 ## 可选择的视图
 
@@ -151,9 +151,13 @@ view()
 | `onPressDown` / `onPressUp` | `.on_press_down` / `.on_press_up` | `PressEvent`（Rust 中无） | 手指按下 / 抬起或移出。 |
 | `onMouseEnter` / `onMouseLeave` | `.on_mouse_enter` / `.on_mouse_leave` | `MouseEvent` | 鼠标移到视图（或其内部的视图）上 / 离开视图或窗口（见[悬停](./index.md#悬停)）；`onMouseLeave` 的位置是鼠标最后所在之处。 |
 | `onMouseMove` | `.on_mouse_move` | `MouseEvent` | 鼠标在视图（或其内部的视图）上移动，无论是否按着按键；或鼠标停在那里、没有按键按下时按下或松开了修饰键：`position`、`pagePosition`（`Point`）、`modifiers` 和 `pressedButton`（`"left"`、`"right"`、`"middle"`、`"back"`、`"forward"` 或 `null`）；每帧最多一次。 |
+| `onWheel` | `.on_wheel` | `WheelEvent` | 鼠标滚轮或触控板在视图（或其内部的视图）上滚动：`position`、`pagePosition`、`delta`、`deltaMode`（`"lines"` 或 `"points"`）和 `modifiers`；比指针下方滚动视图更近的监听者接管滚轮（见[滚轮](./index.md#滚轮)）。 |
+| `onPinch` | `.on_pinch` | `PinchEvent` | 触控板在视图（或其内部的视图）上捏合：`position`、`pagePosition`、`delta`（相对上一次事件的缩放变化）、`phase`（`"start"`、`"move"`、`"end"`）和 `modifiers`；macOS、Linux、GPUI 后端和 Safari 支持，从捏合开始到结束（[触控板捏合](./index.md#滚轮)）。 |
+| `onMouseUp` | `.on_mouse_up` | `MouseEvent` | 鼠标按键在视图（或其内部的视图）上松开：`button`、`position`、`pagePosition` 和 `modifiers`；桌面平台、终端和 Web 支持，iOS 和 Android 不报告。视图外松开不会报告（没有指针捕获）。 |
 | `onContextMenu` | `.on_context_menu` | `ContextMenuEvent` | 在视图上请求了上下文菜单：辅助按钮、浏览器中的键盘，或 macOS 和 Windows 上的读屏软件（见[上下文菜单](./index.md#上下文菜单)）。 |
-| `onFileDragEnter` / `onFileDragLeave` | `.on_file_drag_enter` / `.on_file_drag_leave` | 无 | 本地文件拖入 / 离开当前桌面拖放目标。 |
-| `onFileDrop` | `.on_file_drop` | `{ uris: string[] }`（`FileDropEvent`） | 本地文件或目录被放到桌面拖放目标。 |
+| `onFileDragEnter` | `.on_file_drag_enter` | `{ uris: string[], mimeTypes: string[] }`（`FileDragEvent`） | 本地文件进入当前桌面拖放目标，附带文件列表及其类型。 |
+| `onFileDragLeave` | `.on_file_drag_leave` | 无 | 本地文件离开当前桌面拖放目标。 |
+| `onFileDrop` | `.on_file_drop` | `{ uris: string[], mimeTypes: string[] }`（`FileDropEvent`） | 本地文件或目录被放到桌面拖放目标。 |
 | `onLayout` | `.on_layout` | `{ bounds }`（`Bounds<Points>`） | 相对父视图的 frame 发生变化。 |
 | `onPanStart` / `onPanEnd` | `.on_pan_start` / `.on_pan_end` | `PanEvent` | 通过 `pan` 绑定的拖动开始 / 结束；系统取消时 `cancelled` 为 true。 |
 | `onPinchStart` / `onPinchEnd` | `.on_pinch_start` / `.on_pinch_end` | `{ scale, velocity }` | 通过 `pinch` 绑定的捏合开始 / 结束。 |
@@ -164,39 +168,47 @@ view()
 
 ## 桌面文件拖放
 
-在 AppKit、GTK、Win32 和 GPUI 上，带有 `onFileDrop` 的视图可以接收从其他应用拖入的本地文件和目录。`onFileDragEnter` 和 `onFileDragLeave` 跟踪当前拖放目标；`onFileDrop` 接收 `{ uris: string[] }`，顺序与原生文件列表一致。每项都是绝对 `file:` URL，空格和非 ASCII 字符使用 URL 转义。请解析 URL 获取文件系统路径。
+在 AppKit、GTK、Win32 和 GPUI 上，带有 `onFileDrop` 的视图可以接收从其他应用拖入的本地文件和目录。`onFileDragEnter` 和 `onFileDrop` 都接收 `{ uris: string[], mimeTypes: string[] }`，顺序与原生文件列表一致。`uris` 的每项都是绝对 `file:` URL，空格和非 ASCII 字符使用 URL 转义。请解析 URL 获取文件系统路径。`mimeTypes[i]` 是 `uris[i]` 按文件名得出的 MIME 类型（`a.png` 为 `image/png`），文件名看不出类型时（例如目录）为 `""`，与 DOM 的 `File.type` 相同。各平台结果一致，得出它不读取任何文件。
+
+进入时的列表可用于预告文件名、数量与类型（“松开添加 2 张图片”），只传元数据；松手后仍需重新校验文件。AppKit 把 Finder 文件引用解析为路径 URL。GTK 等异步文件列表预加载完成后报告进入，鼠标停住也会通知；离开或重置后的迟到通知会被忽略。跨目标移动时先报告离开，再携同一列表报告进入；`onFileDragLeave` 用于清除预告。Rust 进入回调接收 `&FileDragEvent`，原有的 `||`、`|_: &()|` 和 `Listener<()>` 仍可使用。
 
 ```rust tabs
-let hovering = signal(false);
+let hint = signal(String::new());
 let files = signal(Vec::<String>::new());
 
 view()
     .min_h(px(160.0))
     .p_6()
-    .on_file_drag_enter(move || hovering.set(true))
-    .on_file_drag_leave(move || hovering.set(false))
+    .on_file_drag_enter(move |event: &FileDragEvent| {
+        let images = event.mime_types.iter().filter(|t| t.starts_with("image/")).count();
+        hint.set(format!("松开添加 {images} 张图片（共 {} 个文件）", event.uris.len()));
+    })
+    .on_file_drag_leave(move || hint.set(String::new()))
     .on_file_drop(move |event: &FileDropEvent| {
         files.set(event.uris.clone());
-        hovering.set(false);
+        hint.set(String::new());
     })
-    .child(text(move || if hovering.get() { "松开以接收文件" } else { "将文件拖到这里" }))
+    .child(text(move || if hint.get().is_empty() { "将文件拖到这里".into() } else { hint.get() }))
     .child(text(move || files.get().join("\n")))
 ```
 
 ```tsx tabs
-const hovering = signal(false);
+const hint = signal("");
 const files = signal<string[]>([]);
 
 <View
-  onFileDragEnter={() => hovering.set(true)}
-  onFileDragLeave={() => hovering.set(false)}
+  onFileDragEnter={(event) => {
+    const images = event.mimeTypes.filter((t) => t.startsWith("image/")).length;
+    hint.set(`松开添加 ${images} 张图片（共 ${event.uris.length} 个文件）`);
+  }}
+  onFileDragLeave={() => hint.set("")}
   onFileDrop={(event) => {
     files.set(event.uris);
-    hovering.set(false);
+    hint.set("");
   }}
   style={{ minHeight: 160, padding: 24 }}
 >
-  <Text>{hovering() ? "松开以接收文件" : "将文件拖到这里"}</Text>
+  <Text>{hint() || "将文件拖到这里"}</Text>
   <Text>{files().join("\n")}</Text>
 </View>
 ```
@@ -207,7 +219,7 @@ const files = signal<string[]>([]);
 
 ## ref 方法
 
-普通 view 的 ref 是 `ViewRef`：`focus()`、`blur()` 和 `measure()`。`ref`（Rust 中为 `.element_ref(&handle)`）拿到它的节点，例如可以传给 `setAccessibilityFocus`（[`nsh` 的无障碍 API](../modules/nsh.md#accessibility)），或者测量它（Rust 中为 `handle.measure()`）。
+普通 view 的 ref 是 `ViewRef`：`focus()`、`blur()`、`measure()` 和 [`reveal()`](../docs/scrolling.md#把视图滚到可见处)。`ref`（Rust 中为 `.element_ref(&handle)`）拿到它的节点，例如可以传给 `setAccessibilityFocus`（[`nsh` 的无障碍 API](../modules/nsh.md#accessibility)），或者测量它（Rust 中为 `handle.measure()`）。
 
 ## 文本中的视图
 
