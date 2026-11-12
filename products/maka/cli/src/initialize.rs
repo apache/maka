@@ -40,6 +40,10 @@ pub(super) struct Init {
     /// Read initial proxy settings from stdin. Requires a new, empty root.
     #[arg(long)]
     pub(super) settings_stdin: bool,
+    /// Confirm the existing Root ID after a legacy Unix mount number changed.
+    #[cfg(unix)]
+    #[arg(long, value_name = "ROOT_ID", conflicts_with = "settings_stdin")]
+    repair_root_after_remount: Option<String>,
 }
 
 /// Bootstrap secrets travel through stdin, never command arguments or diagnostics.
@@ -53,6 +57,10 @@ struct Settings {
 impl Init {
     pub async fn run(self) -> Result<(), HostError> {
         let namespaces = RootNamespaces::for_current_account()?;
+        #[cfg(unix)]
+        if let Some(expected) = &self.repair_root_after_remount {
+            maka_event_log::root::repair_after_remount(&self.root.root, expected, &namespaces)?;
+        }
         let id = if self.settings_stdin {
             let settings = Settings::parse(&settings_input().await?)?;
             let update = settings.proxy_update()?;

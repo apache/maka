@@ -1085,6 +1085,11 @@ export const conversationMessages = {
     'Maka 无法确认上次操作的结果，消息已保留。',
     'Maka 無法確認上次操作的結果，訊息已保留。',
   ],
+  'Maka could not confirm that the run stopped. Try Stop again.': [
+    'Maka could not confirm that the run stopped. Try Stop again.',
+    'Maka 无法确认这轮是否已停止。请再点一次停止。',
+    'Maka 無法確認這輪是否已停止。請再點一次停止。',
+  ],
   'Operation outcome unknown': ['Operation outcome unknown', '操作结果未知', '操作結果未知'],
   'Provider tool outcome unknown': [
     'Provider tool outcome unknown',
