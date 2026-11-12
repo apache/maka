@@ -421,7 +421,6 @@ impl Rig {
         let methods: &[&str] = if model_test {
             &[
                 "create",
-                "history",
                 "models",
                 "observe",
                 "predictNextMessage",
@@ -434,9 +433,6 @@ impl Rig {
                 "botOutbox",
                 "schedule",
                 "schedules",
-                "metadata",
-                "project",
-                "projects",
                 "selectBackend",
                 "stop",
             ]
