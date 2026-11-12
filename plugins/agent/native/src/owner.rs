@@ -137,7 +137,6 @@ struct CapturedRun {
     workspace: Workspace,
     binding: maka_sandbox::workspace::BindingStamp,
     fingerprint: String,
-    tools: Arc<Vec<crate::tools::SelectedTool>>,
     language: Language,
 }
 #[derive(Clone, Default, PartialEq, Eq)]

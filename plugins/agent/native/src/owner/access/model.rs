@@ -206,16 +206,7 @@ impl RunAccess {
                     original.name
                 )));
             }
-            if let Some(original_binding) = selection
-                .services
-                .iter()
-                .find(|binding| binding.name() == original.name)
-                && owner
-                    .tool_basis
-                    .iter()
-                    .find(|binding| binding.name() == original.name)
-                    != Some(original_binding)
-            {
+            if !selection.matches_service(&original.name, &owner.tool_basis) {
                 return Err(source_authority_changed(format!(
                     "selected tool {} binding changed",
                     original.name

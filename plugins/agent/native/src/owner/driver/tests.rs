@@ -2360,7 +2360,6 @@ mod model_recovery {
             "workspaceRoots": [{"label": "model test", "path": base.join("workspace")}],
             "tools": [],
         });
-        configure(&mut configuration);
         if with_web {
             configuration["tools"] = json!([{
                 "input":"web","result":"json","confirmation":"preapproved",
@@ -2368,6 +2367,7 @@ mod model_recovery {
                 "target":{"kind":"import","name":"web"},"method":"fetch"
             }]);
         }
+        configure(&mut configuration);
         let mut boot = Boot {
             deployment: Uuid::new_v4(),
             agent: Uuid::new_v4(),
@@ -2868,6 +2868,202 @@ mod model_recovery {
         stop.cancel();
         server.await??;
         let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        result?
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_run_keeps_native_tools_after_host_replacement() -> TestResult<()> {
+        let mut old = Rig::new()?;
+        let mut boot = bootstrap_deployment(
+            old.directory.path(),
+            format!("http://{}/v1", old.model_listener.local_addr()?),
+            true,
+            |config| {
+                config["tools"] = json!([
+                    {"name":"ModelList","description":"List models.","result":"json",
+                     "confirmation":"preapproved","target":{"kind":"export","name":"agent"},
+                     "method":"models"},
+                    {"name":"WebStatus","description":"Read web availability.","result":"json",
+                     "confirmation":"preapproved","target":{"kind":"import","name":"web"},
+                     "method":"capture"}
+                ]);
+            },
+        )
+        .await?;
+        attach(&mut old, &boot).await?;
+        let client = old.client.as_ref().unwrap();
+        let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+        let connection = call(client, "settings", "create", json!({
+            "expectedCatalogRevision":catalog["revision"],
+            "connection":{"slug":"restart-tools","name":"Restart Tools",
+                "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                "configuration":{"baseUrl":boot.base_url},"enabled":true,"enabledModelIds":["llama3.2"],
+                "modelOverrides":{"llama3.2":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}}
+        })).await?;
+        assert_eq!(connection["kind"], "committed", "{connection}");
+        let created = call(
+            client,
+            "agent",
+            "create",
+            json!({
+                "title":"Restart tool bindings","automaticTitle":false,"labels":[],
+                "workspace":{"kind":"directory","path":old.directory.path().join("workspace")}
+            }),
+        )
+        .await?;
+        let session = created["session"]["id"].as_str().ok_or("session missing")?;
+        let owner = old.captured.lock().unwrap().clone().unwrap();
+        // Hold admission on the old Host so the queued request first runs after the reopen.
+        owner.runs.state().await.preparing.insert(
+            session.into(),
+            super::super::super::PreparingRun {
+                run: RunId::new(),
+                cancellation: CancellationToken::new(),
+                completion: futures_util::future::ready(OperationCleanup::Confirmed)
+                    .boxed()
+                    .shared(),
+            },
+        );
+        let sent = call(client, "agent", "send", json!({
+            "sessionId":session,"message":"Reply with hello.",
+            "backend":{"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"}
+        })).await;
+        owner.stop.cancel();
+        owner.producers.close();
+        owner.producers.wait().await;
+        owner.runs.state().await.preparing.remove(session);
+        let sent = sent?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        assert!(owner.durable.latest_run(session.into()).await?.is_none());
+        let cleanup = old.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+
+        let listener = tokio::net::TcpListener::from_std(old.model_listener.try_clone()?)?;
+        let directory =
+            std::mem::replace(&mut old.directory, TestDirectory::Borrowed(PathBuf::new()));
+        drop(owner);
+        drop(old);
+        let base = directory.path();
+        let store = root(base, false)
+            .await
+            .map_err(|error| format!("reopen Root for deployment edit: {error}"))?;
+        let deployment = store
+            .load_application(boot.deployment)
+            .await?
+            .ok_or("deployment missing")?;
+        let mut input = deployment.source().input.clone();
+        input
+            .instances
+            .get_mut("web")
+            .unwrap()
+            .configuration
+            .values
+            .insert("network".into(), json!("allowed"));
+        store
+            .commit_application(
+                boot.deployment,
+                deployment.source().reference.revision,
+                input,
+                vec![],
+                deployment.packages().to_vec(),
+            )
+            .await?;
+        boot.source = serde_json::to_value(
+            store
+                .load_application(boot.deployment)
+                .await?
+                .ok_or("updated deployment missing")?
+                .source(),
+        )?;
+        store.shutdown().await?;
+        drop(store);
+
+        let (requests, mut received) = tokio::sync::mpsc::channel(2);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |request: axum::extract::Request| {
+                let requests = requests.clone();
+                let index = calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    let bytes = axum::body::to_bytes(request.into_body(), 1024 * 1024)
+                        .await
+                        .unwrap();
+                    let request: Value = serde_json::from_slice(&bytes).unwrap();
+                    requests.send(request).await.unwrap();
+                    let (delta, finish) = if index == 0 {
+                        (
+                            json!({"role":"assistant","tool_calls":[{"index":0,"id":"web-status",
+                            "type":"function","function":{"name":"WebStatus","arguments":"{}"}}]}),
+                            "tool_calls",
+                        )
+                    } else {
+                        (json!({"role":"assistant","content":"Hello"}), "stop")
+                    };
+                    let chunk = |delta: Value, finish: Value| {
+                        json!({
+                            "id":format!("after-restart-{index}"),"object":"chat.completion.chunk",
+                            "created":1,"model":"llama3.2",
+                            "choices":[{"index":0,"delta":delta,"finish_reason":finish}]
+                        })
+                    };
+                    (
+                        [("content-type", "text/event-stream")],
+                        format!(
+                            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                            chunk(delta, Value::Null),
+                            chunk(json!({}), json!(finish))
+                        ),
+                    )
+                }
+            }),
+        );
+        let mut new = Rig::new()?;
+        new.directory = TestDirectory::Borrowed(base.into());
+        let stop = CancellationToken::new();
+        let shutdown = stop.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await
+        });
+        let result = tokio::time::timeout(Duration::from_secs(25), async {
+            attach(&mut new, &boot)
+                .await
+                .map_err(|error| format!("attach replacement Host: {error}"))?;
+            let request = received
+                .recv()
+                .await
+                .ok_or("restored model request missing")?;
+            for name in ["ModelList", "WebStatus"] {
+                assert!(
+                    request["tools"].as_array().is_some_and(|tools| tools
+                        .iter()
+                        .any(|tool| tool["function"]["name"] == name)),
+                    "{name} missing from the restored request: {request}"
+                );
+            }
+            let response = received.recv().await.ok_or("tool result request missing")?;
+            let result = response["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["role"] == "tool")
+                .ok_or("WebStatus result missing")?;
+            let capture: Value = serde_json::from_str(
+                result["content"]
+                    .as_str()
+                    .ok_or("WebStatus result is not text")?,
+            )?;
+            assert_eq!(capture["available"], false, "{capture}");
+            completed_message(new.client.as_ref().unwrap(), session, &sent["messageId"]).await?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .await;
+        stop.cancel();
+        server.await??;
+        let cleanup = new.finish().await;
         assert!(cleanup.is_empty(), "{cleanup:?}");
         result?
     }
