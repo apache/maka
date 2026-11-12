@@ -6530,7 +6530,7 @@ export interface ModelOverride {
    */
   adapter?: string;
   /**
-   * Omitted means model-specific defaults; false is an explicit opt-out.
+   * Code Mode is enabled by default. Set false to select direct tool calls.
    */
   codeMode?: boolean;
   /**

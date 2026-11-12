@@ -240,9 +240,7 @@ impl Source {
                 accepted: AcceptedModel {
                     public_model,
                     editing_tools: Some(editing_tools(row, &selection.model_id, &model.base_url)),
-                    tool_mode: ToolMode::for_model(
-                        &selection.model_id,
-                        &model.base_url,
+                    tool_mode: ToolMode::from_override(
                         row.model_overrides
                             .as_ref()
                             .and_then(|models| models.get(&selection.model_id))
