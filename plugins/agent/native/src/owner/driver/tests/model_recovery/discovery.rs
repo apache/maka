@@ -406,9 +406,22 @@ async fn discovery_is_silent_read_only_and_retains_bounded_progress_after_reopen
     assert!(body.to_string().contains("Discovery continuation"));
     assert!(!body.to_string().contains(&note));
     let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
-    assert_eq!(page["records"][0]["content"]["result"]["note"], note);
+    let preview = &page["records"][0];
+    assert_eq!(preview["kind"], "investigation");
     assert_eq!(
-        page["records"][0]["content"]["checkpoint"]["references"],
+        preview["preview"],
+        note.chars().take(160).collect::<String>()
+    );
+    assert!(!page.to_string().contains(&note));
+    let (mut socket, entry) = memory(
+        &listener,
+        &mut socket,
+        json!({"action":"get","record":preview["id"]}),
+    )
+    .await;
+    assert_eq!(entry["content"]["result"]["note"], note);
+    assert_eq!(
+        entry["content"]["checkpoint"]["references"],
         json!(["README.md"])
     );
     tool(
@@ -454,10 +467,7 @@ async fn discovery_committed_outcome_recovers_after_lost_acknowledgement() {
     let (mut socket, _) = next(&listener).await;
     let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
     assert_eq!(page["records"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        page["records"][0]["content"]["result"]["note"],
-        "durable result"
-    );
+    assert_eq!(page["records"][0]["preview"], "durable result");
     quiet(&f, &listener, &mut socket).await;
     assert_eq!(f.outbox().await, json!([]));
     f.close().await;
@@ -675,7 +685,7 @@ async fn discovery_notification_receipt_is_idempotent_across_retry_and_reopen() 
     )
     .await;
     assert_eq!(page["records"].as_array().unwrap().len(), 2, "{page}");
-    assert_eq!(page["records"][0]["content"]["kind"], "notified");
+    assert_eq!(page["records"][0]["kind"], "notified");
     assert_eq!(f.outbox().await, original);
     quiet(&f, &listener, &mut socket).await;
     f.close().await;
@@ -1085,10 +1095,16 @@ async fn discovery_plain_completion_fails_but_preserves_its_checkpoint() {
     let (mut socket, _) = next(&listener).await;
     let (mut socket, page) = memory(&listener, &mut socket, json!({"action":"list"})).await;
     assert_eq!(
-        page["records"][0]["content"]["checkpoint"]["text"],
+        page["records"][0]["preview"],
         "README checked; changelog still pending"
     );
-    assert_eq!(page["records"][0]["content"]["result"], Value::Null);
+    let (mut socket, entry) = memory(
+        &listener,
+        &mut socket,
+        json!({"action":"get","record":page["records"][0]["id"]}),
+    )
+    .await;
+    assert_eq!(entry["content"]["result"], Value::Null);
     tool(
         &mut socket,
         "DiscoveryComplete",
