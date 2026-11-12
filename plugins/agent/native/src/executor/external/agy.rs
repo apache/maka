@@ -18,7 +18,10 @@
  */
 
 use super::*;
-use maka_agent_facts::executor::Output;
+use maka_agent_facts::{
+    executor::{Output, ToolResultDetails, TurnUsage},
+    model::ModelUsage,
+};
 #[cfg(unix)]
 use runtime::task_interruptible_pipe as native_pipe;
 #[cfg(not(unix))]
@@ -373,7 +376,12 @@ async fn observe(
     show_text: bool,
     journal: Option<&journal::ProtocolSession>,
 ) -> Result<Outcome, Error> {
-    let mut turn = NativeTurn::new(cursor.highest_step, show_text, cfg!(target_os = "macos"));
+    let mut turn = NativeTurn::new(
+        cursor.highest_step,
+        show_text,
+        cfg!(target_os = "macos"),
+        true,
+    );
     let deadline = tokio::time::Instant::now() + runtime::SETUP_TIMEOUT;
     loop {
         let event = if turn.user.is_none() {
@@ -400,13 +408,19 @@ struct NativeTurn {
     messages: AgentMessages,
     show_text: bool,
     step_annotations: bool,
+    presentation: bool,
 }
 enum PendingCommand {
     Step(Value),
     Title(Option<String>),
 }
 impl NativeTurn {
-    fn new(previous_step: Option<u64>, show_text: bool, step_annotations: bool) -> Self {
+    fn new(
+        previous_step: Option<u64>,
+        show_text: bool,
+        step_annotations: bool,
+        presentation: bool,
+    ) -> Self {
         Self {
             previous_step,
             user: None,
@@ -416,6 +430,7 @@ impl NativeTurn {
             messages: Default::default(),
             show_text,
             step_annotations,
+            presentation,
         }
     }
     async fn event(
@@ -489,7 +504,8 @@ impl NativeTurn {
                             _ => {}
                         }
                     }
-                    emit_tool(step, session, index, state, &mut self.tools, title, output).await?;
+                    self.emit_tool(step, session, index, state, title, output)
+                        .await?;
                 }
                 Ok(None)
             }
@@ -509,7 +525,8 @@ impl NativeTurn {
                     .map(|title| title.fallback);
                 if let Some(PendingCommand::Step(step)) = self.commands.remove(&index) {
                     let state = string(&step, "/state")?;
-                    emit_tool(&step, session, index, state, &mut self.tools, title, output).await?;
+                    self.emit_tool(&step, session, index, state, title, output)
+                        .await?;
                 } else if !self.tools.contains(&index) {
                     self.commands.insert(index, PendingCommand::Title(title));
                 }
@@ -525,7 +542,7 @@ impl NativeTurn {
                 for (index, command) in std::mem::take(&mut self.commands) {
                     if let PendingCommand::Step(step) = command {
                         let state = string(&step, "/state")?;
-                        emit_tool(&step, session, index, state, &mut self.tools, None, output)
+                        self.emit_tool(&step, session, index, state, None, output)
                             .await?;
                     }
                 }
@@ -537,10 +554,99 @@ impl NativeTurn {
                         "agy succeeded with an unfinished assistant message".into(),
                     ));
                 }
+                if self.presentation
+                    && self.show_text
+                    && let Some(usage) = result_usage(result)
+                {
+                    output.emit(Output::TurnUsage { usage }).await?;
+                }
                 Ok(Some(outcome))
             }
             _ => Err(Error::Invalid("Unsupported agy stream event".into())),
         }
+    }
+    async fn emit_tool(
+        &mut self,
+        step: &Value,
+        session: &str,
+        index: u64,
+        state: &str,
+        title: Option<String>,
+        output: &dyn OutputSink,
+    ) -> Result<(), Error> {
+        let name = string(step, "/tool_name")?;
+        // Only Maka's MCP calls already own canonical Host T1/T2.
+        if name == "call_mcp_tool"
+            && step
+                .pointer("/tool_info/parameters/ServerName")
+                .and_then(Value::as_str)
+                == Some("maka_maka")
+        {
+            return Ok(());
+        }
+        let tool_call_id = format!("{session}:{index}");
+        if self.tools.insert(index) {
+            let mut input = step
+                .pointer("/tool_info/parameters")
+                .cloned()
+                .unwrap_or(Value::Null);
+            if let Some(title) = title
+                && (input.is_object() || input.is_null())
+            {
+                input["toolSummary"] = title.into();
+            }
+            output
+                .emit(Output::ToolStart {
+                    tool_call_id: tool_call_id.clone(),
+                    name: name.into(),
+                    input,
+                })
+                .await?;
+        }
+        if matches!(state, "DONE" | "ERROR") {
+            self.tools.remove(&index);
+            let info = &step["tool_info"];
+            let mut is_error =
+                state == "ERROR" || info.get("error").is_some_and(|error| !error.is_null());
+            let (text, details) = if self.presentation {
+                let body = info["output"].as_str().unwrap_or_default();
+                let (body, exit_code) = if name == "run_command" {
+                    command_output(body)
+                } else {
+                    (body, None)
+                };
+                is_error |= exit_code.is_some_and(|code| code != 0);
+                let duration_ms = milliseconds(&step["duration_seconds"]);
+                let details =
+                    (exit_code.is_some() || duration_ms.is_some()).then_some(ToolResultDetails {
+                        exit_code,
+                        duration_ms,
+                    });
+                let error = info["error"]["message"]
+                    .as_str()
+                    .or_else(|| info["error"].as_str());
+                let text = match error {
+                    Some(error) if body.is_empty() => error.to_owned(),
+                    Some(error) => format!("{error}\n\n{body}"),
+                    None => body.to_owned(),
+                };
+                (text.replace('\0', "\\0"), details)
+            } else {
+                (
+                    serde_json::to_string(info).expect("native tool info is JSON"),
+                    None,
+                )
+            };
+            output
+                .emit(Output::ToolResult {
+                    tool_call_id,
+                    text,
+                    is_error,
+                    details,
+                })
+                .await?;
+        }
+        Ok(())
     }
 }
 #[derive(Default)]
@@ -651,58 +757,54 @@ fn terminal(result: &Value, message_id: Option<String>) -> Result<Outcome, Error
         _ => Err(Error::Unknown),
     }
 }
-async fn emit_tool(
-    step: &Value,
-    session: &str,
-    index: u64,
-    state: &str,
-    tools: &mut std::collections::BTreeSet<u64>,
-    title: Option<String>,
-    output: &dyn OutputSink,
-) -> Result<(), Error> {
-    let name = string(step, "/tool_name")?;
-    // Only Maka's MCP calls already own canonical Host T1/T2.
-    if name == "call_mcp_tool"
-        && step
-            .pointer("/tool_info/parameters/ServerName")
-            .and_then(Value::as_str)
-            == Some("maka_maka")
-    {
-        return Ok(());
-    }
-    let tool_call_id = format!("{session}:{index}");
-    if tools.insert(index) {
-        let mut input = step
-            .pointer("/tool_info/parameters")
-            .cloned()
-            .unwrap_or(Value::Null);
-        if let Some(title) = title
-            && (input.is_object() || input.is_null())
-        {
-            input["toolSummary"] = title.into();
+fn milliseconds(value: &Value) -> Option<u64> {
+    let seconds = value.as_f64()?;
+    (seconds.is_finite() && seconds >= 0.0 && seconds * 1000.0 <= 9_007_199_254_740_991.0)
+        .then(|| (seconds * 1000.0).round() as u64)
+}
+
+fn result_usage(result: &Value) -> Option<TurnUsage> {
+    let usage = result.get("usage")?.as_object()?;
+    let counter = |key| usage.get(key).and_then(Value::as_u64);
+    Some(TurnUsage {
+        tokens: ModelUsage {
+            input_tokens: counter("input_tokens"),
+            output_tokens: counter("output_tokens"),
+            reasoning_tokens: counter("thinking_tokens"),
+            cache_read_tokens: counter("cache_read_tokens"),
+            cache_write_tokens: None,
+        },
+        total_tokens: counter("total_tokens"),
+        duration_ms: milliseconds(&result["duration_seconds"]),
+    })
+}
+
+fn command_output(raw: &str) -> (&str, Option<i32>) {
+    let mut body = raw;
+    for label in ["Created At: ", "Completed At: "] {
+        if body.starts_with(label) {
+            let Some((_, rest)) = body.split_once('\n') else {
+                return (raw, None);
+            };
+            body = rest;
         }
-        output
-            .emit(Output::ToolStart {
-                tool_call_id: tool_call_id.clone(),
-                name: name.into(),
-                input,
-            })
-            .await?;
     }
-    if matches!(state, "DONE" | "ERROR") {
-        tools.remove(&index);
-        output
-            .emit(Output::ToolResult {
-                tool_call_id,
-                text: serde_json::to_string(&step["tool_info"]).expect("native tool info is JSON"),
-                is_error: state == "ERROR"
-                    || step
-                        .pointer("/tool_info/error")
-                        .is_some_and(|error| !error.is_null()),
-            })
-            .await?;
+    let (status, rest) = body.split_once('\n').unwrap_or((body, ""));
+    let code = status
+        .strip_prefix("Command exited with code ")
+        .and_then(|code| code.trim_end_matches('\r').strip_suffix('.'))
+        .and_then(|code| code.parse::<i32>().ok());
+    match (code, rest.trim_start_matches(['\r', '\n'])) {
+        (Some(code), "") => ("", Some(code)),
+        (Some(code), rest)
+            if let Some(output) = rest
+                .strip_prefix("Command output:\n")
+                .or_else(|| rest.strip_prefix("Command output:\r\n")) =>
+        {
+            (output, Some(code))
+        }
+        _ => (raw, None),
     }
-    Ok(())
 }
 
 pub(super) async fn replay(
@@ -755,7 +857,12 @@ pub(super) async fn replay(
         return Err(Error::Unknown);
     }
     let mut cursor = TurnCursor::default();
-    let mut bootstrap = NativeTurn::new(None, false, *step_annotations);
+    let mut bootstrap = NativeTurn::new(
+        None,
+        false,
+        *step_annotations,
+        binding.adapter_version >= PRESENTATION_VERSION,
+    );
     loop {
         let event = stream.required().await?;
         if let Some(outcome) = bootstrap
@@ -774,7 +881,12 @@ pub(super) async fn replay(
     {
         return Err(Error::Unknown);
     }
-    let mut turn = NativeTurn::new(cursor.highest_step, true, *step_annotations);
+    let mut turn = NativeTurn::new(
+        cursor.highest_step,
+        true,
+        *step_annotations,
+        binding.adapter_version >= PRESENTATION_VERSION,
+    );
     let outcome = loop {
         let event = stream.required().await?;
         if event["event"] == "step_update"
@@ -801,12 +913,146 @@ pub(super) async fn models(
     cwd: &str,
     cancellation: CancellationToken,
 ) -> Result<Value, Error> {
+    let stdout = read_command(config, cwd, &["models"], cancellation).await?;
+    let models = tokio::task::spawn_blocking(move || parse_models(&stdout))
+        .await
+        .map_err(|_| Error::Provider("agy model parser task failed".into()))??;
+    Ok(serde_json::json!({
+        "installation":{"kind":"available"},
+        "authentication":{"kind":"unknown","source":"agy models"},
+        "models":{"kind":"ok","models":models}
+    }))
+}
+
+pub(super) async fn usage_limits(
+    config: &runtime::ResolvedCommand<'_>,
+    cwd: &str,
+    cancellation: CancellationToken,
+) -> Result<Value, Error> {
+    let stdout = read_command(
+        config,
+        cwd,
+        &["-p", "/usage", "--output-format", "stream-json"],
+        cancellation,
+    )
+    .await?;
+    tokio::task::spawn_blocking(move || parse_usage(&stdout))
+        .await
+        .map_err(|_| Error::Provider("agy usage parser task failed".into()))?
+}
+
+fn parse_usage(stdout: &[u8]) -> Result<Value, Error> {
+    use maka_agent_api::external::ExternalUsageLimits;
+    use maka_agent_ports::provider::{UsageLimit, UsagePeriod};
+
+    #[derive(Deserialize)]
+    struct ResultEnvelope {
+        status: String,
+        num_turns: u64,
+        command: UsageCommand,
+    }
+    #[derive(Deserialize)]
+    struct UsageCommand {
+        name: String,
+        data: Groups,
+    }
+    #[derive(Deserialize)]
+    struct Groups {
+        groups: Vec<Group>,
+    }
+    #[derive(Deserialize)]
+    struct Group {
+        name: String,
+        buckets: Vec<Bucket>,
+    }
+    #[derive(Deserialize)]
+    struct Bucket {
+        window: Window,
+        remaining_fraction: f64,
+        reset_time: Option<String>,
+        #[serde(default)]
+        disabled: bool,
+    }
+    #[derive(Deserialize)]
+    enum Window {
+        #[serde(rename = "weekly")]
+        Weekly,
+        #[serde(rename = "5h")]
+        FiveHours,
+    }
+    let invalid = || Error::Invalid("agy returned invalid usage limits".into());
+    let output = std::str::from_utf8(stdout).map_err(|_| invalid())?;
+    let mut result = None;
+    for line in output.lines() {
+        let mut event: Value = serde_json::from_str(line).map_err(|_| invalid())?;
+        if event["event"] == "result" {
+            if result.is_some() {
+                return Err(invalid());
+            }
+            result = Some(
+                serde_json::from_value::<ResultEnvelope>(event["result"].take())
+                    .map_err(|_| invalid())?,
+            );
+        }
+    }
+    let result = result.ok_or_else(invalid)?;
+    if result.status != "SUCCESS" || result.num_turns != 0 || result.command.name != "usage" {
+        return Err(invalid());
+    }
+    let mut limits = Vec::new();
+    for group in result.command.data.groups {
+        let label = group.name.trim();
+        if label.is_empty() || label.chars().any(char::is_control) {
+            return Err(invalid());
+        }
+        for bucket in group.buckets {
+            let period = UsagePeriod::Duration {
+                seconds: match bucket.window {
+                    Window::Weekly => 7 * 24 * 3600,
+                    Window::FiveHours => 5 * 3600,
+                },
+            };
+            if bucket.disabled {
+                limits.push(UsageLimit::Disabled {
+                    label: label.into(),
+                    period,
+                });
+            } else {
+                if !(0.0..=1.0).contains(&bucket.remaining_fraction) {
+                    return Err(invalid());
+                }
+                let resets_at = bucket
+                    .reset_time
+                    .map(|reset| {
+                        let timestamp: jiff::Timestamp = reset.parse().map_err(|_| invalid())?;
+                        u64::try_from(timestamp.as_second()).map_err(|_| invalid())
+                    })
+                    .transpose()?;
+                limits.push(UsageLimit::Window {
+                    label: Some(label.into()),
+                    period: Some(period),
+                    resets_at,
+                    used_percent: (1.0 - bucket.remaining_fraction) * 100.0,
+                    quantity: None,
+                });
+            }
+        }
+    }
+    serde_json::to_value(ExternalUsageLimits::Ready { limits }).map_err(|_| invalid())
+}
+
+async fn read_command(
+    config: &runtime::ResolvedCommand<'_>,
+    cwd: &str,
+    args: &[&str],
+    cancellation: CancellationToken,
+) -> Result<Vec<u8>, Error> {
     use tokio::io::AsyncWriteExt;
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
     let mut command = config.command(cwd);
-    command.arg("models");
+    command.args(args);
     let mut process = maka_process::pipe::spawn(command)
         .await
         .map_err(runtime::process_error)?;
@@ -815,7 +1061,7 @@ pub(super) async fn models(
             .stdin
             .shutdown()
             .await
-            .map_err(|_| Error::Provider("Could not close agy discovery input".into()))?;
+            .map_err(|_| Error::Provider("Could not close agy query input".into()))?;
         let status = async {
             process
                 .child
@@ -825,15 +1071,15 @@ pub(super) async fn models(
         };
         tokio::try_join!(
             status,
-            catalog_output(&mut process.stdout, true),
-            catalog_output(&mut process.stderr, false),
+            query_output(&mut process.stdout, true),
+            query_output(&mut process.stderr, false),
         )
     };
     let observed = tokio::select! {
         biased;
         () = cancellation.cancelled() => Err(Error::Cancelled),
         result = tokio::time::timeout(runtime::SETUP_TIMEOUT, observed) => {
-            result.unwrap_or_else(|_| Err(Error::Provider("agy model discovery timed out".into())))
+            result.unwrap_or_else(|_| Err(Error::Provider("agy query timed out".into())))
         }
     };
     let (status, stdout, _) = match observed {
@@ -865,19 +1111,12 @@ pub(super) async fn models(
     };
     if !status.success() {
         // Native diagnostics may contain account information; they are never surfaced.
-        return Err(Error::Provider("agy models failed".into()));
+        return Err(Error::Provider("agy query failed".into()));
     }
-    let models = tokio::task::spawn_blocking(move || parse_models(&stdout))
-        .await
-        .map_err(|_| Error::Provider("agy model parser task failed".into()))??;
-    Ok(serde_json::json!({
-        "installation":{"kind":"available"},
-        "authentication":{"kind":"unknown","source":"agy models"},
-        "models":{"kind":"ok","models":models}
-    }))
+    Ok(stdout)
 }
 
-async fn catalog_output(
+async fn query_output(
     reader: &mut (impl tokio::io::AsyncRead + Unpin),
     retain: bool,
 ) -> Result<Vec<u8>, Error> {
@@ -889,14 +1128,14 @@ async fn catalog_output(
         let count = reader
             .read(&mut buffer)
             .await
-            .map_err(|_| Error::Provider("Could not read agy model discovery".into()))?;
+            .map_err(|_| Error::Provider("Could not read agy query output".into()))?;
         if count == 0 {
             return Ok(result);
         }
         observed += count;
         if observed > runtime::MAX_MESSAGE_BYTES {
             return Err(Error::Invalid(
-                "agy model discovery exceeds the 256 MiB observation budget".into(),
+                "agy query output exceeds the 256 MiB observation budget".into(),
             ));
         }
         if retain {
@@ -928,6 +1167,21 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn headless_usage_keeps_account_groups_and_disabled_windows() {
+        let output = br#"{"event":"command_result","command":{"name":"usage"}}
+{"event":"result","result":{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"window":"weekly","remaining_fraction":0,"reset_time":"2026-11-12T00:00:00Z"},{"window":"5h","remaining_fraction":0,"disabled":true}]},{"name":"Claude and GPT models","buckets":[{"window":"5h","remaining_fraction":0.75}]}]}}}}
+"#;
+        assert_eq!(
+            parse_usage(output).unwrap(),
+            json!({"kind":"ready","limits":[
+                {"kind":"window","label":"Gemini Models","period":{"kind":"duration","seconds":604800},"usedPercent":100.0,"resetsAt":1794441600u64},
+                {"kind":"disabled","label":"Gemini Models","period":{"kind":"duration","seconds":18000}},
+                {"kind":"window","label":"Claude and GPT models","period":{"kind":"duration","seconds":18000},"usedPercent":25.0}
+            ]})
+        );
+    }
+
     #[derive(Default)]
     struct Sink(std::sync::Mutex<Vec<Output>>);
     impl OutputSink for Sink {
@@ -943,7 +1197,7 @@ mod tests {
     async fn command_titles_follow_their_original_steps_in_either_arrival_order() {
         let output = Sink::default();
         let mut cursor = TurnCursor::default();
-        let mut turn = NativeTurn::new(None, true, true);
+        let mut turn = NativeTurn::new(None, true, true, true);
         let update = |step: Value| json!({"event":"step_update","step_update":step});
         let command = |index, state, command| {
             update(json!({

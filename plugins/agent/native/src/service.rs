@@ -609,6 +609,12 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
+                "externalUsageLimits" => {
+                    let input: maka_agent_api::external::ExternalUsageLimitsRead = decode(input)?;
+                    owner
+                        .external_usage_limits(input.runtime, context.scope())
+                        .await
+                }
                 "executors" => {
                     let _: ExecutorsRead = decode(input)?;
                     encode(Executors {

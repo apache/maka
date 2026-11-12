@@ -19,9 +19,11 @@
 
 import { UiError, errorText, renderText, type UiText } from './text';
 import { tr } from './locale';
+import { formatDuration } from './duration';
 import { cleanup, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import type {
+  ExecutorTurnUsage,
   ModelUsage,
   ServiceMethods,
   SettingsUsageRead,
@@ -57,11 +59,27 @@ function total(attempts: UsageModelAttempt[], key: Counter): string {
   return String(value);
 }
 
+export function executorUsageLabel(usage: ExecutorTurnUsage): string {
+  return usage.totalTokens == null
+    ? [
+        usage.tokens.input_tokens == null
+          ? ''
+          : tr('{count} input tokens', { count: usage.tokens.input_tokens }),
+        usage.tokens.output_tokens == null
+          ? ''
+          : tr('{count} output tokens', { count: usage.tokens.output_tokens }),
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : tr('{count} tokens', { count: usage.totalTokens });
+}
+
 /** Read original turn accounting at one captured usage fence, including across retries. */
 export function TurnUsage(props: {
   sessionId: string;
   turnId: string;
   current(): boolean;
+  reported?: ExecutorTurnUsage;
   close(): void;
 }) {
   const host = useHost();
@@ -147,7 +165,7 @@ export function TurnUsage(props: {
         });
     }
   };
-  void Promise.resolve().then(read);
+  if (!props.reported) void Promise.resolve().then(read);
   const attempts = () => {
     const result = reading();
     return result.kind === 'ready' ? result.attempts : [];
@@ -159,6 +177,19 @@ export function TurnUsage(props: {
     { key: 'cache_read_tokens', label: tr('Cache read tokens') },
     { key: 'cache_write_tokens', label: tr('Cache write tokens') },
   ];
+  const reportedCounters = () => {
+    const usage = props.reported;
+    if (!usage) return [];
+    const counts = counters().flatMap(({ key, label }) => {
+      const value = usage.tokens[key];
+      return value == null ? [] : [{ label, value: String(value) }];
+    });
+    if (usage.totalTokens != null)
+      counts.push({ label: tr('Total tokens'), value: String(usage.totalTokens) });
+    if (usage.durationMs != null)
+      counts.push({ label: tr('Duration'), value: formatDuration(usage.durationMs, true) });
+    return counts;
+  };
   const cost = () => {
     let value = 0;
     for (const attempt of attempts()) {
@@ -170,10 +201,20 @@ export function TurnUsage(props: {
   };
   return (
     <ModalDialog size="form" onCancel={props.close}>
-      <DialogHeader title={tr('Main model usage')} />
+      <DialogHeader title={props.reported ? tr('Turn usage') : tr('Main model usage')} />
       <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
         <View style={{ gap: 8 }}>
-          <If when={reading().kind === 'loading'}>
+          <If when={!!props.reported}>
+            <Each of={reportedCounters()} key={(counter) => counter.label}>
+              {(counter) => (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
+                  <Text style={{ flex: 1, color: C.secondary }}>{counter().label}</Text>
+                  <Text style={[{ color: C.text }, { userSelect: 'text' }]}>{counter().value}</Text>
+                </View>
+              )}
+            </Each>
+          </If>
+          <If when={!props.reported && reading().kind === 'loading'}>
             <Text style={{ color: C.muted }}>
               {tr('Reading original usage… {count} records checked', {
                 count:

@@ -87,9 +87,22 @@ async fn unpaired(
                     .run_source(item.recorded.run)
                     .await
                     .map_err(|error| error.to_string())?;
-                cache.timing = Some(timing(&data, &source).await?);
-                cache.source = Some(source);
+                let mut timing = timing(&data, &source).await?;
                 cache.views.clear();
+                if matches!(source.spec.backend, BackendSpec::Executor { .. }) {
+                    let view = data
+                        .view_at(source.run)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    timing.executor_usage = view
+                        .external
+                        .as_ref()
+                        .and_then(|task| task.turn_usage.clone())
+                        .map(Box::new);
+                    cache.views.insert(source.run, view);
+                }
+                cache.timing = Some(timing);
+                cache.source = Some(source);
                 cache.key = Some(key);
             }
             let mut row = projection::project(
@@ -164,6 +177,7 @@ async fn timing(
     Ok(wire::TurnTiming {
         started_at: millis(source.admission.at)?,
         finished,
+        executor_usage: None,
     })
 }
 pub(super) async fn visible(

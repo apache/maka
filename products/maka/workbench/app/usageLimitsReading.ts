@@ -24,7 +24,7 @@ export type UsageReading = { result: UsageResult; refreshFailed: boolean };
 
 const REFRESH_INTERVAL = 60_000;
 
-export function watchConnectionUsage(
+export function watchUsageLimits(
   query: () => Promise<UsageResult>,
   publish: (reading: UsageReading) => void,
   previous: UsageReading | null,

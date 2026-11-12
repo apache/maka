@@ -185,7 +185,7 @@ async fn run(
     steering: &mut steering::Steering,
 ) -> Result<Outcome, Error> {
     io.cancellation = CancellationToken::new();
-    let mut turn = StreamTurn::new(session.to_owned());
+    let mut turn = StreamTurn::new(session.to_owned(), true);
     turn.sent(input.to_owned());
     bridge.admit()?;
     let wire_input = io
@@ -264,6 +264,7 @@ struct OpenMessage {
     thinking: bool,
 }
 struct StreamTurn {
+    presentation: bool,
     session: String,
     initialized: bool,
     pending: VecDeque<PendingInput>,
@@ -274,8 +275,9 @@ struct StreamTurn {
     first_failure: Option<Outcome>,
 }
 impl StreamTurn {
-    fn new(session: String) -> Self {
+    fn new(session: String, presentation: bool) -> Self {
         Self {
+            presentation,
             session,
             initialized: false,
             pending: VecDeque::new(),
@@ -471,6 +473,7 @@ impl StreamTurn {
                                         tool_call_id: id.to_owned(),
                                         text: content_text(&block["content"]),
                                         is_error: block["is_error"] == true,
+                                        details: None,
                                     })
                                     .await?;
                             }
@@ -518,6 +521,11 @@ impl StreamTurn {
                 }
                 self.pending.pop_front();
                 if self.pending.is_empty() {
+                    if self.presentation
+                        && let Some(usage) = result_usage(&row)
+                    {
+                        output.emit(Output::TurnUsage { usage }).await?;
+                    }
                     return Ok(Some(self.first_failure.take().unwrap_or(outcome)));
                 }
                 self.final_message = None;
@@ -550,7 +558,7 @@ mod tests {
     #[tokio::test]
     async fn command_lifecycle_can_precede_claude_initialization() {
         let output = Sink::default();
-        let mut turn = StreamTurn::new("session".into());
+        let mut turn = StreamTurn::new("session".into(), true);
         turn.sent("input".into());
         for row in [
             json!({"type":"command_lifecycle","stage":"started","session_id":"session","uuid":"input"}),
@@ -569,6 +577,24 @@ mod tests {
         );
         assert_eq!(*output.0.lock().unwrap(), "Hello");
     }
+}
+
+fn result_usage(row: &Value) -> Option<maka_agent_facts::executor::TurnUsage> {
+    let usage = row.get("usage")?.as_object()?;
+    let counter = |key| usage.get(key).and_then(Value::as_u64);
+    Some(maka_agent_facts::executor::TurnUsage {
+        tokens: maka_agent_facts::model::ModelUsage {
+            input_tokens: counter("input_tokens"),
+            output_tokens: counter("output_tokens"),
+            reasoning_tokens: usage
+                .get("output_tokens_details")
+                .and_then(|details| details["thinking_tokens"].as_u64()),
+            cache_read_tokens: counter("cache_read_input_tokens"),
+            cache_write_tokens: counter("cache_creation_input_tokens"),
+        },
+        total_tokens: None,
+        duration_ms: row["duration_ms"].as_u64(),
+    })
 }
 
 fn content_text(content: &Value) -> String {
@@ -599,7 +625,10 @@ pub(super) async fn replay(
     else {
         return Err(Error::Unknown);
     };
-    let mut turn = StreamTurn::new(session.clone());
+    let mut turn = StreamTurn::new(
+        session.clone(),
+        binding.adapter_version >= PRESENTATION_VERSION,
+    );
     let mut first = true;
     let mut user_frames = 0_u64;
     while let Some(row) = input.next().await? {

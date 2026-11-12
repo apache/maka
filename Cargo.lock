@@ -6432,6 +6432,7 @@ dependencies = [
  "futures-util",
  "hex",
  "image",
+ "jiff",
  "jsonschema 0.60.1",
  "libc",
  "maka-acp-native",

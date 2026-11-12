@@ -685,6 +685,7 @@ fn known_publication_failure_only_fences_followup_until_original_cleanup() {
         binding: None,
         observed: 0,
         active_tools: Default::default(),
+        turn_usage: None,
         closed: Some(ExternalClosure {
             outcome: Terminal::Completed,
             diagnostic: None,
