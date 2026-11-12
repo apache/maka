@@ -36469,6 +36469,23 @@ export const contracts: {
                     required: ['kind', 'messageId', 'stepId', 'attemptId'],
                   },
                   {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor_text_changed',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      thinking: {
+                        type: 'boolean',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId', 'thinking'],
+                  },
+                  {
                     description:
                       'Canonical transcript facts changed; clients query bounded history.',
                     type: 'object',

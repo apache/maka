@@ -275,6 +275,7 @@ pub(super) async fn row(
         .await
         .map_err(|error| error.to_string())?;
     let mut row = projection::Row {
+        continuation: None,
         visible: true,
         chunk: wire::Chunk {
             order,

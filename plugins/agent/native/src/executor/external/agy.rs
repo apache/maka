@@ -367,7 +367,7 @@ async fn observe(
         cursor.highest_step,
         show_text,
         cfg!(target_os = "macos"),
-        true,
+        AGY_ACTIVITY_VERSION,
     );
     let deadline = tokio::time::Instant::now() + runtime::SETUP_TIMEOUT;
     loop {
@@ -391,13 +391,15 @@ struct NativeTurn {
     user: Option<u64>,
     user_done: bool,
     tools: std::collections::BTreeSet<u64>,
-    commands: std::collections::BTreeMap<u64, PendingCommand>,
+    pending_tools: std::collections::BTreeMap<u64, PendingTool>,
+    reported_thoughts: std::collections::BTreeSet<u64>,
     messages: AgentMessages,
     show_text: bool,
     step_annotations: bool,
     presentation: bool,
+    all_tool_annotations: bool,
 }
-enum PendingCommand {
+enum PendingTool {
     Step(Value),
     Title(Option<String>),
 }
@@ -406,18 +408,20 @@ impl NativeTurn {
         previous_step: Option<u64>,
         show_text: bool,
         step_annotations: bool,
-        presentation: bool,
+        adapter_version: u32,
     ) -> Self {
         Self {
             previous_step,
             user: None,
             user_done: false,
             tools: Default::default(),
-            commands: Default::default(),
+            pending_tools: Default::default(),
+            reported_thoughts: Default::default(),
             messages: Default::default(),
             show_text,
             step_annotations,
-            presentation,
+            presentation: adapter_version >= PRESENTATION_VERSION,
+            all_tool_annotations: adapter_version >= AGY_ACTIVITY_VERSION,
         }
     }
     async fn event(
@@ -478,14 +482,16 @@ impl NativeTurn {
                 }
                 if kind == "tool" {
                     let mut title = None;
-                    if self.step_annotations && step["tool_name"] == "run_command" {
-                        match self.commands.remove(&index) {
-                            Some(PendingCommand::Title(observed)) => title = observed,
+                    if self.step_annotations
+                        && (self.all_tool_annotations || step["tool_name"] == "run_command")
+                    {
+                        match self.pending_tools.remove(&index) {
+                            Some(PendingTool::Title(observed)) => title = observed,
                             _ if !self.tools.contains(&index)
                                 && !matches!(state, "DONE" | "ERROR") =>
                             {
-                                self.commands
-                                    .insert(index, PendingCommand::Step(step.clone()));
+                                self.pending_tools
+                                    .insert(index, PendingTool::Step(step.clone()));
                                 return Ok(None);
                             }
                             _ => {}
@@ -502,20 +508,38 @@ impl NativeTurn {
                 if annotation["session"] != session || !self.user.is_some_and(|user| index > user) {
                     tracing::warn!(
                         index,
-                        "Antigravity tool annotation does not match the current turn"
+                        "Antigravity step annotation does not match the current turn"
                     );
+                    return Ok(None);
+                }
+                if let Some(thinking) = annotation["thinking"].as_str() {
+                    if self.show_text && self.reported_thoughts.insert(index) {
+                        let message_id = format!("thought:{index}");
+                        output
+                            .emit(Output::MessageStart {
+                                message_id: message_id.clone(),
+                            })
+                            .await?;
+                        output
+                            .emit(Output::ThinkingDelta {
+                                message_id: message_id.clone(),
+                                text: thinking.into(),
+                            })
+                            .await?;
+                        output.emit(Output::MessageEnd { message_id }).await?;
+                    }
                     return Ok(None);
                 }
                 let title = annotation["title"]
                     .as_str()
                     .and_then(maka_agent_facts::display::Text::single_line)
                     .map(|title| title.fallback);
-                if let Some(PendingCommand::Step(step)) = self.commands.remove(&index) {
+                if let Some(PendingTool::Step(step)) = self.pending_tools.remove(&index) {
                     let state = string(&step, "/state")?;
                     self.emit_tool(&step, session, index, state, title, output)
                         .await?;
                 } else if !self.tools.contains(&index) {
-                    self.commands.insert(index, PendingCommand::Title(title));
+                    self.pending_tools.insert(index, PendingTool::Title(title));
                 }
                 Ok(None)
             }
@@ -526,8 +550,8 @@ impl NativeTurn {
                         "agy terminal did not correlate to this user input".into(),
                     ));
                 }
-                for (index, command) in std::mem::take(&mut self.commands) {
-                    if let PendingCommand::Step(step) = command {
+                for (index, command) in std::mem::take(&mut self.pending_tools) {
+                    if let PendingTool::Step(step) = command {
                         let state = string(&step, "/state")?;
                         self.emit_tool(&step, session, index, state, None, output)
                             .await?;
@@ -856,12 +880,8 @@ pub(super) async fn replay(
     }
     let mut cursor = TurnCursor::default();
     if bootstrap_input.is_some() {
-        let mut bootstrap = NativeTurn::new(
-            None,
-            false,
-            *step_annotations,
-            binding.adapter_version >= PRESENTATION_VERSION,
-        );
+        let mut bootstrap =
+            NativeTurn::new(None, false, *step_annotations, binding.adapter_version);
         loop {
             let event = stream.required().await?;
             if let Some(outcome) = bootstrap
@@ -885,7 +905,7 @@ pub(super) async fn replay(
         cursor.highest_step,
         true,
         *step_annotations,
-        binding.adapter_version >= PRESENTATION_VERSION,
+        binding.adapter_version,
     );
     let outcome = loop {
         let event = stream.required().await?;
@@ -1194,31 +1214,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn command_titles_follow_their_original_steps_in_either_arrival_order() {
+    async fn tool_titles_follow_their_original_steps_in_either_arrival_order() {
         let output = Sink::default();
         let mut cursor = TurnCursor::default();
-        let mut turn = NativeTurn::new(None, true, true, true);
+        let mut turn = NativeTurn::new(None, true, true, AGY_ACTIVITY_VERSION);
         let update = |step: Value| json!({"event":"step_update","step_update":step});
-        let command = |index, state, command| {
+        let tool = |index, state, name, parameters| {
             update(json!({
                 "conversation_id":"session","step_index":index,"step_type":"tool","state":state,
-                "tool_name":"run_command","tool_info":{"parameters":{"CommandLine":command}},
+                "tool_name":name,"tool_info":{"parameters":parameters},
             }))
         };
-        let annotation = |step, title| {
+        let annotation = |step, title: Option<&str>| {
             json!({
                 "event":"maka_step_annotation","annotation":{"session":"session","step":step,"title":title},
             })
         };
+        let thought = json!({
+            "event":"maka_step_annotation",
+            "annotation":{"session":"session","step":5,"thinking":"Check the original step."},
+        });
         for event in [
             update(
                 json!({"conversation_id":"session","step_index":0,"step_type":"user_input","state":"DONE"}),
             ),
-            command(1, "ACTIVE", "printf first"),
-            annotation(2, "Second command"),
-            command(2, "ACTIVE", "printf second"),
-            annotation(1, "First command"),
-            command(3, "ERROR", "printf denied"),
+            tool(1, "ACTIVE", "new_tool", json!({})),
+            annotation(2, Some("Second command")),
+            tool(
+                2,
+                "ACTIVE",
+                "run_command",
+                json!({"CommandLine":"printf second"}),
+            ),
+            annotation(1, Some("A future tool's summary")),
+            tool(
+                3,
+                "ERROR",
+                "run_command",
+                json!({"CommandLine":"printf denied"}),
+            ),
+            tool(4, "ACTIVE", "write_file", json!({"Path":"probe.txt"})),
+            annotation(4, None),
+            tool(4, "DONE", "write_file", json!({"Path":"probe.txt"})),
+            thought.clone(),
+            thought,
         ] {
             assert!(
                 turn.event(event, "session", &mut cursor, &output, None)
@@ -1233,11 +1272,11 @@ mod tests {
             .filter_map(|event| match event {
                 Output::ToolStart {
                     tool_call_id,
+                    name,
                     input,
-                    ..
                 } => Some((
                     tool_call_id.as_str(),
-                    input["CommandLine"].as_str().unwrap(),
+                    name.as_str(),
                     input["toolSummary"].as_str(),
                 )),
                 _ => None,
@@ -1246,10 +1285,21 @@ mod tests {
         assert_eq!(
             starts,
             [
-                ("session:2", "printf second", Some("Second command")),
-                ("session:1", "printf first", Some("First command")),
-                ("session:3", "printf denied", None),
+                ("session:2", "run_command", Some("Second command")),
+                ("session:1", "new_tool", Some("A future tool's summary")),
+                ("session:3", "run_command", None),
+                ("session:4", "write_file", None),
             ]
         );
+        let thoughts: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Output::ThinkingDelta { message_id, text } => {
+                    Some((message_id.as_str(), text.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thoughts, [("thought:5", "Check the original step.")]);
     }
 }

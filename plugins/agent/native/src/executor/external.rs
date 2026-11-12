@@ -40,6 +40,7 @@ mod runtime;
 mod steering;
 mod tools;
 const PRESENTATION_VERSION: u32 = 3;
+const AGY_ACTIVITY_VERSION: u32 = 4;
 pub(crate) use history::Inputs;
 pub(crate) use tools::{HostEffects, HostTools};
 
@@ -332,13 +333,15 @@ impl External {
             | NativeTask::ClaudePty { .. }
             | NativeTask::ClaudeStream { .. } => NativeRuntime::Claude,
         };
-        if !matches!(binding.adapter_version, 2 | PRESENTATION_VERSION)
-            || request
-                .settings
-                .runtime
-                .as_deref()
-                .and_then(|runtime| runtime.parse::<NativeRuntime>().ok())
-                != Some(runtime)
+        if !matches!(
+            binding.adapter_version,
+            2 | PRESENTATION_VERSION | AGY_ACTIVITY_VERSION
+        ) || request
+            .settings
+            .runtime
+            .as_deref()
+            .and_then(|runtime| runtime.parse::<NativeRuntime>().ok())
+            != Some(runtime)
         {
             return Ok(blocked(
                 "Original native binding protocol or runtime does not match this task".into(),
