@@ -1414,6 +1414,165 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retain_previous_replaces_clears_errors_and_unmounts() {
+        crate::gtk_test::run(retain_previous_lifecycle)
+            .expect("native image test requires a GTK display (use xvfb-run)");
+    }
+
+    // Control completion ordering while using the platform decoder and mounter.
+    fn retain_previous_lifecycle() {
+        use nsh_core::image::{Budget, MemoryCache};
+        use nsh_core::{MountItem, ViewKind};
+
+        let surface = crate::gtk_test::surface();
+        crate::gtk_test::apply(
+            &surface,
+            &[MountItem::Create {
+                id: 2,
+                kind: ViewKind::Image,
+            }],
+        );
+        let view = crate::gtk_test::view(&surface, 2);
+        let options = ImageOptions {
+            retain_previous: true,
+            ..Default::default()
+        };
+        let source = |uri: &str| ImageSource {
+            uri: uri.into(),
+            ..Default::default()
+        };
+        let red = decoded(br##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#f00"/></svg>"##, 64).unwrap();
+        let blue = decoded(br##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#00f"/></svg>"##, 64).unwrap();
+        let budget = Budget::new(1024);
+        let cache = MemoryCache::<u8, ()>::new(&budget);
+        let generation = || view.state().image.as_ref().unwrap().generation;
+        let shown = || {
+            let s = view.state();
+            s.image
+                .as_ref()
+                .and_then(|i| i.image.as_ref())
+                .map(|p| pixels(&p.texture))
+        };
+        let red_pixels = pixels(&red.texture);
+        let blue_pixels = pixels(&blue.texture);
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/red.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Ok((red.clone(), cache.insert_transient(1, (), 16))),
+            false,
+        );
+        assert_eq!(shown(), Some(red_pixels.clone()));
+
+        let old = generation();
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/blue.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        assert_eq!(
+            shown(),
+            Some(red_pixels.clone()),
+            "replacement retains previous pixels while pending"
+        );
+        assert_eq!(budget.used(), 16);
+        loaded(&surface, &view, old, Err("stale failure".into()), true);
+        assert_eq!(
+            shown(),
+            Some(red_pixels),
+            "stale failure cannot clear the current frame"
+        );
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Ok((blue.clone(), cache.insert_transient(2, (), 32))),
+            true,
+        );
+        assert_eq!(shown(), Some(blue_pixels.clone()));
+        assert_eq!(budget.used(), 32, "replacement releases the old lease");
+
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/broken.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        assert_eq!(shown(), Some(blue_pixels));
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Err("invalid image".into()),
+            true,
+        );
+        assert_eq!(shown(), None, "failure clears the retained frame");
+        assert_eq!(budget.used(), 0);
+
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/red-again.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Ok((red.clone(), cache.insert_transient(3, (), 16))),
+            false,
+        );
+        let cleared = generation();
+        set(&surface, &view, None, ResizeMode::Contain, &options);
+        assert_eq!(shown(), None, "explicit clear is immediate");
+        assert_eq!(budget.used(), 0);
+        loaded(&surface, &view, cleared, Ok((blue, Lease::none())), true);
+        assert_eq!(
+            shown(),
+            None,
+            "completion after clear cannot resurrect pixels"
+        );
+
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/last.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        loaded(
+            &surface,
+            &view,
+            generation(),
+            Ok((red, cache.insert_transient(4, (), 16))),
+            false,
+        );
+        set(
+            &surface,
+            &view,
+            Some(&source("asset:/pending.svg")),
+            ResizeMode::Contain,
+            &options,
+        );
+        assert_eq!(budget.used(), 16);
+        crate::gtk_test::apply(&surface, &[MountItem::Delete { id: 2 }]);
+        drop(view);
+        assert_eq!(budget.used(), 0, "unmount releases the retained frame");
+        surface.stop();
+    }
+
+    #[test]
     fn plays_animations() {
         let delays = [100, 50, 200];
         let mut t = Timeline::default();
