@@ -52,7 +52,6 @@ impl ConfigurationStore {
                 Patch::Set(value) => row.request_body_overlay.as_ref() != Some(value),
             };
             let previous = row.clone();
-            let validate_limits = matches!(changes.model_overrides, Patch::Set(_));
             let mut test_changed = configuration_changed
                 || changes.enabled.is_some_and(|value| row.enabled != value)
                 || changes
@@ -90,9 +89,6 @@ impl ConfigurationStore {
                 row.models_fetched_at = None;
             }
             test_changed |= !crate::effect_snapshot::same_test_basis(&previous, &row);
-            if validate_limits {
-                crate::model_catalog::validate_overrides(&row)?;
-            }
             if test_changed {
                 row.last_test = None;
             }

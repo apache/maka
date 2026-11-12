@@ -108,18 +108,9 @@ impl Provider for Codex {
     fn resolve(&self, request: Resolve) -> BoxFuture<'_, Result<Model, Error>> {
         Box::pin(async move {
             let configuration = configuration(&request.connection.configuration)?;
-            let reported = self.snapshot.resolve(
-                "chatgpt",
-                request.model,
-                request
-                    .overrides
-                    .as_ref()
-                    .and_then(|value| value.catalog_model.as_ref()),
-            );
-            let mut info = match &request.overrides {
-                Some(overrides) => overrides.apply(&reported),
-                None => reported,
-            };
+            let mut info =
+                self.snapshot
+                    .resolve("chatgpt", request.model, request.overrides.as_ref());
             if info
                 .api_protocol
                 .is_some_and(|wire| wire != ApiProtocol::OpenaiResponses)
