@@ -20,7 +20,7 @@
 // The quick tools as one model, which the launcher and Settings › Quick tools both show: the same
 // commands and the same pages, so a change in one is the change in the other.
 
-import { cleanup, keymap, signal, View, type JSX, type Signal } from 'nsh';
+import { cleanup, keymap, signal, Storage, View, type JSX, type Signal } from 'nsh';
 import type {
   UiContributionRef,
   UiRuntime,
@@ -31,6 +31,8 @@ import {
   type SettingsPageInput,
   type SettingsPageNavigation,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
+import { Button } from 'nsh/base';
+import { ChoiceIndicator } from './ChoiceIndicator';
 import { sameValue } from '../../../../plugins/shared/value';
 import { tr } from './locale';
 import { contributionTitle } from './plugins/context';
@@ -38,6 +40,7 @@ import {
   CommandSettings,
   createCommands,
   entryKey,
+  LauncherShortcutRow,
   type Commands,
   type ToolEntry,
 } from './QuickCommands';
@@ -46,14 +49,34 @@ import {
   SettingsProblem,
   SettingsRow,
   SettingsSection,
+  SettingsSwitch,
   settingsGutter,
 } from './SettingsPage';
 import { errorText, renderText } from './text';
 
 export type Attached = { tool: UiContributionRef; handle: QuickToolHandle };
 
+const ENABLED_KEY = 'maka.quick-launcher.tools-enabled';
+
+const DISABLED_KEY = 'maka.quick-launcher.disabled-plugins';
+const pluginKey = (tool: UiContributionRef) => JSON.stringify(tool.instance.path);
+const builtInNames: Partial<Record<string, Parameters<typeof tr>[0]>> = {
+  'maka.calculator': 'Calculator',
+  'maka.symbols': 'Symbols',
+  'maka.file-search': 'Search files',
+  'maka.applications': 'Search applications',
+};
+
 export type QuickTools = {
   runtime: UiRuntime<JSX.Element>;
+  /** Whether the launcher offers the tools at all; off until the user turns them on. */
+  enabled(): boolean;
+  setEnabled(enabled: boolean): void;
+  /** Why the switch could not be read or saved. */
+  failure(): unknown;
+  ready(): boolean;
+  toolEnabled(tool: UiContributionRef): boolean;
+  toggleTool(tool: UiContributionRef): void;
   tools(): UiContributionRef[];
   /** What each tool attached, while the launcher's tools are mounted. */
   handles: Signal<ReadonlyMap<string, QuickToolHandle>>;
@@ -68,6 +91,30 @@ export type QuickTools = {
 };
 
 export function createQuickTools(runtime: UiRuntime<JSX.Element>): QuickTools {
+  const enabled = signal(false);
+  const failure = signal<unknown>(null);
+  // A choice made before the stored one arrives wins over it.
+  let chosen = false;
+  Storage.getItem(ENABLED_KEY).then(
+    (stored) => {
+      if (!chosen) enabled.set(stored === 'true');
+    },
+    (reason) => failure.set(reason),
+  );
+  let saving: Promise<void> = Promise.resolve();
+  const disabled = signal<ReadonlySet<string>>(new Set());
+  const ready = signal(false);
+  Storage.getItem(DISABLED_KEY)
+    .then((raw) => {
+      if (raw) {
+        const keys: unknown = JSON.parse(raw);
+        if (Array.isArray(keys))
+          disabled.set(new Set(keys.filter((key) => typeof key === 'string')));
+      }
+    })
+    .catch((reason) => failure.set(reason))
+    .finally(() => ready.set(true));
+  const toolEnabled = (tool: UiContributionRef) => ready() && !disabled().has(pluginKey(tool));
   const handles = signal<ReadonlyMap<string, QuickToolHandle>>(new Map());
   const tools = () =>
     runtime
@@ -77,10 +124,12 @@ export function createQuickTools(runtime: UiRuntime<JSX.Element>): QuickTools {
           item.declaration.kind === 'view' && item.declaration.contract === quickToolView.id,
       );
   const attached = () =>
-    tools().flatMap((tool) => {
-      const handle = handles().get(tool.key);
-      return handle === undefined ? [] : [{ tool, handle }];
-    });
+    tools()
+      .filter(toolEnabled)
+      .flatMap((tool) => {
+        const handle = handles().get(tool.key);
+        return handle === undefined ? [] : [{ tool, handle }];
+      });
   const entries = () =>
     attached().flatMap(({ tool, handle }) =>
       handle.entries().map((entry) => ({ key: entryKey(tool, entry), tool, entry })),
@@ -91,18 +140,49 @@ export function createQuickTools(runtime: UiRuntime<JSX.Element>): QuickTools {
     entries().filter((item) => item.tool.key === tool.key);
   return {
     runtime,
+    enabled,
+    setEnabled(next) {
+      chosen = true;
+      enabled.set(next);
+      const value = String(next);
+      saving = saving
+        .then(() => Storage.setItem(ENABLED_KEY, value))
+        .catch((reason) => failure.set(reason));
+    },
+    failure,
     tools,
+    ready,
+    toolEnabled,
+    toggleTool(tool) {
+      if (!ready()) return;
+      const key = pluginKey(tool);
+      const next = new Set(disabled());
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      disabled.set(next);
+      const value = JSON.stringify([...next]);
+      saving = saving
+        .then(() => Storage.setItem(DISABLED_KEY, value))
+        .catch((reason) => failure.set(reason));
+    },
     handles,
     attached,
     entries,
-    commands: createCommands(),
+    commands: createCommands((key) =>
+      tools().some(
+        (tool) =>
+          !toolEnabled(tool) && key.startsWith(`${tool.instance.path.join('/')}/${tool.id}/`),
+      ),
+    ),
     page,
     configurable: (tool) => page(tool) !== undefined || ownEntries(tool).length > 0,
     title(tool) {
       const own = page(tool);
       if (own) return contributionTitle(own);
       const names = ownEntries(tool).map((item) => item.entry.title);
-      return names.length > 0 ? names.join(' · ') : tool.instance.path.join(' / ');
+      if (names.length > 0) return names.join(' · ');
+      const name = builtInNames[tool.instance.package.id];
+      return name ? tr(name) : tool.instance.path.join(' / ');
     },
   };
 }
@@ -197,7 +277,8 @@ export function QuickToolsSettings(props: {
         navigation: () =>
           selected() === null ? '' : `${selected()!.key}/${tool.inner()?.navigation() ?? ''}`,
         back() {
-          if (selected() === null) return true;
+          // At the list, Escape first stops recording the launcher shortcut.
+          if (selected() === null) return tool.back();
           if (tool.back()) close();
           return false;
         },
@@ -230,29 +311,75 @@ export function QuickToolsSettings(props: {
       }
     >
       <SettingsBody>
-        <SettingsSection
-          note={tr(
-            'In the quick launcher, {shortcut} on a selected tool opens these same settings.',
-            { shortcut: keymap.label('mod+,') },
-          )}
-        >
-          <Each
-            of={quick.tools().filter(quick.configurable)}
-            key={(item: UiContributionRef) => item.key}
-          >
-            {(item) => (
-              <SettingsRow
-                label={quick.title(item())}
-                description={summary(item()) || undefined}
-                opens
-                onPress={() => selected.set(item())}
-              />
+        <If when={quick.failure() !== null}>
+          <SettingsProblem message={renderText(errorText(quick.failure()))} />
+        </If>
+        <SettingsSection>
+          <SettingsSwitch
+            label={tr('Turn on quick tools')}
+            description={tr(
+              'Press {shortcut} anywhere to open the quick launcher, with its tools, commands and Maka Bot. Still being refined.',
+              { shortcut: keymap.label(quick.commands.launcher()) },
             )}
-          </Each>
-          <If when={!quick.tools().some(quick.configurable)}>
-            <SettingsRow label={tr('No quick tools to set up.')} tone="muted" />
+            checked={quick.enabled()}
+            onPress={() => quick.setEnabled(!quick.enabled())}
+          />
+          <If when={quick.enabled()}>
+            <LauncherShortcutRow
+              all={quick.entries()}
+              commands={quick.commands}
+              recording={tool.recording}
+            />
           </If>
         </SettingsSection>
+        <If when={quick.enabled()}>
+          <SettingsSection
+            note={tr(
+              'In the quick launcher, {shortcut} on a selected tool opens these same settings.',
+              { shortcut: keymap.label('mod+,') },
+            )}
+          >
+            <Each of={quick.tools()} key={(item: UiContributionRef) => item.key}>
+              {(item) => (
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <View style={{ flex: 1 }}>
+                    <If
+                      when={quick.configurable(item())}
+                      else={<SettingsRow label={quick.title(item())} />}
+                    >
+                      <SettingsRow
+                        label={quick.title(item())}
+                        description={summary(item()) || undefined}
+                        opens
+                        onPress={() => selected.set(item())}
+                      />
+                    </If>
+                  </View>
+                  <Button
+                    accessibilityLabel={tr('{label}: {state}', {
+                      label: quick.title(item()),
+                      state: quick.toolEnabled(item()) ? tr('On') : tr('Off'),
+                    })}
+                    selected={quick.toolEnabled(item())}
+                    disabled={!quick.ready()}
+                    onPress={() => quick.toggleTool(item())}
+                    style={{
+                      width: 52,
+                      height: 42,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <ChoiceIndicator kind="switch" checked={quick.toolEnabled(item())} />
+                  </Button>
+                </View>
+              )}
+            </Each>
+            <If when={quick.tools().length === 0}>
+              <SettingsRow label={tr('No quick tools to set up.')} tone="muted" />
+            </If>
+          </SettingsSection>
+        </If>
       </SettingsBody>
     </If>
   );

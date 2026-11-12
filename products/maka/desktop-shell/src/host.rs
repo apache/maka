@@ -80,6 +80,14 @@ pub async fn runs(endpoint: &Path, epoch: Uuid) -> bool {
     }
 }
 
+/// The explicit desktop quit reaches the exact Host even after a desktop reconnect.
+pub async fn quit(bindings: Bindings) {
+    if let Err(error) = bindings.quit_ephemeral().await {
+        eprintln!("maka-desktop-shell: Host quit: {error}");
+    }
+}
+
+#[cfg(target_os = "macos")]
 /// Closes `bindings` for good, within [`DETACH_LIMIT`]. A failure is reported
 /// only while their Host runs: one that stopped has no client left to detach.
 pub async fn detach(bindings: Bindings, endpoint: &Path, epoch: Uuid) {

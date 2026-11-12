@@ -89,6 +89,7 @@ struct Publications {
     frozen: TaskDescriptor<FrozenInput>,
     state: Store,
     root_observation: CancellationToken,
+    owner_stop: CancellationToken,
     cleanup_proof: Mutex<OperationCleanup>,
     retained: Arc<Mutex<Vec<RetainedSource>>>,
 }
@@ -285,6 +286,9 @@ impl OutputSink for Publications {
 impl TaskBinding for Publications {
     fn observation_retired(&self) -> CancellationToken {
         self.root_observation.clone()
+    }
+    fn owner_stop(&self) -> CancellationToken {
+        self.owner_stop.clone()
     }
     fn admitted_steering_batches(&self) -> BoxFuture<'_, Result<u64, Error>> {
         Box::pin(async move {
@@ -715,7 +719,15 @@ impl DriverExecutor {
                 })
             })
             .transpose()?;
+        let owner_stop = self
+            .access
+            .owner
+            .upgrade()
+            .ok_or(RunError::Cancelled)?
+            .stop
+            .clone();
         let publications = Arc::new(Publications {
+            owner_stop,
             publication_source,
             state: self.state.clone(),
             root_observation: self.root_observation.clone(),

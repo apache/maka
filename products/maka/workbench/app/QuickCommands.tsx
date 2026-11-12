@@ -45,8 +45,10 @@ import { SettingsButton, SettingsInlineInput, SettingsRow, SettingsSection } fro
 import { C } from './ui';
 
 const KEY = 'maka.quick-launcher.commands';
-/** The launcher's own shortcut, which no entry may take. */
-export const LAUNCHER_SHORTCUT = 'alt+space';
+const LAUNCHER_KEY = 'maka.quick-launcher.shortcut';
+/** What opens the launcher until the user records another. */
+const DEFAULT_LAUNCHER_SHORTCUT = 'alt+space';
+const apple = platform.os === 'macos' || platform.os === 'ios';
 
 /** An entry a quick tool offers, with the key its choices are kept under across runs. */
 export type ToolEntry = { key: string; tool: UiContributionRef; entry: QuickEntry };
@@ -57,30 +59,46 @@ export const entryKey = (tool: UiContributionRef, entry: QuickEntry) =>
 export type Commands = {
   /** Why the choices could not be read or saved. */
   failure(): unknown;
-  choices(): CommandChoices;
+  reserved(field: keyof CommandChoice, value: string): boolean;
   choice(key: string): CommandChoice | undefined;
   choose(key: string, patch: Partial<Record<keyof CommandChoice, string | null>>): void;
+  /** The shortcut that opens the launcher, which no command may take. */
+  launcher(): string;
+  setLauncher(shortcut: string): void;
   /** Shortcuts the system refused, taken by another app. */
   refused(): ReadonlySet<string>;
   registered(shortcut: string, taken: boolean): void;
 };
 
-export function createCommands(): Commands {
+export function createCommands(disabledCommand: (key: string) => boolean): Commands {
   const failure = signal<unknown>(null);
   const report = (reason: unknown) => failure.set(reason);
   const choices = signal<CommandChoices>({});
   const refused = signal<ReadonlySet<string>>(new Set());
+  const launcher = signal(DEFAULT_LAUNCHER_SHORTCUT);
   // A choice made before the stored ones arrive wins over them.
   let chosen = false;
+  let launcherChosen = false;
   Storage.getItem(KEY)
     .then((stored) => {
       if (!chosen) choices.set(parseChoices(stored));
     })
     .catch(report);
+  Storage.getItem(LAUNCHER_KEY)
+    .then((stored) => {
+      if (launcherChosen || stored === null) return;
+      if (!recordable(apple).includes(stored))
+        throw new Error('The quick launcher shortcut is damaged.');
+      launcher.set(stored);
+    })
+    .catch(report);
   let saving: Promise<void> = Promise.resolve();
   return {
     failure,
-    choices,
+    reserved: (field, value) =>
+      Object.entries(choices()).some(
+        ([key, choice]) => choice[field] === value && disabledCommand(key),
+      ),
     choice: (key) => choices()[key],
     choose(key, patch) {
       chosen = true;
@@ -88,6 +106,12 @@ export function createCommands(): Commands {
       choices.set(next);
       const value = JSON.stringify(next);
       saving = saving.then(() => Storage.setItem(KEY, value)).catch(report);
+    },
+    launcher,
+    setLauncher(shortcut) {
+      launcherChosen = true;
+      launcher.set(shortcut);
+      saving = saving.then(() => Storage.setItem(LAUNCHER_KEY, shortcut)).catch(report);
     },
     refused,
     registered(shortcut, taken) {
@@ -107,17 +131,15 @@ function ShortcutRecorder(props: {
   recording: boolean;
   start(): void;
   record(shortcut: string): void;
-  clear(): void;
+  /** Offers to remove the shortcut; without it one is always kept. */
+  clear?: () => void;
 }) {
   effect(() => {
     if (!props.recording) return;
     cleanup(
       keymap.bind(
         Object.fromEntries(
-          recordable(platform.os === 'macos' || platform.os === 'ios').map((keystroke) => [
-            keystroke,
-            () => props.record(keystroke),
-          ]),
+          recordable(apple).map((keystroke) => [keystroke, () => props.record(keystroke)]),
         ),
         { when: 'always' },
       ),
@@ -155,13 +177,13 @@ function ShortcutRecorder(props: {
               : keymap.label(props.shortcut)}
         </Text>
       </Button>
-      <If when={props.shortcut !== undefined && !props.recording}>
+      <If when={props.clear !== undefined && props.shortcut !== undefined && !props.recording}>
         <SettingsButton
           icon="trash"
           iconOnly
           tone="quiet"
           label={tr('Remove shortcut')}
-          onPress={props.clear}
+          onPress={() => props.clear?.()}
         />
       </If>
     </View>
@@ -192,15 +214,17 @@ function CommandRow(props: {
       : undefined;
     if (other) return problem.set(tr('Used by {title}', { title: other.entry.title }));
     problem.set(null);
+    if (next && commands.reserved('alias', next)) return problem.set(tr('Used by a disabled tool'));
     commands.choose(item.key, { alias: next || null });
   };
   const record = (shortcut: string) => {
     props.recording.set(null);
     const other = holder((choice) => choice?.shortcut === shortcut);
-    if (shortcut === LAUNCHER_SHORTCUT)
-      return problem.set(tr('Used by {title}', { title: tr('Ask Maka') }));
+    if (shortcut === commands.launcher())
+      return problem.set(tr('Used by {title}', { title: tr('Quick launcher') }));
     if (other) return problem.set(tr('Used by {title}', { title: other.entry.title }));
     problem.set(null);
+    if (commands.reserved('shortcut', shortcut)) return problem.set(tr('Used by a disabled tool'));
     commands.choose(item.key, { shortcut });
   };
   const shortcut = () => commands.choice(item.key)?.shortcut;
@@ -263,5 +287,43 @@ export function CommandSettings(props: {
         )}
       </Each>
     </SettingsSection>
+  );
+}
+
+/** The shortcut that opens the launcher, recorded like a command's and never another's. */
+export function LauncherShortcutRow(props: {
+  all: readonly ToolEntry[];
+  commands: Commands;
+  recording: Signal<string | null>;
+}): JSX.Element {
+  const { commands } = props;
+  const problem = signal<string | null>(null);
+  const record = (shortcut: string) => {
+    props.recording.set(null);
+    const other = props.all.find((item) => commands.choice(item.key)?.shortcut === shortcut);
+    if (other) return problem.set(tr('Used by {title}', { title: other.entry.title }));
+    problem.set(null);
+    if (commands.reserved('shortcut', shortcut)) return problem.set(tr('Used by a disabled tool'));
+    commands.setLauncher(shortcut);
+  };
+  return (
+    <SettingsRow
+      label={tr('Shortcut to open the quick launcher')}
+      status={
+        problem() ??
+        (commands.refused().has(commands.launcher()) ? tr('Taken by another app') : undefined)
+      }
+      trailing={
+        <ShortcutRecorder
+          shortcut={commands.launcher()}
+          recording={props.recording() === 'launcher'}
+          start={() => {
+            problem.set(null);
+            props.recording.set('launcher');
+          }}
+          record={record}
+        />
+      }
+    />
   );
 }

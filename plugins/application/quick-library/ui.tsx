@@ -17,14 +17,14 @@
  * under the License.
  */
 
-import { Clipboard, computed, openUrl, signal, Storage, type JSX } from 'nsh';
+import { effect, Clipboard, computed, openUrl, signal, Storage, type JSX } from 'nsh';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
   type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { tr } from '../../../products/maka/workbench/app/locale';
+import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
 import { afterKeyword, search, type Found } from '../../shared/quick-search';
 import { expandLink, isTemplate, parseLibrary, type LibraryItem } from './library';
 import { LibrarySettings, type Library } from './settings';
@@ -92,7 +92,16 @@ function results(items: readonly LibraryItem[], input: QuickToolInput): QuickIte
         else input.report(new Error(tr('The link could not be opened')));
       }, input.report),
   });
-  const ofKind = (kind: LibraryItem['kind']) => items.filter((item) => item.kind === kind);
+  const kind =
+    afterKeyword(query, NOTE_KEYWORDS) !== null
+      ? 'note'
+      : afterKeyword(query, SNIPPET_KEYWORDS) !== null
+        ? 'snippet'
+        : afterKeyword(query, LINK_KEYWORDS) !== null
+          ? 'link'
+          : null;
+  const ofKind = (wanted: LibraryItem['kind']) =>
+    kind !== null && kind !== wanted ? [] : items.filter((item) => item.kind === wanted);
   const links = ofKind('link');
   const notes = ofKind('note');
   return [
@@ -133,7 +142,8 @@ function LibraryTool(props: { input: QuickToolInput; library: Library }) {
   return null;
 }
 
-export const activate: UiModule<JSX.Element>['activate'] = () => {
+export const activate: UiModule<JSX.Element>['activate'] = (context) => {
+  effect(() => currentLocale.set(context.locale()));
   const library = createLibrary();
   return {
     exports: {

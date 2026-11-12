@@ -20,7 +20,6 @@
 use super::*;
 use maka_agent_facts::durable::{self, Fact, FactId, RunId, Terminal, UnixMillis};
 use maka_agent_state::{Change, fold::RunView};
-use maka_event_log::root_store::DataChange;
 
 pub(super) fn project(view: &RunView) -> Execution {
     let state = match &view.terminal {
@@ -248,15 +247,15 @@ impl Owner {
         session: &str,
         run: RunId,
         operation: &maka_plugin_core::operation::RecoveryRef,
-    ) -> Result<(bool, Option<DataChange>), String> {
+    ) -> Result<NativeMutation<Stopped>, String> {
         let Some(view) = self.session_run(session, run).await? else {
-            return Ok((false, None));
+            return Ok(NativeMutation::Returned(Stopped { requested: false }));
         };
         if view.stopped {
-            return Ok((true, None));
+            return Ok(NativeMutation::Returned(Stopped { requested: true }));
         }
         if view.terminal.is_some() {
-            return Ok((false, None));
+            return Ok(NativeMutation::Returned(Stopped { requested: false }));
         }
         let change = self.control_change(
             operation,
@@ -265,7 +264,7 @@ impl Owner {
                 diagnostic: "user_requested_stop".into(),
             },
         );
-        Ok((true, Some(self.durable.prepare_stop_latest(run, change))))
+        self.prepare_stop_with_goal(session, run, change).await
     }
 
     fn control_change(

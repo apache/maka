@@ -421,8 +421,7 @@ async fn execute(owner: Arc<Owner>, value: Value, context: Arc<Context>) -> Hand
             Ok(physical) => journal.cleanup(&key, physical).await,
             Err(error) => Err(error),
         });
-        // Only outstanding actual Root effects retain Root custody. A detached
-        // private helper owns its own workspace and spool outside that lifetime.
+        // Keep Root custody until callbacks and the original process have settled.
         if let Err(error) = &cleanup {
             ticket.unconfirmed(error.clone(), (origin, scope));
         } else {

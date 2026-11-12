@@ -25,33 +25,53 @@ import {
   type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { tr } from '../../../products/maka/workbench/app/locale';
+import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
+import { createScopes, ScopeSettings, statusLabel } from './settings';
 import { afterKeyword } from '../../shared/quick-search';
 
 const KEYWORDS = ['f', 'file', '文件', '檔案'];
 const SETTLE_MS = 200;
 
-function FileSearch(props: { input: QuickToolInput; host: ApplicationHost }) {
+function FileSearch(props: {
+  input: QuickToolInput;
+  host: ApplicationHost;
+  settings: ReturnType<typeof createScopes>;
+}) {
   const { input, host } = props;
   const found = signal<readonly string[]>([]);
+  const hint = signal('');
   effect(() => {
     const text = afterKeyword(input.query(), KEYWORDS);
-    if (text === null || text.length < 2) {
-      found.set([]);
+    const roots = props.settings.roots();
+    found.set([]);
+    hint.set('');
+    if (!text || roots === null) return;
+    if (!roots.length) {
+      hint.set(tr('Choose a search folder in Settings.'));
       return;
     }
     let current = true;
-    const timer = setTimeout(() => {
-      host.searchFileNames(text).then((paths) => {
-        if (current) found.set(paths);
-      }, input.report);
-    }, SETTLE_MS);
+    let timer = setTimeout(refresh, SETTLE_MS);
+    async function refresh() {
+      try {
+        const result = await host.scopedFileSearch(text!, roots!);
+        if (!current) return;
+        found.set(result.paths);
+        const pending = result.scopes.some((scope) => scope.state === 'indexing');
+        const problem = result.scopes.find((scope) => scope.state !== 'ready');
+        hint.set(problem ? statusLabel(problem.state) + ' · ' + problem.root : '');
+        if (pending) timer = setTimeout(refresh, 700);
+      } catch (reason) {
+        if (current) input.report(reason);
+      }
+    }
     cleanup(() => {
       current = false;
       clearTimeout(timer);
     });
   });
   input.attach({
+    emptyMessage: () => hint(),
     items: () =>
       found().map((path): QuickItem => {
         const slash = path.lastIndexOf('/');
@@ -71,15 +91,24 @@ function FileSearch(props: { input: QuickToolInput; host: ApplicationHost }) {
   return null;
 }
 
-export const activate: UiModule<JSX.Element>['activate'] = (context) => ({
-  exports: {
-    tool: {
-      kind: 'view',
-      contract: quickToolView.id,
-      render: ({ input }: UiEmbeddedViewProps<QuickToolInput, JSX.Element>) =>
-        platform.os === 'macos' ? (
-          <FileSearch input={input} host={context.application as ApplicationHost} />
-        ) : null,
+export const activate: UiModule<JSX.Element>['activate'] = (context) => {
+  effect(() => currentLocale.set(context.locale()));
+  const host = context.application as ApplicationHost;
+  const settings = createScopes();
+  return {
+    exports: {
+      preferences: {
+        kind: 'settings',
+        render: () => <ScopeSettings settings={settings} app={host} />,
+      },
+      tool: {
+        kind: 'view',
+        contract: quickToolView.id,
+        render: ({ input }: UiEmbeddedViewProps<QuickToolInput, JSX.Element>) =>
+          platform.os === 'macos' ? (
+            <FileSearch input={input} host={host} settings={settings} />
+          ) : null,
+      },
     },
-  },
-});
+  };
+};

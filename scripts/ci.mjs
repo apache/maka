@@ -47,6 +47,12 @@ export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_N
   ).trim();
   if (process.env.GITHUB_SHA && revision !== process.env.GITHUB_SHA)
     throw new Error('Checkout differs from the workflow revision');
+  const worker = process.env.MAKA_CI_WORKER || null;
+  if (worker !== null) {
+    if (event !== 'workflow_dispatch')
+      throw new Error('A CI worker can only be selected for manual validation');
+    return createPlan({ root, revision, baseline, worker });
+  }
   if (event === 'push') {
     baseline = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')).before;
     if (/^0+$/.test(baseline)) baseline = null;

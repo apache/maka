@@ -28,6 +28,8 @@ pub struct StoredSessionConfiguration {
     pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<crate::contract::BackendPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_preset: Option<crate::preset::AppliedPreset>,
     #[serde(default)]
     pub collaboration_mode: maka_agent_facts::execution::CollaborationMode,
     #[serde(default)]
@@ -55,6 +57,8 @@ pub struct ResolvedConfiguration {
     pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<crate::contract::BackendPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_preset: Option<crate::preset::AppliedPreset>,
     #[serde(default)]
     pub collaboration_mode: maka_agent_facts::execution::CollaborationMode,
     #[serde(default)]
@@ -85,6 +89,7 @@ impl StoredSessionConfiguration {
         Ok(ResolvedConfiguration {
             parent_session_id: self.parent_session_id,
             backend: self.backend,
+            applied_preset: self.applied_preset,
             collaboration_mode: self.collaboration_mode,
             tools: self.tools,
             compaction_prompt: self.compaction_prompt,

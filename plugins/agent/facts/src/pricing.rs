@@ -127,9 +127,9 @@ pub enum Updated {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Pricing {
     pub model_key: String,
-    #[serde(rename = "inputUsdPer1M")]
+    #[serde(rename = "inputUsdPer1M", deserialize_with = "rate")]
     pub input_usd_per_million: f64,
-    #[serde(rename = "outputUsdPer1M")]
+    #[serde(rename = "outputUsdPer1M", deserialize_with = "rate")]
     pub output_usd_per_million: f64,
     #[serde(
         rename = "cacheReadUsdPer1M",
@@ -218,7 +218,16 @@ pub fn validate_key(key: &str) -> Result<(), &'static str> {
 fn present_rate<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<f64>, D::Error> {
-    f64::deserialize(deserializer).map(Some)
+    rate(deserializer).map(Some)
+}
+
+/// The maka binary enables serde_json's arbitrary_precision. A price buffered
+/// inside a tagged enum then arrives as serde_json's number map, not an f64;
+/// `Number` accepts both forms.
+fn rate<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    serde_json::Number::deserialize(deserializer)?
+        .as_f64()
+        .ok_or_else(|| serde::de::Error::custom("invalid model price"))
 }
 
 #[cfg(test)]
@@ -268,5 +277,20 @@ mod tests {
         assert!(huge.estimate(&usage).unwrap().unwrap().is_finite());
         usage.input_tokens = Some(u64::MAX);
         assert_eq!(huge.estimate(&usage).unwrap(), None);
+    }
+
+    #[test]
+    fn decimal_prices_survive_tagged_enum_buffering() {
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum Tagged {
+            Prepared { pricing: Pricing },
+        }
+        let raw = r#"{"kind":"prepared","pricing":{"modelKey":"deepseek:deepseek-flash","inputUsdPer1M":0.15,"outputUsdPer1M":0.6,"cacheReadUsdPer1M":0.003}}"#;
+        let Tagged::Prepared { pricing } = serde_json::from_str(raw).unwrap();
+        assert_eq!(pricing.input_usd_per_million, 0.15);
+        assert_eq!(pricing.output_usd_per_million, 0.6);
+        assert_eq!(pricing.cache_read_usd_per_million, Some(0.003));
+        assert_eq!(pricing.cache_write_usd_per_million, None);
     }
 }

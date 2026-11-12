@@ -72,7 +72,7 @@ Maka 通过插件组装应用。包声明自身提供与依赖的能力，组合
 - **稳定运行身份，无物理接力链**：单次逻辑运行在审批等待、退避重试、上下文压缩与进程重启间保持同一稳定 `RunId`，内部由稳定 `StepId` 与真实上游生成尝试 `ModelAttempt` 组成（本地驱动重启不新建 `ModelAttempt`）。对已进入 `Failed` 或 `Cancelled` 终态的运行执行手动续接时，基于校验通过的历史源截点创建全新 `RunId`。
 - **并发义务前沿与 `Unknown` 风险裁决**：流式模型工具调用、本地与服务工具派发、用户交互与后台 Cell 构成显式并发义务集。任何结果处于 `Unknown` 的副作用均进入强类型阻塞（`TypedBlocker`），禁止模型更换调用 ID 隐式重试变更；人工风险裁决以独立控制事实记录，永不伪造或覆盖原操作回执。
 - **Code Mode（`Cell` 与 `SessionData`）**：持久化 `Cell` 生命周期（`CellStarted`、`CellCompleted`、`CellInterrupted`）、嵌套子效果绑定、动态加载工具集及会话键值数据（`SessionData` 在 Cell 完成被接纳的同一事务内原子发布）。中断的 Cell 须先对账其名下全部已准入嵌套效果后方可进入重规划；恢复过程不做 V8/Python 堆内存快照，也不重放任意脚本。
-- **外部执行器**：内置的 Claude Code、Codex 和 Antigravity CLI 在原工作区使用原生完整权限执行，`TaskOwner` 托管进程并记录执行证据。独立的 ACP 服务适配器（`acp-executor`）仍使用私有工作区，经 Host 发布接纳的改动。历史记录、元数据与工作区快照不赋予任何执行或权限授权；调用方取消、流 EOF 或 Root 退役仅分离观察并取消在途 Host 回调，绝不伪造任务完成或假定未确认的外部子进程已退出。
+- **外部执行器**：内置的 Claude Code、Codex 和 Antigravity CLI 在原工作区使用原生完整权限执行，`TaskOwner` 托管进程并记录执行证据。独立的 ACP 服务适配器（`acp-executor`）仍使用私有工作区，经 Host 发布接纳的改动。历史记录、元数据与工作区快照不赋予任何执行或权限授权。Host 正常退出时会关闭它持有的原始进程组。Host 丢失后，恢复流程读取原始证据，证据不足时保留结果未知的状态。
 - **上层 Agent 协同**：普通父子会话、`Assistant`（Bot）、`Goal` 与 `Scheduler` 均通过公共 Session 契约、持久预算统计与稳定 `RunId` 协同运行。
 
 ## 开发、CI 与分发

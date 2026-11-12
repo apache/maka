@@ -447,6 +447,27 @@ async fn child_failure_observes_original_interruption_without_promoting_child_re
                 report: report.reference.clone()
             }
         );
+        use maka_agent_facts::{durable::ExecutionIdentity, tool_output::DurableToolProjection};
+        let projected = CodeCells::project_observation(cell, observed.clone(), 2000)
+            .into_durable(
+                "interrupted-cell",
+                std::time::SystemTime::UNIX_EPOCH,
+                &ExecutionIdentity {
+                    session_id: "fixture".into(),
+                    turn_id: "fixture".into(),
+                    run_id: maka_agent_facts::durable::RunId::new(),
+                },
+            )
+            .unwrap();
+        let DurableToolProjection::Text { text } = projected.projection else {
+            panic!("expected a text projection");
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap(),
+            json!({"state":"interrupted","cell_id":cell,
+                "diagnostic":"original child still requires reconciliation",
+                "heap":"expired","bindings":"invalid"}),
+        );
         let CellObservation::Interrupted {
             cell_id,
             report: actual,

@@ -33,6 +33,7 @@ pub async fn validate_continuation(
     workspace: &str,
     prompt: &PreparedPrompt,
     prepared: &PreparedRequest,
+    logical_prompt_digest: Option<&str>,
 ) -> Result<(), RunError> {
     let invalid = |message: &str| RunError::ReconciliationRequired(message.into());
     claim.validate(target).map_err(invalid)?;
@@ -78,9 +79,13 @@ pub async fn validate_continuation(
         return Err(invalid("continuation canonical base changed"));
     }
     validate_replay_boundary(prompt).await?;
-    if prepared.input_digest != claim.replay.digest
-        || prepared.route_identity != claim.replay.route_identity
-    {
+    let digest = if claim.replay.uses_logical_prompt() {
+        logical_prompt_digest
+            .ok_or_else(|| invalid("continuation lacks a logical prompt digest"))?
+    } else {
+        &prepared.input_digest
+    };
+    if digest != claim.replay.digest || prepared.route_identity != claim.replay.route_identity {
         return Err(invalid("continuation replay signature changed"));
     }
     Ok(())

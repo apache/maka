@@ -47,6 +47,7 @@ pub enum Preparation {
         main: StepId,
         summary: ModelAttemptId,
     },
+    AdoptCompaction(Box<CompactionAdoption>),
     AfterCompaction {
         attempt: ModelAttemptId,
     },
@@ -64,6 +65,13 @@ pub enum Preparation {
     ToolContinuation {
         attempt: ModelAttemptId,
     },
+}
+#[derive(Clone, Debug)]
+pub struct CompactionAdoption {
+    pub origin: maka_agent_facts::context::SummaryOrigin,
+    pub checkpoint: FactId,
+    pub baseline: ContentRef,
+    pub material: maka_agent_facts::context::CompactedContext,
 }
 pub struct PreparedStep {
     pub notifications: Vec<maka_agent_state::cells::PendingNotification>,
@@ -119,13 +127,6 @@ pub enum DispatchOutcome {
 /// Native fences replaced activations before returning a new driver claim. These
 /// methods execute/observe the Engine's decision; they do not select another action.
 pub trait DriverPorts: Send + Sync {
-    /// Check the candidate against the frozen Main before publishing its checkpoint.
-    fn proactive_summary_matches<'a>(
-        &'a self,
-        view: &'a RunView,
-        origin: maka_agent_facts::context::SummaryOrigin,
-    ) -> BoxFuture<'a, Result<bool, RunError>>;
-
     fn model_admission(
         &self,
         _run: RunId,

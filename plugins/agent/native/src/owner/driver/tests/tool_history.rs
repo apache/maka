@@ -1163,7 +1163,6 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
                 through,
             },
             cell,
-            through,
             &canonical.children,
             maka_agent_facts::language::Language::En,
             false,
@@ -1171,7 +1170,14 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
             &stop,
         )
         .await?;
-        assert!(serde_json::to_string(&knowledge)?.contains(&payload));
+        let knowledge = serde_json::to_string(&knowledge)?;
+        assert_eq!(knowledge.matches("shared child evidence").count(), 1);
+        for field in ["fingerprint", "approvals", "receipt", "through"] {
+            assert!(
+                !knowledge.contains(field),
+                "{field} leaked into model context"
+            );
+        }
         assert!(dependencies.contains(&receipt_ref));
         let mut report = CellInterruption {
             cell,
