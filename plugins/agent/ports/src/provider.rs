@@ -158,6 +158,9 @@ pub enum Error {
 /// Pure request policy is separate from credential resolution. Host can freeze
 /// policy without disclosing tokens; authorization follows execution admission.
 pub trait Provider: Send + Sync {
+    /// Check provider-specific constraints before persisting configuration.
+    fn validate_configuration(&self, configuration: &serde_json::Value) -> Result<(), Error>;
+
     fn resolve(&self, request: Resolve) -> BoxFuture<'_, Result<Model, Error>>;
 
     fn authorize(
@@ -398,6 +401,6 @@ impl Definition {
         {
             return Err(Error::InvalidConfiguration);
         }
-        Ok(())
+        self.implementation.validate_configuration(configuration)
     }
 }

@@ -31,7 +31,24 @@
 
 `maka --help` 列出 CLI 命令和默认终端参数，`maka terminal-shell --help` 单独查看终端参数。交互入口要求 stdin 和 stdout 都连接终端；任一被重定向时，在打开或创建 Host 前报错退出。自动化使用显式 Host、application、Code 或 ACP 命令。
 
-`host init --settings-stdin` 初始化新的 State Root，并在返回 `rootId` 前从 stdin 读取并写入可选的代理配置、模型连接、凭据与默认目标模型 JSON。`host serve` 和 `application serve` 输出的 JSON `ready` 行包含 `rootId`、`hostEpoch` 和 `socketPath`。接入时使用该 epoch，并核对实际 Host 身份。Unix socket 位于系统选择的临时目录下的私有子目录中，可通过 `TMPDIR` 指定其他父目录。规范化后的 socket 路径须满足可移植的 100 字节上限；若启动报告路径过长，请选择更短的父目录。
+`host init --settings-stdin` 初始化新的 State Root，并在返回 `rootId` 前从 stdin 读取并写入可选的代理配置、模型连接、凭据与默认目标模型 JSON。例如：
+
+```json
+{
+  "connections": [{
+    "slug": "gateway",
+    "provider": "openai-compatible",
+    "configuration": { "baseUrl": "http://127.0.0.1:8080/v1" },
+    "apiKey": "<API_KEY>",
+    "enabledModelIds": ["my-model"]
+  }],
+  "defaultTarget": { "slug": "gateway", "modelId": "my-model" }
+}
+```
+
+连接还接受 `name`、`enabled`、`requestHeaders`、`modelOverrides` 和 `requestBodyOverlay`。输入及默认模型的 preparation 均在创建 Root 前校验。此命令不能重新配置已有 Root；密钥通过 stdin 传递。
+
+`host serve` 和 `application serve` 输出的 JSON `ready` 行包含 `rootId`、`hostEpoch` 和 `socketPath`。接入时使用该 epoch，并核对实际 Host 身份。Unix socket 位于系统选择的临时目录下的私有子目录中，可通过 `TMPDIR` 指定其他父目录。规范化后的 socket 路径须满足可移植的 100 字节上限；若启动报告路径过长，请选择更短的父目录。
 
 无界面命令（`host`、`application serve`、`code` 和 `acp`）在运行时初始化前安装进程日志订阅器。警告和错误（包括 SQLx 慢查询警告）写入 stderr，不带 ANSI 样式；stdout 保留给命令结果和协议帧。默认不输出普通 DEBUG 查询日志。交互式产品仍自行管理终端输出。
 

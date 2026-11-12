@@ -168,6 +168,10 @@ async fn public_init_persists_connections_and_default_target_from_stdin() {
         .unwrap();
     assert_eq!(primary.name, "Eval Gateway");
     assert_eq!(primary.enabled_model_ids, vec!["eval-model"]);
+    assert_eq!(
+        primary.request_body_overlay,
+        Some(serde_json::json!({"temperature":0}))
+    );
     let overrides = primary
         .model_overrides
         .as_ref()
@@ -233,6 +237,30 @@ fn public_init_rejects_invalid_settings_without_exposing_input() {
         invalid_suffix,
         serde_json::to_vec(&serde_json::json!({
             "connections": [{
+                "slug": "bad-url",
+                "provider": "openai",
+                "configuration": { "baseUrl": "https://user:private-secret@relay.test/v1" }
+            }]
+        }))
+        .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
+                "slug": "bad-subscription",
+                "provider": "chatgpt",
+                "configuration": { "baseUrl": "https://private-secret.test/v1" }
+            }]
+        }))
+        .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
+                "slug": "bad-limits",
+                "provider": "openai",
+                "modelOverrides": { "eval-model": { "contextWindow": 100, "inputLimit": 200 } }
+            }]
+        }))
+        .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
                 "slug": "bad-key",
                 "provider": "openai",
                 "apiKey": "private-secret\nwith-control-char"
@@ -272,6 +300,35 @@ fn public_init_rejects_invalid_settings_without_exposing_input() {
                 "slug": "eval-gateway",
                 "modelId": "missing-model"
             }
+        }))
+        .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
+                "slug": "eval-gateway",
+                "provider": "openai-compatible",
+                "configuration": { "baseUrl": "http://127.0.0.1:18080/v1" },
+                "apiKey": "private-secret-key",
+                "enabledModelIds": ["eval-model"],
+                "modelOverrides": {
+                    "eval-model": {
+                        "thinkingLevels": ["off"],
+                        "defaultThinkingLevel": "medium"
+                    }
+                }
+            }],
+            "defaultTarget": { "slug": "eval-gateway", "modelId": "eval-model" }
+        }))
+        .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
+                "slug": "eval-gateway",
+                "provider": "openai-compatible",
+                "configuration": { "baseUrl": "http://127.0.0.1:18080/v1" },
+                "apiKey": "private-secret-key",
+                "enabledModelIds": ["eval-model"],
+                "modelOverrides": { "eval-model": { "apiProtocol": "anthropic-messages" } }
+            }],
+            "defaultTarget": { "slug": "eval-gateway", "modelId": "eval-model" }
         }))
         .unwrap(),
     ] {

@@ -24,7 +24,7 @@ use maka_agent_facts::{
         CatalogMutationResult, ConnectionCatalogEntryDraft, ConnectionCatalogEntryUpdate,
         ConnectionCredentialKind, ConnectionCredentialTarget, ConnectionTarget,
         ConnectionVersionBasis, CreateCatalogConnectionInput, CredentialLocator,
-        CredentialMutationResult, ModelOverride, SetCredentialInput,
+        CredentialMutationResult, ModelInfo, ModelOverride, SetCredentialInput,
         SetDefaultConnectionTargetInput, UpdateCatalogConnectionInput,
         policy::{
             NetworkProxy,
@@ -361,25 +361,6 @@ impl Settings {
                     let configuration = definition.configure(raw_configuration).map_err(|_| {
                         HostError::from("invalid initial settings: invalid provider configuration")
                     })?;
-                    if let Some(base_url) = configuration.get("baseUrl").and_then(Value::as_str) {
-                        validation::normalize_base_url(base_url).map_err(|_| {
-                            HostError::from("invalid initial settings: invalid provider base URL")
-                        })?;
-                    }
-                    if provider.package_id == maka_providers::codex::ID
-                        && provider.name == "chatgpt"
-                        && configuration
-                            .get("baseUrl")
-                            .and_then(Value::as_str)
-                            .is_none_or(|url| {
-                                url.trim_end_matches('/') != "https://chatgpt.com/backend-api/codex"
-                            })
-                    {
-                        return Err(
-                            "invalid initial settings: subscription endpoint cannot be overridden"
-                                .into(),
-                        );
-                    }
                     let created = validation::normalize_create(CreateCatalogConnectionInput {
                         expected_catalog_revision: 0,
                         connection: ConnectionCatalogEntryDraft {
@@ -399,19 +380,6 @@ impl Settings {
                         )
                     })?;
                     let draft = created.connection;
-                    if let Some(overrides) = &draft.model_overrides
-                        && overrides.values().any(|profile| {
-                            matches!(
-                                (profile.context_window, profile.input_limit),
-                                (Some(capacity), Some(input)) if input > capacity
-                            )
-                        })
-                    {
-                        return Err(
-                            "invalid initial settings: model inputLimit cannot exceed contextWindow"
-                                .into(),
-                        );
-                    }
                     if !slugs.insert(draft.slug.clone()) {
                         return Err("invalid initial settings: duplicate connection slug".into());
                     }
@@ -490,6 +458,29 @@ impl Settings {
                 {
                     return Err("invalid initial settings: default target must reference an enabled model on an enabled connection".into());
                 }
+                connection
+                    .definition
+                    .prepare(provider::Resolve {
+                        connection: provider::Connection {
+                            id: connection.draft.slug.clone(),
+                            revision: 0,
+                            configuration: connection.draft.configuration.clone(),
+                        },
+                        model: ModelInfo::new(&target.model_id),
+                        overrides: connection
+                            .draft
+                            .model_overrides
+                            .as_ref()
+                            .and_then(|overrides| overrides.get(&target.model_id))
+                            .cloned(),
+                        thinking_level: None,
+                    })
+                    .await
+                    .map_err(|_| {
+                        HostError::from(
+                            "invalid initial settings: invalid default model configuration",
+                        )
+                    })?;
                 Some(target.clone())
             }
             None => None,
