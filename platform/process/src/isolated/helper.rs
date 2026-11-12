@@ -79,6 +79,7 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
             size,
             cwd,
             step_annotation_hook,
+            input_cleanup,
         } => {
             let mut command = Command::new(
                 executable,
@@ -183,18 +184,18 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
                     if let Some(listener) = listener {
                         listener.await.map_err(io::Error::other)?;
                     }
-                    if let Some(hook) = step_annotation_hook
-                        && let Err(error) =
-                            tokio::fs::remove_file(resource.join("inputs").join(hook)).await
-                        && error.kind() != io::ErrorKind::NotFound
-                    {
-                        eprintln!("Original step annotation hook cleanup: {error}");
-                    }
                     status
                 };
                 let original = resource.clone();
                 tokio::task::spawn_blocking(move || {
                     let pinned = super::evidence::pin(&original)?;
+                    for path in input_cleanup.into_iter().chain(step_annotation_hook) {
+                        if let Err(error) = remove_input(&original, &path)
+                            && error.kind() != io::ErrorKind::NotFound
+                        {
+                            eprintln!("Original private task input cleanup: {error}");
+                        }
+                    }
                     let snapshot = super::evidence::snapshot_identity(&pinned.owner)?;
                     let closure = Closure::GroupClosed {
                         resource: original.clone(),
@@ -212,7 +213,7 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
             }
             #[cfg(not(unix))]
             {
-                let _ = (command, size, step_annotation_hook);
+                let _ = (command, size, step_annotation_hook, input_cleanup);
                 Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "task owner unavailable",
@@ -220,6 +221,25 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn remove_input(resource: &Path, path: &Path) -> io::Result<()> {
+    use rustix::fs::{AtFlags, Mode, OFlags, openat, unlinkat};
+    let root = super::evidence::open_resource(resource)?;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut directory = openat(&root, "inputs", flags, Mode::empty())?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::other("missing private task input name"))?;
+    for component in path.parent().expect("relative private input").components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(io::Error::other("invalid private task input component"));
+        };
+        directory = openat(&directory, component, flags, Mode::empty())?;
+    }
+    unlinkat(&directory, name, AtFlags::empty())?;
+    Ok(())
 }
 
 #[cfg(unix)]

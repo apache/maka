@@ -105,25 +105,28 @@ async fn prepare(
     bridge: &Arc<mcp::Bridge>,
     cancellation: CancellationToken,
     submitted: &mut bool,
-    owner: maka_process::isolated::TaskOwner,
+    mut owner: maka_process::isolated::TaskOwner,
 ) -> Result<Outcome, Error> {
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
     let directory = bridge.directory();
-    let plugin = directory.join(".agents/plugins/maka");
+    let agents = directory.join(".agents");
+    let plugin = agents.join("plugins/maka");
+    let mcp_path = agents.join("mcp_config.json");
+    owner
+        .cleanup_input_on_exit(&mcp_path)
+        .map_err(|error| Error::Provider(error.to_string()))?;
     #[cfg(target_os = "macos")]
-    let hook_path = plugin.join("hooks.json");
-    #[cfg(target_os = "macos")]
-    let (owner, hook) = {
-        let mut owner = owner;
+    let hook = {
+        let hook_path = plugin.join("hooks.json");
         let tmp = owner.tmp();
         let executable = owner
             .record_step_annotations(&hook_path)
             .map_err(|error| Error::Provider(error.to_string()))?;
         let hook = super::super::agy_hook::configuration(executable, &tmp)
             .map_err(|error| Error::Provider(error.to_string()))?;
-        (owner, hook)
+        (hook_path, hook)
     };
     tokio::fs::create_dir_all(&plugin)
         .await
@@ -131,16 +134,12 @@ async fn prepare(
     tokio::fs::write(plugin.join("plugin.json"), b"{\"name\":\"maka\"}")
         .await
         .map_err(|e| Error::Provider(e.to_string()))?;
-    let mcp = serde_json::json!({"mcpServers":{"maka":{"url":bridge.url,"headers":{"Authorization":format!("Bearer {}",bridge.bearer())}}}});
+    // A resumed agy conversation discovers its original workspace roots as well.
+    // Workspace MCP definitions override the legacy, bearer-bearing plugin config.
+    let mcp = serde_json::json!({"mcpServers":{"maka_maka":{"serverUrl":bridge.url,"headers":{"Authorization":format!("Bearer {}",bridge.bearer())}}}});
     tokio::fs::write(
-        plugin.join("mcp_config.next"),
+        &mcp_path,
         serde_json::to_vec(&mcp).expect("MCP config is JSON"),
-    )
-    .await
-    .map_err(|e| Error::Provider(e.to_string()))?;
-    tokio::fs::rename(
-        plugin.join("mcp_config.next"),
-        plugin.join("mcp_config.json"),
     )
     .await
     .map_err(|e| Error::Provider(e.to_string()))?;
@@ -189,11 +188,11 @@ async fn prepare(
         plan.arg("--effort").arg(effort);
     }
     #[cfg(target_os = "macos")]
-    tokio::fs::write(&hook_path, hook)
+    tokio::fs::write(&hook.0, hook.1)
         .await
         .map_err(|error| Error::Provider(format!("Antigravity tool hook installation: {error}")))?;
     let host = bridge.clone();
-    let result = native_pipe(
+    native_pipe(
         owner,
         journal.observation(),
         plan,
@@ -208,17 +207,7 @@ async fn prepare(
             submitted,
         },
     )
-    .await;
-    #[cfg(target_os = "macos")]
-    if !matches!(
-        &result,
-        Err(Error::ObservationRetired | Error::CleanupUnconfirmed)
-    ) && let Err(error) = tokio::fs::remove_file(hook_path).await
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::error!(%error, "Antigravity private tool hook cleanup failed");
-    }
-    result
+    .await
 }
 
 struct Protocol<'a> {
