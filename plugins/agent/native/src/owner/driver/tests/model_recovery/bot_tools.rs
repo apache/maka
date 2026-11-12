@@ -280,7 +280,7 @@ fn has_tool(request: &Value, name: &str) -> bool {
         .is_some_and(|tools| tools.iter().any(|tool| tool["function"]["name"] == name))
 }
 
-fn tool_response(name: &str, input: Value) -> String {
+pub(super) fn tool_response(name: &str, input: Value) -> String {
     completion(
         json!({"role":"assistant","tool_calls":[{
             "index":0,"id":format!("call-{name}"),"type":"function",
@@ -290,7 +290,7 @@ fn tool_response(name: &str, input: Value) -> String {
     )
 }
 
-fn completion(delta: Value, finish: &str) -> String {
+pub(super) fn completion(delta: Value, finish: &str) -> String {
     let chunk = |delta, reason: Value| {
         json!({
             "id":"bot-controls","object":"chat.completion.chunk","created":1,"model":"llama3.2",

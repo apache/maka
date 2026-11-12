@@ -207,6 +207,7 @@ struct Rig {
     client: Option<HostClient>,
     call: Option<LocalCall>,
     captured: Arc<StdMutex<Option<Arc<Owner>>>>,
+    completion_gate: Arc<preset_test_gate::Gate>,
     lease: Option<SessionWorkLease>,
     work_effects: Option<WorkEffects>,
     driver: Option<Arc<NativeDriver>>,
@@ -242,6 +243,7 @@ impl Rig {
             client: None,
             call: None,
             captured: Arc::default(),
+            completion_gate: Arc::default(),
             lease: None,
             work_effects: None,
             driver: None,
@@ -388,9 +390,11 @@ impl Rig {
         let mut registry = NativeRegistry::default();
         if model_test {
             maka_settings_native::provide(&mut registry, catalog.clone())?;
+            maka_files_native::provide(&mut registry)?;
             maka_web::provide(&mut registry)?;
         }
         let capture = self.captured.clone();
+        let completion_gate = self.completion_gate.clone();
         let helper = std::env::current_exe()?;
         registry.insert(
             maka_agent_api::IMPLEMENTATION.into(),
@@ -401,6 +405,7 @@ impl Rig {
                     state.clone(),
                     helper.clone(),
                 );
+                let completion_gate = completion_gate.clone();
                 Box::pin(async move {
                     match Owner::open(context, configuration, catalog, state, helper, None).await {
                         Ok(owner) => {
@@ -415,7 +420,11 @@ impl Rig {
                                     "agent".into(),
                                     Published {
                                         contract: maka_agent_api::contract(),
-                                        value: service.clone() as Arc<dyn Handler>,
+                                        value: Arc::new(preset_test_gate::HandlerGate {
+                                            inner: service.clone(),
+                                            gate: completion_gate,
+                                        })
+                                            as Arc<dyn Handler>,
                                     },
                                 )])),
                                 owner: service,
@@ -433,6 +442,12 @@ impl Rig {
                 "createPreset",
                 "updatePreset",
                 "deletePreset",
+                "fork",
+                "list",
+                "metadata",
+                "pendingInteractions",
+                "interaction",
+                "respond",
                 "create",
                 "continueRun",
                 "models",
@@ -441,7 +456,6 @@ impl Rig {
                 "predictNextMessage",
                 "compact",
                 "selectBackend",
-                "continueRun",
                 "execution",
                 "send",
                 "uploadAttachment",
@@ -482,6 +496,17 @@ impl Rig {
         )]);
         if model_test {
             endpoints.insert(
+                "web".into(),
+                HostEndpoint {
+                    consumer: InstanceId(vec![gateway_key]),
+                    import: "web".into(),
+                    grant: Grant {
+                        methods: ["snapshot".into(), "save".into()].into(),
+                        recovery: false,
+                    },
+                },
+            );
+            endpoints.insert(
                 "settings".into(),
                 HostEndpoint {
                     consumer: InstanceId(vec![gateway_key]),
@@ -499,6 +524,25 @@ impl Rig {
                 },
             );
         }
+        let native = if !self.native_grants.is_empty() {
+            self.native_grants.clone()
+        } else if model_test {
+            let loaded = store
+                .load_application(deployment)
+                .await?
+                .ok_or("deployment missing")?;
+            let instances = &loaded.source().input.instances;
+            vec![maka_host_runtime::application::transport::NativeGrant {
+                origin: InstanceId(vec![instances["agent"].key]),
+                consumer: InstanceId(vec![instances["agent"].key]),
+                provider: InstanceId(vec![instances["web"].key]),
+                export: "web".into(),
+                methods: ["capture".into()].into(),
+                recovery: true,
+            }]
+        } else {
+            vec![]
+        };
         let host = Host::open(
             store,
             deployment,
@@ -506,7 +550,7 @@ impl Rig {
             None,
             HostConfiguration::PublicHost {
                 endpoints,
-                native: self.native_grants.clone(),
+                native,
                 product_methods: Default::default(),
             },
         )
@@ -2294,6 +2338,7 @@ mod source_recovery {
 mod model_recovery {
     mod bot_tools;
     mod predictions;
+    mod preset_acceptance;
     mod presets;
 
     use super::*;
@@ -2391,19 +2436,29 @@ mod model_recovery {
         let agent = package(
             "maka.tests.model-agent",
             maka_agent_api::native(),
-            boot.web
-                .into_iter()
-                .map(|_| {
-                    (
-                        "web".into(),
-                        Import {
-                            contract: maka_web_api::contract(),
-                            cardinality: Cardinality::One,
-                        },
-                    )
-                })
-                .collect(),
+            BTreeMap::from([
+                (
+                    "files".into(),
+                    Import {
+                        contract: maka_workspace_api::files::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                ),
+                (
+                    "web".into(),
+                    Import {
+                        contract: maka_web_api::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                ),
+            ]),
         )?;
+        let files = package(
+            "maka.tests.files",
+            maka_workspace_api::files::native(),
+            BTreeMap::new(),
+        )?;
+        let web = package("maka.tests.web", maka_web_api::native(), BTreeMap::new())?;
         let settings = package(
             "maka.tests.model-settings",
             maka_settings_native::native(),
@@ -2413,6 +2468,13 @@ mod model_recovery {
             "maka.tests.model-client",
             gateway_native(),
             BTreeMap::from([
+                (
+                    "web".into(),
+                    Import {
+                        contract: maka_web_api::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                ),
                 (
                     "agent".into(),
                     Import {
@@ -2429,24 +2491,42 @@ mod model_recovery {
                 ),
             ]),
         )?;
-        let mut input = Input {
+        let input = Input {
             base: None,
             ui: None,
             instances: BTreeMap::from([
+                (
+                    "files".into(),
+                    node(
+                        Uuid::new_v4(),
+                        files.application_ref(),
+                        json!({}),
+                        BTreeMap::new(),
+                    ),
+                ),
+                (
+                    "web".into(),
+                    node(
+                        boot.web.unwrap_or_else(Uuid::new_v4),
+                        web.application_ref(),
+                        json!({"network": if with_web { "denied" } else { "allowed" }}),
+                        BTreeMap::new(),
+                    ),
+                ),
                 (
                     "agent".into(),
                     node(
                         boot.agent,
                         agent.application_ref(),
                         configuration,
-                        boot.web
+                        ["files", "web"]
                             .into_iter()
-                            .map(|_| {
+                            .map(|name| {
                                 (
-                                    "web".into(),
+                                    name.into(),
                                     vec![Target::Instance {
-                                        path: vec!["web".into()],
-                                        export: maka_web_api::EXPORT.into(),
+                                        path: vec![name.into()],
+                                        export: name.into(),
                                     }],
                                 )
                             })
@@ -2470,6 +2550,13 @@ mod model_recovery {
                         json!({}),
                         BTreeMap::from([
                             (
+                                "web".into(),
+                                vec![Target::Instance {
+                                    path: vec!["web".into()],
+                                    export: "web".into(),
+                                }],
+                            ),
+                            (
                                 "agent".into(),
                                 vec![Target::Instance {
                                     path: vec!["agent".into()],
@@ -2488,27 +2575,15 @@ mod model_recovery {
                 ),
             ]),
         };
-        let mut packages = vec![agent, settings, client];
-        if let Some(web_id) = boot.web {
-            let web = package(
-                "maka.tests.model-web",
-                maka_web_api::native(),
-                BTreeMap::new(),
-            )?;
-            input.instances.insert(
-                "web".into(),
-                node(
-                    web_id,
-                    web.application_ref(),
-                    json!({"network":"denied"}),
-                    BTreeMap::new(),
-                ),
-            );
-            packages.push(web);
-        }
         let store = root(base, true).await?;
         store
-            .commit_application(boot.deployment, 0, input, vec![], packages)
+            .commit_application(
+                boot.deployment,
+                0,
+                input,
+                vec![],
+                vec![agent, settings, client, files, web],
+            )
             .await?;
         let loaded = store
             .load_application(boot.deployment)
@@ -5413,4 +5488,62 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
     assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
     assert!(matches!(served, Ok(Ok(()))), "{served:?}");
     assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+mod preset_test_gate {
+    use super::*;
+    use maka_host_runtime::application::{Context, HandlerResult};
+    type Pause = (String, oneshot::Sender<oneshot::Sender<()>>);
+    // Pause after domain preparation, before Host commits the statement and receipt.
+    #[derive(Default)]
+    pub(super) struct Gate(StdMutex<Option<Pause>>);
+    impl Gate {
+        pub(super) fn arm(&self, method: &str) -> oneshot::Receiver<oneshot::Sender<()>> {
+            let (send, receive) = oneshot::channel();
+            assert!(
+                self.0
+                    .lock()
+                    .unwrap()
+                    .replace((method.into(), send))
+                    .is_none()
+            );
+            receive
+        }
+    }
+    pub(super) struct HandlerGate {
+        pub inner: Arc<dyn Handler>,
+        pub gate: Arc<Gate>,
+    }
+    impl Handler for HandlerGate {
+        fn call(
+            &self,
+            method: String,
+            input: Value,
+            context: Context,
+        ) -> futures_util::future::BoxFuture<'static, HandlerResult> {
+            let inner = self.inner.clone();
+            let gate = self.gate.clone();
+            Box::pin(async move {
+                let result = inner.call(method.clone(), input, context).await;
+                let paused = {
+                    let mut pending = gate.0.lock().unwrap();
+                    if pending
+                        .as_ref()
+                        .is_some_and(|(target, _)| target == &method)
+                    {
+                        pending.take()
+                    } else {
+                        None
+                    }
+                };
+                if let Some((_, ready)) = paused {
+                    let (release, wait) = oneshot::channel();
+                    if ready.send(release).is_ok() {
+                        let _ = wait.await;
+                    }
+                }
+                result
+            })
+        }
+    }
 }
