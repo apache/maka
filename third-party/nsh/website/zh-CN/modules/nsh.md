@@ -283,7 +283,8 @@ interface Theme {
 它立即生效：调用之后 `token()` 马上读到新的令牌，引用令牌的类名、`nsh/base` 和 Rust 组件的 `theme()` 在下一帧跟上，两种外观都是。
 嵌入方应用的[主题覆盖](../docs/tailwind.md#主题-token)仍然优先于它。传 `null` 恢复应用构建时的主题。
 
-主题要整个读得懂：有值读不懂时（NSH 不认识的颜色，如 `#zz` 或 `lab()`；指不到颜色的 `var()`；或一种外观下是颜色、另一种外观下却不是颜色的值），
+主题要整个读得懂：有值读不懂时（NSH 不认识的颜色，如 `#zz`、`lab()` 或 `rgb(255 0 0)garbage`；
+指不到颜色的 `var()`；或一种外观下是颜色、另一种外观下却不是颜色的值），
 `setTheme` 抛出 `TypeError`，逐一列出这些值，正在显示的主题保持不变。阴影这类不属于任何令牌类型的值会被略过，和 `nsh.json`
 的主题一样。新主题请从应用自己的主题出发，只改不同的部分，这样类名引用的令牌都还有值（`up` 在 `nsh.json` 的主题里时的 `bg-up`）。
 Rust：对 `nsh_base::Theme` 调用 `set_tokens(theme.into())`（[主题 token](../docs/tailwind.md#主题-token)）。
@@ -300,6 +301,36 @@ function brand(color: string) {
 
 brand("#e11d48");
 setTheme(null); // 恢复应用的主题
+```
+
+## appInfo
+
+```ts
+function appInfo(): AppInfo;
+
+interface AppInfo {
+  readonly id: string | null;
+  readonly name: string | null;
+  readonly version: string | null;
+  readonly build: number | null;
+  readonly development: boolean;
+}
+```
+
+应用构建时的信息：id、名称、版本号、构建号，以及是否为开发构建。打包产物报告的是 `nsh package`、`nsh publish` 给包的
+名称和版本（包括 `--id`、`--name`、`--version`、`--build`），没有给出时版本为 `1.0.0`、构建号为 `1`；其他构建报告
+`nsh.json` 的 `"id"`、`"name"`、`"version"` 和 `"build"`，没有的项为 `null`。`nsh run`、`nsh dev`、`nsh test` 和不带
+`--release` 的 `nsh build` 是开发构建；`nsh package`、`nsh publish` 和 `nsh build --release` 不是。在任何平台、任何模块中
+都能读取，包括模块顶层的代码：构建会在应用的模块运行之前把这些信息交给运行时。
+
+安装的应用本体的版本见 `nsh/updater` 的 [`shellInfo()`](./nsh-updater.md#shellinfo)。
+
+```tsx
+import { appInfo, Text } from "nsh";
+
+const { version, build, development } = appInfo();
+
+export const About = () => <Text>{`${version} (${build})${development ? " · dev" : ""}`}</Text>;
 ```
 
 ## View、Text、Scroll、Overlay
@@ -1002,6 +1033,28 @@ effect(() => {
 });
 ```
 
+### wakeCount
+
+```ts
+const wakeCount: Accessor<number>;
+```
+
+应用运行期间系统从睡眠中唤醒的次数：启动时为 0，每次唤醒后加一。睡眠可能让 `lifecycle()` 保持不变（笔记本合上再打开、应用一直在前台），但网络连接和定时器并没有挺过这次睡眠。响应式：读取它的 effect 会在每次唤醒后重新运行，应用就在这里检查连接或重新建立连接。macOS、Windows 和 Linux 统计唤醒；在 iOS 和 Android 上，设备睡眠会把应用移到后台，由 `lifecycle()` 报告。Rust：`wake_count() -> u32`。
+
+```rust tabs
+effect(move || {
+    if wake_count() > 0 {
+        feed.reconnect();
+    }
+});
+```
+
+```tsx tabs
+effect(() => {
+  if (wakeCount() > 0) feed.reconnect();
+});
+```
+
 ### setColorScheme
 
 ```ts
@@ -1021,6 +1074,20 @@ function setFpsEnabled(enabled: boolean): void;
 
 ```tsx
 <Switch checked={fpsEnabled()} onChange={({ checked }) => setFpsEnabled(checked)} />
+```
+
+### shadersAvailable
+
+```ts
+const shadersAvailable: Accessor<boolean>;
+```
+
+平台能否绘制 shader 视图（`Shader`、`ShaderEffect`、`ShaderTransition`、`ScreenEffect`、`ScreenTransition`），响应式。在 iOS、Android、macOS、Windows、Linux、GPUI、Web 和无头测试中为 `true`；在终端中、以及关闭 `shader` 特性构建的应用中为 `false`。它从 `true` 开始，当第一个 shader 挂载、而 NSH 打不开这台机器的 GPU 时（例如浏览器没有 WebGL 2）变为 `false`，之后不再变回；所以在它为真时显示 shader，否则显示应用自己的绘制（见 [Shader](../elements/shader.md#shader-能否绘制)）。Rust：`shaders_available() -> bool`。
+
+```tsx
+<If when={shadersAvailable()} else={<Image src={backdrop} style={{ flex: 1 }} />}>
+  <Shader source={BACKDROP} style={{ flex: 1 }} />
+</If>
 ```
 
 ### platform
@@ -1599,7 +1666,7 @@ hasImage(): Promise<boolean>;
 writeImage(src: string): Promise<void>;
 ```
 
-把 `src`（base64 `data:` URL，或 `readImage` 给的 `url`）的图片放到剪贴板上，替换原有内容。Rust：`set_clipboard_image(src)`。Windows 上接受 PNG，这是浏览器、Office 和截图工具读取的格式。Android 上以 `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` 拒绝。
+把 `src`（base64 `data:` URL，或 `readImage` 给的 `url`）的图片放到剪贴板上，替换原有内容。Rust：`set_clipboard_image(src)`。Windows 上接受 PNG，这是浏览器、Office 和截图工具读取的格式。Web 上图片以 PNG 放到剪贴板，这是浏览器写入的图片格式；其他格式的图片同时原样放上去：作为 HTML（`<img>`，粘贴时在 `html` 里），在 Chromium 系浏览器中还作为原图，`readImage` 读回的就是它，所以 GIF 保留动画。Android 上以 `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` 拒绝。
 
 ```rust tabs
 set_clipboard_image(image.url.clone());
@@ -1669,10 +1736,15 @@ interface PickFilesOptions {
   multiple?: boolean; // 允许选择多个（false：一个）
   limit?: number; // multiple 时最多选几个（最多 100）
   filters?: { name: string; extensions: string[] }[]; // 提供的文件类型（不给：任意文件）
+  maxSize?: number; // 读入的最大文件，单位字节（不给时 512 MiB，也是上限）
 }
 
 interface PickedFile {
-  file: File; // 名称、类型、字节大小和内容，都保持原样
+  file: File | null; // 名称、类型、字节大小和内容，都保持原样；没读入时为 null
+  name: string;
+  type: string;
+  size: number; // 字节数，读没读都有
+  status: "read" | "tooLarge"; // "tooLarge"：超过 maxSize，内容没有读入
 }
 
 interface PickImagesOptions {
@@ -1693,6 +1765,8 @@ interface PickedImage {
 |---|---|
 | `await Picker.pickImages(options)` | `pick_images(request).await -> Vec<PickedFile>` |
 | `await Picker.pickFiles(options)` | `pick_files(request).await -> Vec<PickedFile>` |
+| `maxSize` | `FilePickRequest::new(multiple, limit).max_size(10 << 20)` |
+| `picked.status`、`.size` | `file.status`（`PickedStatus::TooLarge`）、`file.len` |
 | `multiple`、`limit` | `PickRequest::new(multiple, limit)`（`limit` 为 0 表示最多 100） |
 | `maxDimension` | `request.max_dimension = Some(DevicePixels(2048))` |
 | `quality` | `request.quality = Some(Percentage(0.8))` |
@@ -1815,8 +1889,13 @@ pickFiles(options?: PickFilesOptions): Promise<PickedFile[]>;
 const picked = await Picker.pickFiles({
   multiple: true,
   filters: [{ name: "文档", extensions: ["pdf", "md"] }],
+  maxSize: 10 * 1024 * 1024,
 });
-for (const { file } of picked) {
+for (const { file, name } of picked) {
+  if (!file) {
+    showError(`${name} 超过 10 MB`);
+    continue;
+  }
   const form = new FormData();
   form.append("document", file);
   await fetch("https://api.example.com/documents", { method: "POST", body: form });
@@ -1825,7 +1904,7 @@ for (const { file } of picked) {
 
 | 平台 | 选择器 | 过滤器 |
 |---|---|---|
-| macOS | `NSOpenPanel` 表单 | 所有扩展名合为一组 |
+| macOS | `NSOpenPanel`：应用窗口上的表单；该窗口不可见时（如托盘应用隐藏的主窗口）在最前面单独显示 | 所有扩展名合为一组 |
 | Windows | `IFileOpenDialog` | 每个过滤器一个选项，显示其名称 |
 | Linux | `GtkFileDialog`（有 portal 时用 portal 的） | 每个过滤器一个选项，显示其名称 |
 | iOS | `UIDocumentPickerViewController`，以副本形式 | 所有扩展名合为一组 |
@@ -1833,8 +1912,9 @@ for (const { file } of picked) {
 | Web | `<input type=file>` | 所有扩展名合为一组 |
 | GPUI | GPUI 的打开对话框，可选任意文件 | 不符合的文件在选择后被剔除 |
 
-所有平台都不需要权限。文件保持原样：不做转换，文件名不变。文件内容会全部读入内存，因此超过 512 MiB 的文件不会出现在
-结果中，并记录到日志。过滤器只决定选择器提供什么，并不保证结果：请检查拿到的文件。
+所有平台都不需要权限。文件保持原样：不做转换，文件名不变。文件内容会全部读入内存，最多读到 `maxSize`（不给时 512 MiB，
+给了也不超过它）：更大的文件不读入，只带回名称、类型和大小（`file` 为 null，`status` 为 `"tooLarge"`），应用可以据此提示
+用户。过滤器只决定选择器提供什么，并不保证结果：请检查拿到的文件。
 
 ### 嵌入 NSH 的应用
 
@@ -1897,7 +1977,7 @@ await Notifications.show({ id: "sync", title: "Synced", body: "12 new photos", s
 
 ### Notifications.permission
 
-`permission()` 只查询不询问，`requestPermission()` 首次会显示系统提示。两者的结果都是 `"default"`（尚未询问）、`"granted"`、`"denied"`（只能在系统设置里更改）或 `"unavailable"`。
+`permission()` 只查询不询问，`requestPermission()` 首次会显示系统提示。两者的结果都是 `"default"`（尚未询问）、`"granted"`、`"denied"`（只能在系统设置里更改）或 `"unavailable"`。在 Apple 平台上，`requestPermission()` 询问之后按系统设置里的权限返回：用户关掉了通知的应用得到 `"denied"`。
 
 ## UrlScheme
 
@@ -1940,6 +2020,105 @@ scheme 以字母开头，后面是字母、数字、`+`、`-` 或 `.`，按小�
 
 嵌入 NSH 的应用自己拥有 scheme，把 URL 交给视图：`AppView.open_url`（Linux、iOS）、`NshAppView.openURL`（Swift）、
 `NshView.openUrl` 或 `NshView.handleUrlSchemeIntent`（Android）。
+
+### UrlScheme.url
+
+`url()` 是应用的地址，`setUrl(url)` 设置它，应用借此在每个平台上给自己的页面分配地址：
+
+```ts
+const UrlScheme: {
+  on(event: "open", listener: (event: { url: string }) => void): () => void;
+  /** 地址不是应用自己改的（Web 上的后退和前进、用户输入的地址）。 */
+  on(event: "change", listener: (event: { url: string; reason: "back" | "forward" | "address" }) => void): () => void;
+  /** 应用的地址，没有时为 null。 */
+  url(): string | null;
+  /** 设置当前页面的地址；应用的页面保持不变。 */
+  setUrl(url: string, options?: { history?: "replace" | "push" }): void;
+};
+```
+
+| 平台 | `url()` | `setUrl(url)` |
+| --- | --- | --- |
+| Web，应用占据整个页面 | 页面的地址：加载时的地址、`setUrl` 设置的地址，或浏览器后退回到的那条记录的地址 | 替换当前历史记录的地址，与 `history.replaceState` 一样解析（相对于页面的 `<base href>`），在同一轮压入或弹出的页面的历史记录之后生效；带 `history: "push"` 时，像 `history.pushState` 一样在它之后新建一条自己的记录（见下文） |
+| 原生平台，以及 iframe 中的 Web | 最后一个打开应用的链接（启动应用的链接同时作为第一个 `open` 到达），或之后 `setUrl` 设置的地址；两者都没有时为 `null` | 为 `url()` 保存这个 URL，带 `history: "push"` 时也一样（没有可以压入的历史记录）；把它交给系统（Handoff、App Links）由嵌入应用负责 |
+
+URL 不是字符串、超过 16 KiB 或含有空白字符时抛出 `TypeError`；在 Web 上应用占据整个页面时，不是页面同源 URL 的地址同样抛出 `TypeError`。
+应用只有一个地址，Rust 读的也是它，`url()` 直接读取它：链接、Rust 的 `set_app_url` 和 `setUrl` 的改动都立即可见。在上表的平台上，启动应用的链接在应用的代码运行之前就已到达，所以第一次调用 `url()` 就能读到它，它同时也作为第一个 `open` 到达（在 Web 上，页面的地址从一开始就在）。
+在 Web 上，正在显示的栈里压入的每个页面都有自己的历史记录，浏览器的后退就在应用内后退：栈的页面返回，地址变为那条记录的地址，
+和应用自己弹出页面一样不发 `open`（应用用 `popOnBack={false}` 或 `onBackPress` 留下的页面保留它的历史记录和地址）。前进到栈里已经没有的页面，以及回到页面上一次加载留下的历史记录（刷新会保留它们）时，这条记录的地址像链接一样作为 `open` 到达：应用显示它指向的页面（如下例），不处理它的应用停在原处。应用用 `url()` 构建最初的路由，在栈的
+[`onChange`](../elements/nav-stack.md) 里设置顶层页面的地址，并显示链接指向的页面，它的页面就在所有平台上都有了地址：
+
+```tsx
+import { UrlScheme } from "nsh";
+import { NavStack, createNavStack } from "nsh/base";
+
+// 路由是 ""（收件箱）或一条消息的 id：用字符串，同一个地址得到的路由就等于正在显示的路由。
+type Route = string;
+
+function routesOf(url: string | null): Route[] {
+  const id = url && new URL(url, "https://app.invalid/").searchParams.get("message");
+  return id ? ["", id] : [""];
+}
+
+// "." 是页面自己的路径，不带查询参数。
+const urlOf = (route: Route) => (route ? `?message=${encodeURIComponent(route)}` : ".");
+
+const nav = createNavStack<Route>(routesOf(UrlScheme.url()));
+
+// 链接，以及 Web 上靠后退到不了的前进。
+UrlScheme.on("open", ({ url }) => nav.setRoutes(routesOf(url)));
+
+export function App() {
+  return (
+    <NavStack
+      state={nav}
+      style={{ flex: 1 }}
+      onChange={({ routes }) => UrlScheme.setUrl(urlOf(routes[routes.length - 1]))}
+    >
+      {(route) => (route ? <Message id={route} /> : <Inbox onOpen={(id) => nav.push(id)} />)}
+    </NavStack>
+  );
+}
+```
+
+Rust 代码 await `nsh_core::prelude` 的 `app_url()`，调用 `set_app_url(url)`，与 `next_url_scheme_open()` 并列；它们和 `url()`、
+`setUrl` 是同一个地址，`setUrl` 会抛错的 URL，`set_app_url` 返回错误。在 Web 上它和 `setUrl` 一样按页面的基准地址解析 URL，与页面不同源的地址返回错误。
+
+应用里自成一处、却没有为它压入页面的地址（标签页、查询里的筛选或排序、分栏视图选中的行），用 `history: "push"` 设置，
+这样浏览器的后退会回到之前的地址，而不是离开页面。应用通过 [`change`](#urlschemeonchange) 收到这次后退以及之后的前进：
+
+```tsx
+function selectTab(tab: Tab) {
+  current.set(tab);
+  UrlScheme.setUrl(`?tab=${tab}`, { history: "push" });
+}
+UrlScheme.on("change", ({ url }) => current.set(tabOf(url)));
+```
+
+压入的地址是当前条目之后、显示着的页面上的一条记录，并像 `history.pushState` 一样丢弃浏览器的前进记录。在压入页面的那一轮，
+地址归页面的记录，不另建记录（就像 `onChange` 设置的那样）；在弹出页面的那一轮，它是后退落到的那条记录之后的一条记录。压入当前显示的
+地址不会新建记录；同一轮里最后的地址生效，压入优先于替换。`history` 为其他值时抛出 `TypeError`。Rust 调用
+`set_app_url_with(url, HistoryBehavior::Push)`（`nsh_core::url_scheme`）。
+
+### UrlScheme.on("change")
+
+`change` 报告应用的地址发生了变化，而这一变化既不是应用自己做的，也不是它的页面能说明的；事件带有地址和变化的原因。此时
+`url()` 已经读到新地址，应用显示它所指向的内容：
+
+```tsx
+// 标签页在地址里（`?tab=live`）；后退或前进到另一个标签页的条目时，显示那个标签页。
+UrlScheme.on("change", ({ url }) => tab.set(tabOf(url)));
+```
+
+| `reason` | 何时（Web 上，应用占满整个页面时） |
+| --- | --- |
+| `"back"`、`"forward"` | 浏览器的后退或前进到了页面相同、地址不同的条目（用户输入的地址），或者后退弹出了页面，而应用在响应时没有设置地址（没有 `onChange` 设置地址），留下的地址也不是应用设置的 |
+| `"address"` | 用户给页面输入了应用的地址，即在地址栏里输入 `#fragment`：在当前条目之后新建一个条目，应用的页面保持不变 |
+
+栈能说明的情况保持不变：弹出页面的后退归栈处理（`onChange`），前进到栈里已经没有的页面是 `open`，应用自己的 `setUrl`
+不是 `change`。没有监听者时发生的变化不会保留：`url()` 里有它们。原生平台、GPUI 宿主和终端没有地址的历史记录，所以
+`change` 只在 Web 上出现。Rust 代码 await `nsh_core::prelude` 的 `next_app_url_change()`，得到带有 `url` 和 `reason` 的
+`AppUrlChange`。
 
 ## Speech
 
@@ -2095,7 +2274,7 @@ import { AudioPlayer, Sound } from "nsh";
 ```ts
 declare class Sound {
   static available(): Promise<boolean>;
-  static load(src: string): Promise<Sound>;
+  static load(src: string | Uint8Array): Promise<Sound>;
   play(options?: { volume?: number; rate?: number }): void;
   stop(): void;
   readonly duration: number;
@@ -2139,7 +2318,7 @@ type AudioErrorCode =
 
 ### Sound.load
 
-从导入的音频文件（`import click from "./sounds/click.wav"`：导入得到文件的 `asset:/` URL，文件随应用发布）、`file:` URL、`data:` URI 或应用 `network` capability 授权的 `http(s)` URL 加载音效，并解码进内存。引擎已加载过的源会共享：两个组件加载同一个点击音只解码一次。音效在 `dispose()` 时释放，或在加载它的一方离开时（组件卸载）释放。单个音效编码后最大 8 MB、时长最长 5 秒，一个应用同时最多持有 64 个音效、共 16 MB 解码后音频；超出时 `load` 以 `code` 为 `"ERR_NSH_QUOTA_EXCEEDED"` 拒绝。更长的音频交给 `AudioPlayer`。
+从导入的音频文件（`import click from "./sounds/click.wav"`：导入得到文件的 `asset:/` URL，文件随应用发布）、`file:` URL、`data:` URI 或应用 `network` capability 授权的 `http(s)` URL 加载音效，也可以直接给音频文件的字节（应用生成或下载的 `Uint8Array`；Rust 里还可以是嵌进程序的字节，`load_sound(include_bytes!("tick.wav"))`），并解码进内存。字节的格式（WAV、AAC、MP3 等）从字节本身读出。引擎已加载过的源会共享，相同的字节也一样：两个组件加载同一个点击音只解码一次。音效在 `dispose()` 时释放，或在加载它的一方离开时（组件卸载）释放。单个音效编码后最大 8 MB、时长最长 5 秒，一个应用同时最多持有 64 个音效、共 16 MB 解码后音频；超出时 `load` 以 `code` 为 `"ERR_NSH_QUOTA_EXCEEDED"` 拒绝。更长的音频交给 `AudioPlayer`。
 
 ### Sound.play
 

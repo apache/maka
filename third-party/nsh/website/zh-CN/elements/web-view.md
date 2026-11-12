@@ -54,7 +54,7 @@ web view 接受 [view](./view.md) 的属性（它没有子元素），另外还�
 |---|---|---|---|---|
 | `src` | `web_view(url)` | `string` | | 要显示的页面的 URL。 |
 | `html` | `web_view_html(html, base_url)`、`.html(html, base_url)` | `string` | | 内联 HTML，代替 `src` 显示。 |
-| `baseUrl` | `web_view_html` / `.html` 的 `base_url` | `string` | | `html` 中相对链接的解析基准。 |
+| `baseUrl` | `web_view_html` / `.html` 的 `base_url` | `string` | | `html` 中相对链接的解析基准。它需要与该地址的页面相同的授权（`webview.hosts`）；未授权时 HTML 不带基准 URL 加载，`onError` 报告 `ERR_ACCESS_DENIED`。 |
 | `injectedJavaScript` | `.injected_java_script(..)` | `string` | | 每个页面加载完成后执行。 |
 | `injectedJavaScriptBeforeContentLoaded` | `.injected_java_script_before_content(..)` | `string` | | 在每个页面自身的脚本之前执行。 |
 | `userAgent` | `.user_agent(..)` | `string` | | 浏览器的 user agent 字符串。 |
@@ -76,12 +76,14 @@ web view 接受 [view](./view.md) 的属性（它没有子元素），另外还�
 |---|---|---|---|
 | `onLoadStart` | `.on_load_start` | `WebViewNavigation` | 页面开始加载。 |
 | `onLoad` | `.on_load` | `WebViewNavigation` | 页面加载完成。 |
-| `onError` | `.on_error` | `{ message, code? }`（`&str`，即消息） | 加载失败；页面或 `html` 不在应用的能力范围内时 `code` 为 `"ERR_ACCESS_DENIED"`。 |
+| `onError` | `.on_error` | `{ message, code? }`（`&str`，即消息） | 加载失败；页面、`html` 或 `baseUrl` 不在应用的能力范围内时 `code` 为 `"ERR_ACCESS_DENIED"`，平台无法显示网页视图时为 `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"`（Rust 中也可用 `.on_unavailable`，参数为消息），页面的进程结束时为 `"ERR_NSH_WEBVIEW_TERMINATED"`，直到 `reload()`、`load()` 或新的来源（Rust 中也可用 `.on_process_terminated`）。 |
 | `onNavigationStateChange` | `.on_navigation_state_change` | `WebViewNavigation` | URL、标题、加载状态或历史记录发生变化。 |
 | `onMessage` | `.on_message` | `{ data: string }`（`&str`） | 页面调用了 `window.nsh.postMessage(data)`。 |
 | `onDownload` | | `WebViewDownload` | 下载开始、完成或失败（macOS）。 |
 
 `WebViewNavigation` 为 `{ url, title, loading, canGoBack, canGoForward }`；Rust 中为 `WebNavigation`，字段是 `url`、`title`、`loading`、`can_go_back` 和 `can_go_forward`。
+
+`WebView.available()`（Rust 为 `web_view_available()`）得到网页视图在当前环境下能否显示页面：平台没有网页引擎，或应用的能力未授予 `webview` 时为 `false`（见[没有网页引擎时](../docs/web-view-and-video.md#没有网页引擎时)）。
 
 `WebViewDownload` 为 `{ state, id, url, filename, path, bytes?, message? }`：`state` 为 `"started"`、`"finished"`（带文件大小 `bytes`）或 `"failed"`（带原因 `message`）。设置了 `onDownload` 后，页面下载的内容（附件、web view 不显示的类型、`download` 链接）保存在应用数据目录的 `downloads/<id>/<filename>`，即 `path` 所指的位置，应用用 `fs/promises` 读取。
 
@@ -156,7 +158,7 @@ function Bridge() {
 
 ## 能力声明
 
-应用在 `nsh.json` 中声明了[能力](../docs/sandbox-and-capabilities.md)时，web view 显示和跳转到 `webview` 下列出的主机。指向其他主机的 `src`，或未声明 `webview` 的应用中的 `html`，显示为空视图；跳到其他主机的顶层导航（用户点击的链接）会在原生侧取消。每种情况都会触发 `onError`，其 `code` 为 `"ERR_ACCESS_DENIED"`。
+应用在 `nsh.json` 中声明了[能力](../docs/sandbox-and-capabilities.md)时，web view 显示和跳转到 `webview` 下列出的主机。指向其他主机的 `src`，或未声明 `webview` 的应用中的 `html`，显示为空视图；指向其他主机的 `baseUrl` 会被丢弃，HTML 不带它加载；跳到其他主机的顶层导航（用户点击的链接）会在原生侧取消。每种情况都会触发 `onError`，其 `code` 为 `"ERR_ACCESS_DENIED"`。
 
 ```json
 {

@@ -456,7 +456,7 @@ fn context(
     }
     Ok(context)
 }
-fn valid_summary(
+pub(crate) fn valid_summary(
     c: &Connection,
     run: RunId,
     request: &RequestSpec,

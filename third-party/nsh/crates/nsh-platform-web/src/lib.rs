@@ -84,6 +84,11 @@ thread_local! {
     static TEST_ANSWER: RefCell<String> = const { RefCell::new(String::new()) };
     /// The page's URL, which relative request URLs resolve against.
     static BASE_URL: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// The launch parameters of the next app the page starts
+    /// ([`nsh_set_host_params`]): its `host.params`.
+    static HOST_PARAMS: RefCell<serde_json::Map<String, serde_json::Value>> = RefCell::new(serde_json::Map::new());
+    /// The address the next app starts at ([`nsh_set_page_url`]).
+    static PAGE_URL: RefCell<Option<String>> = const { RefCell::new(None) };
     /// What the page reported last ([`nsh_environment`]), kept for the
     /// next start ([`nsh_start_rust`], `nsh_browser_start`).
     static PAGE: Cell<Option<Environment>> = const { Cell::new(None) };
@@ -225,6 +230,7 @@ base_parts!(
     toast => nsh_part_toast,
     pickers => nsh_part_pickers,
     color_picker => nsh_part_color_picker,
+    emoji_picker => nsh_part_emoji_picker,
     carousel => nsh_part_carousel,
     tree => nsh_part_tree,
     fields => nsh_part_fields,
@@ -470,6 +476,8 @@ fn environment(width: f32, height: f32, dark: bool, pixel_ratio: f32) -> Environ
 fn page() -> Environment {
     PAGE.with(Cell::get).unwrap_or(Environment {
         os: Os::Web,
+        // Browsers' screen readers follow `aria-activedescendant`.
+        reads_active_descendants: true,
         ..Environment::default()
     })
 }
@@ -481,7 +489,8 @@ fn page() -> Environment {
 /// covers), `appleKeyboard` (the browser runs on an Apple platform: its
 /// shortcuts are Apple's), `host` (the page answers `nsh/host` calls:
 /// `createPlayer`'s `host`) and `screenColor` (the browser has an
-/// `EyeDropper`); missing keys keep their value. Called before the app starts
+/// `EyeDropper`) and `shaders` (`false` once a shader view found no
+/// WebGL 2); missing keys keep their value. Called before the app starts
 /// and on every change; the idiom and `host` are the ones at start, as on every
 /// platform. Returns the pump delay.
 ///
@@ -589,6 +598,7 @@ pub unsafe extern "C" fn nsh_environment(ptr: *const u8, len: usize) -> f64 {
     env.screen_color = flag("screenColor").unwrap_or(env.screen_color);
     env.notifications = flag("notifications").unwrap_or(env.notifications);
     env.audio = flag("audio").unwrap_or(env.audio);
+    env.shaders = flag("shaders").unwrap_or(env.shaders);
     PAGE.with(|p| p.set(Some(env)));
     send(|app| {
         let e = &mut app.environment;
@@ -606,6 +616,7 @@ pub unsafe extern "C" fn nsh_environment(ptr: *const u8, len: usize) -> f64 {
         e.screen_color = env.screen_color;
         e.notifications = env.notifications;
         e.audio = env.audio;
+        e.shaders = env.shaders;
         app.control.set_environment(app.environment);
         // The DOM draws emoji as wide as the pixel ratio makes them.
         if rescaled && app.text.emoji_measured() {
@@ -684,6 +695,7 @@ fn run(app: App, width: f32, height: f32, environment: Environment, limits: Limi
         app,
         viewport: Size::new(Points(width), Points(height)),
         trace: false,
+        content_culling: false,
         network: Some(std::sync::Arc::new(net::WebNetwork)),
         websocket: Some(std::sync::Arc::new(websocket::BrowserWebSocket)),
         refuse_connections: None,
@@ -705,7 +717,14 @@ fn run(app: App, width: f32, height: f32, environment: Environment, limits: Limi
         context: Default::default(),
         pinned: Default::default(),
         clipboard: None,
-        host: Default::default(),
+        host: {
+            let host = nsh_engine::HostChannel::new();
+            let params = HOST_PARAMS.with(|p| std::mem::take(&mut *p.borrow_mut()));
+            if !params.is_empty() {
+                host.set_params(params);
+            }
+            host
+        },
         picker: None,
         speech: None,
         audio: None,
@@ -719,7 +738,22 @@ fn run(app: App, width: f32, height: f32, environment: Environment, limits: Limi
         }
     });
     let text = Rc::new(WebTextEngine::default());
-    let Some(mut engine) = LocalEngine::start(config, text.clone(), Sink) else {
+    // The page's address, there before the app's code runs, with the page's
+    // base URL, which Rust's `set_app_url` resolves against as
+    // `history.replaceState` does.
+    let page = PAGE_URL.with(|u| u.borrow_mut().take()).map(|url| {
+        let base = BASE_URL
+            .with(|b| b.borrow().clone())
+            .unwrap_or_else(|| url.clone());
+        serde_json::json!({ "url": url, "page": true, "quiet": true, "base": base })
+    });
+    let Some(mut engine) = LocalEngine::start_with(config, text.clone(), Sink, |control| {
+        if let Some(payload) = page {
+            if let Some(payload) = event::payload(EventKind::UrlScheme, payload) {
+                control.dispatch_event(ROOT_ID, EventKind::UrlScheme, payload);
+            }
+        }
+    }) else {
         return -1.0;
     };
     // A task woken by a browser callback (a WebSocket message in an app's
@@ -780,6 +814,19 @@ pub unsafe extern "C" fn nsh_after_gate(ptr: *const u8, len: usize) -> f64 {
     pump()
 }
 
+/// Sets the address the app started next starts at (`UrlScheme.url()`,
+/// `app_url`): the page's, when the app is the page.
+///
+/// # Safety
+///
+/// `ptr..ptr + len` is memory from [`nsh_alloc`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_set_page_url(ptr: *const u8, len: usize) {
+    // SAFETY: guaranteed by the caller.
+    let url = unsafe { string(ptr, len) };
+    PAGE_URL.with(|u| *u.borrow_mut() = Some(url));
+}
+
 /// Sets the page's URL (`document.baseURI`): relative request URLs
 /// (`fetch("/api")`) of the apps started next resolve against it.
 ///
@@ -791,6 +838,25 @@ pub unsafe extern "C" fn nsh_set_base_url(ptr: *const u8, len: usize) {
     // SAFETY: guaranteed by the caller.
     let url = unsafe { string(ptr, len) };
     BASE_URL.with(|b| *b.borrow_mut() = Some(url));
+}
+
+/// Sets the launch parameters of the next app the page starts (its
+/// `host.params`, a JSON object; anything else is none): what the page
+/// knows before the app runs, such as data it was served with, so the
+/// app's first frame shows it without asking for it again.
+///
+/// # Safety
+///
+/// `ptr..ptr + len` is memory from [`nsh_alloc`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_set_host_params(ptr: *const u8, len: usize) {
+    // SAFETY: guaranteed by the caller.
+    let json = unsafe { string(ptr, len) };
+    let params = match serde_json::from_str(&json) {
+        Ok(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    HOST_PARAMS.with(|p| *p.borrow_mut() = params);
 }
 
 /// Compiles one module (`name`'s extension says TSX, TS, JSX or JS) to the
@@ -1140,7 +1206,9 @@ pub unsafe extern "C" fn nsh_event(
     // SAFETY: guaranteed by the caller.
     let json = unsafe { string(ptr, len) };
     let value: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
-    let payload = event::payload(kind, value);
+    let Some(payload) = event::payload(kind, value) else {
+        return pump();
+    };
     send(|app| app.control.dispatch_event(id, kind, payload))
 }
 
@@ -1252,8 +1320,36 @@ pub unsafe extern "C" fn nsh_picked_file(
     PICKED.with_borrow_mut(|files| files.push(file));
 }
 
-/// Answers pick `request` with the files [`nsh_picked_file`] gave (none:
-/// cancelled).
+/// A file picked for the pick `nsh.js` is answering (`Picker.pickFiles`)
+/// that is larger than the pick reads: its name, its type, its size in
+/// bytes and when it was last changed (ms since the Unix epoch), without its
+/// bytes. [`nsh_picked`] sends it with the others.
+///
+/// # Safety
+///
+/// The two ranges are memory from [`nsh_alloc`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_picked_too_large(
+    name: *const u8,
+    name_len: usize,
+    mime: *const u8,
+    mime_len: usize,
+    len: f64,
+    last_modified: f64,
+) {
+    // SAFETY: guaranteed by the caller.
+    let (name, mime) = unsafe { (string(name, name_len), string(mime, mime_len)) };
+    // A `File.size`: a whole number of bytes (`as` saturates).
+    let mut file = nsh_core::picker::PickedFile::too_large(name, mime, len.max(0.0) as u64);
+    if last_modified.is_finite() && last_modified >= 0.0 {
+        file.last_modified =
+            Some(std::time::UNIX_EPOCH + std::time::Duration::from_millis(last_modified as u64));
+    }
+    PICKED.with_borrow_mut(|files| files.push(file));
+}
+
+/// Answers pick `request` with the files [`nsh_picked_file`] and
+/// [`nsh_picked_too_large`] gave (none: cancelled).
 #[unsafe(no_mangle)]
 pub extern "C" fn nsh_picked(request: u32) -> f64 {
     let files = PICKED.with_borrow_mut(std::mem::take);
@@ -1267,7 +1363,7 @@ pub extern "C" fn nsh_picked(request: u32) -> f64 {
 }
 
 /// Touches, as JSON `{ phase, time, points: [{ id, target, path, pageX,
-/// pageY, x, y, changed }] }` (`phase`: 0 start, 1 move, 2 end, 3
+/// pageY, x, y, changed, pointerType }] }` (`phase`: 0 start, 1 move, 2 end, 3
 /// cancel).
 ///
 /// # Safety
@@ -1309,6 +1405,11 @@ pub unsafe extern "C" fn nsh_touch(ptr: *const u8, len: usize) -> f64 {
                     page: point(Points(f(p, "pageX") as f32), Points(f(p, "pageY") as f32)),
                     location: point(Points(f(p, "x") as f32), Points(f(p, "y") as f32)),
                     changed: p.get("changed").and_then(|v| v.as_bool()).unwrap_or(true),
+                    pointer_type: p
+                        .get("pointerType")
+                        .and_then(|v| v.as_str())
+                        .and_then(nsh_core::PointerType::from_name)
+                        .unwrap_or(nsh_core::PointerType::Touch),
                 })
                 .collect()
         })
@@ -1359,8 +1460,10 @@ fn key_of(code: u32) -> Option<Key> {
 /// Matches a key against the app's shortcuts (`nsh/keymap`) on the spot,
 /// while the browser's key event is handled: `key` as [`key_of`] takes
 /// it, `modifiers` bits 1 Ctrl, 2 Alt, 4 Shift, 8 Meta (Command, the
-/// Windows key), `editing` when a text field has the focus, `repeat` for
-/// an auto-repeat. Returns the binding that fires, -1 for none (the key
+/// Windows key), `focus` bits 1 when a text field has the focus and 2 when
+/// a control that Return and Space press has it (they then fire only the
+/// focus' own bindings, [`Keymap::find_at`](nsh_core::keymap::Keymap::find_at)),
+/// `repeat` for an auto-repeat. Returns the binding that fires, -1 for none (the key
 /// goes on), -2 for a held key's repeat (consumed, nothing fires) or
 /// `-3 - id` for binding `id` passing the key through (it fires, then the
 /// key goes on). JS reports a firing binding with [`nsh_key_command`].
@@ -1369,7 +1472,7 @@ fn key_of(code: u32) -> Option<Key> {
 /// shortcuts (`1 << 31` and up) and overlay Escape (`u32::MAX`), while
 /// leaving the negative sentinels distinct.
 #[unsafe(no_mangle)]
-pub extern "C" fn nsh_key(key: u32, modifiers: u32, editing: u32, repeat: u32) -> f64 {
+pub extern "C" fn nsh_key(key: u32, modifiers: u32, focus: u32, repeat: u32) -> f64 {
     let Some(key) = key_of(key) else { return -1.0 };
     let keystroke = Keystroke {
         modifiers: Modifiers {
@@ -1382,7 +1485,13 @@ pub extern "C" fn nsh_key(key: u32, modifiers: u32, editing: u32, repeat: u32) -
     };
     let found = KEYMAP.with(|k| {
         k.borrow().as_ref().map_or(KeyMatch::None, |k| {
-            k.find(keystroke, editing != 0, repeat != 0)
+            k.find_at(
+                nsh_core::ROOT_ID,
+                keystroke,
+                focus & 1 != 0,
+                focus & 2 != 0,
+                repeat != 0,
+            )
         })
     });
     match found {
@@ -1587,6 +1696,19 @@ pub extern "C" fn nsh_root_size(
 #[unsafe(no_mangle)]
 pub extern "C" fn nsh_states(id: u32, states: u32) -> f64 {
     send(|app| app.control.set_states(id, states as u16))
+}
+
+/// The user gave the page input with a pointer (`modality` 1: a mouse
+/// button, a pen or a finger going down) or the keyboard (0: a key that
+/// is not a modifier alone), before it acts: `focus-visible:` follows it.
+#[unsafe(no_mangle)]
+pub extern "C" fn nsh_input_modality(modality: u32) -> f64 {
+    let modality = if modality == 1 {
+        nsh_core::platform::InputModality::Pointer
+    } else {
+        nsh_core::platform::InputModality::Keyboard
+    };
+    send(|app| app.control.set_input_modality(modality))
 }
 
 /// The surface was resized (points).

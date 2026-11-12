@@ -134,6 +134,7 @@ fn start(
         minify: false,
         split: false,
         ui_sets: Vec::new(),
+        ..Default::default()
     })
     .unwrap();
     let bytecode = nsh_js::compile_bytecode_with(&bundle.code, false, &[]).unwrap();
@@ -143,6 +144,7 @@ fn start(
         app: nsh_engine::App::Js(unsafe { Bundle::bytecode(bytecode) }),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,

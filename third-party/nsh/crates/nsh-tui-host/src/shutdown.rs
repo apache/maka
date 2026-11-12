@@ -6,7 +6,12 @@ pub(crate) fn requested() -> bool {
     REQUESTED.load(Ordering::Relaxed)
 }
 
-pub(crate) fn request_exit() {
+/// Asks the running host to leave its run loop and restore the terminal, as SIGTERM does.
+///
+/// A request made before the host starts its run (an embedding program that spawns the host
+/// and stops it at once) ends that run as soon as it starts. The run clears the request when it
+/// ends, so a request made after that ends the next run in the process.
+pub fn request_exit() {
     REQUESTED.store(true, Ordering::Relaxed);
 }
 
@@ -21,7 +26,6 @@ extern "C" fn request(_: libc::c_int) {
 #[cfg(unix)]
 impl Guard {
     pub(crate) fn install() -> std::io::Result<Self> {
-        REQUESTED.store(false, Ordering::Relaxed);
         let mut guard = Self(Vec::new());
         for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
             // SAFETY: initialized signal actions; the handler only stores an atomic flag.
@@ -49,6 +53,10 @@ impl Drop for Guard {
                 libc::sigaction(*signal, previous, std::ptr::null_mut());
             }
         }
+        // The run is over: dropped last, once the terminal is restored. Cleared after the
+        // handlers are put back, so a signal on the way out cannot leave a request for the
+        // next run.
+        REQUESTED.store(false, Ordering::Relaxed);
     }
 }
 
@@ -67,7 +75,6 @@ unsafe extern "system" fn request(event: u32) -> i32 {
 #[cfg(windows)]
 impl Guard {
     pub(crate) fn install() -> std::io::Result<Self> {
-        REQUESTED.store(false, Ordering::Relaxed);
         // SAFETY: a static handler that only sets an atomic flag, removed on drop.
         if unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(request), 1) }
             == 0
@@ -84,5 +91,23 @@ impl Drop for Guard {
         unsafe {
             windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(request), 0);
         }
+        // The run is over: dropped last, once the terminal is restored. Cleared after the
+        // handler is removed, so a Ctrl+C on the way out cannot leave a request for the next
+        // run.
+        REQUESTED.store(false, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_request_before_the_run_starts_ends_it_and_the_run_clears_it() {
+        request_exit();
+        let guard = Guard::install().unwrap();
+        assert!(requested(), "installing the guard keeps an earlier request");
+        drop(guard);
+        assert!(!requested(), "the run ends with no request left");
     }
 }

@@ -1,6 +1,7 @@
 // A case of the API's test suite (docs/dev/compatibility.md): the
 // accessibility props of every element as the platform receives them on
 // iOS (the scripts' default platform): `accessible`, `accessibilityHint`,
+// `accessibilityDescription`,
 // `accessibilityState` (with `hasPopup`, a popup's trigger), `accessibilityValue`, `accessibilityElementsHidden`,
 // `accessibilityActions`, `importantForAccessibility`, which decides
 // `accessible` and hides the descendants for `"no-hide-descendants"`, and
@@ -8,7 +9,8 @@
 // option `selected`, and the structural roles of `nsh/base`'s accordions,
 // toolbars, paginations, trees and checkable menu items (`"group"`,
 // `"region"`, `"navigation"`, `"tree"`, `"treeitem"`, `"menuitemcheckbox"`,
-// `"menuitemradio"`). Its script checks each.
+// `"menuitemradio"`) and of dialogs (`"dialog"`, `"alertdialog"`). Its
+// script checks each.
 import { Text, View } from "nsh";
 
 function App() {
@@ -18,6 +20,11 @@ function App() {
         <Text>Group</Text>
       </View>
       <View testID="hint" accessibilityHint="Opens the settings" style={{ height: 20 }} />
+      <View
+        testID="description"
+        accessibilityDescription="Letters and digits only"
+        style={{ height: 20 }}
+      />
       <View
         testID="state"
         accessibilityState={{ disabled: true, checked: "mixed", expanded: false }}
@@ -66,6 +73,8 @@ function App() {
       </View>
       <View testID="role-menuitemcheckbox" role="menuitemcheckbox" style={{ height: 4 }} />
       <View testID="role-menuitemradio" role="menuitemradio" style={{ height: 4 }} />
+      <View testID="role-dialog" role="dialog" style={{ height: 4 }} />
+      <View testID="role-alertdialog" role="alertdialog" style={{ height: 4 }} />
       <View testID="plain" style={{ height: 20 }} />
     </View>
   );

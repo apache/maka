@@ -147,6 +147,7 @@ fn stage_waits_for_native_state_and_retires_old_sources() {
         minify: false,
         split: false,
         ui_sets: sets.iter().map(Into::into).collect(),
+        ..Default::default()
     })
     .unwrap();
     let area = rect(0., 24., 1200., 776.);

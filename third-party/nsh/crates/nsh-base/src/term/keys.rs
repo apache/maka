@@ -35,8 +35,10 @@ const CTRL_KEYS: [&str; 26] = [
 ];
 
 /// Every bound key and what it sends. `apple`: Control is free of the
-/// app's shortcuts (Command is theirs); elsewhere Ctrl+Q stays the
-/// system's, and Ctrl+Shift+C / V are the clipboard's, as in terminals.
+/// app's shortcuts (Command is theirs), and Command's line editing keys
+/// send what macOS terminals send ([`APPLE_LINE_EDITING`]); elsewhere
+/// Ctrl+Q stays the system's, and Ctrl+Shift+C / V are the clipboard's, as
+/// in terminals.
 pub(super) fn bindings(apple: bool) -> Vec<(&'static str, KeyBytes)> {
     use KeyBytes::*;
     let mut out = vec![
@@ -64,8 +66,25 @@ pub(super) fn bindings(apple: bool) -> Vec<(&'static str, KeyBytes)> {
         }
         out.push((keys, Fixed(bytes)));
     }
+    if apple {
+        out.extend(
+            APPLE_LINE_EDITING
+                .iter()
+                .map(|&(keys, bytes)| (keys, Fixed(bytes))),
+        );
+    }
     out
 }
+
+/// Command's line editing keys on Apple platforms, sent as Ghostty sends
+/// them, for the moves they make in a text field: Command+Backspace
+/// deletes to the line's start (Ctrl+U), Command+Left and Command+Right go
+/// to its start and end (Ctrl+A, Ctrl+E).
+const APPLE_LINE_EDITING: [(&str, &str); 3] = [
+    ("cmd+backspace", "\x15"),
+    ("cmd+left", "\x01"),
+    ("cmd+right", "\x05"),
+];
 
 #[cfg(test)]
 mod tests {
@@ -82,6 +101,22 @@ mod tests {
             "\x1b[A"
         );
         assert_eq!(KeyBytes::Cursor('A').encode(app), "\x1bOA");
+    }
+
+    #[test]
+    fn command_edits_the_line_on_apple_platforms_only() {
+        let sends = |apple: bool, keys: &str| {
+            bindings(apple)
+                .into_iter()
+                .find(|(k, _)| *k == keys)
+                .map(|(_, bytes)| bytes.encode(TerminalModes::default()))
+        };
+        assert_eq!(sends(true, "cmd+backspace").as_deref(), Some("\x15"));
+        assert_eq!(sends(true, "cmd+left").as_deref(), Some("\x01"));
+        assert_eq!(sends(true, "cmd+right").as_deref(), Some("\x05"));
+        for keys in ["cmd+backspace", "cmd+left", "cmd+right"] {
+            assert_eq!(sends(false, keys), None, "{keys} stays the system's");
+        }
     }
 
     #[test]

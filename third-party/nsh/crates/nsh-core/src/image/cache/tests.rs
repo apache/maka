@@ -300,6 +300,40 @@ fn serves_stale_copies_when_offline() {
     );
 }
 
+/// A redirect the app may not load ends a download without being followed
+/// (`Fetched::refused`, or the 3xx a backend leaves unfollowed). The copy
+/// kept for the URL came through that redirect too, so it goes: it is not
+/// served then, nor later when the network fails.
+#[test]
+fn a_refused_redirect_drops_the_cached_copy() {
+    let refusals = [
+        (
+            Ok(Fetched::refused(
+                302,
+                "redirect to `http://b.example/x.png` is not granted by capabilities.network",
+            )),
+            "is not granted",
+        ),
+        (status(302, &[]), "302"),
+    ];
+    for (refused, says) in refusals {
+        let dir = TempDir::new();
+        let cache = DiskCache::open(&dir.0, ByteSize::from_bytes(1 << 20)).unwrap();
+        // A copy with nothing said about freshness: served stale when offline.
+        cache.complete_at(URL, ok(&[], b"png"), T0).unwrap();
+        assert!(matches!(cache.lookup_at(URL, T0), Lookup::Stale(_)));
+        let error = cache.complete_at(URL, refused, T0 + 1).unwrap_err();
+        assert!(error.contains(says), "{error}");
+        assert!(matches!(cache.lookup_at(URL, T0 + 1), Lookup::Miss));
+        assert_eq!(
+            cache
+                .complete_at(URL, Err("offline".into()), T0 + 2)
+                .unwrap_err(),
+            "offline"
+        );
+    }
+}
+
 #[test]
 fn drops_corrupt_entries() {
     let dir = TempDir::new();

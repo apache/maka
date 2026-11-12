@@ -98,7 +98,7 @@ function App() {
           <View style={{ gap: 10 }}>
             <Each of={alerts}>
               {(a) => (
-                <Button onPress={() => show(a().options)} style={row()} activeStyle={press.activeStyle} hoverStyle={hoverFill()} focusStyle={focusRing()}>
+                <Button onPress={() => show(a().options)} style={row()} activeStyle={press.activeStyle} hoverStyle={hoverFill()} focusVisibleStyle={focusRing()}>
                   <Text style={{ color: a().danger ? ui().danger : ui().text, fontSize: 16, fontWeight: "600" }}>{a().label}</Text>
                   <Text style={{ color: ui().muted, fontSize: 13 }}>{a().detail}</Text>
                 </Button>

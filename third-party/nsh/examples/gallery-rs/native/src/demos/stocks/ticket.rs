@@ -38,7 +38,9 @@ const QUANTITIES: [f64; 4] = [100.0, 500.0, 1000.0, 5000.0];
 const EXPAND: LayoutAnimation = LayoutAnimation {
     create: Some(LayoutTransition::new(LayoutCurve::EaseInEaseOut, 380.0)),
     update: Some(LayoutTransition {
-        curve: LayoutCurve::Spring { damping: 0.86 },
+        curve: LayoutCurve::FittedSpring {
+            damping_ratio: 0.86,
+        },
         property: LayoutProperty::Opacity,
         duration_ms: 380.0,
         delay_ms: 0.0,

@@ -471,6 +471,10 @@ mod tests {
             minify: false,
             split: false,
             ui_sets: vec![nsh_base::registry().into(), (&registry).into()],
+            asset_root_from: Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
+            ),
+            ..Default::default()
         })
         .unwrap();
         let mut options = config(&bundle.code);
@@ -789,7 +793,8 @@ mod tests {
                 });
             }
             let mut frame = session.advance(command([])).unwrap();
-            while session.surface.needs_pump() {
+            // A blur waits one display frame for a following focus report.
+            while session.surface.needs_pump() || session.surface.frame_requested() {
                 assert!(Instant::now() < deadline, "native focus never settled");
                 frame = session.advance(command([])).unwrap();
             }

@@ -91,7 +91,7 @@ function App() {
                 }}
                 class="-mx-2 flex-row items-center gap-3 rounded-lg px-2 py-2 active:opacity-70"
                 hoverStyle={hoverFill()}
-                focusStyle={focusRing()}
+                focusVisibleStyle={focusRing()}
               >
                 <Person name={name} side={side} src={avatarPortrait(name)} label={`${name}, ${presence()[i]}`} onStatus={(s) => log(`${name}: ${s}`)}>
                   <View

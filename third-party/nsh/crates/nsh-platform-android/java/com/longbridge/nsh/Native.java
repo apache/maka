@@ -83,8 +83,15 @@ final class Native {
     static final int DOWNLOAD = 71;
     static final int NOTIFICATION = 72;
     static final int URL_SCHEME = 73;
-    static final int AUDIO = 74;
-    static final int WINDOW = 75;
+    static final int SECOND_INSTANCE = 74;
+    static final int AUDIO = 75;
+    static final int WINDOW = 76;
+    static final int SCROLL_INTENT = 77;
+    static final int EDIT_ACTION = 78;
+    static final int WHEEL = 79;
+    static final int PINCH = 80;
+    static final int WEB_EVALUATION = 81;
+    static final int MOUSE_UP = 82;
 
     /**
      * Draws the SVG {@code bytes} for a view {@code maxPx} pixels on its longer side, with its shorter side that long
@@ -147,6 +154,12 @@ final class Native {
     static native boolean allowsWebview(long handle, String url);
 
     /**
+     * Whether the running app's web pages may capture {@code kind}
+     * ({@code "microphone"}, {@code "camera"}): its {@code webview.media}.
+     */
+    static native boolean allowsWebMedia(long handle, String kind);
+
+    /**
      * The URL a media load redirected from {@code base} to {@code location}
      * goes on to, or null if the running app may not load it.
      */
@@ -187,8 +200,12 @@ final class Native {
 
     static native void packageFree(long pkg);
 
-    /** The images picked for pick {@code id} (none: cancelled); {@code sizes} holds each one's width and height in pixels. */
-    static native void picked(long handle, int id, String[] names, String[] types, byte[][] data, int[] sizes);
+    /**
+     * The images or files picked for pick {@code id} (none: cancelled); {@code sizes} holds each one's width and height
+     * in pixels; a file not read (larger than the pick reads) has {@code null} data and its size in bytes in
+     * {@code lengths}.
+     */
+    static native void picked(long handle, int id, String[] names, String[] types, byte[][] data, int[] sizes, long[] lengths);
 
     /** A native component emitted {@code name} with {@code json} data (null: none). */
     static native void componentEvent(long handle, int id, String name, String json);
@@ -275,6 +292,9 @@ final class Native {
     static native float[] afterBatch(long handle, long seq);
 
     static native float[] tick(long handle, long frameNanos);
+
+    /** Runs the functions the app asked to run on the UI thread. */
+    static native void runMainThreadTasks(long handle);
 
     /** Shader view {@code id} is {@code width} × {@code height} px; whether frames should come. */
     static native boolean shaderSize(long handle, int id, int width, int height);

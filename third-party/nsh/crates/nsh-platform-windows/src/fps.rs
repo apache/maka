@@ -1,5 +1,5 @@
 //! The performance monitor ([`crate::AppOptions::fps`], `--fps`): once a
-//! second, one `nsh::perf` line of what the surface's frames and commits
+//! second, one `nsh::fps` line of what the surface's frames and commits
 //! cost, from its [`PerfMonitor`], in the shape of the other desktop
 //! backends' (`examples/gallery/tools/perf.py` reads them all):
 //!
@@ -125,7 +125,7 @@ impl Fps {
             stat(&mut phases.present),
             stat(&mut phases.canvas),
         ];
-        log::info!(target: "nsh::perf", "{}", line(&self.monitor.snapshot(), &stats));
+        log::info!(target: nsh_engine::perf::LOG_TARGET, "{}", line(&self.monitor.snapshot(), &stats));
     }
 }
 

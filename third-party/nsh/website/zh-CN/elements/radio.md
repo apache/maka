@@ -67,7 +67,7 @@ function App() {
     </Radio>
   );
   return (
-    <RadioGroup class="gap-3">
+    <RadioGroup accessibilityLabel="套餐" class="gap-3">
       {option("basic", "Basic")}
       {option("pro", "Pro")}
     </RadioGroup>
@@ -100,6 +100,7 @@ mount(App);
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
+| `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 这组选项的名字（「套餐」「排序方式」），屏幕阅读器进入分组时会读出。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 这一组单选框，以及应用放在它们之间的其他内容。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 分组的布局和外观：默认是一列，`flex-row` 排成一行。 |
 
@@ -168,7 +169,7 @@ mount(App);
 ## 无障碍
 
 - 单选框对屏幕阅读器而言是一个元素，角色是 `"radio"`，带有它的状态：是否勾选，以及勾选时为已选中。有的屏幕阅读器读前者，有的读后者（UI Automation 的单选框是可选中的项）。指示器和标签是它的部件；它的标签是子元素的文字，或 `accessibilityLabel`。
-- `RadioGroup` 的角色是 `"radiogroup"`：屏幕阅读器把其中的单选框当作一组播报，每个单选框仍然是独立的元素。
+- `RadioGroup` 的角色是 `"radiogroup"`：屏幕阅读器把其中的单选框当作一组播报，每个单选框仍然是独立的元素。它的 `accessibilityLabel` 是这组选项的名字；分组旁没有文字说明选的是什么时，都应给一个。
 - `disabled` 按平台的方式报告（VoiceOver、TalkBack、UI Automation、浏览器的无障碍树）。
 - 在 macOS 和 Web 上，整个 `RadioGroup` 是键盘焦点的一站，方向键在它的单选框之间移动并勾选它们（见下文）。
 
@@ -188,7 +189,7 @@ mount(App);
 | Up、Left | 把焦点移到上一个单选框（从第一个回到最后一个），并勾选它。 |
 | Space | 勾选拥有焦点的单选框。 |
 
-方向键跳过禁用的单选框；焦点移到的单选框通过 `onChange` 请求被勾选，由应用勾选它。在从右到左的布局里，Left 和 Right 互换：Left 移到下一个单选框，Right 移到上一个；Up 和 Down 不变。`focus:` 样式显示焦点所在。不在 `RadioGroup` 里的 `Radio` 是独立的一站，Tab 可以到达它，Space 和 Return 勾选它。
+方向键跳过禁用的单选框；焦点移到的单选框通过 `onChange` 请求被勾选，由应用勾选它。在从右到左的布局里，Left 和 Right 互换：Left 移到下一个单选框，Right 移到上一个；Up 和 Down 不变。`focus-visible:` 样式显示焦点所在。不在 `RadioGroup` 里的 `Radio` 是独立的一站，Tab 可以到达它，Space 和 Return 勾选它。
 
 <a id="platform-notes"></a>
 

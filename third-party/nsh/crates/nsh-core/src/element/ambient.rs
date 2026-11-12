@@ -9,6 +9,7 @@
 
 use std::{
     any::{Any, TypeId},
+    cell::Cell,
     future::Future,
     path::PathBuf,
     rc::Rc,
@@ -47,6 +48,8 @@ pub(crate) struct Ambient {
     measure: Option<MeasureFn>,
     /// The app's key-value storage (`nsh/storage`).
     storage: Option<crate::storage::Store>,
+    /// The app's own data directory ([`data_dir`]).
+    data_dir: Option<std::path::PathBuf>,
     /// The displays (desktops), as the platform reports them.
     displays: Option<Signal<Arc<[crate::desktop::Display]>>>,
     /// Whether the performance monitor measures, as the platform reports
@@ -55,6 +58,8 @@ pub(crate) struct Ambient {
     /// The main window's close presses: how many, and the last one's
     /// reason ([`crate::element::desktop::WindowRef::on_close_press`]).
     main_close_press: Option<Signal<(u64, crate::desktop::CloseReason)>>,
+    /// The app's address (`set_app_url` resolves against its page base).
+    app_url: Option<crate::url_scheme::AppUrlCell>,
 }
 
 impl Ambient {
@@ -83,7 +88,9 @@ struct EnvSignals {
     locale: Memo<Locale>,
     locale_settings: Memo<LocaleSettings>,
     lifecycle: Memo<Lifecycle>,
+    wake_count: Memo<u32>,
     screen_color: Memo<bool>,
+    shaders: Memo<bool>,
 }
 
 impl EnvSignals {
@@ -112,7 +119,9 @@ impl EnvSignals {
                 locale: part!(locale),
                 locale_settings: part!(locale_settings),
                 lifecycle: part!(lifecycle),
+                wake_count: part!(wake_count),
                 screen_color: part!(screen_color),
+                shaders: part!(shaders),
             }
         })
     }
@@ -127,10 +136,22 @@ impl super::Runtime {
         with_data(|d| d.ambient.executor = Some(executor));
     }
 
+    /// The app's address, the core's (`set_app_url`).
+    pub(crate) fn set_app_url(&self, app_url: crate::url_scheme::AppUrlCell) {
+        let _entered = self.enter();
+        with_data(|d| d.ambient.app_url = Some(app_url));
+    }
+
     /// Where the app's storage is kept.
     pub(crate) fn set_storage(&self, storage: crate::storage::Store) {
         let _entered = self.enter();
         with_data(|d| d.ambient.storage = Some(storage));
+    }
+
+    /// The app's own data directory ([`data_dir`]).
+    pub(crate) fn set_data_dir(&self, dir: Option<std::path::PathBuf>) {
+        let _entered = self.enter();
+        with_data(|d| d.ambient.data_dir = dir);
     }
 
     /// How text is measured (the core's text engine).
@@ -289,6 +310,28 @@ pub fn screen_reader() -> bool {
     env(|e| e.screen_reader)
 }
 
+/// The platform's screen readers follow the active descendant a focused
+/// element names ([`super::Interactive::accessibility_active_descendant`],
+/// [`crate::platform::Environment::reads_active_descendants`]); it does
+/// not change.
+pub fn reads_active_descendants() -> bool {
+    with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
+        .expect("the core sets the environment")
+        .with_untracked(|e| e.reads_active_descendants)
+}
+
+/// Whether the platform draws shader views ([`super::shader`] and the
+/// other shader elements; TS: `shadersAvailable()`), reading subscribes.
+/// `false` where the platform was built without a renderer, on a grid
+/// surface, or once the platform found no GPU; it starts `true` elsewhere
+/// and turns `false` (never back) when the first shader mounts on a
+/// machine without one, so an app shows a shader while this holds and
+/// its own drawing (a canvas, an image) otherwise. Whether a source
+/// compiles is [`crate::shader::Shader::compile`]'s answer.
+pub fn shaders_available() -> bool {
+    env(|e| e.shaders)
+}
+
 /// Whether the surface lays out right to left: the root's direction,
 /// which follows the user's language unless the app sets the root's
 /// `direction` (reading subscribes).
@@ -343,11 +386,32 @@ pub fn lifecycle() -> Lifecycle {
     env(|e| e.lifecycle)
 }
 
+/// How many times the system woke from sleep while the app ran (TS:
+/// `wakeCount()`), 0 until the first wake. Reading it subscribes, so an
+/// effect that reads it runs again after each wake: a sleep may leave
+/// [`lifecycle`] as it was (a laptop's lid closed and opened with the app
+/// in front), while network connections and timers did not live through
+/// it, so the app checks or opens them again there. macOS, Windows and
+/// Linux count wakes; on iOS and Android a sleeping device takes the app
+/// to the background, which [`lifecycle`] reports.
+pub fn wake_count() -> u32 {
+    env(|e| e.wake_count)
+}
+
 /// The operating system (TS: `platform.os`); it does not change.
 pub fn os() -> Os {
     with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
         .expect("the core sets the environment")
         .with_untracked(|e| e.os)
+}
+
+/// The platform's name (TS: `platform.name`): the OS's on NSH's own
+/// platforms (`"ios"`, `"web"`, ...), a platform built outside NSH's own
+/// (`"miniprogram"`), whose OS is [`os`]; it does not change.
+pub fn platform_name() -> &'static str {
+    with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
+        .expect("the core sets the environment")
+        .with_untracked(|e| e.platform_name())
 }
 
 /// [`os`] where an engine runs (its thread, while it runs Rust code),
@@ -519,6 +583,12 @@ pub fn announce_for_accessibility(message: impl Into<String>) {
     act(super::services::announce(message.into()));
 }
 
+/// The device plays `haptic` (TS: `Haptics` of `nsh/mobile`): iOS and
+/// Android; elsewhere nothing happens.
+pub fn haptic(haptic: crate::Haptic) {
+    act(super::services::haptic(haptic));
+}
+
 /// Runs `f` with the app's storage (`nsh/storage`, [`crate::storage::Storage`]):
 /// the one the engine was given, or one in memory when it was given none.
 pub(crate) fn with_storage<R>(f: impl FnOnce(&crate::storage::Store) -> R) -> R {
@@ -529,6 +599,19 @@ pub(crate) fn with_storage<R>(f: impl FnOnce(&crate::storage::Store) -> R) -> R 
             .clone()
     });
     f(&storage)
+}
+
+/// The app's own data directory (TS: `process.dataDir`): where its files
+/// are kept, `<data_dir>/<app id>` of the engine, beside its
+/// `storage.json`, on every platform. `None` when the host keeps no files
+/// for the app (the web). The directory may not exist yet: create it
+/// before writing.
+///
+/// ```ignore
+/// let db = data_dir().map(|dir| dir.join("app.sqlite"));
+/// ```
+pub fn data_dir() -> Option<std::path::PathBuf> {
+    with_data(|d| d.ambient.data_dir.clone())
 }
 
 /// Opens `url` outside the app (TS: `openUrl` of `nsh/device`): a web page
@@ -802,6 +885,34 @@ pub fn next_notification_press() -> Answer<String> {
     answer
 }
 
+/// The next files the system opens the app with (TS:
+/// `Application.on("openFiles", ...)`, GPUI's `on_open_urls` for files):
+/// files of the types the app declares (`nsh.json` `fileTypes`) the user
+/// opened with it (Open With, a double click, a drop on its icon) at
+/// launch or while it runs, as absolute paths. Those that came before
+/// anything listened, the files that launched the app included, come at
+/// once (at most [`crate::file_type::MAX_PENDING`]). Links of the app's
+/// schemes come apart ([`next_url_scheme_open`]). One call waits at a time,
+/// as with [`next_url_scheme_open`]. To await in a task.
+pub fn next_open_files() -> Answer<Vec<std::path::PathBuf>> {
+    let (answer, slot) = Answer::new();
+    act(Action::NextOpenFiles(slot));
+    answer
+}
+
+/// The next later launch of the app (TS: `Application.on("secondInstance",
+/// ...)`): with `nsh.json` `"singleInstance": true`, a second launch on
+/// Windows or Linux hands the running instance its arguments and working
+/// directory and exits; those that came before anything listened first
+/// ([`crate::single_instance`]). The main window is already brought
+/// forward. Never on macOS (Launch Services activates the running app
+/// instead), iOS, Android or the web. To await in a task.
+pub fn next_second_instance() -> Answer<crate::single_instance::SecondInstance> {
+    let (answer, slot) = Answer::new();
+    act(Action::NextSecondInstance(slot));
+    answer
+}
+
 /// The next link that opens the app (TS: `UrlScheme.on("open", ...)`): a
 /// URL of a scheme the app claims (`nsh.json` `schemes`), those
 /// that came before anything listened first, the one that launched the app
@@ -812,6 +923,70 @@ pub fn next_url_scheme_open() -> Answer<String> {
     answer
 }
 
+/// The next address the app moves to without making the move itself (TS:
+/// `UrlScheme.on("change", ...)`): on the web, the browser's back or
+/// forward to an entry the app's pages do not account for, or an address
+/// the user typed ([`crate::url_scheme::AppUrlChange`]). [`app_url`] reads
+/// it already. Moves while nothing listened since the app started are not
+/// kept; once something listened, at most
+/// [`crate::url_scheme::MAX_PENDING`] wait. One call waits at a time, as
+/// with [`next_url_scheme_open`]: a newer call takes the next move and the
+/// one before gets none, so an app awaits it in one task (TS's `change`
+/// listeners share one). To await in a task.
+pub fn next_app_url_change() -> Answer<crate::url_scheme::AppUrlChange> {
+    let (answer, slot) = Answer::new();
+    act(Action::NextAppUrlChange(slot));
+    answer
+}
+
+/// The app's address (TS: `UrlScheme.url()`): on the web the page's, on
+/// the native platforms the last link that opened the app; what
+/// [`set_app_url`] set after it; `None` when there is none
+/// ([`crate::url_scheme`]). To await in a task.
+pub fn app_url() -> Answer<Option<String>> {
+    let (answer, slot) = Answer::new();
+    act(Action::AppUrl(slot));
+    answer
+}
+
+/// Sets the app's address (TS: `UrlScheme.setUrl`): on the web it replaces
+/// the current history entry's; the native platforms keep it for
+/// [`app_url`] ([`crate::url_scheme`]). An address longer than
+/// [`crate::url_scheme::MAX_URL_LEN`] or with whitespace is an error, as
+/// TS's `TypeError`; on the web a URL is resolved against the page's base,
+/// as TS's is, and one of another origin than the page's is an error.
+pub fn set_app_url(url: impl Into<String>) -> Result<(), String> {
+    set_app_url_with(url, crate::url_scheme::HistoryBehavior::Replace)
+}
+
+/// [`set_app_url`], saying how the address meets the history (TS:
+/// `UrlScheme.setUrl(url, { history })`): on the web
+/// [`HistoryBehavior::Push`](crate::url_scheme::HistoryBehavior::Push)
+/// makes it an entry of its own after the current one, so the browser's
+/// back goes back to the address before it; the native platforms keep it
+/// for [`app_url`] either way.
+pub fn set_app_url_with(
+    url: impl Into<String>,
+    history: crate::url_scheme::HistoryBehavior,
+) -> Result<(), String> {
+    let mut url = url.into();
+    crate::url_scheme::check_address(&url)?;
+    // Where the app is the page (the web), as TS's `setUrl` there.
+    if try_os() == Some(Os::Web)
+        && let Some(base) = with_data(|d| d.ambient.app_url.as_ref().and_then(|a| a.page_base()))
+    {
+        url = crate::url_scheme::resolve_on_page(&url, &base)?;
+    }
+    act(Action::SetAppUrl(url, history));
+    Ok(())
+}
+
+/// `UrlScheme.setUrl`'s part in the core: the address again, in order with
+/// what came since the VM wrote it, and the web's history entry.
+pub(crate) fn set_app_url_from_js(url: String, history: crate::url_scheme::HistoryBehavior) {
+    act(Action::SetAppUrl(url, history));
+}
+
 /// Whether a web view's ref gives its page trusted input here (TS:
 /// `WebView.inputAvailable()`, [`ElementRef::send_input`](super::ElementRef::send_input)):
 /// the platform delivers it (macOS) and the app's capabilities grant
@@ -820,6 +995,31 @@ pub fn next_url_scheme_open() -> Answer<String> {
 pub fn web_input_available() -> Answer<bool> {
     let (answer, slot) = Answer::new();
     act(Action::WebInputAvailable(slot));
+    answer
+}
+
+/// Whether a web view's ref runs scripts and answers with their results
+/// here (TS: `WebView.evaluateAvailable()`,
+/// [`ElementRef::evaluate`](super::ElementRef::evaluate)): the platform has
+/// it and the app's capabilities grant `webview`. Elsewhere `evaluate`
+/// fails with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. To await in a task.
+pub fn web_evaluate_available() -> Answer<bool> {
+    let (answer, slot) = Answer::new();
+    act(Action::WebEvaluateAvailable(slot));
+    answer
+}
+
+/// Whether a web view shows a page here (TS: `WebView.available()`): the
+/// platform shows web views and the app's capabilities grant `webview`.
+/// Where it answers `false`, a web view reports `onError` (`code`
+/// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where the platform shows none,
+/// `ERR_ACCESS_DENIED` where `webview` is not granted). A web engine that
+/// fails only when a web view starts (Windows without the WebView2
+/// runtime) answers `true` and reports the error on the web view. To
+/// await in a task.
+pub fn web_view_available() -> Answer<bool> {
+    let (answer, slot) = Answer::new();
+    act(Action::WebViewAvailable(slot));
     answer
 }
 
@@ -927,6 +1127,12 @@ pub(crate) fn host_call(
     answer
 }
 
+/// Hands `args` to function `name` of the embedding app, with no answer
+/// (TS: `host.post`).
+pub(crate) fn host_post(name: String, args: crate::JsonValue) {
+    act(Action::HostPost { name, args });
+}
+
 /// Forgets the host calls whose answers were dropped (they timed out).
 pub(crate) fn forget_host_calls() {
     act(Action::ForgetHostCalls);
@@ -1013,19 +1219,71 @@ impl<T> Future for Spawned<T> {
 pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Spawned<T> {
     let executor = executor();
     let owner = Owner::current();
+    let cancel = Rc::new(Cell::new(None));
+    // Made outside the block and moved in: a task cancelled before its
+    // first poll drops it too.
+    let release = Release(cancel.clone());
     let task = task::spawn_future(
         &executor,
         Owned {
             owner,
-            future: Box::pin(future),
+            future: Box::pin(async move {
+                let _release = release;
+                future.await
+            }),
         },
     );
     let handle = task.handle();
-    cleanup(move || handle.cancel());
+    // Taken back from the owner when the task ends first (it finished or
+    // was cancelled), so a long-lived owner does not keep one per task.
+    cancel.set(super::reactive::removable_cleanup(move || handle.cancel()));
     Spawned(task)
 }
 
+/// Takes a task's cleanup back from its owner as the task's future goes
+/// (it finished, or was dropped when cancelled).
+struct Release(Rc<Cell<Option<super::reactive::RemovableCleanup>>>);
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.0.take() {
+            cancel.remove();
+        }
+    }
+}
+
+/// Runs `f` on the platform's main thread (the UI thread), for APIs that
+/// only work there (AppKit's status items, UIKit): after the commit of this
+/// turn, after its views are mounted. Await the result on the engine
+/// thread; dropping it does not stop `f`. Without a main thread of its own
+/// (headless tests, the web, where the engine runs on the page's thread)
+/// `f` runs on the engine thread, at the end of the commit; elsewhere it
+/// runs later, while the engine goes on, so only the awaited result tells
+/// that `f` ran. `f` runs outside the reactive graph: it returns a value,
+/// and the caller writes signals after awaiting it. A panic in `f` is a
+/// [`MainThreadError::Panicked`](crate::main_thread::MainThreadError)
+/// (the web runtime aborts on a panic). A function that is not `async` calls
+/// [`ModuleCx::run_on_main_thread`](super::ModuleCx::run_on_main_thread).
+pub fn run_on_main_thread<R: Send + 'static>(
+    f: impl FnOnce() -> R + Send + 'static,
+) -> crate::main_thread::OnMainThread<R> {
+    let (task, result) = crate::main_thread::task(f);
+    act(Action::MainThread(task));
+    result
+}
+
 /// A future polled under `owner` ([`Owner::scope`]).
+/// `future`, polled under `owner`, boxed for the executor.
+pub(super) fn owned(
+    owner: Owner,
+    future: impl Future<Output = ()> + 'static,
+) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+    Box::pin(Owned {
+        owner,
+        future: Box::pin(future),
+    })
+}
+
 struct Owned<F> {
     owner: Owner,
     future: std::pin::Pin<Box<F>>,
@@ -1180,14 +1438,23 @@ pub fn after_answer(f: impl FnOnce() + 'static) {
 }
 
 /// Runs blocking `f` on the runtime's blocking threads (in a task: await
-/// its result; `tokio::task::spawn_blocking`). Not in WebAssembly: code
-/// that should also run on the web uses the engine's services instead
-/// ([`fetch`], [`timer`]).
+/// its result; `tokio::task::spawn_blocking`), starting at once, whether
+/// called from a task, a render, an effect or a handler. Not in
+/// WebAssembly: code that should also run on the web uses the engine's
+/// services instead ([`fetch`], [`timer`]).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn blocking<R: Send + 'static>(
     f: impl FnOnce() -> R + Send + 'static,
 ) -> tokio::task::JoinHandle<R> {
-    tokio::task::spawn_blocking(f)
+    // Tasks are polled in the runtime's context; outside a task the
+    // surface's runtime is the one they would be.
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => runtime.spawn_blocking(f),
+        Err(_) => match executor().runtime() {
+            Some(runtime) => runtime.spawn_blocking(f),
+            None => tokio::task::spawn_blocking(f),
+        },
+    }
 }
 
 /// Runs `future` on the runtime's threads (in a task: await its result;
@@ -1249,6 +1516,13 @@ pub struct KeyOptions {
     /// component closes its popup on Tab and the focus moves on as it
     /// would ([`crate::keymap::KeyMatch::Notify`]).
     pub pass_through: bool,
+    /// The keys of the view with the keyboard focus: a component binds
+    /// them while its part has the focus or its popup is open (a menu
+    /// button's Return opens its menu). Return and Space reach such a
+    /// binding before the focused control's press; others of those keys
+    /// give way to the control the focus is on (default)
+    /// ([`crate::keymap::KeyBinding::for_focus`]).
+    pub for_focus: bool,
 }
 
 /// Whether shortcuts follow Apple's conventions here (`mod` is Command):
@@ -1272,7 +1546,10 @@ pub fn try_apple_keys() -> Option<bool> {
 /// lives (TS: `keymap.bind`): `"mod+k"` (`mod` is Command on Apple
 /// platforms, Control elsewhere), `"shift+mod+l"`, `"escape"`, ... (the
 /// keystrokes of `nsh/keymap`). The handler gets the keystroke as written.
-/// Desktop platforms fire them; elsewhere they are kept but no key does.
+/// It belongs to the window bound in ([`super::desktop::current_window`])
+/// and fires only for keys pressed there; a key it does not take goes on
+/// as usual. Desktop platforms fire them; elsewhere they are kept but no
+/// key does.
 ///
 /// # Panics
 ///
@@ -1321,15 +1598,19 @@ fn bind_key(
     };
     let owner = Owner::current();
     let handler: super::keys::KeyHandler = Rc::new(move |k: &str| owner.run(|| handler(k)));
+    // It belongs to the window whose tree binds it (`current_window`).
+    let window = super::use_context::<super::desktop::WindowRef>().and_then(|w| w.dialog_root());
     let keys = executor().keys.clone();
     let id = keys.borrow_mut().add(
         |id| {
             crate::keymap::KeyBinding::new(id, parsed, options.when, options.repeat)
                 .passing_through(options.pass_through)
+                .focus_keys(options.for_focus)
         },
         within,
         keystroke.into(),
         handler,
+        window,
     );
     let weak = Rc::downgrade(&keys);
     cleanup(move || {
@@ -1577,7 +1858,7 @@ pub fn fps_enabled() -> bool {
 }
 
 /// Turns the platform's performance monitor on or off (TS:
-/// `setFpsEnabled`): the macOS panel, the other platforms' `nsh::perf`
+/// `setFpsEnabled`): the macOS panel, the other platforms' `nsh::fps`
 /// log lines, as `--fps` and `NSH_FPS=1` do at launch. Platforms without a
 /// monitor ignore it; [`fps_enabled`] follows what the platform did.
 pub fn set_fps_enabled(enabled: bool) {

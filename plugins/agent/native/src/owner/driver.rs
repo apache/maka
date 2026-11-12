@@ -432,11 +432,7 @@ impl NativeDriver {
         let definitions = match &self.backend {
             NativeBackend::Model {
                 cells: Some(cells), ..
-            } => cells
-                .coordinator
-                .definitions(&bound)
-                .await
-                .map_err(RunError::Tool)?,
+            } => cells.coordinator.definitions(&bound),
             NativeBackend::Model { cells: None, .. } => {
                 let visible = bound.snapshot().await.map_err(RunError::Tool)?;
                 let mut definitions: Vec<_> = visible.definitions().cloned().collect();
@@ -822,6 +818,13 @@ impl DriverPorts for NativeDriver {
             self.model()?.prepare_step(view, mode, self).await
         })
     }
+    fn proactive_summary_matches<'a>(
+        &'a self,
+        view: &'a RunView,
+        origin: maka_agent_facts::context::SummaryOrigin,
+    ) -> BoxFuture<'a, Result<bool, RunError>> {
+        Box::pin(async move { self.model()?.proactive_summary_matches(view, origin).await })
+    }
     fn assess_recovery<'a>(
         &'a self,
         view: &'a RunView,
@@ -1128,26 +1131,13 @@ impl DriverPorts for NativeDriver {
                     "tool has no original committed admission".into(),
                 ));
             }
-            let mut after = 0;
-            let mut admitted_sequence = None;
-            loop {
-                let facts = self.state.history(run, after, 256).await?;
-                if facts.is_empty() {
-                    break;
-                }
-                for fact in facts {
-                    after = fact.revision;
-                    if matches!(&fact.fact, Fact::ToolAdmitted { tool: key } if key == &tool.key) {
-                        admitted_sequence = Some(fact.revision);
-                    }
-                }
-                if admitted_sequence.is_some() {
-                    break;
-                }
-            }
-            let sequence = admitted_sequence.ok_or_else(|| {
-                RunError::InvalidInput("tool admission receipt is unavailable".into())
-            })?;
+            let sequence = self
+                .state
+                .tool_admission_revision(run, tool.key.clone())
+                .await?
+                .ok_or_else(|| {
+                    RunError::InvalidInput("tool admission receipt is unavailable".into())
+                })?;
             // Cache loss is not a license to repeat an admitted call.
             let selected = self
                 .original_effects

@@ -28,7 +28,7 @@ function App() {
       <If when={history().length > 0}>
         <Text style={{ fontSize: 13, color: ui().muted }}>Recent: {history().join(", ")}</Text>
       </If>
-      <View onPress={() => (count.set(0), history.set([]))} hitSlop={8} hoverStyle={hoverFill()} focusStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
+      <View onPress={() => (count.set(0), history.set([]))} hitSlop={8} hoverStyle={hoverFill()} focusVisibleStyle={focusRing()} activeStyle={{ opacity: 0.7 }}>
         <Text style={{ fontSize: 15, color: ui().accent }}>Reset</Text>
       </View>
     </View>

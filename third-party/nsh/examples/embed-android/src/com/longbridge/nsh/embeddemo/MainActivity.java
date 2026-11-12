@@ -12,6 +12,8 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import com.longbridge.nsh.NshComponent;
 import com.longbridge.nsh.NshComponentContext;
+import com.longbridge.nsh.NshScrollHandle;
+import com.longbridge.nsh.NshScrollListener;
 import com.longbridge.nsh.NshView;
 import java.text.DateFormat;
 import java.util.Collections;
@@ -26,12 +28,16 @@ import java.util.Map;
  * (`nsh/host`): launch parameters, the "time" call it answers, the
  * "tapped" posts it hears and the "message" events "Send a message" sends.
  * (`embed.badge`). "Brand" puts the host's brand over the app's theme
- * (`setThemeOverrides`).
+ * (`setThemeOverrides`). The app's page scrolls in `embedded.scroll`, which
+ * the activity watches (`watchScroll`): a native label follows its offset
+ * in the frame of the scroll, "Back to top" scrolls it from here.
  */
 public final class MainActivity extends Activity {
     private NshView nsh;
     private int loads;
     private boolean branded;
+    /** The app's scroll view while it is there. */
+    private NshScrollHandle scroll;
 
     /** The host's brand: the tokens it sets win over the app's, light and dark. */
     private static final String BRAND = "{ \"cssVars\": {"
@@ -75,6 +81,18 @@ public final class MainActivity extends Activity {
         brand.setOnClickListener(v -> nsh.setThemeOverrides((branded = !branded) ? BRAND : null));
         column.addView(brand);
         column.addView(count);
+        // Follows the app's scroll view, without JS, in the frame of the scroll.
+        TextView offset = new TextView(this);
+        offset.setText("the app's page is not there yet");
+        column.addView(offset);
+        Button top = new Button(this);
+        top.setText("Back to top");
+        top.setOnClickListener(v -> {
+            if (scroll == null) return;
+            scroll.stopScrolling();
+            scroll.scrollBy(0, -scroll.getScrollY(), true);
+        });
+        column.addView(top);
 
         // The embedded nsh app, in a bordered frame.
         FrameLayout frame = new FrameLayout(this);
@@ -83,8 +101,39 @@ public final class MainActivity extends Activity {
         frame.setBackground(border);
         frame.setPadding(Math.round(2 * d), Math.round(2 * d), Math.round(2 * d), Math.round(2 * d));
         nsh = new NshView(this);
-        nsh.setErrorListener(message -> Log.e("embed-demo", message));
-        nsh.registerComponent("embed.badge", context -> new Badge(this, context));
+        nsh.setErrorListener(error -> Log.e("embed-demo", error));
+        nsh.registerComponent("embed.badge", Badge::new);
+        nsh.watchScroll("embedded.scroll", new NshView.ScrollWatcher() {
+            private final NshScrollListener follow = new NshScrollListener() {
+                @Override
+                public void onScroll(int scrollX, int scrollY, int dx, int dy) {
+                    show();
+                }
+
+                @Override
+                public void onContentSizeChange(int contentWidth, int contentHeight) {
+                    show();
+                }
+            };
+
+            private void show() {
+                offset.setText("the app's page: " + Math.round(scroll.getScrollY() / d) + " of "
+                        + Math.round((scroll.getContentHeight() - scroll.getViewportHeight()) / d) + " dp scrolled");
+            }
+
+            @Override
+            public void onAttached(NshScrollHandle handle) {
+                scroll = handle;
+                handle.addScrollListener(follow);
+                show();
+            }
+
+            @Override
+            public void onDetached() {
+                scroll = null;
+                offset.setText("the app's page is gone");
+            }
+        });
         // The channel with the app (`nsh/host`): what it reads at start, the
         // call it makes and the posts it sends.
         nsh.setParams(Collections.singletonMap("user", "Ada"));
@@ -100,6 +149,12 @@ public final class MainActivity extends Activity {
         count.setText("loaded " + (++loads) + "×");
     }
 
+    /** Android 8 hands back presses to the view here; later versions give them to it directly. */
+    @Override
+    public void onBackPressed() {
+        if (!nsh.handleBack()) super.onBackPressed();
+    }
+
     @Override
     protected void onDestroy() {
         nsh.destroy();
@@ -113,8 +168,9 @@ public final class MainActivity extends Activity {
         private final float density;
         private int taps;
 
-        Badge(android.content.Context app, NshComponentContext context) {
+        Badge(NshComponentContext context) {
             this.context = context;
+            android.content.Context app = context.getContext();
             density = app.getResources().getDisplayMetrics().density;
             label = new TextView(app);
             label.setTextColor(Color.WHITE);

@@ -3,6 +3,7 @@ name = "nsh-platform-macos"
 description = "macOS backend (AppKit): native view mounting, CoreText text engine, input, standalone app."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -18,14 +19,14 @@ path = "tests/native/main.rs"
 harness = false
 
 [features]
-default = ["js", "shader", "editor", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
+default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
 # Hidden native RGBA surface and terminal transport contracts.
 terminal = ["dep:nsh-terminal"]
 # JS apps (bundles, signed packages); without it, the library only runs a
 # Rust app and links no QuickJS.
 js = ["nsh-engine/js-core"]
 # Development support: dev server client, log forwarding, error overlay.
-dev = ["js", "shader", "editor", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "dep:nsh-dev", "dep:nsh-testing"]
+dev = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto", "dep:nsh-dev", "dep:nsh-testing"]
 # Shaders (`Shader`, `ShaderEffect`, `ShaderTransition`, the shader transitions
 # of pages and dialogs), on naga and wgpu. Without it they draw nothing.
 shader = ["nsh-engine/shader"]
@@ -44,6 +45,8 @@ highlight = ["nsh-base/highlight"]
 # `TextView`'s formulas typeset natively (RaTeX and the KaTeX fonts). Without
 # it a formula shows as its TeX, or as the app's `renderMath`.
 math = ["nsh-base/math"]
+# `EmojiPicker`, with Unicode's emoji and their English names (about 440 kB).
+emoji-picker = ["nsh-base/emoji-picker"]
 # The standard JS module `zlib`: deflate, gzip, brotli and zstd.
 zlib = ["js", "nsh-engine/zlib"]
 # The standard JS module `crypto` and the globals of Web Crypto.
@@ -70,6 +73,8 @@ objc2-core-text.workspace = true
 objc2-foundation.workspace = true
 objc2-image-io.workspace = true
 objc2-io-kit.workspace = true
+# Shader frames on IOSurfaces (`shader::display_frame`).
+objc2-io-surface.workspace = true
 objc2-quartz-core.workspace = true
 rustc-hash.workspace = true
 serde_json.workspace = true

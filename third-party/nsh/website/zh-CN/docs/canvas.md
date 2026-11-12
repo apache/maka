@@ -190,7 +190,7 @@ const slices = [new Path2D("M50 50 L100 50 A50 50 0 0 1 50 100 Z"), /* ... */];
 
 在 TSX 中，`cx.canvas.width` 和 `cx.canvas.height` 给出画布以点为单位的尺寸。
 
-**支持的范围**：绘制操作。像素由平台写入，因此 `getImageData` / `putImageData` 等像素访问不在其中，`filter` 和在 `drawImage` 中使用 SVG 图片也不在其中。与 HTML Canvas 一样，无效的颜色或字体只会让那一个操作被丢弃。
+**支持的范围**：绘制操作。像素由平台写入，因此 `getImageData` / `putImageData` 等像素访问不在其中，`filter` 也不在其中。与 HTML Canvas 一样，无效的颜色或字体只会让那一个操作被丢弃。
 
 ## 路径与 SVG 路径数据
 
@@ -312,7 +312,7 @@ cx.fillText(label, 32 - 6 - cx.measureText(label).width, 16);
 
 在 Rust 中，绘制图片接受 URL（资源的 URL 是 `LOGO.url`）；在 TSX 中接受 URL 或导入的资源（`import logo from "./logo.png"`）。图片在原生端加载，加载完成后画布会重新绘制，你不需要自己跟踪加载状态。远程 URL 受应用的[网络能力声明](./sandbox-and-capabilities.md)约束。
 
-iOS、macOS、Android、Windows、Linux 和 GPUI 上的画布绘制位图（PNG、JPEG、GIF、WebP 等）：在这些平台上，SVG 来源按加载失败的图片处理，日志会指出它。SVG 图片请用 [`<Image>`](./images-and-assets.md#svg-图片) 显示，或把它们的形状作为 `Path2D` 路径绘制。在 Web 上，画布绘制浏览器能绘制的内容，包括 SVG。
+iOS、macOS、Android、Windows、Linux 和 GPUI 上的画布既绘制位图，也绘制 SVG：SVG 由 `nsh_core::svg` 栅格化为位图后交给画布，栅格尺寸由加载器按 SVG 的固有尺寸（点）分档决定。请把它绘制到明确的目标矩形中，不要依赖栅格位图的像素尺寸。把它放大很多倍绘制会放大位图而显得模糊；要得到清晰的边缘和文字，请按固有尺寸或更小绘制。在 Web 上，画布绘制浏览器能绘制的内容，包括 SVG。
 
 ```rust tabs
 const LOGO: ImageAsset = asset!("logo.png");

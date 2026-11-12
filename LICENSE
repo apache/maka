@@ -340,7 +340,7 @@ third-party/nsh contains NSH initially imported from
 https://github.com/M4n5ter/nsh at revision
 de176695240d550f2b303643b8019146c7989e7f and synchronized with
 https://github.com/longbridge/nsh through revision
-323a8663f6fdb63340c634a50da9bbb820037b69.
+2452c93d450bfe0ee1e22da5248191ba0a391051.
 Copyright 2026 Longbridge <https://longbridge.com>.
 Original license texts, the complete source inventory and local integration
 changes are recorded in third-party/nsh/{LICENSE-APACHE,upstream.json,SOURCE.md}.

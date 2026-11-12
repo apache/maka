@@ -32,6 +32,16 @@
   `Easing.sample`, `Animated.sampleSpring` / `sampleDecay` return the curves from `nsh_core::animation::sample_easing` /
   `sample_driver` (the drivers' own code, stepped like frames, at most `MAX_SAMPLES`), so drawn curves are what runs;
   Rust components call `element::sample_easing` / `sample_spring` / `sample_decay` / `sample_decay_within`.
+  A driver's numbers are taken as given by the decoders and checked in `Running::new` (`driver.rs` `sanitized`): what
+  cannot move a value (stiffness or mass not above 0, a damping or target that is not finite, a NaN or infinite
+  duration) ends where it rests; negative damping is none (it oscillates, as an undamped spring does); a velocity that
+  is not finite is 0; an easing whose numbers are not finite is linear; a NaN delay is none (an infinite one waits, as
+  a sequence's `Delay` does); a NaN deceleration or bounce is 0, the clamps hold infinite ones; bounds that leave no
+  finite place (both NaN, or both the same infinity) are none (one NaN bound is the other, as `min` / `max` give it).
+  It warns once where an animation starts (`AnimationOp::Start`, `StartComposite`, `sample_driver`), not on each pass
+  of a loop. Numbers that still overflow on the way do not reach the views: an easing's frame moves linearly, and
+  otherwise the animation ends (a timing or spring at its target, a decay where it started). An overdamped spring is
+  two decaying exponentials (`spring`), which do not overflow.
   Bindable: `opacity`, `backgroundColor`, `borderColor` (all sides), a text's `color` (the whole text: iOS and Android draw
   it into a layer and paint over it in the color, `SourceIn` / `SRC_IN`), `translate` / `rotate` / `scale` (`[x, y]` per axis) and the steps of a `transform` list (a motion's,
   `createMotion`: `{ opacity, transform }`), and where views stick: a sticky view's `top` /
@@ -96,13 +106,25 @@
   the core leads each run of frames with the layout animation it takes, an empty one for the rest
   (`core/layout_scope.rs`), as the platforms animate a frame with the last `MountItem::LayoutAnimation` before it.
   Insertions and removals are not scoped (their animations are decided per batch on iOS, Android and the web).
+- **A physical layout spring** (`LayoutCurve::Spring(Spring)`, `LayoutTransition::spring`): gpui-base's spring,
+  `Spring::new(response_ms)` (critically damped, the undamped period `response_ms`) or `Spring::from_stiffness(k)`
+  (a mass of 1, as Material 3 Expressive gives its springs), shaped by `.damping_ratio(ζ)`. It is the same `Spring`
+  the animation graph's spring driver takes (stiffness, a damping coefficient, mass); the constructors give the
+  coefficient from a ratio. `Spring::progress` is the closed form (underdamped, critically damped, overdamped) from
+  rest to the target, and `settle_ms` the time it stays within a thousandth of the target after: the curve times
+  itself, so `LayoutTransition::run_ms` (what the platforms time the animation by) is `settle_ms` for it and the
+  transition's `duration_ms` otherwise. The core's `transition.rs` (the desktops) and the web (a `linear()` easing of
+  its samples) follow `progress`; Android draws its samples piecewise linear (curve 6 of `Mounter.Transition`); iOS
+  gives the physics to `UISpringTimingParameters` in a `UIViewPropertyAnimator`, which settles by its own threshold,
+  a few milliseconds from `settle_ms`. No JS config names one: JS's `type: "spring"` is `LayoutCurve::FittedSpring
+  { damping_ratio }`, a spring fitted to the given duration (React Native's `springDamping`).
 - **A view that follows another** (`View::follow(target)`, `core/follow.rs`; `nsh/base`'s `Tabs` indicator): its frame
   along its parent's main axis is the target's, placed by the core after layout, with no layout of its own and no
   JS. Following another element runs its `follow_transition` as a layout animation of its own frame alone (a scope of
   the follower's node in `core/layout_scope.rs`, without its ancestors' children: what changes around it in that
   commit changes at once); the first placement and a layout that moves the target place it at once, in the same
-  batch. The component decides the transition, `None` under reduced motion (`Tabs`: `spring_move`'s spring,
-  `LayoutCurve::Spring { damping: 0.85 }` over 362 ms). A follower hidden (`display: none`) forgets where it was, so
+  batch. The component decides the transition, `None` under reduced motion (`Tabs`:
+  `LayoutTransition::spring(Spring::new(280.0).damping_ratio(0.85))`, settled in 362 ms). A follower hidden (`display: none`) forgets where it was, so
   shown again it is placed at once. A target that changes size in the commit that makes it the target is followed
   to its new frame, animated once; a resize sends no layout animation item. With no follower the pass returns at
   once and `set_frame` notes nothing (`nothing_follows_while_no_view_follows_an_element`).

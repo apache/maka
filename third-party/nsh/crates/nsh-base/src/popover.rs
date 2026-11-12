@@ -85,7 +85,8 @@ pub enum PopoverEvent {
     /// back), with why: set `open` to follow it.
     #[args(open, reason)]
     OpenChange(bool, OpenChangeReason),
-    /// It is shown.
+    /// It is shown, its content rendered: refs inside it name their views,
+    /// so focusing one here moves the keyboard focus into the popover.
     Open,
     /// It is gone (also when the app closed it), after its exit.
     Close,
@@ -145,21 +146,19 @@ pub fn Popover(props: PopoverProps, cx: Scope<PopoverEvent>) -> impl IntoElement
     let anchor = element_ref();
     let desktop = is_desktop();
     // The keyboard focus in the popup as it closes (Escape, a choice in
-    // it, the app closing it) goes back to the trigger once it is gone, as
-    // a select's and a date picker's do: its view goes with the popup.
-    let inside = stored(false);
-    presence.popup().on_focus_in(move || {
-        inside.replace(true);
-    });
-    presence.popup().on_focus_out(move || {
-        inside.replace(false);
-    });
-    let refocus = stored(false);
-    effect(move || {
-        if !open.get() {
-            refocus.replace(inside.get());
-        }
-    });
+    // it, the app closing it) goes back to the trigger as it starts to go,
+    // as a select's and a date picker's do; not after a press outside,
+    // which put the focus where it pressed.
+    if desktop {
+        presence.focus_back_on_close(
+            move || open.get(),
+            move || {
+                if closed_by.get() != Some(OpenChangeReason::PressOutside) {
+                    anchor.focus();
+                }
+            },
+        );
+    }
     lifecycle(
         move || presence.mounted(),
         move || {
@@ -168,10 +167,7 @@ pub fn Popover(props: PopoverProps, cx: Scope<PopoverEvent>) -> impl IntoElement
         },
         move || {
             cx.emit(PopoverEvent::Close);
-            let pressed_outside = closed_by.replace(None) == Some(OpenChangeReason::PressOutside);
-            if desktop && refocus.replace(false) && !pressed_outside {
-                anchor.focus();
-            }
+            closed_by.replace(None);
         },
     );
     // In a toolbar, the trigger is one of its items.

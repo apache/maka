@@ -18,7 +18,10 @@
  */
 
 use super::*;
-use maka_agent_facts::{execution::ModelBinding, model::ModelUsage};
+use maka_agent_facts::{
+    execution::ModelBinding,
+    model::{ModelUsage, PromptCacheUsage},
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -139,6 +142,22 @@ pub struct ModelRequestContextTrace {
 }
 
 impl HistoryDataSource {
+    /// Usage of the main model attempts in a single live-history Run.
+    pub async fn main_prompt_cache(
+        &self,
+        run: RunId,
+    ) -> Result<Option<PromptCacheUsage>, StoreError> {
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(ReadPromptCache(history.namespace.clone(), cut.clone(), run))
+                    .await
+            }
+            Self::Snapshot(_) => Ok(None),
+        }
+    }
+
     /// A bounded page of original model attempts for one already scoped Run.
     pub async fn model_request_traces(
         &self,
@@ -151,6 +170,58 @@ impl HistoryDataSource {
             Self::Live { history, .. } => history.data.query(query).await,
             Self::Snapshot(snapshot) => snapshot.query_request_traces(query).await,
         }
+    }
+}
+
+struct ReadPromptCache(HistoryNamespace, HistoryCut, RunId);
+impl Query for ReadPromptCache {
+    type Output = Option<PromptCacheUsage>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let Self(history, cut, run) = self;
+        sql::validate_cut(c, &history.owner, &history.session, &cut)?;
+        let mut statement = c.prepare_cached(
+            "SELECT r.input,r.cache_read,
+                json_extract(CAST(b.payload AS TEXT),'$.fact.protocol.cacheReadReported')
+             FROM agent_session_history h INDEXED BY agent_session_history_run
+             JOIN agent_usage_calls u ON u.request='model:'||h.run||':'||h.attempt
+                  AND u.admission_sequence=h.sequence
+             LEFT JOIN agent_usage_results r ON r.request=u.request AND r.sequence=(
+                  SELECT v.sequence FROM agent_usage_results v
+                  WHERE v.request=u.request AND v.sequence<=?4 ORDER BY v.sequence DESC LIMIT 1)
+             LEFT JOIN agent_facts f ON r.cache_read=0 AND f.sequence=r.sequence
+             LEFT JOIN contents b ON b.id=f.body_content_id
+             WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.sequence<=?4
+               AND h.kind='model_attempt_prepared' AND u.purpose=?5",
+        )?;
+        let mut rows = statement.query(params![
+            serde_json::to_string(&history.owner)?,
+            history.session,
+            run.to_string(),
+            sql::bind_u64(cut.through_sequence)?,
+            serde_json::to_string(&ModelPurpose::Main)?,
+        ])?;
+        let (mut input, mut read) = (0u64, 0u64);
+        while let Some(row) = rows.next()? {
+            let Some(attempt_input) = counter(row.get(0)?)? else {
+                return Ok(None);
+            };
+            let Some(attempt_read) = counter(row.get(1)?)? else {
+                return Ok(None);
+            };
+            if attempt_read > attempt_input
+                || (attempt_read == 0 && row.get::<_, Option<bool>>(2)? != Some(true))
+            {
+                return Ok(None);
+            }
+            let Some(totals) = input
+                .checked_add(attempt_input)
+                .zip(read.checked_add(attempt_read))
+            else {
+                return Ok(None);
+            };
+            (input, read) = totals;
+        }
+        Ok(PromptCacheUsage::new(input, read))
     }
 }
 
@@ -175,7 +246,8 @@ impl Query for ReadRequestTraces {
                      JOIN agent_usage_calls u ON u.request='model:'||h.run||':'||h.attempt
                           AND u.source='fact' AND u.owner=h.owner AND u.session=h.session
                           AND u.run=h.run AND u.admission_sequence=h.sequence
-                     WHERE h.owner=? AND h.session=? AND h.run=? AND h.kind='model_attempt_prepared'
+                     WHERE h.owner=? AND h.session=? AND h.run=?
+                       AND h.kind IN ('model_attempt_prepared','proactive_summary_prepared')
                        AND h.sequence>? AND h.sequence<=? ORDER BY h.sequence LIMIT ?",
                 )?;
                 let mut rows = statement.query(params![
@@ -238,7 +310,8 @@ impl Query for ReadRequestTraces {
                 let bound = snapshot_bound(c, snapshot)?;
                 let mut statement = c.prepare_cached(
                     "SELECT entry_json FROM agent_history_snapshot_entries
-                     WHERE snapshot=? AND kind='fact' AND run=? AND fact_kind='model_attempt_prepared'
+                     WHERE snapshot=? AND kind='fact' AND run=?
+                       AND fact_kind IN ('model_attempt_prepared','proactive_summary_prepared')
                        AND sequence>? AND sequence<=? ORDER BY sequence LIMIT ?",
                 )?;
                 let mut rows = statement.query(params![
@@ -259,7 +332,8 @@ impl Query for ReadRequestTraces {
                     let raw: String = c.query_row(
                         "SELECT model_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_step
                          WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.step')=?
-                           AND fact_kind='step_prepared' AND sequence<? ORDER BY sequence LIMIT 1",
+                           AND fact_kind IN ('step_prepared','proactive_summary_prepared')
+                           AND sequence<=? ORDER BY sequence LIMIT 1",
                         params![snapshot.id().to_string(), run.to_string(), step.to_string(), sql::bind_u64(original.sequence)?],
                         |row| row.get(0),
                     )?;
@@ -524,7 +598,7 @@ fn live(
         Selection::LatestSuccess => "model_closed",
         Selection::LatestRequest => "model_attempt_prepared",
     };
-    let mut statement = c.prepare_cached("SELECT c.admission_sequence,h.run,h.step,h.attempt,(SELECT p.fact_id FROM agent_session_history p WHERE p.owner=h.owner AND p.session=h.session AND p.sequence=c.admission_sequence AND p.run=h.run AND p.step=h.step AND p.attempt=h.attempt AND p.kind='model_attempt_prepared'),c.request,c.source,c.kind,c.owner,c.session,c.run,c.purpose,c.origin_json FROM agent_session_history h INDEXED BY agent_session_history_kind LEFT JOIN agent_usage_calls c ON c.request='model:'||h.run||':'||h.attempt WHERE h.owner=? AND h.session=? AND h.kind=? AND h.sequence<=? AND h.admission_sequence>? ORDER BY h.sequence DESC")?;
+    let mut statement = c.prepare_cached("SELECT c.admission_sequence,h.run,h.step,h.attempt,(SELECT p.fact_id FROM agent_session_history p WHERE p.owner=h.owner AND p.session=h.session AND p.sequence=c.admission_sequence AND p.run=h.run AND p.step=h.step AND p.attempt=h.attempt AND p.kind IN ('model_attempt_prepared','proactive_summary_prepared')),c.request,c.source,c.kind,c.owner,c.session,c.run,c.purpose,c.origin_json FROM agent_session_history h INDEXED BY agent_session_history_kind LEFT JOIN agent_usage_calls c ON c.request='model:'||h.run||':'||h.attempt WHERE h.owner=? AND h.session=? AND h.kind=? AND h.sequence<=? AND h.admission_sequence>? ORDER BY h.sequence DESC")?;
     let mut rows = statement.query(params![
         owner,
         history.namespace.session,
@@ -854,7 +928,7 @@ fn copied(
             if outcome != Outcome::Success {
                 continue;
             }
-            let raw: String=c.query_row("SELECT entry_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_metrics_attempt WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.attempt')=? AND fact_kind='model_attempt_prepared' AND sequence<=? ORDER BY sequence LIMIT 1",params![snapshot.id().to_string(),observed.run.to_string(),observed.attempt.map(|id|id.to_string()),sql::bind_u64(observed.sequence)?],|r|r.get(0))?;
+            let raw: String=c.query_row("SELECT entry_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_metrics_attempt WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.attempt')=? AND fact_kind IN ('model_attempt_prepared','proactive_summary_prepared') AND sequence<=? ORDER BY sequence LIMIT 1",params![snapshot.id().to_string(),observed.run.to_string(),observed.attempt.map(|id|id.to_string()),sql::bind_u64(observed.sequence)?],|r|r.get(0))?;
             let prepared = copied_fact(c, snapshot, &raw, bound)?;
             if prepared.run != observed.run
                 || prepared.step != observed.step
@@ -875,7 +949,7 @@ fn copied(
         let attempt = original
             .attempt
             .ok_or_else(|| invalid("metrics copied model request has no original attempt"))?;
-        let (raw,model):(String,Option<String>)=c.query_row("SELECT entry_json,model_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_step WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.step')=? AND fact_kind='step_prepared' AND sequence<=? ORDER BY sequence LIMIT 1",params![snapshot.id().to_string(),original.run.to_string(),step.to_string(),sql::bind_u64(original.sequence)?],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        let (raw,model):(String,Option<String>)=c.query_row("SELECT entry_json,model_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_step WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.step')=? AND fact_kind IN ('step_prepared','proactive_summary_prepared') AND sequence<=? ORDER BY sequence LIMIT 1",params![snapshot.id().to_string(),original.run.to_string(),step.to_string(),sql::bind_u64(original.sequence)?],|r|Ok((r.get(0)?,r.get(1)?)))?;
         let prepared = copied_fact(c, snapshot, &raw, bound)?;
         if prepared.run != original.run
             || prepared.step != Some(step)
@@ -1003,10 +1077,19 @@ fn changes(
     let step = sample.map(|sample| sample.step.to_string());
     let attempt = sample.map(|sample| sample.attempt.to_string());
     let (changed,reset):(bool,bool)=match &segment.source {
-        HistoryDataSource::Live{history,cut}=>c.query_row("SELECT coalesce(max(CASE WHEN h.kind='context_compacted' OR (h.kind='run_admitted' AND h.run IS NOT ?6) OR (h.kind='step_prepared' AND h.step IS NOT ?7) OR (h.kind IN ('model_attempt_prepared','model_attempt_admitted','model_observed') AND h.attempt IS NOT ?8) OR h.kind IN ('tool_result_accepted','local_tool_returned','host_tool_result_recorded','external_task_observed','external_effect','cell','tools_loaded') THEN 1 ELSE 0 END),0),coalesce(max(h.kind='context_compacted'),0) FROM agent_session_history h WHERE h.owner=?1 AND h.session=?2 AND h.sequence>?3 AND h.sequence<=?4 AND h.admission_sequence>?5",params![serde_json::to_string(&history.namespace.owner)?,history.namespace.session,sql::bind_u64(after)?,sql::bind_u64(cut.through_sequence)?,sql::bind_u64(segment.after_admission)?,run,step,attempt],|r|Ok((r.get(0)?,r.get(1)?)))?,
+        HistoryDataSource::Live{history,cut}=>c.query_row("SELECT coalesce(max(CASE WHEN h.kind='context_compacted' OR (h.kind='run_admitted' AND h.run IS NOT ?6) OR (h.kind='step_prepared' AND h.step IS NOT ?7) OR (h.kind IN ('model_attempt_prepared','model_attempt_admitted','model_observed') AND h.attempt IS NOT ?8
+       AND NOT (h.kind='model_attempt_admitted' AND EXISTS(
+           SELECT 1 FROM agent_session_history p INDEXED BY agent_session_history_run
+           WHERE p.owner=h.owner AND p.session=h.session AND p.run=h.run AND p.step=h.step
+             AND p.attempt=h.attempt AND p.kind='proactive_summary_prepared'))) OR h.kind IN ('tool_result_accepted','local_tool_returned','host_tool_result_recorded','external_task_observed','external_effect','cell','tools_loaded') THEN 1 ELSE 0 END),0),coalesce(max(h.kind='context_compacted'),0) FROM agent_session_history h WHERE h.owner=?1 AND h.session=?2 AND h.sequence>?3 AND h.sequence<=?4 AND h.admission_sequence>?5",params![serde_json::to_string(&history.namespace.owner)?,history.namespace.session,sql::bind_u64(after)?,sql::bind_u64(cut.through_sequence)?,sql::bind_u64(segment.after_admission)?,run,step,attempt],|r|Ok((r.get(0)?,r.get(1)?)))?,
         HistoryDataSource::Snapshot(snapshot)=>{
             let bound=snapshot_bound(c,snapshot)?;
-            c.query_row("SELECT coalesce(max(CASE WHEN fact_kind='context_compacted' OR (fact_kind='run_admitted' AND run IS NOT ?5) OR (fact_kind='step_prepared' AND json_extract(entry_json,'$.step') IS NOT ?6) OR (fact_kind IN ('model_attempt_prepared','model_attempt_admitted','model_observed') AND json_extract(entry_json,'$.attempt') IS NOT ?7) OR fact_kind IN ('tool_result_accepted','local_tool_returned','host_tool_result_recorded','external_task_observed','external_effect','cell','tools_loaded') THEN 1 ELSE 0 END),0),coalesce(max(fact_kind='context_compacted'),0) FROM agent_history_snapshot_entries WHERE snapshot=?1 AND kind='fact' AND sequence>?2 AND sequence<=?3 AND json_extract(entry_json,'$.admission_sequence')>?4",params![snapshot.id().to_string(),sql::bind_u64(after)?,sql::bind_u64(bound)?,sql::bind_u64(segment.after_admission)?,run,step,attempt],|r|Ok((r.get(0)?,r.get(1)?)))?
+            c.query_row("SELECT coalesce(max(CASE WHEN fact_kind='context_compacted' OR (fact_kind='run_admitted' AND run IS NOT ?5) OR (fact_kind='step_prepared' AND json_extract(entry_json,'$.step') IS NOT ?6) OR (e.fact_kind IN ('model_attempt_prepared','model_attempt_admitted','model_observed') AND json_extract(e.entry_json,'$.attempt') IS NOT ?7
+       AND NOT (e.fact_kind='model_attempt_admitted' AND EXISTS(
+           SELECT 1 FROM agent_history_snapshot_entries p INDEXED BY agent_history_snapshot_metrics_attempt
+           WHERE p.snapshot=e.snapshot AND p.run=e.run AND p.kind='fact'
+             AND json_extract(p.entry_json,'$.attempt')=json_extract(e.entry_json,'$.attempt')
+             AND p.fact_kind='proactive_summary_prepared'))) OR fact_kind IN ('tool_result_accepted','local_tool_returned','host_tool_result_recorded','external_task_observed','external_effect','cell','tools_loaded') THEN 1 ELSE 0 END),0),coalesce(max(fact_kind='context_compacted'),0) FROM agent_history_snapshot_entries e WHERE e.snapshot=?1 AND e.kind='fact' AND e.sequence>?2 AND e.sequence<=?3 AND json_extract(e.entry_json,'$.admission_sequence')>?4",params![snapshot.id().to_string(),sql::bind_u64(after)?,sql::bind_u64(bound)?,sql::bind_u64(segment.after_admission)?,run,step,attempt],|r|Ok((r.get(0)?,r.get(1)?)))?
         }
     };
     Ok((changed, reset))

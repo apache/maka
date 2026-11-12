@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { ContextMenu, Menu, MenuItem, MenuSeparator, type OpenChangeReason, Submenu } from "nsh/base";
-import { backdrop, button, buttonText, desktop, Inspector, MenuLabel, MenuMark, MenuPanel, menuIndicator, menuItemLabel, menuItemLook, menuItemSize, menuSeparator, menuSheet, Panel, Stage, SubmenuBack, SubmenuRow, ui, wide } from "./palette";
+import { button, buttonText, desktop, Inspector, MenuLabel, MenuMark, menuIndicator, menuItemLabel, menuItemLook, menuItemSize, menuSeparator, Panel, Stage, SubmenuBack, SubmenuRow, ui, wide, menuPopup } from "./palette"
 
 /**
  * One row (`menuItemLook`: the hover and the keyboard's highlight alike).
@@ -32,11 +32,9 @@ function Item(props: { label: string; onSelect?: () => void; checked?: boolean; 
 function Share(props: { onSelect: (what: string) => void }) {
   return (
     <Submenu offset={4} trigger={<SubmenuRow label="Share" />} back={<SubmenuBack label="Share" />}>
-      <MenuPanel side="right">
-        <Item label="Mail" onSelect={() => props.onSelect("Mail")} />
-        <Item label="Messages" onSelect={() => props.onSelect("Messages")} />
-        <Item label="Copy link" onSelect={() => props.onSelect("Copy link")} />
-      </MenuPanel>
+      <Item label="Mail" onSelect={() => props.onSelect("Mail")} />
+      <Item label="Messages" onSelect={() => props.onSelect("Messages")} />
+      <Item label="Copy link" onSelect={() => props.onSelect("Copy link")} />
     </Submenu>
   );
 }
@@ -58,8 +56,7 @@ function App() {
     <Menu
       offset={4}
       margin={8}
-      popupStyle={menuSheet()}
-      backdropStyle={backdrop()}
+      {...menuPopup()}
       onOpenChange={changed("File")}
       trigger={
         <View {...button("secondary", { align: "flex-start" })}>
@@ -67,23 +64,20 @@ function App() {
         </View>
       }
     >
-      <MenuPanel>
-        <Item label="New" onSelect={() => choose("New")} />
-        <Item label="Open…" onSelect={() => choose("Open…")} />
-        <Item label="Paste" disabled />
-        <MenuSeparator style={menuSeparator()} />
-        <Share onSelect={(what) => choose(`Share › ${what}`)} />
-        <MenuSeparator style={menuSeparator()} />
-        <Item label="Delete" danger onSelect={() => choose("Delete")} />
-      </MenuPanel>
+      <Item label="New" onSelect={() => choose("New")} />
+      <Item label="Open…" onSelect={() => choose("Open…")} />
+      <Item label="Paste" disabled />
+      <MenuSeparator style={menuSeparator()} />
+      <Share onSelect={(what) => choose(`Share › ${what}`)} />
+      <MenuSeparator style={menuSeparator()} />
+      <Item label="Delete" danger onSelect={() => choose("Delete")} />
     </Menu>
   );
   const view = () => (
     <Menu
       offset={4}
       margin={8}
-      popupStyle={menuSheet()}
-      backdropStyle={backdrop()}
+      {...menuPopup()}
       onOpenChange={changed("View")}
       trigger={
         <View {...button("secondary", { align: "flex-start" })}>
@@ -91,23 +85,20 @@ function App() {
         </View>
       }
     >
-      <MenuPanel>
-        {/* Settings keep the menu open: each shows its new value at once. */}
-        <Item label="Show sidebar" checked={sidebar()} keepOpen onSelect={() => sidebar.set(!sidebar())} />
-        <Item label="Show minimap" checked={minimap()} keepOpen onSelect={() => minimap.set(!minimap())} />
-        <Item label="Show hidden files" checked={hidden()} keepOpen onSelect={() => hidden.set(!hidden())} />
-        <MenuSeparator style={menuSeparator()} />
-        <MenuLabel text="Sort by" />
-        {/* One choice of a group: choosing closes the menu. */}
-        <Each of={SORTS}>{(by) => <Item label={by()} radio checked={sort() === by()} onSelect={() => sort.set(by())} />}</Each>
-      </MenuPanel>
+      {/* Settings keep the menu open: each shows its new value at once. */}
+      <Item label="Show sidebar" checked={sidebar()} keepOpen onSelect={() => sidebar.set(!sidebar())} />
+      <Item label="Show minimap" checked={minimap()} keepOpen onSelect={() => minimap.set(!minimap())} />
+      <Item label="Show hidden files" checked={hidden()} keepOpen onSelect={() => hidden.set(!hidden())} />
+      <MenuSeparator style={menuSeparator()} />
+      <MenuLabel text="Sort by" />
+      {/* One choice of a group: choosing closes the menu. */}
+      <Each of={SORTS}>{(by) => <Item label={by()} radio checked={sort() === by()} onSelect={() => sort.set(by())} />}</Each>
     </Menu>
   );
   const context = () => (
     <ContextMenu
       margin={8}
-      popupStyle={menuSheet()}
-      backdropStyle={backdrop()}
+      {...menuPopup()}
       onOpenChange={changed("Context")}
       trigger={
         <View
@@ -127,13 +118,11 @@ function App() {
         </View>
       }
     >
-      <MenuPanel>
-        <Item label="Pinned" checked={pinned()} onSelect={() => pinned.set(!pinned())} />
-        <Item label="Copy" inset onSelect={() => choose("Copy")} />
-        <Item label="Rename" inset onSelect={() => choose("Rename")} />
-        <MenuSeparator style={menuSeparator()} />
-        <Item label="Delete" inset danger onSelect={() => choose("Delete")} />
-      </MenuPanel>
+      <Item label="Pinned" checked={pinned()} onSelect={() => pinned.set(!pinned())} />
+      <Item label="Copy" inset onSelect={() => choose("Copy")} />
+      <Item label="Rename" inset onSelect={() => choose("Rename")} />
+      <MenuSeparator style={menuSeparator()} />
+      <Item label="Delete" inset danger onSelect={() => choose("Delete")} />
     </ContextMenu>
   );
   const panels = () => (

@@ -45,6 +45,7 @@ fn first_frame_of(app: &str, tag: &str, os: Os, idiom: Idiom) -> Vec<MountItem> 
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     let (tx, rx) = crossbeam_channel::unbounded();
@@ -52,6 +53,7 @@ fn first_frame_of(app: &str, tag: &str, os: Os, idiom: Idiom) -> Vec<MountItem> 
         app: nsh_engine::App::Js(Bundle::source(bundle.code)),
         viewport: Size::new(px(320.0), px(480.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -210,6 +212,7 @@ fn js_reads_the_window_and_the_displays_and_restores_bounds() {
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     let rect = |x: f32, w: f32, h: f32| Bounds::new(point(px(x), px(0.0)), size(px(w), px(h)));
@@ -321,6 +324,7 @@ fn js_turns_the_performance_monitor_on_and_follows_it() {
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     let (tx, rx) = crossbeam_channel::unbounded();
@@ -365,6 +369,52 @@ fn js_turns_the_performance_monitor_on_and_follows_it() {
     read("fps true");
     engine.control().set_perf_monitor(None);
     read("fps false");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_performance_monitor_reads_what_the_app_holds_when_idle() {
+    let dir = std::env::temp_dir().join(format!("nsh-fps-memory-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = dir.join("App.tsx");
+    std::fs::write(
+        &entry,
+        r#"import { mount, Text, View } from "nsh";
+mount(() => <View>{Array.from({ length: 50 }, (_, i) => <Text>{`row ${i}`}</Text>)}</View>);
+"#,
+    )
+    .unwrap();
+    let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+        entry,
+        minify: false,
+        split: false,
+        ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
+    })
+    .unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let config = EngineConfig::new(nsh_engine::App::Js(Bundle::source(bundle.code)));
+    let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
+    let monitor = std::sync::Arc::new(nsh_engine::perf::PerfMonitor::new());
+    engine.control().set_perf_monitor(Some(monitor.clone()));
+    assert_eq!(
+        monitor.snapshot().memory,
+        None,
+        "nothing read before a collection"
+    );
+    // The engine reads it after its first idle collection, a second in.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let memory = loop {
+        while rx.try_recv().is_ok() {}
+        if let Some(m) = monitor.snapshot().memory {
+            break m;
+        }
+        assert!(std::time::Instant::now() < deadline, "never read");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(memory.js_heap > 0 && memory.js_objects > 0, "{memory:?}");
+    assert!(memory.nodes > 50, "{memory:?}");
+    assert!(memory.node_ids >= memory.nodes, "{memory:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -423,6 +473,7 @@ fn js_windows_open_with_their_kinds_defaults_and_report_back() {
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     let (tx, rx) = crossbeam_channel::unbounded();
@@ -558,6 +609,7 @@ fn js_popovers_in_a_window_are_placed_in_it() {
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     let (tx, rx) = crossbeam_channel::unbounded();
@@ -654,6 +706,7 @@ fn js_dialogs_mounted_in_an_open_window_name_it_before_they_show() {
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     let (tx, rx) = crossbeam_channel::unbounded();

@@ -10,7 +10,7 @@ demo: el-data-table
 `DataTable` shows rows and columns as a spreadsheet does and scrolls both ways over any number of either. Only the
 cells in view are made, so a table of a million rows and ten thousand columns scrolls as a small one does. Rows,
 columns or cells select, with the pointer and the keyboard; columns have fixed widths, resize with a drag of their
-edge, move with a drag of their title, stay at the left while the others scroll, and sort. Titles can sit under group
+edge, move with a drag of their title, stay at the left or the right while the others scroll, and sort. Titles can sit under group
 labels, and a cell or a title can be drawn by the app.
 
 `DataTable` supplies layout, alignment, virtualization and interaction. The app gives its parts their padding,
@@ -77,7 +77,7 @@ booleans and strings show as text. Rust gives the rows a field at a time, each o
 | `fitPadding` | Extra room for the app's padding, icons or badges, added to the widest title or cell text when fitting the column. |
 | `align` | `"start"` (the default), `"center"` or `"end"`, for numbers. Cells and title alike. |
 | `sortable` | Its title has a sort button that asks for a sort (see [Sorting](#sorting)). |
-| `fixed` | It stays at the left while the other columns scroll under it. Fixed columns lead the others, in their order. |
+| `fixed` | Where it stays while the other columns scroll under it: `true` or `"left"` at the left, leading the others; `"right"` at the right, after them (right after the scrolling columns while they fit, at the table's right edge once they overflow it). Fixed columns keep their order. |
 | `resizable`, `movable` | Whether a drag of its edge resizes it and a drag of its title moves it. Default the table's `resizableColumns` and `movableColumns`. |
 | `selectable` | Whether it takes part in selection. A column of buttons or checkboxes sets `false`. Default `true`. |
 | `cellClass` | Classes of the column's cells, after the `cell` part's: paddings or alignment of one column. |
@@ -208,7 +208,7 @@ title shows it. Because the app owns the order, sorting works the same over a mi
 A drag of a column's trailing edge resizes it within its `minWidth` and `maxWidth`, and `onColumnResize({ key, width })`
 reports every step. Pressing the edge twice in a row fits the column to its widest text and title. A drag of a title moves the column, and a line shows where it will drop; `onColumnMove` reports
 `{ key, from, to, order }`, `order` being the `key`s of all the columns in the order shown. Fixed columns stay among
-the fixed ones. `resizableColumns` and `movableColumns` turn both off for the table, and a column's `resizable` and
+the ones fixed at their side. `resizableColumns` and `movableColumns` turn both off for the table, and a column's `resizable` and
 `movable` win over them.
 
 ## Live data
@@ -253,6 +253,10 @@ The app looks up its own data by `row`. `renderHeaderCell` draws a title across 
   class="flex-1"
 />
 ```
+
+A view with `onPress` in a cell (a copy button) gets the presses on it, and the table then neither selects the row nor
+reports `onRowPress`; a press elsewhere in the cell selects as usual. Such a view gets `onPress`, without hover or
+pressed styles.
 
 `fontFamily` and `fontSize` (default `14`) set the font of the cells, which the table also measures texts in to fit
 columns.
@@ -328,14 +332,14 @@ parts provide the table's structure and alignment; their classes supply the appe
 | `cellColumnSelected` | The cells of the selected column, after `cell` |
 | `rowHeader` | The row header cells, the row numbers |
 | `rowHeaderCorner` | The corner above the row headers |
-| `fixedEdge` | The line at the fixed columns' trailing edge, over the columns that scroll under them |
+| `fixedEdge` | The line between the fixed columns and the columns that scroll under them: at the trailing edge of those at the left, the leading edge of those at the right |
 | `empty` | The box of the `empty` slot |
 
 ## Props
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
-| `columns` | `.columns(..)` | `DataTableColumn[]` | `[]` | The columns, left to right. Fixed ones lead. |
+| `columns` | `.columns(..)` | `DataTableColumn[]` | `[]` | The columns, left to right. Those fixed at the left lead, those fixed at the right close. |
 | `data` | `.data(..)` | `Row[]` | `[]` | The rows: objects by column `key`, or arrays by position. |
 | `rowCount` | `.row_count(..)` | `number` | the rows held | How many rows there are in all. |
 | `dataStart` | `.data_start(..)` | `number` | `0` | The row of the first row of `data`. |
@@ -391,3 +395,16 @@ parts provide the table's structure and alignment; their classes supply the appe
 - [Editor](./editor.md) and [DiffView](./diff-view.md): the other data-heavy base components.
 - [Menu](./menu.md): the menu to open from `onContextMenu`.
 - [`nsh/base`](../modules/nsh-base.md): the other base components.
+
+### Fixed columns in Rust
+
+`nsh_base::data_table::ColumnFixed` follows GPUI Kit's column-side naming. `None` (the default) scrolls normally;
+`Left` and `Right` pin the column to that side. TS uses `false`, `"left"` and `"right"`,
+with `true` retained as a shorthand for `"left"`.
+
+```rust
+use nsh_base::{DataTableColumn, data_table::ColumnFixed};
+
+let mut actions = DataTableColumn::default();
+actions.fixed = ColumnFixed::Right;
+```

@@ -35,6 +35,9 @@ pub struct ModelFailureProtocol {
 pub struct ModelClosureProtocol {
     pub finish_reason: ModelFinishReason,
     pub provider_options: Option<Value>,
+    /// Older adapters sometimes filled a missing cache counter with zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_reported: Option<bool>,
     pub response_id: Option<String>,
     pub model: Option<String>,
     pub timestamp: Option<String>,

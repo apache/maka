@@ -97,6 +97,9 @@ impl NativeRuntime {
             Self::Claude => "claude",
         }
     }
+    pub fn reports_usage_limits(self) -> bool {
+        matches!(self, Self::Antigravity)
+    }
 }
 impl std::str::FromStr for NativeRuntime {
     type Err = String;

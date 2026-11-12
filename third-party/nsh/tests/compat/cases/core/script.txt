@@ -47,6 +47,10 @@ expect Sum is a node: true
 expect Interpolation is a node: true
 # A node, the same for the same options, another without `snap`.
 expect Snapping diffClamp: true true true
+# Below the views whose frames the steps check, so they keep their place.
+expect Spring without stiffness rests at: 1.00
+expect Overdamped spring stays finite: yes
+expect Overdamped spring rests at: 1.00
 expect Composite: function/function/function
 expect Preset duration: 300
 expect Created: 250 linear opacity
@@ -190,6 +194,44 @@ covers [props] List.header
 covers [props] List.footer
 covers [props] List.empty
 covers [props] List.separator
+# core-list-anchor
+tap id:case-core-list-anchor
+expect Row 1
+absent Row new 1
+# A list at its start shows the rows that arrive above its first one: it
+# stays at its start, where they are (no scroll keeps the first row in
+# place).
+tap id:prepend-rows
+expect Row new 1
+noprop scroll:text:"Row 1" contentOffset
+# One loading pages at its start keeps its rows in place: the page it
+# prepends lies above them, 120 points up (shown, it would ask for the
+# next at once).
+expect Page 1
+tap id:prepend-page
+expect Page new 1
+prop scroll:text:"Page 1" contentOffset y=120
+# core-list-initial-end
+tap id:case-core-list-initial-end
+expect Shrink 49
+absent Shrink 0
+tap id:read-initial-end
+expect Shrink 48/0; Tall 49/180; Short 0/0; Empty null
+expect Short 0
+expect Short 1
+# Both rows fit: opening at the end does not bottom-align their content.
+frame parent:parent:text:"Short 0" 0 0 390 30
+covers [props] List.initialScrollAtEnd
+# core-list-position
+tap id:case-core-list-position
+expect Positioned 0
+tap id:read-position
+expect Row 0, 0 in; empty: null
+# Rows of 40, 60 and 80 points: 130 points down is 30 points into row 2.
+scroll id:positioned 0 130
+tap id:read-position
+expect Row 2, 30 in; empty: null
+covers [nsh] List
 # core-reactive
 tap id:case-core-reactive
 expect Sum: 3
@@ -235,6 +277,21 @@ tap id:measure
 expect Sizes: 100x10 110x11 120x12 130x13 150x15 160x16
 expect Calls: 1
 covers [nsh:rt] ref
+# core-reveal
+tap id:case-core-reveal
+expect Called: none
+# The ref's method takes no options, vertical, horizontal and animated.
+tap id:default
+expect Called: default
+tap id:center
+expect Called: center
+tap id:nearest
+expect Called: nearest
+tap id:end
+expect Called: end
+# An alignment it does not know is a TypeError, at the call.
+tap id:unknown
+expect Unknown alignment: TypeError
 # core-resource
 tap id:case-core-resource
 # Resources without a source: a value at once, an initial value while the
@@ -299,6 +356,11 @@ expect Child gone
 absent Child: pending
 expect Child aborts: 1
 covers [nsh] resource
+# asset-imports
+tap id:case-asset-imports
+# an imported video, and any file imported with `?url`, is its URL
+expect Video: asset:/media/intro.mp4
+expect File: asset:/data/model.bin
 # module-url
 tap id:case-module-url
 expect Module URL: true
@@ -355,7 +417,7 @@ expect Fruit Fig
 expect Fruit Kiwi
 expect Not checked
 tap id:check
-expect functions true context true gradient true path true
+expect functions true context true gradient true path true blob 3x2
 covers [nsh] Image
 covers [nsh] Video
 covers [nsh] WebView
@@ -432,3 +494,17 @@ tap id:case-web-load
 tap id:load
 expect Loaded, invalid header: TypeError
 covers [nsh] WebView
+
+# web-evaluate (headless backend advertises deterministic unavailability)
+tap id:case-web-evaluate
+tap id:evaluate
+expect Evaluation: false/TypeError,RangeError/ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+# web-available
+tap id:case-web-available
+expect Web views available: true
+expect No error
+covers [nsh] WebView
+# shaders-available
+tap id:case-shaders-available
+expect Shaders available: true
+covers [nsh] shadersAvailable

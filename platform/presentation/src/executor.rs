@@ -158,6 +158,7 @@ impl Execution {
                 tool_call_id,
                 text,
                 is_error,
+                ..
             } => {
                 let id = self
                     .pending
@@ -165,6 +166,7 @@ impl Execution {
                     .ok_or(ProjectionError::Invalid("result for unknown executor tool"))?;
                 result(event, ts, event.id.clone(), id, text.clone(), *is_error)
             }
+            Output::TurnUsage { .. } => return Ok(vec![]),
         };
         Ok(vec![row])
     }

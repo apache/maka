@@ -917,6 +917,7 @@ export type AgentGlobalInstructionsUpdated =
   | {
       kind: 'unavailable';
     };
+export type AgentNativeRuntime = 'antigravity' | 'codex' | 'claude';
 export type AgentExternalAgentsState =
   | {
       kind: 'disabled';
@@ -1113,6 +1114,11 @@ export type ExecutorOutput =
       toolCallId: string;
       text: string;
       isError?: boolean;
+      details?: ToolResultDetails | null;
+    }
+  | {
+      type: 'turn_usage';
+      usage: ExecutorTurnUsage;
     };
 export type ProtocolProcessProgress =
   | {
@@ -4063,6 +4069,11 @@ export type AgentDeliveryFact =
       attemptId: ModelAttemptId;
     }
   | {
+      kind: 'executor_text_changed';
+      messageId: string;
+      thinking: boolean;
+    }
+  | {
       kind: 'transcript_changed';
     }
   | {
@@ -4120,6 +4131,7 @@ export type AgentDeliveryFact =
       kind: 'executor_tool_start';
       toolUseId: string;
       name: string;
+      title?: DisplayText | null;
     }
   | {
       kind: 'executor_tool_progress';
@@ -4460,7 +4472,21 @@ export type Role =
  * Who made a call: a model step, a script the model wrote, a tool's own work
  * through the Host SDK, or a foreign record.
  */
-export type HistoryToolCallOrigin = 'provider' | 'code_mode' | 'host_sdk' | 'imported';
+export type HistoryToolCallOrigin = 'provider' | 'executor' | 'code_mode' | 'host_sdk' | 'imported';
+export type ExternalToolTarget =
+  | {
+      kind: 'command';
+      command: string;
+      cwd?: string | null;
+    }
+  | {
+      kind: 'file';
+      path: string;
+    }
+  | {
+      kind: 'search';
+      query: string;
+    };
 export type AgentHistoryPage = {
   kind: 'ready';
   through: number | null;
@@ -5813,9 +5839,10 @@ export interface AgentDataSource {
   namespace: InstanceId;
 }
 export interface AgentExternalRuntimeOption {
-  id: string;
+  id: AgentNativeRuntime;
   name: string;
   enabled: boolean;
+  usageLimits: boolean;
 }
 export interface AgentExternalRuntime {
   id: string;
@@ -6046,6 +6073,23 @@ export interface Rule {
   scope: Scope;
   access: Access;
 }
+export interface ToolResultDetails {
+  exitCode?: number | null;
+  durationMs?: number | null;
+}
+export interface ExecutorTurnUsage {
+  tokens: ModelUsage;
+  totalTokens?: number | null;
+  durationMs?: number | null;
+}
+export interface ModelUsage {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  cache_write_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  [k: string]: unknown | undefined;
+}
 export interface ProtocolProcessRun {
   executable: string;
   args?: string[];
@@ -6190,14 +6234,6 @@ export interface ModelBinding {
   connection_id: string;
   connection_slug: string;
   model: string;
-  [k: string]: unknown | undefined;
-}
-export interface ModelUsage {
-  input_tokens?: number | null;
-  output_tokens?: number | null;
-  cache_read_tokens?: number | null;
-  cache_write_tokens?: number | null;
-  reasoning_tokens?: number | null;
   [k: string]: unknown | undefined;
 }
 export interface Quote {
@@ -6573,7 +6609,7 @@ export interface ModelOverride {
    */
   adapter?: string;
   /**
-   * Omitted means model-specific defaults; false is an explicit opt-out.
+   * Code Mode is enabled by default. Set false to select direct tool calls.
    */
   codeMode?: boolean;
   /**
@@ -8184,10 +8220,19 @@ export interface AgentHistoryAttachment {
 export interface HistoryTurnTiming {
   startedAt: number;
   finished: HistoryTurnFinished | null;
+  executorUsage?: ExecutorTurnUsage | null;
+  promptCache?: PromptCacheUsage | null;
 }
 export interface HistoryTurnFinished {
   at: number;
   outcome: HistoryTurnOutcome;
+}
+/**
+ * Reported cache reads and their share of total prompt input.
+ */
+export interface PromptCacheUsage {
+  inputTokens: number;
+  readTokens: number;
 }
 /**
  * Canonical references at the requested fence, never execution authority.
@@ -8220,6 +8265,7 @@ export interface HistoryToolCall {
    * A unique original Host dispatch is recorded at this fence; not liveness.
    */
   dispatched: boolean;
+  externalTarget?: ExternalToolTarget | null;
 }
 export interface HistoryToolResult {
   settlement: ToolSettlement | null;
@@ -8236,6 +8282,7 @@ export interface HistoryToolResult {
    * Images the model received beside non-image content, readable by index.
    */
   images: number;
+  details?: ToolResultDetails | null;
 }
 export interface AgentHistorySearch {
   sessionId: string;

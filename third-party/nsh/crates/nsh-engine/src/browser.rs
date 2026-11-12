@@ -226,6 +226,8 @@ impl Script {
             .with_websocket(system.websocket)
             .with_refuse_connections(system.refuse_connections)
             .with_filesystem(system.filesystem)
+            .with_app_url(system.app_url)
+            .with_base_url(bundle.base_url.clone())
             .with_os(environment.os);
             script.0.initialize(Services {
                 system: services,
@@ -277,6 +279,9 @@ impl Script {
     pub(crate) fn bind_list(&self, list: NodeId, binds: &[(u32, u32)]) {
         self.0.bind_list(list, binds);
     }
+    // The web culls no content (`EngineConfig::content_culling` is off
+    // there): its `<Each>` renders every row.
+    pub(crate) fn set_lazy_rows(&self, _: bool) {}
     pub(crate) fn host_event(&self, name: &str, data: nsh_core::JsonValue) {
         self.0.host_event(name, data);
     }
@@ -337,6 +342,9 @@ impl Script {
         self.0.fetch_refused(id, message, url);
     }
     pub(crate) fn collect_garbage(&self) {}
+    pub(crate) fn heap_usage(&self) -> (u64, u64) {
+        (0, 0)
+    }
     pub(crate) fn fatal(&self) -> Option<String> {
         self.0.fatal()
     }

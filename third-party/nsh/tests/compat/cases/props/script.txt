@@ -318,6 +318,9 @@ nostyle id:plain userSelect
 # Shrunk to fit: at most to minimumFontScale; what fits keeps its size.
 style id:fit fontSize 20
 style id:fit-min fontSize 10
+style id:fixed-height numberOfLines 1
+style id:fixed-height lineHeight 20
+expect Hello
 covers [styles] numberOfLines
 covers [styles] textOverflow
 covers [styles] userSelect
@@ -331,6 +334,8 @@ prop id:group accessible true
 noprop id:plain accessible
 prop id:hint accessibilityHint Opens the settings
 noprop id:plain accessibilityHint
+prop id:description accessibilityDescription Letters and digits only
+noprop id:plain accessibilityDescription
 prop id:state accessibilityState disabled=true checked=mixed expanded=false
 prop id:plain accessibilityState {}
 # A popup's trigger: `hasPopup` beside `expanded` (nsh-compat's values.rs
@@ -362,8 +367,11 @@ prop id:role-tree role tree
 prop id:role-treeitem role treeitem
 prop id:role-menuitemcheckbox role menuitemcheckbox
 prop id:role-menuitemradio role menuitemradio
+prop id:role-dialog role dialog
+prop id:role-alertdialog role alertdialog
 covers [props] accessible
 covers [props] accessibilityHint
+covers [props] accessibilityDescription
 covers [props] accessibilityState
 covers [props] accessibilityValue
 covers [props] accessibilityElementsHidden

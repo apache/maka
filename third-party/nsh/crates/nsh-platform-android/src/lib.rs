@@ -37,7 +37,7 @@ mod text;
 
 use std::ffi::c_void;
 
-pub use host::run_root;
+pub use host::{run_root, set_runtime};
 /// What [`ui_sets!`] gives.
 pub use nsh_core::element::Registry;
 /// What [`root!`] gives.

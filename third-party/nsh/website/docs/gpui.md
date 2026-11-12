@@ -128,7 +128,9 @@ URIs resolve (`AssetBase::Directory` or `AssetBase::Http`). Bytecode bundles (`b
 `unsafe { Bundle::bytecode(bytes) }` (or `Bundle::read_trusted(path)`, unsafe too): QuickJS bytecode is trusted input,
 so only load it from your own app's files.
 
-- `open_app_window(source, options, cx)` opens a window with one `AppView` in a running GPUI app.
+- `open_app_window(source, options, cx)` opens a window with one `AppView` in a running GPUI app, with the app's
+  nsh.json `window` settings. With `"defaultVisible": false` it opens hidden on macOS and Windows and shows when the
+  app shows it ([The main window](../modules/nsh-desktop.md#the-main-window)); on Linux GPUI shows it as it opens.
 - `run_app(source, options)` starts GPUI and runs one app in a window until it closes (what the development host does).
 - `AppView::register_component(name, factory)` registers a native component of yours before loading
   ([Native components](./native-components.md)).
@@ -160,6 +162,12 @@ so only load it from your own app's files.
 - `AppView::set_locale(locale, cx)` and `AppView::set_font_scale(scale, cx)` give the app your app's language and
   text size in place of the system's (`None` follows the system's again): `locale()`, `Intl`, `fontScale()` and text
   follow at once ([Device and environment](./device-and-environment.md#in-an-embedding-app)).
+- `AppView::set_theme_overrides(Some(json), cx)` puts your app's brand over the app's [theme](./tailwind.md#theme-tokens):
+  a theme file in the format of `nsh.json`'s `"theme"`, whose tokens win over the app's of the same names in light
+  and dark mode while the app's others stay; classes such as `bg-primary` restyle at once, and apps loaded later start
+  with it (`None` gives the app its own theme back; a file that does not parse is an error and changes nothing). With
+  a whole theme from `set_theme` / `set_theme_json`, the overrides win over that one's tokens, and each stays when the
+  other changes.
 - `AppView::run_package(&package)` runs a [signed package](./signed-packages.md#loading-packages-in-a-host-app)
   from `verify_package` or `load_package`; `accept_package` records it once your app decided it is healthy.
 - `set_ui_sets(sets)` sets the UI sets every engine serves: NSH's (`nsh_base::registry()`) and your crates'

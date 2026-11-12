@@ -3,7 +3,8 @@
 // `aria-pressed:` classes and `pressedStyle` while
 // `accessibilityState.pressed` is `true` (not while it is "mixed"),
 // `group-aria-pressed:` on the icon inside it; the `aria-busy:`,
-// `aria-checked:` and `aria-selected:` classes of views in those states;
+// `aria-checked:`, `aria-invalid:` and `aria-selected:` classes of views
+// in those states (an invalid field's `accessibilityState.invalid`);
 // and the `data-*:` and `group-data-*:` classes, which a view without
 // those attributes takes as known classes that do not apply (components'
 // parts show them: `base-date-picker`'s days). Its script toggles the
@@ -45,6 +46,11 @@ function App() {
         role="option"
         accessibilityState={{ selected: true }}
         class="h-4 bg-[#cccccc] aria-selected:bg-[#0000ff]"
+      />
+      <View
+        testID="invalid"
+        accessibilityState={{ invalid: true }}
+        class="h-4 bg-[#cccccc] aria-invalid:bg-[#ff8800]"
       />
       <View testID="data" class="group h-4 bg-[#cccccc] data-range-start:bg-[#ff0000]">
         <View testID="data-inner" class="size-2 bg-[#ffffff] group-data-range-start:bg-[#000000]" />

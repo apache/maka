@@ -15,8 +15,8 @@
 //! it when the last reference (the cache's, the views') goes. SVG images
 //! (sniffed from their bytes) are drawn by [`nsh_core::svg`] at the
 //! bucket's size; their picture keeps their intrinsic size in points, which
-//! they are laid out with and report. Canvases draw bitmaps only
-//! ([`load_bitmap`]).
+//! they are laid out with and report. Canvases draw them as their
+//! rasterized bitmap ([`load_bitmap`]).
 //!
 //! Animated GIF and WebP images decode every frame (composited, at most
 //! [`MAX_FRAMES`] and [`MAX_ANIMATION_BYTES`]: larger ones show their first
@@ -108,6 +108,7 @@ fn context(surface: &Surface, uri: &str) -> Context {
         asset_base: surface.asset_base.borrow().clone(),
         read_asset: surface.image_assets.borrow().clone(),
         access: surface.access.borrow().clone(),
+        media_files: surface.media_files.borrow().clone(),
         disk: remote
             .then(|| surface.image_cache.borrow().clone())
             .flatten(),
@@ -398,13 +399,23 @@ fn decode(bytes: &[u8], target: &Target) -> Result<Picture, String> {
     Ok(Picture::still(texture(image.into_rgba8())))
 }
 
+/// A pixel buffer ([`ImageSrc::rgba`](nsh_core::element::ImageSrc::rgba)),
+/// taken as it is: no decode, at its own size.
+fn from_rgba((w, h, rgba): (u32, u32, &[u8])) -> Result<Picture, String> {
+    let rgba = image::RgbaImage::from_raw(w, h, rgba.to_vec()).ok_or("RGBA of the wrong size")?;
+    Ok(Picture::still(texture(rgba)))
+}
+
 /// The process's decoded images, in the core's budget.
 fn images() -> &'static Images<Picture> {
     static IMAGES: LazyLock<Images<Picture>> = LazyLock::new(|| {
         Images::new(
             nsh_core::image::budget(),
             |bytes: &ImageData, target: &Target| {
-                let picture = decode(bytes, target)?;
+                let picture = match bytes.rgba() {
+                    Some(rgba) => from_rgba(rgba)?,
+                    None => decode(bytes, target)?,
+                };
                 let cost = picture.cost();
                 Ok((picture.clone(), picture.natural, cost))
             },
@@ -542,8 +553,8 @@ fn fetch(
 
 /// Loads the bitmap `uri` (`https://…`, `asset:/…`, a file path, `data:`)
 /// for a canvas off the main thread, at its natural size; `done` runs on
-/// the main thread with the image (an animation's first frame). Canvases
-/// draw bitmaps: an SVG is an image that failed to load.
+/// the main thread with the image (an animation's first frame). An SVG is
+/// rasterized by the shared SVG renderer and handed over as its bitmap.
 ///
 /// A cached texture is handed over before this returns: callers must not
 /// hold a borrow of view state that `done` takes.
@@ -552,15 +563,7 @@ pub(crate) fn load_bitmap(
     uri: &str,
     done: impl FnOnce(Result<gdk::Texture, String>) + 'static,
 ) {
-    let name = uri.to_owned();
-    let done = move |result: Result<(Picture, Lease), String>| {
-        done(result.and_then(|(p, _)| match p.natural {
-            Natural::Vector(_) => Err(format!(
-                "{name} is an SVG image: canvases draw bitmaps (PNG, JPEG, ...)"
-            )),
-            Natural::Pixels(..) => Ok(p.texture),
-        }));
-    };
+    let done = move |result: Result<(Picture, Lease), String>| done(result.map(|(p, _)| p.texture));
     let source = ImageSource {
         uri: uri.into(),
         size: None,
@@ -1648,6 +1651,14 @@ mod tests {
             frames: Frames::All,
         };
         decode(bytes, &target)
+    }
+
+    #[test]
+    fn takes_rgba_buffers_as_they_are() {
+        let picture = from_rgba((2, 1, &[255, 0, 0, 255, 0, 0, 255, 128])).unwrap();
+        assert_eq!(picture.natural, Natural::Pixels(2, 1));
+        // Downloaded as premultiplied BGRA.
+        assert_eq!(pixels(&picture.texture), [0, 0, 255, 255, 128, 0, 0, 128]);
     }
 
     #[test]

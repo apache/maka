@@ -25,7 +25,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use maka_agent_facts::configuration::policy::RuntimePolicy;
+use maka_agent_facts::{
+    configuration::{ModelSelection, policy::RuntimePolicy},
+    execution::ThinkingLevel,
+};
 use maka_config::ConfigurationStore;
 use maka_event_log::root::{RootNamespaces, RootOwner};
 
@@ -99,6 +102,128 @@ async fn public_init_persists_settings_from_stdin_and_rejects_reconfiguration() 
     store.close().await.unwrap();
 }
 
+#[tokio::test]
+async fn public_init_persists_connections_and_default_target_from_stdin() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let mut child = initialize(&root, "15000");
+    let input = serde_json::to_vec(&serde_json::json!({
+        "connections": [
+            {
+                "slug": "eval-gateway",
+                "name": "Eval Gateway",
+                "provider": "openai-compatible",
+                "configuration": {
+                    "baseUrl": "http://127.0.0.1:18080/v1"
+                },
+                "apiKey": "private-bootstrap-api-key",
+                "requestHeaders": {
+                    "x-eval-harness": "maka-eval"
+                },
+                "enabled": true,
+                "enabledModelIds": ["eval-model"],
+                "modelOverrides": {
+                    "eval-model": {
+                        "contextWindow": 200000,
+                        "inputLimit": 160000,
+                        "maxOutputTokens": 16384,
+                        "thinkingLevels": ["off", "medium"],
+                        "defaultThinkingLevel": "off"
+                    }
+                },
+                "requestBodyOverlay": {
+                    "temperature": 0
+                }
+            },
+            {
+                "slug": "secondary-openai",
+                "provider": "openai",
+                "apiKey": "private-secondary-api-key",
+                "enabled": false,
+                "enabledModelIds": ["gpt-5"]
+            }
+        ],
+        "defaultTarget": {
+            "slug": "eval-gateway",
+            "modelId": "eval-model"
+        }
+    }))
+    .unwrap();
+    child.stdin.take().unwrap().write_all(&input).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let namespaces = RootNamespaces::for_current_account().unwrap();
+    let owner = Arc::new(RootOwner::open_existing(&root, &namespaces).unwrap());
+    let store = Arc::new(ConfigurationStore::for_root(owner).await.unwrap());
+    let catalog = store.catalog().await.unwrap();
+    assert_eq!(catalog.connections.len(), 2);
+    let primary = catalog
+        .connections
+        .iter()
+        .find(|row| row.slug == "eval-gateway")
+        .unwrap();
+    assert_eq!(primary.name, "Eval Gateway");
+    assert_eq!(primary.enabled_model_ids, vec!["eval-model"]);
+    assert_eq!(
+        primary.request_body_overlay,
+        Some(serde_json::json!({"temperature":0}))
+    );
+    let overrides = primary
+        .model_overrides
+        .as_ref()
+        .and_then(|all| all.get("eval-model"))
+        .unwrap();
+    assert_eq!(overrides.context_window, Some(200000));
+    assert_eq!(overrides.input_limit, Some(160000));
+    assert_eq!(overrides.max_output_tokens, Some(16384));
+    assert_eq!(
+        overrides.thinking_levels,
+        Some(vec![ThinkingLevel::Off, ThinkingLevel::Medium])
+    );
+    assert_eq!(overrides.default_thinking_level, Some(ThinkingLevel::Off));
+
+    let secondary = catalog
+        .connections
+        .iter()
+        .find(|row| row.slug == "secondary-openai")
+        .unwrap();
+    assert_eq!(secondary.name, "secondary-openai");
+    assert!(!secondary.enabled);
+    assert_eq!(
+        secondary.configuration["baseUrl"],
+        serde_json::json!("https://api.openai.com/v1")
+    );
+
+    let default_target = catalog.default_target.expect("default target");
+    assert_eq!(default_target.connection_id, primary.connection_id);
+    assert_eq!(default_target.model_id, "eval-model");
+
+    let observed = store
+        .observe_selected_model(ModelSelection {
+            connection_id: primary.connection_id.clone(),
+            model_id: "eval-model".into(),
+        })
+        .await
+        .unwrap()
+        .expect("selected model observation");
+    assert_eq!(
+        observed.credential.unwrap().credential().secret,
+        "private-bootstrap-api-key"
+    );
+    assert_eq!(
+        observed
+            .request_headers
+            .get("x-eval-harness")
+            .map(String::as_str),
+        Some("maka-eval")
+    );
+    store.shutdown().await.unwrap();
+}
+
 #[test]
 fn public_init_rejects_invalid_settings_without_exposing_input() {
     let mut invalid_suffix = b"{}".to_vec();
@@ -110,6 +235,102 @@ fn public_init_rejects_invalid_settings_without_exposing_input() {
         br#"{"unexpected":true}"#.to_vec(),
         b"private-secret-invalid-json".to_vec(),
         invalid_suffix,
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
+                "slug": "bad-url",
+                "provider": "openai",
+                "configuration": { "baseUrl": "https://user:private-secret@relay.test/v1" }
+            }]
+        }))
+        .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
+                "slug": "bad-subscription",
+                "provider": "chatgpt",
+                "configuration": { "baseUrl": "https://private-secret.test/v1" }
+            }]
+        }))
+        .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
+                "slug": "bad-limits",
+                "provider": "openai",
+                "modelOverrides": { "eval-model": { "contextWindow": 100, "inputLimit": 200 } }
+            }]
+        }))
+        .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
+                "slug": "bad-key",
+                "provider": "openai",
+                "apiKey": "private-secret\nwith-control-char"
+            }]
+        }))
+        .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
+                "slug": "bad-header",
+                "provider": "openai",
+                "requestHeaders": {
+                    "Authorization": "Bearer private-secret"
+                }
+            }]
+        }))
+        .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
+                "slug": "duplicate-header",
+                "provider": "openai",
+                "requestHeaders": {
+                    "X-Eval": "private-secret-1",
+                    "x-eval": "private-secret-2"
+                }
+            }]
+        }))
+        .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
+                "slug": "eval-gateway",
+                "provider": "openai-compatible",
+                "configuration": { "baseUrl": "http://127.0.0.1:18080/v1" },
+                "apiKey": "private-secret-key",
+                "enabledModelIds": ["eval-model"]
+            }],
+            "defaultTarget": {
+                "slug": "eval-gateway",
+                "modelId": "missing-model"
+            }
+        }))
+        .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
+                "slug": "eval-gateway",
+                "provider": "openai-compatible",
+                "configuration": { "baseUrl": "http://127.0.0.1:18080/v1" },
+                "apiKey": "private-secret-key",
+                "enabledModelIds": ["eval-model"],
+                "modelOverrides": {
+                    "eval-model": {
+                        "thinkingLevels": ["off"],
+                        "defaultThinkingLevel": "medium"
+                    }
+                }
+            }],
+            "defaultTarget": { "slug": "eval-gateway", "modelId": "eval-model" }
+        }))
+        .unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "connections": [{
+                "slug": "eval-gateway",
+                "provider": "openai-compatible",
+                "configuration": { "baseUrl": "http://127.0.0.1:18080/v1" },
+                "apiKey": "private-secret-key",
+                "enabledModelIds": ["eval-model"],
+                "modelOverrides": { "eval-model": { "apiProtocol": "anthropic-messages" } }
+            }],
+            "defaultTarget": { "slug": "eval-gateway", "modelId": "eval-model" }
+        }))
+        .unwrap(),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("root");

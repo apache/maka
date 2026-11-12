@@ -55,6 +55,7 @@ impl Gestures {
                     Points(n("locationY") as f32),
                 ),
                 changed: false,
+                pointer_type: nsh_core::PointerType::Touch,
             });
         }
         let touch = TouchEvent {

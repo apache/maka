@@ -373,8 +373,10 @@ Nothing is left behind, and the app keeps running what it ran.
 
 ### A package does not run at the next start
 
-The launcher logs why, in the terminal or the platform's log (Console or the unified log on Apple platforms,
-`adb logcat` on Android):
+The launcher logs why, in the terminal or the platform's log: the unified log on macOS and iOS, under the app's id
+(Console, `log stream --predicate 'subsystem == "com.example.notes"'`;
+[A packaged app's logs](./dev-server-and-debugging.md#a-packaged-apps-logs)), `adb logcat` on Android. The first
+three lines below are warnings, logged on every platform; the last one is an info line, logged on Android:
 
 ```text
 updates: downloaded package refused: …

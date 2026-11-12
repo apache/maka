@@ -196,6 +196,10 @@ pub enum JsEvent {
         /// The key.
         key: super::SharedString,
     },
+    /// The `<Each>` rows whose placeholders ([`crate::Op::Placeholder`])
+    /// would be made now: JS renders them in their place.
+    #[doc(hidden)]
+    Rows(Vec<NodeId>),
     /// The result of call `call` (its promise settles).
     Reply {
         /// The call number.
@@ -220,6 +224,7 @@ impl fmt::Debug for JsEvent {
                 host, prop, key, ..
             } => write!(f, "Render({host}, {prop}, {key})"),
             JsEvent::Unrender { host, prop, key } => write!(f, "Unrender({host}, {prop}, {key})"),
+            JsEvent::Rows(ids) => write!(f, "Rows({ids:?})"),
             JsEvent::Reply { call, result } => write!(f, "Reply({call}, ok: {})", result.is_ok()),
         }
     }

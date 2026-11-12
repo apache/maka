@@ -1272,6 +1272,13 @@ pub(crate) fn render_effect(cx: *mut JsContext, func: JsValue) -> JsValue {
     unsafe { qjs::JS_DupValue(cx, *graph(cx).value(id)) }
 }
 
+/// Makes a user effect (`createEffect`) running `func` (owned) under the
+/// current owner, after the render; `func` gets the value its last run
+/// returned (`undefined` at first).
+pub(crate) fn user_effect(cx: *mut JsContext, func: JsValue) {
+    r::effect(Js(cx), Kind::UserEffect, func, UNDEFINED);
+}
+
 /// A new signal object holding `value` (borrowed).
 pub(crate) fn new_signal(cx: *mut JsContext, value: JsValue) -> JsValue {
     let mut args = [value];
@@ -1368,11 +1375,6 @@ pub(crate) fn has_owner(cx: *mut JsContext) -> bool {
 /// The current owner (for [`with_root_under`] later).
 pub(crate) fn current_owner(cx: *mut JsContext) -> u32 {
     unsafe { graph(cx) }.owner()
-}
-
-/// Runs `f` under `owner` with no listener; what it makes belongs to that owner.
-pub(crate) fn with_owner<R>(cx: *mut JsContext, owner: u32, f: impl FnOnce() -> R) -> R {
-    r::with_owner(Js(cx), owner, f)
 }
 
 /// [`with_root`] as if run under `owner` (from [`current_owner`]): rows a

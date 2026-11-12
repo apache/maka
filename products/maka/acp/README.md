@@ -23,9 +23,9 @@
 
 Serves ACP v1 and v2 to clients through the ordinary Host client. `serve` translates protocol requests into admitted Agent operations and observations. It owns neither execution nor canonical storage. For invoking an external ACP agent from Maka, see `plugins/agent/acp-executor`.
 
-Run `maka acp` over stdio. The SDK routes each connection by its `initialize` version; no version flag is needed. Model connections and credentials come from the selected Host Root (`maka acp --root /absolute/state/root`). Configure a default model there or select one through the session configuration options.
+Use `maka acp` as the launch command in your ACP client. The SDK routes each stdio connection by its `initialize` version. Model connections and credentials come from the same Host Root as Maka Desktop. Use `--root` to select a different Root, or choose a model through the session configuration options.
 
-For Lody, add a Custom ACP Agent with the absolute launch command `/absolute/path/to/maka acp --root /absolute/state/root`. V1 supports new sessions, history loading, listing, configuration, appended text/thought chunks, tool calls, permissions, form elicitation and cancellation. V2 retains message IDs, replacement updates and independent completion state.
+V1 supports new sessions, history loading, listing, configuration, appended text/thought chunks, tool calls, permissions, form elicitation and cancellation. V2 retains message IDs, replacement updates and independent completion state.
 
 Run the ACP process and the selected Host with the same updated Maka build; restart an older Host before attaching client MCP servers.
 

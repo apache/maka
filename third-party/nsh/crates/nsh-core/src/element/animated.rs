@@ -606,12 +606,31 @@ impl Default for Interpolation {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct AnimatedValue(AnimatedNode);
 
-/// How a spring moves (TS's defaults: stiffness 170, damping 26, mass 1).
+/// How a spring moves (TS's defaults: stiffness 170, damping 26, mass 1):
+/// an animated value's ([`AnimatedValue::spring`]) and a layout
+/// animation's ([`LayoutTransition::spring`](crate::LayoutTransition::spring)).
+///
+/// Made as `gpui-base`'s `Spring` is, from how long it takes and how much it
+/// overshoots ([`Spring::new`], [`Spring::damping_ratio`]), or from a
+/// stiffness, as Material 3's motion tokens give it
+/// ([`Spring::from_stiffness`]); its fields are the physics either way.
+///
+/// ```
+/// use nsh_core::element::Spring;
+///
+/// // `gpui-component`'s `spring_move`: a 280 ms response, a little springy.
+/// let spring = Spring::new(280.0).damping_ratio(0.85);
+/// assert!((spring.settle_ms() - 362.2).abs() < 0.1);
+/// // Material 3 Expressive's fast spatial spring.
+/// let spring = Spring::from_stiffness(800.0).damping_ratio(0.6);
+/// assert!((spring.settle_ms() - 407.0).abs() < 0.1);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Spring {
     /// Stiffness `k`.
     pub stiffness: f32,
-    /// Damping `c`.
+    /// Damping coefficient `c` (not a ratio: the ratio is `c / (2 √(k m))`,
+    /// [`Spring::damping_ratio`] sets it).
     pub damping: f32,
     /// Mass `m`.
     pub mass: f32,
@@ -685,6 +704,107 @@ impl Default for Timing {
 }
 
 impl Spring {
+    /// `gpui-base`'s `Spring::new(response)`: a mass of 1 that would swing
+    /// once in `response_ms` undamped, critically damped (no overshoot).
+    /// The response is the scale the motion is felt at, not when it stops
+    /// ([`Spring::settle_ms`]).
+    pub fn new(response_ms: f32) -> Self {
+        let omega = std::f32::consts::TAU / (response_ms / 1000.0);
+        Self {
+            stiffness: omega * omega,
+            damping: 2.0 * omega,
+            mass: 1.0,
+            velocity: None,
+            frame_rate: None,
+        }
+    }
+
+    /// A mass of 1 on a spring of `stiffness`, critically damped: a design
+    /// system's stiffness token, its damping ratio set with
+    /// [`Spring::damping_ratio`].
+    pub fn from_stiffness(stiffness: f32) -> Self {
+        Self {
+            stiffness,
+            damping: 2.0 * stiffness.max(0.0).sqrt(),
+            mass: 1.0,
+            velocity: None,
+            frame_rate: None,
+        }
+    }
+
+    /// Damped at `ratio` (`gpui-base`'s `with_damping`): 1 does not
+    /// overshoot, below 1 it passes its target and comes back, above 1 it
+    /// approaches slowly. Sets [`Spring::damping`] from the stiffness and
+    /// mass it has, so set those first.
+    pub fn damping_ratio(mut self, ratio: f32) -> Self {
+        self.damping = 2.0 * ratio * (self.stiffness * self.mass).max(0.0).sqrt();
+        self
+    }
+
+    /// How far it has gone, from 0 to 1, `ms` milliseconds after it was
+    /// released at rest: the damped oscillator's closed form, past 1 when
+    /// it is underdamped. A spring that never settles (no damping, or a
+    /// stiffness or mass that is not positive) is at 1 at once.
+    pub fn progress(self, ms: f32) -> f32 {
+        let Some((zeta, omega)) = self.oscillator() else {
+            return 1.0;
+        };
+        if ms <= 0.0 {
+            return 0.0;
+        }
+        let t = ms / 1000.0;
+        if (zeta - 1.0).abs() < CRITICAL {
+            return 1.0 - (1.0 + omega * t) * (-omega * t).exp();
+        }
+        if zeta < 1.0 {
+            let decay = zeta * omega;
+            let wd = omega * (1.0 - zeta * zeta).sqrt();
+            return 1.0 - (-decay * t).exp() * ((wd * t).cos() + decay / wd * (wd * t).sin());
+        }
+        let root = omega * (zeta * zeta - 1.0).sqrt();
+        let (slow, fast) = (zeta * omega - root, zeta * omega + root);
+        1.0 - (fast * (-slow * t).exp() - slow * (-fast * t).exp()) / (fast - slow)
+    }
+
+    /// How long it takes, in milliseconds, released at rest, to stay within
+    /// a thousandth of its travel: how long a layout animation on it lasts.
+    /// 0 for a spring that never settles.
+    pub fn settle_ms(self) -> f32 {
+        let Some((zeta, omega)) = self.oscillator() else {
+            return 0.0;
+        };
+        let seconds = if (zeta - 1.0).abs() < CRITICAL {
+            // (1 + ω t) e^(-ω t) falls to 1/1000 at ω t = 9.233.
+            9.233 / omega
+        } else if zeta < 1.0 {
+            SETTLE / (zeta * omega)
+        } else {
+            // The slow root's term, whose weight is above 1, outlasts the fast one's.
+            let root = (zeta * zeta - 1.0).sqrt();
+            let weight = (zeta + root) / (2.0 * root);
+            (SETTLE + weight.ln()) / (omega * (zeta - root))
+        };
+        seconds * 1000.0
+    }
+
+    /// The damping ratio and the natural angular frequency (radians per
+    /// second); `None` when it never settles.
+    fn oscillator(self) -> Option<(f32, f32)> {
+        let Spring {
+            stiffness,
+            damping,
+            mass,
+            ..
+        } = self;
+        if !(stiffness > 0.0 && mass > 0.0 && damping > 0.0)
+            || !(stiffness.is_finite() && mass.is_finite() && damping.is_finite())
+        {
+            return None;
+        }
+        let zeta = damping / (2.0 * (stiffness * mass).sqrt());
+        Some((zeta, (stiffness / mass).sqrt()))
+    }
+
     /// Needing at most `hz` frames per second (a small, slow spring: 60).
     pub const fn frame_rate(mut self, hz: f32) -> Self {
         self.frame_rate = Some(hz);
@@ -702,6 +822,13 @@ impl Spring {
         }
     }
 }
+
+/// ln(1000): a decay of e^(-x) falls to a thousandth at this x.
+const SETTLE: f32 = 6.907_755;
+
+/// How close to 1 a damping ratio is taken as critical, where the
+/// underdamped and overdamped forms divide by almost 0.
+const CRITICAL: f32 = 1e-3;
 
 /// The values `driver` moves a value through from `from`, one per frame at
 /// `fps` (1 to 1000), until it ends: the exact curve the graph runs.

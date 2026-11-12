@@ -874,6 +874,50 @@ fn a_terminals_table_narrows_its_widest_column_to_fit_and_wraps_its_cells() {
     assert_eq!(top.chars().count(), 1 + 10 * (6 + 2) + 9 + 1, "{top}");
 }
 
+#[component]
+fn SpanningTable() -> impl IntoElement {
+    text_view().html(
+        "<table><tr><th>Platform</th><th>Views</th></tr>\
+         <tr><td>iOS</td><td>UIKit views laid out by Taffy</td></tr>\
+         <tr><td colspan=2>A cell spanning both columns for wrapping</td></tr></table>",
+    )
+}
+
+#[test]
+fn a_terminals_table_keeps_its_rules_and_spanning_cell_in_step_through_resizes() {
+    let rules = |app: &Headless| {
+        texts(app)
+            .into_iter()
+            .filter(|t| t.starts_with(['┌', '├', '└']))
+            .collect::<Vec<_>>()
+    };
+    let mut app = start::<SpanningTable>(Idiom::Terminal);
+    let original = rules(&app);
+    assert_eq!(original.len(), 3);
+    let mut narrow = Vec::new();
+    for width in [240.0, 160.0, 160.0, 32.0, 390.0] {
+        app.set_viewport(Size::new(px(width), px(844.0))).unwrap();
+        let at = rules(&app);
+        assert_eq!(at.len(), 3, "{at:?}");
+        let columns = at[0].chars().count();
+        assert!(at.iter().all(|r| r.chars().count() == columns), "{at:?}");
+        assert!(app.shows("A cell spanning both columns for wrapping"));
+        if width == 240.0 {
+            assert!(columns < original[0].chars().count());
+        }
+        if width == 32.0 {
+            assert_eq!(columns, 1 + 2 * (6 + 2) + 1 + 1);
+        }
+        if width == 160.0 {
+            if !narrow.is_empty() {
+                assert_eq!(at, narrow);
+            }
+            narrow = at;
+        }
+    }
+    assert_eq!(rules(&app), original);
+}
+
 /// An item whose text wraps in a narrow view.
 #[component]
 fn Narrow() -> impl IntoElement {

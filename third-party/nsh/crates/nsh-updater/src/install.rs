@@ -6,8 +6,13 @@
 //! directory or `.app` is swapped by two renames, under the path the user
 //! knows. Windows refuses to rename a directory holding the running
 //! executable but renames the executable itself, so there each entry of the
-//! directory is swapped, undone if one fails, and what is still in use is
-//! removed by the next run ([`Installation::remove_leftovers`]).
+//! directory is swapped (inside the directories holding the executable, their
+//! entries), undone if one fails, and what is still in use is removed by the
+//! next run ([`Installation::remove_leftovers`]).
+//!
+//! The same machinery replaces a plain directory holding an executable
+//! ([`Installation::directory`]): the `nsh` distribution, which `nsh update`
+//! replaces with a release's archive.
 //!
 //! An app installed where the user cannot write (a system package) has no
 //! [`Installation::can_install`]: the app sends the user to the download.
@@ -32,8 +37,8 @@ pub struct Installation {
     root: PathBuf,
     /// The executable, under `root`.
     executable: PathBuf,
-    /// The app's id.
-    id: String,
+    /// The app's id; `None` for a plain directory.
+    id: Option<String>,
 }
 
 impl Installation {
@@ -62,11 +67,22 @@ impl Installation {
         let installation = Installation {
             root: root.to_owned(),
             executable: executable.strip_prefix(root).ok()?.to_owned(),
-            id: id.to_owned(),
+            id: Some(id.to_owned()),
         };
         let holds_config = fs::read(resources(root).join("assets").join(crate::CONFIG_ASSET))
             .is_ok_and(|held| held == config);
         (holds_config && package_id(root).as_deref() == Some(id)).then_some(installation)
+    }
+
+    /// A directory replaced as a whole, `executable` under it: an archive
+    /// holding one directory with an executable at the same place replaces
+    /// it. `None` when `executable` is not under `root`.
+    pub fn directory(root: &Path, executable: &Path) -> Option<Installation> {
+        Some(Installation {
+            root: root.to_owned(),
+            executable: executable.strip_prefix(root).ok()?.to_owned(),
+            id: None,
+        })
     }
 
     /// Whether the user can replace the app: `false` under a directory only
@@ -86,12 +102,20 @@ impl Installation {
     /// Removes what an earlier update could not (Windows: the old
     /// executable, in use until the app exited).
     pub fn remove_leftovers(&self) {
-        let Ok(entries) = fs::read_dir(&self.root) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().contains(OLD) {
-                let _ = remove(&entry.path());
+        let mut dir = self.root.clone();
+        let mut components = self.executable.components();
+        components.next_back();
+        loop {
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().contains(OLD) {
+                        let _ = remove(&entry.path());
+                    }
+                }
+            }
+            match components.next() {
+                Some(component) => dir.push(component),
+                None => break,
             }
         }
     }
@@ -111,7 +135,7 @@ impl Installation {
         let new = single_entry(scratch)?;
         self.check_new(&new)?;
         if cfg!(windows) {
-            swap_entries(&self.root, &new)
+            swap_entries(&self.root, &new, &self.executable)
         } else {
             swap_directory(&self.root, &new)
         }
@@ -119,13 +143,14 @@ impl Installation {
 
     /// Whether `new` is this app, runnable.
     fn check_new(&self, new: &Path) -> Result<(), Error> {
-        match package_id(new) {
-            Some(id) if id == self.id => {}
-            id => {
-                return Err(Error::Install(format!(
-                    "the archive holds {id:?}, this app is {:?}",
-                    self.id
-                )));
+        if let Some(id) = &self.id {
+            match package_id(new) {
+                Some(new_id) if new_id == *id => {}
+                new_id => {
+                    return Err(Error::Install(format!(
+                        "the archive holds {new_id:?}, this app is {id:?}"
+                    )));
+                }
             }
         }
         if !new.join(&self.executable).is_file() {
@@ -146,7 +171,7 @@ impl Installation {
                 return Err(Error::Install("the new app is not executable".into()));
             }
         }
-        if cfg!(target_os = "macos") {
+        if cfg!(target_os = "macos") && new.extension().is_some_and(|e| e == "app") {
             let status = Command::new("/usr/bin/codesign")
                 .args(["--verify", "--deep", "--strict"])
                 .arg(new)
@@ -279,46 +304,68 @@ fn swap_directory(root: &Path, new: &Path) -> Result<(), Error> {
 }
 
 /// Swaps the entries of `root` for those of `new`, the old ones renamed in
-/// place, since what runs can be renamed but not removed. Undone if any
-/// step fails.
-fn swap_entries(root: &Path, new: &Path) -> Result<(), Error> {
-    let pid = std::process::id();
-    let old_name = |name: &std::ffi::OsStr| {
-        let mut old = OsString::from(format!("{OLD}{pid}-"));
-        old.push(name);
-        old
-    };
-    let mut moved_aside: Vec<OsString> = Vec::new();
-    let mut moved_in: Vec<OsString> = Vec::new();
-    let result = (|| -> Result<(), Error> {
-        for entry in fs::read_dir(root)?.collect::<Result<Vec<_>, _>>()? {
-            let name = entry.file_name();
-            if !name.to_string_lossy().contains(OLD) {
-                fs::rename(entry.path(), root.join(old_name(&name)))?;
-                moved_aside.push(name);
-            }
-        }
-        for entry in fs::read_dir(new)?.collect::<Result<Vec<_>, _>>()? {
-            let name = entry.file_name();
-            fs::rename(entry.path(), root.join(&name))?;
-            moved_in.push(name);
-        }
-        Ok(())
-    })();
-    if let Err(e) = result {
-        for name in &moved_in {
-            let _ = fs::rename(root.join(name), new.join(name));
-        }
-        for name in &moved_aside {
-            let _ = fs::rename(root.join(old_name(name)), root.join(name));
+/// place, since what runs can be renamed but not removed. A directory
+/// holding `executable` (relative to `root`) cannot be renamed either, so
+/// its entries are swapped instead. Undone if any step fails.
+fn swap_entries(root: &Path, new: &Path, executable: &Path) -> Result<(), Error> {
+    let mut renames = Vec::new();
+    if let Err(e) = swap_into(root, new, executable, &mut renames) {
+        for (from, to) in renames.iter().rev() {
+            let _ = fs::rename(to, from);
         }
         return Err(e);
     }
-    for name in &moved_aside {
-        // What is in use goes on the next run.
-        let _ = remove(&root.join(old_name(name)));
+    for (_, to) in &renames {
+        if to
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(OLD))
+        {
+            // What is in use goes on the next run.
+            let _ = remove(to);
+        }
     }
     Ok(())
+}
+
+/// One level of [`swap_entries`]; every rename done goes into `renames`.
+fn swap_into(
+    root: &Path,
+    new: &Path,
+    executable: &Path,
+    renames: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<(), Error> {
+    let pid = std::process::id();
+    let mut components = executable.components();
+    let first = components.next().map(|c| c.as_os_str().to_owned());
+    let rest = components.as_path();
+    let descend = first.filter(|first| {
+        !rest.as_os_str().is_empty() && root.join(first).is_dir() && new.join(first).is_dir()
+    });
+    let mut rename = |from: PathBuf, to: PathBuf| -> Result<(), Error> {
+        fs::rename(&from, &to)?;
+        renames.push((from, to));
+        Ok(())
+    };
+    for entry in fs::read_dir(root)?.collect::<Result<Vec<_>, _>>()? {
+        let name = entry.file_name();
+        if name.to_string_lossy().contains(OLD) || Some(&name) == descend.as_ref() {
+            continue;
+        }
+        let mut old = OsString::from(format!("{OLD}{pid}-"));
+        old.push(&name);
+        rename(entry.path(), root.join(old))?;
+    }
+    for entry in fs::read_dir(new)?.collect::<Result<Vec<_>, _>>()? {
+        let name = entry.file_name();
+        if Some(&name) == descend.as_ref() {
+            continue;
+        }
+        rename(entry.path(), root.join(&name))?;
+    }
+    match descend {
+        Some(dir) => swap_into(&root.join(&dir), &new.join(&dir), rest, renames),
+        None => Ok(()),
+    }
 }
 
 fn remove(path: &Path) -> std::io::Result<()> {
@@ -589,16 +636,74 @@ mod tests {
         fs::write(root.join("App.exe"), "old").unwrap();
         fs::write(root.join("gone"), "old").unwrap();
         fs::write(new.join("App.exe"), "new").unwrap();
-        swap_entries(&root, &new).unwrap();
+        swap_entries(&root, &new, Path::new("App.exe")).unwrap();
         assert_eq!(fs::read_to_string(root.join("App.exe")).unwrap(), "new");
         assert!(!root.join("gone").exists());
         assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
 
         // A new tree that is not there: everything is put back.
         let missing = dir.path().join("missing");
-        assert!(swap_entries(&root, &missing).is_err());
+        assert!(swap_entries(&root, &missing, Path::new("App.exe")).is_err());
         assert_eq!(fs::read_to_string(root.join("App.exe")).unwrap(), "new");
         assert!(root.join("nsh").is_dir());
+    }
+
+    /// Windows cannot rename the directory holding the running executable
+    /// (`bin/nsh.exe`): its entries are swapped, the rest as a whole.
+    #[test]
+    fn the_directory_holding_the_executable_is_swapped_inside() {
+        let dir = TempDir::new();
+        let root = dir.path().join("root");
+        let new = dir.path().join("new");
+        for tree in [&root, &new] {
+            fs::create_dir_all(tree.join("bin")).unwrap();
+            fs::create_dir_all(tree.join("runtime")).unwrap();
+        }
+        fs::write(root.join("bin/nsh.exe"), "old").unwrap();
+        fs::write(root.join("bin/gone.exe"), "old").unwrap();
+        fs::write(root.join("runtime/old"), "old").unwrap();
+        fs::write(new.join("bin/nsh.exe"), "new").unwrap();
+        fs::write(new.join("runtime/new"), "new").unwrap();
+        let exe = Path::new("bin/nsh.exe");
+        swap_entries(&root, &new, exe).unwrap();
+        assert_eq!(fs::read_to_string(root.join("bin/nsh.exe")).unwrap(), "new");
+        assert!(!root.join("bin/gone.exe").exists());
+        assert!(root.join("runtime/new").exists());
+        assert!(!root.join("runtime/old").exists());
+    }
+
+    #[test]
+    fn an_archive_replaces_a_directory() {
+        let dir = TempDir::new();
+        let root = dir.path().join("nsh");
+        let build = dir.path().join("build");
+        let new = build.join("nsh");
+        for (tree, version) in [(&root, "old"), (&new, "new")] {
+            fs::create_dir_all(tree.join("bin")).unwrap();
+            fs::write(tree.join("bin/nsh"), version).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                fs::set_permissions(tree.join("bin/nsh"), fs::Permissions::from_mode(0o755))
+                    .unwrap();
+            }
+        }
+        fs::write(root.join("bin/stale"), "old").unwrap();
+        let archive = tar_gz(&build, &new, "nsh.tar.gz");
+
+        let installation = Installation::directory(&root, &root.join("bin/nsh")).unwrap();
+        assert!(Installation::directory(&root, &dir.path().join("elsewhere")).is_none());
+        installation.install(&archive).unwrap();
+        assert_eq!(fs::read_to_string(root.join("bin/nsh")).unwrap(), "new");
+        assert!(!root.join("bin/stale").exists());
+
+        // An archive without the executable is refused.
+        let empty = build.join("empty");
+        fs::create_dir_all(empty.join("bin")).unwrap();
+        fs::write(empty.join("bin/other"), "x").unwrap();
+        let archive = tar_gz(&build, &empty, "empty.tar.gz");
+        assert!(installation.install(&archive).is_err());
+        assert_eq!(fs::read_to_string(root.join("bin/nsh")).unwrap(), "new");
     }
 
     #[cfg(unix)]

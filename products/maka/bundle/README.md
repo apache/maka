@@ -102,6 +102,8 @@ To compile one NSH UI module directly:
 maka application build-ui --entry ui/index.tsx --output ui-build
 ```
 
+Imported resources use paths relative to the NSH app directory (`nsh.json`, or the directory containing `App.tsx`). For shared assets outside that directory, pass `--asset-root /path/to/source-root`; every imported resource must be inside that root.
+
 The emitted `manifest.json` describes `bundle.js`, assets and source dependencies. The package builder copies them to `application.ui.module` and the corresponding package-relative asset paths.
 
 The default product selects the ordinary `maka.workbench` UI package at `workbench-ui`, with `ui: { path: ["workbench-ui"], id: "root" }` in `host.json`. Its declared imports bind to the selected Agent, settings and other product services. The package builder compiles `app/App.tsx` to the declared `app/App.js` entry through the same UI compiler used by other packages.

@@ -27,7 +27,8 @@ const CONNECT: Duration = Duration::from_secs(60);
 
 /// Starts the apps tests open on `target`'s host; `browser` is the one
 /// `--target web` runs them in (else the one found on this machine); `fps`
-/// has the host log its performance monitor's readings; `display` (one-based)
+/// has the host log its performance monitor's readings; `device` is the iOS
+/// simulator (name or UDID); `display` (one-based)
 /// is the display the macOS host opens its windows on (by default a
 /// secondary one when there is one); `foreground` lets the macOS host's apps
 /// become the active app, which run in the background otherwise.
@@ -36,6 +37,7 @@ pub(crate) fn starter(
     browser: Option<&Path>,
     work: &Path,
     fps: bool,
+    device: Option<&str>,
     display: Option<usize>,
     foreground: bool,
 ) -> anyhow::Result<StartHost> {
@@ -50,6 +52,9 @@ pub(crate) fn starter(
     {
         anyhow::bail!("--fps goes with --target linux, macos, windows or ios");
     }
+    if device.is_some() && target != Target::Ios {
+        anyhow::bail!("--device goes with --target ios");
+    }
     if display.is_some() && target != Target::Macos {
         anyhow::bail!("--display goes with --target macos");
     }
@@ -58,7 +63,7 @@ pub(crate) fn starter(
     }
     match target {
         Target::Web => return crate::test_web::starter(browser),
-        Target::Ios => return crate::test_ios::starter(work, fps),
+        Target::Ios => return crate::test_ios::starter(work, fps, device),
         Target::Android => return crate::test_android::starter(work),
         _ => {}
     }
@@ -156,6 +161,12 @@ fn start(
 ) -> Result<TestHost, String> {
     let server = serve(entry, options)?;
     let entry = resolve(entry)?;
+    if matches!(
+        target,
+        Target::Macos | Target::Linux | Target::Windows | Target::Gpui
+    ) {
+        crate::package::note_hidden_main_window(&entry);
+    }
     let dir = entry.parent().unwrap_or(Path::new("."));
     let url = format!("ws://{}{WS_PATH}", server.local_addr());
     // A fresh data directory: what the app keeps (its storage) starts empty
@@ -201,6 +212,12 @@ fn start(
         if !foreground {
             command.arg("--background");
         }
+        // As the app runs (`--background` takes precedence): a menu bar app
+        // run `--foreground` has no Dock icon either. As `nsh run` does, a
+        // test runs as a regular app when `nsh.json` does not read (the
+        // keys only packages use are checked there too).
+        let config = crate::package::read_config(&entry).unwrap_or_default();
+        command.args(config.macos.host_args());
     }
     if target == Target::Gpui && cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_some()
     {
@@ -259,12 +276,17 @@ pub(crate) fn serve(entry: &Path, options: &HostOptions) -> Result<DevServer, St
     } else {
         Some(build::compile(entry, false).map_err(|e| e.plain)?)
     };
-    let dir = entry.parent().unwrap_or(Path::new("."));
+    // The media files a literal `asset:/` URL names, from where the build
+    // named the imported ones: the app's directory, as a package has them.
+    let dir = built
+        .as_ref()
+        .and_then(|built| built.asset_root.clone())
+        .unwrap_or_else(|| entry.parent().unwrap_or(Path::new(".")).to_path_buf());
     let trace = options.trace.clone();
     let server = DevServer::start(
         "127.0.0.1:0".parse().expect("an address"),
         nsh_js::BYTECODE_VERSION,
-        Some(dir.to_path_buf()),
+        Some(dir),
         move |event| match event {
             // The app's log lines, as `nsh run` shows them (a traced app's
             // commit timings among them); the host's own coming and going
@@ -363,10 +385,41 @@ mod tests {
             Target::Ios,
             Target::Android,
         ] {
-            let err = starter(target, None, Path::new("."), false, None, true).err();
+            let err = starter(target, None, Path::new("."), false, None, None, true).err();
             assert_eq!(
                 err.map(|e| e.to_string()).as_deref(),
                 Some("--foreground goes with --target macos"),
+                "{target:?}"
+            );
+        }
+    }
+
+    /// `--device` names an iOS simulator: the other targets refuse it before
+    /// anything is built or started.
+    #[test]
+    fn device_is_for_the_ios_host_only() {
+        for target in [
+            Target::Macos,
+            Target::Linux,
+            Target::Windows,
+            Target::Gpui,
+            Target::Tui,
+            Target::Web,
+            Target::Android,
+        ] {
+            let err = starter(
+                target,
+                None,
+                Path::new("."),
+                false,
+                Some("iPhone 16"),
+                None,
+                false,
+            )
+            .err();
+            assert_eq!(
+                err.map(|e| e.to_string()).as_deref(),
+                Some("--device goes with --target ios"),
                 "{target:?}"
             );
         }

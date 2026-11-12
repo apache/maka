@@ -26,7 +26,7 @@ export function Toasts() {
       setTimeout(() => updateToast("send", { kind: "success", title: "Message sent", description: "To Mira Chen", duration: 3000 }), 1200);
     };
     return (
-      <Card icon="system" title="Kinds" subtitle="Success, information, a warning and an error, each with what to do next">
+      <Card icon="system" title="Kinds" subtitle="Each kind, with what to do next">
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           <Button label="Save changes" variant="secondary" onPress={() => void toast({ kind: "success", title: "Changes saved", description: "Q3 roadmap.md · just now" })} />
           <Button
@@ -69,7 +69,7 @@ export function Toasts() {
       setTimeout(step, 700);
     };
     return (
-      <Card icon="photos" title="Loading, then its result" subtitle="One toast counts its progress and becomes what happened, in place">
+      <Card icon="photos" title="Loading, then its result" subtitle="Counts its progress, then says what happened">
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <Text style={{ flex: 1, fontSize: pointer ? 13 : 15, color: colors.text }}>Fail the last one</Text>
           <Toggle label="Fail the last one" value={failing()} onChange={(v) => failing.set(v)} />
@@ -97,7 +97,7 @@ export function Toasts() {
       inbox.set([...list.slice(0, at), message, ...list.slice(at)]);
     };
     return (
-      <Card icon="lists" title="Undo" subtitle="What was just done, with a way back while the toast shows">
+      <Card icon="lists" title="Undo" subtitle="What was just done, with a way back">
         <If when={inbox().length > 0} else={<Caption label="Inbox zero" />}>
           <View>
             <Each of={inbox()} key={(m) => m.id}>

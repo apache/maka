@@ -7,30 +7,11 @@ name: Core
 # releases froze is checked by the Compat workflow.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "crates/nsh-bundler/**"
-      - "crates/nsh-core/**"
-      - "crates/nsh-dev/**"
-      - "crates/nsh-engine/**"
-      - "crates/nsh-i18n/**"
-      - "crates/nsh-js/**"
-      - "crates/nsh-macros/**"
-      - "crates/nsh-package/**"
-      - "crates/nsh-updater/**"
-      - "crates/nsh-testing/**"
-      - "crates/nsh-base/**"
-      - "examples/counter/**"
-      - "examples/gallery/**"
-      - "examples/bench/**"
-      - "tests/compat/cases/layout/fonts/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".cargo/**"
-      - "rust-toolchain.toml"
-      - ".github/workflows/core.yml"
-      - ".github/actions/cargo/**"
+  # Pull requests test every change before it merges; main runs every three hours
+  # (when it moved) instead of on every push, which only tested again what its pull request
+  # had, and saves the dependencies' caches pull requests restore.
+  schedule:
+    - cron: "0 */3 * * *"
   pull_request:
     # `closed` runs nothing, but it takes the pull request's concurrency group
     # and so cancels its runs still queued or running once it merges or closes.
@@ -51,6 +32,7 @@ on:
       - "examples/gallery/**"
       - "examples/bench/**"
       - "tests/compat/cases/layout/fonts/**"
+      - "crates/nsh-platform-android/java/com/longbridge/nsh/Native.java"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".cargo/**"
@@ -83,9 +65,18 @@ env:
     --features nsh-bundler/bundle,nsh-testing/bundle,nsh-testing/agent
 
 jobs:
+  # Scheduled runs: only when main moved since the last one.
+  changed:
+    if: github.event_name == 'schedule'
+    permissions:
+      actions: read
+    uses: ./.github/workflows/changed.yml
+
   check:
-    # Nothing for drafts or a pull request being closed.
-    if: github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
     # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
     # push cancels this run before it takes one.
     environment:

@@ -47,6 +47,7 @@ fn launch(
         minify: false,
         split: false,
         ui_sets: Vec::new(),
+        ..Default::default()
     })
     .unwrap();
     let bytecode = nsh_js::compile_bytecode_with(&bundle.code, false, &[]).unwrap();
@@ -61,6 +62,7 @@ fn launch(
         ),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -175,6 +177,7 @@ fn rust_shares_the_entries_of_js() {
         app: App::Rust(Root::new::<Reader>(|| ReaderProps {})),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -279,6 +282,7 @@ fn rust_edits_the_storage() {
         app: App::Rust(Root::new::<Editor>(|| EditorProps {})),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -355,6 +359,9 @@ struct WriterProps {}
 #[component]
 fn Writer(_props: WriterProps) -> impl IntoElement {
     Storage::set_item("from", "rust").unwrap();
+    let dir = nsh_core::prelude::data_dir().expect("the app's data directory");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("app.db"), "rust").unwrap();
     text(|| "rust wrote".to_owned())
 }
 
@@ -366,6 +373,7 @@ fn a_rust_root_keeps_its_data_under_its_id() {
         app: App::Rust(Root::new::<Writer>(|| WriterProps {}).app_id("com.example.rusty")),
         viewport: Size::new(px(390.0), px(844.0)),
         trace: false,
+        content_culling: false,
         network: None,
         websocket: None,
         refuse_connections: None,
@@ -395,6 +403,9 @@ fn a_rust_root_keeps_its_data_under_its_id() {
     drop(engine);
     let file = root.join("com.example.rusty/storage.json");
     assert_eq!(std::fs::read_to_string(file).unwrap(), r#"{"from":"rust"}"#);
+    // Its own files sit beside its storage (`data_dir`).
+    let db = root.join("com.example.rusty/app.db");
+    assert_eq!(std::fs::read_to_string(db).unwrap(), "rust");
 }
 
 #[test]

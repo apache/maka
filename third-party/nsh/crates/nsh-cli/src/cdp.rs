@@ -113,7 +113,8 @@ fn candidates() -> Vec<PathBuf> {
     paths
 }
 
-/// A headless browser this process started; it goes when this is dropped.
+/// A headless browser this process started; it goes when it is closed
+/// ([`Browser::close`]) or dropped.
 pub(crate) struct Browser {
     child: Mutex<Child>,
     socket: Mutex<WebSocket<MaybeTlsStream<TcpStream>>>,
@@ -121,6 +122,7 @@ pub(crate) struct Browser {
     /// Its profile, removed after it.
     profile: PathBuf,
     output: ui::Tail,
+    closed: AtomicBool,
 }
 
 impl Browser {
@@ -158,6 +160,10 @@ impl Browser {
                 // Playwright launches it).
                 "--blink-settings=primaryPointerType=4,availablePointerTypes=4,\
                  primaryHoverType=2,availableHoverTypes=2",
+                // No downloads of its own (components, Safe Browsing lists):
+                // they made a profile in the temp directory 150 MB.
+                "--disable-component-update",
+                "--disable-background-networking",
                 "about:blank",
             ])
             .stdin(Stdio::null());
@@ -209,6 +215,7 @@ impl Browser {
             next: AtomicU64::new(1),
             profile,
             output,
+            closed: AtomicBool::new(false),
         })
     }
 
@@ -311,10 +318,13 @@ impl Browser {
     fn lock_child(&self) -> std::sync::MutexGuard<'_, Child> {
         self.child.lock().unwrap_or_else(|e| e.into_inner())
     }
-}
 
-impl Drop for Browser {
-    fn drop(&mut self) {
+    /// Closes it and removes its profile, once; the pages left fail their
+    /// calls.
+    pub(crate) fn close(&self) {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return;
+        }
         // Closed as a user closes it, so its helper processes go with it.
         let _ = self.call(None, "Browser.close", json!({}));
         let mut child = self.lock_child();
@@ -329,6 +339,12 @@ impl Drop for Browser {
         let _ = child.wait();
         drop(child);
         let _ = std::fs::remove_dir_all(&self.profile);
+    }
+}
+
+impl Drop for Browser {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 

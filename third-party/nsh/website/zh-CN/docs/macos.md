@@ -17,7 +17,7 @@ macOS 后端的行为是桌面应用：鼠标、触控板和键盘输入，可�
 
 ## 环境要求
 
-- 运行应用的机器需要 **macOS 14** 及以上。
+- 运行应用的机器需要 **macOS 14** 及以上，或应用指定的更高版本（见[最低系统版本](./packaging.md#最低系统版本)）。
 - Xcode 命令行工具（`xcode-select --install`），用于构建 Rust 应用的 runner、从源码构建 NSH 的 macOS 运行时以及打包应用
   （`codesign`、`sips`）。在 Mac 上用 `cargo xtask dist` 制作的发行版把 TSX 应用的运行时放在 `runtime/macos/` 中。
 
@@ -71,7 +71,7 @@ dist/nsh/runtime/macos/nsh-macos-host --bundle build/bundle.nshc --window-size 1
 | `CPU` / `GPU` / `MEM` | 进程：CPU（100% 为一个核心）、它占用的 GPU 比例、内存占用（活动监视器中的数值）。 |
 
 下方的柱状图是最近 120 帧的主线程耗时，与一次刷新的时长（横线）对比：在一半以内为绿色，在其以内为琥珀色，超过为红色。
-面板显示时，读数也会每秒记录到日志一次（target `nsh::perf`，格式与 Linux 后端相同，帧阶段为 macOS 的 `tick`、`drain` 和 `canvas`；毫秒，依次为 mean/p50/p95/max），`nsh test --fps -v` 会显示这些日志，`examples/gallery/tools/perf.py` 会读取它们。请测量 release 构建；监视器关闭时没有任何开销。
+面板显示时，读数也会每秒记录到日志一次（target `nsh::fps`，格式与 Linux 后端相同，帧阶段为 macOS 的 `tick`、`drain` 和 `canvas`；毫秒，依次为 mean/p50/p95/max），`nsh test --fps -v` 会显示这些日志，`examples/gallery/tools/perf.py` 会读取它们。请测量 release 构建；监视器关闭时没有任何开销。
 
 ## 打包
 
@@ -88,11 +88,69 @@ nsh package App.tsx --target macos [--run]   # TSX 应用
   MacOS/<Name>               可执行文件：Rust 应用是用它的 crate 构建的自有 runner；TSX 应用是 nsh 的发布版运行器
   Resources/nsh/bundle.nshc  编译后的 TSX 应用
   Resources/nsh/assets/…     应用导入的资源（也包括 Rust crate 的 `assets!()`）
-  Resources/nsh/app.json     窗口标题和应用的外观
+  Resources/nsh/app.json     窗口标题、应用的外观、激活策略和 nsh.json 中的窗口设置
   Resources/AppIcon.icns     图标（nsh.json 指定了图标时，用 sips 转换）
 ```
 
 `.app` 使用 ad hoc 签名，因此可以在构建它的 Mac 上运行。要分发它，请用 Developer ID 签名并进行公证。`--run` 会在打包后打开应用。
+
+应用把它的警告、错误以及 `console.log` 和 `console.info` 日志写入统一日志，以它的 id 为子系统：“控制台”应用会显示它们，
+`log stream --predicate 'subsystem == "com.example.notes"'` 也会。从终端启动时（`.nsh/out/<Name>.app/Contents/MacOS/<Name>`），
+它还会把日志打印在终端里；标准错误重定向到文件时（`2> app.log`、`open --stderr app.log`）也会写进文件
+（[打包应用的日志](./dev-server-and-debugging.md#a-packaged-apps-logs)）。
+
+## 菜单栏应用
+
+菜单栏应用以[托盘图标](../modules/nsh-desktop.md#tray)的形式待在菜单栏里，不进入 Dock 和应用切换器（Cmd+Tab）。
+nsh.json 的 `macos.activationPolicy` 让应用成为菜单栏应用：
+
+```json
+{
+  "macos": { "activationPolicy": "accessory" }
+}
+```
+
+| `activationPolicy` | 应用 |
+|---|---|
+| `"regular"`（默认） | 有 Dock 图标，处于活跃状态时有菜单栏，在应用切换器中占一个位置。 |
+| `"accessory"` | 菜单栏应用。它的窗口和普通应用的一样显示；应用菜单不显示出来，而在它的某个窗口处于活跃状态时，菜单的快捷键（Cmd+W、Cmd+Q）照常可用。 |
+
+无论 NSH 以哪种方式启动应用，应用从启动起、在它的代码运行之前就是菜单栏应用。`nsh package --target macos` 把 `LSUIElement`
+写入包的 `Info.plist`（请设置 `macos.activationPolicy`，而不是在 [`macos.infoPlist`](./packaging.md#infoplist-键与-entitlements)
+中设置 `LSUIElement`），并把策略写入运行器读取的 `app.json`。`nsh run --target macos` 用 `--activation-policy accessory`
+启动开发宿主，自己启动宿主时也传这个参数；`nsh test --target macos --foreground` 同样如此，而在后台运行的测试（默认）
+和以前一样运行。`cargo run` 启动 Rust 应用自己的 `main`，由它在 `run_app` 的选项里设置。这个选项属于 macOS 后端，
+所以同时为 Windows 和 Linux 构建的 `main`（`nsh init --template rust` 生成的就是这样）只为 macOS 设置它：
+
+```rust
+platform::AppOptions {
+    #[cfg(target_os = "macos")]
+    activation_policy: platform::ActivationPolicy::Accessory,
+    ..Default::default()
+}
+```
+
+Dock 的功能跟着 Dock 图标走：`Notifications.setBadge` 的标记、`requestAttention()` 的弹跳以及从 Dock 重新打开隐藏的窗口
+属于普通应用。菜单栏应用用托盘展示自己的状态（`Tray.set` 的图标和提示），并从托盘打开窗口：
+
+```tsx
+import { mount } from "nsh";
+import { currentWindow, Tray } from "nsh/desktop";
+import icon from "./tray.svg";
+
+function App() {
+  // 关闭窗口时隐藏它：应用继续在菜单栏中运行。
+  const main = currentWindow();
+  main.set({ closeOnPress: false });
+  main.on("closePress", () => main.hide());
+  Tray.set({ icon, onClick: () => main.focus(), menu: [{ role: "quit" }] });
+  return <Inbox />;
+}
+
+mount(App);
+```
+
+用 `AppView` 嵌入的应用按宿主应用的方式参与系统界面（宿主的 `LSUIElement`，或 `NSApplication.setActivationPolicy`）。
 
 ## 嵌入 Mac 应用
 
@@ -153,7 +211,7 @@ view.load(Bundle::source(code).into());
 默认情况下，关闭窗口或选择退出会停止引擎，并从 `run_app` 返回；调用方可以继续完成清理或重新启动可执行文件。
 
 设置 `AppOptions { keep_alive_on_close: true, ..Default::default() }` 可以在关闭窗口后保留独立应用的会话。
-关闭操作会隐藏窗口，从 Dock 重开时会显示同一个窗口和引擎。明确退出或更新重启时，可以从任意线程调用
+关闭操作会隐藏窗口，从 Dock 重开时会显示同一个窗口和引擎（[菜单栏应用](#菜单栏应用)从托盘显示它）。明确退出或更新重启时，可以从任意线程调用
 `nsh_platform_macos::quit_app()`；它会关闭保留的窗口、停止引擎，并从 `run_app` 返回。
 应用自己的代码用 `nsh_core::element::desktop::quit()`（TS：`Application.quit()`）以同样的方式退出，而
 `current_window().close()`（`nsh_core::element::desktop`）遵循所选的窗口关闭策略。

@@ -75,8 +75,12 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
             environment,
             sandbox,
             size,
+            cwd,
         } => {
-            let mut command = Command::new(executable, resource.join("workspace"));
+            let mut command = Command::new(
+                executable,
+                cwd.unwrap_or_else(|| resource.join("workspace")),
+            );
             command.env_clear().args(args);
             #[cfg(target_os = "macos")]
             {
@@ -282,12 +286,13 @@ where
             if count == 0 {
                 break;
             }
-            log.write_all(&buffer[..count]).await?;
+            let chunk = &buffer[..count];
+            log.write_all(chunk).await?;
             log.flush().await?;
             if connected {
                 // Buffered stdio can report a detached observer only on flush.
                 let forwarded = async {
-                    front.write_all(&buffer[..count]).await?;
+                    front.write_all(chunk).await?;
                     front.flush().await
                 }
                 .await;

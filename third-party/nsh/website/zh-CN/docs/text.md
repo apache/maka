@@ -114,6 +114,20 @@ text("先运行 ")
 </Text>
 ```
 
+### 隐藏的 Span
+
+Span 上的 `visibility: "hidden"` 让它的字符原地隐藏：文字的排版与显示时相同，字符（以及其中的视图和图片）不绘制，复制和屏幕阅读器也会略过它们。重新显示时只重绘、不移动任何内容，所以仍在生成的段落可以逐个显示末尾的词（[Text 元素](../elements/text.md#隐藏片段)）：
+
+```rust tabs
+text("Loading ").child(text("the next words").invisible())
+```
+
+```tsx tabs
+<Text>
+  Loading <Text style={{ visibility: "hidden" }}>the next words</Text>
+</Text>
+```
+
 ### 文字中的视图和图片
 
 文本中除文本以外的任何元素都会以行内方式布局在基线上，并随文字一起换行。它也可以有自己的按下处理：

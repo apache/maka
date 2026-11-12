@@ -112,6 +112,8 @@ impl Mounter {
                 | MountItem::Remove { .. }
                 | MountItem::Delete { .. }
                 | MountItem::ViewProps { .. }
+                | MountItem::Frame { .. }
+                | MountItem::ViewStyle { .. }
         ) {
             crate::selectable_view::tree_changed();
         }
@@ -423,6 +425,18 @@ impl Mounter {
                 id,
                 command: Command::Desktop(command),
             } if surface.terminal_active.get().is_some() => {
+                if *id == ROOT_ID {
+                    match command.as_ref() {
+                        DesktopCommand::SetMenuLabels(labels) => {
+                            surface.chrome.labels.replace((**labels).clone());
+                        }
+                        DesktopCommand::SetQuitOnRequest(quit) => {
+                            crate::chrome::set_quit_on_request(surface, *quit);
+                        }
+                        DesktopCommand::Quit => surface.terminal_quit.set(true),
+                        _ => {}
+                    }
+                }
                 if *id != ROOT_ID && matches!(command.as_ref(), DesktopCommand::OpenWindow(_)) {
                     self.terminal_windows.insert(*id);
                     if let Some(view) = self.get(*id) {
@@ -484,6 +498,11 @@ impl Mounter {
                 if let Some(view) = view {
                     crate::text_input::set_selection(view, *start, *end);
                 }
+            }
+            // Not carried out on this platform yet: the app's paste is lost,
+            // so say so.
+            Command::InsertText(_) => {
+                log::warn!("insertText is not supported on Windows yet; nothing inserted")
             }
             Command::ScrollTo { y, .. } if view.is_some_and(|v| v.kind() == ViewKind::Input) => {
                 crate::text_input::scroll_to(view.expect("an input"), *y);

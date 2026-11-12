@@ -1109,7 +1109,7 @@ import { Line, Plot, PlotAppearScope } from "nsh/base/plot";
 
 ## 键盘
 
-可交互的 plot 是 Tab 的一个停靠点（macOS、Web）；获得键盘焦点时，按键移动的就是指针驱动的同一个悬停：十字线、圆点和提示框按 `pointer` 弹簧滑动，饼图的扇区抬起，`onHoverChange` 报告这一行，屏幕阅读器读出应用为它给出的 `accessibilityValue`。焦点环由应用决定：`focus-visible:` 类或 `focusStyle`（`focus-visible:outline-2 focus-visible:outline-ring`）。
+可交互的 plot 是 Tab 的一个停靠点（macOS、Web）；获得键盘焦点时，按键移动的就是指针驱动的同一个悬停：十字线、圆点和提示框按 `pointer` 弹簧滑动，饼图的扇区抬起，`onHoverChange` 报告这一行，屏幕阅读器读出应用为它给出的 `accessibilityValue`。焦点环由应用决定：`focus-visible:` 类或 `focusVisibleStyle`（`focus-visible:outline-2 focus-visible:outline-ring`）。
 
 | 按键 | 作用 |
 |---|---|

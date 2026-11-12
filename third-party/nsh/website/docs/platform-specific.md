@@ -106,7 +106,7 @@ What an element means on every platform is a top-level prop (in Rust a method of
 
 ## Platform modules
 
-In Rust, the APIs only one platform has are functions of `nsh_core::prelude` (`on_back_press`, `input_accessory_view`) and of `nsh_core::element::desktop` (windows: `window`, `current_window` and its `WindowRef`, `title_bar`, `displays`; the app: `quit`, `restart`; menus: `set_application_menu`, `popup_menu`); elsewhere they do nothing. In TSX, `nsh/mobile` holds the APIs of iOS and Android (some of them one platform's), `nsh/desktop` those of the desktops. Both can be imported on every platform, so one bundle runs everywhere: on other platforms their functions return at once and their components take no room. Each exports `isAvailable`, which is `true` on its own platforms; `platform.os` tells them apart.
+In Rust, the APIs only one platform has are functions of `nsh_core::prelude` (`on_back_press`, `haptic`, `input_accessory_view`) and of `nsh_core::element::desktop` (windows: `window`, `current_window` and its `WindowRef`, `title_bar`, `displays`; the app: `quit`, `restart`; menus: `set_application_menu`, `popup_menu`); elsewhere they do nothing. In TSX, `nsh/mobile` holds the APIs of iOS and Android (some of them one platform's), `nsh/desktop` those of the desktops. Both can be imported on every platform, so one bundle runs everywhere: on other platforms their functions return at once and their components take no room. Each exports `isAvailable`, which is `true` on its own platforms; `platform.os` tells them apart.
 
 ### nsh/mobile
 
@@ -154,6 +154,16 @@ function Player() {
 
 The back button is handled by the top dialog first, then the back listeners (most recent first), then the top navigation stack, and the app exits when nothing handled it. See [Navigation](./navigation.md#the-android-back-button).
 
+#### Haptics (iOS, Android)
+
+| Rust | TSX | Description |
+|---|---|---|
+| `haptic(Haptic::Selection)` | `Haptics.selection()` | The haptic of a selection that changed. |
+| `haptic(Haptic::Impact(HapticImpact::…))` | `Haptics.impact(style)` | The haptic of an element that collided, by its weight (`"medium"` by default). |
+| `haptic(Haptic::Notification(HapticNotification::…))` | `Haptics.notification(kind)` | The haptic of a task that ended (`"success"` by default). |
+
+See [nsh/mobile](../modules/nsh-mobile.md#haptics).
+
 #### InputAccessoryView (iOS)
 
 | Rust | TSX | Description |
@@ -176,6 +186,11 @@ Rust apps draw their own title bars with `nsh_core::element::desktop` ([Building
 | `isAvailable` | `true` where the window and menu APIs work: macOS, Windows and Linux. Desktop browsers have `platform.desktop` and keep the browser's window and menus. |
 
 See [nsh/desktop](../modules/nsh-desktop.md).
+
+### nsh/web
+
+In browsers the app is a page of a site. `nsh/web`'s `Head` sets the page's title, description, canonical URL and
+metadata while it is mounted, for search engines and link previews. On the other platforms `Head` renders nothing. See [nsh/web](../modules/nsh-web.md) and [the web](./web.md#search-engines).
 
 ### The status bar
 
@@ -210,7 +225,7 @@ In an app embedded in a native one, the host app's view controller decides the s
 
 ## platform.os and platform.select
 
-`os()` in Rust and the `platform` constant from `nsh` in TSX tell you where the app runs: `Os::Ios`, `Os::Android`, `Os::MacOs`, `Os::Windows`, `Os::Linux` or `Os::Web`, and `platform.os` `"ios"`, `"android"`, `"macos"`, `"windows"`, `"linux"` or `"web"` (Mac Catalyst is `"ios"`, with `platform.catalyst` in either of its idioms; the [macOS backend](./macos.md) is `"macos"`, the [Linux backend](./linux.md) `"linux"` and the [Windows backend](./windows.md) `"windows"`, and their elements apply their `desktop` props; [browsers](./web.md) are `"web"`, and apply `desktop` props too when `platform.desktop` is `true`). See [Device and environment](./device-and-environment.md#the-platform) for the version, the idiom and the rest.
+`os()` in Rust and the `platform` constant from `nsh` in TSX tell you where the app runs: `Os::Ios`, `Os::Android`, `Os::MacOs`, `Os::Windows`, `Os::Linux` or `Os::Web`, and `platform.os` `"ios"`, `"android"`, `"macos"`, `"windows"`, `"linux"` or `"web"` (Mac Catalyst is `"ios"`, with `platform.catalyst` in either of its idioms; the [macOS backend](./macos.md) is `"macos"`, the [Linux backend](./linux.md) `"linux"` and the [Windows backend](./windows.md) `"windows"`, and their elements apply their `desktop` props; [browsers](./web.md) are `"web"`, and apply `desktop` props too when `platform.desktop` is `true`). `platform_name()` in Rust and `platform.name` in TSX name the platform itself: the OS's name on NSH's own platforms, and a [platform built outside NSH](./platform-extensions.md) its own (`"miniprogram"`), with `platform.os` the OS of the device it runs on. See [Device and environment](./device-and-environment.md#the-platform) for the version, the idiom and the rest.
 
 ```rust tabs
 use nsh_core::{element::Os, prelude::*};

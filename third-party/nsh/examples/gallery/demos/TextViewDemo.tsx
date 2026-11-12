@@ -240,7 +240,7 @@ function Markdown() {
   const pressed = signal("nothing yet");
   const viewing = signal<TextViewImage | null>(null);
   return (
-    <Card icon="text" title="Markdown" subtitle="CommonMark and GitHub's: tables, tasks, alerts, footnotes, math, HTML">
+    <Card icon="text" title="Markdown" subtitle="CommonMark and GitHub's: tables, tasks, math, HTML">
       <TextView
         markdown={MARKDOWN}
         selectable
@@ -352,7 +352,7 @@ const CHIP_EXTENSIONS = [
 
 function InlineChips() {
   return (
-    <Card icon="components" title="Inline chips" subtitle="Chips in the middle of the text; lines stay evenly spaced">
+    <Card icon="components" title="Inline chips" subtitle="Chips in the text; lines stay evenly spaced">
       <TextView
         markdown={CHIPS}
         extensions={CHIP_EXTENSIONS}

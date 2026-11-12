@@ -4,8 +4,14 @@
 //! The engine thread hands each commit to [`Sink`], which queues it and
 //! wakes the main thread once (`DispatchQueue::main`); the main thread
 //! drains the queue and applies every batch in order ([`Surface::drain`]).
-//! Native animations and JS frame requests run on the root view's display
-//! link while there is something to do. While native animations or the
+//! Native animations and JS frame requests run on one display link while
+//! there is something to do. It drives every window of the surface, the
+//! app's own too, and AppKit fires a view's link only while some of the
+//! view's window shows on a screen, so it is made from the root view of a
+//! window that shows ([`crate::window::link_root`]): the main window's
+//! while it shows, else that of a window of the app's own; it moves when
+//! that window hides, closes, is minimized or covered
+//! ([`Surface::follow_windows`]). While native animations or the
 //! platform's own (scroll glides) run, batches wait for the start of the
 //! next frame and each frame applies them for at most
 //! [`FRAME_BATCHES`] ([`Surface::apply_queued`]): a scroll glide's frames
@@ -41,7 +47,8 @@ use crossbeam_channel::{Receiver, Sender};
 use dispatch2::{DispatchQueue, DispatchQueueGlobalPriority, GlobalQueueIdentifier};
 use nsh_core::{EventKind, EventPayload, MountBatch, MountItem, NodeId, Points, ROOT_ID, Size};
 use nsh_engine::{
-    Chunk, Engine, EngineConfig, EngineControl, Environment, MountSink, perf::PerfMonitor,
+    Chunk, Engine, EngineConfig, EngineControl, Environment, MainThreadTask, MountSink,
+    perf::PerfMonitor,
 };
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained, sel,
@@ -67,6 +74,9 @@ enum Message {
     /// The app imports chunk `id` (`import()` of a split bundle), which its
     /// bundle does not hold ([`MountSink::load_chunk`]).
     LoadChunk(String),
+    /// A function the app runs on the main thread
+    /// ([`MountSink::run_on_main_thread`]), after the batches before it.
+    Run(MainThreadTask),
 }
 
 /// How long the main thread waits for the layout at a new window size
@@ -152,6 +162,10 @@ impl MountSink for Sink {
         self.send(Message::HotUpdateFailed);
     }
 
+    fn run_on_main_thread(&self, task: MainThreadTask) {
+        self.send(Message::Run(task));
+    }
+
     fn resized(&self, size: Size<Points>) {
         self.send(Message::Resized(size));
     }
@@ -185,6 +199,14 @@ define_class!(
         }
     }
 );
+
+/// The surface's display link and the root view it was made from: the
+/// root of the window it follows ([`crate::window::link_root`]), the
+/// surface's own for the main window.
+struct DisplayLink {
+    link: Retained<CADisplayLink>,
+    root: NshView,
+}
 
 /// Called when the app reports a fatal error (development hosts show it).
 pub(crate) type ErrorHandler = Box<dyn Fn(&str)>;
@@ -237,6 +259,10 @@ pub(crate) struct Surface {
     /// ([`crate::AppView::set_theme_overrides`]): sent to every engine the
     /// surface starts, before its first frame.
     pub(crate) host_tokens: RefCell<Option<nsh_engine::Tokens>>,
+    /// Links that came before the engine started (the one that launched
+    /// the app): sent before the app's code runs, so its first
+    /// `UrlScheme.url()` reads them.
+    pub(crate) launch_links: RefCell<Vec<String>>,
     /// JS asked for a display frame.
     js_frame: Cell<bool>,
     /// Batches that arrived while animations run, and what came after
@@ -255,8 +281,10 @@ pub(crate) struct Surface {
     /// The model of a test session's app (`nsh test --target`).
     #[cfg(feature = "dev")]
     test_model: RefCell<Option<std::sync::Arc<nsh_testing::agent::Model>>>,
-    /// The display link, while it runs.
-    link: RefCell<Option<Retained<CADisplayLink>>>,
+    /// The display link, once something wanted frames, and the root it
+    /// was made from (it is made again from another window's:
+    /// [`Surface::follow_windows`]).
+    link: RefCell<Option<DisplayLink>>,
     /// The rate the display link was last asked for
     /// ([`Surface::frame_rate`]; `None`: the screen's highest).
     link_rate: Cell<Option<f32>>,
@@ -307,6 +335,9 @@ pub(crate) struct Surface {
     pub(crate) audio: crate::audio::Speaker,
     /// The disk cache of downloaded images ([`crate::image::set_disk_cache`]).
     pub(crate) image_cache: RefCell<Option<nsh_core::image::DiskCache>>,
+    /// The roots the app's `<Image>` files are read under
+    /// ([`nsh_engine::Engine::media_files`]).
+    pub(crate) media_files: RefCell<Arc<nsh_core::access::MediaFiles>>,
     /// The window's chrome: title bar, menus ([`crate::chrome`]).
     pub(crate) chrome: crate::chrome::Chrome,
     /// What is held of the main window: its policies, title bar and look
@@ -314,6 +345,10 @@ pub(crate) struct Surface {
     pub(crate) main_window: crate::window::Held,
     /// The window observed for its bounds ([`crate::window_state`]).
     pub(crate) window: crate::window_state::Watch,
+    /// The mode the standalone app's main window opens in, until it first
+    /// shows (hidden at launch: nsh.json `window.defaultVisible: false`)
+    /// ([`crate::window::launched_main`]).
+    pub(crate) main_open_mode: Cell<Option<nsh_core::desktop::WindowMode>>,
     /// Videos, web views and registered native components.
     pub(crate) native: crate::native::NativeState,
     /// The app's keyboard shortcuts ([`crate::keymap`]).
@@ -387,6 +422,7 @@ impl Surface {
             chunks: RefCell::new(None),
             host_environment: Cell::default(),
             host_tokens: RefCell::new(None),
+            launch_links: RefCell::new(Vec::new()),
             js_frame: Cell::new(false),
             queued: RefCell::default(),
             frame_callbacks: RefCell::default(),
@@ -415,12 +451,14 @@ impl Surface {
             image_assets: RefCell::default(),
             audio: Default::default(),
             image_cache: RefCell::new(None),
+            media_files: RefCell::default(),
             native: Default::default(),
             keymap: Default::default(),
             file_drop: Default::default(),
             chrome: Default::default(),
             main_window: Default::default(),
             window: Default::default(),
+            main_open_mode: Cell::new(None),
             shaders: Default::default(),
         });
         SURFACES.with(|s| s.borrow_mut().insert(key, Rc::downgrade(&surface)));
@@ -471,11 +509,22 @@ impl Surface {
         let tokens = self.host_tokens.borrow().clone();
         // The displays are there as the app first renders.
         let displays = crate::window_state::displays(self.mtm);
+        let links = std::mem::take(&mut *self.launch_links.borrow_mut());
         let setup = |control: &EngineControl| {
             if tokens.is_some() {
                 control.set_tokens(tokens);
             }
             control.set_displays(displays);
+            for url in links {
+                control.dispatch_event(
+                    nsh_core::ROOT_ID,
+                    nsh_core::EventKind::UrlScheme,
+                    nsh_core::EventPayload::Map(vec![(
+                        nsh_core::url_scheme::URL,
+                        nsh_core::PayloadValue::Str(url),
+                    )]),
+                );
+            }
         };
         // Remote images download with NSURLSession.
         crate::image::install_transport();
@@ -483,6 +532,7 @@ impl Surface {
             Ok(engine) => {
                 // The app's downloaded images go through its disk cache.
                 crate::image::set_disk_cache(self, engine.image_cache());
+                *self.media_files.borrow_mut() = engine.media_files();
                 // The test moves its clock through the engine.
                 #[cfg(feature = "dev")]
                 if let Some(model) = &*self.test_model.borrow() {
@@ -752,6 +802,7 @@ impl Surface {
                 }
             }
             Message::Resized(_) => self.resize_late.set(false),
+            Message::Run(task) => task.run(),
             Message::LoadChunk(id) => {
                 // The chunk's file name is its id: `is_chunk_name`
                 // (nsh-js) restricted it to a plain `<stem>.js`, so this
@@ -801,6 +852,7 @@ impl Surface {
             *at = Some(now);
         }
         crate::access::prepare(batch);
+        self.mounter.borrow_mut().begin_batch(&batch.items);
         for item in &batch.items {
             self.anim.borrow_mut().apply(item);
             if !matches!(
@@ -811,6 +863,7 @@ impl Surface {
             }
         }
         self.mounter.borrow_mut().end_batch(self);
+        crate::access::batch_applied();
         crate::window::batch_applied(self);
         #[cfg(feature = "dev")]
         if let Some(model) = &*self.test_model.borrow() {
@@ -921,7 +974,10 @@ impl Surface {
     }
 
     /// Runs the display link while animations run or JS wants a frame (or
-    /// a performance monitor measures).
+    /// a performance monitor measures), made from the root of a window
+    /// that shows ([`crate::window::link_root`]): the window it followed
+    /// may have hidden, closed or been covered since it last ran, and its
+    /// link would not fire.
     pub(crate) fn ensure_ticking(self: &Rc<Self>) {
         if !self.wants_frames() {
             if self.perf.borrow().is_none() {
@@ -930,13 +986,20 @@ impl Surface {
         } else {
             self.keep_deadline();
         }
-        if let Some(link) = &*self.link.borrow() {
-            if link.isPaused() {
+        let root = {
+            let link = self.link.borrow();
+            crate::window::link_root(self, link.as_ref().map(|l| &l.root))
+        };
+        if let Some(link) = &*self.link.borrow()
+            && link.root == root
+        {
+            if link.link.isPaused() {
                 // The window may have moved to another screen meanwhile.
                 self.capped_frames.set((0, 0.0));
                 self.link_rate.set(self.frame_rate());
-                link.setPreferredFrameRateRange(self.frame_rate_range());
-                link.setPaused(false);
+                link.link
+                    .setPreferredFrameRateRange(self.frame_rate_range(&link.root));
+                link.link.setPaused(false);
             } else {
                 // What starts now may want more frames than what runs;
                 // only a full frame lowers the rate (`ticked`).
@@ -944,19 +1007,29 @@ impl Surface {
             }
             return;
         }
+        self.make_link(root);
+    }
+
+    /// Makes the display link from `root`, the root view of the window it
+    /// follows ([`crate::window::link_root`]), in place of the one there
+    /// was: it runs, at the rate what wants frames needs on that window's
+    /// screen.
+    fn make_link(&self, root: NshView) {
+        if let Some(old) = self.link.borrow_mut().take() {
+            old.link.invalidate();
+        }
         let ticker = Ticker::alloc(self.mtm).set_ivars(self.key);
         // SAFETY: NSObject's initializer.
         let ticker: Retained<Ticker> = unsafe { msg_send![super(ticker), init] };
         // SAFETY: `tick:` takes the display link, as the selector requires;
         // the link retains its target.
         let link = unsafe {
-            self.root
-                .ns()
+            root.ns()
                 .displayLinkWithTarget_selector(&ticker, sel!(tick:))
         };
         self.capped_frames.set((0, 0.0));
         self.link_rate.set(self.frame_rate());
-        link.setPreferredFrameRateRange(self.frame_rate_range());
+        link.setPreferredFrameRateRange(self.frame_rate_range(&root));
         // SAFETY: the main run loop exists while the app runs.
         unsafe {
             link.addToRunLoop_forMode(
@@ -964,7 +1037,35 @@ impl Surface {
                 objc2_foundation::NSRunLoopCommonModes,
             )
         };
-        *self.link.borrow_mut() = Some(link);
+        *self.link.borrow_mut() = Some(DisplayLink { link, root });
+    }
+
+    /// A window of the surface showed, hid, closed, was minimized, covered
+    /// or uncovered, or moved to another screen: the display link moves to
+    /// the window it should follow ([`crate::window::link_root`]), as the
+    /// one it followed may give no frames now (the app's own window the
+    /// user scrolls, while the main window hides). A running link is made
+    /// again from that window's root; a paused one goes, and
+    /// [`Surface::ensure_ticking`] makes the next there.
+    pub(crate) fn follow_windows(&self) {
+        let (root, running) = {
+            let Ok(link) = self.link.try_borrow() else {
+                return;
+            };
+            let Some(link) = link.as_ref() else {
+                return;
+            };
+            let root = crate::window::link_root(self, Some(&link.root));
+            if root == link.root {
+                return;
+            }
+            (root, !link.link.isPaused())
+        };
+        if running {
+            self.make_link(root);
+        } else if let Some(old) = self.link.borrow_mut().take() {
+            old.link.invalidate();
+        }
     }
 
     /// A frame callback that keeps running needs at most `hz` frames per
@@ -1003,7 +1104,7 @@ impl Surface {
 
     /// Asks the display link for the rate what runs needs, when it changed
     /// (`raise_only`: when it is higher).
-    fn update_frame_rate(&self, link: &CADisplayLink, raise_only: bool) {
+    fn update_frame_rate(&self, link: &DisplayLink, raise_only: bool) {
         let rate = self.frame_rate();
         let old = self.link_rate.get();
         let changed = match (old, rate) {
@@ -1014,23 +1115,24 @@ impl Surface {
         };
         if changed {
             self.link_rate.set(rate);
-            link.setPreferredFrameRateRange(self.frame_rate_range());
+            link.link
+                .setPreferredFrameRateRange(self.frame_rate_range(&link.root));
         }
     }
 
     /// The frame rates the display link asks for ([`frame_rate_range`]) at
-    /// the rate it was last asked for, on the window's screen.
-    fn frame_rate_range(&self) -> objc2_quartz_core::CAFrameRateRange {
-        let max = self.screen_max();
+    /// the rate it was last asked for, on the screen of `root`'s window
+    /// (the window the link follows).
+    fn frame_rate_range(&self, root: &NshView) -> objc2_quartz_core::CAFrameRateRange {
+        let max = self.screen_max(root);
         self.link_screen_max.set(max);
         frame_rate_range(self.link_rate.get(), max)
     }
 
-    /// The highest refresh rate of the window's screen (the main screen
-    /// while the root is in no window), in Hz.
-    fn screen_max(&self) -> f32 {
-        self.root
-            .ns()
+    /// The highest refresh rate of the screen `root`'s window is on (the
+    /// main screen while it is in no window), in Hz.
+    fn screen_max(&self, root: &NshView) -> f32 {
+        root.ns()
             .window()
             .and_then(|w| w.screen())
             .or_else(|| objc2_app_kit::NSScreen::mainScreen(self.mtm))
@@ -1038,15 +1140,17 @@ impl Surface {
             .max(1) as f32
     }
 
-    /// Asks the display link for its rates again when the window's screen
-    /// refreshes at another rate than the one they were made for: the
-    /// window moved to another screen, or the screen's mode changed. The
-    /// link follows the window's screen, but its rates stay what they were
-    /// asked for: one resumed on a 60 Hz screen and kept running (a looping
-    /// animation, the performance monitor) stays at 60 Hz on a 120 Hz one.
-    fn follow_screen(&self, link: &CADisplayLink) {
-        if self.screen_max() != self.link_screen_max.get() {
-            link.setPreferredFrameRateRange(self.frame_rate_range());
+    /// Asks the display link for its rates again when the screen of the
+    /// window it follows refreshes at another rate than the one they were
+    /// made for: the window moved to another screen, or the screen's mode
+    /// changed. The link follows the window's screen, but its rates stay
+    /// what they were asked for: one resumed on a 60 Hz screen and kept
+    /// running (a looping animation, the performance monitor) stays at
+    /// 60 Hz on a 120 Hz one.
+    fn follow_screen(&self, link: &DisplayLink) {
+        if self.screen_max(&link.root) != self.link_screen_max.get() {
+            link.link
+                .setPreferredFrameRateRange(self.frame_rate_range(&link.root));
         }
     }
 
@@ -1069,17 +1173,18 @@ impl Surface {
     }
 
     /// Makes what comes due happen on time while no frames are drawn: the
-    /// display link does not fire while the window is occluded or
-    /// minimized, or the screen is locked, and animations must still end
-    /// (a transition detaches its views when it does, a modal reports its
-    /// dismissal, an animation its end to JS). A timer waits for the next
-    /// deadline ([`Surface::deadline`]) and a little more ([`LATE`]); if
-    /// no frame ran since it came due, it runs one, which steps everything
-    /// to its time, ends what ended and gives the next deadline. While the
-    /// window shows, frames always come first and the timer does nothing:
-    /// frames are the display link's only. Nothing is scheduled for what
-    /// only draws (a spinner, a JS frame request), so a hidden window
-    /// with an endless animation does no work.
+    /// display link does not fire while none of the surface's windows
+    /// shows (hidden, minimized or covered) or the screen is locked, and
+    /// animations must still end (a transition detaches its views when it
+    /// does, a modal reports its dismissal, an animation its end to JS). A
+    /// timer waits for the next deadline ([`Surface::deadline`]) and a
+    /// little more ([`LATE`]); if no frame ran since it came due, it runs
+    /// one, which steps everything to its time, ends what ended and gives
+    /// the next deadline. While a window shows, frames always come first
+    /// and the timer does nothing: frames are the display link's only.
+    /// Nothing is scheduled for what only draws (a spinner, a JS frame
+    /// request), so a hidden window with an endless animation does no
+    /// work.
     fn keep_deadline(self: &Rc<Self>) {
         let now = objc2_quartz_core::CACurrentMediaTime();
         // A test's app runs as on screen whatever covers its window (the
@@ -1129,13 +1234,29 @@ impl Surface {
     }
 
     fn ticked(self: &Rc<Self>, link: &CADisplayLink) {
+        // A link another took the place of (made from another window's
+        // root) gives no more frames: one clock at a time.
+        let ours = self
+            .link
+            .borrow()
+            .as_ref()
+            .is_some_and(|l| std::ptr::eq(&*l.link, link));
+        if !ours {
+            link.invalidate();
+            return;
+        }
         let now = link.timestamp();
         self.frame(now, link.targetTimestamp() - link.timestamp());
+        // The frame may have made the link again, from another window.
+        let current = self.link.borrow();
+        let Some(current) = current.as_ref() else {
+            return;
+        };
         if !self.wants_frames() && self.perf.borrow().is_none() {
-            link.setPaused(true);
+            current.link.setPaused(true);
         } else {
-            self.follow_screen(link);
-            self.update_frame_rate(link, false);
+            self.follow_screen(current);
+            self.update_frame_rate(current, false);
         }
     }
 
@@ -1186,9 +1307,9 @@ impl Surface {
             self.control(|c| c.frame());
         }
         // A batch changes more than moves count (clips, deletions); else
-        // only a move can show a view put off. An endless animation keeps
-        // the frames coming without moving any view (transforms and
-        // opacity are not looked at): no pass on each of its frames.
+        // only a move can show a view put off. A transform counts only
+        // when its subtree has deferred drawing or placement, so an
+        // endless animation elsewhere does not force a pass every frame.
         if applied || crate::sight::moves() != self.revisited.get() {
             self.revisit();
         }
@@ -1259,7 +1380,7 @@ impl Drop for Surface {
     fn drop(&mut self) {
         let key = self.key;
         if let Some(link) = self.link.borrow_mut().take() {
-            link.invalidate();
+            link.link.invalidate();
         }
         crate::text_input::disposed(key);
         crate::tray::release(key);

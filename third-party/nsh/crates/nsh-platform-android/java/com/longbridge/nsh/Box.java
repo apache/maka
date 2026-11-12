@@ -767,6 +767,16 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
         mounter.pressFeedback(this, id, false, pressX, pressY);
     }
 
+    /**
+     * A responder inside took the touch (`SetJsResponder`): this view's press ends here, with no long press or
+     * press after it, as iOS cancels the press recognizers around a responder.
+     */
+    void cancelPress() {
+        if (!tracking) return;
+        tracking = false;
+        pressOut();
+    }
+
     /** Whether a scroll view may still take this touch for a scroll. */
     private boolean insideScrollView() {
         for (ViewParent p = getParent(); p != null; p = p.getParent()) {

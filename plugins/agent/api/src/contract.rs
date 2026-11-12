@@ -922,6 +922,10 @@ pub enum DeliveryFact {
         step_id: maka_agent_facts::durable::StepId,
         attempt_id: maka_agent_facts::durable::ModelAttemptId,
     },
+    ExecutorTextChanged {
+        message_id: String,
+        thinking: bool,
+    },
     /// Canonical transcript facts changed; clients query bounded history.
     TranscriptChanged,
     StepEnded {
@@ -971,6 +975,8 @@ pub enum DeliveryFact {
     ExecutorToolStart {
         tool_use_id: String,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<maka_agent_facts::display::Text>,
     },
     ExecutorToolProgress {
         tool_use_id: String,
@@ -2136,6 +2142,7 @@ pub fn contract() -> Contract {
                 ("models".into(), method::<ModelsRead, ModelsPage>(MethodMode::Query)),
                 ("model".into(), method::<ModelRead, ModelResult>(MethodMode::Query)),
                 ("externalAgents".into(),method::<crate::external::ExternalAgentsRead, crate::external::ExternalAgents>(MethodMode::Query)),
+                ("externalUsageLimits".into(),method::<crate::external::ExternalUsageLimitsRead, crate::external::ExternalUsageLimits>(MethodMode::Query)),
                 (
                     "executorSetup".into(),
                     Method {

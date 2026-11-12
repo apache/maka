@@ -97,6 +97,9 @@ struct Backdrop {
     /// drawn at its own, so glass keeps no animator.
     animator: Option<Retained<UIViewPropertyAnimator>>,
     spec: BackdropSpec,
+    /// The size and radii the effect view's mask view was made for, while
+    /// it has one (corners of unequal radii).
+    mask: Option<(CGSize, CornerRadii)>,
 }
 
 impl Drop for Backdrop {
@@ -742,6 +745,7 @@ impl Visual {
                 view: effect_view,
                 animator,
                 spec,
+                mask: None,
             });
         }
         if let Some(b) = &mut self.backdrop {
@@ -753,6 +757,11 @@ impl Visual {
             let layer = b.view.layer();
             match radii.shared().map(|r| r.0) {
                 Some(r) => {
+                    // A shape the corners draw: the mask of another shape
+                    // goes.
+                    if b.mask.take().is_some() {
+                        b.view.setMaskView(None);
+                    }
                     crate::decor::set_corners(
                         &layer,
                         r as CGFloat,
@@ -763,10 +772,29 @@ impl Visual {
                 }
                 None => {
                     b.view.setClipsToBounds(false);
-                    let mask = CAShapeLayer::new();
-                    mask.setPath(Some(&rounded(local, radii)));
-                    // SAFETY: a fresh mask layer owned by the effect view.
-                    unsafe { layer.setMask(Some(&mask)) };
+                    layer.setCornerRadius(0.0);
+                    // Through `maskView`, the only mask an effect view
+                    // supports: one on its layer (or a superview's) makes
+                    // the system leave the backdrop out. UIKit copies the
+                    // mask view when it is set, so a mask view changed
+                    // afterwards does not reshape the effect: a new size or
+                    // shape takes a new mask view, made whole before it is
+                    // set.
+                    let shape = (local.size, radii);
+                    if b.mask != Some(shape) {
+                        let bounds = CGRect::new(CGPoint::new(0.0, 0.0), local.size);
+                        let mask = UIView::initWithFrame(UIView::alloc(mtm), bounds);
+                        mask.setBackgroundColor(Some(&UIColor::blackColor()));
+                        mask.setUserInteractionEnabled(false);
+                        let path = CAShapeLayer::new();
+                        path.setPath(Some(&rounded(bounds, radii)));
+                        // SAFETY: a fresh mask layer owned by the mask view,
+                        // which is no effect view.
+                        unsafe { mask.layer().setMask(Some(&path)) };
+                        b.view.setMaskView(None);
+                        b.view.setMaskView(Some(&mask));
+                        b.mask = Some(shape);
+                    }
                 }
             }
         }

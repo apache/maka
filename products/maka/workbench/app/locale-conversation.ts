@@ -143,6 +143,7 @@ export const conversationMessages = {
     '請先核准工作區連線，再重試這則訊息。',
   ],
   'Message was not sent.': ['Message was not sent.', '消息尚未发送。', '訊息尚未傳送。'],
+  'Send failed: {reason}': ['Send failed: {reason}', '发送失败：{reason}', '傳送失敗：{reason}'],
   'Delivery not confirmed. Check status before retrying.': [
     'Delivery not confirmed. Check status before retrying.',
     '尚未确认送达，请先检查状态。',
@@ -367,6 +368,8 @@ export const conversationMessages = {
     '浏览器来源：{origin}',
     '瀏覽器來源：{origin}',
   ],
+  'Cache hit {rate}': ['Cache hit {rate}', '缓存命中 {rate}', '快取命中 {rate}'],
+  'Cache hit rate': ['Cache hit rate', '缓存命中率', '快取命中率'],
   'Cache read tokens': ['Cache read tokens', '缓存读取 Token', '快取讀取 Token'],
   'Cache write tokens': ['Cache write tokens', '缓存写入 Token', '快取寫入 Token'],
   'Cancel queued message edit': [
@@ -1085,6 +1088,11 @@ export const conversationMessages = {
     'Maka 无法确认上次操作的结果，消息已保留。',
     'Maka 無法確認上次操作的結果，訊息已保留。',
   ],
+  'Maka could not confirm that the run stopped. Try Stop again.': [
+    'Maka could not confirm that the run stopped. Try Stop again.',
+    'Maka 无法确认这轮是否已停止。请再点一次停止。',
+    'Maka 無法確認這輪是否已停止。請再點一次停止。',
+  ],
   'Operation outcome unknown': ['Operation outcome unknown', '操作结果未知', '操作結果未知'],
   'Provider tool outcome unknown': [
     'Provider tool outcome unknown',
@@ -1617,6 +1625,13 @@ export const conversationMessages = {
   'Effective input limit': ['Effective input limit', '实际输入上限', '實際輸入上限'],
   'Started at': ['Started at', '开始时间', '開始時間'],
   'Finished at': ['Finished at', '结束时间', '結束時間'],
+  Output: ['Output', '输出', '輸出'],
+  'Turn usage': ['Turn usage', '本轮用量', '本輪用量'],
+  'Total tokens': ['Total tokens', '总 token 数', '總 token 數'],
+  '{count} tokens': ['{count} tokens', '{count} tokens', '{count} tokens'],
+  '{count} input tokens': ['{count} input tokens', '输入 {count} tokens', '輸入 {count} tokens'],
+  '{count} output tokens': ['{count} output tokens', '输出 {count} tokens', '輸出 {count} tokens'],
+  'Search query': ['Search query', '搜索查询', '搜尋查詢'],
   Duration: ['Duration', '耗时', '耗時'],
   'First token latency': ['First token latency', '首 Token 耗时', '首 Token 耗時'],
   'Model request': ['Model request', '模型请求', '模型請求'],

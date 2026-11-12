@@ -99,6 +99,24 @@ pub struct ModelUsage {
     pub reasoning_tokens: Option<u64>,
 }
 
+/// Reported cache reads and their share of total prompt input.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PromptCacheUsage {
+    pub input_tokens: u64,
+    pub read_tokens: u64,
+}
+
+impl PromptCacheUsage {
+    pub fn new(input_tokens: u64, read_tokens: u64) -> Option<Self> {
+        (input_tokens > 0 && input_tokens <= 9_007_199_254_740_991 && read_tokens <= input_tokens)
+            .then_some(Self {
+                input_tokens,
+                read_tokens,
+            })
+    }
+}
+
 /// Auxiliary Host generation, not an assistant step in the parent conversation.
 /// Usage is provider-reported; absent counters are unknown, not zero.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -53,7 +53,7 @@ logo; // { url: "asset:/assets/logo@2x.png", size: { width: 64, height: 64 } }
 
 **自然尺寸。** 当样式没有指定宽度或高度时，来自资源的图片按自然尺寸布局，所以 `image(LOGO)` 和 `<Image src={logo} />` 不需要任何样式。若要改变大小，设置其中一边加宽高比，或同时设置两边。
 
-在 Rust 中，缺失或损坏的文件会让构建失败，文件改动后 crate 会重新构建。在 TSX 中，资源路径相对于导入它的模块解析，其 `url` 相对于应用根目录（入口文件所在目录）。`nsh build` 会把它们复制到 `out/assets/`，`nsh package` 会把它们放进应用，开发时则由开发服务器提供。
+在 Rust 中，缺失或损坏的文件会让构建失败，文件改动后 crate 会重新构建。在 TSX 中，资源路径相对于导入它的模块解析，其 `url` 是文件在应用目录中的路径（应用目录即 `nsh.json` 所在的目录；没有 `nsh.json` 时为 `App.tsx` 所在的目录），因此测试打开的、位于应用目录之下的入口（`tests/SubApp.tsx`）与应用本身给出相同的名称。导入的文件都位于应用目录中：从应用目录之外导入文件时，构建会停止并指出该文件。`nsh build` 会把它们复制到 `out/assets/`，`nsh package` 会把它们放进应用，开发时则由开发服务器提供。
 
 > [!TIP]
 > 在 TSX 中，`src` 也接受 `asset:/path` 字符串，被导入的文件才保证会被发布。从未导入的路径在开发服务器下可以使用（仅限应用目录中隐藏目录以外的图片、字体、音频和视频），在打包后的应用中却会缺失。请导入你用到的每一张图片。Rust crate 通过 `assets!()` 发布整个 `assets/` 目录。
@@ -106,11 +106,22 @@ logo; // { url: "asset:/assets/logo.svg", size: { width: 120, height: 40 } }
 
 SVG 在显示的尺寸下清晰。浏览器以矢量方式绘制它；iOS、macOS 和 Android 在图片加载时按视图显示它的像素尺寸绘制（与位图的降采样相同；之后变大的视图会缩放这次绘制的结果，直到图片重新加载）；Windows、Linux 和 GPUI 以每点四个像素绘制一次（每边最多 2048 像素），再缩放到各个视图。其余一切与位图相同：`objectFit`、`tintColor`（透过 SVG 的不透明形状着色，单色图标因此能随主题变色）、滤镜、`blurRadius`、占位图、加载事件、`Image.getSize` 与 `Image.prefetch`。`onLoad` 和 `Image.getSize` 以整数点报告 SVG 的尺寸；图片按它的精确尺寸布局。远程 SVG 文件以同样的方式加载，经过同样的下载与[能力](./sandbox-and-capabilities.md)检查；NSH 根据内容识别 SVG（包括 gzip 压缩的 `.svgz`），与 URL 的结尾无关。
 
-**原生平台绘制的内容。** iOS、macOS、Android、Windows、Linux 和 GPUI 用同一个渲染器（resvg）绘制 SVG，因此同一幅图在各平台上看起来一致：形状与路径、填充与描边、渐变与图案、裁剪路径与蒙版、不透明度、滤镜和变换。文本（`<text>`）、动画（SMIL 与 CSS）、嵌入的图片（`<image>`）和 HTML（`<foreignObject>`）在浏览器中显示；原生平台绘制 SVG 的其余部分，保持静止，`nsh build` 会指出用到它们的文件。把文本导出为轮廓（路径），即可在各处得到相同的效果。
+**原生平台绘制的内容。** iOS、macOS、Android、Windows、Linux 和 GPUI 用同一个渲染器（resvg）绘制 SVG，因此同一幅图在各平台上看起来一致：形状与路径、填充与描边、渐变与图案、裁剪路径与蒙版、不透明度、滤镜和变换。文本（`<text>`）和内联栅格 `data:` 图片（`<image>`）在原生平台上也绘制，使用系统字体和解码器；动画（SMIL 与 CSS）和 HTML（`<foreignObject>`）只在浏览器中显示，引用文件、URL 或其他 SVG 文档的 `<image>` 会被略过。`nsh build` 会指出用到这些仅浏览器支持特性的文件。把文本导出为轮廓（路径），即可在各处得到相同的效果。
 
-**自成一体的图片。** 在原生平台上，SVG 只绘制它自身包含的内容：它引用的文件、URL、`data:` 图片和其他文档都不会加载。原生平台在控制内存的范围内绘制 SVG（包括远程的 SVG）：文档最大 16 MiB（压缩的 SVG 按解压后计算），绘制结果每边最多 8192 像素、总共最多 4096 × 4096 像素（64 MiB；更大的会缩小绘制），图层（带不透明度、蒙版、裁剪路径和滤镜的组，渲染器会单独绘制它们）同时最多 256 MiB。超出文档或图层范围的 SVG 加载失败，并触发 `onError`。
+**自成一体的图片。** 在原生平台上，SVG 只绘制它自身包含的内容：它引用的文件、URL 和嵌套 SVG 文档都不会加载，而内联栅格 `data:` 图片会绘制，并计入图层上限。原生平台在控制内存的范围内绘制 SVG（包括远程的 SVG）：文档最大 16 MiB（压缩的 SVG 按解压后计算），文本最多 64 Ki 个字符，绘制结果每边最多 8192 像素、总共最多 4096 × 4096 像素（64 MiB；更大的会缩小绘制），图层（带不透明度、蒙版、裁剪路径和滤镜的组，渲染器会单独绘制它们）同时最多 256 MiB。超出文档或图层范围的 SVG 加载失败，并触发 `onError`。
 
 **Web 上报告的尺寸。** 浏览器自行测量 SVG，无论是导入的还是远程的：SVG 有 `width` 和 `height` 时，`onLoad` 和 `Image.getSize` 报告这两个值，否则报告浏览器给出的尺寸，浏览器通常由默认尺寸 300 × 150 和 `viewBox` 的宽高比得出它。导入的 SVG 在所有平台上都按打包器给出的尺寸布局。为 SVG 设置 `width` 和 `height`，即可在各处得到相同的报告尺寸。
+
+## 像素缓冲区
+
+自己绘制像素的 Rust 组件（渲染器、相机、在其他线程生成的预览）用 `ImageSrc::rgba(width, height, pixels)` 显示它们：直通（非预乘）的 8 位 RGBA，行自上而下、无填充，共 `width * height * 4` 字节，可放在任意所有者中（`Vec<u8>`、`Arc<[u8]>`）。创建来源时既不编码也不复制。
+
+```rust
+let page: Arc<[u8]> = render_page(); // 1192 × 1684 像素
+image(ImageSrc::rgba(1192, 1684, page)).w_full()
+```
+
+图片按 `width` × `height` 点布局，与 `data:` 图片相同；用样式设置它的尺寸。每个缓冲区都是一张独立的图片：新的一帧就给视图一个新来源，旧的一帧在没有视图显示后由缓存释放。Windows、macOS、Linux 和 GPUI 直接绘制这些像素；iOS、Android 和浏览器只能从编码后的字节加载图片，因此缓冲区在首次显示时会转成未压缩的 PNG（一次复制，不做压缩）。TSX 中持有的字节可使用 `Blob` URL。
 
 ## 远程图片
 
@@ -131,7 +142,7 @@ image(move || user.with(|u| u.avatar_url.clone()))
 - 加载期间会显示**背景色**，也可以使用占位图（见下文）。
 - 下载是共享的：多个视图显示同一个 URL 时只下载一次，即使它们按不同尺寸解码也是如此。没有任何视图再等待的下载会被取消。
 - 解码后的图片缓存在内存中（内存紧张时会清理），以 URL、解码尺寸和模糊半径为键。
-- 当应用声明了[能力](./sandbox-and-capabilities.md)时，图片的主机必须在 `network` 中被允许；被拒绝的图片会触发错误事件。
+- 当应用声明了[能力](./sandbox-and-capabilities.md)时，图片的主机必须在 `network` 中被允许；被拒绝的图片会触发错误事件。本地文件（绝对路径或 `file:` URL，桌面上的 `onFileDrop`、剪贴板和 `import.meta.url` 给出的就是这种）需要一个包含它的 `fs.read` 根目录，并且只在桌面上加载。
 
 ### 磁盘缓存
 
@@ -143,6 +154,7 @@ image(move || user.with(|u| u.avatar_url.clone()))
 - 在新鲜期内直接使用，不发请求：新鲜期为 `max-age`，否则到 `Expires` 为止，否则为距 `Last-Modified` 时长的十分之一（最多一周）。
 - 过期后向服务器确认（用它的 `ETag` 发 `If-None-Match`，用它的 `Last-Modified` 发 `If-Modified-Since`）：未变的图片（`304`）无需下载即可再次使用，变了的则被替换。
 - 请求失败（没有网络）或服务器出错（`5xx`）时，显示保存的副本，除非响应声明了 `must-revalidate` 或 `no-cache`。
+- 图片的请求被重定向到应用的 `network` 能力不允许的地址时，图片加载失败，保存的副本也会被删除。
 
 每个应用有自己的缓存，大小为 256 MiB；超出后，最久未使用的图片先被删除。同一应用的多个视图、surface 和进程可以安全地共用它。嵌入应用可以选择它的位置和大小，或关闭它：
 
@@ -351,9 +363,22 @@ function RemoteImage(props: { url: string }) {
 |---|---|---|---|
 | `.ttf`、`.otf`、`.woff`、`.woff2` | 带字体族名的 `FontAsset` | 字体的字体族名 | [字体](./fonts.md) |
 | `.wav`、`.m4a`、`.aac`、`.mp3` | 带 URI 的 `FileAsset` | 文件的 `asset:/` URL | [声音](../modules/nsh.md#sound) |
-| `.json` 及其他文件 | 带 URI 的 `FileAsset` | `.json`：解析后的值，打包进脚本 | [项目结构](./project-structure.md#模块) |
+| `.mp4`、`.mov`、`.m4v`、`.webm` | 带 URI 的 `FileAsset` | 文件的 `asset:/` URL | [视频](../modules/nsh-video.md) |
+| `.json` 及其他文件 | 带 URI 的 `FileAsset` | `.json`：解析后的值，打包进脚本；任何文件加 `?url`：它的 `asset:/` URL | [项目结构](./project-structure.md#模块) |
 
 两种方式下，字体都在第一帧之前注册。
+
+在 TSX 中，导入路径末尾加 `?url` 得到任何文件的 `asset:/` URL，文件随应用打包。路径相对于导入它的模块：
+
+```tsx
+import model from "./data/model.bin?url";
+import cities from "./data/cities.json?url";
+
+const bytes = await (await fetch(model)).bytes();
+const list = await (await fetch(cities)).json();
+```
+
+用 `?url` 导入的 `.json` 保持为文件，应用需要时再读取，而不是脚本里的一个值。
 
 ### 运行时读取文件
 

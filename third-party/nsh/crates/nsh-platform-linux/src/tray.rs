@@ -15,6 +15,15 @@
 //!   `ItemIsMenu` asks the panel to open the menu instead. The menu's items
 //!   are chosen through `Event(id, "clicked")` and reported as the menu bar's
 //!   are ([`crate::chrome::choose`]).
+//! - Before a click, a panel on Wayland hands over an XDG activation token
+//!   (`ProvideXdgActivationToken`): it is kept for the app's next window
+//!   activation ([`crate::window::give_activation_token`]), so a window the
+//!   app shows or focuses in answer comes to the front; without one (X11, a
+//!   panel that gives none) the window is presented as before.
+//! - The title is `XAyatanaLabel` (the AppIndicator extension), its runs'
+//!   text without their colors: panels that show it (GNOME's AppIndicator
+//!   extension, Unity, MATE, Budgie) draw it right of the icon, whatever
+//!   `title_placement` says; the others show the icon alone.
 
 use std::{cell::RefCell, rc::Weak, sync::Arc};
 
@@ -45,6 +54,8 @@ const XML: &str = r#"<node>
     <property name="IconPixmap" type="a(iiay)" access="read"/>
     <property name="ToolTip" type="(sa(iiay)ss)" access="read"/>
     <property name="ItemIsMenu" type="b" access="read"/>
+    <property name="XAyatanaLabel" type="s" access="read"/>
+    <property name="XAyatanaLabelGuide" type="s" access="read"/>
     <property name="Menu" type="o" access="read"/>
     <method name="ContextMenu"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
     <method name="Activate"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
@@ -55,6 +66,7 @@ const XML: &str = r#"<node>
     <signal name="NewIcon"/>
     <signal name="NewToolTip"/>
     <signal name="NewStatus"><arg name="status" type="s"/></signal>
+    <signal name="XAyatanaNewLabel"><arg name="label" type="s"/><arg name="guide" type="s"/></signal>
   </interface>
   <interface name="com.canonical.dbusmenu">
     <property name="Version" type="u" access="read"/>
@@ -129,6 +141,9 @@ struct Shown {
     name: String,
     title: String,
     tooltip: String,
+    /// The tray's title as text (`XAyatanaLabel`): the panel draws it right
+    /// of the icon, in its own color.
+    label: String,
     click: u32,
     /// `IconPixmap`'s value: empty until the icon has loaded.
     pixmaps: Vec<(i32, i32, Vec<u8>)>,
@@ -248,6 +263,7 @@ pub(crate) fn set(surface: &std::rc::Rc<Surface>, tray: Option<&Tray>) {
         };
         shown.surface = std::rc::Rc::downgrade(surface);
         shown.tooltip = tray.tooltip.clone();
+        shown.label = label(tray);
         shown.click = tray.click;
         shown.entries = entries.take().unwrap_or_default();
         shown.revision += 1;
@@ -256,6 +272,13 @@ pub(crate) fn set(surface: &std::rc::Rc<Surface>, tray: Option<&Tray>) {
     });
     if changed {
         emit(ITEM_PATH, ITEM_INTERFACE, "NewToolTip", None);
+        let label = TRAY.with(|t| t.borrow().as_ref().map(|s| s.label.clone()));
+        emit(
+            ITEM_PATH,
+            ITEM_INTERFACE,
+            "XAyatanaNewLabel",
+            Some((label.unwrap_or_default(), "").to_variant()),
+        );
         let revision = TRAY.with(|t| t.borrow().as_ref().map_or(0, |s| s.revision));
         emit(
             MENU_PATH,
@@ -367,6 +390,7 @@ fn publish(
         name,
         title,
         tooltip: tray.tooltip.clone(),
+        label: label(tray),
         click: tray.click,
         pixmaps: Vec::new(),
         entries,
@@ -374,6 +398,11 @@ fn publish(
         generation,
         registration: Registration::Absent,
     })
+}
+
+/// The title's runs as one text, for `XAyatanaLabel` (which has no colors).
+fn label(tray: &Tray) -> String {
+    tray.title.iter().map(|run| run.text.as_str()).collect()
 }
 
 /// Tells the watcher about the item called `name`.
@@ -530,6 +559,8 @@ fn item_property(name: &str) -> glib::Variant {
                 ("", Vec::<(i32, i32, Vec<u8>)>::new(), text, "").to_variant()
             }
             "ItemIsMenu" => (s.click == 0).to_variant(),
+            "XAyatanaLabel" => s.label.to_variant(),
+            "XAyatanaLabelGuide" => "".to_variant(),
             "Menu" => glib::variant::ObjectPath::try_from(MENU_PATH.to_owned())
                 .expect("a valid path")
                 .to_variant(),
@@ -538,8 +569,12 @@ fn item_property(name: &str) -> glib::Variant {
     })
 }
 
-fn item_call(method: &str, _params: &glib::Variant) -> Option<glib::Variant> {
-    if method == "Activate" {
+fn item_call(method: &str, params: &glib::Variant) -> Option<glib::Variant> {
+    if method == "ProvideXdgActivationToken" {
+        if let Some((token,)) = params.get::<(String,)>() {
+            crate::window::give_activation_token(token);
+        }
+    } else if method == "Activate" {
         let (surface, click) = TRAY.with(|t| {
             t.borrow()
                 .as_ref()
@@ -556,7 +591,7 @@ fn item_call(method: &str, _params: &glib::Variant) -> Option<glib::Variant> {
         }
     }
     // `ContextMenu`: hosts open the menu themselves; `Scroll`,
-    // `SecondaryActivate`, `ProvideXdgActivationToken`: nothing to do.
+    // `SecondaryActivate`: nothing to do.
     None
 }
 
@@ -803,6 +838,28 @@ mod tests {
     }
 
     #[test]
+    fn the_panel_s_activation_token_serves_one_activation() {
+        let now = std::time::Instant::now;
+        item_call("ProvideXdgActivationToken", &("token-1",).to_variant());
+        assert_eq!(
+            crate::window::take_activation_token(now()).as_deref(),
+            Some("token-1")
+        );
+        assert_eq!(crate::window::take_activation_token(now()), None);
+        // A newer token replaces one not used yet.
+        item_call("ProvideXdgActivationToken", &("token-2",).to_variant());
+        item_call("ProvideXdgActivationToken", &("token-3",).to_variant());
+        assert_eq!(
+            crate::window::take_activation_token(now()).as_deref(),
+            Some("token-3")
+        );
+        // Wrong arguments and empty tokens keep nothing.
+        item_call("ProvideXdgActivationToken", &(1i32,).to_variant());
+        item_call("ProvideXdgActivationToken", &("",).to_variant());
+        assert_eq!(crate::window::take_activation_token(now()), None);
+    }
+
+    #[test]
     fn menus_number_depth_first_and_lay_out() {
         let items: Arc<[MenuItem]> = vec![
             action(7, "Open_File"),
@@ -850,5 +907,20 @@ mod template_tests {
         let expected = if crate::system::system_dark() { 255 } else { 0 };
         assert_eq!(painted, vec![255, expected, expected, expected]);
         assert_eq!(pixmap(&red(), false, 1).2, vec![255, 255, 0, 0]);
+    }
+
+    #[test]
+    fn label_joins_the_title_runs_text() {
+        use nsh_core::desktop::{Tray, TrayTitleRun};
+        let run = |text: &str| {
+            let mut run = TrayTitleRun::default();
+            run.text = text.into();
+            run.color = Some("#d92d20".parse().unwrap());
+            run
+        };
+        let mut tray = Tray::default();
+        assert_eq!(label(&tray), "");
+        tray.title = vec![run("AAPL "), run("+1.33%")];
+        assert_eq!(label(&tray), "AAPL +1.33%");
     }
 }

@@ -38,13 +38,13 @@ export function createReactive(invoke, live, values) {
   };
   const guarded = fn => (...args) => protect(() => fn(...args));
   const finalizers = new FinalizationRegistry(handle => {
-    values?.accessors.delete(`${handle[0]}:${handle[1]}`);
+    values?.accessors.delete(values.accessorKey(handle[0], handle[1]));
     if (live()) call(114, handle);
   });
   const accessor = handle => {
     const read = () => call(101, handle);
     finalizers.register(read, handle);
-    values?.accessors.set(`${handle[0]}:${handle[1]}`, new WeakRef(read));
+    values?.accessors.set(values.accessorKey(handle[0], handle[1]), new WeakRef(read));
     values?.reconcile();
     return read;
   };

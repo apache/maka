@@ -9,6 +9,7 @@
 //! dist/nsh/runtime/linux/{nsh-linux-host,nsh-linux-app}        development host, packaged app runner
 //! dist/nsh/runtime/windows/{nsh-windows-host,nsh-windows-app}.exe  development host, packaged app runner
 //! dist/nsh/runtime/gpui/nsh-gpui-host[.exe]                   development host (GPUI; apps embed it, never package it)
+//! dist/nsh/runtime/tui/nsh-tui-host[.exe]                     development host (the terminal, `nsh run --target tui`)
 //! dist/nsh/runtime/android/{release,dev}/                      classes.dex, lib/<abi>/libnsh.so (stripped),
 //!                                                              symbols/<abi>/libnsh.so (with symbols)
 //! dist/nsh/runtime/web/{nsh-browser.wasm,nsh-dev.wasm,nsh.js,browser/}  the web runtimes (published apps' to link from, the dev host's)
@@ -17,16 +18,17 @@
 //! dist/nsh/embed/android/{nsh,nsh-dev}.aar                     embedding in Android apps
 //! ```
 //!
-//! The iOS runtimes and SDK need Xcode: they are built on macOS only, as is
-//! the macOS (AppKit) runtime, built for this machine. The
+//! The iOS runtimes and SDK need Xcode: they are built on Apple silicon Macs
+//! only. The macOS (AppKit) runtime is built on macOS, for this machine. The
 //! Linux runtime is built for this machine, on Linux only (where it runs,
 //! GTK 4, Pango and, for web views, WebKitGTK 6.0 must be installed;
 //! without WebKitGTK's development files it is built with placeholders for
 //! web views and needs only GTK); the Windows runtime likewise, on
-//! Windows only (where the CLI is `bin/nsh.exe`). The GPUI development host
-//! is built for this machine on each of the three. The web runtime is built
+//! Windows only (where the CLI is `bin/nsh.exe`). The GPUI and terminal
+//! development hosts are built for this machine on each of the three. The web runtime is built
 //! everywhere: it needs a clang that targets wasm32 and `llvm-ar`
-//! (`docs/dev/web.md`).
+//! (`docs/dev/web.md`). `NSH_DIST_NO_ANDROID` and `NSH_DIST_NO_WEB` leave the
+//! Android and web runtimes out, which the release builds only once.
 
 use std::{
     env,
@@ -43,6 +45,11 @@ use crate::{android, term};
 const IOS: &str = "aarch64-apple-ios";
 const IOS_SIM: &str = "aarch64-apple-ios-sim";
 const CATALYST: &str = "aarch64-apple-ios-macabi";
+/// Whether the distribution has the iOS runtimes and SDK: on Apple silicon
+/// only, the `ios` component's one host. They are built for arm64 (devices,
+/// Apple silicon's simulator, Mac Catalyst), which an Intel Mac's simulator
+/// and Mac Catalyst do not run.
+const WITH_IOS: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
 
 pub(crate) fn dist() -> anyhow::Result<()> {
     let root = android::root();
@@ -54,19 +61,21 @@ pub(crate) fn dist() -> anyhow::Result<()> {
 
     // The CLI for this machine.
     cargo(&["build", "--release", "-p", "nsh-cli"], "nsh")?;
-    copy(
+    copy_executable(
         &release.join("release").join(exe("nsh")),
         &out.join("bin").join(exe("nsh")),
     )?;
 
-    if cfg!(target_os = "macos") {
+    if WITH_IOS {
         ios_runtimes(&release, &out)?;
+    }
+    if cfg!(target_os = "macos") {
         for (package, what) in [
             ("nsh-macos-host", "the development host for macOS"),
             ("nsh-macos-app", "the release runner for macOS"),
         ] {
             cargo(&["build", "--release", "-p", package], what)?;
-            copy(
+            copy_executable(
                 &release.join("release").join(package),
                 &out.join("runtime/macos").join(package),
             )?;
@@ -101,7 +110,7 @@ pub(crate) fn dist() -> anyhow::Result<()> {
                 }
             }
             cargo(&args, what)?;
-            copy(
+            copy_executable(
                 &release.join("release").join(package),
                 &out.join("runtime/linux").join(package),
             )?;
@@ -113,7 +122,7 @@ pub(crate) fn dist() -> anyhow::Result<()> {
             ("nsh-windows-app", "the release runner for Windows"),
         ] {
             cargo(&["build", "--release", "-p", package], what)?;
-            copy(
+            copy_executable(
                 &release.join("release").join(exe(package)),
                 &out.join("runtime/windows").join(exe(package)),
             )?;
@@ -150,7 +159,18 @@ pub(crate) fn dist() -> anyhow::Result<()> {
             .iter()
             .find(|file| file.exists())
             .context("the GPUI build wrote no development host")?;
-        copy(host, &out.join("runtime/gpui").join(exe(package)))?;
+        copy_executable(host, &out.join("runtime/gpui").join(exe(package)))?;
+
+        // The terminal's development host (`nsh run --target tui`).
+        let package = "nsh-tui-host";
+        cargo(
+            &["build", "--release", "-p", package],
+            "the development host for the terminal",
+        )?;
+        copy_executable(
+            &release.join("release").join(exe(package)),
+            &out.join("runtime/tui").join(exe(package)),
+        )?;
     }
 
     // The web runtimes, the same files on every machine, all running TSX on
@@ -165,29 +185,47 @@ pub(crate) fn dist() -> anyhow::Result<()> {
     // An explicitly configured compiler is a promise that the web runtimes
     // are wanted: on a release runner a broken one must fail the build
     // rather than quietly ship an archive with no `runtime/web`.
+    // `NSH_DIST_NO_WEB` leaves them out: the release's builds that don't
+    // publish the `web` component set it, as with `NSH_DIST_NO_ANDROID`.
     let configured = ["CC_wasm32_unknown_unknown", "CC"]
         .iter()
         .any(|key| env::var_os(key).is_some_and(|value| !value.is_empty()));
     let compiler = wasm_cc(|key| env::var_os(key));
-    let compiles = wasm_compiles(&compiler, |command| {
-        command.status().is_ok_and(|status| status.success())
-    });
-    let web = web_runtimes_plan(configured, compiles, &compiler)?;
-    if web {
-        web_runtimes(&root, &out, &release)?;
-    } else {
-        term::warn(
+    let web = web_runtimes_plan(
+        env::var_os("NSH_DIST_NO_WEB").is_some_and(|value| !value.is_empty()),
+        configured,
+        || {
+            wasm_compiles(&compiler, |command| {
+                command.status().is_ok_and(|status| status.success())
+            })
+        },
+        &compiler,
+    )?;
+    match web {
+        WebRuntimes::Build => web_runtimes(&root, &out, &release)?,
+        WebRuntimes::OptedOut => {
+            term::warn("NSH_DIST_NO_WEB is set: the distribution has no web runtime")
+        }
+        WebRuntimes::NoCompiler => term::warn(
             "no working wasm32 C compiler (set CC_wasm32_unknown_unknown): \
              the distribution has no web runtime",
-        );
+        ),
     }
 
     // Android runtimes. Windows machines often have no Android SDK: the
-    // distribution is then made without them.
-    let android = !cfg!(windows) || android::Sdk::find().is_ok();
-    if !android {
-        term::warn("no Android SDK (ANDROID_HOME): the distribution has no Android runtime");
+    // distribution is then made without them. The NDK has no toolchain that
+    // runs on arm64 Linux: there it never has them. `NSH_DIST_NO_ANDROID`
+    // leaves them out anywhere: the release's builds that don't publish the
+    // `android` component set it, so they skip it even where an SDK is found.
+    let skip_android = android_skip(
+        env::var_os("NSH_DIST_NO_ANDROID").is_some_and(|value| !value.is_empty()),
+        !cfg!(all(target_os = "linux", not(target_arch = "x86_64"))),
+        || !cfg!(windows) || android::Sdk::find().is_ok(),
+    );
+    if let Some(reason) = skip_android {
+        term::warn(format!("{reason}: the distribution has no Android runtime"));
     }
+    let android = skip_android.is_none();
     let abis: Vec<String> = android::ABIS.iter().map(|a| a.to_string()).collect();
     for (dev, name) in [(false, "release"), (true, "dev")]
         .into_iter()
@@ -214,7 +252,7 @@ pub(crate) fn dist() -> anyhow::Result<()> {
         ));
     }
 
-    if cfg!(target_os = "macos") {
+    if WITH_IOS {
         // iOS embedding: a static framework per platform (Rust + the Swift
         // module) in an XCFramework.
         crate::ios::xcframeworks(
@@ -241,14 +279,32 @@ fn wasm_cc(get: impl Fn(&str) -> Option<OsString>) -> OsString {
     OsString::from("clang")
 }
 
-/// Whether to build the web runtimes. A developer who explicitly configured
-/// a wasm32 compiler expects them: a broken toolchain must fail the release
-/// rather than quietly ship an archive with no `runtime/web`. With nothing
-/// configured, a machine without a wasm32 clang still gets a usable (web-less)
-/// distribution, as before.
-fn web_runtimes_plan(configured: bool, compiles: bool, compiler: &OsStr) -> anyhow::Result<bool> {
-    if compiles {
-        return Ok(true);
+/// Whether the distribution has the web runtimes.
+#[derive(Debug, PartialEq, Eq)]
+enum WebRuntimes {
+    Build,
+    /// `NSH_DIST_NO_WEB` is set.
+    OptedOut,
+    /// No compiler was configured and the default one cannot target wasm32.
+    NoCompiler,
+}
+
+/// Whether to build the web runtimes. An opt-out wins without probing the
+/// compiler. A developer who explicitly configured a wasm32 compiler expects
+/// them: a broken toolchain must fail the release rather than quietly ship an
+/// archive with no `runtime/web`. With nothing configured, a machine without
+/// a wasm32 clang still gets a usable (web-less) distribution, as before.
+fn web_runtimes_plan(
+    opted_out: bool,
+    configured: bool,
+    compiles: impl FnOnce() -> bool,
+    compiler: &OsStr,
+) -> anyhow::Result<WebRuntimes> {
+    if opted_out {
+        return Ok(WebRuntimes::OptedOut);
+    }
+    if compiles() {
+        return Ok(WebRuntimes::Build);
     }
     if configured {
         bail!(
@@ -257,7 +313,27 @@ fn web_runtimes_plan(configured: bool, compiles: bool, compiler: &OsStr) -> anyh
             compiler.to_string_lossy()
         );
     }
-    Ok(false)
+    Ok(WebRuntimes::NoCompiler)
+}
+
+/// Why the distribution is made without the Android runtimes, or `None` to
+/// build them: not when `NSH_DIST_NO_ANDROID` opts out, not where the NDK has
+/// no toolchain (`ndk_host`), and not without an SDK where one is optional
+/// (`sdk`, asked last because it searches the disk).
+fn android_skip(
+    opted_out: bool,
+    ndk_host: bool,
+    sdk: impl FnOnce() -> bool,
+) -> Option<&'static str> {
+    if opted_out {
+        Some("NSH_DIST_NO_ANDROID is set")
+    } else if !ndk_host {
+        Some("the NDK does not run on this machine")
+    } else if !sdk() {
+        Some("no Android SDK (ANDROID_HOME)")
+    } else {
+        None
+    }
 }
 
 /// Whether `compiler` can actually produce a wasm32 object. `clang
@@ -355,7 +431,7 @@ fn ios_runtimes(release: &Path, out: &Path) -> anyhow::Result<()> {
             ],
             &format!("the release runner for {triple}"),
         )?;
-        copy(
+        copy_executable(
             &release.join(triple).join("release/nsh-ios-app"),
             &out.join("runtime/ios").join(dir).join("nsh-ios-app"),
         )?;
@@ -372,7 +448,7 @@ fn ios_runtimes(release: &Path, out: &Path) -> anyhow::Result<()> {
             ],
             &format!("the development host for {triple}"),
         )?;
-        copy(
+        copy_executable(
             &release.join(triple).join("release/nsh-ios-host"),
             &out.join("runtime/ios").join(dir).join("nsh-ios-host"),
         )?;
@@ -408,7 +484,15 @@ fn make_aar(built: &Path, abis: &[String], dev: bool, aar: &Path) -> anyhow::Res
             r#"<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.longbridge.nsh">
     <uses-sdk android:minSdkVersion="{}" />
-    <uses-permission android:name="android.permission.INTERNET" />{}
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Text actions (Translate and the like) the selection menu offers,
+        as TextView's: Android 11+ hides other apps' activities otherwise. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT" />
+            <data android:mimeType="text/plain" />
+        </intent>
+    </queries>{}
 </manifest>
 "#,
             android::MIN_SDK,
@@ -529,6 +613,29 @@ pub(crate) fn remove(file: &Path) -> anyhow::Result<()> {
     }
 }
 
+/// Copies the executable `from` to `to` without its symbol table: a sixth
+/// or so of each executable, which nothing that runs it reads (panics name
+/// no functions). Stripped after the build, not by the release profile's
+/// `strip`, which would build everything again apart from the builds a
+/// checkout keeps for profiling. Windows' executables keep their symbols in
+/// PDB files, which the distribution leaves out.
+fn copy_executable(from: &Path, to: &Path) -> anyhow::Result<()> {
+    copy(from, to)?;
+    if cfg!(target_os = "macos") {
+        term::run(Command::new("strip").arg(to))?;
+        // Stripping invalidates the linker's ad-hoc signature, without
+        // which Apple silicon refuses to run the file.
+        term::run(
+            Command::new("codesign")
+                .args(["--force", "--sign", "-"])
+                .arg(to),
+        )?;
+    } else if cfg!(target_os = "linux") {
+        term::run(Command::new("strip").arg("--strip-all").arg(to))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn copy(from: &Path, to: &Path) -> anyhow::Result<()> {
     if let Some(dir) = to.parent() {
         fs::create_dir_all(dir)?;
@@ -545,7 +652,10 @@ mod tests {
         io::Read as _,
     };
 
-    use super::{AAR_KEEP_RULES, make_aar, wasm_cc, wasm_compiles, web_runtimes_plan};
+    use super::{
+        AAR_KEEP_RULES, WebRuntimes, android_skip, make_aar, wasm_cc, wasm_compiles,
+        web_runtimes_plan,
+    };
 
     #[test]
     fn an_aar_carries_the_rules_that_keep_the_runtime() {
@@ -609,15 +719,71 @@ mod tests {
     #[test]
     fn an_explicit_compiler_failure_fails_the_distribution() {
         let cc = OsStr::new("/opt/llvm/bin/clang");
-        assert!(web_runtimes_plan(false, true, cc).unwrap());
-        assert!(web_runtimes_plan(true, true, cc).unwrap());
+        let plan = |configured, compiles| web_runtimes_plan(false, configured, || compiles, cc);
+        assert_eq!(plan(false, true).unwrap(), WebRuntimes::Build);
+        assert_eq!(plan(true, true).unwrap(), WebRuntimes::Build);
         // Nothing configured: a machine with no wasm32 clang still gets a
         // distribution, just without the web runtimes.
-        assert!(!web_runtimes_plan(false, false, cc).unwrap());
-        // release.yml always sets CC_wasm32_unknown_unknown: a broken
-        // toolchain there must not quietly ship an archive with no
+        assert_eq!(plan(false, false).unwrap(), WebRuntimes::NoCompiler);
+        // release.yml sets CC_wasm32_unknown_unknown where it builds them: a
+        // broken toolchain there must not quietly ship an archive with no
         // runtime/web.
-        let error = web_runtimes_plan(true, false, cc).unwrap_err().to_string();
+        let error = plan(true, false).unwrap_err().to_string();
         assert!(error.contains("/opt/llvm/bin/clang"), "{error}");
+    }
+
+    #[test]
+    fn web_is_left_out_when_opted_out() {
+        let cc = OsStr::new("/opt/llvm/bin/clang");
+        // The opt-out wins over a configured compiler, without probing it.
+        let plan = web_runtimes_plan(true, true, || panic!("probed the compiler"), cc);
+        assert_eq!(plan.unwrap(), WebRuntimes::OptedOut);
+    }
+
+    /// A stripped executable (this test's own) is smaller and still runs:
+    /// on macOS, signed again.
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn a_stripped_executable_still_runs() {
+        let dir = std::env::temp_dir().join(format!("nsh-strip-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let exe = std::env::current_exe().unwrap();
+        let stripped = dir.join("stripped");
+        super::copy_executable(&exe, &stripped).unwrap();
+        let size = |p: &std::path::Path| fs::metadata(p).unwrap().len();
+        assert!(
+            size(&stripped) < size(&exe),
+            "{} >= {}",
+            size(&stripped),
+            size(&exe)
+        );
+        let output = std::process::Command::new(&stripped)
+            .args(["--list", "--format", "terse"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("a_stripped_executable_still_runs")
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn android_is_left_out_when_opted_out_or_unbuildable() {
+        assert_eq!(android_skip(false, true, || true), None);
+        assert_eq!(
+            android_skip(true, true, || true),
+            Some("NSH_DIST_NO_ANDROID is set")
+        );
+        assert_eq!(
+            android_skip(false, false, || true),
+            Some("the NDK does not run on this machine")
+        );
+        assert_eq!(
+            android_skip(false, true, || false),
+            Some("no Android SDK (ANDROID_HOME)")
+        );
+        // The opt-out wins without searching for an SDK.
+        assert!(android_skip(true, true, || panic!("searched for an SDK")).is_some());
     }
 }

@@ -3468,7 +3468,7 @@ json-strip-comments@3.1.2 (Apache-2.0)
 kurbo@0.13.1 (Apache-2.0 OR MIT)
 lru-slab@0.1.3 (MIT OR Apache-2.0 OR Zlib); authors declared by package: Benjamin Saunders <ben.e.saunders@gmail.com>
 nohash-hasher@0.2.0 (Apache-2.0 OR MIT); authors declared by package: Parity Technologies <admin@parity.io>
-nsh-js@0.4.0 (Apache-2.0)
+nsh-js@0.5.0 (Apache-2.0)
 ntapi@0.4.3 (Apache-2.0 OR MIT); authors declared by package: MSxDOS <melcodos@gmail.com>
 numtoa@0.2.4 (MIT OR Apache-2.0); authors declared by package: Michael Aaron Murphy <mmstickman@gmail.com>
 polycool@0.4.0 (MIT OR Apache-2.0)
@@ -3564,7 +3564,7 @@ https://crates.io/api/v1/crates/zeroize/1.9.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zeroize_derive/1.5.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zune-core/0.5.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/zune-jpeg/0.5.15/download :: LICENSE-APACHE
-https://github.com/M4n5ter/nsh#de176695240d550f2b303643b8019146c7989e7f (adapted; third-party/nsh/crates/nsh-js) :: third_party/llrt-types/LICENSE
+https://github.com/longbridge/nsh#75e009e652ccb18c3dfbcc7e65a44b1f21da538c (adapted; third-party/nsh/crates/nsh-js) :: third_party/llrt-types/LICENSE
 https://raw.githubusercontent.com/google/flatbuffers/7e163021e59cca4f8e1e35a7c828b5c6b7915953/LICENSE
 
 Apache License
@@ -7891,6 +7891,7 @@ objc2-image-io@0.3.2 (Zlib OR Apache-2.0 OR MIT)
 objc2-io-kit@0.3.2 (Zlib OR Apache-2.0 OR MIT)
 objc2-io-surface@0.3.2 (Zlib OR Apache-2.0 OR MIT)
 objc2-quartz-core@0.3.2 (Zlib OR Apache-2.0 OR MIT)
+objc2-screen-capture-kit@0.3.2 (Zlib OR Apache-2.0 OR MIT)
 objc2@0.6.5 (MIT); authors declared by package: Mads Marquart <mads@marquart.dk>
 
 https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md
@@ -16380,7 +16381,6 @@ pin-project-internal@1.1.13 (Apache-2.0 OR MIT)
 pin-project-lite@0.2.17 (Apache-2.0 OR MIT)
 pin-project@1.1.13 (Apache-2.0 OR MIT)
 portable-atomic@1.15.0 (Apache-2.0 OR MIT)
-raw-window-handle@0.6.2 (MIT OR Apache-2.0 OR Zlib); authors declared by package: Osspial <osspial@gmail.com>
 resvg@0.46.0 (Apache-2.0 OR MIT)
 simdutf8@0.1.5 (MIT OR Apache-2.0); authors declared by package: Hans Kratz <hans@appfour.com>
 sync_wrapper@1.0.2 (Apache-2.0); authors declared by package: Actyx AG <developer@actyx.io>
@@ -16454,7 +16454,6 @@ https://crates.io/api/v1/crates/pin-project-internal/1.1.13/download :: LICENSE-
 https://crates.io/api/v1/crates/pin-project-lite/0.2.17/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/pin-project/1.1.13/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/portable-atomic/1.15.0/download :: LICENSE-APACHE
-https://crates.io/api/v1/crates/raw-window-handle/0.6.2/download :: LICENSE-APACHE.md
 https://crates.io/api/v1/crates/resvg/0.46.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/simdutf8/0.1.5/download :: LICENSE-Apache
 https://crates.io/api/v1/crates/sync_wrapper/1.0.2/download :: LICENSE
@@ -25304,22 +25303,199 @@ For these and/or other purposes and motivations, and without any expectation of 
 
 ================================================================================
 
-nsh-base@0.4.0 (Apache-2.0)
-nsh-bundler@0.4.0 (Apache-2.0)
-nsh-core@0.4.0 (Apache-2.0)
-nsh-engine@0.4.0 (Apache-2.0)
-nsh-i18n@0.4.0 (Apache-2.0)
-nsh-macros@0.4.0 (Apache-2.0)
-nsh-package@0.4.0 (Apache-2.0)
-nsh-platform-apple@0.4.0 (Apache-2.0)
-nsh-platform-linux@0.4.0 (Apache-2.0)
-nsh-platform-macos@0.4.0 (Apache-2.0)
-nsh-platform-tui@0.4.0 (Apache-2.0)
-nsh-platform-windows@0.4.0 (Apache-2.0)
-nsh-terminal@0.4.0 (Apache-2.0)
-nsh-updater@0.4.0 (Apache-2.0)
+nsh-base@0.5.0 (Apache-2.0)
 
-https://raw.githubusercontent.com/M4n5ter/nsh/de176695240d550f2b303643b8019146c7989e7f/LICENSE-APACHE
+https://github.com/longbridge/nsh#75e009e652ccb18c3dfbcc7e65a44b1f21da538c (adapted; third-party/nsh/crates/nsh-base) :: fonts/katex.LICENSE.txt
+
+The KaTeX fonts in katex.pack.zst (KaTeX_*.ttf of https://github.com/KaTeX/KaTeX,
+unmodified, packed in one zstd-compressed file):
+
+Copyright (c) 2009-2010 Design Science, Inc.
+Copyright (c) 2014-2018 Khan Academy
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+This license is copied below, and is also available with a FAQ at:
+https://openfontlicense.org
+
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and linguistic communities, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded, 
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply
+to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as
+distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting,
+or substituting -- in part or in whole -- any of the components of the
+Original Version, by changing formats or by porting the Font Software to a
+new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components,
+in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder. This restriction only applies to the primary font name as
+presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created
+using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.
+
+================================================================================
+
+nsh-base@0.5.0 (Apache-2.0)
+
+https://github.com/longbridge/nsh#75e009e652ccb18c3dfbcc7e65a44b1f21da538c (adapted; third-party/nsh/crates/nsh-base) :: src/emoji_picker/emoji.LICENSE.txt
+
+emoji.tsv is generated from emojibase-data (https://github.com/milesj/emojibase),
+whose names and keywords come from the Unicode Common Locale Data Repository.
+
+=== emojibase-data ===
+
+MIT License
+
+Copyright (c) 2017-2019 Miles Johnson
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+=== Unicode CLDR ===
+
+UNICODE LICENSE V3
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2026 Unicode, Inc.
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
+
+================================================================================
+
+nsh-base@0.5.0 (Apache-2.0)
+nsh-bundler@0.5.0 (Apache-2.0)
+nsh-core@0.5.0 (Apache-2.0)
+nsh-engine@0.5.0 (Apache-2.0)
+nsh-i18n@0.5.0 (Apache-2.0)
+nsh-js@0.5.0 (Apache-2.0)
+nsh-macros@0.5.0 (Apache-2.0)
+nsh-package@0.5.0 (Apache-2.0)
+nsh-platform-apple@0.5.0 (Apache-2.0)
+nsh-platform-linux@0.5.0 (Apache-2.0)
+nsh-platform-macos@0.5.0 (Apache-2.0)
+nsh-platform-tui@0.5.0 (Apache-2.0)
+nsh-platform-windows@0.5.0 (Apache-2.0)
+nsh-updater@0.5.0 (Apache-2.0)
+
+https://raw.githubusercontent.com/longbridge/nsh/75e009e652ccb18c3dfbcc7e65a44b1f21da538c/LICENSE-APACHE
 
 Copyright 2026 Longbridge <https://longbridge.com>
 
@@ -26280,6 +26456,112 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
+onig@6.5.3 (MIT); authors declared by package: Will Speak <will@willspeak.me>, Ivan Ivashchenko <defuz@me.com>
+
+https://crates.io/api/v1/crates/onig/6.5.3/download :: LICENSE.md
+
+# Rust-Onig is Open Source!
+
+All source code in this repository is distributed under the terms of
+the *MIT License* unless otherwise stated. The Oniguruma source code
+remains the property of the original authors and is re-distributed
+under the original license.
+
+> The MIT License (MIT)
+> 
+> Copyright (c) 2015 Will Speak <will@willspeak.me>, Ivan Ivashchenko
+> <defuz@me.com>, and contributors.
+> 
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+> 
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+> 
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+================================================================================
+
+onig_sys@69.9.3 (MIT); authors declared by package: Will Speak <will@willspeak.me>, Ivan Ivashchenko <defuz@me.com>
+
+https://crates.io/api/v1/crates/onig_sys/69.9.3/download :: LICENSE.md
+
+# Rust-Onig is Open Source!
+
+All source code in this repository is distributed under the terms of
+the *MIT License* unless otherwise stated. The Oniguruma source code
+remains the property of the original authors and is re-distributed
+under the original license, see [COPYING](oniguruma/COPYING) for more
+information.
+
+> The MIT License (MIT)
+> 
+> Copyright (c) 2015 Will Speak <will@willspeak.me>, Ivan Ivashchenko
+> <defuz@me.com>, and contributors.
+> 
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+> 
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+> 
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+================================================================================
+
+onig_sys@69.9.3 (MIT); authors declared by package: Will Speak <will@willspeak.me>, Ivan Ivashchenko <defuz@me.com>
+
+https://crates.io/api/v1/crates/onig_sys/69.9.3/download :: oniguruma/COPYING
+
+Oniguruma LICENSE
+-----------------
+
+Copyright (c) 2002-2021  K.Kosako  <kkosako0@gmail.com>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
 
 ================================================================================
 
@@ -34037,8 +34319,10 @@ THE SOFTWARE.
 
 quickjs-jit-core@0.14.2 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>, K. <kayo@illumium.org>
 quickjs-jit-macro@0.14.2 (MIT); authors declared by package: K. <kayo@illumium.org>, Mees Delzenne <mees.delzenne@gmail.com>
+quickjs-jit-sys@0.14.2 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>
 quickjs-jit@0.14.2 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>, K. <kayo@illumium.org>
 rquickjs-core@0.14.0 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>, K. <kayo@illumium.org>
+rquickjs-sys@0.14.0 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>
 rquickjs@0.14.0 (MIT); authors declared by package: Mees Delzenne <mees.delzenne@gmail.com>, K. <kayo@illumium.org>
 
 https://crates.io/api/v1/crates/quickjs-jit/0.14.2/download :: LICENSE
@@ -34993,52 +35277,6 @@ This license becomes null and void if any of the above conditions are not met.
 DISCLAIMER
 
 THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM OTHER DEALINGS IN THE FONT SOFTWARE.
-
-================================================================================
-
-raw-window-handle@0.6.2 (MIT OR Apache-2.0 OR Zlib); authors declared by package: Osspial <osspial@gmail.com>
-
-https://crates.io/api/v1/crates/raw-window-handle/0.6.2/download :: LICENSE-MIT.md
-
-MIT License
-
-Copyright (c) 2019 Osspial
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-================================================================================
-
-raw-window-handle@0.6.2 (MIT OR Apache-2.0 OR Zlib); authors declared by package: Osspial <osspial@gmail.com>
-
-https://crates.io/api/v1/crates/raw-window-handle/0.6.2/download :: LICENSE-ZLIB.md
-
-Copyright (c) 2020 Osspial
-
-This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
-
-Permission is granted to anyone to use this software for any purpose, including commercial applications, and to alter it and redistribute it freely, subject to the following restrictions:
-
-1. The origin of this software must not be misrepresented; you must not claim that you wrote the original software. If you use this software in a product, an acknowledgment in the product documentation would be appreciated but is not required.
-
-2. Altered source versions must be plainly marked as such, and must not be misrepresented as being the original software.
-
-3. This notice may not be removed or altered from any source distribution.
 
 ================================================================================
 

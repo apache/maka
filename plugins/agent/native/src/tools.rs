@@ -22,7 +22,7 @@
 mod computer;
 pub(crate) mod image;
 mod shell;
-mod title;
+pub(crate) mod title;
 mod web;
 use crate::contract::{ServiceTool, ToolConfirmation, ToolInput, ToolResult};
 use crate::owner::access::RunAccess;

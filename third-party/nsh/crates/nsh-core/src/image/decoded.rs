@@ -365,7 +365,10 @@ impl<V: Clone + Send + Sync + 'static> Images<V> {
         stage: &Mutex<Stage>,
         done: Done<V>,
     ) {
-        let natural = self.natural(&source).or_else(|| Natural::of(&bytes));
+        let natural = self
+            .natural(&source)
+            .or_else(|| bytes.rgba().map(|(w, h, _)| Natural::Pixels(w, h)))
+            .or_else(|| Natural::of(&bytes));
         let (key, target) = self.key(request, &source, natural);
         {
             let mut s = lock(stage);

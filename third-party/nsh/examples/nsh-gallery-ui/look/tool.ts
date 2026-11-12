@@ -26,7 +26,7 @@ export interface ToggleLookOptions {
    * hover. A `Toggle` needs none of it: its `pressedStyle` follows its
    * `pressed`. */
   on?: Live<boolean | undefined>;
-  /** No hover and no press feedback; dimmed to 40% (`disabledStyle`). */
+  /** No hover and no press feedback; dimmed to 50% (`disabledStyle`). */
   disabled?: Live<boolean | undefined>;
   /** More style (a flex, a width, a margin), over the look's. */
   style?: Live<ViewStyle | undefined>;
@@ -76,7 +76,7 @@ const dimensions = (o?: ToggleLookOptions) => toggleSizes[read(o?.size) ?? "regu
  * edge; on (`pressedStyle`), it takes `finish.on`, a fill that stands off
  * its surface in both appearances, further than the hover's whisper of the
  * text color. Pressed it sinks to 92% (none with reduced motion). Keyboard
- * focus: `focusRing(1)`. Disabled: 40%, no hover or press. Pair it with
+ * focus: `focusRing(1)`. Disabled: 50%, no hover or press. Pair it with
  * `toggleLabel` for a label and `toggleGlyph` for an icon: muted while
  * off, the text's color while on.
  */
@@ -114,10 +114,10 @@ export function toggleLook(o?: ToggleLookOptions) {
     get activeStyle(): ViewStyle | undefined {
       return read(o?.disabled) ? undefined : sink(0.92);
     },
-    get focusStyle(): ViewStyle {
+    get focusVisibleStyle(): ViewStyle {
       return focusRing(1);
     },
-    disabledStyle: { opacity: 0.4 } as ViewStyle,
+    disabledStyle: { opacity: 0.5 } as ViewStyle,
     get hitSlop(): number | undefined {
       return slop(dimensions(o).side);
     },

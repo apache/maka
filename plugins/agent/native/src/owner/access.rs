@@ -56,8 +56,7 @@ pub(crate) async fn reserved_sandbox_floor(
             .into();
     let workspace = workspace.clone();
     tokio::task::spawn_blocking(move || {
-        let namespace =
-            maka_process::isolated::protected_namespace().map_err(|error| error.to_string())?;
+        let namespace = maka_sandbox::native_task_namespace().map_err(|error| error.to_string())?;
         let private = maka_workspace_support::private_rules(&workspace, &root)?;
         Sandbox::Managed {
             filesystem: Policy {

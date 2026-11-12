@@ -1,16 +1,31 @@
 //! `nsh.json` `"ios"` and `"macos"`: the `Info.plist` keys and the
-//! entitlements an app adds to what `nsh package` writes for it.
+//! entitlements an app adds to what `nsh package` writes for it, and how a
+//! macOS app takes part in the system's UI (`macos.activationPolicy`).
 //!
 //! Values are JSON, written as property list values (strings, numbers,
 //! booleans, arrays, dictionaries). The keys NSH sets from other `nsh.json`
 //! keys or that the runtime depends on are NSH's ([`ApplePlatform::reserved`]):
 //! an app setting one is an error that names what to set instead. Every other
-//! key the app sets replaces NSH's default, if it has one.
+//! key the app sets replaces NSH's default, if it has one. The oldest system
+//! the app runs on (`MinimumOSVersion`, `LSMinimumSystemVersion`) is such a
+//! default, which an app raises for the APIs of a later system but never
+//! lowers below the runtime's own ([`IOS_MINIMUM`], [`MACOS_MINIMUM`]).
 
 use anyhow::bail;
 use serde::Deserialize;
 
-/// `nsh.json` `"ios"` or `"macos"`.
+/// The oldest iOS the runtime runs on: the deployment target it is built
+/// for (`.cargo/config.toml`'s `IPHONEOS_DEPLOYMENT_TARGET`, `cargo xtask
+/// dist`). Packages declare it (`MinimumOSVersion`, and `actool`'s
+/// deployment target) unless the app raises it.
+pub(crate) const IOS_MINIMUM: &str = "15.0";
+
+/// The oldest macOS the AppKit runtime runs on (its display links are
+/// `NSView`'s, new in macOS 14). Packages declare it
+/// (`LSMinimumSystemVersion`) unless the app raises it.
+pub(crate) const MACOS_MINIMUM: &str = "14.0";
+
+/// `nsh.json` `"ios"` (and the keys [`MacosConfig`] shares with it).
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AppleConfig {
@@ -21,6 +36,66 @@ pub(crate) struct AppleConfig {
     /// against the provisioning profile.
     #[serde(default)]
     pub(crate) entitlements: serde_json::Map<String, serde_json::Value>,
+}
+
+/// `nsh.json` `"macos"`: [`AppleConfig`]'s keys, and the app's activation
+/// policy, which iOS has no counterpart of.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MacosConfig {
+    /// Keys added to the app's `Info.plist`.
+    #[serde(default)]
+    pub(crate) info_plist: serde_json::Map<String, serde_json::Value>,
+    /// Entitlements the app is signed with.
+    #[serde(default)]
+    pub(crate) entitlements: serde_json::Map<String, serde_json::Value>,
+    /// How the app takes part in the system's UI. Every way NSH starts it
+    /// on macOS applies it before the app's code runs: packages say so in
+    /// their `Info.plist` (`LSUIElement`) and `app.json` (as the Rust apps
+    /// `nsh run` runs in place do), `nsh run` and `nsh test` pass it to the
+    /// development host (`--activation-policy`).
+    #[serde(default)]
+    pub(crate) activation_policy: ActivationPolicy,
+}
+
+/// `nsh.json` `macos.activationPolicy`, as GPUI's `ActivationPolicy`. Read
+/// from its name only: serde's own enums also take an object
+/// (`{ "accessory": null }`), and one `nsh.json`'s reader could not leave
+/// out as it does a value of another form.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub(crate) enum ActivationPolicy {
+    /// A Dock icon, the menu bar while the app is active, a place in the
+    /// app switcher.
+    #[default]
+    Regular,
+    /// None of them: a menu bar app.
+    Accessory,
+}
+
+impl ActivationPolicy {
+    /// Its name in `nsh.json`, `app.json` and the development host's
+    /// `--activation-policy`.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            ActivationPolicy::Regular => "regular",
+            ActivationPolicy::Accessory => "accessory",
+        }
+    }
+}
+
+impl TryFrom<String> for ActivationPolicy {
+    type Error = String;
+
+    fn try_from(name: String) -> Result<Self, String> {
+        match name.as_str() {
+            "regular" => Ok(ActivationPolicy::Regular),
+            "accessory" => Ok(ActivationPolicy::Accessory),
+            _ => Err(format!(
+                "unknown variant `{name}`, expected `regular` or `accessory`"
+            )),
+        }
+    }
 }
 
 /// The Apple platform an [`AppleConfig`] is for.
@@ -40,20 +115,21 @@ enum Owner {
 }
 
 /// The `Info.plist` keys of every Apple package that are NSH's.
-const RESERVED_INFO: [(&str, Owner); 8] = [
+const RESERVED_INFO: [(&str, Owner); 9] = [
     ("CFBundleIdentifier", Owner::Config("id")),
     ("CFBundleName", Owner::Config("name")),
     ("CFBundleDisplayName", Owner::Config("name")),
     ("CFBundleShortVersionString", Owner::Config("version")),
     ("CFBundleVersion", Owner::Config("build")),
     ("CFBundleURLTypes", Owner::Config("schemes")),
+    ("CFBundleDocumentTypes", Owner::Config("fileTypes")),
     ("CFBundleExecutable", Owner::Package),
     ("CFBundlePackageType", Owner::Package),
 ];
 
 /// The `Info.plist` keys of iOS packages that are NSH's, besides
 /// [`RESERVED_INFO`].
-const RESERVED_IOS_INFO: [(&str, Owner); 11] = [
+const RESERVED_IOS_INFO: [(&str, Owner); 10] = [
     ("CFBundleIcons", Owner::Config("icon")),
     ("CFBundleIcons~ipad", Owner::Config("icon")),
     ("CFBundleIconName", Owner::Config("icon")),
@@ -61,7 +137,6 @@ const RESERVED_IOS_INFO: [(&str, Owner); 11] = [
     ("UIStatusBarStyle", Owner::Config("statusBar")),
     ("UIStatusBarHidden", Owner::Config("statusBar")),
     ("CFBundleSupportedPlatforms", Owner::Package),
-    ("MinimumOSVersion", Owner::Package),
     ("LSRequiresIPhoneOS", Owner::Package),
     ("UIApplicationSceneManifest", Owner::Package),
     ("UIApplicationSupportsMultipleScenes", Owner::Package),
@@ -71,8 +146,8 @@ const RESERVED_IOS_INFO: [(&str, Owner); 11] = [
 /// [`RESERVED_INFO`].
 const RESERVED_MACOS_INFO: [(&str, Owner); 4] = [
     ("CFBundleIconFile", Owner::Config("icon")),
+    ("LSUIElement", Owner::Config("macos.activationPolicy")),
     ("CFBundleSupportedPlatforms", Owner::Package),
-    ("LSMinimumSystemVersion", Owner::Package),
     ("NSPrincipalClass", Owner::Package),
 ];
 
@@ -101,13 +176,38 @@ impl ApplePlatform {
         };
         RESERVED_INFO.iter().chain(own)
     }
+
+    /// The system's name, for errors.
+    fn os(self) -> &'static str {
+        match self {
+            ApplePlatform::Ios => "iOS",
+            ApplePlatform::Macos => "macOS",
+        }
+    }
+
+    /// The `Info.plist` key of the oldest system version the app runs on.
+    fn minimum_key(self) -> &'static str {
+        match self {
+            ApplePlatform::Ios => "MinimumOSVersion",
+            ApplePlatform::Macos => "LSMinimumSystemVersion",
+        }
+    }
+
+    /// The oldest system version the runtime runs on: the
+    /// [`minimum_key`](Self::minimum_key) of packages whose app does not
+    /// raise it.
+    fn minimum(self) -> &'static str {
+        match self {
+            ApplePlatform::Ios => IOS_MINIMUM,
+            ApplePlatform::Macos => MACOS_MINIMUM,
+        }
+    }
 }
 
 impl AppleConfig {
     /// The app's `Info.plist` keys as property list values.
     pub(crate) fn info_plist(&self, platform: ApplePlatform) -> anyhow::Result<plist::Dictionary> {
-        let section = format!("{}.infoPlist", platform.key());
-        convert(&self.info_plist, &section, platform.reserved())
+        info_plist(&self.info_plist, platform)
     }
 
     /// The app's entitlements as property list values.
@@ -115,8 +215,7 @@ impl AppleConfig {
         &self,
         platform: ApplePlatform,
     ) -> anyhow::Result<plist::Dictionary> {
-        let section = format!("{}.entitlements", platform.key());
-        convert(&self.entitlements, &section, RESERVED_ENTITLEMENTS.iter())
+        entitlements(&self.entitlements, platform)
     }
 
     /// Checks both when `nsh.json` is read, so a mistake shows before a
@@ -126,6 +225,107 @@ impl AppleConfig {
         self.entitlements(platform)?;
         Ok(())
     }
+}
+
+impl MacosConfig {
+    /// The app's `Info.plist` keys as property list values.
+    pub(crate) fn info_plist(&self) -> anyhow::Result<plist::Dictionary> {
+        info_plist(&self.info_plist, ApplePlatform::Macos)
+    }
+
+    /// The app's entitlements as property list values.
+    pub(crate) fn entitlements(&self) -> anyhow::Result<plist::Dictionary> {
+        entitlements(&self.entitlements, ApplePlatform::Macos)
+    }
+
+    /// Checks both when `nsh.json` is read, so a mistake shows before a
+    /// build.
+    pub(crate) fn check(&self) -> anyhow::Result<()> {
+        self.info_plist()?;
+        self.entitlements()?;
+        Ok(())
+    }
+
+    /// The development host's arguments that start the app as `nsh.json`
+    /// says (`nsh run`, `nsh test`): none for the default.
+    pub(crate) fn host_args(&self) -> Vec<&'static str> {
+        match self.activation_policy {
+            ActivationPolicy::Regular => Vec::new(),
+            policy => vec!["--activation-policy", policy.as_str()],
+        }
+    }
+
+    /// Adds to `info`, the app's `app.json`, what the release runner reads
+    /// before the app's code runs: nothing for the default.
+    pub(crate) fn add_to_app_json(&self, info: &mut serde_json::Value) {
+        if self.activation_policy != ActivationPolicy::Regular {
+            info["activationPolicy"] = self.activation_policy.as_str().into();
+        }
+    }
+}
+
+/// `nsh.json` `<platform>.infoPlist` as property list values.
+fn info_plist(
+    entries: &serde_json::Map<String, serde_json::Value>,
+    platform: ApplePlatform,
+) -> anyhow::Result<plist::Dictionary> {
+    let section = format!("{}.infoPlist", platform.key());
+    if let Some(value) = entries.get(platform.minimum_key()) {
+        check_minimum(value, platform, &section)?;
+    }
+    convert(entries, &section, platform.reserved())
+}
+
+/// Checks the app's own minimum system version (`value`, its
+/// [`ApplePlatform::minimum_key`] in `section`): a version string that
+/// raises the runtime's minimum or names it, never one below it, which
+/// would let the system install the app where the runtime cannot run.
+fn check_minimum(
+    value: &serde_json::Value,
+    platform: ApplePlatform,
+    section: &str,
+) -> anyhow::Result<()> {
+    let minimum = platform.minimum();
+    let problem = match value {
+        serde_json::Value::String(text) => match version(text) {
+            Some(raised) if version(minimum).is_some_and(|floor| raised >= floor) => {
+                return Ok(());
+            }
+            Some(_) => format!("{text:?} is below NSH's minimum"),
+            None => format!("{text:?} is no version"),
+        },
+        other => format!("{other} is no string"),
+    };
+    bail!(
+        "nsh.json {section}.{}: {problem}; write the {} version the app needs as a string of \
+         numbers and dots, from NSH's minimum, \"{minimum}\", up",
+        platform.minimum_key(),
+        platform.os()
+    )
+}
+
+/// The numbers of a version string of one to three (`"15"`, `"15.2"`,
+/// `"15.2.1"`), those left out 0, so `"14"` is `"14.0"`; `None` for
+/// anything else.
+fn version(text: &str) -> Option<[u32; 3]> {
+    let mut numbers = [0; 3];
+    for (i, part) in text.split('.').enumerate() {
+        // Digits only: `parse` also takes a sign.
+        if i == numbers.len() || part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        numbers[i] = part.parse().ok()?;
+    }
+    Some(numbers)
+}
+
+/// `nsh.json` `<platform>.entitlements` as property list values.
+fn entitlements(
+    entries: &serde_json::Map<String, serde_json::Value>,
+    platform: ApplePlatform,
+) -> anyhow::Result<plist::Dictionary> {
+    let section = format!("{}.entitlements", platform.key());
+    convert(entries, &section, RESERVED_ENTITLEMENTS.iter())
 }
 
 /// `entries` as a property list dictionary, refusing the `reserved` keys.
@@ -356,18 +556,18 @@ mod tests {
         );
         let error = refused(
             ApplePlatform::Ios,
-            serde_json::json!({ "infoPlist": { "MinimumOSVersion": "17.0" } }),
+            serde_json::json!({ "infoPlist": { "LSRequiresIPhoneOS": false } }),
         );
         assert!(
-            error.contains("`MinimumOSVersion` is set by NSH"),
+            error.contains("`LSRequiresIPhoneOS` is set by NSH"),
             "{error}"
         );
         let error = refused(
             ApplePlatform::Macos,
-            serde_json::json!({ "infoPlist": { "LSMinimumSystemVersion": "15.0" } }),
+            serde_json::json!({ "infoPlist": { "NSPrincipalClass": "App" } }),
         );
         assert!(
-            error.contains("macos.infoPlist: `LSMinimumSystemVersion`"),
+            error.contains("macos.infoPlist: `NSPrincipalClass`"),
             "{error}"
         );
         let error = refused(
@@ -386,12 +586,183 @@ mod tests {
             error.contains("`CFBundleURLTypes` is set by NSH from `schemes`"),
             "{error}"
         );
+        let macos = |json| serde_json::from_value::<MacosConfig>(json).unwrap();
+        let error = macos(serde_json::json!({ "infoPlist": { "LSUIElement": true } }))
+            .check()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(
+                "macos.infoPlist: `LSUIElement` is set by NSH from `macos.activationPolicy`; set \
+                 `macos.activationPolicy` instead"
+            ),
+            "{error}"
+        );
         // A key that is NSH's on one platform only is the app's on the other.
         assert!(
-            config(serde_json::json!({ "infoPlist": { "LSMinimumSystemVersion": "15.0" } }))
+            config(serde_json::json!({ "infoPlist": { "NSPrincipalClass": "App" } }))
                 .check(ApplePlatform::Ios)
                 .is_ok()
         );
+    }
+
+    /// An app raises the oldest system its package runs on, never below the
+    /// runtime's: anything else is an error when `nsh.json` is read.
+    #[test]
+    fn apps_raise_the_minimum_system_version() {
+        let check = |platform: ApplePlatform, value: serde_json::Value| {
+            let mut info = serde_json::Map::new();
+            info.insert(platform.minimum_key().to_owned(), value);
+            config(serde_json::json!({ "infoPlist": info })).check(platform)
+        };
+        // NSH's own, written either way, and later ones.
+        let accepted = [
+            (
+                ApplePlatform::Ios,
+                ["15", "15.0", "15.0.0", "16.4", "17.0.1"],
+            ),
+            (ApplePlatform::Macos, ["14", "14.0", "15", "15.2", "15.2.1"]),
+        ];
+        for (platform, values) in accepted {
+            for value in values {
+                check(platform, value.into()).unwrap();
+                // Written as the app wrote it.
+                let info = config(serde_json::json!({
+                    "infoPlist": { platform.minimum_key(): value }
+                }))
+                .info_plist(platform)
+                .unwrap();
+                assert_eq!(
+                    info[platform.minimum_key()],
+                    plist::Value::String(value.into())
+                );
+            }
+        }
+        let below = [
+            (ApplePlatform::Ios, ["14.0", "14.9.9", "13", "8"]),
+            (ApplePlatform::Macos, ["13.0", "13.9.9", "13", "10.15"]),
+        ];
+        for (platform, values) in below {
+            for value in values {
+                let error = check(platform, value.into()).unwrap_err().to_string();
+                assert!(
+                    error.contains(&format!(
+                        "{}.infoPlist.{}: {value:?} is below NSH's minimum",
+                        platform.key(),
+                        platform.minimum_key()
+                    )),
+                    "{error}"
+                );
+                // The error says what to write instead.
+                assert!(
+                    error.contains(&format!(
+                        "write the {} version the app needs as a string of numbers and dots, \
+                         from NSH's minimum, \"{}\", up",
+                        platform.os(),
+                        platform.minimum()
+                    )),
+                    "{error}"
+                );
+            }
+        }
+        for platform in [ApplePlatform::Ios, ApplePlatform::Macos] {
+            for malformed in [
+                "abc", "15.x", "", "15.", ".15", "15..2", "15.2.1.4", " 15.2", "+15", "v15", "１５",
+            ] {
+                let error = check(platform, malformed.into()).unwrap_err().to_string();
+                assert!(
+                    error.contains(&format!("{malformed:?} is no version")),
+                    "{error}"
+                );
+            }
+            for other in [
+                serde_json::json!(15),
+                serde_json::json!(15.2),
+                serde_json::json!(true),
+                serde_json::json!(null),
+                serde_json::json!(["15.2"]),
+                serde_json::json!({ "version": "15.2" }),
+            ] {
+                let error = check(platform, other.clone()).unwrap_err().to_string();
+                assert!(error.contains(&format!("{other} is no string")), "{error}");
+            }
+        }
+        // `macos`'s own section reads it as `ios`'s does.
+        let macos = |json| serde_json::from_value::<MacosConfig>(json).unwrap();
+        assert!(
+            macos(serde_json::json!({ "infoPlist": { "LSMinimumSystemVersion": "15.2" } }))
+                .check()
+                .is_ok()
+        );
+        let error = macos(serde_json::json!({ "infoPlist": { "LSMinimumSystemVersion": "13.0" } }))
+            .check()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("macos.infoPlist.LSMinimumSystemVersion: \"13.0\" is below"),
+            "{error}"
+        );
+        // The other platform's key is the app's own, as it writes it.
+        assert!(
+            config(serde_json::json!({ "infoPlist": { "LSMinimumSystemVersion": "11.0" } }))
+                .check(ApplePlatform::Ios)
+                .is_ok()
+        );
+        assert!(
+            macos(serde_json::json!({ "infoPlist": { "MinimumOSVersion": "11.0" } }))
+                .check()
+                .is_ok()
+        );
+    }
+
+    /// Versions compare number by number, the numbers left out 0.
+    #[test]
+    fn versions_compare_by_their_numbers() {
+        assert_eq!(version("15.2.1"), Some([15, 2, 1]));
+        assert_eq!(version("14"), version("14.0"));
+        assert_eq!(version("14.0"), version("14.0.0"));
+        assert!(version("15.10") > version("15.9"));
+        assert!(version("15") > version("14.9.9"));
+        assert!(version(IOS_MINIMUM).is_some());
+        assert!(version(MACOS_MINIMUM).is_some());
+        assert_eq!(version("4294967296"), None);
+    }
+
+    /// `macos.activationPolicy`: `regular` unless the app says
+    /// `accessory`, which the development host and `app.json` are told.
+    #[test]
+    fn macos_apps_choose_their_activation_policy() {
+        let macos = |json| serde_json::from_value::<MacosConfig>(json);
+        let regular = macos(serde_json::json!({})).unwrap();
+        assert_eq!(regular.activation_policy, ActivationPolicy::Regular);
+        assert!(regular.host_args().is_empty());
+        let mut info = serde_json::json!({ "id": "com.a" });
+        regular.add_to_app_json(&mut info);
+        assert_eq!(info, serde_json::json!({ "id": "com.a" }));
+        let accessory = macos(serde_json::json!({ "activationPolicy": "accessory" })).unwrap();
+        assert_eq!(accessory.activation_policy, ActivationPolicy::Accessory);
+        assert_eq!(accessory.host_args(), ["--activation-policy", "accessory"]);
+        accessory.add_to_app_json(&mut info);
+        assert_eq!(
+            info,
+            serde_json::json!({ "id": "com.a", "activationPolicy": "accessory" })
+        );
+        assert_eq!(
+            macos(serde_json::json!({ "activationPolicy": "regular" }))
+                .unwrap()
+                .activation_policy,
+            ActivationPolicy::Regular
+        );
+        // `nsh.json`'s reader leaves another value out with a warning, an
+        // object (the form serde's own enums also take) too.
+        for value in [
+            serde_json::json!("dock"),
+            serde_json::json!("Accessory"),
+            serde_json::json!(true),
+            serde_json::json!({ "accessory": null }),
+        ] {
+            assert!(macos(serde_json::json!({ "activationPolicy": value })).is_err());
+        }
     }
 
     fn dictionary(json: serde_json::Value) -> plist::Dictionary {

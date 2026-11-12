@@ -743,6 +743,9 @@ pub(crate) fn draw_view(cx: &mut DrawCx<'_>, view: &NshView, parent: Mat4, origi
     // Drawn above a web view reached before it, if any.
     cx.realize();
     let layered = crate::decor::layered(&state);
+    // A partial frame needs only what it clears: the view's own paint when
+    // damage meets it, its children always.
+    let paint_own = own_paint_needed(cx, &own, &state, layered);
     // Opacity applies to the view and its subtree as one group. When the
     // view paints a single shape, fading that shape's color is the same
     // and needs no layer.
@@ -772,13 +775,36 @@ pub(crate) fn draw_view(cx: &mut DrawCx<'_>, view: &NshView, parent: Mat4, origi
         crate::decor::draw_layered(cx, view, world);
         cx.group_area = outer;
     } else {
-        draw_content(cx, view, world);
+        draw_content(cx, view, world, paint_own);
     }
     cx.alpha = alpha;
     cx.fade = fade;
     if grouped {
         cx.pop();
     }
+}
+
+/// Whether this pass must paint what `view` draws itself (its backdrop
+/// filter, shadows, background, shader, content, hosted items, scroll
+/// indicator and border). A partial frame leaves a view whose own painted
+/// area (`own`) no damage meets unpainted: everything it would draw is
+/// clipped away. Its children are still traversed ([`draw_content`]), so
+/// this is only about the view's own paint.
+///
+/// Effects that reach beyond a view's own pixels keep the full path:
+/// hosted items (drawn above the children), filters and blend modes (drawn
+/// offscreen as one image), and shader views (an effect shader draws its
+/// children as its content, and a shader reading a backdrop must still
+/// read it on the off-damage path: `take_backdrop` hydrates it, and this
+/// module cannot ask [`crate::shader::ShaderState`] which inputs it reads).
+fn own_paint_needed(cx: &DrawCx<'_>, own: &D2D_RECT_F, state: &ViewState, layered: bool) -> bool {
+    let Some(damage) = &cx.damage else {
+        return true;
+    };
+    damage.iter().any(|d| intersects(own, d))
+        || !state.natives.is_empty()
+        || layered
+        || state.shader.is_some()
 }
 
 /// True if `view` (its `state`) paints at most one shape, its background
@@ -925,18 +951,25 @@ pub(crate) fn drawn_area(view: &NshView) -> Option<D2D_RECT_F> {
 /// Draws what `view` draws and its subtree at `world` (set on the context):
 /// the backdrop filter, shadows and background, the content clipped to the
 /// bounds, the children, the hosted items, the scroll indicator, the
-/// border and outline.
-pub(crate) fn draw_content(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) {
+/// border and outline. `paint_own` false ([`own_paint_needed`]) skips
+/// everything but the backdrop read and the children.
+pub(crate) fn draw_content(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4, paint_own: bool) {
+    // Before anything of the view draws, and before its children: the
+    // pixels behind it are what its shader reads as its backdrop.
     crate::shader::take_backdrop(cx, view);
     let state = view.state();
-    crate::decor::draw_backdrop(cx, &state);
-    crate::decor::draw_background(cx, &state);
-    crate::shader::draw(cx, &state);
+    if paint_own {
+        crate::decor::draw_backdrop(cx, &state);
+        crate::decor::draw_background(cx, &state);
+        crate::shader::draw(cx, &state);
+    }
     let clip = state.clips();
     let (w, h) = (state.frame.size.width.0, state.frame.size.height.0);
     // Most views (boxes, rows) have no content of their own: no clip for it.
-    let content = state.text.is_some() || state.image.is_some() || state.canvas.is_some();
+    let content =
+        paint_own && (state.text.is_some() || state.image.is_some() || state.canvas.is_some());
     if clip {
+        // The children are clipped even when nothing of the view draws.
         cx.push_clip_rounded(crate::geom::rect(0.0, 0.0, w, h), state.radii());
     } else if content {
         // The view's own content stays inside it, as a UIKit view's drawing
@@ -951,7 +984,13 @@ pub(crate) fn draw_content(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) {
     if !clip && content {
         cx.pop();
     }
-    let natives = state.natives.clone();
+    // Hosted items keep the full path, so none draw when the own paint is
+    // skipped.
+    let natives = if paint_own {
+        state.natives.clone()
+    } else {
+        Vec::new()
+    };
     let effect = crate::shader::effect(&state);
     drop(state);
     // An effect's children are its shader's content.
@@ -1006,19 +1045,24 @@ pub(crate) fn draw_content(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) {
         }
     }
     let state = view.state();
-    let above = crate::scroll::indicates(&state)
-        || state.borders().is_visible()
-        || state.style.outline.is_visible();
+    let above = paint_own
+        && (crate::scroll::indicates(&state)
+            || state.borders().is_visible()
+            || state.style.outline.is_visible());
     if above {
         // A scroll indicator, a border over a web view.
         cx.realize();
     }
-    cx.set_transform(world);
-    crate::scroll::draw_indicator(cx, view, &state);
+    if paint_own {
+        cx.set_transform(world);
+        crate::scroll::draw_indicator(cx, view, &state);
+    }
     if clip {
         cx.pop();
     }
-    crate::decor::draw_border(cx, &state);
+    if paint_own {
+        crate::decor::draw_border(cx, &state);
+    }
 }
 
 /// Most pixels along a side of a 3D-transformed view's bitmap.
@@ -1345,17 +1389,24 @@ pub(crate) fn frame(surface: &Rc<Surface>) -> bool {
     let Some(chain) = swap.as_mut() else {
         return false;
     };
-    chain.set_background(crate::system::window_background(surface));
     let resized = chain.size != (size.0.max(1), size.1.max(1));
     if let Err(err) = chain.resize(&gfx, size) {
         log::error!("cannot resize the swap chain: {err}");
         *swap = None;
         return false;
     }
-    // A window that is resized draws now (never stretched pixels); the
-    // others wait until the compositor has room, so that no window's
-    // present holds the thread up for another's vblank. The damage stays.
-    if !resized && !chain.ready() {
+    // A window that is resized draws now, once its frame in flight is shown:
+    // a resize's frames presented faster than the display shows them would
+    // queue up, and the window would trail the pointer by all of them. That
+    // wait holds the thread up for a vblank at most, the one exception: the
+    // others wait until the compositor has room, so that no window's present
+    // holds the thread up for another's vblank. The damage stays.
+    let ready = if resized {
+        chain.wait_ready()
+    } else {
+        chain.ready()
+    };
+    if !ready {
         return true;
     }
     if (surface.target_scale.get() - scale).abs() > f32::EPSILON {
@@ -1668,17 +1719,20 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
     let Some(chain) = swap.as_mut() else {
         return false;
     };
-    // Its own background (its scheme, see-through or not).
-    chain.set_background(crate::app_window::background(surface, root.id()));
     let resized = chain.size != (size.0.max(1), size.1.max(1));
     if let Err(err) = chain.resize(&gfx, size) {
         log::error!("cannot resize a window's swap chain: {err}");
         *swap = None;
         return false;
     }
-    // As the main window's ([`frame`]): resized, it draws now; otherwise it
-    // waits until its swap chain has room.
-    if !resized && !chain.ready() {
+    // As the main window's ([`frame`]): resized, it draws once its frame in
+    // flight is shown; otherwise it waits until its swap chain has room.
+    let ready = if resized {
+        chain.wait_ready()
+    } else {
+        chain.ready()
+    };
+    if !ready {
         return true;
     }
     if (target_scale.replace(scale) - scale).abs() > f32::EPSILON {
@@ -1742,6 +1796,9 @@ fn draw_into(
     areas: Option<&[D2D_RECT_F]>,
     window: Option<(&NshView, (u32, u32))>,
 ) -> windows::core::Result<Drawn> {
+    // The decoration bitmaps this pass draws with are the last evicted if
+    // the cache overflows mid-frame ([`crate::decor::begin_frame`]).
+    let _frame = crate::decor::begin_frame();
     let (window, pixels) = match window {
         Some((root, pixels)) => (Some(root), pixels),
         None => (None, surface.pixel_size()),
@@ -2030,6 +2087,89 @@ mod tests {
         }
     }
 
+    /// Fails with the first differing BGRA pixel.
+    fn assert_same_pixels(
+        gfx: &Gfx,
+        a: &ID2D1Bitmap1,
+        b: &ID2D1Bitmap1,
+        size: (u32, u32),
+        what: &str,
+    ) {
+        let (a, b) = (read(gfx, a, size), read(gfx, b, size));
+        if a == b {
+            return;
+        }
+        let at = a
+            .iter()
+            .zip(&b)
+            .position(|(x, y)| x != y)
+            .expect("they differ");
+        let pixel = at / 4;
+        let end = (at + 4).min(a.len());
+        panic!(
+            "{what}: pixels differ first at ({}, {}): {:?} vs {:?}",
+            pixel % size.0 as usize,
+            pixel / size.0 as usize,
+            &a[at..end],
+            &b[at..end]
+        );
+    }
+
+    /// Draws `areas` as a partial frame over `back` (which holds a whole
+    /// frame), then renders a fresh whole frame and compares every BGRA
+    /// byte with it.
+    fn fill_with_damage_and_compare_whole(
+        surface: &Rc<Surface>,
+        gfx: &Gfx,
+        back: &ID2D1Bitmap1,
+        size: (u32, u32),
+        areas: &[D2D_RECT_F],
+    ) {
+        draw_into(surface, gfx, back, 1.0, false, None, Some(areas), None).unwrap();
+        let fresh = target(gfx, size);
+        draw_into(surface, gfx, &fresh, 1.0, false, None, None, None).unwrap();
+        assert_same_pixels(gfx, back, &fresh, size, "the partial frame and a whole one");
+    }
+
+    /// The areas `surface` reports as changed (window DIPs), after the
+    /// first whole frame's damage was taken.
+    fn changed_areas(surface: &Surface, size: (u32, u32)) -> Vec<D2D_RECT_F> {
+        let damage = surface.take_damage().unwrap_or_else(|| {
+            vec![D2D_RECT_F {
+                left: 0.0,
+                top: 0.0,
+                right: size.0 as f32,
+                bottom: size.1 as f32,
+            }]
+        });
+        merged(pixel_rects(&damage, 1.0, size))
+            .iter()
+            .map(|r| {
+                rect_f(
+                    r.left as f32,
+                    r.top as f32,
+                    (r.right - r.left) as f32,
+                    (r.bottom - r.top) as f32,
+                )
+            })
+            .collect()
+    }
+
+    /// A hosted item painting its rectangle red, drawn above the children.
+    struct RedItem;
+
+    impl Hosted for RedItem {
+        fn draw(&self, cx: &mut DrawCx<'_>, size: (f32, f32)) {
+            // SAFETY: COM calls between BeginDraw and EndDraw.
+            unsafe {
+                cx.dc.FillRectangle(
+                    &rect_f(0.0, 0.0, size.0, size.1),
+                    cx.solid(Color(0xff0000ff)),
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_partial_frame_draws_what_a_whole_one_does() {
         let Ok(gfx) = gfx::get() else {
@@ -2096,6 +2236,686 @@ mod tests {
         assert!(read(&gfx, &back, size) == read(&gfx, &fresh, size));
         // Nothing changed since: nothing to draw.
         assert!(surface.take_damage().is_none_or(|d| d.is_empty()));
+    }
+
+    /// A uniform background fill draws a rounded rectangle and makes no
+    /// geometry; corners that differ make one.
+    #[test]
+    fn a_uniform_background_fill_makes_no_geometry() {
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let size = (80, 60);
+        let surface = Surface::new(Default::default());
+        surface.resized(size, 1.0);
+        let root = surface.root.clone();
+        let uniform = view(Some(&root), 2, ViewKind::View, rect(10.0, 10.0, 40.0, 30.0));
+        {
+            let mut s = uniform.state_mut();
+            s.style.background_color = Color(0x224488ff);
+            s.style.border_radius = Points(8.0);
+        }
+        let into = target(&gfx, size);
+        crate::decor::probe::reset();
+        draw_into(&surface, &gfx, &into, 1.0, false, None, None, None).unwrap();
+        assert_eq!(crate::decor::probe::geometries(), 0);
+
+        let surface = Surface::new(Default::default());
+        surface.resized(size, 1.0);
+        let root = surface.root.clone();
+        let differing = view(Some(&root), 2, ViewKind::View, rect(10.0, 10.0, 40.0, 30.0));
+        {
+            let mut s = differing.state_mut();
+            s.style.background_color = Color(0x224488ff);
+            s.style.border_radius = Points(8.0);
+            s.style.corner_radius.top_right = Some(Points(2.0));
+        }
+        let into = target(&gfx, size);
+        crate::decor::probe::reset();
+        draw_into(&surface, &gfx, &into, 1.0, false, None, None, None).unwrap();
+        assert_eq!(crate::decor::probe::geometries(), 1);
+    }
+
+    /// Damage that meets a parent's own decoration repaints it and the
+    /// child in it, while a child outside the damage stays as it was: the
+    /// partial frame is the whole frame byte for byte.
+    #[test]
+    fn a_partial_frame_repaints_a_parent_that_meets_the_damage() {
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let size = (240, 140);
+        let surface = Surface::new(Default::default());
+        surface.resized(size, 1.0);
+        let root = surface.root.clone();
+        let parent = view(
+            Some(&root),
+            2,
+            ViewKind::View,
+            rect(20.0, 20.0, 160.0, 90.0),
+        );
+        {
+            let mut s = parent.state_mut();
+            s.style.background_color = Color(0x224488ff);
+            s.style.border_radius = Points(12.0);
+            s.style.borders.widths = Edges::all(Points(2.0));
+            s.style.borders.colors = [Color(0x112233ff); 4];
+            s.style.effects = Some(std::sync::Arc::new(Effects {
+                box_shadows: vec![BoxShadow {
+                    blur: Points(8.0),
+                    color: Color(0x0000_0080),
+                    ..BoxShadow::default()
+                }],
+                ..Effects::default()
+            }));
+        }
+        let near = view(
+            Some(&parent),
+            4,
+            ViewKind::View,
+            rect(30.0, 30.0, 40.0, 30.0),
+        );
+        near.state_mut().style.background_color = Color(0xee2222ff);
+        let far = view(
+            Some(&parent),
+            6,
+            ViewKind::View,
+            rect(110.0, 40.0, 30.0, 30.0),
+        );
+        far.state_mut().style.background_color = Color(0x2222eeff);
+
+        let back = target(&gfx, size);
+        draw_into(&surface, &gfx, &back, 1.0, false, None, None, None).unwrap();
+        // The near child changes; the damage around it also meets the
+        // parent's own background and border, and stops short of the far
+        // child.
+        near.state_mut().style.background_color = Color(0xee8822ff);
+        // Around the near child (world 50..90 × 50..80), short of the far
+        // child (110..140).
+        let areas = [rect_f(48.0, 48.0, 44.0, 34.0)];
+        fill_with_damage_and_compare_whole(&surface, &gfx, &back, size, &areas);
+    }
+
+    /// A parent whose own painted area misses every damage rectangle paints
+    /// none of its own decoration, while its damaged child still draws and
+    /// the pixels equal a whole frame's.
+    ///
+    /// The decoration probe's failing-first run, on the traversal before the
+    /// own-paint skip, counted for the parent (id 2): `draw_backdrop` 1,
+    /// `draw_background` 1 and its outer-shadow bake 1, while the child's
+    /// damage was the only thing changed. With the skip: 0 / 0 / 0, and the
+    /// child still reaches `draw_background` (1).
+    #[test]
+    fn a_partial_frame_draws_a_child_without_repainting_its_parent() {
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let size = (260, 140);
+        let surface = Surface::new(Default::default());
+        surface.resized(size, 1.0);
+        let root = surface.root.clone();
+        let parent = view(
+            Some(&root),
+            2,
+            ViewKind::View,
+            rect(20.0, 20.0, 100.0, 60.0),
+        );
+        {
+            let mut s = parent.state_mut();
+            s.style.background_color = Color(0x224488ff);
+            s.style.border_radius = Points(10.0);
+            s.style.borders.widths = Edges::all(Points(2.0));
+            s.style.borders.colors = [Color(0x112233ff); 4];
+            s.style.effects = Some(std::sync::Arc::new(Effects {
+                box_shadows: vec![BoxShadow {
+                    blur: Points(8.0),
+                    color: Color(0x0000_0080),
+                    ..BoxShadow::default()
+                }],
+                ..Effects::default()
+            }));
+        }
+        // Outside the parent's bounds (and its shadow): damage there meets
+        // neither the parent's own area nor its outset.
+        let child = view(
+            Some(&parent),
+            4,
+            ViewKind::View,
+            rect(150.0, 20.0, 40.0, 30.0),
+        );
+        child.state_mut().style.background_color = Color(0xee2222ff);
+
+        let back = target(&gfx, size);
+        draw_into(&surface, &gfx, &back, 1.0, false, None, None, None).unwrap();
+        child.state_mut().style.background_color = Color(0x22ee22ff);
+        // The child's whole area (world 170..210 × 40..70), which misses
+        // the parent's own area and its shadow's outset.
+        let areas = [rect_f(168.0, 38.0, 44.0, 34.0)];
+        crate::decor::probe::reset();
+        draw_into(&surface, &gfx, &back, 1.0, false, None, Some(&areas), None).unwrap();
+        let parent_counts = crate::decor::probe::counts(parent.id());
+        assert_eq!(
+            parent_counts,
+            crate::decor::probe::Counts::default(),
+            "an off-damage parent paints no own decoration"
+        );
+        assert!(
+            crate::decor::probe::counts(child.id()).backgrounds >= 1,
+            "the damaged child still draws"
+        );
+        let fresh = target(&gfx, size);
+        draw_into(&surface, &gfx, &fresh, 1.0, false, None, None, None).unwrap();
+        assert_same_pixels(&gfx, &back, &fresh, size, "the off-damage parent");
+    }
+
+    /// The same parent with damage over its shadow: its decoration does
+    /// run (the probe's in-damage baseline), and the cleared shadow area is
+    /// painted as a whole frame paints it.
+    #[test]
+    fn a_partial_frame_repaints_a_parent_whose_shadow_meets_the_damage() {
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let size = (260, 140);
+        let surface = Surface::new(Default::default());
+        surface.resized(size, 1.0);
+        let root = surface.root.clone();
+        let parent = view(
+            Some(&root),
+            2,
+            ViewKind::View,
+            rect(20.0, 20.0, 100.0, 60.0),
+        );
+        {
+            let mut s = parent.state_mut();
+            s.style.background_color = Color(0x224488ff);
+            s.style.effects = Some(std::sync::Arc::new(Effects {
+                box_shadows: vec![BoxShadow {
+                    blur: Points(8.0),
+                    color: Color(0x0000_0080),
+                    ..BoxShadow::default()
+                }],
+                ..Effects::default()
+            }));
+        }
+        let child = view(
+            Some(&parent),
+            4,
+            ViewKind::View,
+            rect(30.0, 30.0, 30.0, 20.0),
+        );
+        child.state_mut().style.background_color = Color(0xee2222ff);
+
+        let back = target(&gfx, size);
+        draw_into(&surface, &gfx, &back, 1.0, false, None, None, None).unwrap();
+        // The shadow below the box: its bounds reach in, the box does not.
+        let areas = [rect_f(20.0, 82.0, 100.0, 12.0)];
+        crate::decor::probe::reset();
+        draw_into(&surface, &gfx, &back, 1.0, false, None, Some(&areas), None).unwrap();
+        let counts = crate::decor::probe::counts(parent.id());
+        assert!(counts.backdrops >= 1, "{counts:?}");
+        assert!(counts.backgrounds >= 1, "{counts:?}");
+        assert!(counts.shadows >= 1, "{counts:?}");
+        let fresh = target(&gfx, size);
+        draw_into(&surface, &gfx, &fresh, 1.0, false, None, None, None).unwrap();
+        assert_same_pixels(&gfx, &back, &fresh, size, "the damaged shadow");
+    }
+
+    /// A parent with no damage of its own still reaches its overflowing
+    /// child, which draws over a sibling that changed beneath it.
+    #[test]
+    fn a_partial_frame_keeps_an_overflowing_child_over_a_changed_sibling() {
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let size = (260, 140);
+        let surface = Surface::new(Default::default());
+        surface.resized(size, 1.0);
+        let root = surface.root.clone();
+        // Drawn first: the overflowing child covers part of it.
+        let sibling = view(
+            Some(&root),
+            2,
+            ViewKind::View,
+            rect(150.0, 50.0, 40.0, 40.0),
+        );
+        sibling.state_mut().style.background_color = Color(0x2222eeff);
+        let parent = view(
+            Some(&root),
+            4,
+            ViewKind::View,
+            rect(20.0, 20.0, 100.0, 60.0),
+        );
+        parent.state_mut().style.background_color = Color(0x224488ff);
+        let child = view(
+            Some(&parent),
+            6,
+            ViewKind::View,
+            rect(100.0, 40.0, 80.0, 20.0),
+        );
+        child.state_mut().style.background_color = Color(0xeeee22ff);
+
+        let back = target(&gfx, size);
+        draw_into(&surface, &gfx, &back, 1.0, false, None, None, None).unwrap();
+        sibling.state_mut().style.background_color = Color(0x22ee22ff);
+        // Over the sibling only: the parent's own area (and shadow) is
+        // elsewhere, the overflowing child is here.
+        let areas = [rect_f(149.0, 49.0, 42.0, 42.0)];
+        fill_with_damage_and_compare_whole(&surface, &gfx, &back, size, &areas);
+    }
+
+    /// Rounded clips, opacity below 1, transforms, a projective view and a
+    /// blended view keep exactly a whole frame's pixels when only damage
+    /// draws.
+    #[test]
+    fn a_partial_frame_keeps_clips_opacity_and_transforms() {
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let size = (240, 140);
+
+        // A rounded clip: the child's edge is cut by the parent's corners.
+        {
+            let surface = Surface::new(Default::default());
+            surface.resized(size, 1.0);
+            let root = surface.root.clone();
+            let parent = view(
+                Some(&root),
+                2,
+                ViewKind::View,
+                rect(30.0, 20.0, 100.0, 60.0),
+            );
+            {
+                let mut s = parent.state_mut();
+                s.style.background_color = Color(0x224488ff);
+                s.style.border_radius = Points(16.0);
+                s.style.overflow_hidden = true;
+            }
+            let child = view(
+                Some(&parent),
+                4,
+                ViewKind::View,
+                rect(10.0, 10.0, 140.0, 80.0),
+            );
+            child.state_mut().style.background_color = Color(0xee2222ff);
+            let back = target(&gfx, size);
+            draw_into(&surface, &gfx, &back, 1.0, false, None, None, None).unwrap();
+            assert!(surface.take_damage().is_none(), "the first frame is whole");
+            child.state_mut().style.background_color = Color(0x22ee22ff);
+            let areas = changed_areas(&surface, size);
+            fill_with_damage_and_compare_whole(&surface, &gfx, &back, size, &areas);
+        }
+
+        // Opacity below 1: the parent's group must still fade the child of
+        // an off-damage parent as one.
+        {
+            let surface = Surface::new(Default::default());
+            surface.resized(size, 1.0);
+            let root = surface.root.clone();
+            let parent = view(Some(&root), 2, ViewKind::View, rect(20.0, 20.0, 80.0, 40.0));
+            {
+                let mut s = parent.state_mut();
+                s.style.background_color = Color(0x224488ff);
+                s.style.opacity = 0.5;
+            }
+            let child = view(
+                Some(&parent),
+                4,
+                ViewKind::View,
+                rect(120.0, 20.0, 30.0, 30.0),
+            );
+            child.state_mut().style.background_color = Color(0xee2222ff);
+            let back = target(&gfx, size);
+            draw_into(&surface, &gfx, &back, 1.0, false, None, None, None).unwrap();
+            assert!(surface.take_damage().is_none(), "the first frame is whole");
+            child.state_mut().style.background_color = Color(0x22ee22ff);
+            let areas = changed_areas(&surface, size);
+            fill_with_damage_and_compare_whole(&surface, &gfx, &back, size, &areas);
+        }
+
+        // A translation and a scale move the child's damage with it.
+        {
+            let surface = Surface::new(Default::default());
+            surface.resized(size, 1.0);
+            let root = surface.root.clone();
+            let parent = view(Some(&root), 2, ViewKind::View, rect(20.0, 20.0, 60.0, 40.0));
+            {
+                let mut s = parent.state_mut();
+                s.style.background_color = Color(0x224488ff);
+                s.style.transform.push(TransformKind::TranslateX, 100.0);
+                s.style.transform.push(TransformKind::Scale, 1.5);
+            }
+            let child = view(
+                Some(&parent),
+                4,
+                ViewKind::View,
+                rect(200.0, 20.0, 20.0, 20.0),
+            );
+            child.state_mut().style.background_color = Color(0xee2222ff);
+            let back = target(&gfx, size);
+            draw_into(&surface, &gfx, &back, 1.0, false, None, None, None).unwrap();
+            assert!(surface.take_damage().is_none(), "the first frame is whole");
+            child.state_mut().style.background_color = Color(0x22ee22ff);
+            let areas = changed_areas(&surface, size);
+            fill_with_damage_and_compare_whole(&surface, &gfx, &back, size, &areas);
+        }
+
+        // A projective view draws offscreen and is mapped whole; a sibling
+        // change around it still leaves the partial frame exact.
+        {
+            let surface = Surface::new(Default::default());
+            surface.resized(size, 1.0);
+            let root = surface.root.clone();
+            let projected = view(Some(&root), 2, ViewKind::View, rect(20.0, 20.0, 80.0, 50.0));
+            {
+                let mut s = projected.state_mut();
+                s.style.background_color = Color(0x224488ff);
+                s.style.transform.push(TransformKind::Perspective, 600.0);
+                s.style.transform.push(TransformKind::RotateY, 30.0);
+            }
+            view(
+                Some(&projected),
+                4,
+                ViewKind::View,
+                rect(10.0, 10.0, 60.0, 30.0),
+            )
+            .state_mut()
+            .style
+            .background_color = Color(0xee2222ff);
+            let sibling = view(
+                Some(&root),
+                6,
+                ViewKind::View,
+                rect(150.0, 20.0, 50.0, 50.0),
+            );
+            sibling.state_mut().style.background_color = Color(0x2222eeff);
+            let back = target(&gfx, size);
+            draw_into(&surface, &gfx, &back, 1.0, false, None, None, None).unwrap();
+            assert!(surface.take_damage().is_none(), "the first frame is whole");
+            sibling.state_mut().style.background_color = Color(0x22ee22ff);
+            let areas = changed_areas(&surface, size);
+            fill_with_damage_and_compare_whole(&surface, &gfx, &back, size, &areas);
+        }
+
+        // A blended view draws offscreen and composites with the backdrop.
+        {
+            let surface = Surface::new(Default::default());
+            surface.resized(size, 1.0);
+            let root = surface.root.clone();
+            let blended = view(Some(&root), 2, ViewKind::View, rect(20.0, 20.0, 80.0, 50.0));
+            {
+                let mut s = blended.state_mut();
+                s.style.background_color = Color(0x224488ff);
+                s.style.blend_mode = BlendMode::Multiply;
+            }
+            let child = view(
+                Some(&blended),
+                4,
+                ViewKind::View,
+                rect(10.0, 10.0, 60.0, 30.0),
+            );
+            child.state_mut().style.background_color = Color(0xee2222ff);
+            let back = target(&gfx, size);
+            draw_into(&surface, &gfx, &back, 1.0, false, None, None, None).unwrap();
+            assert!(surface.take_damage().is_none(), "the first frame is whole");
+            child.state_mut().style.background_color = Color(0x22ee22ff);
+            let areas = changed_areas(&surface, size);
+            fill_with_damage_and_compare_whole(&surface, &gfx, &back, size, &areas);
+        }
+    }
+
+    /// Hosted items draw above the children in a partial frame too, and the
+    /// child under one repaints where damage goes.
+    #[test]
+    fn a_partial_frame_keeps_hosted_items_above_the_children() {
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let size = (240, 140);
+        let surface = Surface::new(Default::default());
+        surface.resized(size, 1.0);
+        let root = surface.root.clone();
+        let parent = view(
+            Some(&root),
+            2,
+            ViewKind::View,
+            rect(20.0, 20.0, 100.0, 60.0),
+        );
+        parent.state_mut().style.background_color = Color(0x224488ff);
+        let child = view(
+            Some(&parent),
+            4,
+            ViewKind::View,
+            rect(20.0, 10.0, 50.0, 30.0),
+        );
+        child.state_mut().style.background_color = Color(0xee2222ff);
+        // Inside the child: the item covers part of what changed.
+        let item: Rc<dyn Hosted> = Rc::new(RedItem);
+        parent.set_native(&item, rect(40.0, 15.0, 20.0, 15.0));
+
+        let back = target(&gfx, size);
+        draw_into(&surface, &gfx, &back, 1.0, false, None, None, None).unwrap();
+        child.state_mut().style.background_color = Color(0x22ee22ff);
+        // The child's whole box (world 40..90 × 30..60), nothing more.
+        let areas = [rect_f(39.0, 29.0, 52.0, 32.0)];
+        fill_with_damage_and_compare_whole(&surface, &gfx, &back, size, &areas);
+    }
+
+    /// A parent that reads a backdrop is given the current pixels under it
+    /// in a partial frame, exactly as in a whole one, even when its own
+    /// painted area misses the damage: once for the parent, and once for a
+    /// deeper reader below it.
+    #[test]
+    fn a_partial_frame_applies_backdrop_readers_with_off_damage_parent() {
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let size = (280, 150);
+        let surface = Surface::new(Default::default());
+        // Without a GPU the shader reads nothing; the fixture cannot run.
+        if surface.shader_renderer().is_none() {
+            return;
+        }
+        surface.resized(size, 1.0);
+        let root = surface.root.clone();
+        let behind = view(Some(&root), 2, ViewKind::View, rect(0.0, 0.0, 280.0, 150.0));
+        behind.state_mut().style.background_color = Color(0x334455ff);
+        let mut warnings = Vec::new();
+        let mut reader_layer = || {
+            let shader = nsh_core::shader::Shader::compile(
+                "fn shade(uv: vec2f) -> vec4f { return sample_backdrop(uv); }",
+            )
+            .expect("a shader");
+            let mut layer = nsh_core::shader::ShaderLayer::new(shader, &[], &mut warnings);
+            layer.role = nsh_core::shader::ShaderRole::Fill;
+            std::sync::Arc::new(layer)
+        };
+        let parent = view(
+            Some(&root),
+            4,
+            ViewKind::View,
+            rect(20.0, 20.0, 100.0, 60.0),
+        );
+        crate::shader::set(&surface, &parent, Some(reader_layer()));
+        // Off the parent's box and overflow: damage here misses its own
+        // painted area.
+        let child = view(
+            Some(&parent),
+            6,
+            ViewKind::View,
+            rect(150.0, 20.0, 40.0, 30.0),
+        );
+        child.state_mut().style.background_color = Color(0x22ee22ff);
+
+        let back = target(&gfx, size);
+        draw_into(&surface, &gfx, &back, 1.0, false, None, None, None).unwrap();
+        assert!(surface.take_damage().is_none(), "the first frame is whole");
+        child.state_mut().style.background_color = Color(0xee2222ff);
+        let areas = [rect_f(168.0, 38.0, 44.0, 34.0)];
+        let (partial, whole, fresh) = backdrop_pixels(&surface, &gfx, &back, size, &areas);
+        assert_eq!(partial.len(), 1, "the parent reads its backdrop once");
+        assert_eq!(partial, whole);
+        assert_same_pixels(&gfx, &back, &fresh, size, "backdrop reader");
+
+        // A deeper reader below an off-damage parent: both must be read.
+        let surface = Surface::new(Default::default());
+        if surface.shader_renderer().is_none() {
+            return;
+        }
+        surface.resized(size, 1.0);
+        let root = surface.root.clone();
+        let behind = view(Some(&root), 2, ViewKind::View, rect(0.0, 0.0, 280.0, 150.0));
+        behind.state_mut().style.background_color = Color(0x334455ff);
+        let mut warnings = Vec::new();
+        let mut reader_layer = || {
+            let shader = nsh_core::shader::Shader::compile(
+                "fn shade(uv: vec2f) -> vec4f { return sample_backdrop(uv); }",
+            )
+            .expect("a shader");
+            let mut layer = nsh_core::shader::ShaderLayer::new(shader, &[], &mut warnings);
+            layer.role = nsh_core::shader::ShaderRole::Fill;
+            std::sync::Arc::new(layer)
+        };
+        let outer = view(
+            Some(&root),
+            4,
+            ViewKind::View,
+            rect(20.0, 20.0, 100.0, 60.0),
+        );
+        crate::shader::set(&surface, &outer, Some(reader_layer()));
+        let inner = view(
+            Some(&outer),
+            6,
+            ViewKind::View,
+            rect(150.0, 0.0, 80.0, 40.0),
+        );
+        crate::shader::set(&surface, &inner, Some(reader_layer()));
+        let leaf = view(
+            Some(&inner),
+            8,
+            ViewKind::View,
+            rect(100.0, 20.0, 30.0, 20.0),
+        );
+        leaf.state_mut().style.background_color = Color(0x22ee22ff);
+
+        let back = target(&gfx, size);
+        draw_into(&surface, &gfx, &back, 1.0, false, None, None, None).unwrap();
+        assert!(surface.take_damage().is_none(), "the first frame is whole");
+        leaf.state_mut().style.background_color = Color(0xee2222ff);
+        // Over the leaf outside both readers' boxes.
+        let areas = [rect_f(268.0, 38.0, 34.0, 24.0)];
+        let (partial, whole, fresh) = backdrop_pixels(&surface, &gfx, &back, size, &areas);
+        assert_eq!(partial.len(), 2, "the parent and the deeper reader read");
+        assert_eq!(partial, whole);
+        assert_same_pixels(&gfx, &back, &fresh, size, "nested backdrop readers");
+    }
+
+    /// The backdrop pixels the shaders read in a partial frame over `back`,
+    /// in a fresh whole frame, and that frame's bitmap.
+    fn backdrop_pixels(
+        surface: &Rc<Surface>,
+        gfx: &Gfx,
+        back: &ID2D1Bitmap1,
+        size: (u32, u32),
+        areas: &[D2D_RECT_F],
+    ) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, ID2D1Bitmap1) {
+        crate::shader::set_capture();
+        draw_into(surface, gfx, back, 1.0, false, None, Some(areas), None).unwrap();
+        let partial = crate::shader::take_capture();
+        crate::shader::set_capture();
+        let fresh = target(gfx, size);
+        draw_into(surface, gfx, &fresh, 1.0, false, None, None, None).unwrap();
+        let whole = crate::shader::take_capture();
+        (partial, whole, fresh)
+    }
+
+    /// A canvas's animated change draws again only where it paints, and the
+    /// partial frame paints what a whole one does.
+    #[test]
+    fn an_animated_canvas_draws_only_its_changed_area() {
+        use std::sync::Arc;
+
+        use nsh_core::{
+            animation::AnimationValue,
+            canvas::{CanvasOp, Damage, Drawing, Num, Paint},
+        };
+
+        let Ok(gfx) = gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let size = (240, 140);
+        let surface = Surface::new(Default::default());
+        surface.resized(size, 1.0);
+        let root = surface.root.clone();
+        let canvas = view(
+            Some(&root),
+            2,
+            ViewKind::Canvas,
+            rect(20.0, 20.0, 100.0, 60.0),
+        );
+        crate::canvas::create(&canvas);
+        // A square that moves with slot 0, on a canvas much larger than it.
+        crate::canvas::set(
+            &surface,
+            &canvas,
+            Arc::new(Drawing {
+                ops: vec![
+                    CanvasOp::FillStyle(Paint::Color(Color(0xcc2244ff))),
+                    CanvasOp::FillRect([
+                        Num::Slot(0),
+                        Num::Const(10.0),
+                        Num::Const(10.0),
+                        Num::Const(10.0),
+                    ]),
+                ],
+                slots: Vec::new(),
+                nodes: Vec::new(),
+                view_paints: Vec::new(),
+            }),
+        );
+
+        let back = target(&gfx, size);
+        draw_into(&surface, &gfx, &back, 1.0, false, None, None, None).unwrap();
+        assert!(surface.take_damage().is_none(), "the first frame is whole");
+
+        // The slot moves the square 40 points: only where it was and where
+        // it is now changes.
+        match crate::canvas::set_args(&canvas, &[(0, AnimationValue::Number(40.0))]) {
+            Damage::Rect(rect) => canvas.changed_rect(rect),
+            Damage::All => canvas.changed(),
+            Damage::None => panic!("the changed slot paints"),
+        }
+        let damage = surface.take_damage().expect("the changed area");
+        let areas: Vec<D2D_RECT_F> = merged(pixel_rects(&damage, 1.0, size))
+            .iter()
+            .map(|r| {
+                rect_f(
+                    r.left as f32,
+                    r.top as f32,
+                    (r.right - r.left) as f32,
+                    (r.bottom - r.top) as f32,
+                )
+            })
+            .collect();
+        let covered: f32 = areas
+            .iter()
+            .map(|r| (r.right - r.left) * (r.bottom - r.top))
+            .sum();
+        assert!(covered < 100.0 * 60.0, "smaller than the canvas: {areas:?}");
+        draw_into(&surface, &gfx, &back, 1.0, false, None, Some(&areas), None).unwrap();
+
+        let fresh = target(&gfx, size);
+        draw_into(&surface, &gfx, &fresh, 1.0, false, None, None, None).unwrap();
+        assert!(read(&gfx, &back, size) == read(&gfx, &fresh, size));
     }
 
     /// A change wholly outside the window leaves nothing to draw, which
@@ -2296,5 +3116,83 @@ mod tests {
             s.style.transform.push(TransformKind::RotateY, 60.0);
         }
         assert!(drawn_area(&parent).is_none());
+    }
+
+    /// The painted extent (x0, y0, x1, y1) in pixels of what is red.
+    fn red_extent(data: &[u8], size: (u32, u32)) -> Option<(u32, u32, u32, u32)> {
+        let mut out: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..size.1 {
+            for x in 0..size.0 {
+                let i = ((y * size.0 + x) * 4) as usize;
+                let (b, g, r) = (data[i], data[i + 1], data[i + 2]);
+                if r > 180 && g < 100 && b < 100 {
+                    out = Some(match out {
+                        None => (x, y, x + 1, y + 1),
+                        Some((a, b, c, d)) => (a.min(x), b.min(y), c.max(x + 1), d.max(y + 1)),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_tinted_image_fills_its_frame_at_any_scale() {
+        let Ok(gfx) = gfx::get() else {
+            return;
+        };
+        for scale in [1.0f32, 1.25, 1.75, 2.0] {
+            for (transformed, faded) in [(false, false), (true, false), (false, true)] {
+                let size = ((60.0 * scale).ceil() as u32, (60.0 * scale).ceil() as u32);
+                let surface = Surface::new(Default::default());
+                surface.resized(size, scale);
+                let root = surface.root.clone();
+                let button = view(Some(&root), 2, ViewKind::View, rect(10.0, 10.0, 40.0, 40.0));
+                button.state_mut().style.background_color = Color(0xddddddff);
+                if transformed {
+                    let mut s = button.state_mut();
+                    s.style.transform.push(TransformKind::TranslateY, -1.0);
+                }
+                if faded {
+                    // Drawn through a layer: the icon still shows red
+                    // enough over the light background.
+                    button.state_mut().style.opacity = 0.9;
+                }
+                let icon = view(
+                    Some(&button),
+                    4,
+                    ViewKind::Image,
+                    rect(11.0, 11.0, 18.0, 18.0),
+                );
+                {
+                    let mut s = icon.state_mut();
+                    s.style.tint_color = Some(Color(0xff0000ff));
+                    s.image = Some(crate::image::ImageState::loaded_for_test(
+                        (18.0 * scale).ceil() as u32,
+                        18.0,
+                    ));
+                }
+                let into = target(&gfx, size);
+                draw_into(&surface, &gfx, &into, scale, false, None, None, None).unwrap();
+                let got = red_extent(&read(&gfx, &into, size), size);
+                let dy = if transformed { -1.0 } else { 0.0 };
+                let want = (
+                    (21.0 * scale).round(),
+                    ((21.0 + dy) * scale).round(),
+                    (39.0 * scale).round(),
+                    ((39.0 + dy) * scale).round(),
+                );
+                eprintln!(
+                    "scale {scale} transformed {transformed} faded {faded}: got {got:?} want {want:?}"
+                );
+                let (x0, y0, x1, y1) = got.expect("the icon is drawn");
+                for (g, w) in [(x0, want.0), (y0, want.1), (x1, want.2), (y1, want.3)] {
+                    assert!(
+                        (g as f32 - w).abs() <= 1.0,
+                        "scale {scale}: {got:?} vs {want:?}"
+                    );
+                }
+            }
+        }
     }
 }

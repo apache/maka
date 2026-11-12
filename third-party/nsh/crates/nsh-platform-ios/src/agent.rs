@@ -151,6 +151,13 @@ impl Native for IosNative {
         .flatten()
     }
 
+    fn scroll_room(&self, id: NodeId, horizontal: bool) -> Option<(Points, Points)> {
+        self.on_main(move |view, _| view.with_mounter(|m| m.scroll_room(id, horizontal)))
+            .flatten()
+            .flatten()
+            .map(|(start, end)| (Points(start as f32), Points(end as f32)))
+    }
+
     fn viewport(&self) -> Size<Points> {
         self.on_main(|_, window| {
             let s = window.bounds().size;

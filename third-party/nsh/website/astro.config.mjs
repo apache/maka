@@ -6,6 +6,7 @@ import { remarkCallouts } from './src/lib/remark-callouts.js';
 import { remarkCodeTabs } from './src/lib/remark-code-tabs.js';
 import { remarkDemo } from './src/lib/remark-demo.js';
 import { remarkDocLinks } from './src/lib/remark-doc-links.js';
+import { remarkLocaleHeadingIds } from './src/lib/remark-locale-heading-ids.js';
 import { remarkStripTitle } from './src/lib/remark-strip-title.js';
 import { rehypeHeadingAnchors } from './src/lib/rehype-heading-anchors.js';
 import { demoState } from './src/lib/demo.js';
@@ -42,6 +43,7 @@ export default defineConfig({
     processor: unified({
       remarkPlugins: [
         remarkStripTitle,
+        remarkLocaleHeadingIds,
         remarkCallouts,
         remarkCodeTabs,
         [remarkDocLinks, { base: BASE }],

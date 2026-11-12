@@ -16,6 +16,15 @@ use nsh_core::{
 
 pub use crate::shader_frame::{Frame, MAX_SIDE, PixelFormat};
 
+/// This build has no renderer: a platform reports `Environment::shaders`
+/// `false` from the start.
+pub const LINKED: bool = false;
+
+/// No renderer ever looks for a GPU here.
+pub(crate) fn no_gpu() -> bool {
+    false
+}
+
 /// Never made: this build has no renderer.
 pub struct Renderer {
     format: PixelFormat,
@@ -30,6 +39,12 @@ impl Renderer {
     /// The format of the frames.
     pub fn format(&self) -> PixelFormat {
         self.format
+    }
+
+    /// `false`: there are no frames (`f` is dropped).
+    pub fn when_done(&self, f: impl FnOnce() + Send + 'static) -> bool {
+        drop(f);
+        false
     }
 }
 
@@ -53,6 +68,11 @@ impl ShaderView {
         _input: ShaderInput,
         _picture: Option<(&[u8], u32, u32, u32)>,
     ) {
+    }
+
+    /// `false`: there is no frame.
+    pub fn set_input_from_frame(&mut self, _renderer: &Renderer, _input: ShaderInput) -> bool {
+        false
     }
 
     /// `false`: nothing is kept.
@@ -102,9 +122,29 @@ impl ShaderView {
         false
     }
 
+    /// `false`: there are no frames.
+    pub fn due(&self) -> bool {
+        false
+    }
+
+    /// `false`: there are no frames.
+    pub fn animates(&self) -> bool {
+        false
+    }
+
     /// The empty frame.
     pub fn frame(&self) -> &Frame {
         &self.frame
+    }
+
+    /// Does nothing: there are no frames.
+    #[cfg(target_vendor = "apple")]
+    pub fn show_on_surfaces(&mut self) {}
+
+    /// `None`: there are no frames.
+    #[cfg(target_vendor = "apple")]
+    pub fn surface(&self) -> Option<&objc2_io_surface::IOSurfaceRef> {
+        None
     }
 
     /// `false`: there are no frames.

@@ -18,6 +18,7 @@
  */
 
 import { createTrajectoryRequests } from './trajectoryRequests';
+import { sendReceiptFailure } from './sendReceipt';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
 import { delayed } from '../../../../products/maka/workbench/app/delayed';
@@ -27,7 +28,6 @@ import {
   createTransientText,
   UiError,
   errorText,
-  errorMessage,
   isObservationCancelled,
   renderText,
   type UiText,
@@ -39,7 +39,6 @@ import type {
   AgentContinuationRejection,
   AgentContinuationResult,
   AgentExecution,
-  AgentSendResult,
   RunId,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import {
@@ -348,25 +347,6 @@ function indexRows(items: readonly Row[]) {
   }
   return { byId, byMessage };
 }
-function receiptMessage(reply: any): UiText {
-  const receipt = reply?.receipt;
-  if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'returned') {
-    const result = receipt.outcome.result;
-    if (result.kind === 'failure') return errorMessage(new Error(result.diagnostic));
-    const value = result.value as AgentSendResult;
-    return value?.kind === 'rejected'
-      ? value.reason === 'turn_stopped'
-        ? uiMessage('Stopped before delivery. Your message is kept.')
-        : value.reason === 'model_unavailable'
-          ? uiMessage('The selected model is unavailable. Try again or choose another model.')
-          : value.reason === 'original_operation_unsettled'
-            ? uiMessage('Maka could not confirm the previous operation. Your message is kept.')
-            : uiMessage('Send rejected: {reason}', { reason: value.reason })
-      : uiMessage('Host returned an unexpected send result.');
-  }
-  return uiMessage('This action could not be completed.');
-}
-
 // Rows share the composer's column: at most 800 wide, centered. The terminal's
 // scroll bar takes a cell of the right margin.
 const readingColumn = {
@@ -1156,6 +1136,7 @@ export function Conversation(props: ConversationProps) {
     });
     hydrateAttachmentMetadata();
   };
+  const executorTextChanges = new Set<string>();
   const requestMetadata = (row: Pick<Row, 'position' | 'order' | 'field'> | undefined) => {
     if (!row?.position || !row.order) return;
     const next = { position: row.position, order: row.order, field: row.field };
@@ -1424,17 +1405,37 @@ export function Conversation(props: ConversationProps) {
       do {
         followAgain = false;
         const fence = latestKnown;
+        const refresh = refreshFrom;
+        refreshFrom = null;
         const currentWindow = historyWindow();
         if (currentWindow?.after === null) {
+          const tail = rows().at(-1);
+          const changedRows = [...executorTextChanges].flatMap((id) => {
+            const row = canonicalRows().byMessage.get(id);
+            return row && row !== tail && row.position?.kind === 'live' ? [row] : [];
+          });
+          executorTextChanges.clear();
+          // A native message can keep streaming after another row has taken the tail.
+          for (const row of changedRows) {
+            let position = historyFollowPosition(row, []);
+            const chunks: AgentHistoryChunk[] = [];
+            for (;;) {
+              const page = await history(fence, position);
+              if (!ownsWindow(owner.identity)) return;
+              const matching = page.chunks.filter(
+                (chunk) =>
+                  sameHistoryRow(chunk.position, row.position!) && chunk.field === row.field,
+              );
+              chunks.push(...matching);
+              if (page.after === null || matching.length !== page.chunks.length) break;
+              position = { kind: 'after', cursor: page.after };
+            }
+            publishHistory(chunks, fence);
+          }
           const windowStart =
             currentWindow.before && rows()[0] ? rootEventSequence(rows()[0]) : undefined;
           const snap = overlay.snapshot();
-          const initial = historyFollowPosition(
-            rows().at(-1),
-            snap.rows,
-            snap.closedStarts,
-            windowStart,
-          );
+          const initial = historyFollowPosition(tail, snap.rows, snap.closedStarts, windowStart);
           const coveredFrom =
             initial.kind === 'start' ? 0 : initial.kind === 'event' ? initial.sequence : undefined;
           let position = initial;
@@ -1450,8 +1451,6 @@ export function Conversation(props: ConversationProps) {
           const current = historyWindow()!;
           historyWindow.set({ ...current, through: fence, after: null });
         }
-        const refresh = refreshFrom;
-        refreshFrom = null;
         const last = rows().at(-1);
         if (refresh !== null && last?.position) {
           let cursor: HistoryPosition = {
@@ -1586,6 +1585,12 @@ export function Conversation(props: ConversationProps) {
         case 'executor_tool_result':
           changed = true;
           break;
+        case 'executor_text_changed': {
+          const id = `${fact.messageId}/${fact.thinking ? 'thinking' : 'body'}`;
+          if (atHistoryTail() || canonicalRows().byMessage.has(id)) executorTextChanges.add(id);
+          changed = true;
+          break;
+        }
         case 'transcript_changed':
           void observe().catch(report);
           changed = true;
@@ -1609,7 +1614,12 @@ export function Conversation(props: ConversationProps) {
       );
     const observed = await observe();
     if (!alive) return;
-    const after = replayStartCursor(observed.through, observed.parts, observed.toolSeeds);
+    const tailThrough = atHistoryTail() ? historyWindow()?.through : undefined;
+    const after = replayStartCursor(
+      Math.min(tailThrough ?? observed.through, observed.through),
+      observed.parts,
+      observed.toolSeeds,
+    );
     const stream = await host.subscribe('agent', 'watch', { sessionId, after });
     if (!alive) {
       await stream.close();
@@ -2487,12 +2497,7 @@ export function Conversation(props: ConversationProps) {
   const retryable = (original: SendOperation) =>
     sendDeliveries().get(original.id) === 'cancelled' ||
     original.abandoned ||
-    (original.receipt?.kind === 'recorded' &&
-      original.receipt.outcome.kind === 'returned' &&
-      original.receipt.outcome.result.kind === 'success' &&
-      ['rejected', 'not_your_worker'].includes(
-        (original.receipt.outcome.result.value as { kind?: string })?.kind ?? '',
-      ));
+    sendReceiptFailure(original.receipt)?.retryable === true;
   const needsRecovery = (original: SendOperation) =>
     !original.abandoned &&
     !activeSends().has(original.id) &&
@@ -2600,7 +2605,10 @@ export function Conversation(props: ConversationProps) {
         .map((entry) => entry.messageId),
     );
     for (const original of unresolved()) {
-      const failed = retryable(original);
+      const receiptFailure = sendReceiptFailure(original.receipt);
+      const cancelled = sendDeliveries().get(original.id) === 'cancelled';
+      const canRetry = cancelled || original.abandoned || receiptFailure?.retryable === true;
+      const failed = canRetry || receiptFailure !== null;
       const checking = checkingSends().has(original.id);
       const detail = sendErrors().get(original.id);
       if (
@@ -2622,18 +2630,18 @@ export function Conversation(props: ConversationProps) {
             : 'unknown',
         detail: checking
           ? tr('Checking send status…')
-          : detail
+          : detail && receiptFailure?.retryable !== false
             ? renderText(detail)
-            : sendDeliveries().get(original.id) === 'cancelled'
+            : cancelled
               ? tr('Stopped before delivery. Your message is kept.')
-              : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
-                ? tr('Received · waiting for the next step')
+              : receiptFailure
+                ? renderText(receiptFailure.detail)
                 : original.abandoned
                   ? tr('Message was not sent.')
-                  : failed
-                    ? renderText(receiptMessage({ receipt: original.receipt }))
+                  : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
+                    ? tr('Received · waiting for the next step')
                     : tr('Delivery not confirmed. Check status before retrying.'),
-        retryable: failed && !checking,
+        retryable: canRetry && !checking,
         busy: checking,
       });
     }
@@ -3404,7 +3412,6 @@ export function Conversation(props: ConversationProps) {
                 }}
                 toggle={(open) => {
                   turnState(initial.turnKey).expanded.set(open);
-                  if (open) reveal();
                 }}
               />
             );

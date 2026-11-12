@@ -198,9 +198,13 @@ fn response(body: String, content_type: &str) -> Response<Body> {
         .unwrap()
 }
 fn sse(delta: Value, finish: &str) -> String {
+    sse_with_input_usage(delta, finish, 100)
+}
+
+fn sse_with_input_usage(delta: Value, finish: &str, input_tokens: u64) -> String {
     let first = json!({"id":"mainline","object":"chat.completion.chunk","choices":[{"index":0,"delta":delta,"finish_reason":null}]});
     let last = json!({"id":"mainline","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":finish}],
-        "usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}});
+        "usage":{"prompt_tokens":input_tokens,"completion_tokens":10,"total_tokens":input_tokens + 10}});
     format!("data: {first}\n\ndata: {last}\n\ndata: [DONE]\n\n")
 }
 
@@ -657,3 +661,6 @@ async fn exercise_reopen(restart: Restart) {
 
 #[path = "mainline_reopen/steering.rs"]
 mod steering;
+
+#[path = "mainline_reopen/background_compaction.rs"]
+mod background_compaction;

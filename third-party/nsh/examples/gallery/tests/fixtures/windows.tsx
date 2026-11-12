@@ -65,6 +65,22 @@ function PanelBody() {
   );
 }
 
+/** What the palette shows. */
+function PaletteBody() {
+  return (
+    <View style={{ flex: 1, padding: 12 }}>
+      <Text>Inside palette</Text>
+    </View>
+  );
+}
+
+/** A panel focused as it opens, as the docs' `Window.open(..).focus()`:
+ * the focus asked for before its first frame is not lost. */
+function openPalette() {
+  const palette = Window.open(PaletteBody, { id: "palette", kind: "panel", parent: "main", title: "Palette", defaultSize: { width: 220, height: 140 }, defaultPosition: corner() });
+  palette.focus();
+}
+
 function openNotes() {
   const first = Window.open(Notes, { id: "notes", title: "Notes", defaultSize: { width: 220, height: 140 }, defaultPosition: corner() });
   // Open already: the same window, whatever the options say.
@@ -101,6 +117,7 @@ function App() {
         <Text>{`Overlay: ${overlay()}`}</Text>
         <Text>{`Notes: ${describe(notes()?.state())}`}</Text>
         <Text>{`Panel: ${describe(Window.get("panel")?.state())}`}</Text>
+        <Text>{`Palette: ${describe(Window.get("palette")?.state())}`}</Text>
         <Text>{`Popup: ${describe(Window.get("popup")?.state())}`}</Text>
         <Text>{`Dialog: ${describe(Window.get("dialog")?.state())}`}</Text>
         <Text>{`Panel log: ${panelLog()}`}</Text>
@@ -119,6 +136,7 @@ function App() {
         <Action label="Restore notes" onPress={() => notes()?.restore()} />
         <Action label="Open panel" onPress={() => panelOpen.set(true)} />
         <Action label="Close panel" onPress={() => panelOpen.set(false)} />
+        <Action label="Open palette" onPress={openPalette} />
         <Action label="Open popup" onPress={() => popupOpen.set(true)} />
         <Action label="Open dialog" onPress={() => dialogOpen.set(true)} />
         <Action label="Open guard" onPress={() => guardOpen.set(true)} />

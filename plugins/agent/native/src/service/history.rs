@@ -558,6 +558,21 @@ pub(super) async fn observation(
             let progress = if matches!(view.spec.trigger, Trigger::ContextCompact) {
                 Some((latest.admission.id.to_string(), latest.admission.at))
             } else if !view.stopped
+                && let Some((attempt, summary)) = view.proactive_summary_attempt()
+                && summary.closed.is_none()
+                && summary.interrupted.is_none()
+                && view.waits.values().any(|wait| {
+                    wait.satisfied.is_none()
+                        && wait.cancelled.is_none()
+                        && matches!(wait.reason, WaitReason::Model { attempt: id } if id == attempt)
+                })
+            {
+                let (_, prepared_at) = history
+                    .request_preparation(&cut, view.run, summary.step)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Some((summary.step.to_string(), prepared_at))
+            } else if !view.stopped
                 && let Some(step) = view.current_step
                 && !view
                     .current_attempt
@@ -618,8 +633,20 @@ pub(super) async fn observation(
                     ui::RunState::Running
                 },
             });
-            for tool in view.tools.values().filter(|tool| tool.accepted.is_none()) {
-                let tool_use_id = super::delivery::tool_id(view.run, &tool.key);
+            let mut active_tools: Vec<_> = view
+                .tools
+                .values()
+                .filter(|tool| tool.accepted.is_none())
+                .map(|tool| super::delivery::tool_id(view.run, &tool.key))
+                .collect();
+            if let Some(task) = view.external.as_ref().filter(|task| task.closed.is_none()) {
+                active_tools.extend(
+                    task.active_tools
+                        .iter()
+                        .map(|id| super::delivery::executor_tool_id(view.run, task.task, id)),
+                );
+            }
+            for tool_use_id in active_tools {
                 if let Some(position) = history
                     .tool_position(&cut, &tool_use_id)
                     .await

@@ -236,8 +236,9 @@ impl State {
             buffer,
             selections: Selections::default(),
             display,
-            // Made once the syntaxes are loaded (`Ed::load_syntaxes`), never
-            // here: loading them blocks for tens of milliseconds.
+            // Made here where it needs nothing loaded first (its first job
+            // loads the syntaxes); on the web once they come from the page
+            // (`Ed::load_syntaxes`).
             highlighter: if Highlighter::ready() {
                 Highlighter::new(language.syntax_hint)
             } else {

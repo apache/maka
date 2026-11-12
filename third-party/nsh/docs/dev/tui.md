@@ -85,9 +85,9 @@ apps (ratatui's, gitui, MS Edit) do is the reference; the desktop look and motio
 components branch on `terminal::is_terminal()` for this, so the desktops and mobile keep their own behavior.
 
 The viewport's bottom row is the status line (`crates/nsh-base/src/status_line.rs`): a toast's message and the
-tooltip of what the focus or the pointer is on show there, one at a time. The components claim it (`claim`) and draw
-it (`line`) through that module, so they share its place and its rule: a toast wins over a hint, and of two claims of a
-kind the newer shows.
+tooltip of what the pointer or the focus the keyboard moved is on show there, one at a time. The components claim it
+(`claim`) and draw it (`line`) through that module, so they share its place and its rule: a toast wins over a hint,
+and of two claims of a kind the newer shows.
 
 A pressable mark of one Cell (a trigger's `▾`, a field's clear `×`, a mask toggle, a stepper's `−` / `+`) takes a slot
 of three Cells, ` ▾ `, and the whole slot takes the press, so a pointer need not land on the glyph itself. Slots
@@ -120,7 +120,7 @@ cargo test --release -p nsh-tui-host --test host bench_terminal_scroll -- --igno
 `--fps` enables a single line at the top right; `C-h p` toggles it beside `C-h e`. These prefixes apply outside
 editable fields and inside diagnostics; a field keeps C-h as Backspace. The line shows active FPS (`idle` after
 a second with no app frames), mean frame time and p95, mean apply / draw / flush milliseconds, and mean bytes
-and changed Cells per frame. It logs the same line through `nsh::perf`, visible in `C-h e`. Long lines clip to
+and changed Cells per frame. It logs the same line through `nsh::fps`, visible in `C-h e`. Long lines clip to
 the terminal width. The readings update once a second while active, with one final idle update; HUD-only
 refreshes never count as app frames and idle monitoring schedules no recurring draws.
 
@@ -969,6 +969,19 @@ A press on the Cell of a pressable span (a nested `<Text onPress>`, a `TextView`
 desktop backends: the innermost span around the character drawn there takes it before the views around its
 text, and it fires only when released on that span.
 
+The text drawn inside a view with an `href` (`ViewProps::href`, which `nsh/base`'s `Link` sets from its own
+while enabled) reaches the terminal as an OSC 8 hyperlink to it, which the terminal emulator opens (while the
+host captures the mouse, most emulators open it on a modified click). The buffer keeps plain symbols, so layout,
+ratatui's diff, selection, search and the test agent's screen are as without links (`link.rs`); the painter
+records the Cells that hold a glyph drawn inside the innermost such view, the frame keeps those no overlay drew
+over, and `MeasuredBackend` wraps each such Cell the diff hands it in a link of its own (`ESC ] 8 ;
+id=nsh-<view> ; URL ESC \`, the symbol, `ESC ] 8 ; ; ESC \`): a Cell redrawn alone carries its link whole, and
+the Cells of one link share its view's id. A Cell whose link changed (a new URL over the same text, the link
+gone) is drawn again whatever the diff finds, as the terminal keeps the old link there. Only an `href` that
+`openUrl` would take (`check_url`: no path of the app's, no whitespace or control character) is a link, its
+characters outside ASCII percent-encoded. `TerminalCapabilities::hyperlinks` turns links off; the host does so
+on the Linux console (`TERM=linux`), which prints the sequence.
+
 A text field takes the pointer itself (the caret, a drag's selection), and one that listens to presses (a
 combobox's field) still reports the press: `onPressDown` as it goes down, then the focus it takes, then
 `onPressUp` and, released on the field, `onPress`, focused before or not. Return stays `onSubmit`.
@@ -1096,7 +1109,7 @@ permit clipboard writes; `nsh test` uses memory and never writes to the machine'
 | Feature | Terminal representation |
 |---|---|
 | Device form | `platform.idiom` `"terminal"` with the real `platform.os`; desktop behavior (`desktop={{…}}`, `platform.select`'s `desktop`, shortcuts, hover, context menus) |
-| Performance monitor | One corner line, toggled by `C-h p` or enabled by `--fps`; idle draws stop and readings also go to `nsh::perf` |
+| Performance monitor | One corner line, toggled by `C-h p` or enabled by `--fps`; idle draws stop and readings also go to `nsh::fps` |
 | Development logs and connection/build status | Append-only log file, visible in the on-demand `C-h e` panel |
 | Test screenshots | Versioned UTF-8 JSON of Cell symbols, foreground/background/underline colors and modifiers |
 | Alerts (`AlertDialog`) | A centered framed box over the dimmed screen, buttons as `< OK >`, the focused one reversed |

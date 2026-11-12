@@ -3,7 +3,7 @@
 //! same layer. The elements are the core's host elements ([`Stack`],
 //! [`Screen`], [`Modal`]); these are where apps make them.
 
-use nsh_core::element::{Modal, Screen, Stack};
+use nsh_core::element::{AccessibilityRole, Accessible, Modal, Screen, Stack};
 
 /// A native navigation stack (TSX: `NavStack`): its children are its
 /// [`nav_page`]s, bottom to top. Put a page in to push it, leave it out to
@@ -31,6 +31,10 @@ pub fn nav_page() -> Screen {
 /// it; `on_cancel` tells the app the user tried to close it (Escape, the
 /// Android back button, a press on the backdrop, a swipe down on an iOS
 /// sheet).
+///
+/// Screen readers hear it as a dialog ([`AccessibilityRole::Dialog`];
+/// `role` makes it an [`AccessibilityRole::AlertDialog`]) named by its
+/// `label`, its title, as the focus enters it.
 pub fn dialog() -> Modal {
-    nsh_core::element::modal()
+    nsh_core::element::modal().role(AccessibilityRole::Dialog)
 }

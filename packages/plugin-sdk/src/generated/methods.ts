@@ -268,6 +268,41 @@ export type AgentCompactOutput_AgentCompactRejection =
   | 'archived'
   | 'backend_unavailable'
   | 'workspace_changed';
+export type AgentExternalUsageLimitsOutput_UsageLimit =
+  | {
+      kind: 'window';
+      label?: string | null;
+      period?: AgentExternalUsageLimitsOutput_UsagePeriod | null;
+      /**
+       * Reset time in Unix seconds.
+       */
+      resetsAt?: number | null;
+      usedPercent: number;
+      quantity?: AgentExternalUsageLimitsOutput_UsageQuantity | null;
+    }
+  | {
+      kind: 'balance';
+      label?: string | null;
+      amount: number;
+      unit?: string | null;
+    }
+  | {
+      kind: 'unlimited';
+      label?: string | null;
+    }
+  | {
+      kind: 'disabled';
+      label: string;
+      period: AgentExternalUsageLimitsOutput_UsagePeriod;
+    };
+export type AgentExternalUsageLimitsOutput_UsagePeriod =
+  | {
+      kind: 'duration';
+      seconds: number;
+    }
+  | {
+      kind: 'monthly';
+    };
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
@@ -883,6 +918,11 @@ export type SettingsConnectionUsageLimitsOutput_UsageLimit =
   | {
       kind: 'unlimited';
       label?: string | null;
+    }
+  | {
+      kind: 'disabled';
+      label: string;
+      period: SettingsConnectionUsageLimitsOutput_UsagePeriod;
     };
 export type SettingsConnectionUsageLimitsOutput_UsagePeriod =
   | {
@@ -1336,6 +1376,23 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentExternalAgentsRead;
       output: Runtime.AgentExternalAgents;
+    };
+    externalUsageLimits: {
+      mode: 'query';
+      input: {
+        runtime: Runtime.AgentNativeRuntime;
+      };
+      output:
+        | {
+            kind: 'ready';
+            limits: AgentExternalUsageLimitsOutput_UsageLimit[];
+          }
+        | {
+            kind: 'unsupported';
+          }
+        | {
+            kind: 'unavailable';
+          };
     };
     fileCandidates: {
       mode: 'subscription';
@@ -3043,6 +3100,11 @@ export interface AgentCompactOutput_ContentRef {
   digest: string;
   bytes: number;
 }
+export interface AgentExternalUsageLimitsOutput_UsageQuantity {
+  used: number;
+  limit: number;
+  unit?: string | null;
+}
 export interface AgentHistoryCheckpointHeadOutput_AgentHistoryCheckpointHead {
   revision: string;
   manifest: AgentHistoryCheckpointHeadOutput_AgentHistoryCheckpointObject;
@@ -3585,7 +3647,7 @@ export interface SettingsUpdateInput_ModelOverride {
    */
   adapter?: string;
   /**
-   * Omitted means model-specific defaults; false is an explicit opt-out.
+   * Code Mode is enabled by default. Set false to select direct tool calls.
    */
   codeMode?: boolean;
   /**

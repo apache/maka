@@ -31,7 +31,7 @@ fn files() -> impl IntoElement {
         .list_class("p-1")
         .item_class(
             "group rounded-md hover:bg-accent selected:bg-primary/10 \
-             focus:outline-2 focus:-outline-offset-2 focus:outline-ring disabled:opacity-50",
+             focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-50",
         )
         .render_item(|entry: &TreeEntry| {
             view()
@@ -76,7 +76,7 @@ function App() {
       accessibilityLabel="Files"
       class="h-80 w-64 rounded-lg border border-border"
       listClass="p-1"
-      itemClass="group h-8 rounded-md hover:bg-accent selected:bg-primary/10 focus:outline-2 focus:-outline-offset-2 focus:outline-ring disabled:opacity-50"
+      itemClass="group h-8 rounded-md hover:bg-accent selected:bg-primary/10 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
       renderItem={(entry) => (
         <View class="h-8 flex-row items-center gap-2" style={{ paddingLeft: 8 + entry.depth * 16 }}>
           <Text class="w-3 text-muted-foreground transition-transform group-aria-expanded:rotate-90">
@@ -150,10 +150,10 @@ mount(App);
 |---|---|---|---|
 | 树 | | `class`、`style` | |
 | 列表 | 树 | `listClass`、`listStyle` | |
-| 行 | 列表 | `itemClass`、`itemStyle` | `selected:`、`aria-expanded:`（展开的文件夹）、`focus:`（树拥有键盘焦点时按键作用的行：选中的行；选中项被收起的项目隐藏时，是那个项目的行；没有选中项时是第一行）、`disabled:`、`hover:`、`active:` |
-| 行的内容 | 行 | `renderItem` | 在 `itemClass` 中加上 `group` 后的 `group-selected:`、`group-aria-expanded:`、`group-focus:`、`group-disabled:` |
+| 行 | 列表 | `itemClass`、`itemStyle` | `selected:`、`aria-expanded:`（展开的文件夹）、`focus:`（树拥有键盘焦点时按键作用的行：选中的行；选中项被收起的项目隐藏时，是那个项目的行；没有选中项时是第一行）、`focus-visible:`（树的焦点显示时的这一行：由按键移来，而不是点击）、`disabled:`、`hover:`、`active:` |
+| 行的内容 | 行 | `renderItem` | 在 `itemClass` 中加上 `group` 后的 `group-selected:`、`group-aria-expanded:`、`group-focus:`、`group-focus-visible:`、`group-disabled:` |
 
-用 `selected:` 表示选中的行，用 `focus:` 表示键盘所在的位置（见[设计指南](../docs/design-guides.md#交互状态)）。把焦点画在行内（`focus:outline-2 focus:-outline-offset-2`）：列表会裁掉超出两侧的部分。
+用 `selected:` 表示选中的行，用 `focus-visible:` 表示键盘所在的位置：按键移动后才显示，点击后不显示（见[设计指南](../docs/design-guides.md#交互状态)）。把焦点画在行内（`focus-visible:outline-2 focus-visible:-outline-offset-2`）：列表会裁掉超出两侧的部分。
 
 ## Ref
 

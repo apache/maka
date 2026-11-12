@@ -146,7 +146,7 @@ function Live() {
   const peakAlign = (): "left" | "center" | "right" => (peak() < 8 ? "left" : peak() > LIVE_POINTS - 9 ? "right" : "center");
   const breathing = () => running() && !reduceMotion();
   return (
-    <Card icon="stocks" title="Live price" subtitle="A tick a second in its ten-second range, the last price tagged at its height">
+    <Card icon="stocks" title="Live price" subtitle="A tick a second, the last price tagged">
       <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
         <View style={{ flex: 1, gap: 6 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -199,7 +199,7 @@ function Live() {
             hover.set(index);
             if (index != null) tip.set(index);
           }}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           style={{ height: LIVE_HEIGHT, marginRight: GUTTER, marginBottom: BELOW }}
         >
           <Grid y={grid()} style={plotGrid()} />
@@ -366,7 +366,7 @@ function Depth() {
             hover.set(index);
             if (index != null) tip.set(index);
           }}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           style={{ height: DEPTH_HEIGHT, marginBottom: BELOW }}
         >
           <Grid y={ticks(0, top(), 3)} style={plotGrid()} />
@@ -462,7 +462,7 @@ function Drawdown() {
   );
   const total = (EQUITY[EQUITY.length - 1].value / EQUITY[0].value - 1) * 100;
   return (
-    <Card icon="stocks" title="Drawdown" subtitle="Value over its distance from the high, the worst run shaded">
+    <Card icon="stocks" title="Drawdown" subtitle="Value against its high, the worst run shaded">
       <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
         <Text style={{ fontSize: 22, fontWeight: "600", letterSpacing: -0.4, color: colors.text, fontVariant: ["tabular-nums"] }}>{`$${count(shown().value)}`}</Text>
         <Text style={{ fontSize: 12, color: shown().drawdown < -0.05 ? toneColor("danger") : colors.muted, fontVariant: ["tabular-nums"] }}>
@@ -487,7 +487,7 @@ function Drawdown() {
           {...plotCrossLine()}
           dotClass={plotDotClass}
           onHoverChange={follow("equity")}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           style={{ height: EQUITY_HEIGHT }}
         >
           {/* The worst run, from its high to its low, its value hatched under the curve. */}
@@ -518,7 +518,7 @@ function Drawdown() {
           {...plotCrossLine()}
           dotClass="size-2 rounded-full border-2"
           onHoverChange={follow("water")}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           style={{ height: WATER_HEIGHT, marginBottom: BELOW }}
         >
           <Area
@@ -560,9 +560,10 @@ const PERIODS = [
 ] as const;
 type Period = (typeof PERIODS)[number]["value"];
 const RESOURCES: { name: string; color: string; unit: string; total: number; used: Record<Period, number> }[] = [
-  { name: "Compute", color: chart.s1, unit: "vCPU", total: 64, used: { now: 38, day: 51, week: 59 } },
-  { name: "Memory", color: chart.s2, unit: "GB", total: 256, used: { now: 141, day: 188, week: 214 } },
-  { name: "Network", color: chart.s3, unit: "Gbps", total: 10, used: { now: 3.2, day: 7.4, week: 8.9 } },
+  // Getters: the series colors follow the appearance, so they are read when the rings render.
+  { name: "Compute", get color() { return chart.s1; }, unit: "vCPU", total: 64, used: { now: 38, day: 51, week: 59 } },
+  { name: "Memory", get color() { return chart.s2; }, unit: "GB", total: 256, used: { now: 141, day: 188, week: 214 } },
+  { name: "Network", get color() { return chart.s3; }, unit: "Gbps", total: 10, used: { now: 3.2, day: 7.4, week: 8.9 } },
 ];
 /** In a terminal the rings take more Cells, so the average and its
  * caption fit in the innermost ring's hole, clear of its arcs. */
@@ -689,7 +690,7 @@ function Revenue() {
           appearGeneration={1}
           motion={{ appear: { duration: 900, easing: "easeOut" }, update: { duration: 450, easing: "easeInOut" }, enter: { duration: 120 }, exit: { duration: 180 }, pointer: { stiffness: 420, damping: 40 } }}
           onHoverChange={({ index }) => hover.set(index)}
-          focusStyle={{ ...focusRing(4), borderRadius: RING / 2 }}
+          focusVisibleStyle={{ ...focusRing(4), borderRadius: RING / 2 }}
           style={{ width: RING, height: RING }}
           colorScale={{ type: "ordinal", range: palette() }}
         >
@@ -815,7 +816,7 @@ function Sales() {
           // The band of the month under the pointer: a faint tint over it.
           {...plotCrossLine({ band: true })}
           onHoverChange={({ index }) => hover.set(index)}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           style={{ height: SALES_HEIGHT, marginRight: AXIS + 8, marginBottom: BELOW }}
         >
           <Grid y={[40, 80, 120]} style={plotGrid()} />
@@ -990,7 +991,7 @@ function Bridge() {
           accessibilityValue={{ text: shown() && `${shown()!.name}: ${shown()!.kind === "total" ? millions(shown()!.end) : signedMillions(amount(shown()!))}` }}
           {...plotCrossLine({ band: true })}
           onHoverChange={({ index }) => hover.set(index)}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           style={{ height: BRIDGE_HEIGHT, marginRight: AXIS + 8, marginBottom: BELOW }}
         >
           <Grid y={[40, 80, 120]} style={plotGrid()} />
@@ -1172,7 +1173,7 @@ function Funnel() {
   const fading = "transition-opacity duration-150 motion-reduce:transition-none";
   const channelName = () => CHANNELS.find((c) => c.value === channel())!.label;
   return (
-    <Card icon="stocks" title="Conversion funnel" subtitle="From a first visit to a first trade, and what each stage keeps">
+    <Card icon="stocks" title="Conversion funnel" subtitle="From a first visit to a first trade">
       <View style={{ gap: 4 }}>
         <Text style={tipTitle()}>{(shown()?.name ?? "Visits to first trade").toUpperCase()}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
@@ -1215,7 +1216,7 @@ function Funnel() {
             crossLineClass="w-full h-full"
             crossLineStyle={{ backgroundColor: alpha(colors.text, 0.045), borderRadius: 6 }}
             onHoverChange={onHover}
-            focusStyle={focusRing(4)}
+            focusVisibleStyle={focusRing(4)}
             style={{ height: FUNNEL_HEIGHT }}
           >
             {/* The necks, beside the bars: from one bar's ends to the next one's, curving through the gap. Their
@@ -1470,7 +1471,7 @@ function Candles() {
           crossLineClass="w-full h-full"
           crossLineStyle={{ backgroundColor: alpha(colors.text, 0.06) }}
           onHoverChange={follow("price")}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           style={{ height: PRICE_HEIGHT, marginRight: GUTTER }}
         >
           <Grid y={grid()} style={plotGrid()} />
@@ -1516,7 +1517,7 @@ function Candles() {
           crossLineClass="w-full h-full"
           crossLineStyle={{ backgroundColor: alpha(colors.text, 0.06) }}
           onHoverChange={follow("volume")}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           style={{ height: VOLUME_HEIGHT, marginRight: GUTTER, marginBottom: BELOW }}
         >
           {/* A day's volume in one of two series, so each takes its tone, faded under the candles'. */}
@@ -1665,7 +1666,7 @@ function RiskReturn() {
   // On the card's color, so the grid and the index's lines pass under the words.
   const corner = { ...axis(), color: colors.faint, paddingHorizontal: 6, paddingVertical: 4, backgroundColor: colors.surface, borderRadius: 4 };
   return (
-    <Card icon="stocks" title="Risk vs return" subtitle="Each holding's volatility against its return, sized by market cap">
+    <Card icon="stocks" title="Risk vs return" subtitle="Volatility against return, sized by market cap">
       <View style={{ gap: 4 }}>
         <Text style={tipTitle()}>
           {shown() ? `${shown()!.ticker === "SPX" ? "S&P 500" : shown()!.ticker} · ${shown()!.ticker === "SPX" ? "BENCHMARK" : shown()!.name.toUpperCase()}` : `PORTFOLIO · ${period()}`}
@@ -1709,7 +1710,7 @@ function RiskReturn() {
           accessibilityLabel={`Risk and return of ${HOLDINGS.length} holdings, ${period()}: best Sharpe ${best().ticker}, ${ahead()} ahead of the S&P 500`}
           accessibilityValue={{ text: shown() && `${shown()!.name}: ${pct(shown()!.ret)} return, ${fixed(shown()!.vol, 1)}% volatility, Sharpe ${fixed(sharpe(shown()!))}` }}
           onHoverChange={({ index }) => hover.set(index)}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           style={{ height: RISK_HEIGHT, marginRight: AXIS + 8, marginBottom: BELOW }}
         >
           <Grid x={VOL_TICKS} y={RET_TICKS} style={plotGrid()} />
@@ -1851,7 +1852,7 @@ function Targets() {
   const raised = () => rows().filter((r) => r.revised > 0).length;
   const height = () => rows().length * TARGET_ROW;
   return (
-    <Card icon="stocks" title="Price targets" subtitle="Where analysts see each stock in a year, against today's price">
+    <Card icon="stocks" title="Price targets" subtitle="Analysts' one-year targets against today's price">
       <View style={{ gap: 4 }}>
         <Text style={tipTitle()}>{shown() ? `${shown()!.ticker} · ${shown()!.analysts} ANALYSTS` : `${name().toUpperCase()} · ${rows().length} STOCKS`}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
@@ -1890,7 +1891,7 @@ function Targets() {
           crossLineClass="w-full h-full"
           crossLineStyle={{ backgroundColor: alpha(colors.text, 0.04), borderRadius: 6 }}
           onHoverChange={({ index }) => hover.set(index)}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           style={{ height: height(), marginLeft: 44, marginBottom: BELOW }}
         >
           <Grid x={UPSIDE_TICKS.filter((v) => v !== 0)} style={plotGrid()} />
@@ -2062,7 +2063,7 @@ function VolumePrice() {
         crossLineStyle={{ backgroundColor: alpha(colors.text, 0.05) }}
         dotStyle={{ width: 9, height: 9, borderRadius: 4.5, borderWidth: 2, borderColor: chart.s1, backgroundColor: colors.surface }}
         onHoverChange={({ index }) => hover.set(index)}
-        focusStyle={focusRing(4)}
+        focusVisibleStyle={focusRing(4)}
         style={{ height: TAPE_HEIGHT, marginLeft: SIDE, marginRight: SIDE, marginBottom: BELOW }}
       >
         {/* No values: the lines follow the aligned steps both axes share. */}
@@ -2145,7 +2146,7 @@ function Margins() {
         crossLineClass="w-full h-full"
         crossLineStyle={{ backgroundColor: alpha(colors.text, 0.05) }}
         onHoverChange={({ index }) => hover.set(index)}
-        focusStyle={focusRing(4)}
+        focusVisibleStyle={focusRing(4)}
         style={{ height: MARGIN_HEIGHT, marginLeft: SIDE, marginRight: SIDE, marginBottom: 2 * BELOW + 2 }}
       >
         <Grid style={plotGrid()} />
@@ -2320,7 +2321,7 @@ function Correlation() {
   const tick = () => ({ ...axis(), fontSize: compact() ? 9 : 10.5, color: colors.muted });
   const ramp = () => [colors.info, colors.line, chart.s1];
   return (
-    <Card icon="table" title="Holdings correlation" subtitle="How closely each pair of holdings moves, from their daily returns">
+    <Card icon="table" title="Holdings correlation" subtitle="How closely each pair of holdings moves">
       <View style={{ gap: 4 }}>
         <Text style={tipTitle()}>{shown() ? `${shown()!.a} × ${shown()!.b}` : `${PAIR_TICKERS.length} HOLDINGS · ${lookback()}`}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
@@ -2345,7 +2346,7 @@ function Correlation() {
           accessibilityLabel={`Correlation of ${PAIR_TICKERS.length} holdings over ${lookback()}: closest ${closest().a} and ${closest().b} at ${coefficient(closest().r)}, best hedge ${hedge().a} and ${hedge().b} at ${coefficient(hedge().r)}`}
           accessibilityValue={{ text: shown() && `${shown()!.a} and ${shown()!.b}: ${coefficient(shown()!.r)}` }}
           onHoverChange={({ index }) => hover.set(index)}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           style={{ aspectRatio: 1, marginLeft: compact() ? 34 : 40, marginTop: 20 }}
         >
           <Cell
@@ -2450,7 +2451,7 @@ function Seasonality() {
   const gutter = () => (compact() ? 34 : 36);
   const totals = () => (compact() ? 46 : 54);
   return (
-    <Card icon="chart" title="Monthly returns" subtitle="Every month since 2020, red for a loss and green for a gain">
+    <Card icon="chart" title="Monthly returns" subtitle="Every month since 2020, red for a loss">
       <View style={{ gap: 4 }}>
         <Text style={tipTitle()}>{shown() ? `${shown()!.month.toUpperCase()} ${shown()!.year}` : `${name().toUpperCase()} · 2020–2026`}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
@@ -2476,7 +2477,7 @@ function Seasonality() {
           accessibilityLabel={`${name()} monthly returns since 2020: best ${best().month} ${best().year} at ${pct(best().ret)}, worst ${worst().month} ${worst().year} at ${pct(worst().ret)}`}
           accessibilityValue={{ text: shown() && `${shown()!.month} ${shown()!.year}: ${pct(shown()!.ret)}` }}
           onHoverChange={({ index }) => hover.set(index)}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           style={{ height: CAL_YEARS.length * (compact() ? 22 : 27), marginLeft: gutter(), marginRight: totals(), marginTop: 20 }}
         >
           <Cell
@@ -2576,7 +2577,7 @@ function Activity() {
   const tick = () => ({ ...axis(), fontSize: compact() ? 9 : 10.5 });
   const ramp = () => [colors.line, chart.s1];
   return (
-    <Card icon="layers" title="Trading activity" subtitle="Trades every half hour of a week, the busier the brighter">
+    <Card icon="layers" title="Trading activity" subtitle="Trades every half hour of a week">
       <View style={{ gap: 4 }}>
         <Text style={tipTitle()}>{shown() ? `${shown()!.day.toUpperCase()} ${shown()!.slot}–${slotEnd(shown()!.slot)}` : `${market()} · TRADES PER HALF HOUR`}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
@@ -2601,7 +2602,7 @@ function Activity() {
           accessibilityLabel={`Trades per half hour in ${market()}: busiest ${busiest().day} at ${busiest().slot} with ${thousands(busiest().trades)}, quietest ${quietest().day} at ${quietest().slot}`}
           accessibilityValue={{ text: shown() && `${shown()!.day} ${shown()!.slot}: ${thousands(shown()!.trades)} trades` }}
           onHoverChange={({ index }) => hover.set(index)}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           style={{ height: WEEKDAYS.length * (compact() ? 24 : 28), marginLeft: 36, marginTop: 20 }}
         >
           <Cell x="slot" y="day" value="trades" cornerRadii={4} stagger={0.6} inactiveOpacity={0.4} hoverCellClass="rounded-[5px]" hoverCellStyle={cellRing()} />
@@ -2652,7 +2653,7 @@ function Factors() {
           accessibilityLabel={`Factor exposure against the ${benchName().toLowerCase()}, leaning most on ${lead.name} at ${lead.ours}`}
           accessibilityValue={{ text: shown() && `${shown()!.name}: ${shown()!.ours}, ${benchName().toLowerCase()} ${theirs()}` }}
           onHoverChange={({ index }) => hover.set(index)}
-          focusStyle={{ ...focusRing(4), borderRadius: RADAR / 2 }}
+          focusVisibleStyle={{ ...focusRing(4), borderRadius: RADAR / 2 }}
           style={{ width: RADAR, height: RADAR, marginHorizontal: 40, marginVertical: 10 }}
         >
           <RadialGrid rings={[25, 50, 75]} outerRadius={RADAR_RIM} style={plotGrid()} />
@@ -2810,7 +2811,7 @@ function Flows() {
           accessibilityLabel={`Income flows, ${label()}: ${billions(revenue())} revenue, ${billions(through(quarter(), 7))} net income, a net margin of ${margin(7)}`}
           accessibilityValue={{ text: hover() == null ? undefined : `${ACCOUNTS[hover()!].name}: ${billions(through(quarter(), hover()!))}, ${margin(hover()!)} of revenue` }}
           onHoverChange={({ index }) => hover.set(index)}
-          focusStyle={focusRing(4)}
+          focusVisibleStyle={focusRing(4)}
           // Room for the segments' names left of them, the results' right
           // and the rest's above: the chart's own margins, which a terminal
           // keeps as its labels' gutters inside the card too.
@@ -2913,7 +2914,7 @@ function Watchlist() {
     return (closes[closes.length - 1].close / closes[0].close - 1) * 100;
   };
   return (
-    <Card icon="stocks" title="Watchlist" subtitle="Sparklines that draw in once and stay whole as their rows scroll back">
+    <Card icon="stocks" title="Watchlist" subtitle="Sparklines that draw in once and stay whole">
       <PlotAppearScope id="watchlist">
         <List testID="watchlist" each={WATCH} keyExtractor={(w) => w.symbol} estimatedItemSize={WATCH_ROW} style={{ height: WATCH_ROW * 5 }}>
           {(w) => {
@@ -3073,7 +3074,7 @@ function MarketMap() {
   };
   const tone = (v: number): Tone => (v > 0 ? "up" : v < 0 ? "down" : "neutral");
   return (
-    <Card icon="stocks" title="Market map" subtitle="The largest stocks by sector, sized by market cap and colored by their change">
+    <Card icon="stocks" title="Market map" subtitle="The largest stocks by sector, sized by market cap">
       <View style={{ gap: 4 }}>
         <Text style={tipTitle()}>{readout().title}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
@@ -3091,7 +3092,7 @@ function MarketMap() {
         accessibilityLabel={`Market map of ${stocks().length} stocks in ${MARKET.length} sectors, ${period()}: ${advancing()} up`}
         accessibilityValue={{ text: shown() && `${shown()!.name}: ${pct(readout().value, 2)}, ${readout().note}` }}
         onHoverChange={({ index }) => hover.set(index)}
-        focusStyle={focusRing(4)}
+        focusVisibleStyle={focusRing(4)}
         style={{ height: MAP_HEIGHT, marginTop: size.gap + 4 }}
       >
         <Treemap
@@ -3140,7 +3141,8 @@ const ALLOCATION_VIEWS = [
 type AllocationView = (typeof ALLOCATION_VIEWS)[number]["value"];
 const ASSET_CLASSES = ["Equities", "Bonds", "Alternatives", "Cash"] as const;
 type AssetClass = (typeof ASSET_CLASSES)[number];
-const ASSET_COLOR: Record<AssetClass, string> = { Equities: chart.s1, Bonds: chart.s2, Alternatives: chart.s4, Cash: chart.s3 };
+/** Each class's series color, read when the plot renders so it follows the appearance. */
+const assetColor = (c: AssetClass) => ({ Equities: chart.s1, Bonds: chart.s2, Alternatives: chart.s4, Cash: chart.s3 })[c];
 const ASSET_GROUP: Record<AssetClass, string> = {
   Equities: "fill-chart-1/15",
   Bonds: "fill-chart-2/15",
@@ -3197,7 +3199,7 @@ function Allocation() {
   const weight = (k: number) => `${fixed((k / total()) * 100, 1)}%`;
   const shown = () => rows()[tip()] ?? rows()[0];
   return (
-    <Card icon="stocks" title="Allocation" subtitle="A portfolio's asset classes and the positions in each, by value">
+    <Card icon="stocks" title="Allocation" subtitle="Asset classes and their positions, by value">
       <Figures>
         {ASSET_CLASSES.map((c) => (
           <Figure label={c} value={weight(valueOf(rows().find((r) => r.id === c)!))} />
@@ -3205,7 +3207,7 @@ function Allocation() {
       </Figures>
       <Plot
         data={rows()}
-        colorScale={{ type: "ordinal", domain: [...ASSET_CLASSES], range: ASSET_CLASSES.map((c) => ASSET_COLOR[c]) }}
+        colorScale={{ type: "ordinal", domain: [...ASSET_CLASSES], range: ASSET_CLASSES.map(assetColor) }}
         appearGeneration={1}
         motion={{ appear: { duration: 900, easing: "easeOut" }, update: { duration: 700, easing: "easeInOut" }, enter: { duration: 120 }, exit: { duration: 160 }, pointer: { stiffness: 380, damping: 36 } }}
         tooltipPlacement="pointer"
@@ -3222,7 +3224,7 @@ function Allocation() {
         onHoverChange={({ index }) => {
           if (index != null) tip.set(index);
         }}
-        focusStyle={focusRing(4)}
+        focusVisibleStyle={focusRing(4)}
         style={{ height: ALLOCATION_HEIGHT, marginTop: size.gap + 4 }}
       >
         <Treemap

@@ -1,16 +1,17 @@
 import { type JSX, mount, signal, Text, View } from "nsh";
 import { DatePicker, type DatePickerValue, type DateRangePreset, type HourCycle, type OpenChangeReason } from "nsh/base";
-import { desktop, Log, Panel, Segmented, size, Split, ui, wide, sectionSurface, controlSize, clearButtonLook, datePickerLook, Picker } from "./palette";
+import { desktop, Log, Panel, Segmented, size, Split, ui, wide, sectionSurface, controlSize, clearButtonLook, datePickerLook, DateTrigger } from "./palette";
 
 // Three date pickers in a card: a due date (weekends disabled, presets
 // beside the calendar, a clear button), a stay picked as a range over two
 // months in a wide window, and a meeting's date and time with the hours
-// on the clock the inspector picks. The look is the shared listbox look:
-// the trigger (`Picker`) with the value and a chevron that turns while the
-// calendar is open, and `datePickerLook` for the rest: the popup at the
-// trigger (a sheet on a touch screen), the items (`CalendarItem`: month
-// names, weekday initials, today on a quiet fill, the selected days filled,
-// a range's band), the presets, and the time's row, segments and well.
+// on the clock the inspector picks. The look is the shared listbox look,
+// after shadcn/ui's date picker: the trigger (`DateTrigger`) led by a
+// calendar, the value or a muted placeholder, and `datePickerLook` for the
+// rest: the popup at the trigger (a sheet on a touch screen), the items
+// (`CalendarItem`: the month and year, two-letter weekdays, today on a quiet
+// fill, the selected days on `primary`, a range's band), the presets, and
+// the time's row, segments and well.
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
@@ -112,7 +113,7 @@ function App() {
               cleanable
               clearButtonAccessibilityLabel="Clear the due date"
               {...clearButtonLook({ over: true })}
-              trigger={<Picker title={due() ? `${monthDay(due()!)}, ${due()!.slice(0, 4)}` : "No due date"} placeholder={!due()} open={dueOpen()} clearable={due() !== null} style={trigger} />}
+              trigger={<DateTrigger title={due() ? `${monthDay(due()!)}, ${due()!.slice(0, 4)}` : "No due date"} placeholder={!due()} open={dueOpen()} clearable={due() !== null} style={trigger} />}
             />
           </Field>
           <Field label="Stay" detail={wide() ? "A range over two months: the first press starts it" : "A range: the first press starts it, the second ends it"}>
@@ -128,8 +129,8 @@ function App() {
               numberOfMonths={wide() ? 2 : 1}
               firstDayOfWeek={1}
               presets={stays}
-              {...datePickerLook({ months: () => (wide() ? 2 : 1) })}
-              trigger={<Picker title={stayTitle() ?? "Check-in – check-out"} placeholder={!stayTitle()} open={stayOpen()} style={trigger} />}
+              {...datePickerLook({ months: () => (wide() ? 2 : 1), firstDayOfWeek: 1 })}
+              trigger={<DateTrigger title={stayTitle() ?? "Check-in – check-out"} placeholder={!stayTitle()} open={stayOpen()} style={trigger} />}
             />
           </Field>
           <Field label="Meeting" detail={desktop ? "A day, then its time; the day again closes the calendar" : "A tap picks the day; open it again for the time"}>
@@ -147,7 +148,7 @@ function App() {
               {...datePickerLook()}
               timeLabel={<Text style={{ fontSize: controlSize.label, color: ui().muted }}>Time</Text>}
               timeAccessibilityLabel="Meeting time"
-              trigger={<Picker title={meetingTitle() ?? "Not scheduled"} placeholder={!meetingTitle()} open={meetingOpen()} style={trigger} />}
+              trigger={<DateTrigger title={meetingTitle() ?? "Not scheduled"} placeholder={!meetingTitle()} open={meetingOpen()} style={trigger} />}
             />
           </Field>
         </View>

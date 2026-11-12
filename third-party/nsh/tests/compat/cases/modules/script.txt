@@ -90,6 +90,7 @@ expect Picked: pending
 expect Files: not picked
 tap id:pick-files
 expect Files refused: rejected RangeError
+expect Size refused: rejected RangeError
 expect Files: pending
 covers [nsh] Picker
 # mod-speech
@@ -114,6 +115,7 @@ expect Imported: asset:/sounds/click.wav
 tap id:play
 expect Refused: threw RangeError
 expect Sound: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
+expect Bytes: rejected ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
 expect Player: rejected, error unavailable, idle true 1.5
 covers [nsh] Sound
 covers [nsh] AudioPlayer
@@ -127,11 +129,26 @@ expect Permission: unavailable unavailable
 expect Refused: RangeError RangeError
 expect Shown: false false
 covers [nsh] Notifications
+# mod-app-info
+tap id:case-mod-app-info
+# `nsh build --release` of an app whose nsh.json has a version and build:
+# a release build, its information there before any module runs.
+expect App: com.example.api-modules API Modules
+expect Version: 1.2.3 build 7
+expect Development: false
+expect Early: 1.2.3
+covers [nsh] appInfo
 # mod-url-scheme
 tap id:case-mod-url-scheme
 # the domain claims `compat`: no link opened it, and the listener stops.
+# The app's own `setUrl` is no change of the address it did not make.
 expect Links: none
 expect Listener: listening
+expect Address: null
+expect Changes: none
+tap id:set-url
+expect Address: compat://orders/43, wrong TypeError TypeError TypeError
+expect Changes: none
 tap id:stop-links
 expect Listener: stopped
 covers [nsh] UrlScheme
@@ -169,7 +186,7 @@ tap id:menu
 expect Calls: menu done
 expect Popup: closed
 tap id:application
-expect Calls: application done, quit function, restart function
+expect Calls: application done, quit function, restart function, stop function
 covers [nsh/desktop] isAvailable
 covers [nsh/desktop] titleBar
 covers [nsh/desktop] windowState
@@ -183,6 +200,7 @@ covers [nsh/desktop] Application
 # mod-device
 tap id:case-mod-device
 # iOS phone at 1 pixel per point, in the light scheme.
+expect Platform: ios
 expect OS: ios
 expect Idiom: phone
 expect Desktop: false
@@ -195,6 +213,7 @@ expect Font scale: 1
 expect Window: 390x844
 expect Scheme: light
 expect Lifecycle: active
+expect Wakes: 0
 expect Time zone: UTC
 expect Intl local time: its zone
 expect Languages: en-US
@@ -217,6 +236,7 @@ covers [nsh] setColorScheme
 covers [nsh] fontScale
 covers [nsh] windowSize
 covers [nsh] lifecycle
+covers [nsh] wakeCount
 covers [nsh] localeSettings
 # mod-host-channel
 tap id:case-mod-host-channel
@@ -264,6 +284,13 @@ tap id:tab-rename
 frame id:tab-bar 0 784 390 60
 covers [nsh/mobile] isAvailable
 covers [nsh/mobile] TabBar
+# mod-haptics
+tap id:case-mod-haptics
+# every call goes through; a name Haptics does not know throws.
+expect Haptics: not called
+tap id:play
+expect Haptics: done, loud refused: TypeError
+covers [nsh/mobile] Haptics
 # mod-storage
 tap id:case-mod-storage
 # a key set twice keeps its last value, and a missing key reads null.
@@ -294,6 +321,13 @@ event id:heard onHost type=event event=tick payload=2
 wait 50
 expect Host heard: [1]
 covers [nsh] host
+# mod-web
+tap id:case-mod-web
+# No page here: a head renders nothing, before and after its props change.
+expect Title: Notes
+tap id:retitle
+expect Title: Q3 earnings
+covers [nsh/web] Head
 # mod-fps
 tap id:case-mod-fps
 # no performance monitor headless: it reports none, and the calls go through.

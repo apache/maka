@@ -6,8 +6,9 @@ export const dataTableFitPadding = 16;
 
 /** The shared table look. nsh/base owns its structure and interaction. */
 export const dataTableClasses: DataTableClasses = {
-  root: "rounded-lg border border-border bg-background text-foreground",
-  header: "border-b border-border bg-muted/50 text-muted-foreground",
+  // On the card, so the stripes and the header (muted) stand off it in light as in dark.
+  root: "rounded-lg border border-border bg-card text-foreground",
+  header: "border-b border-border bg-muted/70 text-muted-foreground",
   headerCell: "pl-2 pr-1",
   headerContent: "gap-1",
   headerCellSelected: "bg-primary/10",
@@ -23,10 +24,10 @@ export const dataTableClasses: DataTableClasses = {
     : "bg-border group-hover:bg-primary group-active:bg-primary",
   moveIndicator: "bg-primary",
   row: "border-b border-border/60",
-  rowOdd: "bg-muted/35",
-  rowHover: "bg-muted/60",
+  rowOdd: "bg-muted/60",
+  rowHover: "bg-muted",
   rowSelected: "bg-primary/12",
-  rowActive: "bg-muted/60",
+  rowActive: "bg-muted",
   cell: "px-2",
   cellSelected: "border border-primary",
   cellColumnSelected: "bg-primary/8",

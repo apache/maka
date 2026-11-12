@@ -61,6 +61,48 @@ pub struct HistoryItem {
     /// retain their original typed Run/attempt identity without reinterpretation.
     pub recorded: RecordedFact,
 }
+/// Read-time projection of native assistant text at a captured history cut.
+#[derive(Default)]
+pub struct ExecutorTranscript {
+    messages: std::collections::BTreeMap<(String, bool), ExecutorText>,
+}
+
+pub struct ExecutorText {
+    pub sequence: u64,
+    pub fact: FactId,
+    pub body: maka_agent_facts::model::body::TextBody,
+}
+
+impl ExecutorTranscript {
+    pub fn text(&self, id: &str, thinking: bool) -> Option<&ExecutorText> {
+        self.messages.get(&(id.to_owned(), thinking))
+    }
+
+    fn observe(&mut self, sequence: u64, record: &RecordedFact) {
+        use maka_agent_facts::executor::Output;
+        let Fact::ExternalTaskObserved { output, .. } = &record.fact else {
+            return;
+        };
+        let (id, text, thinking) = match output {
+            Output::OutputDelta { message_id, text } => (message_id, text, false),
+            Output::ThinkingDelta { message_id, text } => (message_id, text, true),
+            _ => return,
+        };
+        let message = self
+            .messages
+            .entry((id.clone(), thinking))
+            .or_insert_with(|| ExecutorText {
+                sequence,
+                fact: record.id,
+                body: Default::default(),
+            });
+        message.body = message
+            .body
+            .inserted(message.body.len_bytes(), text)
+            .expect("append at text end");
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolResultSource {
@@ -547,7 +589,18 @@ struct ViewAt(SessionHistory, HistoryCut, RunId);
 impl Query for ViewAt {
     type Output = crate::fold::RunView;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        sql::view_at(c, &self.0.namespace, &self.1, self.2)
+        sql::view_at(c, &self.0.namespace, &self.1, self.2, |_, _| {})
+    }
+}
+struct ExecutorViewAt(SessionHistory, HistoryCut, RunId);
+impl Query for ExecutorViewAt {
+    type Output = (crate::fold::RunView, ExecutorTranscript);
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let mut transcript = ExecutorTranscript::default();
+        let view = sql::view_at(c, &self.0.namespace, &self.1, self.2, |sequence, record| {
+            transcript.observe(sequence, record);
+        })?;
+        Ok((view, transcript))
     }
 }
 struct ToolCall(SessionHistory, HistoryCut, RunId, ToolKey);

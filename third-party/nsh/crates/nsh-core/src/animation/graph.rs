@@ -59,7 +59,7 @@ impl Finished {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Node {
     Value {
         value: f32,
@@ -118,7 +118,7 @@ struct Snap {
 const MAX_DEPTH: u32 = 64;
 
 /// All animation nodes of one surface.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Graph {
     /// Indexed by node id (dense, assigned by JS).
     nodes: Vec<Option<Node>>,
@@ -148,7 +148,7 @@ pub struct Graph {
 }
 
 /// A running composite animation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Program {
     id: AnimationId,
     key: u32,
@@ -161,7 +161,7 @@ struct Program {
 }
 
 /// The state of one part of a composite animation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Step {
     Run {
         node: NodeId,
@@ -201,6 +201,23 @@ enum Step {
 /// How a step ended: completed (or stopped) and when.
 type End = (bool, f64);
 
+/// [`warn_out_of_range`](super::driver::warn_out_of_range) for every
+/// driver of a composite, and a delay that is not a number: once when it
+/// starts, not on each pass of a loop.
+fn warn_composite_out_of_range(spec: &Composite) {
+    match spec {
+        Composite::Run { driver, .. } => super::driver::warn_out_of_range(driver),
+        Composite::Sequence(children) | Composite::Parallel { children, .. } => {
+            children.iter().for_each(warn_composite_out_of_range);
+        }
+        Composite::Delay(ms) if ms.is_nan() => {
+            log::warn!("animation delay out of range (NaN): no delay");
+        }
+        Composite::Delay(_) => {}
+        Composite::Loop { child, .. } => warn_composite_out_of_range(child),
+    }
+}
+
 impl Step {
     fn new(spec: &Composite) -> Step {
         match spec {
@@ -223,8 +240,10 @@ impl Step {
                 stop_together: *stop_together,
                 at: None,
             },
+            // A NaN delay never ended (`at + NaN`): it is none. An infinite
+            // one is the app's to wait out.
             Composite::Delay(ms) => Step::Delay {
-                ms: *ms,
+                ms: if ms.is_nan() { 0.0 } else { *ms },
                 until: None,
             },
             Composite::Loop {
@@ -553,6 +572,7 @@ impl Graph {
                 animation,
                 driver,
             } => {
+                super::driver::warn_out_of_range(&driver);
                 self.start(node, animation, driver, None, finished);
             }
             AnimationOp::StartComposite {
@@ -560,6 +580,7 @@ impl Graph {
                 key,
                 spec,
             } => {
+                warn_composite_out_of_range(&spec);
                 let mut nodes = Vec::new();
                 spec.nodes(&mut nodes);
                 let values = nodes
@@ -658,7 +679,11 @@ impl Graph {
             return false;
         };
         let mut new = Running::new(animation, driver, *value, *velocity);
-        if let Some(start) = start {
+        // Replacing one in motion, it goes on from that one's last frame,
+        // where `value` and `velocity` were taken: started on the next
+        // frame instead, a value retargeted on every frame (one following
+        // the pointer) would never move.
+        if let Some(start) = start.or_else(|| running.as_ref().and_then(Running::last_step)) {
             new = new.starting_at(start);
         }
         if let Some(old) = running.replace(new) {
@@ -1793,6 +1818,56 @@ mod tests {
         assert!(!g.is_animating());
     }
 
+    /// A spring given a new target on every frame (a value that follows
+    /// the pointer, #632) still moves on each frame, as far as one that
+    /// keeps its target.
+    #[test]
+    fn a_spring_retargeted_every_frame_keeps_moving() {
+        let spring = |to| Driver::Spring {
+            to,
+            stiffness: 170.0,
+            damping: 26.0,
+            mass: 1.0,
+            velocity: None,
+            frame_rate: None,
+        };
+        let run = |retarget: bool| {
+            let mut g = Graph::default();
+            let mut finished = Vec::new();
+            g.apply(
+                AnimationOp::CreateValue {
+                    node: 1,
+                    value: 0.0,
+                },
+                &mut finished,
+            );
+            let mut trace = Vec::new();
+            for frame in 0..10u32 {
+                if frame == 0 || retarget {
+                    g.apply(
+                        AnimationOp::Start {
+                            node: 1,
+                            animation: frame + 1,
+                            driver: spring(100.0),
+                        },
+                        &mut finished,
+                    );
+                }
+                g.tick(f64::from(frame) / 60.0, &mut finished);
+                trace.push(g.value(1).unwrap());
+            }
+            trace
+        };
+        let steady = run(false);
+        let retargeted = run(true);
+        for (frame, (a, b)) in steady.iter().zip(&retargeted).enumerate() {
+            assert!(
+                (a - b).abs() < 0.5,
+                "frame {frame}: {steady:?} vs {retargeted:?}"
+            );
+        }
+    }
+
     fn timing(to: f32, ms: f32) -> Driver {
         Driver::Timing {
             to,
@@ -2105,6 +2180,68 @@ mod tests {
         g.tick(0.5, &mut f);
         assert_eq!(g.value(2), Some(stopped));
         assert!(!g.is_animating());
+    }
+
+    /// A loop of parameters out of range warns once, when it starts, not on
+    /// each of its passes (up to 16 a frame for passes of no duration:
+    /// `run_programs` routes each pass's end in a round of its own).
+    #[test]
+    fn a_loop_out_of_range_warns_once() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1]);
+        let warnings = || crate::animation::driver::WARNINGS.with(|n| n.get());
+        let before = warnings();
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 3,
+                key: 1,
+                spec: Composite::Loop {
+                    child: Box::new(Composite::Run {
+                        node: 1,
+                        driver: timing(1.0, f32::NAN),
+                    }),
+                    iterations: None,
+                    reset: false,
+                },
+            },
+            &mut f,
+        );
+        run(&mut g, &mut f, 0.0, 0.5);
+        assert_eq!(warnings() - before, 1);
+        assert_eq!(g.value(1), Some(1.0));
+    }
+
+    /// A NaN delay (`at + NaN` never came) is none.
+    #[test]
+    fn a_nan_delay_is_none() {
+        let mut g = Graph::default();
+        let mut f = Vec::new();
+        values(&mut g, &mut f, &[1]);
+        g.apply(
+            AnimationOp::StartComposite {
+                animation: 3,
+                key: 1,
+                spec: Composite::Sequence(vec![
+                    Composite::Delay(f32::NAN),
+                    Composite::Run {
+                        node: 1,
+                        driver: timing(10.0, 100.0),
+                    },
+                ]),
+            },
+            &mut f,
+        );
+        run(&mut g, &mut f, 0.0, 0.3);
+        assert_eq!(g.value(1), Some(10.0));
+        assert_eq!(
+            f,
+            vec![Finished {
+                animation: 3,
+                finished: true,
+                value: None,
+            }]
+        );
     }
 
     #[test]

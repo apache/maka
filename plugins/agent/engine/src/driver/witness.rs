@@ -1035,6 +1035,7 @@ mod tests {
                         protocol: serde_json::to_value(ModelClosureProtocol {
                             finish_reason: ModelFinishReason::Stop,
                             provider_options: None,
+                            cache_read_reported: None,
                             response_id: None,
                             model: None,
                             timestamp: None,
@@ -1086,6 +1087,7 @@ mod tests {
                         protocol: serde_json::to_value(ModelClosureProtocol {
                             finish_reason: ModelFinishReason::Stop,
                             provider_options: None,
+                            cache_read_reported: None,
                             response_id: None,
                             model: None,
                             timestamp: None,
@@ -1118,11 +1120,11 @@ mod tests {
             let view = store.frontier(run).await?;
             assert!(!view.attempts.contains_key(&attempt));
             let engine = Engine::new(store.clone());
-            let level = engine.model_level(&view).await?;
+            let level = engine.model_level(&view, &[], false).await?;
             assert_eq!(
                 level.compaction,
                 crate::reconcile::CompactionLevel::Candidate {
-                    summary: attempt,
+                    origin: maka_agent_facts::context::SummaryOrigin { run, attempt },
                     adopt: false
                 }
             );

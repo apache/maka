@@ -3,6 +3,7 @@ name = "nsh-windows-app"
 description = "Release app runner on Windows: the executable of packaged nsh apps (no development features)."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -12,7 +13,7 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["js", "shader", "editor", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
+default = ["js", "shader", "editor", "emoji-picker", "highlight", "math", "plot", "rich-editor", "term", "zlib", "crypto"]
 # JS apps (the bundle in the package). Without it the runner runs a Rust
 # app only (`run_rust`) and links no QuickJS.
 js = ["nsh-platform-windows/js", "nsh-engine/js-core"]
@@ -26,6 +27,7 @@ plot = ["nsh-platform-windows/plot"]
 term = ["nsh-platform-windows/term"]
 highlight = ["nsh-platform-windows/highlight"]
 math = ["nsh-platform-windows/math"]
+emoji-picker = ["nsh-platform-windows/emoji-picker"]
 zlib = ["nsh-platform-windows/zlib"]
 crypto = ["nsh-platform-windows/crypto"]
 

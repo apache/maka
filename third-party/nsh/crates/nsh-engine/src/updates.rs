@@ -21,6 +21,11 @@
 //! schemes and trusted paths, its own declared capabilities granted at most
 //! what the shipped app declares, and `nsh/updater` reads the shipped
 //! app's update configuration ([`Bundle::updater_config`]).
+//!
+//! Failures and fallbacks are warnings or errors, which packaged apps log
+//! on every platform: the app's developer needs to see why a package does
+//! not run. What runs and what is installed are info, which they log on
+//! Android.
 
 use std::{
     path::{Path, PathBuf},
@@ -264,7 +269,7 @@ fn choose(dir: &Path, shipped: &Shipped) -> Option<Chosen> {
                 })
             }
             Err(err) => {
-                log::info!("updates: the installed package does not run: {err}");
+                log::warn!("updates: the installed package does not run: {err}");
                 remove(&current);
             }
         }

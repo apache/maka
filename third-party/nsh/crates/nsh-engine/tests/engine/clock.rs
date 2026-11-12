@@ -94,6 +94,7 @@ fn start_app(
         minify: false,
         split: false,
         ui_sets: Vec::new(),
+        ..Default::default()
     })
     .unwrap();
     let bytecode = nsh_js::compile_bytecode(&bundle.code, false).unwrap();
@@ -305,6 +306,7 @@ fn a_clock_that_moves_with_frames_runs_them_at_the_display_pace() {
         minify: false,
         split: false,
         ui_sets: Vec::new(),
+        ..Default::default()
     })
     .unwrap();
     let bytecode = nsh_js::compile_bytecode(&bundle.code, false).unwrap();

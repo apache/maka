@@ -171,6 +171,8 @@ impl Variant {
     pub(crate) const HOVER: Self = Self::states(state::HOVERED);
     /// While focused.
     pub(crate) const FOCUS: Self = Self::states(state::FOCUSED);
+    /// While focused and showing it (the keyboard moved the focus).
+    pub(crate) const FOCUS_VISIBLE: Self = Self::states(state::FOCUS_VISIBLE);
     /// While it or a view inside it is focused.
     pub(crate) const FOCUS_WITHIN: Self = Self::states(state::FOCUS_WITHIN);
     /// While pressed.
@@ -227,6 +229,7 @@ impl Variant {
         let keys = [
             (state::HOVERED, rank::HOVER),
             (state::FOCUSED, rank::FOCUS),
+            (state::FOCUS_VISIBLE, rank::FOCUS_VISIBLE),
             (state::FOCUS_WITHIN, rank::FOCUS_WITHIN),
             (state::PRESSED, rank::ACTIVE),
             (state::DISABLED, rank::DISABLED),
@@ -1687,6 +1690,8 @@ pub trait Styled: Sized {
     /// Laid out but not shown, nor what is inside it (CSS's `visibility:
     /// hidden`, Tailwind's `invisible`, GPUI's `Styled::invisible`): it
     /// keeps its place and frame, and takes no presses or keyboard focus.
+    /// On a text nested in another (a span), its characters keep their
+    /// place in the lines and are left out of copies and screen readers.
     fn invisible(mut self) -> Self {
         self.style()
             .value(StyleKey::Visibility, PropertyValue::Bool(true));
@@ -4230,6 +4235,12 @@ pub trait Styled: Sized {
         in_group(self, "", state::FOCUS_WITHIN, f)
     }
 
+    /// Styles while the nearest group around it has the keyboard focus
+    /// and shows it (`group-focus-visible:`).
+    fn group_focus_visible(self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
+        in_group(self, "", state::FOCUS_VISIBLE, f)
+    }
+
     /// Styles while the group `name` around it is pressed
     /// (`group-active/name:`).
     fn group_active_named(
@@ -4256,6 +4267,16 @@ pub trait Styled: Sized {
         f: impl FnOnce(StyleRefinement) -> StyleRefinement,
     ) -> Self {
         in_group(self, name, state::FOCUS_WITHIN, f)
+    }
+
+    /// Styles while the group `name` around it has the keyboard focus and
+    /// shows it (`group-focus-visible/name:`).
+    fn group_focus_visible_named(
+        self,
+        name: &'static str,
+        f: impl FnOnce(StyleRefinement) -> StyleRefinement,
+    ) -> Self {
+        in_group(self, name, state::FOCUS_VISIBLE, f)
     }
 }
 

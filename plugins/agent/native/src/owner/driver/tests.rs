@@ -536,8 +536,7 @@ impl Rig {
                 "slug":"wait-local", "name":"wait-local",
                 "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
                 "configuration":{"baseUrl":format!("http://{}/v1", self.model_listener.local_addr()?)},
-                "enabled":true, "enabledModelIds":["llama3.2"],
-                "modelOverrides":{"llama3.2":{"codeMode":true}}
+                "enabled":true, "enabledModelIds":["llama3.2"]
             }
         }))?).await?;
         let CatalogMutationResult::Committed {
@@ -3471,7 +3470,7 @@ mod model_recovery {
                 usage: maka_agent_facts::model::ModelUsage { input_tokens: Some(100), output_tokens: Some(10), ..Default::default() },
                 protocol: serde_json::to_value(maka_agent_facts::context::ModelClosureProtocol {
                     finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
-                    provider_options: None, response_id: None, model: None, timestamp: None, compaction: None, summary: None,
+                    provider_options: None, cache_read_reported: None, response_id: None, model: None, timestamp: None, compaction: None, summary: None,
                 })?,
             },
             Fact::BudgetCharged { tokens: 110 },
@@ -4069,6 +4068,21 @@ async fn compacted_history_checks_the_producing_requests_original_cut() {
         };
         let summary_text = "Continue the original task.";
         rig.record_model_reply(Preparation::Initial, None).await?;
+        let view = driver.state.frontier(run).await?;
+        let mut main = model
+            .prepare_step(&view, Preparation::Initial, driver)
+            .await?;
+        let encoded = ContentBlob::json(&main.request)?;
+        main.contents.push(encoded.clone());
+        rig.append(
+            vec![Fact::StepPrepared {
+                step: main.request.step,
+                request: encoded.reference().clone(),
+                adjudications: vec![],
+            }],
+            main.contents,
+        )
+        .await?;
         let (summary, summary_attempt, started) =
             rig.record_model_request(Preparation::Summary).await?;
         let observe = || {
@@ -4102,6 +4116,7 @@ async fn compacted_history_checks_the_producing_requests_original_cut() {
             (capture.current.digest.clone(), false),
         ] {
             let baseline = ContentBlob::json(&CompactedContext {
+                summary_origin: None,
                 source_capture: summary.source_capture.clone(),
                 checkpoint: ContextCheckpoint {
                     mode: CheckpointMode::Standalone,
@@ -4402,6 +4417,7 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
                 .await?,
         )?;
         let baseline = ContentBlob::json(&CompactedContext {
+            summary_origin: None,
             source_capture: summary.source_capture,
             checkpoint: ContextCheckpoint {
                 mode: CheckpointMode::MidTurn {

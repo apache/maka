@@ -218,10 +218,13 @@ In Rust, `nav_stack()` is a view whose children are its pages, bottom to top; st
 | `state` | `NavStackState<R>` | The routes to show. |
 | `children` | `(route: R, index: Accessor<number>) => JSX.Element` | Renders a route; return a `<NavPage>` for its header. |
 | `style`, `class` | | The stack's own style (usually `flex: 1`). |
+| `onChange` | `({ routes }) => void` | The routes changed: pushed, popped, replaced or set by the app, or a page the user went back from. It runs after the change is rendered, and not for the routes the stack starts with. |
 
 The render function runs once per route, when it is pushed; `route` is the plain value, `index()` its current position. What it returns becomes the page's content. Return a `<NavPage>` to set the header; anything else is wrapped in a page with default options.
 
 Pages stay mounted while their route is in the stack: going back shows the previous page exactly as it was left, with its scroll position, inputs and signals. A page's [`cleanup`](./reactivity.md) handlers run when its route leaves the stack.
+
+`onChange` is where an app follows its navigation: it tracks screens, saves the routes to restore them, or gives each page an address. [`UrlScheme`](../modules/nsh.md#urlscheme) holds the app's address on every platform: the app builds its first routes from `UrlScheme.url()` and sets the top page's address with `UrlScheme.setUrl` in `onChange`, which on the web is the address the browser shows. What the stack does not account for, a back or forward between entries of the same pages, comes as `UrlScheme.on("change")`; an address with no page of its own (a tab, a filter) becomes such an entry with `UrlScheme.setUrl(url, { history: "push" })`.
 
 ## NavPage and the header
 

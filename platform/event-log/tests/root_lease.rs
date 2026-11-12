@@ -65,3 +65,20 @@ fn durable_lease_blocks_other_process_even_after_cache_removal() {
     drop(owner);
     RootOwner::open(&path, &ns).unwrap();
 }
+
+#[test]
+fn copied_root_marker_does_not_authorize_another_directory() {
+    use maka_event_log::root::{ROOT_MARKER, RUST_ROOT_MARKER, resolve};
+
+    let temp = tempfile::tempdir().unwrap();
+    let ns = namespaces(temp.path());
+    let original = temp.path().join("original");
+    let replacement = temp.path().join("replacement");
+    let owner = RootOwner::create(&original, &ns).unwrap();
+    assert_eq!(resolve(&original).unwrap().root_id(), owner.root_id());
+    fs::create_dir(&replacement).unwrap();
+    for name in [ROOT_MARKER, RUST_ROOT_MARKER] {
+        fs::copy(original.join(name), replacement.join(name)).unwrap();
+    }
+    assert!(resolve(&replacement).is_err());
+}

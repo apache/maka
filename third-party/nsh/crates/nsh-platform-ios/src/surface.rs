@@ -9,7 +9,8 @@ use block2::RcBlock;
 use dispatch2::{DispatchQueue, MainThreadBound};
 use nsh_core::{MountBatch, Points, Size};
 use nsh_engine::{
-    App, ColorScheme, Edges, Engine, EngineConfig, Environment, Idiom, Lifecycle, MountSink, Policy,
+    App, ColorScheme, Edges, Engine, EngineConfig, Environment, Idiom, Lifecycle, MainThreadTask,
+    MountSink, Policy,
 };
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
@@ -80,6 +81,11 @@ impl MountSink for MainThreadSink {
                 mounter.request_frame();
             }
         });
+    }
+
+    fn run_on_main_thread(&self, task: MainThreadTask) {
+        // The main queue is serial: after the batches submitted before it.
+        DispatchQueue::main().exec_async(move || task.run());
     }
 
     fn hot_update_failed(&self) {
@@ -394,6 +400,9 @@ impl RootView {
             notifications: true,
             // AVAudioEngine and AVPlayer.
             audio: true,
+            web_evaluate: true,
+            // wgpu on Metal, in builds with it, until it finds no GPU.
+            shaders: nsh_engine::shader::LINKED,
             // No file dialogs, file manager or trash (Catalyst included):
             // the default, so the core answers those requests.
             ..Environment::default()
@@ -739,6 +748,7 @@ impl RootView {
             app,
             viewport,
             trace: self.ivars().options.trace,
+            content_culling: true,
             network: Some(crate::net::network()),
             websocket: None,
             refuse_connections: None,
@@ -751,7 +761,7 @@ impl RootView {
             header_heights: header_heights(mtm),
             limits: self.ivars().options.limits,
             ui_sets: crate::ui_sets(),
-            runtime: None,
+            runtime: self.ivars().options.runtime.clone(),
             data_dir: self.ivars().options.data_dir.clone(),
             cache: system_cache(self.ivars().options.cache.clone()),
             storage: self.ivars().options.storage.as_ref().map(|dir| {
@@ -784,8 +794,11 @@ impl RootView {
             #[cfg(feature = "dev")]
             test_model: self.ivars().test_model.clone(),
         };
-        // The embedding app's theme overrides are in the first frame.
+        // The embedding app's theme overrides are in the first frame, and
+        // the links that came before are the app's address when its code
+        // first runs (`UrlScheme.url()`).
         let tokens = self.ivars().host_tokens.borrow().clone();
+        let links = std::mem::take(&mut *self.ivars().url_schemes.borrow_mut());
         let fonts = self.ivars().fonts.borrow().clone();
         let engine = match Engine::start_with(config, CoreTextEngine::default, sink, |control| {
             if tokens.is_some() {
@@ -793,6 +806,9 @@ impl RootView {
             }
             for font in fonts {
                 control.register_font(font);
+            }
+            for url in links {
+                send_url_scheme(control, url);
             }
         }) {
             Ok(engine) => engine,
@@ -821,16 +837,13 @@ impl RootView {
             access,
             self.ivars().options.components.clone(),
         );
+        installed.watch_scrolls(self.ivars().options.scroll_watchers.clone());
         // The app's downloaded images go through its disk cache.
         installed.set_image_cache(engine.image_cache());
         if self.ivars().options.fps || nsh_engine::perf::enabled_by_env() {
             installed.measure();
         }
         *mounter.get(mtm).borrow_mut() = Some(installed);
-        let links = std::mem::take(&mut *self.ivars().url_schemes.borrow_mut());
-        for url in links {
-            send_url_scheme(&engine.control(), url);
-        }
         *self.ivars().running.borrow_mut() = Some(Running { engine, mounter });
         self.ivars().environment.set(Some(self.environment()));
     }
@@ -862,6 +875,7 @@ fn header_heights(mtm: MainThreadMarker) -> (Points, Points) {
 
 /// Options of a [`Surface`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SurfaceOptions {
     /// Log per-commit timings.
     pub trace: bool,
@@ -869,6 +883,10 @@ pub struct SurfaceOptions {
     pub asset_base: Option<AssetBase>,
     /// The VM limits of the apps it runs.
     pub limits: nsh_engine::Limits,
+    /// The runtime for async tasks; `None` uses NSH's shared runtime.
+    /// The embedding app owns it and must keep it running until the view
+    /// stops. Dropping the view does not shut the runtime down.
+    pub runtime: Option<tokio::runtime::Handle>,
     /// What the embedding app grants the apps it runs at most (`None`: what
     /// each app declares).
     pub granted: Option<nsh_engine::Capabilities>,
@@ -887,12 +905,15 @@ pub struct SurfaceOptions {
     pub cache: nsh_engine::CacheOptions,
     /// The native components the apps can use (`nsh/native`).
     pub components: crate::component::Components,
+    /// The scroll views the embedding app watches by `nativeID`
+    /// ([`crate::AppView::watch_scroll`]).
+    pub scroll_watchers: crate::ScrollWatchers,
     /// The embedding app's channel with the apps (`nsh/host`): launch
     /// parameters, events and handlers of their calls and posts, one for
     /// every app the surface runs.
     pub host: nsh_engine::HostChannel,
     /// Logs the performance monitor's readings once a second (target
-    /// `nsh::perf`): frame rate, frame and commit costs, CPU, memory.
+    /// `nsh::fps`): frame rate, frame and commit costs, CPU, memory.
     pub fps: bool,
 }
 
@@ -902,11 +923,13 @@ impl Default for SurfaceOptions {
             trace: false,
             asset_base: None,
             limits: nsh_engine::Limits::default(),
+            runtime: None,
             granted: None,
             data_dir: data_dir(),
             storage: None,
             cache: nsh_engine::CacheOptions::default(),
             components: crate::component::Components::default(),
+            scroll_watchers: crate::ScrollWatchers::default(),
             host: nsh_engine::HostChannel::default(),
             fps: false,
         }
@@ -1062,7 +1085,8 @@ impl Surface {
 
     /// Hands `url`, a link the system opened the app with, to the app's
     /// engine, whose core keeps it until the app listens (`UrlScheme`);
-    /// kept until the engine starts.
+    /// kept until the engine starts, which applies it before the app's code
+    /// first runs.
     pub(crate) fn url_scheme(&self, url: String) {
         match &*self.view.ivars().running.borrow() {
             Some(running) => send_url_scheme(&running.engine.control(), url),

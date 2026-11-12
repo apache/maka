@@ -26,11 +26,13 @@ mod macos {
     use nsh_core::{element::Root, prelude::*};
     use nsh_platform_macos::{
         AppOptions, AppView,
-        objc2::{MainThreadMarker, MainThreadOnly, Message, rc::Retained, runtime::AnyObject},
+        objc2::{
+            MainThreadMarker, MainThreadOnly, Message, msg_send, rc::Retained, runtime::AnyObject,
+        },
         objc2_app_kit::{
             NSAccessibility, NSApplication, NSBackingStoreType, NSView, NSWindow, NSWindowStyleMask,
         },
-        objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoop, NSSize, NSString},
+        objc2_foundation::{NSDate, NSNumber, NSPoint, NSRect, NSRunLoop, NSSize, NSString},
     };
 
     /// The test sets it to change the texts inside the elements.
@@ -38,6 +40,12 @@ mod macos {
 
     /// The scale requested by the frame checks, in percent.
     static ZOOM: AtomicU32 = AtomicU32::new(100);
+
+    /// The test sets it to scroll the scroll area to its end.
+    static SCROLLED: AtomicBool = AtomicBool::new(false);
+
+    /// The test sets it to open the dialog.
+    static OPENED: AtomicBool = AtomicBool::new(false);
 
     /// An option and a tree item holding only a text, an option with a
     /// label of its own, and a button holding only a text.
@@ -79,6 +87,81 @@ mod macos {
                     .child(name("Save", "Save all")),
             )
             .child(geometry())
+            .child(order())
+            .child(scroll_area())
+            .child(confirm())
+    }
+
+    /// A dialog named by its title and described by its message, opened
+    /// once the test asks.
+    #[component]
+    fn Confirm() -> impl IntoElement {
+        let open = signal(false);
+        set_interval(Duration::from_millis(20), move || {
+            if OPENED.load(Ordering::SeqCst) && !open.get_untracked() {
+                open.set(true);
+            }
+        });
+        when(open, || {
+            nsh_base::dialog()
+                .test_id("rename")
+                .label("Rename file")
+                .accessibility_description("Other apps see the new name too.")
+                .child(
+                    view()
+                        .child(text("Rename file"))
+                        .child(view().test_id("save").on_press(|| {}).child(text("Save"))),
+                )
+        })
+    }
+
+    /// A scroll view and a plain view, each holding two texts made bottom
+    /// first, as a list's recycled cells can be.
+    #[component]
+    fn Order() -> impl IntoElement {
+        let two = |second: &'static str, first: &'static str| {
+            [
+                text("Second").test_id(second).absolute().top(px(40.0)),
+                text("First").test_id(first).absolute().top(px(0.0)),
+            ]
+        };
+        view()
+            .absolute()
+            .left(px(260.0))
+            .top(px(0.0))
+            .w(px(120.0))
+            .child(
+                scroll()
+                    .test_id("scrolled")
+                    .h(px(80.0))
+                    .children(two("scrolled-second", "scrolled-first")),
+            )
+            .child(
+                view()
+                    .test_id("plain")
+                    .h(px(80.0))
+                    .children(two("plain-second", "plain-first")),
+            )
+    }
+
+    /// A scroll view whose content is three times its height.
+    #[component]
+    fn ScrollArea() -> impl IntoElement {
+        let area = element_ref();
+        set_interval(Duration::from_millis(20), move || {
+            if SCROLLED.swap(false, Ordering::SeqCst) {
+                area.scroll_to_end(false);
+            }
+        });
+        scroll()
+            .element_ref(&area)
+            .test_id("scroll-area")
+            .absolute()
+            .left(px(260.0))
+            .top(px(180.0))
+            .w(px(100.0))
+            .h(px(50.0))
+            .child(view().h(px(150.0)))
     }
 
     /// Fixed geometry makes the expected screen frames independent of
@@ -202,6 +285,47 @@ mod macos {
             .find_map(|c| find(&c, id))
     }
 
+    /// The view with identifier `id` under `view`, through the view tree
+    /// (it need not be an element).
+    fn view_with_id(view: &NSView, id: &str) -> Option<Retained<NSView>> {
+        if view
+            .accessibilityIdentifier()
+            .is_some_and(|i| i.to_string() == id)
+        {
+            return Some(view.retain());
+        }
+        view.subviews().iter().find_map(|c| view_with_id(&c, id))
+    }
+
+    /// The identifiers of the accessibility children of view `id`, in
+    /// their order.
+    fn children_of(root: &NSView, id: &str) -> Vec<String> {
+        let view = view_with_id(root, id).unwrap_or_else(|| panic!("no view {id}"));
+        view.accessibilityChildren()
+            .map(|children| {
+                children
+                    .iter()
+                    .filter_map(|c| c.downcast::<NSView>().ok())
+                    .filter_map(|c| c.accessibilityIdentifier().map(|i| i.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The role and value of the accessibility element `object`.
+    fn role_and_value(object: &AnyObject) -> (Option<String>, Option<f64>) {
+        // SAFETY: NSAccessibility getters, sent to an element on the main
+        // thread.
+        let role: Option<Retained<NSString>> = unsafe { msg_send![object, accessibilityRole] };
+        let value: Option<Retained<AnyObject>> = unsafe { msg_send![object, accessibilityValue] };
+        (
+            role.map(|r| r.to_string()),
+            value
+                .and_then(|v| v.downcast::<NSNumber>().ok())
+                .map(|n| n.as_f64()),
+        )
+    }
+
     fn string(object: Option<Retained<AnyObject>>) -> Option<String> {
         object
             .and_then(|o| o.downcast::<NSString>().ok())
@@ -269,6 +393,46 @@ mod macos {
         assert_eq!(read(&root, "labelled"), (None, Some("Fixed".into()), 0));
         assert_eq!(read(&root, "button"), (Some("Save all".into()), None, 0));
 
+        // A scroll view's content is read in the order it is on screen,
+        // not the order its views were made in; elsewhere the tree's order
+        // stays.
+        until("the order mount", || {
+            find(&root, "scrolled-first").is_some()
+        });
+        assert_eq!(
+            children_of(&root, "scrolled"),
+            ["scrolled-first", "scrolled-second"]
+        );
+        assert_eq!(children_of(&root, "plain"), ["plain-second", "plain-first"]);
+
+        // A scroll view is a scroll area, its scroll bar on its axis telling
+        // where it is scrolled to, from 0 at the start to 1 at the end.
+        until("the scroll area", || find(&root, "scroll-area").is_some());
+        let area = find(&root, "scroll-area").expect("the scroll area");
+        assert_eq!(
+            area.accessibilityRole().map(|r| r.to_string()).as_deref(),
+            Some("AXScrollArea")
+        );
+        assert!(area.accessibilityHorizontalScrollBar().is_none());
+        let bar = area
+            .accessibilityVerticalScrollBar()
+            .expect("a vertical bar");
+        assert_eq!(
+            role_and_value(&bar),
+            (Some("AXScrollBar".into()), Some(0.0))
+        );
+        let children = area.accessibilityChildren().expect("children");
+        assert!(
+            children
+                .iter()
+                .any(|c| std::ptr::eq(&*c as *const AnyObject, &*bar as *const AnyObject)),
+            "the bar is among the children"
+        );
+        SCROLLED.store(true, Ordering::SeqCst);
+        until("the bar's value at the end", || {
+            role_and_value(&bar).1 == Some(1.0)
+        });
+
         until("the geometry mount", || find(&root, "nested-row").is_some());
         println!("window backing scale: {}", window.backingScaleFactor());
         for percent in [120, 80, 100] {
@@ -295,6 +459,38 @@ mod macos {
                 (140.0, 180.0 - 60.0 * s, 30.0 * s, 10.0 * s),
             );
         }
+
+        // A dialog is an AXGroup with the dialog subrole, as WebKit makes
+        // ARIA's `dialog`, named by its label; its controls stay elements
+        // of their own inside it.
+        OPENED.store(true, Ordering::SeqCst);
+        until("the dialog", || find(&root, "rename").is_some());
+        let dialog = find(&root, "rename").expect("the dialog");
+        assert_eq!(
+            dialog.accessibilityRole().map(|r| r.to_string()).as_deref(),
+            Some("AXGroup")
+        );
+        assert_eq!(
+            dialog
+                .accessibilitySubrole()
+                .map(|r| r.to_string())
+                .as_deref(),
+            Some("AXApplicationDialog")
+        );
+        assert_eq!(
+            dialog
+                .accessibilityLabel()
+                .map(|s| s.to_string())
+                .as_deref(),
+            Some("Rename file")
+        );
+        // Its description is its help, which VoiceOver reads after the
+        // name.
+        assert_eq!(
+            dialog.accessibilityHelp().map(|s| s.to_string()).as_deref(),
+            Some("Other apps see the new name too.")
+        );
+        assert_eq!(read(&dialog, "save"), (Some("Save".into()), None, 0));
 
         app.stop();
         window.close();

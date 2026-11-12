@@ -364,7 +364,8 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     let original_cut = store.queue().read(spec.session_id.clone()).await.unwrap();
     store
         .data
-        .write(StopLatest {
+        .write(StopRun {
+            retract_pending: true,
             run: older.run(),
             change: Change::new(stop.fact.clone(), stop.at),
         })
@@ -387,7 +388,8 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     };
     let rejected = store
         .data
-        .write(StopLatest {
+        .write(StopRun {
+            retract_pending: true,
             run: current.run(),
             change: conflicting,
         })
@@ -408,7 +410,8 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     );
     store
         .data
-        .write(StopLatest {
+        .write(StopRun {
+            retract_pending: true,
             run: current.run(),
             change: stop.clone(),
         })
@@ -434,7 +437,8 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     let cut = store.queue().read(spec.session_id.clone()).await.unwrap();
     store
         .data
-        .write(StopLatest {
+        .write(StopRun {
+            retract_pending: true,
             run: current.run(),
             change: stop.clone(),
         })
@@ -468,7 +472,8 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     );
     store
         .data
-        .write(StopLatest {
+        .write(StopRun {
+            retract_pending: true,
             run: current.run(),
             change: stop,
         })
@@ -535,7 +540,8 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
     let cut = store.queue().read(spec.session_id.clone()).await.unwrap();
     store
         .data
-        .write(StopLatest {
+        .write(StopRun {
+            retract_pending: true,
             run: fresh.run(),
             change: Change::new(
                 Fact::StopRequested {

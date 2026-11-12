@@ -87,10 +87,16 @@ case "$#:${1:-}" in
   *) fail "usage: install.sh [--nightly | --source]" ;;
 esac
 
-case "$(uname -s)/$(uname -m)" in
+machine="$(uname -m)"
+# A shell under Rosetta reports x86_64 on Apple silicon: install the native build.
+if [ "$(uname -s)" = Darwin ] && [ "$(sysctl -n sysctl.proc_translated 2> /dev/null)" = 1 ]; then
+  machine=arm64
+fi
+case "$(uname -s)/$machine" in
   Darwin/arm64) platform="macos-arm64" ;;
+  Darwin/x86_64) platform="macos-x86_64" ;;
   Linux/x86_64 | Linux/amd64) platform="linux-x86_64" ;;
-  Darwin/*) fail "no prebuilt NSH for Intel Macs; build it from source: https://nsh.dev/docs/installation" ;;
+  Linux/aarch64 | Linux/arm64) platform="linux-arm64" ;;
   *) fail "no prebuilt NSH for $(uname -s) $(uname -m); see https://nsh.dev/docs/installation" ;;
 esac
 
@@ -135,6 +141,6 @@ case ":$PATH:" in
   *":$bin:"*) ;;
   *) echo "Add $bin to your PATH: export PATH=\"$bin:\$PATH\"" ;;
 esac
-if [ "$platform" = "linux-x86_64" ]; then
+if [ "$(uname -s)" = Linux ]; then
   echo "The Linux runtime needs GTK 4.14 or newer (Ubuntu 24.04 and later)."
 fi

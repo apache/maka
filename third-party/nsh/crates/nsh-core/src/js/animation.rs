@@ -287,7 +287,9 @@ type MakeLayoutCurve = fn(f32) -> LayoutCurve;
 /// the default.
 const LAYOUT_TYPES: &[(&str, MakeLayoutCurve)] = &[
     ("easeInEaseOut", |_| LayoutCurve::EaseInEaseOut),
-    ("spring", |damping| LayoutCurve::Spring { damping }),
+    ("spring", |damping_ratio| LayoutCurve::FittedSpring {
+        damping_ratio,
+    }),
     ("linear", |_| LayoutCurve::Linear),
     ("easeIn", |_| LayoutCurve::EaseIn),
     ("easeOut", |_| LayoutCurve::EaseOut),
@@ -581,8 +583,10 @@ pub fn tables() -> crate::JsonValue {
             LayoutCurve::EaseIn => ("easeIn", None),
             LayoutCurve::EaseOut => ("easeOut", None),
             LayoutCurve::EaseInEaseOut => ("easeInEaseOut", None),
-            LayoutCurve::Spring { damping } => ("spring", Some(damping)),
+            LayoutCurve::FittedSpring { damping_ratio } => ("spring", Some(damping_ratio)),
             LayoutCurve::Keyboard => ("keyboard", None),
+            // JS names no spring by its physics, and no preset is one.
+            LayoutCurve::Spring(_) => ("spring", None),
         };
         let property = match t.property {
             LayoutProperty::Opacity => "opacity",

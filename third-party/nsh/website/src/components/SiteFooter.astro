@@ -24,6 +24,7 @@ const copy = isZh
   <nav aria-label={copy.nav}>
     {SECTIONS.map((section) => <a href={hrefs[section.id]}>{section.label[lang]}</a>)}
     <a href={url(isZh ? 'zh-CN/apps' : 'apps')}>{isZh ? '应用案例' : 'App Stories'}</a>
+    <a href={url(isZh ? 'zh-CN/directory' : 'directory')}>{isZh ? '社区生态' : 'Directory'}</a>
     <a href={isLatestVersion ? url(isZh ? 'zh-CN/releases' : 'releases') : isZh ? '/zh-CN/releases' : '/releases'}>{isZh ? '版本发布' : 'Releases'}</a>
     <a href={REPO_URL} target="_blank" rel="noopener noreferrer">{copy.source}</a>
     <a href={`${REPO_URL}/issues`} target="_blank" rel="noopener noreferrer">{copy.issues}</a>

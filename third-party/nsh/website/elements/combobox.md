@@ -184,6 +184,7 @@ a count, a hint. It stays in place while the rows scroll.
 | `itemClass`, `itemStyle` | `.item_class(..)`, `.item_style(..)` | `string`, `StyleProp<TextStyle>` | none | Each item's row: `focus:` while highlighted, `selected:` while selected, `disabled:` while it cannot be. |
 | `groupClass`, `groupStyle` | `.group_class(..)`, `.group_style(..)` | `string`, `StyleProp<ViewStyle>` | none | Each section's header. |
 | `inputClass`, `inputStyle` | `.input_class(..)`, `.input_style(..)` | `string`, `StyleProp<InputStyle>` | none | The input: `focus:` while it edits, `disabled:` with the combobox. |
+| `inputTestID` | `.input_test_id(..)` | `string` | none | The id UI tests find the input by (`id:` in `nsh/test`), as `testID` names the combobox's own view. |
 | `footerClass`, `footerStyle` | `.footer_class(..)`, `.footer_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The footer, below the rows. |
 | `clearButtonClass`, `clearButtonStyle` | `.clear_button_class(..)`, `.clear_button_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The clear button (`cleanable`). |
 | `clearButton` | `.clear_button(..)` | `JSX.Element` | none | The content of the clear button. |
@@ -217,7 +218,7 @@ They come in this order: `onChange` for a choice, or `onCancel` for a close with
 |---|---|---|
 | The field | the combobox's view, a row | `class`, `style` |
 | The prefix | the field, first | the app's own element (`prefix`) |
-| The input | the field, after the prefix | `inputClass`, `inputStyle`, `placeholder` |
+| The input | the field, after the prefix | `inputClass`, `inputStyle`, `placeholder`, `inputTestID` |
 | The clear button | the field, after the input (`cleanable`, while an item is selected) | `clearButtonClass`, `clearButtonStyle`; its content `clearButton` |
 | The trigger button | the field, after the clear button | the app's own element (`triggerButton`) |
 | The suffix | the field, last | the app's own element (`suffix`) |
