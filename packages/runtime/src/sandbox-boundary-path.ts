@@ -18,7 +18,7 @@
  */
 
 import { promises as fs } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { realpathAllowMissing } from './path-containment.js';
 import {
   MAX_SANDBOX_BOUNDARY_PATH_CHARS,
@@ -94,8 +94,15 @@ export async function normalizeSandboxBoundaryExpansion(
           'An exact sandbox boundary cannot target a directory; use subtree for directory access.',
         );
       }
+      // Reading a linked worktree's admin directory is not enough to read the repository, so a
+      // read subtree widens to the shared Git directory it points at. A write boundary keeps the
+      // exact path the caller asked for.
+      const commonDir =
+        normalized.access === 'read' && normalized.scope === 'subtree'
+          ? await linkedWorktreeCommonDir(normalized.enforcementPath)
+          : undefined;
       return {
-        path: normalized.enforcementPath,
+        path: commonDir ?? normalized.enforcementPath,
         access: normalized.access,
         scope: normalized.scope,
       };
@@ -107,6 +114,75 @@ export async function normalizeSandboxBoundaryExpansion(
   });
   if (!normalized.ok) throw new SandboxBoundaryDeclarationError(normalized.message);
   return normalized.expansion;
+}
+
+/** `commondir` holds one short relative path; anything larger is not a pointer we will follow. */
+const MAX_GIT_COMMON_DIR_POINTER_CHARS = 1024;
+
+/**
+ * Resolve a linked worktree's admin directory to the repository's shared Git directory.
+ *
+ * `.git/worktrees/<name>` keeps only that worktree's HEAD, index and reflog; refs, objects,
+ * `config` and `info/exclude` live in the directory named by its `commondir` file. A read boundary
+ * on the admin directory alone leaves `git status` and `git log` unable to read the repository
+ * they belong to, so the request is widened to that shared directory before it is approved.
+ *
+ * The pointer is repository-controlled text found inside a path the caller asked for, so it is
+ * followed only when the target really is this repository's shared directory: it must hold
+ * `objects` and `refs` as real directories, reached through no symlink, and the requested admin
+ * directory must sit at `<target>/worktrees/<name>`. Anything else leaves the boundary exactly as
+ * requested, rather than widening it into a temp directory, an ancestor, or another repository's
+ * `.git` that only looks like a common directory.
+ */
+async function linkedWorktreeCommonDir(adminPath: string): Promise<string | undefined> {
+  const pointer = join(adminPath, 'commondir');
+  try {
+    if ((await realTargetTypeFor(pointer)) !== 'file') return undefined;
+    const raw = await fs.readFile(pointer, 'utf8');
+    if (raw.length > MAX_GIT_COMMON_DIR_POINTER_CHARS) return undefined;
+    const target = raw.trim();
+    if (!target || target.includes('\0')) return undefined;
+    const resolved = await realpathAllowMissing(resolve(adminPath, target));
+    if (!(await isGitCommonDir(resolved))) return undefined;
+    // Git's own contract for a linked worktree is that the admin directory lives at
+    // `<commondir>/worktrees/<name>`. Proving that relationship is what stops a directory that
+    // merely looks like a Git directory - a temp dir, an ancestor, another repository's `.git` -
+    // from replacing the subtree the caller actually asked for.
+    const [ownAdmin, requestedAdmin] = await Promise.all([
+      fs.realpath(join(resolved, 'worktrees', basename(adminPath))),
+      fs.realpath(adminPath),
+    ]);
+    return ownAdmin === requestedAdmin ? resolved : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function isGitCommonDir(path: string): Promise<boolean> {
+  if ((await realTargetTypeFor(path)) !== 'directory') return false;
+  return (
+    (await realTargetTypeFor(join(path, 'objects'))) === 'directory' &&
+    (await realTargetTypeFor(join(path, 'refs'))) === 'directory'
+  );
+}
+
+/**
+ * `lstat`-backed {@link targetTypeFor}: a symlink is not proof that a repository layout is real, so
+ * the `commondir` marker and the entries that qualify its target are inspected without following
+ * links.
+ */
+async function realTargetTypeFor(
+  path: string,
+): Promise<NormalizedSandboxBoundaryPath['targetType']> {
+  try {
+    const stat = await fs.lstat(path);
+    if (stat.isFile()) return 'file';
+    if (stat.isDirectory()) return 'directory';
+    return 'other';
+  } catch (error) {
+    if (isMissingPathError(error)) return 'missing';
+    throw error;
+  }
 }
 
 async function targetTypeFor(path: string): Promise<NormalizedSandboxBoundaryPath['targetType']> {

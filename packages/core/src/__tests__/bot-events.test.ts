@@ -42,11 +42,11 @@ describe('bot event contract', () => {
     receivedAt: 1_700_000_000_000,
   };
 
-  test('derives sanitized session text and stable keys', () => {
+  test('formats platform-only session labels and stable routing keys', () => {
     assert.equal(botConversationKey(message), 'telegram:chat-1');
     assert.equal(botSourceEventKey(message), 'telegram:chat-1:m1');
     assert.equal(botSourceEventKey({ ...message, sourceMessageId: '   ' }), undefined);
-    assert.equal(formatBotMessageForSession(message), '[Telegram:Alice] hello');
+    assert.equal(formatBotMessageForSession(message), '[Telegram] hello');
   });
 
   test('recognizes only exact plaintext commands in direct messages', () => {

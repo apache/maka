@@ -49,7 +49,7 @@ export default function SettingsModal(props: {
    * Force the modal to a specific section and Runtime Host when it mounts.
    * Section changes while already open remain live for command-palette jumps.
    */
-  request?: { readonly section?: SettingsSection; readonly profileId?: string };
+  request?: { readonly section?: SettingsSection; readonly profileId?: string; readonly externalAgentId?: string };
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;

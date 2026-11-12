@@ -25,6 +25,7 @@ import type { SessionStatus } from '@maka/core/session';
 import {
   assertExactKeys,
   requireCount,
+  requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
   requireId,
@@ -48,6 +49,10 @@ import {
   type MessageContent,
   type TurnSnapshot,
 } from './turn.js';
+import {
+  decodeSessionEventWaitsProjection,
+  type SessionEventWaitsProjection,
+} from './event-wait.js';
 import { decodeGoalProjection, type GoalProjection } from './goal.js';
 import { decodeRuntimeResourceRef } from './runtime-resource.js';
 import {
@@ -99,6 +104,7 @@ export interface SessionContinuitySnapshot {
   projectionRevision: number;
   rootTurn: TurnSnapshot | null;
   goal: GoalProjection | null;
+  eventWaits?: SessionEventWaitsProjection;
   queue: SessionMessageQueueProjection;
   interactions: SessionInteractionProjection;
 }
@@ -207,7 +213,7 @@ export type SessionToolEvent =
   | (SessionToolEventIdentity & {
       type: 'tool_result';
       operationId?: string;
-      status: 'completed' | 'errored';
+      status: 'completed' | 'errored' | 'interrupted';
       sandboxFailureReason?: SandboxBoundaryFailureSignal['reason'];
       durationMs?: number;
     })
@@ -232,11 +238,18 @@ export interface SessionSteeringEvent {
   content: MessageContent;
 }
 
+export interface SessionContextCompactionAppliedEvent {
+  type: 'context_compaction_applied';
+  id: string;
+  turnId: string;
+  ts: number;
+}
+
 export interface SessionEventFrame extends SubscriptionEnvelope {
   kind: 'subscription.session_event';
   sessionId: string;
   runId: string;
-  event: SessionToolEvent | SessionSteeringEvent;
+  event: SessionToolEvent | SessionSteeringEvent | SessionContextCompactionAppliedEvent;
 }
 
 export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
@@ -245,7 +258,7 @@ export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
   throughSequence: number;
 }
 
-export const SESSION_DOMAINS = ['todo', 'plan', 'usage', 'runtime_resource'] as const;
+export const SESSION_DOMAINS = ['todo', 'plan', 'usage', 'runtime_resource', 'event_wait'] as const;
 export type SessionDomain = (typeof SESSION_DOMAINS)[number];
 export const SESSION_RUNTIME_RESOURCE_CHANGES_MAX = 64;
 
@@ -605,6 +618,9 @@ export function decodeSessionContinuitySnapshot(value: unknown): SessionContinui
     'goal',
     'queue',
     'interactions',
+    ...(value && typeof value === 'object' && Object.hasOwn(value, 'eventWaits')
+      ? ['eventWaits']
+      : []),
   ]);
   if (record.schemaVersion !== SESSION_CONTINUITY_SCHEMA_VERSION) {
     throw invalidProtocolFrame('Unsupported Session continuity snapshot schema');
@@ -619,12 +635,19 @@ export function decodeSessionContinuitySnapshot(value: unknown): SessionContinui
   if (goal !== null && goal.sessionId !== session.sessionId) {
     throw invalidProtocolFrame('Session continuity Goal belongs to a different Session');
   }
+  const eventWaits =
+    record.eventWaits === undefined
+      ? undefined
+      : decodeSessionEventWaitsProjection(record.eventWaits);
+  if (eventWaits?.items.some((wait) => wait.sessionId !== session.sessionId))
+    throw invalidProtocolFrame('Session event wait belongs to a different Session');
   return {
     schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session,
     projectionRevision: requirePositiveCount(record.projectionRevision, 'projectionRevision'),
     rootTurn,
     goal,
+    ...(eventWaits === undefined ? {} : { eventWaits }),
     queue: decodeSessionMessageQueueProjection(record.queue),
     interactions,
   };
@@ -800,8 +823,22 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
   };
 }
 
-function decodeSessionFrameEvent(value: unknown): SessionToolEvent | SessionSteeringEvent {
+function decodeSessionFrameEvent(value: unknown): SessionEventFrame['event'] {
   const record = requireRecord(value, 'Session event');
+  if (record.type === 'context_compaction_applied') {
+    assertExactKeys(record, 'Session context compaction applied event', [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+    ]);
+    return {
+      type: record.type,
+      id: requireId(record.id, 'Session context compaction applied event id'),
+      turnId: requireEntityId(record.turnId, 'turnId'),
+      ts: requireCount(record.ts, 'Session context compaction applied event timestamp'),
+    };
+  }
   if (record.type === 'steering_message') return decodeSessionSteeringEvent(record);
   return decodeSessionToolEvent(record);
 }
@@ -981,7 +1018,11 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'toolUseId',
       'status',
     ]);
-    if (record.status !== 'completed' && record.status !== 'errored') {
+    if (
+      record.status !== 'completed' &&
+      record.status !== 'errored' &&
+      record.status !== 'interrupted'
+    ) {
       throw invalidProtocolFrame('Invalid Session tool result status');
     }
     if (record.status === 'completed' && record.sandboxFailureReason !== undefined) {
@@ -1108,18 +1149,6 @@ function requireUtf8BoundedString(value: unknown, label: string, maxBytes: numbe
     throw invalidProtocolFrame(`Invalid ${label}`);
   }
   return value;
-}
-
-function requireEncodedByteLimit(value: unknown, label: string, maxBytes: number): void {
-  let encoded: string | undefined;
-  try {
-    encoded = JSON.stringify(value);
-  } catch {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
-  if (encoded === undefined || Buffer.byteLength(encoded, 'utf8') > maxBytes) {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
 }
 
 /**

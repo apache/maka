@@ -18,6 +18,7 @@
  */
 
 import { createContext, useContext } from 'react';
+import type { SessionContextEventWait } from './session-context-layer.js';
 import type { ChatViewGoalIndicatorProps } from './chat-view.js';
 import type { ComposerGoalProps } from './composer.js';
 
@@ -29,6 +30,7 @@ export interface ComposerGoalProjection {
 
 /** The required transport shape for the optional Goal indicator on ChatView. */
 export interface ChatViewGoalProjection {
+  readonly eventWaitIndicators?: readonly SessionContextEventWait[];
   readonly goalIndicator: ChatViewGoalIndicatorProps['goalIndicator'] | undefined;
 }
 

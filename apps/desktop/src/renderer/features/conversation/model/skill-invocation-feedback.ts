@@ -20,7 +20,9 @@
 import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
+import type { ComposerIngestInput } from '@maka/ui/composer-attachments';
 import { getShellCopy } from '../../../locales/shell-copy.js';
+import { getSessionLocalCopy } from '../../../locales/session-local-copy.js';
 
 type FeedbackToastApi = {
   error(
@@ -41,9 +43,10 @@ export function showSubmissionFeedback(
   toastApi: FeedbackToastApi,
   outcome: SubmissionFeedback,
   sessionId: string,
+  attachmentItems: readonly ComposerIngestInput[] = [],
 ): void {
   if ('code' in outcome) {
-    showAttachmentIngestBlockedFeedback(uiLocale, toastApi, outcome.code, sessionId);
+    showAttachmentIngestBlockedFeedback(uiLocale, toastApi, outcome.code, sessionId, attachmentItems);
     return;
   }
   showSkillInvocationFeedback(uiLocale, toastApi, outcome.skillInvocation, sessionId);
@@ -54,11 +57,25 @@ function showAttachmentIngestBlockedFeedback(
   toastApi: FeedbackToastApi,
   code: AttachmentIngestBlockedCode,
   sessionId: string,
+  attachmentItems: readonly ComposerIngestInput[],
 ): void {
   const copy = getShellCopy(uiLocale);
+  let description = copy.sessionSettingsActions.attachmentIngestBlocked[code];
+  if (code === 'source_expired') {
+    const recoveryCount = attachmentItems.filter((item) =>
+      'approvalId' in item && item.approvalId.startsWith('local-recovery:')).length;
+    if (recoveryCount > 0) {
+      const recoveryCopy = getSessionLocalCopy(uiLocale);
+      // Main reports the batch failure, not which source expired. A mixed
+      // batch needs both recovery paths even when one source is still valid.
+      description = recoveryCount === attachmentItems.length
+        ? recoveryCopy.recoverySourceExpired
+        : recoveryCopy.mixedSourcesExpired;
+    }
+  }
   toastApi.error(
     copy.chatActions.sendFailedTitle,
-    copy.sessionSettingsActions.attachmentIngestBlocked[code],
+    description,
     undefined,
     { sessionId },
   );

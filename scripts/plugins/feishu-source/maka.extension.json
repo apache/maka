@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.maka.feishu-source",
+  "displayName": "飞书只读 Source",
+  "description": "飞书 CLI 多来源只读查询、原文回查与索引引用",
+  "runtime": {
+    "entry": "dist/host.mjs"
+  },
+  "configuration": {
+    "properties": {
+      "instanceId": {
+        "type": "string",
+        "description": "固定账号/租户标识，更换账号必须更换此值"
+      },
+      "tokenFile": {
+        "type": "string",
+        "description": "本机受保护的 access token 文件路径"
+      },
+      "domain": {
+        "type": "string",
+        "default": "feishu"
+      },
+      "containers": {
+        "type": "string",
+        "description": "可选 JSON 数组，限制聊天/话题；CLI 模式留空或 [] 自动发现全部可访问私聊和群聊"
+      },
+      "startTime": {
+        "type": "number",
+        "description": "CLI 日历窗口起始 Unix 秒；token 模式作为消息范围下界"
+      },
+      "endTime": {
+        "type": "number",
+        "description": "CLI 日历窗口结束 Unix 秒；token 模式可选消息范围上界"
+      },
+      "cliPath": {
+        "type": "string",
+        "description": "本地官方 lark-cli 绝对路径；配置后使用 CLI 登录身份"
+      },
+      "accountId": {
+        "type": "string",
+        "description": "固定 user openId，登录账号不一致时拒绝访问"
+      },
+      "appId": {
+        "type": "string",
+        "description": "固定应用 ID；CLI 模式自动核对登录应用"
+      },
+      "kinds": {
+        "type": "string",
+        "description": "JSON 数组：documents、tasks、calendar"
+      },
+      "calendarId": {
+        "type": "string",
+        "description": "日历 ID，默认 primary"
+      },
+      "documentQuery": {
+        "type": "string",
+        "description": "可选文档枚举搜索范围"
+      },
+      "messageStartTime": {
+        "type": "number",
+        "description": "可同步消息范围下界 Unix 秒，默认 0；由 FeishuSync 显式选择具体区间。"
+      },
+      "messageEndTime": {
+        "type": "number",
+        "description": "消息范围上界 Unix 秒，留空不限；CLI 模式读取已发布本地缓存，token 模式按需读取远端。"
+      },
+      "cliProfile": {
+        "type": "string",
+        "description": "固定 CLI profile 名称，避免跟随全局默认 profile 切换"
+      },
+      "dataDirectory": {
+        "type": "string",
+        "description": "CLI 消息缓存基础目录，首次写入 message-cache-directory；账号/应用子目录独立，留空自动创建。"
+      },
+      "syncIntervalMinutes": {
+        "type": "number",
+        "default": 30,
+        "description": "用户开启定期同步后的默认间隔；安装时不自动开启。"
+      },
+      "syncOverlapHours": {
+        "type": "number",
+        "default": 24,
+        "description": "定期同步重查最近小时数；不保证窗口之前的修改或删除。"
+      }
+    }
+  },
+  "composition": {
+    "patch": "maka.composition.json"
+  }
+}

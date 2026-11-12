@@ -17,10 +17,11 @@
  * under the License.
  */
 
-import { useLayoutEffect, type ReactNode } from 'react';
+import { MessageCardSendContext } from '@maka/ui';
+import { useLayoutEffect, useMemo, type ReactNode } from 'react';
 import { CatalogRowWatch } from '../../../application/contracts/session-catalog/catalog-row-watch.js';
 import { useSessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
-import { SessionLocalMessages } from '../controller/session-local-messages.js';
+import { StagedLocalMessages } from './staged-local-messages.js';
 import { useComposerSubmission } from '../controller/use-composer-submission.js';
 import { submissionBindings } from '../model/composer-submission-binding.js';
 import type { ComposerStagingCommands } from '../model/composer-staging-contract.js';
@@ -30,7 +31,11 @@ import type {
   ComposerSubmissionShell,
   ComposerSurfaceOwner,
 } from '../model/composer-submission-contract.js';
-import { ComposerSubmissionContext, ComposerTurnContext } from './composer-submission-context.js';
+import {
+  ComposerSubmissionContext,
+  ComposerTurnContext,
+  ConversationNavigationContext,
+} from './composer-submission-context.js';
 
 /**
  * Sole owner of the Composer's submission: the send-pending flag, the
@@ -46,6 +51,8 @@ export function ComposerSubmissionProvider<Owner extends ComposerSurfaceOwner>(p
   readonly newTask: ComposerNewTaskSubmission;
   readonly sharedSessionActive: boolean;
   readonly ownerSessionId: string | undefined;
+  readonly recoveryEnabled: boolean;
+  readonly directoryHostId?: string;
   readonly children?: ReactNode;
 }) {
   const submission = useComposerSubmission({
@@ -57,6 +64,11 @@ export function ComposerSubmissionProvider<Owner extends ComposerSurfaceOwner>(p
   });
   const catalog = useSessionCatalogController();
   const { shellCommands } = submission;
+  const openSession = props.shell.openSession;
+  const navigation = useMemo(
+    () => ({ openSession: (sessionId: string) => openSession(sessionId) }),
+    [openSession],
+  );
   useLayoutEffect(() => {
     const binding = submissionBindings.get(props.commands);
     if (!binding) throw new Error('Unknown Composer submission commands');
@@ -68,8 +80,15 @@ export function ComposerSubmissionProvider<Owner extends ComposerSurfaceOwner>(p
       <ComposerTurnContext.Provider value={submission.turnReader}>
         <CatalogRowWatch catalog={catalog} sessionIds={submission.revisionWatch.sessionIds}
           onRows={submission.revisionWatch.onRows} />
-        <SessionLocalMessages sessionId={submission.turnReader.activeId} {...submission.localMessages} />
-        {props.children}
+        <StagedLocalMessages sessionId={submission.turnReader.activeId}
+          directoryHostId={props.directoryHostId}
+          enabled={props.recoveryEnabled && !submission.reader.revisionDraft}
+          restoreContext={props.staging.restoreContext} />
+        <ConversationNavigationContext.Provider value={navigation}>
+          <MessageCardSendContext.Provider value={props.ownerSessionId && !props.sharedSessionActive && !submission.reader.revisionDraft ? submission.reader.sendCardReply : undefined}>
+            {props.children}
+          </MessageCardSendContext.Provider>
+        </ConversationNavigationContext.Provider>
       </ComposerTurnContext.Provider>
     </ComposerSubmissionContext.Provider>
   );

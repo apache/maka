@@ -65,6 +65,8 @@ export interface TranscriptProjectionInput {
   locale: UiLocale;
   messages: readonly StoredMessage[];
   liveTurns?: readonly LiveTurnProjection[];
+  /** Host-observed running Turn, including reconnects without live tool buffers. */
+  activeTurnId?: string;
   shellRunUpdates?: readonly ShellRunUpdate[];
 }
 
@@ -83,6 +85,7 @@ export function createTranscriptProjection(): TranscriptProjection {
   // Stage inputs, remembered so a stage only reruns when its own input moved.
   let lastMessages: readonly StoredMessage[] | undefined;
   let lastLocale: UiLocale | undefined;
+  let lastActiveTurnId: string | undefined;
   let lastLiveTurn: readonly LiveTurnProjection[] | undefined;
   let lastUpdates: readonly ShellRunUpdate[] | undefined;
 
@@ -105,6 +108,7 @@ export function createTranscriptProjection(): TranscriptProjection {
     lastMessages = undefined;
     lastLocale = undefined;
     lastLiveTurn = undefined;
+    lastActiveTurnId = undefined;
     lastUpdates = undefined;
     settledTurns = NO_TURNS;
     liveTurns = NO_TURNS;
@@ -136,6 +140,7 @@ export function createTranscriptProjection(): TranscriptProjection {
       hasProjected
       && input.messages === lastMessages
       && input.locale === lastLocale
+      && input.activeTurnId === lastActiveTurnId
       && !buffersMoved
       && !updatesMoved
     ) {
@@ -153,11 +158,24 @@ export function createTranscriptProjection(): TranscriptProjection {
     if (
       liveTurnsFrom !== settledTurns ||
       buffersMoved ||
+      input.activeTurnId !== lastActiveTurnId ||
       input.locale !== lastOverlayLocale
     ) {
-      liveTurns = (input.liveTurns ?? []).reduce<readonly TurnViewModel[]>((turns, live) => overlayLiveTurn(turns, live, input.locale), settledTurns);
+      // Continuity proves only that this Turn is still active. It supplies no
+      // tool output and cannot override results or a recorded terminal state.
+      // Apply it before live buffers so explicit live outcomes keep precedence.
+      const observed = settledTurns.map((turn) => {
+        if (turn.turnId !== input.activeTurnId
+          || (turn.statusSource === 'recorded' && turn.status !== 'running')) return turn;
+        const tools = turn.tools.map((tool) => tool.result === undefined && tool.status === 'interrupted'
+          ? { ...tool, status: 'running' as const }
+          : tool);
+        return projectTurnTools([turn], tools)[0]!;
+      });
+      liveTurns = (input.liveTurns ?? []).reduce<readonly TurnViewModel[]>((turns, live) => overlayLiveTurn(turns, live, input.locale), observed);
       liveTurnsFrom = settledTurns;
       lastLiveTurn = input.liveTurns;
+      lastActiveTurnId = input.activeTurnId;
       lastOverlayLocale = input.locale;
     }
     if (updatesMoved) {

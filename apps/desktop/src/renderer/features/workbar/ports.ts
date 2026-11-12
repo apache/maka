@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ResolveImageDelivery } from '@maka/core/image-delivery';
 import type { SessionInspectorService } from '../../application/contracts/session-inspector/service.js';
 export type { SessionInspectorService, SessionTracePage, SessionUsageSummary } from '../../application/contracts/session-inspector/service.js';
 
@@ -166,6 +167,7 @@ export interface WorkbarArtifactsService {
 
 export interface WorkbarAttachmentsService {
   readBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
+  resolveImageDelivery?: ResolveImageDelivery;
   pickFiles(): Promise<
     | {
         ok: true;

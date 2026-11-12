@@ -70,8 +70,21 @@ export interface TurnFooterAction {
   pending?: boolean;
 }
 
+/**
+ * Mirrors `requireEntityId` in packages/runtime-host/src/protocol/codec.ts. The
+ * Host rejects any branch source that fails this rule, so the footer must not
+ * offer Branch for such a turn (legacy assistant background turns used colon
+ * separators).
+ */
+const BRANCHABLE_TURN_ID = /^[A-Za-z0-9_-]{1,128}$/;
+export function isBranchableTurnId(turnId: string): boolean {
+  return BRANCHABLE_TURN_ID.test(turnId);
+}
+
 export interface TurnFooterContext {
   status: TurnStatus;
+  /** The turn's id; it becomes the Branch source and must be Host-admissible. */
+  turnId: string;
   allowBranch?: boolean;
   /**
    * True when the turn has at least one materialized assistant message
@@ -105,16 +118,19 @@ export function deriveTurnFooterActions(input: TurnFooterContext): TurnFooterAct
   const actionLabel = copyText.labels;
   const isPending = (id: TurnFooterActionId) => pendingActions?.has(id) ?? false;
   const PENDING_TOOLTIP = copyText.pending;
+  const branchable = isBranchableTurnId(input.turnId);
 
   const branch: TurnFooterAction = isPending('branch')
     ? { id: 'branch', label: actionLabel.branch, enabled: false, tooltip: PENDING_TOOLTIP, pending: true }
     : {
         id: 'branch',
         label: actionLabel.branch,
-        enabled: status !== 'running',
+        enabled: status !== 'running' && branchable,
         tooltip:
           status === 'running'
             ? copyText.branchRunning
+            : !branchable
+            ? copyText.branchUnavailable
             : status === 'aborted'
             ? copyText.branchAborted
             : copyText.branch,

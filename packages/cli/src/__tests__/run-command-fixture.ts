@@ -78,7 +78,7 @@ const runtime: MakaRunRuntime = {
       };
       if (!boundaryDenied) throw new Error('sandbox boundary request was not denied');
       // A completed outcome with output makes the fail-closed exit code
-      // load-bearing: only the boundary-failure classification may turn
+      // load-bearing: only the unsupported request may turn
       // this run into exit 1 with empty stdout.
       await observer?.({
         outcomeId: 'run-fixture',
@@ -87,6 +87,21 @@ const runtime: MakaRunRuntime = {
         sandboxBoundary: 'none',
       });
       return;
+    }
+    if (scenario === 'sandbox-tool-error') {
+      yield {
+        type: 'tool_result',
+        id: 'denied',
+        turnId: input.turnId,
+        ts: 1,
+        toolUseId: 'write',
+        isError: true,
+        content: {
+          kind: 'text',
+          text: 'Denied',
+          sandboxFailure: { reason: 'sandbox_boundary_required' },
+        },
+      };
     }
     if (scenario === 'graph-wait' && input.turnOrchestration?.mode !== 'graph') {
       throw new Error('expected graph orchestration');

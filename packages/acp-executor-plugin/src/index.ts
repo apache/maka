@@ -23,7 +23,12 @@ import { access, mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { AdmissionLimiter } from '@maka/runtime/admission-limiter';
 import { AcpCatalog } from './acp-catalog.js';
-import type { ExecutorCatalogEntry, ExecutorConfiguration } from '@maka/core/executor-catalog';
+import { createAcpCatalogStore, type AcpCatalogPersistence } from './acp-catalog-store.js';
+import {
+  normalizeCatalogEntry,
+  type ExecutorCatalogEntry,
+  type ExecutorConfiguration,
+} from '@maka/core/executor-catalog';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   methods,
@@ -90,6 +95,7 @@ export interface AcpAgentAdapter<TConfig = unknown> {
   configure(config: TConfig): AcpConfiguredAgent;
   permissionKind?(request: RequestPermissionRequest): 'permission' | 'question';
   executionFailed?(text: string): boolean;
+  /** Changes to persisted presentation require a CATALOG_SNAPSHOT_VERSION bump in acp-catalog-store.ts. */
   describeModels?(
     models: ExecutorCatalogEntry['models'],
   ): Pick<ExecutorCatalogEntry, 'models' | 'modelGroups'>;
@@ -113,6 +119,13 @@ export interface AcpConversationStateStore {
   write?(conversationKey: string, state: AcpContinuityRecord): Promise<void>;
 }
 
+interface AcpSessionPresentation {
+  readonly version: 1;
+  readonly models: ExecutorCatalogEntry['models'];
+  readonly modelGroups?: ExecutorCatalogEntry['modelGroups'];
+  readonly modes?: ExecutorCatalogEntry['modes'];
+}
+
 export interface AcpContinuityRecord {
   readonly version: 2;
   readonly cwd: string;
@@ -124,6 +137,8 @@ export interface AcpContinuityRecord {
   readonly pendingTurnId?: string;
   readonly confirmedModel?: string;
   readonly confirmedMode?: string;
+  /** Last confirmed labels for this Session only; never used to authorize execution or configuration. */
+  readonly presentation?: AcpSessionPresentation;
   readonly gapEvidence?: {
     readonly replayedUpdates: number;
     readonly replayedUserChunks: number;
@@ -174,6 +189,12 @@ interface RetainedSession {
   loss?: Promise<void>;
 }
 
+interface RetainedCatalogProbe {
+  session?: RetainedSession;
+  directory: Promise<void>;
+  releaseDirectory(): void;
+}
+
 type CatalogDirectory = <T>(
   signal: AbortSignal,
   use: (directory: string) => Promise<T>,
@@ -188,7 +209,9 @@ export class AcpExecutor implements PluginExecutorProvider {
   readonly #createConnection: AcpConnectionFactory;
   readonly #state?: AcpConversationStateStore;
   readonly #sessions = new Map<string, RetainedSession>();
+  #catalogProbe?: RetainedCatalogProbe;
   #disposed = false;
+  #disposal?: Promise<void>;
   readonly #catalog: AcpCatalog;
   readonly #withCatalogDirectory: CatalogDirectory;
   #temporaryDirectory?: Promise<string>;
@@ -201,6 +224,7 @@ export class AcpExecutor implements PluginExecutorProvider {
       readonly state?: AcpConversationStateStore;
       readonly catalogAdmission?: AdmissionLimiter;
       readonly withCatalogDirectory?: CatalogDirectory;
+      readonly catalogPersistence?: AcpCatalogPersistence;
     } = {},
   ) {
     this.#adapter = validateAdapter(adapter);
@@ -226,8 +250,17 @@ export class AcpExecutor implements PluginExecutorProvider {
       });
     this.#catalog = new AcpCatalog(
       options.catalogAdmission ?? new AdmissionLimiter(1),
-      (signal) => this.#probeCatalog(signal),
+      (signal, holdAdmission) => this.#probeCatalog(signal, holdAdmission),
       () => this.#catalogEntry('unavailable'),
+      () => this.#drainCatalogProbe(),
+      options.catalogPersistence
+        ? createAcpCatalogStore(
+            options.catalogPersistence,
+            this.id,
+            config,
+            this.#configured.launch,
+          )
+        : undefined,
     );
   }
 
@@ -241,13 +274,47 @@ export class AcpExecutor implements PluginExecutorProvider {
     return await this.#catalog.get(input.signal, input.refresh);
   }
 
-  async #probeCatalog(signal: AbortSignal): Promise<ExecutorCatalogEntry> {
-    return await this.#withCatalogDirectory(signal, (directory) =>
-      this.#readCatalog(directory, signal),
-    );
+  async #probeCatalog(
+    signal: AbortSignal,
+    holdAdmission: (until: Promise<void>) => void,
+  ): Promise<ExecutorCatalogEntry> {
+    let resolveResult!: (entry: ExecutorCatalogEntry) => void;
+    let rejectResult!: (error: unknown) => void;
+    const result = new Promise<ExecutorCatalogEntry>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+    let releaseDirectory!: () => void;
+    const released = new Promise<void>((resolve) => {
+      releaseDirectory = resolve;
+    });
+    const probe: RetainedCatalogProbe = { directory: Promise.resolve(), releaseDirectory };
+    this.#catalogProbe = probe;
+    // Report a cleanup failure to discovery while retaining the directory lease
+    // and admission permit until a refresh or shutdown successfully retries it.
+    probe.directory = this.#withCatalogDirectory(signal, async (directory) => {
+      try {
+        resolveResult(await this.#readCatalog(probe, directory, signal));
+      } catch (error) {
+        rejectResult(error);
+      } finally {
+        await released;
+      }
+    }).finally(() => {
+      if (this.#catalogProbe === probe && !probe.session?.owner) this.#catalogProbe = undefined;
+    });
+    holdAdmission(probe.directory);
+    void probe.directory.catch(rejectResult);
+    const entry = await result;
+    await probe.directory;
+    return entry;
   }
 
-  async #readCatalog(directory: string, signal: AbortSignal): Promise<ExecutorCatalogEntry> {
+  async #readCatalog(
+    probe: RetainedCatalogProbe,
+    directory: string,
+    signal: AbortSignal,
+  ): Promise<ExecutorCatalogEntry> {
     let session: RetainedSession | undefined;
     try {
       signal.throwIfAborted();
@@ -257,6 +324,7 @@ export class AcpExecutor implements PluginExecutorProvider {
         configOptions: [],
         lost: false,
       };
+      probe.session = session;
       await this.#initialize(session, signal, true);
       return this.#catalogEntry('ready', session.configOptions);
     } catch (error) {
@@ -265,8 +333,19 @@ export class AcpExecutor implements PluginExecutorProvider {
       );
     } finally {
       // The directory lease outlives process cleanup, including failure cleanup.
-      if (session) await (session.loss ?? this.#disposeSession(session));
+      if (session) await this.#lose(session);
+      probe.releaseDirectory();
     }
+  }
+
+  async #drainCatalogProbe(): Promise<void> {
+    // AcpCatalog serializes probes and drains any retained owner before replacement.
+    const probe = this.#catalogProbe;
+    if (!probe) return;
+    if (probe.session) await this.#lose(probe.session);
+    probe.releaseDirectory();
+    await probe.directory;
+    if (this.#catalogProbe === probe) this.#catalogProbe = undefined;
   }
 
   invalidateCatalog(): void {
@@ -282,10 +361,19 @@ export class AcpExecutor implements PluginExecutorProvider {
     if (this.#disposed) return this.#catalogEntry('unavailable');
     if (session && session.cwd !== resolve(input.cwd))
       return this.#catalogEntry('history_only', [], input.configuration);
-    if (session?.restoring)
-      return this.#catalogEntry('restoring', session.configOptions, input.configuration);
-    if (session?.restoreFailed)
-      return this.#catalogEntry('restore_failed', session.configOptions, input.configuration);
+    if (session?.restoring || session?.restoreFailed) {
+      const entry = this.#catalogEntry(
+        session.restoring ? 'restoring' : 'restore_failed',
+        session.configOptions,
+        {
+          model: input.configuration?.model ?? session.record?.confirmedModel,
+          mode: input.configuration?.mode ?? session.record?.confirmedMode,
+        },
+      );
+      return session.configOptions.length
+        ? entry
+        : this.#withSavedPresentation(entry, session.record?.presentation);
+    }
     if (session?.historyGap)
       return this.#catalogEntry('history_gap', session.configOptions, input.configuration);
     if (session && !session.lost)
@@ -302,16 +390,62 @@ export class AcpExecutor implements PluginExecutorProvider {
       return this.#catalogEntry('history_only', [], input.configuration);
     if (stored.phase === 'reserved')
       return this.#catalogEntry('history_only', [], input.configuration);
-    return this.#catalogEntry(
-      stored.phase === 'prompt_pending' || stored.phase === 'history_gap'
-        ? 'history_gap'
-        : 'restorable',
-      [],
-      {
-        model: input.configuration?.model ?? stored.confirmedModel,
-        mode: input.configuration?.mode ?? stored.confirmedMode,
-      },
+    return this.#withSavedPresentation(
+      this.#catalogEntry(
+        stored.phase === 'prompt_pending' || stored.phase === 'history_gap'
+          ? 'history_gap'
+          : 'restorable',
+        [],
+        {
+          model: input.configuration?.model ?? stored.confirmedModel,
+          mode: input.configuration?.mode ?? stored.confirmedMode,
+        },
+      ),
+      stored.presentation,
     );
+  }
+
+  #readPresentation(value: unknown): AcpSessionPresentation | undefined {
+    if (!value || typeof value !== 'object' || (value as { version?: unknown }).version !== 1)
+      return;
+    try {
+      // Normalize optional display metadata separately: a corrupt cache must not invalidate continuity.
+      const input = value as AcpSessionPresentation;
+      const entry = normalizeCatalogEntry(
+        {
+          ...this.#catalogEntry('restorable'),
+          models: input.models,
+          modelGroups: input.modelGroups,
+          modes: input.modes,
+        },
+        this.id,
+      );
+      return {
+        version: 1,
+        models: entry.models,
+        modelGroups: entry.modelGroups,
+        modes: entry.modes,
+      };
+    } catch {
+      return;
+    }
+  }
+
+  async #withSavedPresentation(
+    entry: ExecutorCatalogEntry,
+    saved?: AcpSessionPresentation,
+  ): Promise<ExecutorCatalogEntry> {
+    const presentation = this.#readPresentation(saved) ?? (await this.#catalog.readCached());
+    if (!presentation) return entry;
+    return {
+      ...entry,
+      ...(entry.currentModel && presentation.models.some((model) => model.id === entry.currentModel)
+        ? { models: presentation.models, modelGroups: presentation.modelGroups }
+        : {}),
+      ...(entry.currentMode && presentation.modes?.some((mode) => mode.id === entry.currentMode)
+        ? { modes: presentation.modes }
+        : {}),
+    };
   }
 
   async configureConversation(
@@ -508,14 +642,25 @@ export class AcpExecutor implements PluginExecutorProvider {
   }
 
   async dispose(): Promise<void> {
-    if (this.#disposed) return;
+    if (this.#disposal) return await this.#disposal;
     this.#disposed = true;
+    this.#disposal = this.#dispose().catch((error) => {
+      this.#disposal = undefined;
+      throw error;
+    });
+    await this.#disposal;
+  }
+
+  async #dispose(): Promise<void> {
     await this.#catalog.dispose();
-    const sessions = [...this.#sessions.values()];
-    this.#sessions.clear();
-    const settlements = await Promise.allSettled(
-      sessions.map((session) => session.loss ?? this.#disposeSession(session)),
-    );
+    const settlements = await Promise.allSettled([
+      ...[...this.#sessions.values()].map(async (session) => {
+        await this.#lose(session);
+        if (this.#sessions.get(session.conversationKey) === session)
+          this.#sessions.delete(session.conversationKey);
+      }),
+      this.#drainCatalogProbe(),
+    ]);
     const failures = settlements.flatMap((settlement) =>
       settlement.status === 'rejected' ? [settlement.reason] : [],
     );
@@ -527,6 +672,7 @@ export class AcpExecutor implements PluginExecutorProvider {
     readonly cwd: string;
     readonly configuration?: ExecutorConfiguration;
   }): Promise<RetainedSession> {
+    if (this.#disposed) throw new AcpRuntimeError('ACP executor is unavailable', 'acp_unavailable');
     const cwd = resolve(request.cwd);
     const existing = this.#sessions.get(request.conversationKey);
     if (existing) {
@@ -540,7 +686,9 @@ export class AcpExecutor implements PluginExecutorProvider {
           'ACP conversation is history-only because its external process was lost',
           'acp_history_only',
         );
-      await existing.loss;
+      await this.#lose(existing);
+      if (this.#disposed)
+        throw new AcpRuntimeError('ACP executor is unavailable', 'acp_unavailable');
       if (this.#sessions.get(request.conversationKey) !== existing) return this.#session(request);
       this.#sessions.delete(request.conversationKey);
     }
@@ -623,6 +771,9 @@ export class AcpExecutor implements PluginExecutorProvider {
       throw new AcpRuntimeError('ACP Agent installation changed', 'acp_restore_identity_changed');
     const executable = await checkedExecutable(launch.executable);
     await Promise.all((launch.requiredExecutables ?? []).map(checkedExecutable));
+    // Closing may have started while startup was reading state or checking binaries.
+    if (this.#disposed || session.lost)
+      throw new AcpRuntimeError('ACP executor is unavailable', 'acp_unavailable');
     const owner = this.#createConnection({
       ...launch,
       executable,
@@ -965,7 +1116,16 @@ export class AcpExecutor implements PluginExecutorProvider {
     configOptions: readonly SessionConfigOption[] = session.configOptions,
   ): Promise<void> {
     if (!session.record) return;
-    const record = withConfirmedConfiguration(session.record, configOptions);
+    let record = withConfirmedConfiguration(session.record, configOptions);
+    const observed = this.#catalogEntry('ready', configOptions);
+    const presentation = this.#readPresentation({
+      version: 1,
+      models: observed.models,
+      modelGroups: observed.modelGroups,
+      modes: observed.modes,
+    });
+    if (presentation && JSON.stringify(record.presentation) !== JSON.stringify(presentation))
+      record = { ...record, presentation };
     if (record === session.record) return;
     await this.#state?.write?.(session.conversationKey, record);
     session.record = record;
@@ -1147,18 +1307,23 @@ export class AcpExecutor implements PluginExecutorProvider {
   }
 
   async #lose(session: RetainedSession): Promise<void> {
+    session.lost = true;
+    session.connection = undefined;
     if (!session.loss) {
-      session.lost = true;
-      session.loss = this.#disposeSession(session);
+      session.loss = this.#disposeSession(session).catch((error) => {
+        // Keep the owner until cleanup succeeds, and let a later caller retry failures.
+        session.loss = undefined;
+        throw error;
+      });
     }
     await session.loss;
   }
 
   async #disposeSession(session: RetainedSession): Promise<void> {
     const owner = session.owner;
-    session.owner = undefined;
     session.connection = undefined;
     if (owner) await owner.dispose();
+    session.owner = undefined;
   }
 }
 
@@ -1235,6 +1400,7 @@ export class AcpRuntimeService {
     const provider = new AcpExecutor(adapter as AcpAgentAdapter, config, {
       state: pluginStateStore(storage, adapter.id),
       catalogAdmission: this.#catalogAdmission,
+      catalogPersistence: { storage, key: `${directoryKey}/snapshot` },
       withCatalogDirectory: (signal, use) =>
         storage.withScratchDirectory(directoryKey, signal, use),
     });

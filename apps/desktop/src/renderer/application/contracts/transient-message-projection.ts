@@ -38,7 +38,10 @@ type TransientUserMessage = TransientUserMessageProjection;
  * content carries a separate model-facing `text`.
  */
 export interface RestoredDraftContent {
+  replacesLocalMessageId?: string;
   text: string;
+  stagedAttachments?: readonly { approvalId: string; name: string; mimeType?: string; size: number }[];
+  inlineReferences?: readonly import('@maka/core/events').InlineReference[];
   attachments?: readonly AttachmentRef[];
   directoryReferences?: readonly DirectoryReference[];
   quotes?: readonly QuoteRef[];
@@ -64,6 +67,7 @@ export async function retractQueuedEntryToDraft(
     attachments: content.attachments,
     directoryReferences: content.directoryReferences,
     quotes: content.quotes,
+    inlineReferences: content.inlineReferences,
   });
 }
 
@@ -124,6 +128,8 @@ export function mergeTransientMessageProjection(
     ...(!Object.hasOwn(update, 'deliveryStatus') && current.deliveryStatus !== undefined ? { deliveryStatus: current.deliveryStatus } : {}),
     ...(!Object.hasOwn(update, 'deliveryDetail') && current.deliveryDetail !== undefined ? { deliveryDetail: current.deliveryDetail } : {}),
     ...(!Object.hasOwn(update, 'deliveryActions') && current.deliveryActions !== undefined ? { deliveryActions: current.deliveryActions } : {}),
+    ...(!Object.hasOwn(update, 'deliveryTone') && current.deliveryTone !== undefined ? { deliveryTone: current.deliveryTone } : {}),
+    ...(!Object.hasOwn(update, 'deliveryDiagnostic') && current.deliveryDiagnostic !== undefined ? { deliveryDiagnostic: current.deliveryDiagnostic, deliveryDiagnosticLabel: current.deliveryDiagnosticLabel } : {}),
   };
   return current.hostTurnId !== undefined && update.hostTurnId === undefined
     ? { ...update, hostTurnId: current.hostTurnId }

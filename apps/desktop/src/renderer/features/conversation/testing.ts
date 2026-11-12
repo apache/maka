@@ -37,8 +37,13 @@ export function createAppShellSessionUiStateController(initialState?: AppShellSe
 export {
   createTranscriptRestoreLifecycle,
   prepareTranscriptForSend,
+  readCompleteTranscript,
   restoreSessionTranscriptRange,
 } from './controller/transcript-reading-position.js';
+export { localMessagePresentation } from './controller/local-message-presentation.js';
+export { composerSend, composerFollowUp } from './controller/composer-follow-up.js';
+export { composerMessageRecovery } from './controller/composer-message-recovery.js';
+export { StagedLocalMessages } from './ui/staged-local-messages.js';
 export { shellSessionRowEqual } from './model/conversation-catalog-row.js';
 export {
   type ActiveExecutionBoundarySnapshot,
@@ -81,7 +86,10 @@ export function stubConversationServices(
   return {
     observation: { openTranscript() { throw new Error('Transcript observation not configured'); }, subscribeEvents: () => () => {}, listActiveInteractions: async () => [], subscribeActiveInteractions: () => () => {}, shellRuns: { list: async () => [], subscribeUpdates: () => () => {}, subscribeResync: () => () => {} }, subscribeVisible: () => () => {}, queryCancelledMessages: async () => ({ cancelledMessageIds: [] }) },
     listMessages: async () => [],
+    readFailedMessage: async () => { throw new Error('Failed-message recovery is not stubbed'); },
+    releaseRecoveryAttachments: async () => undefined,
     cancelMessage: async () => undefined,
+    resumeMessage: async () => undefined,
     reconcileMessage: async () => undefined,
     subscribeChanges: () => () => undefined,
     skills: { listInvocable: async () => [] },
@@ -178,3 +186,15 @@ export { resolveNewChatExecutionThinkingLevel } from './controller/use-shell-cha
 export { executorSubmissionError, newTaskConfiguration } from './model/executor-submission.js';
 export { executorComposerProps } from './model/executor-composer.js';
 export { renderConversationMarkdown } from './model/conversation-markdown.js';
+
+export {
+  CHECKIN_ATTEMPT_COOLDOWN_MS,
+  checkinCardKey,
+  decodeCheckinMemory,
+  EMPTY_CHECKIN_MEMORY,
+  recordCheckinResult,
+  settleCheckinCard,
+  shouldRunCheckin,
+  visibleCheckinCards,
+} from './model/checkin.js';
+export { editCheckinCard, runCheckinAction } from './model/checkin-action.js';

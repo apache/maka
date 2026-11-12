@@ -25,6 +25,7 @@
 import * as esbuild from 'esbuild';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -35,9 +36,10 @@ const outDir = join(desktop, 'dist', 'overlay');
 const jsToTs = {
   name: 'js-to-ts',
   setup(build) {
-    build.onResolve({ filter: /^\.\.?\/.*\.js$/ }, (args) => ({
-      path: resolve(args.resolveDir, args.path.replace(/\.js$/, '.ts')),
-    }));
+    build.onResolve({ filter: /^\.\.?\/.*\.js$/ }, (args) => {
+      const source = resolve(args.resolveDir, args.path.replace(/\.js$/, '.ts'));
+      return existsSync(source) ? { path: source } : undefined;
+    });
   },
 };
 
@@ -67,6 +69,7 @@ export async function buildCursorOverlay({ logLevel = 'info' } = {}) {
   await copyFile(join(srcOverlay, 'cursor-overlay.html'), join(outDir, 'cursor-overlay.html'));
   await buildPermissionOverlay({ logLevel });
   await buildComputerUsePip({ logLevel });
+  await buildPetOverlay({ logLevel });
   return outDir;
 }
 
@@ -172,4 +175,28 @@ export async function buildPermissionOverlay({ logLevel = 'info' } = {}) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const dir = await buildCursorOverlay();
   console.log('overlays built →', dir);
+}
+
+async function buildPetOverlay({ logLevel }) {
+  await esbuild.build({
+    entryPoints: [join(srcOverlay, 'pet.ts')],
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'chrome120',
+    outfile: join(outDir, 'pet.js'),
+    plugins: [jsToTs],
+    logLevel,
+  });
+  await esbuild.build({
+    entryPoints: [join(srcOverlay, 'pet-preload.ts')],
+    bundle: true,
+    format: 'cjs',
+    platform: 'node',
+    external: ['electron'],
+    outfile: join(outDir, 'pet-preload.cjs'),
+    logLevel,
+  });
+  for (const file of ['pet.html', 'pet.css'])
+    await copyFile(join(srcOverlay, file), join(outDir, file));
 }

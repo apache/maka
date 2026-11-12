@@ -22,16 +22,21 @@ import {
   Banner,
   Button,
   ClientCapabilityPrompt,
-  Composer,
+  clearUserQuestionWizardState,
   type ComposerInteraction,
   ComposerGoalProjectionConsumer,
   FormInteractionPrompt,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
 } from '@maka/ui';
+import { PersonalAssistantComposer as Composer } from './features/personal-assistant/index.js';
 import { StagedComposer, type ComposerStagingProp } from './features/conversation/index.js';
 import type { ComposerHandle } from '@maka/ui';
-export { selectLatestRequestUsage } from './application/contracts/session-inspector/latest-request-usage.js';
+import {
+  resolveContextUsage,
+  type LatestRequestUsage,
+} from './application/contracts/session-inspector/latest-request-usage.js';
+import type { LiveContextReading } from './application/contracts/session-inspector/live-context-usage.js';
 import { useComposerMentionsContext } from './composer-mentions.js';
 import type { GuestComposerProjection } from './features/session-collaboration/index.js';
 import {
@@ -124,14 +129,14 @@ interface ChatComposerRegionProps
   boundaryUnreadableNotice?: BoundaryUnreadableNotice;
   /**
    * Tokens the provider counted for the session's latest request on the active
-   * route, or nothing when that cannot be established. Resolved by the owner,
-   * which knows the transcript range and the route; this control never derives
-   * it from the rendered slice. This is the per-turn anchor: it moves when a
-   * turn's usage record lands. `LiveContextUsageProbe` overlays the
-   * per-settled-request snapshot (#4717) whenever that snapshot can vouch for
-   * the same route, and this value is the fallback when it cannot.
+   * route, or nothing when that cannot be established, or a compaction
+   * boundary that superseded it. Resolved by the owner, which knows the
+   * transcript range and the route; this control never derives it from the
+   * rendered slice. `LiveContextUsageProbe` overlays the per-settled-request
+   * snapshot (#4717) whenever that snapshot is the newer answer to the same
+   * question, and this value is the fallback when it is not.
    */
-  latestRequestUsageTokens?: number;
+  latestRequestUsage?: LatestRequestUsage;
   onOpenContextUsage(): void;
   /**
    * The live overlay for the gauge (#4717), injected rather than imported:
@@ -150,9 +155,7 @@ interface ChatComposerRegionProps
      * catalog currently reports — one row's tokens against another row's
      * ceiling.
      */
-    children: (
-      usage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
-    ) => ReactNode;
+    children: (usage: LiveContextReading) => ReactNode;
   }>;
   canStageContext: boolean;
   contextPickEnabled: boolean;
@@ -176,7 +179,7 @@ export function ChatComposerRegion({
   respondToUserForm,
   stop,
   boundaryUnreadableNotice,
-  latestRequestUsageTokens,
+  latestRequestUsage,
   onOpenContextUsage,
   LiveContextUsageProbe,
   canStageContext,
@@ -200,17 +203,21 @@ export function ChatComposerRegion({
           choice.model === composerRest.activeModel,
       )
     : undefined;
-  const contextUsage = activeId
-    ? {
-        usageTokens: latestRequestUsageTokens,
-        declaredContextWindow: activeModelChoice?.declaredContextWindow,
-        metadataContextWindow: activeModelChoice?.contextWindow,
-        onOpen: onOpenContextUsage,
-      }
-    : undefined;
-  const previousNewTaskDraftKey = useRef(newTaskDraftKey);
+  const composerLifecycleRef = useRef({
+    newTaskDraftKey,
+    sessionId: activeId,
+    question: activeQuestion,
+  });
   useLayoutEffect(() => {
-    const previous = previousNewTaskDraftKey.current;
+    const lifecycle = composerLifecycleRef.current;
+    const previousQuestion = lifecycle.question;
+    const previousSessionId = lifecycle.sessionId;
+    lifecycle.sessionId = activeId;
+    lifecycle.question = activeQuestion;
+    if (previousQuestion && !activeQuestion && previousSessionId === activeId) {
+      clearUserQuestionWizardState(previousQuestion.requestId);
+    }
+    const previous = lifecycle.newTaskDraftKey;
     // A submission owns the text it submitted until it settles. `sendCurrent`
     // captures the key it sent from and clears exactly that key when the send
     // resolves, so carrying the text to a target chosen mid-flight would leave
@@ -220,7 +227,7 @@ export function ChatComposerRegion({
     // slot the completion has already cleared, so nothing sent comes with it,
     // and anything typed after the send does.
     if (newTaskSendPending) return;
-    previousNewTaskDraftKey.current = newTaskDraftKey;
+    lifecycle.newTaskDraftKey = newTaskDraftKey;
     if (previous === newTaskDraftKey) return;
     const composer = composerRef.current;
     if (!composer) return;
@@ -263,55 +270,61 @@ export function ChatComposerRegion({
         ? carried
         : (newTaskDraftPersistence.read(newTaskDraftKey) ?? ''),
     );
-  }, [composerRef, newTaskDraftKey, newTaskSendPending]);
+  }, [activeId, activeQuestion, composerRef, newTaskDraftKey, newTaskSendPending]);
 
   // The composer body as a function of the gauge's live reading, so the probe
   // — when mounted — can feed it the per-settled-request snapshot (#4717), and
   // the anchor prop remains the reading it falls back to.
-  const renderComposer = (
-    liveContextUsage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
-  ) => (
-    <ComposerGoalProjectionConsumer>
-      {(goalProjection) => (
-        <StagedComposer
-          stagingEnabled={!guest}
-          canStageContext={canStageContext}
-          contextPickEnabled={contextPickEnabled}
-          directoryPickerEnabled={directoryPickerEnabled}
-          ref={composerRef}
-          {...(guest ? guestComposerProps(composerRest, guest) : {
-            ...composerRest,
-            contextUsage: contextUsage && liveContextUsage
-              ? {
-                  ...contextUsage,
-                  usageTokens: liveContextUsage.usageTokens,
-                  meteredContextWindow: liveContextUsage.contextWindow,
-                }
-              : contextUsage,
-            // AppShell carries staged attachments into both queued and steering
-            // follow-ups. Other Composer hosts remain gated by default because a
-            // text-only running-turn submission would leave attachments behind.
-            allowAttachmentImportWhileStreaming: true,
-            mentionSkills: mentions?.mentionSkills,
-            mentionSkillsUnavailable: mentions?.mentionSkillsUnavailable,
-            mentionSkillsLoading: mentions?.mentionSkillsLoading,
-            onSearchMentionFiles: mentions?.searchMentionFiles,
-            sessionReferences: mentions?.sessionReferences,
-            onPickSessionReference: mentions?.onPickSessionReference,
-            pendingSessionReferences: mentions?.pendingSessionReferences,
-            onRemovePendingSessionReference: mentions?.onRemovePendingSessionReference,
-            waitForSessionReference: mentions?.waitForSessionReference,
-            stopPending: stopPending,
-            goalActive: goalProjection.goalActive,
-            onSetGoal: goalProjection.onSetGoal,
-          })}
-          hidden={!active || onboardingComposerHidden || Boolean(activeInteraction) || Boolean(guest && !guest.composer)}
-          draftKey={activeId ?? newTaskDraftKey}
-          draftPersistence={newTaskDraftPersistence}
-        />
-      )}
-    </ComposerGoalProjectionConsumer>
-  );
+  const renderComposer = (liveContextUsage: LiveContextReading) => {
+    // One question, two answers, and a compaction can make the finer one stale: the
+    // snapshot wins when it landed after the boundary, and the boundary wins
+    // when it did not.
+    const reading = resolveContextUsage({ latestRequestUsage, live: liveContextUsage });
+    const contextUsage = activeId
+      ? {
+          reading,
+          declaredContextWindow: activeModelChoice?.declaredContextWindow,
+          metadataContextWindow: activeModelChoice?.contextWindow,
+          onOpen: onOpenContextUsage,
+        }
+      : undefined;
+    return (
+      <ComposerGoalProjectionConsumer>
+        {(goalProjection) => (
+          <StagedComposer
+            stagingEnabled={!guest}
+            canStageContext={canStageContext}
+            contextPickEnabled={contextPickEnabled}
+            directoryPickerEnabled={directoryPickerEnabled}
+            ref={composerRef}
+            {...(guest ? guestComposerProps(composerRest, guest) : {
+              ...composerRest,
+              contextUsage,
+              // AppShell carries staged attachments into both queued and steering
+              // follow-ups. Other Composer hosts remain gated by default because a
+              // text-only running-turn submission would leave attachments behind.
+              allowAttachmentImportWhileStreaming: true,
+              mentionSkills: mentions?.mentionSkills,
+              mentionSkillsUnavailable: mentions?.mentionSkillsUnavailable,
+              mentionSkillsLoading: mentions?.mentionSkillsLoading,
+              onSearchMentionFiles: mentions?.searchMentionFiles,
+              sessionReferences: mentions?.sessionReferences,
+              onPickSessionReference: mentions?.onPickSessionReference,
+              pendingSessionReferences: mentions?.pendingSessionReferences,
+              onRemovePendingSessionReference: mentions?.onRemovePendingSessionReference,
+              waitForSessionReference: mentions?.waitForSessionReference,
+              stopPending,
+              goalActive: goalProjection.goalActive,
+              onSetGoal: goalProjection.onSetGoal,
+            })}
+            hidden={!active || onboardingComposerHidden || Boolean(activeInteraction) || Boolean(guest && !guest.composer)}
+            draftKey={activeId ?? newTaskDraftKey}
+            draftPersistence={newTaskDraftPersistence}
+          />
+        )}
+      </ComposerGoalProjectionConsumer>
+    );
+  };
 
   return (
     <>
@@ -364,6 +377,7 @@ export function ChatComposerRegion({
         )}
         {activeQuestion && (
           <UserQuestionPrompt
+            key={activeQuestion.requestId}
             request={activeQuestion}
             onRespond={respondToUserQuestion}
             onStop={stop}

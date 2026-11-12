@@ -22,6 +22,7 @@ import { registerHooks } from 'node:module';
 import { describe, test } from 'node:test';
 import { createDefaultBotChannel } from '@maka/core/settings';
 import type { BotChatSettings, BotProvider } from '@maka/core/bot-chat-settings';
+import { FeishuBotBridge } from '../feishu-bridge.js';
 import { BotRegistry } from '../bot-registry.js';
 import type { BotStatus } from '../types.js';
 
@@ -183,3 +184,101 @@ function settingsWith(
     ) as BotChatSettings['channels'],
   };
 }
+
+test('Feishu inherits global routing, updates it live, and preserves explicit channel overrides', async (t) => {
+  const incoming: unknown[] = [];
+  const handlers = new Map<string, (message: unknown) => void>();
+  let connections = 0;
+  const channel = {
+    async connect() {
+      connections++;
+    },
+    async disconnect() {},
+    updatePolicy() {},
+    on(name: string, handler: (message: unknown) => void) {
+      handlers.set(name, handler);
+      return () => handlers.delete(name);
+    },
+  };
+  const start = FeishuBotBridge.prototype.start;
+  t.mock.method(FeishuBotBridge.prototype, 'start', function (this: FeishuBotBridge) {
+    // Replace only the external SDK, retaining real registry resolution and bridge filtering.
+    Object.assign(this, {
+      loadSdk: () => ({
+        createLarkChannel: () => channel,
+        Domain: { Feishu: 'feishu', Lark: 'lark' },
+        LoggerLevel: { error: 1 },
+      }),
+    });
+    return start.call(this);
+  });
+  const registry = new BotRegistry({
+    onIncomingMessage: (message) => incoming.push(message),
+    onStatusChange() {},
+  });
+  const receive = (chatType: string, senderId = 'ou_owner') =>
+    handlers.get('message')!({
+      messageId: `om_${incoming.length}`,
+      chatId: 'oc_chat',
+      chatType,
+      senderId,
+      content: 'hello',
+      resources: [],
+      rawContentType: 'text',
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: false,
+      createTime: 1,
+    });
+  try {
+    for (const global of ['task', 'workhub', 'assistant'] as const) {
+      for (const override of [undefined, 'task', 'workhub', 'assistant'] as const) {
+        for (const allowedUserIds of [[], ['ou_owner'], ['ou_owner', 'ou_other']]) {
+          const settings = {
+            ...settingsWith({
+              feishu: {
+                enabled: true,
+                appId: 'app',
+                appSecret: 'secret',
+                messageHandling: override,
+                allowedUserIds,
+              },
+            }),
+            messageHandling: global,
+          };
+          await registry.applySettings(settings);
+          assert.equal(
+            settings.channels.feishu.messageHandling,
+            override,
+            'do not rewrite persisted inheritance',
+          );
+          const before = incoming.length;
+          receive('p2p');
+          receive('group');
+          receive('p2p', 'ou_stranger');
+          const mode = override ?? global;
+          const expected =
+            mode === 'assistant'
+              ? allowedUserIds.length === 1
+                ? 1
+                : 0
+              : allowedUserIds.length
+                ? 2
+                : 3;
+          assert.equal(
+            incoming.length - before,
+            expected,
+            JSON.stringify({ global, override, allowedUserIds }),
+          );
+        }
+      }
+    }
+    assert.equal(
+      connections,
+      1,
+      'routing-only changes must update the running bridge without restart',
+    );
+  } finally {
+    await registry.stopAll();
+  }
+});

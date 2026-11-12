@@ -186,6 +186,19 @@ export async function verifyRestoredWindowsInstallation(
   assertWindowsProductVersion(actualVersion, expectedVersion);
 }
 
+export async function verifyRegistryMismatchRecoveryEvidence(
+  installDirectory,
+  backupDirectory,
+  expectedVersion,
+  { run } = {},
+) {
+  const installedExecutable = join(installDirectory, executableName);
+  const mismatchVersion = await readInstalledProductVersion(installedExecutable, { run });
+  assertWindowsProductVersion(mismatchVersion, expectedVersion);
+  await access(join(backupDirectory, backupMarkerName));
+  await access(join(backupDirectory, 'RECOVERY-README.txt'));
+}
+
 /**
  * Exercises the Abort-path rollback contract of
  * apps/desktop/build/installer.nsh, scenario by scenario:
@@ -381,11 +394,13 @@ export async function verifyWindowsInstallerRollback(
           `${registryMismatch.stderr.trim() ? `\nstderr: ${registryMismatch.stderr.trim()}` : ''}`,
       );
     }
-    const mismatchVersion = await readInstalledProductVersion(installedExecutable, { run });
-    assertWindowsProductVersion(mismatchVersion, nextVersion);
-    await access(join(backupDirectory, backupMarkerName));
-    await access(join(backupDirectory, 'RECOVERY-README.txt'));
-    await access(join(`${installDirectory}.failed-upgrade`, executableName));
+    // Exit 103 also covers a transient failure to move the extracted tree
+    // aside. In that valid state the launchable new tree remains at INSTDIR,
+    // so no failed-upgrade sibling exists; the complete backup and persisted
+    // snapshot still make the following recovery rerun safe.
+    await verifyRegistryMismatchRecoveryEvidence(installDirectory, backupDirectory, nextVersion, {
+      run,
+    });
 
     step('registry mismatch recovery: rerun without the failpoint');
     await run(nextInstaller, ['/S', `/D=${installDirectory}`], {

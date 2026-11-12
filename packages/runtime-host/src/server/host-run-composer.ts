@@ -31,6 +31,8 @@ import type { ToolAvailabilityConfig } from '@maka/runtime/tool-availability';
 export type HostModelPromptContext = SystemPromptContext;
 
 export interface ResolvedRunPrompt {
+  /** Require a tool step until the Host-owned prerequisite is settled. */
+  readonly requireToolCall?: boolean;
   readonly text: string | undefined;
   readonly contexts?: readonly { readonly name: string; readonly text: string }[];
   readonly sourceRevisions: readonly RunCompositionSourceRevision[];
@@ -41,7 +43,9 @@ export interface HostRunComposer {
   readonly composerRevision: string;
   readonly tools: readonly MakaTool[];
   /** Reads the current scoped Tool surface before each logical model step. */
-  readonly resolveTools?: () => readonly MakaTool[];
+  readonly resolveTools?: (
+    identity?: Parameters<NonNullable<AiSdkBackendInput['resolveTools']>>[0],
+  ) => readonly MakaTool[];
   readonly toolAvailability?: ToolAvailabilityConfig;
   readonly resolveSystemPrompt: (context: HostModelPromptContext) => Promise<ResolvedRunPrompt>;
   readonly planTraceContext?: AiSdkBackendInput['planTraceContext'];

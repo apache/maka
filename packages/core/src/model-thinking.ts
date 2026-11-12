@@ -17,24 +17,7 @@
  * under the License.
  */
 
-/**
- * Controllable thinking level for reasoning-capable models.
- *
- * A `ThinkingLevel` is a user-facing reasoning-depth knob. It is a per-model
- * variant: each model supports a subset of levels (declared here by
- * `thinkingVariantsForModel`), and switching models clears the choice so a
- * level is never sent to a model that does not understand it. `undefined`
- * means "no override" (the model's default behaviour) and is the only value
- * persisted-absent — the UI shows it as "默认". `'off'` explicitly disables
- * reasoning for providers that expose a true off switch (`reasoningEffort:
- * 'none'` for OpenAI gpt-5 / codex, `thinking: { type: 'disabled' }` for
- * Anthropic-protocol); providers without a clean off switch do not list it.
- *
- * The runtime maps a chosen level to the ai-sdk provider option
- * (`reasoningEffort` / `thinking.budgetTokens` / `thinkingConfig`) in
- * `buildProviderOptions`; this module owns only the vocabulary and the
- * per-model supported set, so the UI and runtime share one source of truth.
- */
+/** Explicit reasoning controls. Omission uses the provider's default settings. */
 
 import type { ModelInfo, ProviderType } from './llm-connections.js';
 import { lookupModelMetadata } from './model-metadata.js';
@@ -45,10 +28,11 @@ import { isModelApiProtocol, type ModelApiProtocol } from './provider-registry.j
  * Not every model supports every level — call `thinkingVariantsForModel` for
  * the model-specific subset.
  */
-export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ThinkingLevel = 'off' | 'on' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   'off',
+  'on',
   'minimal',
   'low',
   'medium',
@@ -57,18 +41,9 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   'max',
 ];
 
-/**
- * The levels a generic-relay declaration may hold — the vocabulary the
- * settings surfaces offer and the one the data layer admits. `off` is the
- * sole exclusion: it is not an intensity tier but a *disable* wire
- * (`reasoning_effort: 'none'`), and no generic relay is presumed to honor
- * that encoding; built-in providers that support it get `off` from their own
- * metadata instead. `minimal` and every effort tier above are pure
- * intensity values — the user declaring them is the authority on what the
- * relay accepts.
- */
+/** Relay declarations contain effort tiers; switches require a provider-specific wire. */
 export const DECLARABLE_RELAY_THINKING_LEVELS: readonly ThinkingLevel[] = THINKING_LEVELS.filter(
-  (level) => level !== 'off',
+  (level) => level !== 'off' && level !== 'on',
 );
 
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {
@@ -96,24 +71,20 @@ export interface ThinkingOptions {
   readonly offBehavior?: ThinkingOffBehavior;
 }
 
-/**
- * Derive the user-facing thinking-level choices from a model's declared
- * `ThinkingOptions`. `none` (OpenAI's off effort) and declared `offBehavior`
- * surface as `'off'`; other effort values map to the same-named
- * `ThinkingLevel`. Raw `toggle` alone is intentionally not enough because some
- * adapters have no real disabled wire. Unknown effort values (not in
- * `ThinkingLevel`) are dropped. Returns `[]` for models with no declared
- * options (miss → no thinking menu, fallback default).
- */
+/** Only expose controls the adapter can encode; unknown effort values are ignored. */
 function deriveThinkingChoices(options: ThinkingOptions | undefined): readonly ThinkingLevel[] {
   if (!options) return [];
   const choices = new Set<ThinkingLevel>();
   if (options.offBehavior) choices.add('off');
   for (const effort of options.efforts ?? []) {
     if (effort === 'none') choices.add('off');
-    else if (isThinkingLevel(effort)) choices.add(effort);
-    // Unknown effort values (not in ThinkingLevel) are dropped — add the
-    // level to THINKING_LEVELS if a provider introduces a new effort tier.
+    else if ((DECLARABLE_RELAY_THINKING_LEVELS as readonly string[]).includes(effort)) {
+      choices.add(effort as ThinkingLevel);
+    }
+  }
+  // Legacy Claude models need an explicit enabled request and have no effort knob.
+  if (options.offBehavior === 'anthropic-thinking-disabled' && choices.size === 1) {
+    choices.add('on');
   }
   return THINKING_LEVELS.filter((level) => choices.has(level));
 }
@@ -210,12 +181,6 @@ function normalizeModelOverride(entry: unknown): ModelOverride | undefined {
     serviceTier?: 'fast';
   } = {};
   if (Array.isArray(entry.thinkingLevels)) {
-    // Declared levels are filtered to the declarable vocabulary, not merely
-    // the level vocabulary: `off` is a disable-wire encoding no generic
-    // relay is presumed to speak, and a declaration table has no business
-    // carrying it. The codec rejects it in persisted documents for the same
-    // reason; normalize silently drops it because it also sanitizes input
-    // that never passed a validator (settings drafts, hand-edited tables).
     const declaredSet = new Set(
       entry.thinkingLevels.filter(
         (level): level is ThinkingLevel =>

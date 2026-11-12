@@ -105,4 +105,19 @@ mod tests {
             Err(BrokerAuthorizationError::ProfileDigestMismatch)
         );
     }
+
+    #[test]
+    fn rejects_a_non_following_root_added_after_digest_approval() {
+        let mut value = request("abcdef0123456789abcdef0123456789");
+        value.launch.read_roots = vec!["C:\\work".to_owned()];
+        value.profile_digest = launch_digest(&value.launch).expect("launch digest");
+        let approved = value.profile_digest.clone();
+        value.launch.non_following_read_root = Some("C:\\work".to_owned());
+        let mut authorizer = BrokerAuthorizer::new([approved]);
+
+        assert_eq!(
+            authorizer.authorize(&value, 42),
+            Err(BrokerAuthorizationError::ProfileDigestMismatch)
+        );
+    }
 }

@@ -171,7 +171,7 @@ describe('Anthropic-compatible Computer Use product loops', () => {
       expectedPath: '/coding/v1/messages',
       auth: 'x-api-key',
       expectedAuth: 'test-key',
-      expectedThinking: 'enabled',
+      returnsThinking: true,
       expectedWireOutputLimit: 32_768,
       apiProtocol: undefined,
     },
@@ -182,7 +182,7 @@ describe('Anthropic-compatible Computer Use product loops', () => {
       expectedPath: '/coding/v1/messages',
       auth: 'x-api-key',
       expectedAuth: 'test-key',
-      expectedThinking: 'adaptive',
+      returnsThinking: true,
       expectedWireOutputLimit: 131_072,
       apiProtocol: undefined,
     },
@@ -193,7 +193,7 @@ describe('Anthropic-compatible Computer Use product loops', () => {
       expectedPath: '/anthropic/v1/messages',
       auth: 'x-api-key',
       expectedAuth: 'test-key',
-      expectedThinking: undefined,
+      returnsThinking: false,
       expectedWireOutputLimit: 512_000,
       apiProtocol: undefined,
     },
@@ -204,7 +204,7 @@ describe('Anthropic-compatible Computer Use product loops', () => {
       expectedPath: '/copilot/v1/messages',
       auth: 'authorization',
       expectedAuth: 'Bearer test-key',
-      expectedThinking: undefined,
+      returnsThinking: false,
       expectedWireOutputLimit: 128_000,
       apiProtocol: 'anthropic-messages',
     },
@@ -244,7 +244,7 @@ describe('Anthropic-compatible Computer Use product loops', () => {
           provider.modelId,
           step,
           toolInput,
-          provider.expectedThinking !== undefined,
+          provider.returnsThinking,
         );
       });
       const value = { current: '' };
@@ -304,15 +304,11 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         (requestBodies[0].tools as Array<{ name: string }>).map((tool) => tool.name),
         ['maka_computer'],
       );
-      if (provider.expectedThinking) {
-        for (const body of requestBodies) {
-          assert.equal(
-            (body.thinking as { type?: string } | undefined)?.type,
-            provider.expectedThinking,
-            'Kimi Coding Plan must send its model-specific thinking mode on every turn',
-          );
-          assert.deepEqual(body.output_config, { effort: 'max' });
-        }
+      for (const body of requestBodies) {
+        assert.equal(body.thinking, undefined);
+        assert.equal(body.output_config, undefined);
+      }
+      if (provider.returnsThinking) {
         assertAnthropicThinkingReplay(requestBodies[1]?.messages, 1);
         assertAnthropicThinkingReplay(requestBodies[2]?.messages, 2);
         assertAnthropicThinkingReplay(requestBodies[3]?.messages, 3);
@@ -971,7 +967,7 @@ describe('OpenAI-compatible product loops', () => {
       );
     }
     for (const body of requestBodies) {
-      assert.equal(body.reasoning_effort, 'max');
+      assert.equal(body.reasoning_effort, undefined);
       assert.equal(body.max_tokens, 131_072);
       assert.deepEqual(body.stream_options, { include_usage: true });
     }

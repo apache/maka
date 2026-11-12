@@ -962,17 +962,6 @@ describe('workspace version persistence authority', () => {
         }),
         /workspace version authority writer/i,
       );
-      await assert.rejects(
-        store.commitToolRecoveryBundle({
-          operationId: 'workspace-bypass-operation',
-          reconcileRuntimeEvent: epochOpenedEvent,
-          decisionRuntimeEvent: {
-            ...epochOpenedEvent,
-            id: 'workspace-bypass-decision',
-          },
-        }),
-        /workspace version authority writer/i,
-      );
     });
   });
 

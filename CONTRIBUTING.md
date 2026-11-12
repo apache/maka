@@ -23,6 +23,10 @@
 
 ## Where to start
 
+**Start new feature work from `rust-preview` and target that branch in your PR.** As agreed in [Discussion #6366](https://github.com/apache/maka/discussions/6366), `main` is limited to bug fixes, security fixes, dependency updates, release work and documentation for the 0.2.x line. For an existing issue or PR, confirm which implementation it concerns before starting; labels such as `good first issue` do not identify the target branch.
+
+The two branches use different implementations. Follow the [Rust contribution guide](https://github.com/apache/maka/blob/rust-preview/CONTRIBUTING.md) for setup and validation on `rust-preview`; the setup and development commands below apply to TypeScript `main`.
+
 Bug fixes, model provider support, tests, performance work, and documentation merge most readily. Pick something up from [`help wanted`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) · [`good first issue`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [`bug`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Abug) · [`enhancement`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) and claim it in a comment. Use the **Bug report** or **Feature request** template for new issues; report security problems through [SECURITY.md](./SECURITY.md), never as a public issue. Questions, ideas, and not-yet-actionable proposals belong in [Discussions](https://github.com/apache/maka/discussions), which reaches the whole team by email.
 
 To self-assign an unclaimed issue, post a comment whose entire body is exactly `take`; post `untake` to remove your assignment. Other claim text does not trigger the workflow.
@@ -87,6 +91,6 @@ Architecture is documented in [ARCHITECTURE.md](./ARCHITECTURE.md); evaluation c
 
 Opening a pull request pre-fills [`pull_request_template.md`](./.github/pull_request_template.md); fill it in rather than replacing it.
 
-Branches and titles follow [Conventional Commits](https://www.conventionalcommits.org/): branches are `<type>/<description>`, titles are `<type>(<scope>): <summary>`. The repository squash-merges, so the title becomes the commit on `main`; `git log` shows the types and scopes in use.
+Branches and titles follow [Conventional Commits](https://www.conventionalcommits.org/): branches are `<type>/<description>`, titles are `<type>(<scope>): <summary>`. The repository squash-merges, so the title becomes the commit on the target branch; `git log` shows the types and scopes in use.
 
 For UI changes, include before/after screenshots or a recording. Keep the description short and your own — if it needs many paragraphs, the pull request is probably too large.

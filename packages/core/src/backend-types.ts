@@ -130,6 +130,8 @@ export interface BackendSendInput {
    * child agents and non-interactive clients.
    */
   pullSteering?: () => readonly SteeringLease[] | Promise<readonly SteeringLease[]>;
+  /** Wake when this Run has effective durable steering; does not lease or consume input. */
+  waitForSteering?: (signal: AbortSignal) => Promise<void>;
   /** Confirm delivery of leased steering messages (see pullSteering). */
   ackSteering?: (leaseIds: readonly string[]) => void;
   /** Return undelivered leased steering messages to the queue (see pullSteering). */

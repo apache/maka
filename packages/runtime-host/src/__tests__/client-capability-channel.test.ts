@@ -45,7 +45,7 @@ test('Session registrations mutate independently and reject reverse calls for an
     ],
     call: async () => {
       providerCalls += 1;
-      return { content: [] };
+      return { outcome: 'success', content: [] };
     },
   };
   const channel = new ClientCapabilityChannel({
@@ -112,7 +112,7 @@ test('Client Capability channel closes a provider after its final registration i
         ],
       },
     ],
-    call: async () => ({ content: [] }),
+    call: async () => ({ outcome: 'success', content: [] }),
     close: () => {
       closeCalls += 1;
     },
@@ -269,7 +269,11 @@ test('Client Capability channel runs a self-described Host service through admis
     {
       kind: 'client.capability.result',
       invocationId: 'service_invocation',
-      result: { content: [], structuredContent: { kind: 'presented' } },
+      result: {
+        outcome: 'success',
+        content: [],
+        structuredContent: { kind: 'presented' },
+      },
     },
   ]);
   channel.close(new Error('test complete'));
@@ -298,7 +302,7 @@ test('Client Capability channel rejects Host paths before invoking a path-isolat
     ],
     call: async () => {
       callCount += 1;
-      return { content: [] };
+      return { outcome: 'success', content: [] };
     },
   };
   const channel = new ClientCapabilityChannel({
@@ -364,7 +368,7 @@ test('Client Capability channel forwards admitted tool progress before the resul
       options.progress?.(3, 3);
       options.progress?.(2, 3);
       options.progress?.(1, 1_025);
-      return { content: [] };
+      return { outcome: 'success', content: [] };
     },
   };
   channel = new ClientCapabilityChannel({
@@ -426,7 +430,7 @@ test('Client Capability channel forwards admitted tool progress before the resul
     {
       kind: 'client.capability.result',
       invocationId: 'progress-invocation',
-      result: { content: [] },
+      result: { outcome: 'success', content: [] },
     },
   ]);
   channel.close(new Error('test complete'));
@@ -465,8 +469,14 @@ test('Client Capability channel correlates one admitted nested form before the f
           },
         ],
       });
-      assert.deepEqual(answer, { action: 'accept', values: { target: 'staging' } });
-      return { content: [{ type: 'text', text: 'deployed' }] };
+      assert.deepEqual(answer, {
+        action: 'accept',
+        values: { target: 'staging' },
+      });
+      return {
+        outcome: 'success',
+        content: [{ type: 'text', text: 'deployed' }],
+      };
     },
   };
   channel = new ClientCapabilityChannel({
@@ -526,9 +536,15 @@ test('Client Capability channel correlates one admitted nested form before the f
   assert.deepEqual(written.at(-1), {
     kind: 'client.capability.result',
     invocationId: 'nested-form',
-    result: { content: [{ type: 'text', text: 'deployed' }] },
+    result: {
+      outcome: 'success',
+      content: [{ type: 'text', text: 'deployed' }],
+    },
   });
-  channel.accept({ kind: 'client.capability.release', invocationId: 'nested-form' });
+  channel.accept({
+    kind: 'client.capability.release',
+    invocationId: 'nested-form',
+  });
   channel.close(new Error('test complete'));
 });
 
@@ -559,7 +575,7 @@ test('Client Capability release rejects a pending nested form', async () => {
           requester: { name: 'deploy' },
           fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
         });
-        return { content: [] };
+        return { outcome: 'success', content: [] };
       } catch (error) {
         observedError = error;
         throw error;

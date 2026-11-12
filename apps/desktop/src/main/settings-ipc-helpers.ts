@@ -29,7 +29,6 @@ import type { BotProvider } from '@maka/core/bot-chat-settings';
 import { botDisplayLabel } from '@maka/core/bot-events';
 import { generalizedErrorMessage, redactSecrets } from '@maka/core/redaction';
 import {
-  SENSITIVE_PLACEHOLDER,
   maskSensitive,
   type TestProxyResult,
 } from "@maka/core/settings/network-settings";
@@ -72,15 +71,12 @@ export function proxyTestFailure(result: TestProxyResult): {
 
 export function maskAppSettings(
   settings: RuntimeHostAppSettings,
-  revealPatch?: UpdateAppSettingsInput,
 ): RuntimeHostAppSettings;
 export function maskAppSettings(
   settings: AppSettings,
-  revealPatch?: UpdateAppSettingsInput,
 ): AppSettings;
 export function maskAppSettings(
   settings: AppSettings,
-  revealPatch: UpdateAppSettingsInput = {},
 ): AppSettings {
   return {
     ...settings,
@@ -92,17 +88,8 @@ export function maskAppSettings(
           provider,
           {
             ...channel,
-            token: shouldReveal(
-              revealPatch.botChat?.channels?.[provider as BotProvider]?.token,
-            )
-              ? channel.token
-              : (maskSensitive(channel.token) ?? ""),
-            appSecret: shouldReveal(
-              revealPatch.botChat?.channels?.[provider as BotProvider]
-                ?.appSecret,
-            )
-              ? channel.appSecret
-              : (maskSensitive(channel.appSecret) ?? ""),
+            token: maskSensitive(channel.token) ?? "",
+            appSecret: maskSensitive(channel.appSecret) ?? "",
           },
         ]),
       ) as AppSettings["botChat"]["channels"],
@@ -182,17 +169,9 @@ export function buildSettingsUpdateResult(
 ): UpdateAppSettingsResult {
   const personalization = collectPersonalizationWarnings(patch.personalization);
   return {
-    settings: maskAppSettings(settings, patch),
+    settings: maskAppSettings(settings),
     ...(personalization.length ? { warnings: { personalization } } : {}),
   };
-}
-
-function shouldReveal(value: string | undefined): boolean {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    value !== SENSITIVE_PLACEHOLDER
-  );
 }
 
 export function toSettingsTestResult(

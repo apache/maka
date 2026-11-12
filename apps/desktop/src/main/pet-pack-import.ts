@@ -108,6 +108,9 @@ export async function importPetPackFromDirectory(input: {
       if (error.code === 'already_installed') {
         throw new PetPackImportError('already_installed', error.message, { cause: error });
       }
+      if (error.code === 'invalid_manifest') {
+        throw new PetPackImportError('invalid_manifest', error.message, { cause: error });
+      }
       if (error.code === 'invalid_asset') {
         throw new PetPackImportError('invalid_asset', error.message, { cause: error });
       }
@@ -125,6 +128,7 @@ export function registerPetPackIpc(input: {
   readonly settingsStore: Pick<SettingsStore, 'get' | 'update'>;
   readonly store?: PetPackStore;
   readonly now?: () => number;
+  readonly onChanged?: () => void;
   readonly resolveLocale: () => Promise<UiLocale>;
 }): void {
   const store = input.store ?? createPetPackStore(input.workspaceRoot);
@@ -162,6 +166,7 @@ export function registerPetPackIpc(input: {
           personalization: { selectedPetId: petId },
         });
         const selectedPetId = settings.personalization.selectedPetId;
+        input.onChanged?.();
         emitChanged(input.mainWindowController, 'selected', selectedPetId, now());
         return { ok: true, selectedPetId };
       } catch {
@@ -194,6 +199,7 @@ export function registerPetPackIpc(input: {
         const removed = await store.remove(petId);
         if (removed) {
           await clearSelectedPetIfMatching(input.settingsStore, petId);
+          input.onChanged?.();
           emitChanged(input.mainWindowController, 'removed', petId, now());
         }
         return { ok: true, removed };
@@ -222,6 +228,7 @@ export function registerPetPackIpc(input: {
         sourceDirectory: selection.filePaths[0],
         store,
       });
+      input.onChanged?.();
       emitChanged(input.mainWindowController, 'installed', manifest.id, now());
       return { ok: true, manifest };
     } catch (error) {

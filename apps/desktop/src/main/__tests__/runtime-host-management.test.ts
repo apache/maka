@@ -28,6 +28,7 @@ import {
   RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY,
   runtimeHostAccessCredentialFingerprint,
   type RuntimeHostServiceManagementFrame,
+  type RuntimeHostOperatorCommand,
 } from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostManagement } from '../runtime-host-management.js';
 import { createDesktopRuntimeHostPeerMeshManagement } from '../runtime-host-peer-mesh-management.js';
@@ -793,7 +794,12 @@ test('publishes update progress and waits for the managed profile to reconnect',
   );
 });
 
-test('configures Project roots with CAS and reconnects only after a committed cutover', async () => {
+for (const platform of ['posix', 'win32'] as const) {
+  test(`configures ${platform} Project roots with CAS and reconnects only after a committed cutover`, () =>
+    assertConfiguresProjectRoots(platform));
+}
+
+async function assertConfiguresProjectRoots(platform: 'posix' | 'win32'): Promise<void> {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const profile = {
     id: 'office',
@@ -810,7 +816,9 @@ test('configures Project roots with CAS and reconnects only after a committed cu
   const service = {
     id: 'b'.repeat(64),
     rootPath: '/srv/maka',
-    operator: OPERATOR,
+    operator: platform === 'posix' ? OPERATOR : {
+      kind: 'node' as const, platform, nodePath: 'C:\\node.exe', modulePath: 'C:\\Maka\\operator.mjs',
+    },
   };
   const fingerprint = `sha256:${'c'.repeat(64)}`;
   const inputs: DesktopRuntimeHostSshManagementInput[] = [];
@@ -859,7 +867,11 @@ test('configures Project roots with CAS and reconnects only after a committed cu
   });
   const configure = handlers.get('runtime-host-management:configure-project-directories');
   assert.ok(configure);
-  const roots = [{ label: 'Work', path: '/srv/work ' }];
+  const roots = [{ label: 'Work', path: platform === 'win32' ? 'C:\\work ' : '/srv/work ' }];
+  if (platform === 'posix') {
+    await assert.rejects(async () => configure({}, profile.id, [{ label: 'Work', path: 'C:\\work' }], fingerprint, false), /Project directory is invalid/u);
+    assert.equal(inputs.length, 0);
+  }
   const blocked = await configure({}, profile.id, roots, fingerprint, false);
   assert.equal(
     (blocked as { configuration: { kind: string } }).configuration.kind,
@@ -899,7 +911,7 @@ test('configures Project roots with CAS and reconnects only after a committed cu
         'The Runtime Host change was applied, but Desktop could not reconnect: authentication required',
     },
   );
-});
+}
 
 test('manages one Host update policy and reconciles it through the bound operator', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -1431,7 +1443,7 @@ function managedSshBinding() {
 
 function managedBinding<
   Profile,
-  Service extends { readonly id: string; readonly rootPath: string; readonly operator: typeof OPERATOR },
+  Service extends { readonly id: string; readonly rootPath: string; readonly operator: RuntimeHostOperatorCommand },
   State extends 'active' | 'uninstalling' | 'cleanup_pending',
 >(profile: Profile, service: Service, state: State) {
   return {

@@ -18,8 +18,9 @@
  */
 
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { bareCssImportSpecifiers } from './third-party-closure.mjs';
+import { bareCssImportSpecifiers, installedInstances } from './third-party-closure.mjs';
 
 // The bundle recorder cannot see a package reached only through a CSS
 // `@import` of pure rules — Vite inlines it at transform time, so it never
@@ -67,5 +68,81 @@ describe('bareCssImportSpecifiers', () => {
 @import "@astryxdesign/core/astryx.css" layer(astryx-components);
 `;
     assert.deepEqual(bareCssImportSpecifiers(css), ['@astryxdesign/core']);
+  });
+});
+
+// `npm ls --long --json` reports each installed instance with its real
+// directory. The artifact-budget ledger is read at that granularity, because
+// electron-builder copies every instance, not every name.
+describe('installedInstances', () => {
+  const root = join('/', 'repo');
+  const at = (...segments) => join(root, ...segments);
+
+  test('lists a nested copy as its own instance, alongside the hoisted one', () => {
+    const tree = {
+      alpha: {
+        version: '1.0.0',
+        path: at('node_modules', 'alpha'),
+        dependencies: {
+          shared: {
+            version: '2.0.0',
+            path: at('node_modules', 'alpha', 'node_modules', 'shared'),
+            dependencies: {
+              only_via_nested: { version: '1.0.0', path: at('node_modules', 'only_via_nested') },
+            },
+          },
+        },
+      },
+      shared: { version: '1.0.0', path: at('node_modules', 'shared') },
+    };
+
+    assert.deepEqual(installedInstances(tree, root), [
+      'node_modules/alpha/node_modules/shared@2.0.0',
+      'node_modules/alpha@1.0.0',
+      'node_modules/only_via_nested@1.0.0',
+      'node_modules/shared@1.0.0',
+    ]);
+  });
+
+  test('a deduped reference to the same instance counts once', () => {
+    const shared = { version: '1.0.0', path: at('node_modules', 'shared') };
+    const tree = {
+      alpha: { version: '1.0.0', path: at('node_modules', 'alpha'), dependencies: { shared } },
+      shared,
+    };
+
+    assert.deepEqual(installedInstances(tree, root), [
+      'node_modules/alpha@1.0.0',
+      'node_modules/shared@1.0.0',
+    ]);
+  });
+
+  test('an optional peer that nothing installed ships nothing', () => {
+    const tree = {
+      ws: {
+        version: '8.0.0',
+        path: at('node_modules', 'ws'),
+        dependencies: { bufferutil: {}, 'utf-8-validate': {} },
+      },
+    };
+
+    assert.deepEqual(installedInstances(tree, root), ['node_modules/ws@8.0.0']);
+  });
+
+  test('a workspace package is recorded at its node_modules link', () => {
+    const tree = {
+      '@maka/runtime': {
+        version: '0.1.0',
+        path: at('node_modules', '@maka', 'runtime'),
+        dependencies: {
+          undici: { version: '8.0.0', path: at('packages', 'runtime', 'node_modules', 'undici') },
+        },
+      },
+    };
+
+    assert.deepEqual(installedInstances(tree, root), [
+      'node_modules/@maka/runtime@0.1.0',
+      'packages/runtime/node_modules/undici@8.0.0',
+    ]);
   });
 });

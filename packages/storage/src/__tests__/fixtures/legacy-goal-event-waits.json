@@ -1,0 +1,624 @@
+{
+  "producer": "b0ed5707ff3dc645c66253ed93e50936e3f9d45d",
+  "registered": {
+    "sessionId": "legacy-session",
+    "root": "/legacy-root",
+    "rows": {
+      "workflow_goal_authority": [
+        {
+          "session_id": "legacy-session",
+          "authority_revision": 1,
+          "goal_id": "goal",
+          "goal_revision": 0,
+          "status": "active",
+          "record_json": "{\"schemaVersion\":1,\"goal\":{\"id\":\"goal\",\"sessionId\":\"legacy-session\",\"revision\":0,\"condition\":\"Finish\",\"status\":\"active\",\"setAt\":1,\"iterations\":0,\"maxIterations\":10,\"consecutiveNoProgress\":0,\"blockCap\":3,\"tokensAtStart\":0,\"tokensNow\":0,\"tokensBaselinePending\":false},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0},\"currentExecution\":{\"execution\":{\"sessionId\":\"legacy-session\",\"turnId\":\"source\",\"runId\":\"source-run\"},\"checkpoint\":{\"goalId\":\"goal\",\"revision\":0},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0}},\"pendingContinuation\":null,\"activeEventWait\":{\"waitId\":\"wait\",\"sourceExecution\":{\"sessionId\":\"legacy-session\",\"turnId\":\"source\",\"runId\":\"source-run\"},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0},\"reason\":\"Waiting for a job\",\"settled\":false}}"
+        }
+      ],
+      "workflow_event_waits": [
+        {
+          "wait_id": "wait",
+          "session_id": "legacy-session",
+          "authority_revision": 0,
+          "status": "waiting",
+          "delivery_key": "event-wait/wait",
+          "deadline_at": 100,
+          "record_json": "{\"schemaVersion\":1,\"waitId\":\"wait\",\"sessionId\":\"legacy-session\",\"goalControlLease\":{\"goalId\":\"goal\",\"generation\":0},\"sourceTurnId\":\"source\",\"sourceToolCallId\":\"call\",\"resource\":{\"providerId\":\"test\",\"connectionId\":null,\"resourceType\":\"job\",\"resourceId\":\"job\"},\"condition\":{\"typeId\":\"done\",\"version\":1,\"parameters\":{}},\"deliveryKey\":\"event-wait/wait\",\"createdAt\":10,\"updatedAt\":10,\"deadlineAt\":100,\"status\":\"waiting\"}"
+        }
+      ],
+      "core_root_turn_admissions": [
+        {
+          "session_id": "legacy-session",
+          "turn_id": "source",
+          "admitted_at": 1,
+          "record_json": "{\"schemaVersion\":1,\"sessionId\":\"legacy-session\",\"turnId\":\"source\",\"runId\":\"source-run\",\"userMessageId\":\"source-message\",\"execution\":{\"kind\":\"external_message\"},\"previousRootTurnId\":null,\"normalizedInput\":{\"text\":\"work\"},\"sourceMessages\":[],\"admittedAt\":1}"
+        }
+      ],
+      "runtime_events": [
+        {
+          "event_id": "source-opening",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 1,
+          "event_kind": "invocation_opened",
+          "payload_json": "{\"author\":\"system\",\"content\":{\"configuration\":{\"collaborationMode\":\"agent\",\"cwd\":\"/legacy-root\",\"orchestrationMode\":\"default\",\"orchestrationSource\":\"session\",\"permissionMode\":\"ask\",\"toolMode\":\"direct\"},\"kind\":\"invocation_opened\",\"protocol\":\"invocation_opened_v1\",\"root\":{\"kind\":\"user\"},\"route\":{\"backendKind\":\"fake\",\"llmConnectionId\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"llmConnectionSlug\":\"fake\",\"modelId\":\"fake-model\",\"provenance\":\"runtime\"},\"source\":{\"kind\":\"fresh\"}},\"id\":\"source-opening\",\"invocationId\":\"source-run\",\"modelVisibility\":\"hidden\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":1,\"turnId\":\"source\"}",
+          "committed_at": 1
+        },
+        {
+          "event_id": "source-message",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 2,
+          "event_kind": "text",
+          "payload_json": "{\"author\":\"user\",\"content\":{\"kind\":\"text\",\"text\":\"work\"},\"id\":\"source-message\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"user\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":2,\"turnId\":\"source\"}",
+          "committed_at": 2
+        },
+        {
+          "event_id": "source-usage",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 3,
+          "event_kind": "runtime_fact",
+          "payload_json": "{\"actions\":{\"tokenUsage\":{\"input\":12,\"output\":0,\"total\":12}},\"author\":\"system\",\"id\":\"source-usage\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":3,\"turnId\":\"source\"}",
+          "committed_at": 3
+        }
+      ]
+    }
+  },
+  "schema": [
+    "CREATE TABLE workflow_event_waits (\n      wait_id TEXT PRIMARY KEY,\n      session_id TEXT NOT NULL,\n      authority_revision INTEGER NOT NULL CHECK (authority_revision >= 0),\n      status TEXT NOT NULL CHECK (status IN ('waiting', 'resolved', 'cancelled', 'expired')),\n      delivery_key TEXT NOT NULL UNIQUE,\n      deadline_at INTEGER NOT NULL CHECK (deadline_at >= 0),\n      record_json TEXT NOT NULL,\n      FOREIGN KEY (session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE\n    )",
+    "CREATE INDEX workflow_event_waits_by_session\n      ON workflow_event_waits(session_id, wait_id)",
+    "CREATE INDEX workflow_event_waits_by_status\n      ON workflow_event_waits(status, wait_id)",
+    "CREATE INDEX workflow_event_waits_observation_order\n      ON workflow_event_waits(COALESCE(json_extract(record_json, '$.observation.lastAttemptAt'), 0), wait_id)\n      WHERE status = 'waiting'",
+    "CREATE INDEX workflow_event_waits_pending\n      ON workflow_event_waits(wait_id) WHERE status IN ('waiting', 'resolved') AND json_extract(record_json, '$.delivery') IS NULL",
+    "CREATE UNIQUE INDEX workflow_event_waits_one_active_session\n      ON workflow_event_waits(session_id) WHERE status IN ('waiting', 'resolved') AND json_extract(record_json, '$.delivery') IS NULL",
+    "CREATE INDEX workflow_event_waits_delivery ON workflow_event_waits(status, wait_id) WHERE status IN ('resolved', 'expired') AND json_extract(record_json, '$.delivery') IS NULL"
+  ],
+  "unsettled": {
+    "sessionId": "legacy-session",
+    "root": "/legacy-root",
+    "rows": {
+      "workflow_goal_authority": [
+        {
+          "session_id": "legacy-session",
+          "authority_revision": 1,
+          "goal_id": "goal",
+          "goal_revision": 0,
+          "status": "active",
+          "record_json": "{\"schemaVersion\":1,\"goal\":{\"id\":\"goal\",\"sessionId\":\"legacy-session\",\"revision\":0,\"condition\":\"Finish\",\"status\":\"active\",\"setAt\":1,\"iterations\":0,\"maxIterations\":10,\"consecutiveNoProgress\":0,\"blockCap\":3,\"tokensAtStart\":0,\"tokensNow\":0,\"tokensBaselinePending\":false},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0},\"currentExecution\":{\"execution\":{\"sessionId\":\"legacy-session\",\"turnId\":\"source\",\"runId\":\"source-run\"},\"checkpoint\":{\"goalId\":\"goal\",\"revision\":0},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0}},\"pendingContinuation\":null,\"activeEventWait\":{\"waitId\":\"wait\",\"sourceExecution\":{\"sessionId\":\"legacy-session\",\"turnId\":\"source\",\"runId\":\"source-run\"},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0},\"reason\":\"Waiting for a job\",\"settled\":false}}"
+        }
+      ],
+      "workflow_event_waits": [
+        {
+          "wait_id": "wait",
+          "session_id": "legacy-session",
+          "authority_revision": 0,
+          "status": "waiting",
+          "delivery_key": "event-wait/wait",
+          "deadline_at": 100,
+          "record_json": "{\"schemaVersion\":1,\"waitId\":\"wait\",\"sessionId\":\"legacy-session\",\"goalControlLease\":{\"goalId\":\"goal\",\"generation\":0},\"sourceTurnId\":\"source\",\"sourceToolCallId\":\"call\",\"resource\":{\"providerId\":\"test\",\"connectionId\":null,\"resourceType\":\"job\",\"resourceId\":\"job\"},\"condition\":{\"typeId\":\"done\",\"version\":1,\"parameters\":{}},\"deliveryKey\":\"event-wait/wait\",\"createdAt\":10,\"updatedAt\":10,\"deadlineAt\":100,\"status\":\"waiting\"}"
+        }
+      ],
+      "core_root_turn_admissions": [
+        {
+          "session_id": "legacy-session",
+          "turn_id": "source",
+          "admitted_at": 1,
+          "record_json": "{\"schemaVersion\":1,\"sessionId\":\"legacy-session\",\"turnId\":\"source\",\"runId\":\"source-run\",\"userMessageId\":\"source-message\",\"execution\":{\"kind\":\"external_message\"},\"previousRootTurnId\":null,\"normalizedInput\":{\"text\":\"work\"},\"sourceMessages\":[],\"admittedAt\":1}"
+        }
+      ],
+      "runtime_events": [
+        {
+          "event_id": "source-opening",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 1,
+          "event_kind": "invocation_opened",
+          "payload_json": "{\"author\":\"system\",\"content\":{\"configuration\":{\"collaborationMode\":\"agent\",\"cwd\":\"/legacy-root\",\"orchestrationMode\":\"default\",\"orchestrationSource\":\"session\",\"permissionMode\":\"ask\",\"toolMode\":\"direct\"},\"kind\":\"invocation_opened\",\"protocol\":\"invocation_opened_v1\",\"root\":{\"kind\":\"user\"},\"route\":{\"backendKind\":\"fake\",\"llmConnectionId\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"llmConnectionSlug\":\"fake\",\"modelId\":\"fake-model\",\"provenance\":\"runtime\"},\"source\":{\"kind\":\"fresh\"}},\"id\":\"source-opening\",\"invocationId\":\"source-run\",\"modelVisibility\":\"hidden\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":1,\"turnId\":\"source\"}",
+          "committed_at": 1
+        },
+        {
+          "event_id": "source-message",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 2,
+          "event_kind": "text",
+          "payload_json": "{\"author\":\"user\",\"content\":{\"kind\":\"text\",\"text\":\"work\"},\"id\":\"source-message\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"user\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":2,\"turnId\":\"source\"}",
+          "committed_at": 2
+        },
+        {
+          "event_id": "source-usage",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 3,
+          "event_kind": "runtime_fact",
+          "payload_json": "{\"actions\":{\"tokenUsage\":{\"input\":12,\"output\":0,\"total\":12}},\"author\":\"system\",\"id\":\"source-usage\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":3,\"turnId\":\"source\"}",
+          "committed_at": 3
+        },
+        {
+          "event_id": "terminal",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 4,
+          "event_kind": "completed",
+          "payload_json": "{\"actions\":{\"endInvocation\":true,\"stateDelta\":{\"stopReason\":\"event_wait\"}},\"author\":\"system\",\"id\":\"terminal\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"status\":\"completed\",\"ts\":30,\"turnId\":\"source\"}",
+          "committed_at": 30
+        }
+      ]
+    }
+  },
+  "waiting": {
+    "sessionId": "legacy-session",
+    "root": "/legacy-root",
+    "rows": {
+      "workflow_goal_authority": [
+        {
+          "session_id": "legacy-session",
+          "authority_revision": 2,
+          "goal_id": "goal",
+          "goal_revision": 1,
+          "status": "active",
+          "record_json": "{\"schemaVersion\":1,\"goal\":{\"id\":\"goal\",\"sessionId\":\"legacy-session\",\"revision\":1,\"condition\":\"Finish\",\"status\":\"active\",\"setAt\":1,\"iterations\":1,\"maxIterations\":10,\"consecutiveNoProgress\":0,\"blockCap\":3,\"tokensAtStart\":0,\"tokensNow\":12,\"tokensBaselinePending\":false},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0},\"currentExecution\":null,\"pendingContinuation\":null,\"activeEventWait\":{\"waitId\":\"wait\",\"sourceExecution\":{\"sessionId\":\"legacy-session\",\"turnId\":\"source\",\"runId\":\"source-run\"},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0},\"reason\":\"Waiting for a job\",\"settled\":true}}"
+        }
+      ],
+      "workflow_event_waits": [
+        {
+          "wait_id": "wait",
+          "session_id": "legacy-session",
+          "authority_revision": 0,
+          "status": "waiting",
+          "delivery_key": "event-wait/wait",
+          "deadline_at": 100,
+          "record_json": "{\"schemaVersion\":1,\"waitId\":\"wait\",\"sessionId\":\"legacy-session\",\"goalControlLease\":{\"goalId\":\"goal\",\"generation\":0},\"sourceTurnId\":\"source\",\"sourceToolCallId\":\"call\",\"resource\":{\"providerId\":\"test\",\"connectionId\":null,\"resourceType\":\"job\",\"resourceId\":\"job\"},\"condition\":{\"typeId\":\"done\",\"version\":1,\"parameters\":{}},\"deliveryKey\":\"event-wait/wait\",\"createdAt\":10,\"updatedAt\":10,\"deadlineAt\":100,\"status\":\"waiting\"}"
+        }
+      ],
+      "core_root_turn_admissions": [
+        {
+          "session_id": "legacy-session",
+          "turn_id": "source",
+          "admitted_at": 1,
+          "record_json": "{\"schemaVersion\":1,\"sessionId\":\"legacy-session\",\"turnId\":\"source\",\"runId\":\"source-run\",\"userMessageId\":\"source-message\",\"execution\":{\"kind\":\"external_message\"},\"previousRootTurnId\":null,\"normalizedInput\":{\"text\":\"work\"},\"sourceMessages\":[],\"admittedAt\":1}"
+        }
+      ],
+      "runtime_events": [
+        {
+          "event_id": "source-opening",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 1,
+          "event_kind": "invocation_opened",
+          "payload_json": "{\"author\":\"system\",\"content\":{\"configuration\":{\"collaborationMode\":\"agent\",\"cwd\":\"/legacy-root\",\"orchestrationMode\":\"default\",\"orchestrationSource\":\"session\",\"permissionMode\":\"ask\",\"toolMode\":\"direct\"},\"kind\":\"invocation_opened\",\"protocol\":\"invocation_opened_v1\",\"root\":{\"kind\":\"user\"},\"route\":{\"backendKind\":\"fake\",\"llmConnectionId\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"llmConnectionSlug\":\"fake\",\"modelId\":\"fake-model\",\"provenance\":\"runtime\"},\"source\":{\"kind\":\"fresh\"}},\"id\":\"source-opening\",\"invocationId\":\"source-run\",\"modelVisibility\":\"hidden\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":1,\"turnId\":\"source\"}",
+          "committed_at": 1
+        },
+        {
+          "event_id": "source-message",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 2,
+          "event_kind": "text",
+          "payload_json": "{\"author\":\"user\",\"content\":{\"kind\":\"text\",\"text\":\"work\"},\"id\":\"source-message\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"user\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":2,\"turnId\":\"source\"}",
+          "committed_at": 2
+        },
+        {
+          "event_id": "source-usage",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 3,
+          "event_kind": "runtime_fact",
+          "payload_json": "{\"actions\":{\"tokenUsage\":{\"input\":12,\"output\":0,\"total\":12}},\"author\":\"system\",\"id\":\"source-usage\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":3,\"turnId\":\"source\"}",
+          "committed_at": 3
+        },
+        {
+          "event_id": "terminal",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 4,
+          "event_kind": "completed",
+          "payload_json": "{\"actions\":{\"endInvocation\":true,\"stateDelta\":{\"stopReason\":\"event_wait\"}},\"author\":\"system\",\"id\":\"terminal\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"status\":\"completed\",\"ts\":30,\"turnId\":\"source\"}",
+          "committed_at": 30
+        }
+      ]
+    }
+  },
+  "queued": {
+    "sessionId": "legacy-session",
+    "root": "/legacy-root",
+    "rows": {
+      "workflow_goal_authority": [
+        {
+          "session_id": "legacy-session",
+          "authority_revision": 3,
+          "goal_id": "goal",
+          "goal_revision": 1,
+          "status": "active",
+          "record_json": "{\"schemaVersion\":1,\"goal\":{\"id\":\"goal\",\"sessionId\":\"legacy-session\",\"revision\":1,\"condition\":\"Finish\",\"status\":\"active\",\"setAt\":1,\"iterations\":1,\"maxIterations\":10,\"consecutiveNoProgress\":0,\"blockCap\":3,\"tokensAtStart\":0,\"tokensNow\":12,\"tokensBaselinePending\":false},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0},\"currentExecution\":null,\"pendingContinuation\":{\"checkpoint\":{\"goalId\":\"goal\",\"revision\":1},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0},\"prompt\":\"Untrusted result data\",\"eventWait\":{\"execution\":{\"sessionId\":\"legacy-session\",\"turnId\":\"next\",\"runId\":\"next-run\"},\"userMessageId\":\"next-message\",\"provenance\":{\"waitId\":\"wait\",\"deliveryKey\":\"event-wait/wait\",\"sourceTurnId\":\"source\",\"sourceToolCallId\":\"call\",\"generation\":0,\"outcome\":\"satisfied\",\"resultDigest\":\"sha256:05f45572cddcc838d8cf062d84f3a96121c71b3bf7fc9624febae3eec010735e\"}},\"triggeringTurnId\":\"source\"},\"activeEventWait\":{\"waitId\":\"wait\",\"sourceExecution\":{\"sessionId\":\"legacy-session\",\"turnId\":\"source\",\"runId\":\"source-run\"},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0},\"reason\":\"Waiting for a job\",\"settled\":true}}"
+        }
+      ],
+      "workflow_event_waits": [
+        {
+          "wait_id": "wait",
+          "session_id": "legacy-session",
+          "authority_revision": 1,
+          "status": "resolved",
+          "delivery_key": "event-wait/wait",
+          "deadline_at": 100,
+          "record_json": "{\"schemaVersion\":1,\"waitId\":\"wait\",\"sessionId\":\"legacy-session\",\"goalControlLease\":{\"goalId\":\"goal\",\"generation\":0},\"sourceTurnId\":\"source\",\"sourceToolCallId\":\"call\",\"resource\":{\"providerId\":\"test\",\"connectionId\":null,\"resourceType\":\"job\",\"resourceId\":\"job\"},\"condition\":{\"typeId\":\"done\",\"version\":1,\"parameters\":{}},\"deliveryKey\":\"event-wait/wait\",\"createdAt\":10,\"updatedAt\":20,\"deadlineAt\":100,\"status\":\"resolved\",\"resolvedAt\":20,\"resolution\":{\"outcome\":\"satisfied\",\"receiptKey\":\"receipt\",\"observedAt\":20,\"evidenceRefs\":[\"ref\"]}}"
+        }
+      ],
+      "core_root_turn_admissions": [
+        {
+          "session_id": "legacy-session",
+          "turn_id": "source",
+          "admitted_at": 1,
+          "record_json": "{\"schemaVersion\":1,\"sessionId\":\"legacy-session\",\"turnId\":\"source\",\"runId\":\"source-run\",\"userMessageId\":\"source-message\",\"execution\":{\"kind\":\"external_message\"},\"previousRootTurnId\":null,\"normalizedInput\":{\"text\":\"work\"},\"sourceMessages\":[],\"admittedAt\":1}"
+        }
+      ],
+      "runtime_events": [
+        {
+          "event_id": "source-opening",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 1,
+          "event_kind": "invocation_opened",
+          "payload_json": "{\"author\":\"system\",\"content\":{\"configuration\":{\"collaborationMode\":\"agent\",\"cwd\":\"/legacy-root\",\"orchestrationMode\":\"default\",\"orchestrationSource\":\"session\",\"permissionMode\":\"ask\",\"toolMode\":\"direct\"},\"kind\":\"invocation_opened\",\"protocol\":\"invocation_opened_v1\",\"root\":{\"kind\":\"user\"},\"route\":{\"backendKind\":\"fake\",\"llmConnectionId\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"llmConnectionSlug\":\"fake\",\"modelId\":\"fake-model\",\"provenance\":\"runtime\"},\"source\":{\"kind\":\"fresh\"}},\"id\":\"source-opening\",\"invocationId\":\"source-run\",\"modelVisibility\":\"hidden\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":1,\"turnId\":\"source\"}",
+          "committed_at": 1
+        },
+        {
+          "event_id": "source-message",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 2,
+          "event_kind": "text",
+          "payload_json": "{\"author\":\"user\",\"content\":{\"kind\":\"text\",\"text\":\"work\"},\"id\":\"source-message\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"user\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":2,\"turnId\":\"source\"}",
+          "committed_at": 2
+        },
+        {
+          "event_id": "source-usage",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 3,
+          "event_kind": "runtime_fact",
+          "payload_json": "{\"actions\":{\"tokenUsage\":{\"input\":12,\"output\":0,\"total\":12}},\"author\":\"system\",\"id\":\"source-usage\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":3,\"turnId\":\"source\"}",
+          "committed_at": 3
+        },
+        {
+          "event_id": "terminal",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 4,
+          "event_kind": "completed",
+          "payload_json": "{\"actions\":{\"endInvocation\":true,\"stateDelta\":{\"stopReason\":\"event_wait\"}},\"author\":\"system\",\"id\":\"terminal\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"status\":\"completed\",\"ts\":30,\"turnId\":\"source\"}",
+          "committed_at": 30
+        }
+      ]
+    }
+  },
+  "admitted": {
+    "sessionId": "legacy-session",
+    "root": "/legacy-root",
+    "rows": {
+      "workflow_goal_authority": [
+        {
+          "session_id": "legacy-session",
+          "authority_revision": 4,
+          "goal_id": "goal",
+          "goal_revision": 1,
+          "status": "active",
+          "record_json": "{\"schemaVersion\":1,\"goal\":{\"id\":\"goal\",\"sessionId\":\"legacy-session\",\"revision\":1,\"condition\":\"Finish\",\"status\":\"active\",\"setAt\":1,\"iterations\":1,\"maxIterations\":10,\"consecutiveNoProgress\":0,\"blockCap\":3,\"tokensAtStart\":0,\"tokensNow\":12,\"tokensBaselinePending\":false},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0},\"currentExecution\":{\"execution\":{\"sessionId\":\"legacy-session\",\"turnId\":\"next\",\"runId\":\"next-run\"},\"checkpoint\":{\"goalId\":\"goal\",\"revision\":1},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0}},\"pendingContinuation\":null}"
+        }
+      ],
+      "workflow_event_waits": [
+        {
+          "wait_id": "wait",
+          "session_id": "legacy-session",
+          "authority_revision": 2,
+          "status": "resolved",
+          "delivery_key": "event-wait/wait",
+          "deadline_at": 100,
+          "record_json": "{\"schemaVersion\":1,\"waitId\":\"wait\",\"sessionId\":\"legacy-session\",\"goalControlLease\":{\"goalId\":\"goal\",\"generation\":0},\"sourceTurnId\":\"source\",\"sourceToolCallId\":\"call\",\"resource\":{\"providerId\":\"test\",\"connectionId\":null,\"resourceType\":\"job\",\"resourceId\":\"job\"},\"condition\":{\"typeId\":\"done\",\"version\":1,\"parameters\":{}},\"deliveryKey\":\"event-wait/wait\",\"createdAt\":10,\"updatedAt\":110,\"deadlineAt\":100,\"delivery\":{\"kind\":\"admitted\",\"turnId\":\"next\",\"runId\":\"next-run\",\"userMessageId\":\"next-message\",\"at\":110},\"status\":\"resolved\",\"resolvedAt\":20,\"resolution\":{\"outcome\":\"satisfied\",\"receiptKey\":\"receipt\",\"observedAt\":20,\"evidenceRefs\":[\"ref\"]}}"
+        }
+      ],
+      "core_root_turn_admissions": [
+        {
+          "session_id": "legacy-session",
+          "turn_id": "source",
+          "admitted_at": 1,
+          "record_json": "{\"schemaVersion\":1,\"sessionId\":\"legacy-session\",\"turnId\":\"source\",\"runId\":\"source-run\",\"userMessageId\":\"source-message\",\"execution\":{\"kind\":\"external_message\"},\"previousRootTurnId\":null,\"normalizedInput\":{\"text\":\"work\"},\"sourceMessages\":[],\"admittedAt\":1}"
+        },
+        {
+          "session_id": "legacy-session",
+          "turn_id": "next",
+          "admitted_at": 110,
+          "record_json": "{\"schemaVersion\":1,\"sessionId\":\"legacy-session\",\"turnId\":\"next\",\"runId\":\"next-run\",\"userMessageId\":\"next-message\",\"execution\":{\"kind\":\"goal\",\"goalId\":\"goal\",\"eventWait\":{\"waitId\":\"wait\",\"deliveryKey\":\"event-wait/wait\",\"sourceTurnId\":\"source\",\"sourceToolCallId\":\"call\",\"generation\":0,\"outcome\":\"satisfied\",\"resultDigest\":\"sha256:05f45572cddcc838d8cf062d84f3a96121c71b3bf7fc9624febae3eec010735e\"}},\"previousRootTurnId\":\"source\",\"normalizedInput\":{\"text\":\"Untrusted result data\"},\"sourceMessages\":[],\"admittedAt\":110}"
+        }
+      ],
+      "runtime_events": [
+        {
+          "event_id": "source-opening",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 1,
+          "event_kind": "invocation_opened",
+          "payload_json": "{\"author\":\"system\",\"content\":{\"configuration\":{\"collaborationMode\":\"agent\",\"cwd\":\"/legacy-root\",\"orchestrationMode\":\"default\",\"orchestrationSource\":\"session\",\"permissionMode\":\"ask\",\"toolMode\":\"direct\"},\"kind\":\"invocation_opened\",\"protocol\":\"invocation_opened_v1\",\"root\":{\"kind\":\"user\"},\"route\":{\"backendKind\":\"fake\",\"llmConnectionId\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"llmConnectionSlug\":\"fake\",\"modelId\":\"fake-model\",\"provenance\":\"runtime\"},\"source\":{\"kind\":\"fresh\"}},\"id\":\"source-opening\",\"invocationId\":\"source-run\",\"modelVisibility\":\"hidden\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":1,\"turnId\":\"source\"}",
+          "committed_at": 1
+        },
+        {
+          "event_id": "source-message",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 2,
+          "event_kind": "text",
+          "payload_json": "{\"author\":\"user\",\"content\":{\"kind\":\"text\",\"text\":\"work\"},\"id\":\"source-message\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"user\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":2,\"turnId\":\"source\"}",
+          "committed_at": 2
+        },
+        {
+          "event_id": "source-usage",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 3,
+          "event_kind": "runtime_fact",
+          "payload_json": "{\"actions\":{\"tokenUsage\":{\"input\":12,\"output\":0,\"total\":12}},\"author\":\"system\",\"id\":\"source-usage\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":3,\"turnId\":\"source\"}",
+          "committed_at": 3
+        },
+        {
+          "event_id": "terminal",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 4,
+          "event_kind": "completed",
+          "payload_json": "{\"actions\":{\"endInvocation\":true,\"stateDelta\":{\"stopReason\":\"event_wait\"}},\"author\":\"system\",\"id\":\"terminal\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"status\":\"completed\",\"ts\":30,\"turnId\":\"source\"}",
+          "committed_at": 30
+        }
+      ]
+    }
+  },
+  "completed": {
+    "sessionId": "legacy-session",
+    "root": "/legacy-root",
+    "rows": {
+      "workflow_goal_authority": [
+        {
+          "session_id": "legacy-session",
+          "authority_revision": 5,
+          "goal_id": "goal",
+          "goal_revision": 2,
+          "status": "achieved",
+          "record_json": "{\"schemaVersion\":1,\"goal\":{\"id\":\"goal\",\"sessionId\":\"legacy-session\",\"revision\":2,\"condition\":\"Finish\",\"status\":\"achieved\",\"setAt\":1,\"iterations\":1,\"maxIterations\":10,\"consecutiveNoProgress\":0,\"blockCap\":3,\"tokensAtStart\":0,\"tokensNow\":12,\"tokensBaselinePending\":false},\"controlLease\":{\"goalId\":\"goal\",\"generation\":0},\"currentExecution\":null,\"pendingContinuation\":null}"
+        }
+      ],
+      "workflow_event_waits": [
+        {
+          "wait_id": "wait",
+          "session_id": "legacy-session",
+          "authority_revision": 2,
+          "status": "resolved",
+          "delivery_key": "event-wait/wait",
+          "deadline_at": 100,
+          "record_json": "{\"schemaVersion\":1,\"waitId\":\"wait\",\"sessionId\":\"legacy-session\",\"goalControlLease\":{\"goalId\":\"goal\",\"generation\":0},\"sourceTurnId\":\"source\",\"sourceToolCallId\":\"call\",\"resource\":{\"providerId\":\"test\",\"connectionId\":null,\"resourceType\":\"job\",\"resourceId\":\"job\"},\"condition\":{\"typeId\":\"done\",\"version\":1,\"parameters\":{}},\"deliveryKey\":\"event-wait/wait\",\"createdAt\":10,\"updatedAt\":110,\"deadlineAt\":100,\"delivery\":{\"kind\":\"admitted\",\"turnId\":\"next\",\"runId\":\"next-run\",\"userMessageId\":\"next-message\",\"at\":110},\"status\":\"resolved\",\"resolvedAt\":20,\"resolution\":{\"outcome\":\"satisfied\",\"receiptKey\":\"receipt\",\"observedAt\":20,\"evidenceRefs\":[\"ref\"]}}"
+        }
+      ],
+      "core_root_turn_admissions": [
+        {
+          "session_id": "legacy-session",
+          "turn_id": "source",
+          "admitted_at": 1,
+          "record_json": "{\"schemaVersion\":1,\"sessionId\":\"legacy-session\",\"turnId\":\"source\",\"runId\":\"source-run\",\"userMessageId\":\"source-message\",\"execution\":{\"kind\":\"external_message\"},\"previousRootTurnId\":null,\"normalizedInput\":{\"text\":\"work\"},\"sourceMessages\":[],\"admittedAt\":1}"
+        },
+        {
+          "session_id": "legacy-session",
+          "turn_id": "next",
+          "admitted_at": 110,
+          "record_json": "{\"schemaVersion\":1,\"sessionId\":\"legacy-session\",\"turnId\":\"next\",\"runId\":\"next-run\",\"userMessageId\":\"next-message\",\"execution\":{\"kind\":\"goal\",\"goalId\":\"goal\",\"eventWait\":{\"waitId\":\"wait\",\"deliveryKey\":\"event-wait/wait\",\"sourceTurnId\":\"source\",\"sourceToolCallId\":\"call\",\"generation\":0,\"outcome\":\"satisfied\",\"resultDigest\":\"sha256:05f45572cddcc838d8cf062d84f3a96121c71b3bf7fc9624febae3eec010735e\"}},\"previousRootTurnId\":\"source\",\"normalizedInput\":{\"text\":\"Untrusted result data\"},\"sourceMessages\":[],\"admittedAt\":110}"
+        }
+      ],
+      "runtime_events": [
+        {
+          "event_id": "source-opening",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 1,
+          "event_kind": "invocation_opened",
+          "payload_json": "{\"author\":\"system\",\"content\":{\"configuration\":{\"collaborationMode\":\"agent\",\"cwd\":\"/legacy-root\",\"orchestrationMode\":\"default\",\"orchestrationSource\":\"session\",\"permissionMode\":\"ask\",\"toolMode\":\"direct\"},\"kind\":\"invocation_opened\",\"protocol\":\"invocation_opened_v1\",\"root\":{\"kind\":\"user\"},\"route\":{\"backendKind\":\"fake\",\"llmConnectionId\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"llmConnectionSlug\":\"fake\",\"modelId\":\"fake-model\",\"provenance\":\"runtime\"},\"source\":{\"kind\":\"fresh\"}},\"id\":\"source-opening\",\"invocationId\":\"source-run\",\"modelVisibility\":\"hidden\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":1,\"turnId\":\"source\"}",
+          "committed_at": 1
+        },
+        {
+          "event_id": "source-message",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 2,
+          "event_kind": "text",
+          "payload_json": "{\"author\":\"user\",\"content\":{\"kind\":\"text\",\"text\":\"work\"},\"id\":\"source-message\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"user\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":2,\"turnId\":\"source\"}",
+          "committed_at": 2
+        },
+        {
+          "event_id": "source-usage",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 3,
+          "event_kind": "runtime_fact",
+          "payload_json": "{\"actions\":{\"tokenUsage\":{\"input\":12,\"output\":0,\"total\":12}},\"author\":\"system\",\"id\":\"source-usage\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":3,\"turnId\":\"source\"}",
+          "committed_at": 3
+        },
+        {
+          "event_id": "terminal",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 4,
+          "event_kind": "completed",
+          "payload_json": "{\"actions\":{\"endInvocation\":true,\"stateDelta\":{\"stopReason\":\"event_wait\"}},\"author\":\"system\",\"id\":\"terminal\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"status\":\"completed\",\"ts\":30,\"turnId\":\"source\"}",
+          "committed_at": 30
+        },
+        {
+          "event_id": "next-opening",
+          "session_id": "legacy-session",
+          "invocation_id": "next-run",
+          "run_id": "next-run",
+          "turn_id": "next",
+          "event_seq": 1,
+          "event_kind": "invocation_opened",
+          "payload_json": "{\"author\":\"system\",\"content\":{\"configuration\":{\"collaborationMode\":\"agent\",\"cwd\":\"/legacy-root\",\"orchestrationMode\":\"default\",\"orchestrationSource\":\"session\",\"permissionMode\":\"ask\",\"toolMode\":\"direct\"},\"kind\":\"invocation_opened\",\"protocol\":\"invocation_opened_v1\",\"root\":{\"eventWait\":{\"deliveryKey\":\"event-wait/wait\",\"generation\":0,\"outcome\":\"satisfied\",\"resultDigest\":\"sha256:05f45572cddcc838d8cf062d84f3a96121c71b3bf7fc9624febae3eec010735e\",\"sourceToolCallId\":\"call\",\"sourceTurnId\":\"source\",\"waitId\":\"wait\"},\"goalId\":\"goal\",\"kind\":\"goal\"},\"route\":{\"backendKind\":\"fake\",\"llmConnectionId\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"llmConnectionSlug\":\"fake\",\"modelId\":\"fake-model\",\"provenance\":\"runtime\"},\"source\":{\"kind\":\"fresh\"}},\"id\":\"next-opening\",\"invocationId\":\"next-run\",\"modelVisibility\":\"hidden\",\"partial\":false,\"role\":\"system\",\"runId\":\"next-run\",\"sessionId\":\"legacy-session\",\"ts\":110,\"turnId\":\"next\"}",
+          "committed_at": 110
+        },
+        {
+          "event_id": "next-message",
+          "session_id": "legacy-session",
+          "invocation_id": "next-run",
+          "run_id": "next-run",
+          "turn_id": "next",
+          "event_seq": 2,
+          "event_kind": "text",
+          "payload_json": "{\"author\":\"user\",\"content\":{\"kind\":\"text\",\"origin\":{\"eventWait\":{\"deliveryKey\":\"event-wait/wait\",\"generation\":0,\"outcome\":\"satisfied\",\"resultDigest\":\"sha256:05f45572cddcc838d8cf062d84f3a96121c71b3bf7fc9624febae3eec010735e\",\"sourceToolCallId\":\"call\",\"sourceTurnId\":\"source\",\"waitId\":\"wait\"},\"goalId\":\"goal\",\"kind\":\"goal\"},\"text\":\"Untrusted result data\"},\"id\":\"next-message\",\"invocationId\":\"next-run\",\"partial\":false,\"role\":\"user\",\"runId\":\"next-run\",\"sessionId\":\"legacy-session\",\"ts\":111,\"turnId\":\"next\"}",
+          "committed_at": 111
+        },
+        {
+          "event_id": "next-usage",
+          "session_id": "legacy-session",
+          "invocation_id": "next-run",
+          "run_id": "next-run",
+          "turn_id": "next",
+          "event_seq": 3,
+          "event_kind": "runtime_fact",
+          "payload_json": "{\"actions\":{\"tokenUsage\":{\"input\":12,\"output\":0,\"total\":12}},\"author\":\"system\",\"id\":\"next-usage\",\"invocationId\":\"next-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"next-run\",\"sessionId\":\"legacy-session\",\"ts\":112,\"turnId\":\"next\"}",
+          "committed_at": 112
+        },
+        {
+          "event_id": "next-terminal",
+          "session_id": "legacy-session",
+          "invocation_id": "next-run",
+          "run_id": "next-run",
+          "turn_id": "next",
+          "event_seq": 4,
+          "event_kind": "completed",
+          "payload_json": "{\"actions\":{\"endInvocation\":true,\"stateDelta\":{\"stopReason\":\"completed\"}},\"author\":\"system\",\"id\":\"next-terminal\",\"invocationId\":\"next-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"next-run\",\"sessionId\":\"legacy-session\",\"status\":\"completed\",\"ts\":120,\"turnId\":\"next\"}",
+          "committed_at": 120
+        }
+      ]
+    }
+  },
+  "suppressed": {
+    "sessionId": "legacy-session",
+    "root": "/legacy-root",
+    "rows": {
+      "workflow_goal_authority": [
+        {
+          "session_id": "legacy-session",
+          "authority_revision": 3,
+          "goal_id": "goal",
+          "goal_revision": 2,
+          "status": "paused",
+          "record_json": "{\"schemaVersion\":1,\"goal\":{\"id\":\"goal\",\"sessionId\":\"legacy-session\",\"revision\":2,\"condition\":\"Finish\",\"status\":\"paused\",\"setAt\":1,\"iterations\":1,\"maxIterations\":10,\"consecutiveNoProgress\":0,\"blockCap\":3,\"tokensAtStart\":0,\"tokensNow\":12,\"tokensBaselinePending\":false,\"pausedAt\":40},\"controlLease\":{\"goalId\":\"goal\",\"generation\":1},\"currentExecution\":null,\"pendingContinuation\":null}"
+        }
+      ],
+      "workflow_event_waits": [
+        {
+          "wait_id": "wait",
+          "session_id": "legacy-session",
+          "authority_revision": 1,
+          "status": "cancelled",
+          "delivery_key": "event-wait/wait",
+          "deadline_at": 100,
+          "record_json": "{\"schemaVersion\":1,\"waitId\":\"wait\",\"sessionId\":\"legacy-session\",\"goalControlLease\":{\"goalId\":\"goal\",\"generation\":0},\"sourceTurnId\":\"source\",\"sourceToolCallId\":\"call\",\"resource\":{\"providerId\":\"test\",\"connectionId\":null,\"resourceType\":\"job\",\"resourceId\":\"job\"},\"condition\":{\"typeId\":\"done\",\"version\":1,\"parameters\":{}},\"deliveryKey\":\"event-wait/wait\",\"createdAt\":10,\"updatedAt\":1792993972513,\"deadlineAt\":100,\"delivery\":{\"kind\":\"suppressed\",\"at\":1792993972513,\"reason\":\"Goal wait cancelled or control generation ended\"},\"status\":\"cancelled\",\"cancelledAt\":1792993972513,\"reason\":\"Goal wait cancelled or control generation ended\"}"
+        }
+      ],
+      "core_root_turn_admissions": [
+        {
+          "session_id": "legacy-session",
+          "turn_id": "source",
+          "admitted_at": 1,
+          "record_json": "{\"schemaVersion\":1,\"sessionId\":\"legacy-session\",\"turnId\":\"source\",\"runId\":\"source-run\",\"userMessageId\":\"source-message\",\"execution\":{\"kind\":\"external_message\"},\"previousRootTurnId\":null,\"normalizedInput\":{\"text\":\"work\"},\"sourceMessages\":[],\"admittedAt\":1}"
+        }
+      ],
+      "runtime_events": [
+        {
+          "event_id": "source-opening",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 1,
+          "event_kind": "invocation_opened",
+          "payload_json": "{\"author\":\"system\",\"content\":{\"configuration\":{\"collaborationMode\":\"agent\",\"cwd\":\"/legacy-root\",\"orchestrationMode\":\"default\",\"orchestrationSource\":\"session\",\"permissionMode\":\"ask\",\"toolMode\":\"direct\"},\"kind\":\"invocation_opened\",\"protocol\":\"invocation_opened_v1\",\"root\":{\"kind\":\"user\"},\"route\":{\"backendKind\":\"fake\",\"llmConnectionId\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"llmConnectionSlug\":\"fake\",\"modelId\":\"fake-model\",\"provenance\":\"runtime\"},\"source\":{\"kind\":\"fresh\"}},\"id\":\"source-opening\",\"invocationId\":\"source-run\",\"modelVisibility\":\"hidden\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":1,\"turnId\":\"source\"}",
+          "committed_at": 1
+        },
+        {
+          "event_id": "source-message",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 2,
+          "event_kind": "text",
+          "payload_json": "{\"author\":\"user\",\"content\":{\"kind\":\"text\",\"text\":\"work\"},\"id\":\"source-message\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"user\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":2,\"turnId\":\"source\"}",
+          "committed_at": 2
+        },
+        {
+          "event_id": "source-usage",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 3,
+          "event_kind": "runtime_fact",
+          "payload_json": "{\"actions\":{\"tokenUsage\":{\"input\":12,\"output\":0,\"total\":12}},\"author\":\"system\",\"id\":\"source-usage\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"ts\":3,\"turnId\":\"source\"}",
+          "committed_at": 3
+        },
+        {
+          "event_id": "terminal",
+          "session_id": "legacy-session",
+          "invocation_id": "source-run",
+          "run_id": "source-run",
+          "turn_id": "source",
+          "event_seq": 4,
+          "event_kind": "completed",
+          "payload_json": "{\"actions\":{\"endInvocation\":true,\"stateDelta\":{\"stopReason\":\"event_wait\"}},\"author\":\"system\",\"id\":\"terminal\",\"invocationId\":\"source-run\",\"partial\":false,\"role\":\"system\",\"runId\":\"source-run\",\"sessionId\":\"legacy-session\",\"status\":\"completed\",\"ts\":30,\"turnId\":\"source\"}",
+          "committed_at": 30
+        }
+      ]
+    }
+  }
+}

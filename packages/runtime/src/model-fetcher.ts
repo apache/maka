@@ -82,6 +82,8 @@ type RawProviderModel = {
   context_length?: number;
   context_window?: number;
   max_tokens?: number;
+  max_output_length?: number;
+  supported_features?: string[];
   providers?: Array<{
     status?: string;
     supports_tools?: boolean;
@@ -419,6 +421,7 @@ type RawOpenAiCodexModel = {
   visibility?: unknown;
   priority?: unknown;
   context_window?: unknown;
+  comp_hash?: unknown;
 };
 
 /**
@@ -468,6 +471,15 @@ async function fetchOpenAiCodexModels(
     const entry: ModelInfo = { id: (model.slug as string).trim() };
     const contextWindow = providerTokenLimit(model.context_window);
     if (contextWindow !== undefined) entry.contextWindow = contextWindow;
+    if (
+      typeof model.comp_hash === 'string' &&
+      model.comp_hash.length > 0 &&
+      model.comp_hash.length <= 128 &&
+      model.comp_hash.trim() === model.comp_hash &&
+      !/[\u0000-\u001f\u007f]/.test(model.comp_hash)
+    ) {
+      entry.codexCompactionHash = model.comp_hash;
+    }
     return entry;
   });
 }
@@ -783,13 +795,15 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
   assertOptionalArray(model.input_modalities, 'model input_modalities');
   assertOptionalArray(model.output_modalities, 'model output_modalities');
   assertOptionalArray(model.tags, 'model tags');
+  assertOptionalArray(model.supported_features, 'model supported_features');
   const providers = providerObjectArray<NonNullable<RawProviderModel['providers']>[number]>(
     model.providers,
     'model providers',
   );
   const contextWindow =
     providerTokenLimit(model.context_length) ?? providerTokenLimit(model.context_window);
-  const maxOutputTokens = providerTokenLimit(model.max_tokens);
+  const maxOutputTokens =
+    providerTokenLimit(model.max_output_length) ?? providerTokenLimit(model.max_tokens);
   const capabilities: NonNullable<ModelInfo['capabilities']> = {};
   if (model.input_modalities?.includes('image')) capabilities.vision = true;
   if (typeof model.capabilities?.reasoning === 'boolean')
@@ -800,6 +814,9 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
   if (model.tags?.includes('vision')) capabilities.vision = true;
   if (model.tags?.includes('reasoning')) capabilities.reasoning = true;
   if (model.tags?.includes('tool-use')) capabilities.functionCalling = true;
+  if (model.supported_features) {
+    capabilities.functionCalling = model.supported_features.includes('tools');
+  }
   // `output_modalities` was validated above and then dropped, so a relay that
   // advertised an image-only model handed back a row indistinguishable from a
   // chat model's. Declared output that names modalities but not text is the
@@ -826,6 +843,9 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
     ...(model.display_name || model.name ? { displayName: model.display_name ?? model.name } : {}),
     ...(contextWindow === undefined ? {} : { contextWindow }),
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+    ...(model.supported_features
+      ? { structuredOutput: model.supported_features.includes('structured_outputs') }
+      : {}),
     ...(Object.keys(capabilities).length ? { capabilities } : {}),
   };
 }

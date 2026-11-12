@@ -25,8 +25,10 @@ import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import { nonEmpty } from './context-budget-helpers.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
+  freshCodexCompactionHash,
   historyCompactCheckpointToModelMessage,
   isProviderHistoryCompactCheckpoint,
+  projectHistoryCompactCheckpointReplay,
   type HistoryCompactProviderState,
 } from './history-compact-checkpoint.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -49,6 +51,8 @@ export interface BuildOpenAiCodexHistoryCompactorOptions {
   connectionId: string;
   providerStateIdentity?: `sha256:${string}`;
   modelId: string;
+  models?: readonly { id: string; codexCompactionHash?: string }[];
+  codexCompactionMetadataFetchedAt?: number;
   providerOptions?: Record<string, unknown>;
 }
 
@@ -70,16 +74,32 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       const previous = input.previousCheckpoint;
       const canContinuePrevious =
         previous &&
-        isProviderHistoryCompactCheckpoint(previous) &&
         canContinueHistoryCompactCheckpointForModel(
           previous,
-          { providerType: 'openai-codex' },
+          {
+            providerType: 'openai-codex',
+            models: options.models,
+            codexCompactionMetadataFetchedAt: options.codexCompactionMetadataFetchedAt,
+          },
           options.connectionId,
           options.modelId,
         );
       const events = canContinuePrevious
         ? (input.newlyFoldedRuntimeEvents ?? [])
         : input.source.foldedRuntimeEvents;
+      // Match ordinary replay after a text-compacted session switches to
+      // Codex: summarize the portable checkpoint plus its tail, without
+      // resurrecting the already-folded source history (#6154).
+      const replayEvents =
+        canContinuePrevious && !isProviderHistoryCompactCheckpoint(previous)
+          ? projectHistoryCompactCheckpointReplay(
+              previous,
+              // The projection finds a mid-turn head anchor by identity. A
+              // historical event count can cut it off after reasoning admission.
+              input.source.foldedRuntimeEvents,
+              events,
+            )
+          : events;
       const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
         events,
         input.source.invocations,
@@ -88,10 +108,10 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
         input.runId,
       );
       const projectedMessages = openAiCodexCompactionMessages(
-        events,
+        replayEvents,
         providerReasoningReplayEventIds,
       );
-      if (canContinuePrevious) {
+      if (canContinuePrevious && isProviderHistoryCompactCheckpoint(previous)) {
         projectedMessages.unshift(historyCompactCheckpointToModelMessage(previous));
       }
       // Whether this input fits the compaction endpoint is its own answer;
@@ -130,6 +150,14 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
         content,
         options.connectionId,
         options.modelId,
+        freshCodexCompactionHash(
+          {
+            providerType: 'openai-codex',
+            models: options.models,
+            codexCompactionMetadataFetchedAt: options.codexCompactionMetadataFetchedAt,
+          },
+          options.modelId,
+        ),
       );
       if (!state) throw new HistoryCompactSummarizerError('invalid_provider_state');
       return state;
@@ -169,7 +197,9 @@ export function shouldFallbackFromOpenAiCodexHistoryCompaction(
 ): boolean {
   if (abortSignal?.aborted || hasAbortCause(error)) return false;
   if (!(error instanceof HistoryCompactSummarizerError)) return false;
-  if (error.reason === 'input_too_large' || error.reason === 'invalid_provider_state') return true;
+  // Capacity errors must reach the planner's same-route accepted-prefix
+  // retry, which preserves native compaction and the uncovered tail.
+  if (error.reason === 'invalid_provider_state') return true;
   if (error.reason !== 'provider_error') return false;
   return providerFailureDiagnostic(error).errorClass === 'request_rejected';
 }
@@ -308,6 +338,7 @@ export function extractOpenAiCodexCompactionState(
   content: readonly unknown[] | undefined,
   connectionId: string,
   modelId: string,
+  codexCompactionHash?: string,
 ): HistoryCompactProviderState | undefined {
   const parts = (content ?? []).filter(isOpenAiCompactionPart);
   if (parts.length !== 1) return undefined;
@@ -317,6 +348,7 @@ export function extractOpenAiCodexCompactionState(
     kind: 'openai_codex_remote_v2',
     connectionId,
     modelId,
+    ...(codexCompactionHash ? { codexCompactionHash } : {}),
     itemId: metadata.itemId,
     encryptedContent: metadata.encryptedContent,
   };

@@ -111,6 +111,24 @@ describe('OverlaysRoot', () => {
     await act(async () => root.unmount());
   });
 
+  test('agent setup opens its detail while the management action clears that target', async () => {
+    const { root } = installReactRenderer();
+    const persisted: string[] = [];
+    const services = createFakeOverlaysServices({
+      settingsSection: { persist: (section) => { persisted.push(section); } },
+    });
+    await act(async () => renderRoot(root, services));
+    const commands = latest!.commands;
+    await act(async () => commands.openExternalAgentSettings('antigravity-acp'));
+    assert.deepEqual(latest?.selectors.settings.request, {
+      section: 'external-agents', externalAgentId: 'antigravity-acp',
+    });
+    await act(async () => commands.openExternalAgentSettings());
+    assert.deepEqual(latest?.selectors.settings.request, { section: 'external-agents' });
+    assert.deepEqual(persisted, ['external-agents', 'external-agents']);
+    await act(async () => root.unmount());
+  });
+
   test('an omitted section opens Settings without changing the persisted section', async () => {
     const { root } = installReactRenderer();
     const persisted: string[] = [];

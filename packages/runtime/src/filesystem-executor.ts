@@ -394,6 +394,8 @@ function createWorkspaceFilesystemExecutor(
           const result = await workspace.readFile({
             cwd,
             path,
+            ...(operation.imagePurpose ? { imagePurpose: operation.imagePurpose } : {}),
+            ...(abortSignal ? { abortSignal } : {}),
           });
           if ('bytes' in result) {
             return { kind: 'read_image', bytes: result.bytes, mimeType: result.mimeType };

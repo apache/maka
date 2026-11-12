@@ -53,6 +53,17 @@ describe('Settings modal state model', () => {
     assert.equal(next.open, true);
   });
 
+  test('agent sign-in opens its settings detail and management clears the detail target', () => {
+    const detail = openSettingsModal(remembered, { kind: 'external-agent', executorId: 'antigravity-acp' });
+    assert.deepEqual(detail.request, {
+      section: 'external-agents', profileId: 'profile-1', externalAgentId: 'antigravity-acp',
+    });
+    assert.equal(settingsIntentSection({ kind: 'external-agent', executorId: 'antigravity-acp' }), 'external-agents');
+    const overview = openSettingsModal(detail, { kind: 'section', section: 'external-agents' });
+    assert.deepEqual(overview.request, { section: 'external-agents', profileId: 'profile-1' });
+    assert.equal(openSettingsModal(detail, { kind: 'settings' }).request.externalAgentId, undefined);
+  });
+
   test('a project open replaces the whole request so a stale profile cannot leak', () => {
     const next = openSettingsModal(remembered, { kind: 'project', profileId: 'profile-2' });
     assert.deepEqual(next.request, { section: 'projects', profileId: 'profile-2' });

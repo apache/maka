@@ -524,3 +524,42 @@ test('catalog discovery uses session visibility without inspecting a conversatio
     await root.fiber.dispose();
   }
 });
+
+test('executor inventory is process-free and invalidation and refresh target one agent', async () => {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  const calls: string[] = [];
+  for (const id of ['first-agent', 'second-agent']) {
+    plugin(root, 'profile', id, 1).executors.register({
+      id,
+      displayName: id,
+      execute: async () => ({ status: 'completed', text: '' }),
+      invalidateCatalog: () => {
+        calls.push(`invalidate:${id}`);
+      },
+      discover: async () => {
+        calls.push(`discover:${id}`);
+        return {
+          id,
+          displayName: id,
+          readiness: 'ready',
+          models: [],
+          supportsModelChange: false,
+          supportsAttachments: false,
+        };
+      },
+    });
+  }
+  try {
+    assert.deepEqual(
+      (await service.catalog({ cwd: '/workspace', listOnly: true })).map((entry) => entry.id),
+      ['first-agent', 'second-agent'],
+    );
+    assert.deepEqual(calls, []);
+    service.invalidateCatalog('first-agent');
+    await service.catalog({ cwd: '/workspace', executorId: 'first-agent', refresh: true });
+    assert.deepEqual(calls, ['invalidate:first-agent', 'discover:first-agent']);
+  } finally {
+    await root.fiber.dispose();
+  }
+});

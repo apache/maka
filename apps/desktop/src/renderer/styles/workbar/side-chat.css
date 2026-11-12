@@ -84,12 +84,3 @@
   max-width: min(200px, 56%);
   flex: 1 1 auto;
 }
-
-.maka-session-workbar-panel[data-placement="right"]
-  .maka-quote-companion
-  .maka-composer-model-chip {
-  justify-content: flex-start;
-  width: 100%;
-  max-width: 200px;
-  padding-inline: var(--space-1-5);
-}

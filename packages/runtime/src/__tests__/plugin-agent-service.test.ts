@@ -49,7 +49,20 @@ test('Agent handles expose the complete control and query surface', async () => 
     get: async () => descriptor,
     list: async () => [descriptor],
     roots: async () => [],
-    followup: async () => calls.push('followup'),
+    followup: async (id, message, initiator, options) => {
+      assert.equal(id, 'child');
+      assert.equal(message, 'next');
+      assert.equal(initiator.sessionId, 'session-a');
+      assert.deepEqual(options, { messageId: 'wake-id' });
+      calls.push('followup');
+    },
+    messageExecution: async (id, messageId, initiator) => {
+      assert.equal(id, 'child');
+      assert.equal(messageId, 'wake-id');
+      assert.equal(initiator.sessionId, 'session-a');
+      calls.push('messageExecution');
+      return { messageId, state: 'pending' };
+    },
     steer: async () => calls.push('steer'),
     inject: async () => calls.push('inject'),
     cancel: async () => calls.push('cancel'),
@@ -68,7 +81,11 @@ test('Agent handles expose the complete control and query surface', async () => 
   agents.bindRuntime(runtime);
   const invocation = toolContext('session-a');
   const agent = await agents.withInvocation(invocation, () => agents.create());
-  await agent.followup('next');
+  await agent.followup('next', { messageId: 'wake-id' });
+  assert.deepEqual(await agent.messageExecution('wake-id'), {
+    messageId: 'wake-id',
+    state: 'pending',
+  });
   await agent.steer('now');
   await agent.inject('context');
   await agent.cancel();
@@ -81,6 +98,7 @@ test('Agent handles expose the complete control and query surface', async () => 
   await agent.dispose();
   assert.deepEqual(calls, [
     'followup',
+    'messageExecution',
     'steer',
     'inject',
     'cancel',

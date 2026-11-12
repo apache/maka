@@ -33,6 +33,7 @@
 import { truncateGoalText, type GoalTextLimit } from './goal-state.js';
 import type { NormalizedUsage } from './model-protocol.js';
 import { generateToolFreeModelCall } from './tool-free-model-call.js';
+import { decodeEventWaitConditionSpec, type EventWaitConditionSpec } from '@maka/core/event-wait';
 
 export interface GoalEvaluation {
   /** Condition is satisfied — stop, success. */
@@ -43,6 +44,8 @@ export interface GoalEvaluation {
   progress: boolean;
   /** The agent is blocked waiting on an external event (CI, deploy, review). */
   waiting: boolean;
+  /** Explicit source data only. Host still authenticates the source and completed Turn. */
+  waitingCondition?: EventWaitConditionSpec;
   /**
    * The evaluator failed (timeout/error) and produced no real judgment. The
    * caller should treat `progress` as UNKNOWN — neither advancing nor resetting
@@ -115,6 +118,7 @@ Field rules:
 - impossible: true ONLY for a truly unachievable goal (violates constraints/physics), not merely a hard one.
 - progress: true if the last turn moved measurably closer to the goal (fixed a failure, advanced a step). false if the turn spun, repeated itself, or did nothing useful.
 - waiting: true if the agent is correctly blocked on an external event it cannot speed up (CI run, deploy, remote queue, human review).
+- waitingCondition: OPTIONAL. Only when waiting=true and the conversation contains an explicit supported resource and deterministic condition, copy {resource:{providerId,connectionId,resourceType,resourceId},condition:{typeId,version,parameters},deadlineAt:null|absoluteUnixMilliseconds}. Preserve the task's existing absolute deadline; null adds no new deadline. Never invent resource identities, condition types, permissions, or convert an ambiguous reason into a condition. Omit this field when those facts are unavailable; the existing waiting fallback remains available.
 - reason: concise (under 120 chars), specific, actionable steering for the next turn.
 
 Be conservative on "met" and "impossible". When uncertain, met=false impossible=false progress=false waiting=false.`;
@@ -145,31 +149,93 @@ export function parseGoalEvaluation(raw: string): GoalEvaluation {
     evaluatorFailed: true,
     reason: 'Evaluator produced unparseable output',
   };
-  // Prefer the object that mentions "met"; fall back to the first object.
-  const jsonMatch = raw.match(/\{[^{}]*"met"[^{}]*\}/s) ?? raw.match(/\{[\s\S]*?\}/);
-  if (!jsonMatch) return fallback;
+  const candidates = evaluationJsonObjects(raw);
+  if (candidates.length === 0) return fallback;
   try {
-    const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+    // Match whole objects: a structured condition and braces in strings are legal.
+    const objects = candidates.flatMap((candidate) => {
+      try {
+        const parsed: unknown = JSON.parse(candidate);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? [parsed as Record<string, unknown>]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+    const parsed = objects.find((candidate) => 'met' in candidate) ?? objects[0];
+    if (!parsed) return { ...fallback, reason: 'Evaluator JSON parse failed' };
     // Missing flags keep their defaults; invalid flags are not a real judgment.
     for (const field of ['met', 'impossible', 'progress', 'waiting']) {
       if (parsed[field] !== undefined && typeof parsed[field] !== 'boolean') {
         return { ...fallback, reason: `Evaluator returned a non-boolean ${field}` };
       }
     }
+    let waitingCondition: EventWaitConditionSpec | undefined;
+    let invalidWaitingCondition = false;
+    if (parsed.waitingCondition !== undefined) {
+      if (parsed.waiting !== true || parsed.met === true || parsed.impossible === true)
+        return { ...fallback, reason: 'Evaluator returned an invalid waiting condition' };
+      try {
+        waitingCondition = decodeEventWaitConditionSpec(parsed.waitingCondition);
+      } catch {
+        // Optional observation data cannot discard an otherwise valid waiting
+        // verdict: the existing timed backoff remains the fallback.
+        invalidWaitingCondition = true;
+      }
+    }
+    const reason =
+      typeof parsed.reason === 'string' && parsed.reason.trim()
+        ? parsed.reason
+        : 'No reason provided';
     return {
       met: parsed.met === true,
       impossible: parsed.impossible === true,
       progress: parsed.progress === true,
       waiting: parsed.waiting === true,
+      ...(waitingCondition ? { waitingCondition } : {}),
       evaluatorFailed: false,
-      reason:
-        typeof parsed.reason === 'string' && parsed.reason.trim()
-          ? truncateGoalText(parsed.reason, EVALUATOR_REASON_TEXT_LIMIT)
-          : 'No reason provided',
+      reason: truncateGoalText(
+        invalidWaitingCondition
+          ? `Invalid waiting condition; using waiting backoff. ${reason}`
+          : reason,
+        EVALUATOR_REASON_TEXT_LIMIT,
+      ),
     };
   } catch {
     return { ...fallback, reason: 'Evaluator JSON parse failed' };
   }
+}
+
+function evaluationJsonObjects(raw: string): string[] {
+  const result: string[] = [];
+  let start = -1,
+    depth = 0,
+    quoted = false,
+    escaped = false;
+  for (let index = 0; index < raw.length; index++) {
+    const char = raw[index];
+    if (start < 0) {
+      if (char === '{') {
+        start = index;
+        depth = 1;
+        quoted = false;
+        escaped = false;
+      }
+      continue;
+    }
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === '{') depth++;
+    else if (char === '}' && --depth === 0) {
+      result.push(raw.slice(start, index + 1));
+      start = -1;
+    }
+  }
+  return result;
 }
 
 /**

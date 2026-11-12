@@ -17,7 +17,7 @@
   under the License.
 -->
 
-[ENGLISH](./ARCHITECTURE.md)
+[English](./ARCHITECTURE.md)
 
 # Maka 后端架构
 
@@ -27,7 +27,7 @@
 flowchart LR
     C["Desktop / TUI / CLI / Bot"] --> H["Runtime Host"]
     H --> S["SessionManager"]
-    S --> R["AgentRun + Runtime Runner"]
+    S --> R["AgentRun + RuntimeKernel"]
     R --> T["Tool Runtime"]
     R --> L["Runtime Event Log"]
     S --> G["Agent Graph Control Plane"]

@@ -82,7 +82,7 @@ async function mountDialog() {
   installDomStubs(window);
   Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
 
-  const submitted: string[] = [];
+  const submitted: (string | undefined)[] = [];
   let openChanges = 0;
   const container = document.querySelector('#root');
   assert.ok(container);
@@ -135,7 +135,7 @@ test('a submit belongs to the dialog and never reaches the browser', async () =>
   }
 });
 
-test('an empty name submits nothing at all', async () => {
+test('an empty name submits as "no name" so the folder can still be chosen', async () => {
   const dialog = await mountDialog();
   try {
     let event!: Event;
@@ -144,7 +144,34 @@ test('an empty name submits nothing at all', async () => {
     });
 
     assert.equal(event.defaultPrevented, true);
-    assert.deepEqual(dialog.submitted, []);
+    // The dialog asked to close and handed back no name — the caller opens
+    // the folder picker and the catalog uses the folder's basename.
+    assert.equal(dialog.openChanges(), 1);
+    assert.deepEqual(dialog.submitted, [undefined]);
+  } finally {
+    await dialog.dispose();
+  }
+});
+
+test('a typed name is trimmed before it travels', async () => {
+  const dialog = await mountDialog();
+  try {
+    const input = document.querySelector('input');
+    assert.ok(input);
+    await act(() => {
+      input.value = '  Spaced  ';
+      const propsKey = Object.keys(input).find((key) => key.startsWith('__reactProps$'));
+      assert.ok(propsKey);
+      const props = (input as unknown as Record<string, unknown>)[propsKey] as {
+        onChange: (event: { target: HTMLInputElement; defaultPrevented: boolean }) => void;
+      };
+      props.onChange({ target: input, defaultPrevented: false });
+    });
+    await act(() => {
+      dialog.submit();
+    });
+
+    assert.deepEqual(dialog.submitted, ['Spaced']);
   } finally {
     await dialog.dispose();
   }

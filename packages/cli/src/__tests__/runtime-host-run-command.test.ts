@@ -35,6 +35,7 @@ import {
   type SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
 import { resolveRuntimeHostCliTarget } from '../runtime-host-cli-context.js';
+import { RunQuestionAvailable } from '../run-session-result.js';
 import { createRuntimeHostRunContext, runRuntimeHostTextCli } from '../runtime-host-run-command.js';
 import type { RuntimeHostMakaSessionDriver } from '../runtime-host-session-driver.js';
 import type { MakaRunContextInput, MakaRunOutcome } from '../run-command-core.js';
@@ -260,7 +261,76 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(stderr.join(''), 'maka run: Turn failed\n');
   });
 
-  test('returns exit code 1 when a same-step sibling succeeds after a sandbox failure', async () => {
+  test('returns the Session ID and terminal failure for --json', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const fixture = runFixture({ turnEvents: failedEvents('turn-1', 'provider_failure') });
+    const exit = await runFixtureCommand(
+      fixture,
+      ['fail once', '--json'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+    assert.equal(exit, 1);
+    assert.deepEqual(JSON.parse(stdout.join('')), {
+      sessionId: 'session-created',
+      status: 'failed',
+      error: 'Turn failed',
+    });
+    assert.equal(stderr.join(''), '');
+  });
+
+  test('detached admission leaves early interactions unanswered', async () => {
+    for (const request of [
+      {
+        kind: 'sandbox_boundary' as const,
+        expansion: { network: { enabled: true as const } },
+        justification: 'test',
+      },
+      pendingQuestion('turn-1').request,
+      pendingForm('turn-1').request,
+      pendingPermission('turn-1').request,
+    ]) {
+      const gate = deferred<void>();
+      const preparing = deferred<void>();
+      const fixture = runFixture({
+        prepareGate: gate.promise,
+        onPrepareStarted: () => preparing.resolve(),
+      });
+      const context = fixture.createContext({
+        workspaceRoot: '/data',
+        cwd: '/workspace',
+        noWait: true,
+      });
+      try {
+        const sending = collect(
+          context.runtime.sendMessage('session-created', { turnId: 'turn-1', text: 'go' }),
+        );
+        await preparing.promise;
+        fixture.publishPendingInteraction({
+          schemaVersion: 1,
+          sessionId: 'session-created',
+          turnId: 'turn-1',
+          runId: 'run-1',
+          interactionId: 'early',
+          revision: 1,
+          status: 'pending',
+          outcome: null,
+          request,
+        });
+        await Promise.resolve();
+        gate.resolve();
+        await sending;
+        assert.deepEqual(fixture.sandboxResponses, [], request.kind);
+        assert.deepEqual(fixture.exactTurnStops, [], request.kind);
+      } finally {
+        gate.resolve();
+        await context.close();
+      }
+    }
+  });
+
+  test('honors Runtime completion after a same-step tool failure', async () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
     const fixture = runFixture({
@@ -273,15 +343,12 @@ describe('Runtime Host maka run adapter', () => {
       (text) => stderr.push(text),
     );
 
-    assert.equal(exitCode, 1);
-    assert.equal(stdout.join(''), '');
-    assert.equal(
-      stderr.join(''),
-      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
-    );
+    assert.equal(exitCode, 0);
+    assert.equal(stdout.join(''), 'Incomplete answer\n');
+    assert.equal(stderr.join(''), '');
   });
 
-  test('returns exit code 1 when a denied boundary request follows a sandbox failure', async () => {
+  test('honors Runtime completion after a rejected boundary request', async () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
     const fixture = runFixture({
@@ -300,15 +367,12 @@ describe('Runtime Host maka run adapter', () => {
       (text) => stderr.push(text),
     );
 
-    assert.equal(exitCode, 1);
-    assert.equal(stdout.join(''), '');
-    assert.equal(
-      stderr.join(''),
-      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
-    );
+    assert.equal(exitCode, 0);
+    assert.equal(stdout.join(''), 'Boundary was not widened\n');
+    assert.equal(stderr.join(''), '');
   });
 
-  test('keeps a sandbox failure unresolved after an unrelated tool succeeds', async () => {
+  test('preserves the final answer after an unrelated tool succeeds', async () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
     const fixture = runFixture({
@@ -327,25 +391,22 @@ describe('Runtime Host maka run adapter', () => {
       (text) => stderr.push(text),
     );
 
-    assert.equal(exitCode, 1);
-    assert.equal(stdout.join(''), '');
-    assert.equal(
-      stderr.join(''),
-      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
-    );
+    assert.equal(exitCode, 0);
+    assert.equal(stdout.join(''), 'Boundary was not widened\n');
+    assert.equal(stderr.join(''), '');
   });
 
-  test('keeps the boundary unresolved when a later same-named call succeeds (live)', async () => {
+  test('honors live completion without matching tool retries', async () => {
     const fixture = runFixture({
       turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-2', 'Partial answer', 'Read'),
     });
 
     const exitCode = await runFixtureCommand(fixture, ['accept same-name different target']);
 
-    assert.equal(exitCode, 1);
+    assert.equal(exitCode, 0);
   });
 
-  test('keeps the boundary unresolved when a later same-named call succeeds (durable)', async () => {
+  test('honors durable completion without matching tool retries', async () => {
     const fixture = runFixture({
       graph: true,
       finalMessages: sandboxBoundaryMessages('step-1', 'step-2', 'Read'),
@@ -356,10 +417,10 @@ describe('Runtime Host maka run adapter', () => {
       '--graph',
     ]);
 
-    assert.equal(exitCode, 1);
+    assert.equal(exitCode, 0);
   });
 
-  test('returns exit code 1 when a denied widening precedes any later tool success', async () => {
+  test('honors Runtime completion after denied widening and later tool success', async () => {
     const stderr: string[] = [];
     const fixture = runFixture({
       turnEvents: deniedWideningEvents('turn-1'),
@@ -372,14 +433,11 @@ describe('Runtime Host maka run adapter', () => {
       (text) => stderr.push(text),
     );
 
-    assert.equal(exitCode, 1);
-    assert.equal(
-      stderr.join(''),
-      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
-    );
+    assert.equal(exitCode, 0);
+    assert.equal(stderr.join(''), '');
   });
 
-  test('returns exit code 1 when reconnect restores a missed sandbox failure', async () => {
+  test('reconnected tool failure does not override Runtime completion', async () => {
     let publishReplacement = () => {};
     const fixture = runFixture({
       turnEvents: eventsAfterTranscriptReplacement(() => publishReplacement()),
@@ -393,7 +451,7 @@ describe('Runtime Host maka run adapter', () => {
 
     const exitCode = await runFixtureCommand(fixture, ['resume protected work']);
 
-    assert.equal(exitCode, 1);
+    assert.equal(exitCode, 0);
   });
 
   test('prints the transcript answer when the live stream never carried one', async () => {
@@ -454,14 +512,14 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(stdout.join(''), 'Host answer\n');
   });
 
-  test('returns exit code 1 when one retry follows two sandbox failures', async () => {
+  test('honors Runtime completion after multiple tool failures', async () => {
     const fixture = runFixture({
       turnEvents: multipleSandboxFailureEvents('turn-1'),
     });
 
     const exitCode = await runFixtureCommand(fixture, ['retry one blocked operation']);
 
-    assert.equal(exitCode, 1);
+    assert.equal(exitCode, 0);
   });
 
   test('returns exit code 0 when the final Graph Turn completes', async () => {
@@ -475,7 +533,7 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(stdout.join(''), 'Final graph answer\n');
   });
 
-  test('keeps a root Graph boundary failure unresolved even when a later same-named call succeeds', async () => {
+  test('honors Graph completion after a root tool failure', async () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
     const fixture = runFixture({
@@ -489,25 +547,22 @@ describe('Runtime Host maka run adapter', () => {
       (text) => stderr.push(text),
     );
 
-    assert.equal(exitCode, 1);
-    assert.equal(stdout.join(''), '');
-    assert.equal(
-      stderr.join(''),
-      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
-    );
+    assert.equal(exitCode, 0);
+    assert.equal(stdout.join(''), 'Final graph answer\n');
+    assert.equal(stderr.join(''), '');
   });
 
-  test('returns exit code 1 when a same-step Graph sibling succeeds after a sandbox failure', async () => {
+  test('honors Graph completion after a same-step tool failure', async () => {
     const fixture = runFixture({
       graph: true,
       finalMessages: sandboxBoundaryMessages('step-1', 'step-1'),
     });
     const exitCode = await runFixtureCommand(fixture, ['run parallel tools', '--graph']);
 
-    assert.equal(exitCode, 1);
+    assert.equal(exitCode, 0);
   });
 
-  test('returns exit code 1 when a denied Graph boundary request follows a sandbox failure', async () => {
+  test('honors Graph completion after a denied boundary request', async () => {
     const stdout: string[] = [];
     const fixture = runFixture({
       graph: true,
@@ -519,11 +574,11 @@ describe('Runtime Host maka run adapter', () => {
       (text) => stdout.push(text),
     );
 
-    assert.equal(exitCode, 1);
-    assert.equal(stdout.join(''), '');
+    assert.equal(exitCode, 0);
+    assert.equal(stdout.join(''), 'Final graph answer\n');
   });
 
-  test('returns exit code 1 when one Graph retry follows two sandbox failures', async () => {
+  test('honors Graph completion after multiple tool failures', async () => {
     const fixture = runFixture({
       graph: true,
       finalMessages: multipleSandboxFailureMessages(),
@@ -531,10 +586,10 @@ describe('Runtime Host maka run adapter', () => {
 
     const exitCode = await runFixtureCommand(fixture, ['retry one blocked operation', '--graph']);
 
-    assert.equal(exitCode, 1);
+    assert.equal(exitCode, 0);
   });
 
-  test('returns exit code 1 when the final Graph Turn fails', async () => {
+  test('returns the stored Graph failure class when no original message exists', async () => {
     const stderr: string[] = [];
     const fixture = runFixture({
       graph: true,
@@ -548,7 +603,7 @@ describe('Runtime Host maka run adapter', () => {
     );
 
     assert.equal(exitCode, 1);
-    assert.equal(stderr.join(''), 'maka run: Agent Graph final Turn failed\n');
+    assert.equal(stderr.join(''), 'maka run: provider_failure\n');
   });
 
   test('waits for Host-started graph supervisor Turns before returning', async () => {
@@ -903,7 +958,7 @@ describe('Runtime Host maka run adapter', () => {
     assert.deepEqual(fixture.graphStops, [session.id, session.id]);
   });
 
-  test('fails and stops instead of waiting for an interactive question', async () => {
+  test('returns an AskUser handoff without stopping its Host Turn', async () => {
     const fixture = runFixture({
       turnEvents: questionEvents('turn-1'),
       pendingInteractions: [pendingQuestion('turn-1')],
@@ -923,11 +978,75 @@ describe('Runtime Host maka run adapter', () => {
           text: 'ask me something',
         }),
       ),
-      new Error('interactive user questions are unavailable in non-interactive mode'),
+      RunQuestionAvailable,
     );
-    assert.deepEqual(fixture.exactTurnStops, [
-      { sessionId: session.id, turnId: 'turn-1', runId: 'run-1' },
-    ]);
+    assert.deepEqual(fixture.exactTurnStops, []);
+  });
+
+  test('public run returns questions with exit 0 and keeps the original Turn waiting', async () => {
+    const fixture = runFixture({
+      turnEvents: questionEvents('turn-1'),
+      pendingInteractions: [pendingQuestion('turn-1')],
+      pendingAfterTurnStarts: true,
+    });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runFixtureCommand(
+      fixture,
+      ['ask something'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+    assert.equal(code, 0, stderr.join(''));
+    assert.equal(JSON.parse(stdout.join('')).status, 'needs_input');
+    assert.equal(JSON.parse(stdout.join('')).sessionId, 'session-created');
+    assert.ok(JSON.parse(stdout.join('')).questions.length);
+    assert.deepEqual(fixture.exactTurnStops, []);
+    assert.deepEqual(stderr, []);
+  });
+
+  test('no-wait returns after admission instead of consuming the event stream', async () => {
+    const fixture = runFixture({
+      turnEvents: (async function* (): AsyncIterable<SessionEvent> {
+        throw new Error('no-wait must not consume events');
+      })(),
+    });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runFixtureCommand(
+      fixture,
+      ['execute in background', '--no-wait'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+    assert.equal(code, 0, stderr.join(''));
+    assert.deepEqual(JSON.parse(stdout.join('')), {
+      sessionId: 'session-created',
+      status: 'running',
+      submission: 'started',
+    });
+    assert.deepEqual(fixture.exactTurnStops, []);
+  });
+
+  test('preserves the concrete provider failure stored with a Turn', async () => {
+    const messages = structuredClone(graphMessages());
+    const terminal = messages.find(
+      (message) => message.type === 'turn_state' && message.turnId === 'turn-2',
+    );
+    assert.ok(terminal && terminal.type === 'turn_state');
+    terminal.status = 'failed';
+    terminal.errorClass = 'quota_exhausted';
+    terminal.failureMessage = 'Selected provider has no remaining quota';
+    const fixture = runFixture({ graph: true, finalMessages: messages });
+    const stderr: string[] = [];
+    const code = await runFixtureCommand(
+      fixture,
+      ['execute', '--graph'],
+      () => {},
+      (text) => stderr.push(text),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr.join(''), /Selected provider has no remaining quota/);
   });
 
   test('fails and stops instead of dropping an interactive form', async () => {

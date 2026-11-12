@@ -30,9 +30,9 @@
 // lane runs a plain root `npm ci`, and an unpatched tree turns
 // packages/runtime/src/__tests__/model-factory-tool-call-index.test.ts red.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -55,8 +55,34 @@ try {
   process.exit(0);
 }
 
-const result = spawnSync(process.execPath, [patchPackageEntry, '--error-on-fail'], {
-  cwd: repoRoot,
-  stdio: 'inherit',
-});
-process.exit(result.status ?? 1);
+let temporaryPatches;
+try {
+  const runPatchName = 'run+2.1.4.patch';
+  const runPatchPath = join(patchesDirectory, runPatchName);
+  const runPatch = existsSync(runPatchPath) ? readFileSync(runPatchPath, 'utf8') : '';
+  const marker = '__MAKA_RUN_WASM_BASE64__';
+  if (runPatch.includes(marker)) {
+    // The patch changes worker code, not WASM. Reuse the npm package's binary
+    // during installation so the source distribution carries only the changes.
+    const worker = readFileSync(
+      join(repoRoot, 'node_modules/run/dist/runtime/worker-source.js'),
+      'utf8',
+    );
+    const wasm = /__RUN_QUICKJS_WASM_BASE64__ = \\"([A-Za-z0-9+/=]+)\\";/u.exec(worker)?.[1];
+    if (!wasm) throw new Error('Cannot find the installed run 2.1.4 QuickJS payload');
+    temporaryPatches = mkdtempSync(join(repoRoot, 'node_modules/.maka-patches-'));
+    for (const name of readdirSync(patchesDirectory).filter((name) => name.endsWith('.patch'))) {
+      const contents =
+        name === runPatchName
+          ? runPatch.replaceAll(marker, wasm)
+          : readFileSync(join(patchesDirectory, name), 'utf8');
+      writeFileSync(join(temporaryPatches, name), contents);
+    }
+  }
+  const arguments_ = [patchPackageEntry, '--error-on-fail'];
+  if (temporaryPatches) arguments_.push('--patch-dir', relative(repoRoot, temporaryPatches));
+  const result = spawnSync(process.execPath, arguments_, { cwd: repoRoot, stdio: 'inherit' });
+  process.exitCode = result.status ?? 1;
+} finally {
+  if (temporaryPatches) rmSync(temporaryPatches, { recursive: true, force: true });
+}

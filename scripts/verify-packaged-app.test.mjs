@@ -39,8 +39,30 @@ import {
   asarLookupPath,
   assertPackagedDependencyClosure,
   assertPackagedResources,
+  runCommand,
   stopChild,
 } from './verify-packaged-app.mjs';
+
+const { version: productVersion } = JSON.parse(
+  await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+);
+
+test('runCommand preserves the exit code and both output streams on failure', async () => {
+  await assert.rejects(
+    runCommand(process.execPath, [
+      '-e',
+      "require('node:fs').writeSync(1, 'CloudKit connection lost'); require('node:fs').writeSync(2, 'stderr detail'); process.exit(68)",
+    ]),
+    (error) => {
+      assert.equal(error.code, 68);
+      assert.equal(error.stdout, 'CloudKit connection lost');
+      assert.equal(error.stderr, 'stderr detail');
+      assert.match(error.message, /CloudKit connection lost/u);
+      assert.match(error.message, /stderr detail/u);
+      return true;
+    },
+  );
+});
 
 test('stopChild waits for a process that ignores SIGTERM to exit before returning', {
   skip: process.platform === 'win32',
@@ -474,7 +496,7 @@ const options = {
   collectPackagedAllowlist: () => allowlistOf(PTY_PACKAGES),
 };
 
-test('accepts the Intel Mach-O architecture for an x64 package', async () => {
+test('verifies an Intel macOS package after a transient ticket validation failure', async () => {
   const { verifyPackagedMacApp } = await import('./verify-macos-dmg.mjs');
   const asarPackages = await Promise.all(
     PTY_PACKAGES.map(async (name) => {
@@ -500,10 +522,11 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
     'provider: github\nowner: apache\nrepo: maka\nchannel: dev\nupdaterCacheDirName: "@makadesktop-updater"\n',
   );
   await writeFile(join(resources, 'icon.icns'), RENDERABLE_ICNS);
-  const version = '0.2.0-dev.14.20260902';
+  const version = `${productVersion}-dev.14.20260902`;
   const app = join(dirname(resources), 'Maka.app');
   await mkdir(join(app, 'Contents'), { recursive: true });
   await rename(resources, join(app, 'Contents', 'Resources'));
+  const verificationSteps = [];
   // The archive and update configuration are real; macOS command output and
   // app launches are the system boundaries this portable test substitutes.
   await verifyPackagedMacApp(app, {
@@ -512,7 +535,9 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
     environment: { MAKA_DESKTOP_NIGHTLY_VERSION: version },
     requirePath: async () => {},
     smokeFilesystemWorker: async () => {},
-    smokeRenderer: async () => {},
+    smokeRenderer: async () => {
+      verificationSteps.push('renderer');
+    },
     run: async (command, args) => {
       if (command === 'plutil') {
         const values = {
@@ -524,14 +549,24 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
         return { stdout: `${values[args[1]]}\n` };
       }
       if (command === 'lipo') return { stdout: 'x86_64\n' };
-      if (
-        ['codesign', 'spctl', 'xcrun', join(app, 'Contents', 'MacOS', 'Maka')].includes(command)
-      ) {
+      if (command === 'xcrun') {
+        verificationSteps.push(args[1]);
+        assert.deepEqual(args, ['stapler', 'validate', app]);
+        if (verificationSteps.length === 1) {
+          return runCommand(process.execPath, [
+            '-e',
+            "require('node:fs').writeSync(1, 'Error Domain=NSURLErrorDomain Code=-1005 connection lost'); process.exit(68)",
+          ]);
+        }
+        return { stdout: '' };
+      }
+      if (['codesign', 'spctl', join(app, 'Contents', 'MacOS', 'Maka')].includes(command)) {
         return { stdout: '' };
       }
       throw new Error(`Unexpected command: ${command}`);
     },
   });
+  assert.deepEqual(verificationSteps, ['validate', 'validate', 'renderer']);
 });
 
 describe('assertRenderableAppIcon', () => {
@@ -711,6 +746,27 @@ describe('assertRenderableAppIcon', () => {
 });
 
 describe('assertPackagedDependencyClosure', () => {
+  test('requires a relative runtime import to exist inside the shipped archive', async () => {
+    const distFiles = {
+      'main/workhub-remote-bridge.js':
+        "import { readWorkHubTopicAssociation } from '../shared/workhub-topic-association.js';\n",
+    };
+    await assert.rejects(
+      assertPackagedDependencyClosure(await makeResources({ distFiles }), options),
+      /workhub-remote-bridge\.js.*missing file.*shared\/workhub-topic-association\.js/u,
+    );
+    await assertPackagedDependencyClosure(
+      await makeResources({
+        distFiles: {
+          ...distFiles,
+          'shared/workhub-topic-association.js':
+            'export function readWorkHubTopicAssociation() {}\n',
+        },
+      }),
+      options,
+    );
+  });
+
   test('accepts an artifact whose asar, bundle record, and shipped notices match', async () => {
     const resources = await makeResources();
     await assertPackagedDependencyClosure(resources, options);

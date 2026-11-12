@@ -17,50 +17,195 @@
  * under the License.
  */
 
-/**
- * The session's latest provider-counted request, or nothing.
- *
- * A token count belongs to one request on one route: it is a number in that
- * model's tokenizer, and it is only the session's latest if nothing newer
- * exists. The runtime enforces both when it reads an anchor back, refusing one
- * whose run header names another model or connection. A control that shows the
- * number has to enforce the same two facts or it will display a precise-looking
- * figure about a request the user is not making — model A's tokens against
- * model B's window, or a historical range's usage presented as current.
- *
- * So this refuses rather than approximates, and the three refusals are the
- * three normal states that break the pairing:
- *
- * - the loaded transcript range is not the session tail, so a newer request may
- *   exist that this range cannot see;
- * - the newest usage row carries no anchor, which is what manual `/compact`
- *   writes, so the scan continues past it exactly as the runtime's does;
- * - the anchor names a different route than the active one, or names none at
- *   all because it was written before anchors carried their route.
- */
+import type { ContextUsageReading } from '@maka/ui';
+import type {
+  ContextUsageSnapshot,
+  ContextUsageTokens,
+} from './context-usage-snapshot.js';
+import type { LiveContextReading } from './live-context-usage.js';
+
 export interface LatestRequestUsageAnchor {
   inputTokens: number;
   outputTokens?: number;
+  completedAt?: number;
   modelId?: string;
   connectionId?: string;
 }
 
+export interface LatestRequestUsageRow {
+  readonly type: string;
+  readonly ts?: number;
+  readonly kind?: string;
+  readonly turnId?: string;
+  readonly lastRequestAnchor?: LatestRequestUsageAnchor;
+}
+
+/**
+ * The durable half of the gauge's answer — what the transcript's own rows
+ * select — in the same shape the live tracker reports, so
+ * `resolveContextUsage` can arbitrate the two on one union.
+ */
+export type LatestRequestUsage = ContextUsageSnapshot | undefined;
+
+/**
+ * Read the newest route-matching measurement or compaction from the session tail.
+ * Anchorless usage rows (including manual compaction usage) carry no measurement.
+ * A compaction invalidates earlier measurements until a later request settles.
+ *
+ * Ledger position decides the scan order, but the candidate is arbitrated by
+ * event time: settlement persists the usage row AFTER the compaction notes even
+ * when the anchored request completed BEFORE the compaction — its retry never
+ * finished (#5547) — so a boundary row behind the newest anchored row can still
+ * supersede it when the compaction's apply time postdates the anchor's completion.
+ */
 export function selectLatestRequestUsage(
-  messages: readonly { type: string; lastRequestAnchor?: LatestRequestUsageAnchor }[],
+  messages: readonly LatestRequestUsageRow[],
   model: string | undefined,
   route: { llmConnectionId?: string } | undefined,
-): number | undefined {
+): LatestRequestUsage {
   const connectionId = route?.llmConnectionId;
-  if (model === undefined || connectionId === undefined) return undefined;
+  // The newest anchored usage row, held while the scan behind it looks for a
+  // boundary that postdates its completion. A second anchored row settles it:
+  // under ordered writes every boundary behind that row is strictly older.
+  let pendingTokens: ContextUsageTokens | undefined;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
+    if (message?.type === 'system_note' && message.kind === 'context_compaction_applied') {
+      // Written the moment the compaction is applied, so its row time IS the
+      // boundary time — mid-turn compactions land it mid-turn, not at settlement.
+      if (!pendingTokens) {
+        return { kind: 'compacted', ...(message.ts !== undefined ? { at: message.ts } : {}) };
+      }
+      return orderTokensAgainstBoundary(pendingTokens, message.ts);
+    }
+    if (message?.type === 'system_note' && message.kind === 'context_compacted') {
+      // The settlement-time display row: the compaction it describes was applied
+      // earlier in the same turn and recorded its own boundary row.
+      const appliedAt = latestCompactionAppliedAt(messages, index, message.turnId);
+      const at = appliedAt ?? message.ts;
+      if (!pendingTokens) {
+        return { kind: 'compacted', ...(at !== undefined ? { at } : {}) };
+      }
+      return orderTokensAgainstBoundary(pendingTokens, at);
+    }
     if (message?.type !== 'token_usage') continue;
     const anchor = message.lastRequestAnchor;
     if (!anchor) continue;
+    if (pendingTokens) return pendingTokens;
+    if (model === undefined || connectionId === undefined) return undefined;
     if (anchor.modelId !== model || anchor.connectionId !== connectionId) return undefined;
     if (!Number.isFinite(anchor.inputTokens) || anchor.inputTokens <= 0) return undefined;
     const output = Number.isFinite(anchor.outputTokens ?? 0) ? Math.max(0, anchor.outputTokens ?? 0) : 0;
-    return anchor.inputTokens + output;
+    pendingTokens = {
+      kind: 'tokens',
+      tokens: anchor.inputTokens + output,
+      // The row is persisted after request settlement (and sometimes after a
+      // compaction note). Its write time cannot order its own snapshot.
+      ...(anchor.completedAt !== undefined ? { at: anchor.completedAt } : {}),
+    };
+  }
+  return pendingTokens;
+}
+
+/**
+ * Arbitration between the position-newest anchored usage row and a boundary
+ * row found behind it. The compaction supersedes the measurement only when its
+ * apply time provably postdates the anchored request's completion; a missing
+ * completion or boundary time cannot establish that order, so the candidate
+ * stands.
+ */
+function orderTokensAgainstBoundary(
+  reading: ContextUsageTokens,
+  boundaryAt: number | undefined,
+): LatestRequestUsage {
+  if (
+    reading.at !== undefined &&
+    boundaryAt !== undefined &&
+    boundaryAt >= reading.at
+  ) {
+    return { kind: 'compacted', at: boundaryAt };
+  }
+  return reading;
+}
+
+/**
+ * Find the apply-time boundary behind a settlement `context_compacted` row.
+ * The display note is written when the turn settles while the compaction it
+ * describes was applied mid-turn; between the two rows sit only that turn's
+ * post-compaction output — the turn's own usage row lands after the note — so the
+ * first relevant row behind the note is the matching apply row when one was
+ * recorded. A different turn's apply row, an older display note, a usage
+ * row, or the head of the log all mean the note's own write time is all
+ * there is.
+ */
+function latestCompactionAppliedAt(
+  messages: readonly LatestRequestUsageRow[],
+  noteIndex: number,
+  turnId: string | undefined,
+): number | undefined {
+  for (let index = noteIndex - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.type === 'token_usage') return undefined;
+    if (message?.type !== 'system_note') continue;
+    if (message.kind === 'context_compaction_applied') {
+      return message.turnId === turnId ? message.ts : undefined;
+    }
+    if (message.kind === 'context_compacted') return undefined;
   }
   return undefined;
+}
+
+/**
+ * Resolve the context-usage reading the UI can display from the live Turn's
+ * latest request snapshot and the durable transcript's token-usage anchors
+ * and compaction notes. Choose the newest reading whose relative order can
+ * be established; after a compaction, only a measurement proven to have
+ * completed later may be shown, otherwise report the usage as stale.
+ */
+export function resolveContextUsage(input: {
+  readonly latestRequestUsage: LatestRequestUsage;
+  readonly live?: LiveContextReading;
+}): ContextUsageReading {
+  const { latestRequestUsage, live } = input;
+  // A live boundary holds the gauge on "compacted" until a durable
+  // measurement provably settled after it lands.
+  if (live?.kind === 'compacted') {
+    if (
+      latestRequestUsage?.kind === 'tokens' &&
+      latestRequestUsage.at !== undefined &&
+      live.at !== undefined &&
+      latestRequestUsage.at > live.at
+    ) {
+      return { kind: 'measured', tokens: latestRequestUsage.tokens };
+    }
+    return { kind: 'stale', reason: 'compaction' };
+  }
+  // A durable boundary does the same to any live measurement that cannot
+  // prove it settled after the boundary — an untimed one included.
+  if (
+    latestRequestUsage?.kind === 'compacted' &&
+    (live?.kind !== 'tokens' ||
+      live.at === undefined ||
+      latestRequestUsage.at === undefined ||
+      latestRequestUsage.at >= live.at)
+  ) {
+    return { kind: 'stale', reason: 'compaction' };
+  }
+  if (
+    latestRequestUsage?.kind === 'tokens' &&
+    latestRequestUsage.at !== undefined &&
+    (live?.kind !== 'tokens' || live.at === undefined || latestRequestUsage.at > live.at)
+  ) {
+    return { kind: 'measured', tokens: latestRequestUsage.tokens };
+  }
+  if (live?.kind === 'tokens') {
+    return {
+      kind: 'measured',
+      tokens: live.tokens,
+      ...(live.contextWindow !== undefined ? { contextWindow: live.contextWindow } : {}),
+    };
+  }
+  if (latestRequestUsage?.kind === 'tokens')
+    return { kind: 'measured', tokens: latestRequestUsage.tokens };
+  return { kind: 'unavailable' };
 }

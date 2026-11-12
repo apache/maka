@@ -23,7 +23,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary } from '@maka/core/session';
 import type { SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { NavSelection } from "@maka/ui";
+import type { NavSelection, ToastApi } from "@maka/ui";
 import type { DesktopManualDiagnosticTarget } from '../preload/diagnostics-contract.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
@@ -41,17 +41,6 @@ import { getShellCopy } from "./locales/shell-copy.js";
 import { memoryOpenFailureMessage } from "./locales/settings-memory-copy.js";
 import { settingsTestResultMessage } from "./locales/settings-test-result-copy.js";
 
-type ToastApi = {
-  success(title: string, description?: string): void;
-  info(title: string, description?: string): void;
-  error(
-    title: string,
-    description?: string,
-    diagnosticDetails?: string,
-    diagnosticTarget?: { sessionId: string } | { profileId: string },
-  ): void;
-};
-
 type ComposerImportOwner = {
   sessionId: string | undefined;
   navSection: NavSelection["section"];
@@ -68,8 +57,8 @@ export interface AppShellCommandListOptions {
   clientPathsAccessible: boolean;
   connections: LlmConnection[];
   defaultConnection: string | null;
-  /** Copy and Save's Markdown export of the published conversation. */
-  renderPublishedConversation(sessionName: string, locale: UiLocale): string;
+  /** Copy and Save read the complete history without replacing the visible range. */
+  renderCompleteConversation(sessionId: string, sessionName: string, locale: UiLocale): Promise<string>;
   newTaskProfileId: string | undefined;
   settingsOpen: boolean;
   settingsProfileId: string | undefined;
@@ -130,6 +119,13 @@ export function buildAppShellCommandList(
   const options = optionsRef.current;
   const locale = options.uiLocale;
   const copy = getShellCopy(locale).commandActions;
+  const completeConversation = async () => {
+    const { activeId, renderCompleteConversation, sessionCatalog } = optionsRef.current;
+    if (!activeId) return undefined;
+    const sessionName = sessionCatalog.getState().sessions.find((session) => session.id === activeId)?.name ?? copy.newConversation;
+    const markdown = await renderCompleteConversation(activeId, sessionName, locale);
+    return { markdown, sessionName };
+  };
 
   return buildCommandList({
     locale,
@@ -217,38 +213,43 @@ export function buildAppShellCommandList(
       : {}),
     onSelectModule: (selection) => optionsRef.current.setNavSelection(selection),
     onExportActiveConversation: async () => {
-      const { activeId, renderPublishedConversation, sessionCatalog, toastApi } = optionsRef.current;
-      if (!activeId) return;
-      const session = sessionCatalog.getState().sessions.find((s) => s.id === activeId);
-      const markdown = renderPublishedConversation(session?.name ?? copy.newConversation, locale);
+      const { toastApi } = optionsRef.current;
       try {
-        await navigator.clipboard.writeText(markdown);
+        const result = await completeConversation();
+        if (!result) return;
+        const { markdown } = result;
+        try {
+          await navigator.clipboard.writeText(markdown);
+        } catch {
+          toastApi.error(copy.copyFailedTitle, copy.clipboardUnavailable);
+          return;
+        }
         toastApi.success(
           copy.conversationCopiedTitle,
           copy.lineCount(markdown.split("\n").length),
         );
-      } catch {
-        toastApi.error(copy.copyFailedTitle, copy.clipboardUnavailable);
+      } catch (err) {
+        toastApi.error(
+          copy.copyFailedTitle,
+          commandPaletteActionErrorMessage(err, copy.exportFallback, locale),
+        );
       }
     },
     onSaveActiveConversationToFile: async () => {
-      const { activeId, paletteActions, renderPublishedConversation, sessionCatalog, toastApi } = optionsRef.current;
-      if (!activeId) return;
-      const session = sessionCatalog.getState().sessions.find((s) => s.id === activeId);
-      const sessionName = session?.name ?? copy.newConversation;
-      const markdown = renderPublishedConversation(sessionName, locale);
+      const { paletteActions, toastApi } = optionsRef.current;
       const now = new Date();
       const yyyy = now.getFullYear();
       const mm = String(now.getMonth() + 1).padStart(2, "0");
       const dd = String(now.getDate()).padStart(2, "0");
-      // Make the filename mostly portable: collapse whitespace
-      // and quote chars that some file pickers don't like.
-      const sanitizedSession = sessionName
-        .replace(/[\s ]+/g, "-")
-        .replace(/["<>:|?*]/g, "")
-        .slice(0, 80);
-      const defaultName = `maka-${sanitizedSession}-${yyyy}-${mm}-${dd}.md`;
       try {
+        const conversation = await completeConversation();
+        if (!conversation) return;
+        const { markdown, sessionName } = conversation;
+        const sanitizedSession = sessionName
+          .replace(/[\s ]+/g, "-")
+          .replace(/["<>:|?*]/g, "")
+          .slice(0, 80);
+        const defaultName = `maka-${sanitizedSession}-${yyyy}-${mm}-${dd}.md`;
         const result = await paletteActions.saveConversationToFile({
           markdown,
           defaultName,
@@ -268,11 +269,7 @@ export function buildAppShellCommandList(
       } catch (err) {
         toastApi.error(
           copy.saveFailedTitle,
-          commandPaletteActionErrorMessage(
-            err,
-            copy.exportFallback,
-            locale,
-          ),
+          commandPaletteActionErrorMessage(err, copy.exportFallback, locale),
         );
       }
     },
