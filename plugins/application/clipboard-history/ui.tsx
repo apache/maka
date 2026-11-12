@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Clipboard, cleanup, computed, effect, platform, signal, Storage, type JSX } from 'nsh';
+import { cleanup, computed, effect, platform, signal, Storage, type JSX } from 'nsh';
 import type { ApplicationHost } from 'maka/host';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
@@ -25,9 +25,9 @@ import {
   type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { tr } from '../../../products/maka/workbench/app/locale';
+import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
 import { search } from '../../shared/quick-search';
-import { DEFAULT_LIMIT, LIMITS, remember, type Limit } from './history';
+import { DEFAULT_LIMIT, LIMITS, remember, type HistoryEntry, type Limit } from './history';
 import { HistorySettings, type History } from './settings';
 
 const KEYWORDS = ['cb', 'clipboard', '剪贴板', '剪貼簿'];
@@ -35,8 +35,8 @@ const POLL_MS = 1000;
 const LIMIT_KEY = 'maka.clipboard-history.limit';
 
 /** History lives in this process only: clipboard text may be private and must not reach disk. */
-function watchClipboard(host: ApplicationHost): History {
-  const entries = signal<readonly string[]>([]);
+function createHistory(): History {
+  const entries = signal<readonly HistoryEntry[]>([]);
   const failure = signal<unknown>(null);
   const limit = signal<Limit>(DEFAULT_LIMIT);
   // A limit chosen before the stored one arrives wins over it.
@@ -49,27 +49,6 @@ function watchClipboard(host: ApplicationHost): History {
     (reason) => failure.set(reason),
   );
   let saving: Promise<void> = Promise.resolve();
-  let seen: number | null = null;
-  let reading = false;
-  const timer = setInterval(() => {
-    if (reading) return;
-    reading = true;
-    host
-      .clipboardTextChange(seen)
-      .then(({ change, text }) => {
-        // The first read only learns the position; what was already there is not history.
-        if (seen !== null && text) entries.set(remember(entries(), text, limit()));
-        seen = change;
-      })
-      .catch((reason) => {
-        failure.set(reason);
-        clearInterval(timer);
-      })
-      .finally(() => {
-        reading = false;
-      });
-  }, POLL_MS);
-  cleanup(() => clearInterval(timer));
   return {
     entries,
     limit,
@@ -87,26 +66,118 @@ function watchClipboard(host: ApplicationHost): History {
   };
 }
 
-function ClipboardHistory(props: { input: QuickToolInput; history: History }) {
+function watchClipboard(host: ApplicationHost, history: History) {
+  let active = true;
+  let seen: number | null = null;
+  let reading = false;
+  const timer = setInterval(() => {
+    if (reading) return;
+    reading = true;
+    host
+      .clipboardHistoryChange(seen)
+      .then(({ change, entry }) => {
+        if (!active) return;
+        // The first read only learns the position; what was already there is not history.
+        if (seen !== null && entry)
+          history.entries.set(
+            remember(
+              history.entries(),
+              { change, copiedAt: Date.now(), ...entry },
+              history.limit(),
+            ),
+          );
+        seen = change;
+      })
+      .catch((reason) => {
+        history.failure.set(reason);
+        clearInterval(timer);
+      })
+      .finally(() => {
+        reading = false;
+      });
+  }, POLL_MS);
+  cleanup(() => {
+    active = false;
+    clearInterval(timer);
+  });
+}
+
+const TEXT = 'public.utf8-plain-text';
+const PDF = 'com.adobe.pdf';
+
+function entryTitle(entry: HistoryEntry): string {
+  if (entry.paths.length)
+    return entry.paths.map((p) => p.slice(p.lastIndexOf('/') + 1)).join(' · ');
+  if (entry.format === TEXT) return entry.data.replace(/\s+/g, ' ').trim().slice(0, 200);
+  const type =
+    entry.format === PDF
+      ? 'PDF'
+      : `${tr('Image')} · ${entry.format.split('.').pop()!.toUpperCase()}`;
+  const bytes =
+    Math.floor((entry.data.length * 3) / 4) -
+    (entry.data.endsWith('==') ? 2 : entry.data.endsWith('=') ? 1 : 0);
+  return `${type} · ${Math.ceil(bytes / 1024)} KB`;
+}
+
+function ClipboardHistory(props: {
+  input: QuickToolInput;
+  history: History;
+  host: ApplicationHost;
+}) {
   const { input, history } = props;
+  watchClipboard(props.host, history);
   effect(() => {
     if (history.failure() !== null) input.report(history.failure());
   });
   const items = computed(() =>
-    search(history.entries(), input.query(), KEYWORDS, (entry) => [entry]).map(
+    search(history.entries(), input.query(), KEYWORDS, (entry) =>
+      entry.paths.length ? entry.paths : entry.format === TEXT ? [entry.data] : [entryTitle(entry)],
+    ).map(
       ({ item: entry, match }): QuickItem => ({
-        id: entry,
-        title: entry.replace(/\s+/g, ' ').trim().slice(0, 200),
-        icon: 'clipboard',
+        id: String(entry.change),
+        title: entryTitle(entry),
+        image: entry.thumbnail ? () => entry.thumbnail ?? undefined : undefined,
+        detail: entry.paths.length ? entry.paths.join(' · ') : undefined,
+        icon:
+          entry.paths.length || entry.format === PDF
+            ? 'file'
+            : entry.format === TEXT
+              ? 'clipboard'
+              : 'camera',
         source: tr('Clipboard'),
         action: tr('Copy and close'),
         match,
-        run: () => void Clipboard.writeText(entry).then(input.close, input.report),
+        run: () => void props.host.restoreClipboardEntry(entry).then(input.close, input.report),
       }),
     ),
   );
   input.attach({
     items,
+    preview(id) {
+      const entry = history.entries().find((it) => String(it.change) === id);
+      if (!entry) return undefined;
+      const format = entry.paths.length
+        ? tr('Files')
+        : entry.format === TEXT
+          ? tr('Clipboard text')
+          : entry.format.split('.').pop()!.toUpperCase();
+      const fields = [{ label: tr('Clipboard format'), value: format }];
+      if (entry.dimensions)
+        fields.push({ label: tr('Pixel dimensions'), value: entry.dimensions + ' px' });
+      fields.push({
+        label: tr('Copied at'),
+        value: new Date(entry.copiedAt).toLocaleString(currentLocale()),
+      });
+      return {
+        image: entry.preview ?? undefined,
+        text: entry.paths.length
+          ? entry.paths.join('\n')
+          : entry.format === TEXT
+            ? entry.data
+            : undefined,
+        fields,
+      };
+    },
     entries: () => [
       { id: 'history', title: tr('Clipboard history'), icon: 'clipboard', keywords: KEYWORDS },
     ],
@@ -115,15 +186,21 @@ function ClipboardHistory(props: { input: QuickToolInput; history: History }) {
 }
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
-  const history =
-    platform.os === 'macos' ? watchClipboard(context.application as ApplicationHost) : null;
+  effect(() => currentLocale.set(context.locale()));
+  const history = platform.os === 'macos' ? createHistory() : null;
   return {
     exports: {
       tool: {
         kind: 'view',
         contract: quickToolView.id,
         render: ({ input }: UiEmbeddedViewProps<QuickToolInput, JSX.Element>) =>
-          history ? <ClipboardHistory input={input} history={history} /> : null,
+          history ? (
+            <ClipboardHistory
+              input={input}
+              history={history}
+              host={context.application as ApplicationHost}
+            />
+          ) : null,
       },
       history: {
         kind: 'settings',

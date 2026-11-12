@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { computed, platform, signal, type JSX } from 'nsh';
+import { effect, computed, platform, signal, type JSX } from 'nsh';
 import type { ApplicationHost } from 'maka/host';
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
@@ -25,7 +25,7 @@ import {
   type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { tr } from '../../../products/maka/workbench/app/locale';
+import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
 import { search } from '../../shared/quick-search';
 
 const KEYWORDS = ['app', 'apps', '应用', '應用'];
@@ -70,15 +70,18 @@ function Applications(props: { input: QuickToolInput; host: ApplicationHost }) {
   return null;
 }
 
-export const activate: UiModule<JSX.Element>['activate'] = (context) => ({
-  exports: {
-    tool: {
-      kind: 'view',
-      contract: quickToolView.id,
-      render: ({ input }: UiEmbeddedViewProps<QuickToolInput, JSX.Element>) =>
-        platform.os === 'macos' ? (
-          <Applications input={input} host={context.application as ApplicationHost} />
-        ) : null,
+export const activate: UiModule<JSX.Element>['activate'] = (context) => {
+  effect(() => currentLocale.set(context.locale()));
+  return {
+    exports: {
+      tool: {
+        kind: 'view',
+        contract: quickToolView.id,
+        render: ({ input }: UiEmbeddedViewProps<QuickToolInput, JSX.Element>) =>
+          platform.os === 'macos' ? (
+            <Applications input={input} host={context.application as ApplicationHost} />
+          ) : null,
+      },
     },
-  },
-});
+  };
+};

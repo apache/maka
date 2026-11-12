@@ -22,11 +22,44 @@ export const LIMITS = [20, 50, 100, 200] as const;
 export type Limit = (typeof LIMITS)[number];
 export const DEFAULT_LIMIT: Limit = 50;
 
-/** Newest first, at most `limit`; copying an old entry again moves it back to the top. */
+export type HistoryEntry = {
+  change: number;
+  copiedAt: number;
+  preview?: string | null;
+  dimensions?: string | null;
+  format: string;
+  data: string;
+  paths: string[];
+  thumbnail?: string | null;
+};
+
+const MAX_HISTORY_BYTES = 64 * 1024 * 1024;
+
+function sameEntry(a: HistoryEntry, b: HistoryEntry): boolean {
+  return (
+    a.format === b.format &&
+    a.data === b.data &&
+    a.paths.length === b.paths.length &&
+    a.paths.every((path, index) => path === b.paths[index])
+  );
+}
+
+/** The memory cap also bounds a series of large image copies. */
 export function remember(
-  history: readonly string[],
-  text: string,
+  history: readonly HistoryEntry[],
+  entry: HistoryEntry,
   limit: Limit,
-): readonly string[] {
-  return [text, ...history.filter((entry) => entry !== text)].slice(0, limit);
+): readonly HistoryEntry[] {
+  const result: HistoryEntry[] = [];
+  let used = 0;
+  for (const item of [entry, ...history.filter((older) => !sameEntry(older, entry))]) {
+    used +=
+      item.data.length * (item.format === 'public.utf8-plain-text' ? 2 : 1) +
+      (item.thumbnail?.length ?? 0) +
+      (item.preview?.length ?? 0) +
+      item.paths.reduce((sum, path) => sum + 2 * path.length, 0);
+    if (used > MAX_HISTORY_BYTES || result.length === limit) break;
+    result.push(item);
+  }
+  return result;
 }
