@@ -50,6 +50,30 @@ describe('redactSecrets', () => {
     }
   });
 
+  test('masks complete quoted secrets nested in harmless diagnostic values', () => {
+    const cases = [
+      [`label="token='abc def'" next=visible`, `label="token='[redacted]'" next=visible`],
+      [`label='password="abc def"' next=visible`, `label='password="[redacted]"' next=visible`],
+      [`outer="note: token='first\nsecond'"`, `outer="note: token='[redacted]'"`],
+      [
+        `label="token='abc def' password='ghi jkl'"`,
+        `label="token='[redacted]' password='[redacted]'"`,
+      ],
+      [`label="token='' next=visible"`, `label="token='[redacted]' next=visible"`],
+      [
+        `label="token='abc def'" password='ghi jkl'`,
+        `label="token='[redacted]'" password='[redacted]'`,
+      ],
+    ];
+    for (const [input, expected] of cases) {
+      assert.equal(redactSecrets(input), expected);
+      assert.equal(redactSecrets(expected), expected);
+      assert.deepEqual(JSON.parse(redactSecrets(JSON.stringify({ message: input }))), {
+        message: expected,
+      });
+    }
+  });
+
   test('masks bearer tokens and provider key prefixes', () => {
     const text = redactSecrets(
       'Authorization: Bearer sk-live-secret-token-value Proxy-Authorization: Basic opaque-proxy-value and ghp_abcdefghijklmnopqrstuvwxyz',
@@ -345,6 +369,8 @@ describe('redactSecrets', () => {
       `data=${'a-'.repeat(100_000)}`,
       `blob=${'Z'.repeat(200_000)}==`,
       'a-'.repeat(100_000),
+      `label="${'a='.repeat(100_000)}visible"`,
+      `label="${'x=\"'.repeat(30_000)}visible`,
     ]) {
       assert.equal(redactSecrets(text), text);
     }

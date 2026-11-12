@@ -61,12 +61,12 @@ const ASSIGNED_SECRET_VALUE_PATTERN = new RegExp(
   `(?:${ASSIGNED_SECRET_VALUE_CHARACTER_SOURCE})+`,
   'y',
 );
-// Match each key run once, as in the unquoted scanner, before consuming a
-// complete quoted diagnostic value. Restarting at each hyphen is quadratic.
-const QUOTED_SECRET_ASSIGNMENT_PATTERN = new RegExp(
-  `(?<![A-Za-z0-9_-])(([A-Za-z0-9_-]+)${OPTIONAL_SHELL_SEPARATOR_SOURCE}[:=]${OPTIONAL_SHELL_SEPARATOR_SOURCE})("(?:\\\\[\\s\\S]|[^"\\\\])*"|'(?:\\\\[\\s\\S]|[^'\\\\])*')`,
+// Stop before the value so harmless outer keys cannot hide nested assignments.
+const QUOTED_SECRET_ASSIGNMENT_PREFIX_PATTERN = new RegExp(
+  `(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)${OPTIONAL_SHELL_SEPARATOR_SOURCE}[:=]${OPTIONAL_SHELL_SEPARATOR_SOURCE}(?=["'])`,
   'g',
 );
+const QUOTED_SECRET_ASSIGNMENT_VALUE_PATTERN = /"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'/y;
 const AUTHORIZATION_HEADER_PATTERN =
   /(^|[^A-Za-z0-9_])(['"]?(?:proxy[-_]?authorization|authorization)['"]?\s*:\s*['"]?(?:bearer|basic|token)\s+)[^\s"'<>]+/gim;
 const STANDALONE_BEARER_PATTERN = /\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi;
@@ -105,13 +105,7 @@ function redactTextSecrets(value: string): string {
   );
   next = next.replace(STANDALONE_BEARER_PATTERN, (_match, prefix: string) => `${prefix}[redacted]`);
   // Mask complete quoted values before bare-value/AWS rules can expose later words.
-  next = next.replace(
-    QUOTED_SECRET_ASSIGNMENT_PATTERN,
-    (match, prefix: string, key: string, token: string) =>
-      isAssignmentSensitiveKey(ASSIGNED_SECRET_KEY_PATTERN.exec(key)?.[0] ?? '')
-        ? `${prefix}${redactShellToken(token)}`
-        : match,
-  );
+  next = redactQuotedAssignedSecrets(next);
   next = next.replace(
     AWS_CLI_SPACE_SECRET_PATTERN,
     (_match, boundary: string, prefix: string, token: string) =>
@@ -130,6 +124,30 @@ function redactTextSecrets(value: string): string {
     next = next.replace(pattern, () => '[redacted]');
   }
   return next;
+}
+
+function redactQuotedAssignedSecrets(value: string): string {
+  let next = '';
+  let copied = 0;
+  QUOTED_SECRET_ASSIGNMENT_PREFIX_PATTERN.lastIndex = 0;
+  for (
+    let match = QUOTED_SECRET_ASSIGNMENT_PREFIX_PATTERN.exec(value);
+    match;
+    match = QUOTED_SECRET_ASSIGNMENT_PREFIX_PATTERN.exec(value)
+  ) {
+    const key = ASSIGNED_SECRET_KEY_PATTERN.exec(match[1] ?? '')?.[0] ?? '';
+    if (!isAssignmentSensitiveKey(key)) continue;
+    const valueStart = QUOTED_SECRET_ASSIGNMENT_PREFIX_PATTERN.lastIndex;
+    QUOTED_SECRET_ASSIGNMENT_VALUE_PATTERN.lastIndex = valueStart;
+    const token = QUOTED_SECRET_ASSIGNMENT_VALUE_PATTERN.exec(value)?.[0];
+    // Incomplete quotes remain available to the bare-value fallback.
+    if (!token) continue;
+    next += value.slice(copied, valueStart) + redactShellToken(token);
+    copied = valueStart + token.length;
+    // The whole secret is masked; scanning inside it could expose a suffix.
+    QUOTED_SECRET_ASSIGNMENT_PREFIX_PATTERN.lastIndex = copied;
+  }
+  return next + value.slice(copied);
 }
 
 function redactAssignedSecrets(value: string): string {

@@ -243,6 +243,8 @@ describe('RiveWorkflow tool and CLI bridge', { concurrency: false }, () => {
           for (const text of [riveError.stderrTail ?? '', emitted.join('')]) {
             assert.equal(text.includes('horse'), false);
             assert.equal(text.includes('secret words'), false);
+            assert.equal(text.includes('nested phrase'), false);
+            assert.ok(text.includes(`label="token='[redacted]'"`));
             assert.match(text, /password="\[redacted\]"/);
             assert.match(text, /client_secret: '\[redacted\]'/);
           }
@@ -333,6 +335,7 @@ function fakeRiveScript(mode: string): string {
     return [
       "console.error(\"password=\\\"correct horse battery staple\\\"\");",
       "console.error(\"client_secret: 'two secret words'\");",
+      'console.error("label=\\"token=\'nested phrase\'\\"");',
       'console.error("api_key=abc123-super-secret");',
       'console.log(JSON.stringify({error: {code: "auth", message: "token=abc123-super-secret"}}));',
       'process.exitCode = 1;',
