@@ -200,6 +200,7 @@ pub(crate) fn decode_command<'js>(name: &str, arg: Value<'js>) -> compat::Result
                     .as_ref()
                     .and_then(|o| o.get::<_, Option<bool>>("animated").ok().flatten())
                     .unwrap_or(true),
+                automatic: false,
                 view_position: Percentage(f("viewPosition")?.unwrap_or(0.0)),
                 view_offset: Points(f("viewOffset")?.unwrap_or(0.0)),
             }

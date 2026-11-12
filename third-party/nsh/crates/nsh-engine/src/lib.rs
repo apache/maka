@@ -3972,6 +3972,7 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
         }
         Message::FocusPath(path) => {
             state.core.set_focus_path(&path);
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(script) = script {
                 script.set_focus_path(&path);
             }
