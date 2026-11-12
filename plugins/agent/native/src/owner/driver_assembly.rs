@@ -307,7 +307,6 @@ impl Owner {
                 let writer = self.store.data_writer_for_work(access.custody().as_ref(), &view.spec.session_id)?;
                 let state = self.durable.with_data_writer(writer)?;
                 publication_store = state.clone();
-                let current_configuration = access.observation_configuration().await?;
                 preflight_stage = Some(AuthorityStage::InputCodec);
                 let (basis, selection) = self.restored_data(&view).await.map_err(|failure| { preflight_stage = Some(failure.stage); failure.cause })?;
                 preflight_stage = Some(AuthorityStage::ToolBindings);
@@ -351,9 +350,6 @@ impl Owner {
                     }
                     (None, Some(accepted)) => {
                         let mut backend = self.executors.restore(accepted).map_err(RunError::InvalidInput)?;
-                        if view.external.is_none() {
-                            backend.validate_current_access(current_configuration.permissions.access).map_err(RunError::InvalidInput)?;
-                        }
                         let effects = driver_external_effects::NativeExternalEffects::new(self.clone(), access.clone(), claim.clone(), cleanup.clone(), workers.clone())?;
                         original_external_effects = Some(effects.clone());
                         backend.bind_host_tools(crate::executor::external::HostTools { catalog: self.external_catalog(catalog.clone()), resource_reads: self.resource_reads.clone(), effects: Arc::new(effects) });

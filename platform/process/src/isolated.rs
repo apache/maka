@@ -33,8 +33,6 @@ mod home;
 pub use home::{FrozenHome, HomeCapture, HomeEntries, HomeEntry, HomeEntryKind};
 mod helper;
 #[cfg(unix)]
-pub mod step_annotations;
-#[cfg(unix)]
 pub(crate) use helper::ExternalOwner;
 mod snapshot;
 
@@ -223,10 +221,8 @@ pub struct TaskOwner {
     bound_command: Option<BoundCommand>,
     home_capture: HomeCapture,
     home_seed: home::SeedState,
-    #[cfg(target_os = "macos")]
-    account_home: Option<PathBuf>,
-    step_annotation_hook: Option<PathBuf>,
-    snapshot: SnapshotProof,
+    snapshot: Option<SnapshotProof>,
+    live_workspace: Option<PathBuf>,
     sandbox: Sandbox,
     cancellation: CancellationToken,
 }
@@ -251,7 +247,7 @@ enum Manifest {
         sandbox: Sandbox,
         size: Option<maka_plugin_core::terminal::TerminalSize>,
         #[serde(default)]
-        step_annotation_hook: Option<PathBuf>,
+        cwd: Option<PathBuf>,
     },
 }
 
@@ -376,6 +372,44 @@ impl TaskOwner {
         privacy: &Policy,
         cancellation: CancellationToken,
     ) -> Result<Self, Error> {
+        Self::prepare_owner(
+            source,
+            state_root,
+            helper_executable,
+            actual,
+            Some(privacy),
+            cancellation,
+        )
+        .await
+    }
+
+    /// Native CLI consent authorizes the original workspace and account.
+    /// Keep the launch and output collection under the helper's ownership.
+    pub async fn prepare_live(
+        source: &Path,
+        state_root: &Path,
+        helper_executable: &Path,
+        cancellation: CancellationToken,
+    ) -> Result<Self, Error> {
+        Self::prepare_owner(
+            source,
+            state_root,
+            helper_executable,
+            &Sandbox::Disabled,
+            None,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn prepare_owner(
+        source: &Path,
+        state_root: &Path,
+        helper_executable: &Path,
+        actual: &Sandbox,
+        privacy: Option<&Policy>,
+        cancellation: CancellationToken,
+    ) -> Result<Self, Error> {
         if !cfg!(target_os = "macos") {
             return Err(Error::IsolationUnavailable(
                 "this platform has no proven persistent native task boundary".into(),
@@ -410,23 +444,25 @@ impl TaskOwner {
         // StateRoot is never a source for a private task, even in full access mode.
         reads.deny_globs.push(literal_glob(&state_root)?);
         reads.compile().map_err(sandbox_error)?;
-        let probe = Sandbox::Managed {
-            filesystem: reads.clone(),
-            network: Network::Denied,
-        };
-        // Execute the real wrapper before copying a byte or starting any CLI.
-        let status = launch_snapshot_command(Path::new("/usr/bin/true"), &source, &probe, &[])?
-            .status()
-            .await?;
-        if !status.success() {
-            return Err(Error::IsolationUnavailable(format!(
-                "OS sandbox probe failed: {status}"
-            )));
+        if privacy.is_some() {
+            let probe = Sandbox::Managed {
+                filesystem: reads.clone(),
+                network: Network::Denied,
+            };
+            // Execute the real wrapper before copying a byte or starting any CLI.
+            let status = launch_snapshot_command(Path::new("/usr/bin/true"), &source, &probe, &[])?
+                .status()
+                .await?;
+            if !status.success() {
+                return Err(Error::IsolationUnavailable(format!(
+                    "OS sandbox probe failed: {status}"
+                )));
+            }
         }
         let namespace = tokio::task::spawn_blocking(maka_sandbox::native_task_namespace)
             .await
             .map_err(io::Error::other)??;
-        if namespace.starts_with(&source)
+        if (privacy.is_some() && namespace.starts_with(&source))
             || source.starts_with(&namespace)
             || namespace.starts_with(&state_root)
         {
@@ -441,13 +477,19 @@ impl TaskOwner {
             .retain(|rule| !rule.path.starts_with(&namespace));
         reads.rules.push(Rule::subtree(&namespace, Access::Deny));
         let read_ceiling = reads;
-        let reads = read_ceiling
-            .compile()
-            .map_err(sandbox_error)?
-            .intersect(&privacy.compile().map_err(sandbox_error)?)
-            .map_err(sandbox_error)?
-            .policy()
-            .clone();
+        let reads = privacy
+            .map(|privacy| {
+                Ok::<_, Error>(
+                    read_ceiling
+                        .compile()
+                        .map_err(sandbox_error)?
+                        .intersect(&privacy.compile().map_err(sandbox_error)?)
+                        .map_err(sandbox_error)?
+                        .policy()
+                        .clone(),
+                )
+            })
+            .transpose()?;
         let helper_path = helper_executable.clone();
         let helper_ceiling = read_ceiling.clone();
         let helper_executable = tokio::task::spawn_blocking(move || {
@@ -503,106 +545,119 @@ impl TaskOwner {
         .await
         .map_err(io::Error::other)??;
         let resource = tokio::fs::canonicalize(resource).await?;
-        if resource.starts_with(&source) || resource.starts_with(&state_root) {
+        if (privacy.is_some() && resource.starts_with(&source)) || resource.starts_with(&state_root)
+        {
             return Err(Error::IsolationUnavailable(
                 "private task directory overlaps protected source or Root".into(),
             ));
         }
-        let mut copy_policy = reads.clone();
-        // These metadata/copy exceptions belong only to trusted private custody,
-        // never to the source read ceiling recorded in SnapshotProof.
-        copy_policy.rules.push(Rule::exact(
-            resource
-                .parent()
-                .ok_or_else(|| io::Error::other("private namespace"))?,
-            Access::Read,
-        ));
-        copy_policy
-            .rules
-            .push(Rule::subtree(&resource, Access::Write));
-        // The trusted copier may load its actual helper, not expand the
-        // snapshot's source read policy or any caller denial.
-        copy_policy
-            .rules
-            .push(Rule::exact(&helper_executable, Access::Read));
-        let copy_sandbox = Sandbox::Managed {
-            filesystem: copy_policy,
-            network: Network::Denied,
-        };
-        write_json_new(
-            &resource.join("owner/manifest.json"),
-            &Manifest::Snapshot {
-                source: source.clone(),
-                policy: reads.clone(),
-            },
-        )
-        .await?;
-        let args = [OsString::from(HELPER), resource.clone().into_os_string()];
-        let mut copy = launch_snapshot_command(&helper_executable, &source, &copy_sandbox, &args)?;
-        let stderr = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(resource.join("owner/snapshot.stderr"))
-            .await?
-            .into_std()
-            .await;
-        copy.stderr(std::process::Stdio::from(stderr));
-        copy.kill_on_drop(true);
-        let mut child = copy.spawn()?;
-        let status = tokio::select! {
-            result = child.wait() => result?,
-            _ = cancellation.cancelled() => { child.kill().await?; return Err(Error::Cancelled); }
-        };
-        if !status.success() {
-            return Err(Error::IsolationUnavailable(format!(
-                "authorized workspace snapshot failed: {status}; evidence {}",
-                resource.display()
-            )));
-        }
-        let snapshot: SnapshotProof =
-            serde_json::from_slice(&tokio::fs::read(resource.join("owner/snapshot.json")).await?)
-                .map_err(io::Error::other)?;
-        let mut execution = reads;
-        execution.rules.push(Rule::exact(
-            resource
-                .parent()
-                .ok_or_else(|| io::Error::other("private namespace"))?,
-            Access::Read,
-        ));
-        // Remove all original writes. Only these independently owned directories
-        // may be changed; equal-path or nested source grants cannot reopen them.
-        execution.rules.push(Rule::subtree(&resource, Access::Deny));
-        execution.rules.push(Rule::exact(&resource, Access::Read));
-        for child in ["workspace", "home", "tmp"] {
+        let (snapshot, sandbox) = if let Some(reads) = reads {
+            let mut copy_policy = reads.clone();
+            // These metadata/copy exceptions belong only to trusted private custody,
+            // never to the source read ceiling recorded in SnapshotProof.
+            copy_policy.rules.push(Rule::exact(
+                resource
+                    .parent()
+                    .ok_or_else(|| io::Error::other("private namespace"))?,
+                Access::Read,
+            ));
+            copy_policy
+                .rules
+                .push(Rule::subtree(&resource, Access::Write));
+            // The trusted copier may load its actual helper, not expand the
+            // snapshot's source read policy or any caller denial.
+            copy_policy
+                .rules
+                .push(Rule::exact(&helper_executable, Access::Read));
+            let copy_sandbox = Sandbox::Managed {
+                filesystem: copy_policy,
+                network: Network::Denied,
+            };
+            write_json_new(
+                &resource.join("owner/manifest.json"),
+                &Manifest::Snapshot {
+                    source: source.clone(),
+                    policy: reads.clone(),
+                },
+            )
+            .await?;
+            let args = [OsString::from(HELPER), resource.clone().into_os_string()];
+            let mut copy =
+                launch_snapshot_command(&helper_executable, &source, &copy_sandbox, &args)?;
+            let stderr = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(resource.join("owner/snapshot.stderr"))
+                .await?
+                .into_std()
+                .await;
+            copy.stderr(std::process::Stdio::from(stderr));
+            copy.kill_on_drop(true);
+            let mut child = copy.spawn()?;
+            let status = tokio::select! {
+                result = child.wait() => result?,
+                _ = cancellation.cancelled() => { child.kill().await?; return Err(Error::Cancelled); }
+            };
+            if !status.success() {
+                return Err(Error::IsolationUnavailable(format!(
+                    "authorized workspace snapshot failed: {status}; evidence {}",
+                    resource.display()
+                )));
+            }
+            let snapshot: SnapshotProof = serde_json::from_slice(
+                &tokio::fs::read(resource.join("owner/snapshot.json")).await?,
+            )
+            .map_err(io::Error::other)?;
+            let mut execution = reads;
+            execution.rules.push(Rule::exact(
+                resource
+                    .parent()
+                    .ok_or_else(|| io::Error::other("private namespace"))?,
+                Access::Read,
+            ));
+            // Remove all original writes. Only these independently owned directories
+            // may be changed; equal-path or nested source grants cannot reopen them.
+            execution.rules.push(Rule::subtree(&resource, Access::Deny));
+            execution.rules.push(Rule::exact(&resource, Access::Read));
+            for child in ["workspace", "home", "tmp"] {
+                execution
+                    .rules
+                    .push(Rule::subtree(resource.join(child), Access::Write));
+            }
             execution
                 .rules
-                .push(Rule::subtree(resource.join(child), Access::Write));
-        }
-        execution
-            .rules
-            .push(Rule::subtree(resource.join("inputs"), Access::Read));
-        execution
-            .deny_globs
-            .push(literal_glob(&resource.join("owner"))?);
-        execution
-            .deny_globs
-            .push(literal_glob(&resource.join("launch"))?);
-        execution
-            .deny_globs
-            .push(literal_glob(&resource.join("baseline"))?);
-        let network = match actual {
-            Sandbox::Managed { network, .. } => network.clone(),
-            _ => Network::Allowed,
+                .push(Rule::subtree(resource.join("inputs"), Access::Read));
+            execution
+                .deny_globs
+                .push(literal_glob(&resource.join("owner"))?);
+            execution
+                .deny_globs
+                .push(literal_glob(&resource.join("launch"))?);
+            execution
+                .deny_globs
+                .push(literal_glob(&resource.join("baseline"))?);
+            let network = match actual {
+                Sandbox::Managed { network, .. } => network.clone(),
+                _ => Network::Allowed,
+            };
+            let sandbox = Sandbox::Managed {
+                filesystem: execution,
+                network,
+            };
+            // Validate the filesystem compiler now. Restricted network preparation
+            // itself belongs to the helper that will retain the live gateway.
+            if let Sandbox::Managed { filesystem, .. } = &sandbox {
+                filesystem.compile().map_err(sandbox_error)?;
+            }
+            (Some(snapshot), sandbox)
+        } else {
+            write_json_new(
+                &resource.join("owner/snapshot.json"),
+                &Option::<SnapshotProof>::None,
+            )
+            .await?;
+            (None, Sandbox::Disabled)
         };
-        let sandbox = Sandbox::Managed {
-            filesystem: execution,
-            network,
-        };
-        // Validate the filesystem compiler now. Restricted network preparation
-        // itself belongs to the helper that will retain the live gateway.
-        if let Sandbox::Managed { filesystem, .. } = &sandbox {
-            filesystem.compile().map_err(sandbox_error)?;
-        }
         let home_resource = resource.clone();
         let home_capture =
             tokio::task::spawn_blocking(move || HomeCapture::from_resource(&home_resource))
@@ -615,10 +670,8 @@ impl TaskOwner {
             bound_command: None,
             home_capture,
             home_seed: home::SeedState::Fresh,
-            #[cfg(target_os = "macos")]
-            account_home: None,
-            step_annotation_hook: None,
             snapshot,
+            live_workspace: privacy.is_none().then_some(source),
             sandbox,
             cancellation,
         })
@@ -648,7 +701,10 @@ impl TaskOwner {
             .cloned()
             .or_else(|| std::env::var_os("PATH"));
         let workspace = self.workspace();
-        let source = self.snapshot.source().to_owned();
+        let source = self.snapshot.as_ref().map_or_else(
+            || workspace.clone(),
+            |snapshot| snapshot.source().to_owned(),
+        );
         let original = self.read_ceiling.clone();
         let current = current_caller.clone();
         let (executable, file) = tokio::task::spawn_blocking(move || {
@@ -684,53 +740,11 @@ impl TaskOwner {
     }
 
     pub fn workspace(&self) -> PathBuf {
-        self.resource.join("workspace")
+        self.live_workspace
+            .clone()
+            .unwrap_or_else(|| self.resource.join("workspace"))
     }
 
-    /// Some native CLIs look up OS credentials in the current account's HOME.
-    /// Only the CLI's profile directory may be written outside the task.
-    #[cfg(target_os = "macos")]
-    pub async fn use_account_profile(&mut self, directory: &str) -> Result<(), Error> {
-        let source = self.snapshot.source().to_owned();
-        let directory = PathBuf::from(directory);
-        let (home, profile) = tokio::task::spawn_blocking(move || {
-            let home = maka_sandbox::account_home()?.canonicalize()?;
-            let profile = home.join(directory);
-            if profile.canonicalize()? != profile
-                || profile == home
-                || !profile.starts_with(&home)
-                || !profile.is_dir()
-                || profile.starts_with(&source)
-                || source.starts_with(&profile)
-            {
-                return Err(Error::IsolationUnavailable(
-                    "native CLI profile overlaps the workspace or leaves the account home".into(),
-                ));
-            }
-            Ok::<_, Error>((home, profile))
-        })
-        .await
-        .map_err(io::Error::other)??;
-        let Sandbox::Managed { filesystem, .. } = &mut self.sandbox else {
-            return Err(Error::IsolationUnavailable(
-                "private execution profile is unavailable".into(),
-            ));
-        };
-        if !filesystem
-            .compile()
-            .map_err(sandbox_error)?
-            .access(&profile)
-            .can_read()
-        {
-            return Err(Error::IsolationUnavailable(
-                "native CLI profile is outside the task's read ceiling".into(),
-            ));
-        }
-        filesystem.rules.push(Rule::subtree(profile, Access::Write));
-        filesystem.compile().map_err(sandbox_error)?;
-        self.account_home = Some(home);
-        Ok(())
-    }
     /// Retain original HOME custody before consuming this owner in spawn.
     pub fn home_capture(&self) -> HomeCapture {
         self.home_capture.clone()
@@ -763,35 +777,23 @@ impl TaskOwner {
     pub fn tmp(&self) -> PathBuf {
         self.resource.join("tmp")
     }
-    #[cfg(target_os = "macos")]
-    pub fn record_step_annotations(&mut self, hook: &Path) -> io::Result<&Path> {
-        let relative = hook.strip_prefix(self.inputs()).map_err(io::Error::other)?;
-        if relative.as_os_str().is_empty()
-            || !relative
-                .components()
-                .all(|part| matches!(part, std::path::Component::Normal(_)))
-        {
-            return Err(io::Error::other(
-                "invalid private step annotation hook path",
-            ));
-        }
-        self.step_annotation_hook = Some(relative.to_owned());
-        Ok(&self.helper_executable)
-    }
     pub fn descriptor(&self) -> Descriptor {
         Descriptor {
             resource_ref: self.resource.clone(),
         }
     }
-    pub fn snapshot(&self) -> &SnapshotProof {
-        &self.snapshot
+    pub fn snapshot(&self) -> Option<&SnapshotProof> {
+        self.snapshot.as_ref()
     }
 
     /// Capture only this live owner's original immutable baseline. This cannot
     /// be reconstructed from a descriptor or used to launch/control a task.
     pub async fn baseline_reader(&self) -> Result<BaselineReader, Error> {
         let resource = self.resource.clone();
-        let proof = self.snapshot.clone();
+        let proof = self
+            .snapshot
+            .clone()
+            .ok_or_else(|| io::Error::other("live task has no baseline"))?;
         tokio::task::spawn_blocking(move || {
             BaselineReader::from_resource(&evidence::open_resource(&resource)?, proof)
         })
@@ -848,43 +850,50 @@ impl TaskOwner {
             .sandbox
             .intersect(&command.sandbox)
             .map_err(|error| SpawnError::Closed(sandbox_error(error)))?;
-        let home = self.home();
-        #[cfg(target_os = "macos")]
-        let home = self.account_home.clone().unwrap_or(home);
-        for (key, path) in [
-            ("HOME", home.clone()),
-            ("USERPROFILE", home),
-            ("CODEX_HOME", self.codex_home()),
-            ("CLAUDE_CONFIG_DIR", self.claude_config_dir()),
-            ("TMPDIR", self.tmp()),
-            ("TMP", self.tmp()),
-            ("TEMP", self.tmp()),
-            ("XDG_CONFIG_HOME", self.home().join(".config")),
-            ("XDG_CACHE_HOME", self.home().join(".cache")),
-            ("XDG_DATA_HOME", self.home().join(".local/share")),
-            ("XDG_STATE_HOME", self.home().join(".local/state")),
-        ] {
-            command
-                .environment
-                .insert(key.into(), path.into_os_string());
-        }
-        for key in [
-            "SSH_AUTH_SOCK",
-            "SSH_AGENT_PID",
-            "XDG_RUNTIME_DIR",
-            "DBUS_SESSION_BUS_ADDRESS",
-            "CLAUDE_CODE_SSE_PORT",
-            "CLAUDE_CODE_ENTRYPOINT",
-            "CODEX_THREAD_ID",
-            "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
-            "GIT_DIR",
-            "GIT_WORK_TREE",
-            "GIT_COMMON_DIR",
-            "GIT_OBJECT_DIRECTORY",
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-            "GIT_INDEX_FILE",
-        ] {
-            command.environment.remove(std::ffi::OsStr::new(key));
+        if self.live_workspace.is_none() {
+            let home = self.home();
+            for (key, path) in [
+                ("HOME", home.clone()),
+                ("USERPROFILE", home),
+                ("CODEX_HOME", self.codex_home()),
+                ("CLAUDE_CONFIG_DIR", self.claude_config_dir()),
+                ("TMPDIR", self.tmp()),
+                ("TMP", self.tmp()),
+                ("TEMP", self.tmp()),
+                ("XDG_CONFIG_HOME", self.home().join(".config")),
+                ("XDG_CACHE_HOME", self.home().join(".cache")),
+                ("XDG_DATA_HOME", self.home().join(".local/share")),
+                ("XDG_STATE_HOME", self.home().join(".local/state")),
+            ] {
+                command
+                    .environment
+                    .insert(key.into(), path.into_os_string());
+            }
+            for key in [
+                "SSH_AUTH_SOCK",
+                "SSH_AGENT_PID",
+                "XDG_RUNTIME_DIR",
+                "DBUS_SESSION_BUS_ADDRESS",
+                "CLAUDE_CODE_SSE_PORT",
+                "CLAUDE_CODE_ENTRYPOINT",
+                "CODEX_THREAD_ID",
+                "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_COMMON_DIR",
+                "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                "GIT_INDEX_FILE",
+            ] {
+                command.environment.remove(std::ffi::OsStr::new(key));
+            }
+        } else {
+            // The process uses the account profile and task-private temporary files.
+            for key in ["TMPDIR", "TMP", "TEMP"] {
+                command
+                    .environment
+                    .insert(key.into(), self.tmp().into_os_string());
+            }
         }
         let args = command
             .args
@@ -901,7 +910,7 @@ impl TaskOwner {
             environment: command.environment.into_iter().collect(),
             sandbox,
             size,
-            step_annotation_hook: self.step_annotation_hook.clone(),
+            cwd: self.live_workspace.clone(),
         };
         // Protocol evidence must not become a credential/configuration store.
         // Argv can contain secrets too, so retain neither argv nor environment.
@@ -909,7 +918,9 @@ impl TaskOwner {
             .map_err(|error| SpawnError::Closed(Error::Io(io::Error::other(error))))?;
         let manifest = serde_json::to_vec(&manifest)
             .map_err(|error| SpawnError::Closed(Error::Io(io::Error::other(error))))?;
-        let mut launch = Command::new(&self.helper_executable, self.workspace());
+        // The helper owns its spool and uses relative socket names. Only the
+        // actual CLI changes into the live workspace via the manifest.
+        let mut launch = Command::new(&self.helper_executable, self.resource.join("workspace"));
         launch.env_clear().arg(HELPER).arg(&self.resource);
         #[cfg(target_os = "macos")]
         {

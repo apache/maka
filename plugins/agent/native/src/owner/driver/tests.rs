@@ -3471,7 +3471,7 @@ mod model_recovery {
                 usage: maka_agent_facts::model::ModelUsage { input_tokens: Some(100), output_tokens: Some(10), ..Default::default() },
                 protocol: serde_json::to_value(maka_agent_facts::context::ModelClosureProtocol {
                     finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
-                    provider_options: None, response_id: None, model: None, timestamp: None, compaction: None, summary: None,
+                    provider_options: None, cache_read_reported: None, response_id: None, model: None, timestamp: None, compaction: None, summary: None,
                 })?,
             },
             Fact::BudgetCharged { tokens: 110 },

@@ -18,6 +18,9 @@
  */
 
 use super::*;
+use maka_agent_facts::durable::RunId;
+use maka_host_runtime::storage::Storage;
+use maka_plugin_core::storage::{Data, Mutation, Store};
 use maka_process::isolated::{Descriptor, SnapshotProof, TaskOwner};
 
 pub(super) struct InstructionUpdate {
@@ -25,33 +28,64 @@ pub(super) struct InstructionUpdate {
     pub text: String,
 }
 
-/// State of this one private native session. Cross-task context comes only from
-/// canonical history, never a previous native HOME or daemon session.
-pub(super) struct ProtocolSession {
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Session {
     native_session: Option<String>,
-    bootstrap_completed: bool,
     instructions_digest: Option<String>,
+    last_delivered_run: Option<RunId>,
+}
+
+/// The session checkpoint follows the native conversation. Task bindings still
+/// identify exactly one original execution for recovery.
+pub(super) struct ProtocolSession {
+    session: Session,
+    storage: Storage,
+    key: String,
+    revision: Option<u64>,
+    run: RunId,
     observation: runtime::Observation,
     command_basis: String,
     resource: Descriptor,
-    snapshot: SnapshotProof,
+    snapshot: Option<SnapshotProof>,
 }
 impl ProtocolSession {
-    pub fn new(
+    pub async fn load(
+        storage: Storage,
+        request: &Request,
         binding: Arc<dyn TaskBinding>,
         command_basis: String,
         owner: &TaskOwner,
         raw: CancellationToken,
-    ) -> Self {
-        Self {
-            native_session: None,
-            bootstrap_completed: false,
-            instructions_digest: None,
+    ) -> Result<Self, Error> {
+        let key = format!(
+            "native-session/{}",
+            hex::encode(Sha256::digest(
+                serde_json::to_vec(&(
+                    &request.conversation_key,
+                    &request.settings.runtime,
+                    &command_basis
+                ))
+                .map_err(persistence)?,
+            ))
+        );
+        let record = storage.read(key.clone()).await.map_err(persistence)?;
+        let revision = record.as_ref().map(|record| record.revision);
+        let session = match record.and_then(|record| record.data.value().cloned()) {
+            Some(record) => serde_json::from_value(record).map_err(persistence)?,
+            None => Session::default(),
+        };
+        Ok(Self {
+            session,
+            storage,
+            key,
+            revision,
+            run: request.execution.run_id,
             observation: runtime::Observation::new(binding, raw),
             command_basis,
             resource: owner.descriptor(),
-            snapshot: owner.snapshot().clone(),
-        }
+            snapshot: owner.snapshot().cloned(),
+        })
     }
     pub fn observation(&self) -> runtime::Observation {
         self.observation.clone()
@@ -63,60 +97,71 @@ impl ProtocolSession {
         self.observation
             .binding
             .bound(NativeBinding {
-                adapter_version: PRESENTATION_VERSION,
+                adapter_version: match task {
+                    NativeTask::AntigravityAcp { .. } => AGY_ACP_VERSION,
+                    _ => PRESENTATION_VERSION,
+                },
                 command_basis: self.command_basis.clone(),
                 resource: self.resource.clone(),
                 snapshot: self.snapshot.clone(),
                 task,
             })
-            .await
+            .await?;
+        let mut session = self.session.clone();
+        session.last_delivered_run = Some(self.run);
+        self.save(&session).await?;
+        Ok(())
+    }
+    pub fn last_delivered_run(&self) -> Option<RunId> {
+        self.session.last_delivered_run
     }
     pub fn instruction_update(&self, instructions: Option<&str>) -> Option<InstructionUpdate> {
         let digest = instruction_digest(instructions);
-        if self.instructions_digest.as_deref() == Some(digest.as_str())
-            || (instructions.is_none() && self.instructions_digest.is_none())
+        if self.session.instructions_digest.as_deref() == Some(digest.as_str())
+            || (instructions.is_none() && self.session.instructions_digest.is_none())
         {
             return None;
         }
         let text = instruction_text(instructions);
         Some(InstructionUpdate { digest, text })
     }
-    pub fn confirm_instructions(&mut self, update: InstructionUpdate) {
-        self.instructions_digest = Some(update.digest);
-    }
-    pub fn bootstrap_completed(&self) -> bool {
-        self.bootstrap_completed
-    }
-    pub fn complete_bootstrap(&mut self) {
-        self.bootstrap_completed = true;
-        if self.instructions_digest.is_none() {
-            self.instructions_digest = Some(instruction_digest(None));
-        }
+    pub async fn confirm_instructions(&mut self, update: InstructionUpdate) -> Result<(), Error> {
+        self.session.instructions_digest = Some(update.digest);
+        self.revision = Some(self.save(&self.session).await?);
+        Ok(())
     }
     pub fn native_session(&self) -> Option<&str> {
-        self.native_session.as_deref()
+        self.session.native_session.as_deref()
     }
     pub fn opened(&mut self, id: String) -> Result<(), Error> {
-        if self
-            .native_session
-            .as_ref()
-            .is_some_and(|previous| previous != &id)
-        {
+        if self.native_session().is_some_and(|previous| previous != id) {
             return Err(Error::Invalid(
                 "External agent changed this task's native session".into(),
             ));
         }
-        self.native_session = Some(id);
+        self.session.native_session = Some(id);
         Ok(())
     }
-    pub fn revoke_unsubmitted(&mut self) {
-        self.native_session = None;
-        self.bootstrap_completed = false;
-        self.instructions_digest = None;
+    async fn save(&self, session: &Session) -> Result<u64, Error> {
+        let receipt = self
+            .storage
+            .batch(vec![Mutation {
+                key: self.key.clone(),
+                expected_revision: self.revision,
+                data: Data::Present(serde_json::to_value(session).map_err(persistence)?),
+            }])
+            .await
+            .map_err(persistence)?;
+        receipt
+            .first()
+            .map(|record| record.revision)
+            .ok_or_else(|| {
+                Error::Persistence("External agent session checkpoint receipt missing".into())
+            })
     }
 }
 
-pub(super) fn instruction_text(instructions: Option<&str>) -> String {
+fn instruction_text(instructions: Option<&str>) -> String {
     match instructions {
             Some(text) => format!("These are the current Maka instructions. They replace all earlier Maka instruction blocks; do not retain superseded Maka instructions.\n\n{text}"),
             None => "The previous Maka instruction blocks are now cleared. Do not apply their instructions to subsequent requests. Continue following your native system instructions and the user's requests.".into(),
@@ -129,4 +174,8 @@ fn instruction_digest(instructions: Option<&str>) -> String {
         digest.update(text.as_bytes());
     }
     hex::encode(digest.finalize())
+}
+
+fn persistence(error: impl std::fmt::Display) -> Error {
+    Error::Persistence(error.to_string())
 }

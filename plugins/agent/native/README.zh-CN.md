@@ -40,31 +40,27 @@
 
 服务工具通过 `target: { kind: "import", name: "files" }` 选择导入服务，通过 `target: { kind: "export", name: "agent" }` 选择当前 Agent 自身的 API。自身 export 不增加导入或启动依赖，发布成功后才可调用。两种目标共用 Host 准入、操作回执和可选的 `confirmation` 审批。Maka 通过这条路径开放 Session 浏览、历史、创建、分叉、元数据、归档／删除、消息、队列和执行控制；schema 直接来自已有的 [Agent 契约](../api/src/contract.rs)。
 
-Codex 复用原生 managed app-server daemon：先调用幂等的 `codex app-server daemon start`，再通过 `codex app-server proxy` 建立 WebSocket 连接。已有 daemon 不重启，多个会话与轮次共用服务；Maka 只拥有本轮连接、thread/turn 和 Host 工具桥接，不停止共享 daemon。取消仅中断对应 turn 并等待关联终态；proxy 退出不能解除已提交轮次的栅栏。CLI 必须支持原生 daemon/proxy，不回退到私有 app-server。每轮 MCP 凭证通过 thread 配置的 `http_headers` 刷新，不依赖 daemon 的环境变量。
+内置 `external` 执行器通过 PTY 驱动交互式 Claude Code，通过 ACP 驱动 agy，通过 app-server 驱动 Codex。在 `external.runtimes` 中启用对应 CLI，也可用 `external.commands` 配置程序、参数和环境。请先在原生 CLI 登录。CLI 使用当前账户配置和原工作区，原生工具使用完整权限，回调 Maka 的 MCP 工具仍受会话授权约束。
 
-内置 `external` executor 使用 agy 和 Claude Code 的原生 stream-JSON 接口，以及 Codex app-server。在 `external.runtimes` 中逐项启用，并选择 `antigravity`、`codex` 或 `claude`。`external.commands` 可覆盖可执行文件、参数和环境。请通过原生 CLI 安装和登录。在 macOS 上，agy 复用当前账户的 Keychain 和 Antigravity CLI profile，项目则在私有工作副本中运行。
+原生 assistant 输出保留 agy ACP 的轮次和工具身份、Codex item ID 和 Claude API 的 `message.id`。显式消息开始／结束边界让阶段说明、工具和后续回答在实时显示、刷新及取消后保持原生顺序。完成回执只指向最后完成的非空正文消息，不再用整轮聚合文本覆盖此前输出。agy、Codex 和 Claude 的思考内容与最终答复分别保存。
 
-原生 assistant 输出保留 agy 的 `step_index`、Codex item ID 和 Claude API 的 `message.id`（不是每行 JSONL UUID）。显式消息开始／结束边界让阶段说明、工具和后续回答在实时显示、刷新及取消后保持原生顺序。完成回执只指向最后完成的非空正文消息，不再用整轮聚合文本覆盖此前输出。Codex 推理正文／摘要和 Claude thinking 单独保留为思考内容，不抢占最终答复。当前已公开的 agy headless stream 未暴露思考文本，token 计数和 effort 设置不能替代它。
-
-每次 invocation 只有一个 journal 和 Host bridge 所有者；agy/Claude 拥有本轮进程，Codex 只拥有本轮代理连接。agy 每次 new/resume 都使用 `--dangerously-skip-permissions`；Codex 每次 open/resume 都必须确认 `never` 审批和 `dangerFullAccess`，每轮也传入相同策略。Claude 使用提前持久化的 UUID 和 `--dangerously-skip-permissions`，先启动真正的空白读屏 PTY。Maka 自动处理原生主题、安全说明和绕过权限确认；仅当信任对话框明确指向本轮已获授权工作区的精确 canonical 路径时才确认信任，由 Claude 自己保存决定，不直接改写全局信任记录。登录仍由用户完成。交互提示和本轮 Host MCP 工具目录均就绪后，逐张粘贴 PNG/JPEG/GIF/WebP 上传的不可变临时文件路径，等待原生图片编号确认，再粘贴文字并只发送一次 Enter。JSONL 接纳必须匹配正文、原生图片标签及完整 image block 数量。终端控制字符转为可见形式，CRLF 归一化；Maka 说明通过独立普通 user 消息传入，不覆盖原生系统提示词；原生接入初始化只做一次，已交付说明摘要持久化，内容不变时不重复提交，变更或清空时明确替代旧说明。原生提问／计划回调仍须使用已捕获的 Host 对应工具；未识别的对话框显式失败，不猜测用户答案。当前提示游标之后的完整 JSONL `turn_duration` 记录仅证明轮次结束，还必须排除 `isApiErrorMessage` API 错误才能判成功；Stop hook、终端重绘、静默和进程退出均不能证明完成。
+每次任务拥有自己的原生进程、协议流和 Host bridge。Codex 执行使用前台 app-server，发现使用 daemon/proxy。agy 每次 new/resume 都使用 `--dangerously-skip-permissions`；Codex 每次 open/resume 都必须确认 `never` 审批和 `dangerFullAccess`，每轮也传入相同策略。Claude 使用Maka 指定的会话 UUID 和 `--dangerously-skip-permissions`，先启动真正的空白读屏 PTY。Maka 自动处理原生主题、安全说明和绕过权限确认；仅当信任对话框明确指向本轮已获授权工作区的精确 canonical 路径时才确认信任，由 Claude 自己保存决定，不直接改写全局信任记录。登录仍由用户完成。交互提示和本轮 Host MCP 工具目录均就绪后，逐张粘贴 PNG/JPEG/GIF/WebP 上传的不可变临时文件路径，等待原生图片编号确认，再粘贴文字并只发送一次 Enter。JSONL 接纳必须匹配正文、原生图片标签及完整 image block 数量。终端控制字符转为可见形式，CRLF 归一化；Maka 说明通过独立普通 user 消息传入，不覆盖原生系统提示词；原生接入初始化只做一次，已交付说明摘要持久化，内容不变时不重复提交，变更或清空时明确替代旧说明。原生提问／计划回调仍须使用已捕获的 Host 对应工具；未识别的对话框显式失败，不猜测用户答案。当前提示游标之后的完整 JSONL `turn_duration` 记录仅证明轮次结束，还必须排除 `isApiErrorMessage` API 错误才能判成功；Stop hook、终端重绘、静默和进程退出均不能证明完成。
 
 `SessionSend` 默认向正在运行的 Codex、Claude 执行发送 steering；显式 `delivery: "queue"` 和贡献式 service executor 则留到后续 invocation，不打断当前执行。Codex 通过 `turn/steer` 绑定已捕获 thread 和当前 turn 前置条件。Claude 向同一 PTY 继续粘贴输入并按普通 Enter，保留原生忙时输入队列，不强制 send-now、不取消或另起进程。每条已提交 Claude 输入都须由原生 user 行精确确认，才能在最后的 assistant／`turn_duration` 后结算共享 Host invocation；中间 duration 不能丢掉尚未消费的输入。消息身份、发送者来源、原始回执和已捕获的工具上限不变；过时的 Host 交互会关闭，但不代答或代批。等待 ACK 时收到的原生通知在拒绝／取消后仍有明确所有者；明确拒绝的输入不静默算作原生模型已消费，也不重放。
 
 三家都保留原生系统提示词。捕获的 Maka 说明用 `<maka_system_instructions>` 包裹，作为实际任务之前的一条独立普通 user 消息，不拼进任务正文。Codex 通过原生 `thread/inject_items` 追加该消息，不额外启动模型轮次；Claude 在同一 PTY 确认说明消息及其结果后再提交任务，初始化答复不作为用户任务答案。
 
-agy 发现直接读取原生 `agy models` TSV，保留 Gemini、Claude、GPT-OSS 的完整型号／effort ID；执行使用同一原生 CLI，不走 ACP 或另一套 gateway／账号。会话私有 `--add-dir` 插件携带捕获的 Host MCP 地址与本轮凭据，不修改用户配置或登录。MCP 在首条 user 消息后懒加载：首次先持久化 native ID、开放 Host admission，再发送独立初始化消息；确认目录与初始化结果后才发送实际任务。说明不变时，后续 invocation 直接提交实际任务，由新客户端发现 MCP，不增加初始化模型轮次。累计 `num_turns` 不作为本轮身份。图片按顺序附上临时路径和媒体类型，不指定工具或额外教 Agent 读图，直到物理结算后才清理；原生读图结果可进入模型上下文，但这不证明所选模型一定支持视觉或仍有额度。
+agy 从原生 `agy models` 读取模型目录，从 `/usage` 读取分组额度。执行通过 [agy ACP](https://antigravity.google/docs/ide/extensions/acp/) 新建或续接会话，使用当前登录的账号和原工作区。建连时直接注册本轮 Host MCP，续接时刷新凭据，工具命名空间保持一致，无需额外工作区或 hook。已有会话沿用原生 ID 和已保存的历史。升级前，请在旧版中让正在运行的 headless 任务完成或停止并结算。Maka 说明在首次交付或变更时通过独立的 user 消息发送，图片通过 ACP image block 传入。工具摘要、思考片段和本轮用量随执行事件记录。
 
-每轮 agy 设置为 `queuedMessages: "send-immediately"`，但 1.5.0 print／stream 分派仍然串行。因此 Unix 上忙时 `SessionSend` 默认采用软中断续接：先持久化后续消息，只向本轮拥有的进程组发送 SIGINT，确认关联原生终态、已接受的 Host 操作结算和物理退出后，再用同一原生 conversation ID 启动排队的新 invocation。旧 invocation 如实标为取消，不冒充原地 steering。显式 `delivery: "queue"` 不中断；缺失终态或必须强制清理时保留未知栅栏，不启动替代执行。当前 Windows 管道没有可安全定向的独立控制台中断，忙时 steering 显式报不支持，可使用 `delivery: "queue"`。不保留 ACP 回退。
-
-[官方 headless 协议](https://antigravity.google/docs/cli/headless/#stream-prompts-from-stdin)定义了每轮结果、累计计数、只接受文本内容块及不支持的控制消息。关闭 stdin 会等待当前轮完成，不能代替中断。私有插件的 Host wrapper 使用原生服务器名 `maka_maka`；其他原生 MCP 工具仍投影活动，DONE 中的 `tool_info.error` 也保留失败状态。
+停止时向 agy 会话发送 `session/cancel`，等对应 prompt 返回终态后再结算任务。agy 忙时，steer 会在同一事务里将新消息入队，并请求取消当前轮。原轮结算后沿用同一个原生会话处理后续消息。显式 queue 会让当前轮继续执行。无法确认原始终态时，恢复仍按原任务绑定读取其协议日志。
 
 原生协议帧、Claude JSONL 行及经过认证的 Host MCP 请求共用 256 MiB 内存防护边界，不另外限制上传大小或图片张数。20 张各 5 MiB 的图片编码为同一行 base64 就已约 134 MiB。ACK 前事件不再按条数截断，保留预算同样为 256 MiB，每条至少按 1 KiB 计入对象开销。启动和 RPC 确认允许五分钟，Claude 文字确认和 JSONL 接纳还按每 32 KiB 增加一秒。这不是整轮执行时限；用户仍可取消，清理超时和不确定副作用栅栏独立保留。
 
-历史交接按索引反向读取，最多汇聚 8 MiB 可读正文／64 MiB 编码源数据，不再按片段条数限制；分页本身不会在同一字段内插入截断标记，真正省略的历史仍明确提示。这是上下文与内存预算，不保证每个模型都能接受这么大的输入。Codex 发现会先遍历原生 `nextCursor`，再由 Host/UI 分页；允许原生 `--config`、`--enable`、`--disable` 配置，但每轮 full-access／never-approval 策略不变；已有 daemon 保持自身原生启动配置。
+首次启动原生会话时，Maka 提供之前的会话历史。后续续接只在需要时提供上次交付之后的增量历史。Codex 发现沿原生游标完整分页。
 
-原生身份、历史水位和 CAS fence 使用 `maka.agent.external` namespace、deployment/instance 前缀及 conversation/runtime 键哈希。running 记录继续按 unknown 阻断下一轮，直到原操作结算。executor 只读取当前 journal 格式；存储与配置迁移须在激活前离线完成。
+`maka.agent.external` 按 Maka 会话、运行时和命令/工作区保存原生会话 ID、已交付的指令摘要和最后交付的 Run。Host 重启后可以续接下一轮。中断任务仍按单次任务的原始绑定恢复，绝不重新提交原输入。
 
-有界 opt-in 测试 `native_external_real_runtime_host_tool_and_exact_resume` 验证真实 Host 工具回执及同一原生会话的两轮执行。通过 `MAKA_NATIVE_REAL_RUNTIME=antigravity|codex|claude` 选择运行时；`MAKA_NATIVE_REAL_COMMAND` 可传私有 `NativeCommand` JSON 启动配置，`MAKA_NATIVE_REAL_MODEL`、`MAKA_NATIVE_REAL_EFFORT` 和 `MAKA_NATIVE_REAL_CWD` 可指定模型、推理强度和工作目录。使用 `cargo test -p maka-agent-native --lib native_external_real_runtime_host_tool_and_exact_resume -- --ignored` 运行。 视觉验收可通过 `MAKA_NATIVE_REAL_IMAGES` 传入 PNG 路径 JSON 数组，并通过 `MAKA_NATIVE_REAL_IMAGE_ANSWER` 指定预期可见四位数字（空格分隔）；预期答案不会进入提示词，第二轮不重新附图。
+macOS 上的 `cargo test -p maka-cli --test external_jobs` 用可控 app-server 验证原工作区、原生续接、精确停止和冷启动恢复。
 
 外部运行时只获得已捕获的安全 Host catalog：Skills、结构化提问、支持的 Session 编排、插件管理及符合条件的 Recall 工具。调用保留实时 Maka 身份、授权、审批、ToolJournal 和原操作回执。取消时先关闭准入、请求取消并等待全部已准入副作用结算，再结算原生进程和输出流。Session 工具列表只约束这一 Host catalog；CLI 保留原生工具和完整权限模式。
 

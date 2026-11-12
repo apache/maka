@@ -47,6 +47,7 @@ pub(super) enum Body {
 pub(super) struct Row {
     pub chunk: Chunk,
     pub visible: bool,
+    pub continuation: Option<wire::HistoryRowAddress>,
     pub body: Body,
     pub fields: Vec<(SourceField, Field)>,
 }
@@ -89,6 +90,7 @@ fn base(
     let position = address.with_item_index(index);
     Ok(Row {
         visible: visible(&item.recorded.fact),
+        continuation: None,
         chunk: Chunk {
             order: wire::HistoryOrder {
                 path: vec![item.sequence],
@@ -221,6 +223,7 @@ pub(super) async fn project(
     source: &maka_agent_state::session_history::RunSource,
     address: &wire::HistoryRowAddress,
     views: &mut std::collections::BTreeMap<RunId, maka_agent_state::fold::RunView>,
+    executor: Option<&maka_agent_state::session_history::ExecutorTranscript>,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<Row>, String> {
     let turn = source.spec.turn_id.as_str();
@@ -685,7 +688,6 @@ pub(super) async fn project(
         Fact::ExternalTaskObserved { task, output, .. } => {
             use maka_agent_facts::executor::Output;
             let mut row = base(item, turn, 0, Role::Assistant, address)?;
-            row.chunk.message_id = Some(item.recorded.id.to_string());
             match output {
                 Output::OutputDelta {
                     message_id,
@@ -696,17 +698,28 @@ pub(super) async fn project(
                     text: body,
                 } => {
                     let thinking = matches!(output, Output::ThinkingDelta { .. });
-                    if !thinking {
-                        if let std::collections::btree_map::Entry::Vacant(e) =
-                            views.entry(item.recorded.run)
-                        {
-                            e.insert(
-                                reader
-                                    .view_at(item.recorded.run)
-                                    .await
-                                    .map_err(|error| error.to_string())?,
-                            );
+                    let message = executor
+                        .and_then(|transcript| transcript.text(message_id, thinking))
+                        .ok_or("agent_history_executor_text_missing")?;
+                    row.chunk.message_id = Some(super::super::delivery::executor_message_id(
+                        item.recorded.run,
+                        *task,
+                        message_id,
+                    ));
+                    if item.sequence != message.sequence {
+                        let mut first = address.clone();
+                        match &mut first {
+                            wire::HistoryRowAddress::Live { sequence, fact, .. }
+                            | wire::HistoryRowAddress::Snapshot { sequence, fact, .. } => {
+                                *sequence = message.sequence;
+                                *fact = message.fact;
+                            }
+                            wire::HistoryRowAddress::Imported { .. } => unreachable!(),
                         }
+                        row.continuation = Some(first);
+                        row.visible = false;
+                    }
+                    if !thinking {
                         row.chunk.final_output = views[&item.recorded.run]
                             .external
                             .as_ref()
@@ -720,6 +733,11 @@ pub(super) async fn project(
                     } else {
                         HistoryField::Body
                     };
+                    let body = if row.visible {
+                        message.body.clone()
+                    } else {
+                        body.clone().into()
+                    };
                     text(
                         &mut row,
                         if thinking {
@@ -727,7 +745,7 @@ pub(super) async fn project(
                         } else {
                             SourceField::Body
                         },
-                        body.clone().into(),
+                        body,
                     );
                 }
                 Output::ToolStart {

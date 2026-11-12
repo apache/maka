@@ -341,6 +341,14 @@ impl Foreground {
                             .entry(message_id)
                             .or_insert(event.sequence);
                     }
+                    DeliveryFact::ExecutorTextChanged { message_id, .. } => {
+                        let start = self
+                            .message_starts
+                            .entry(message_id)
+                            .or_insert(event.sequence);
+                        catchup_from = catchup_from.min(start.saturating_sub(1));
+                        catchup = true;
+                    }
                     DeliveryFact::Delta {
                         step_id,
                         attempt_id,

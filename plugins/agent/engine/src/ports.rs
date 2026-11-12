@@ -248,10 +248,12 @@ pub trait ExternalCleanupPorts: Send + Sync {
 
 /// External executors have an original task, not an LLM ModelAttempt.
 pub struct PreparedExternal {
+    pub live_workspace: bool,
     pub descriptor: ContentBlob,
     pub contents: Vec<ContentBlob>,
 }
 pub type ExternalConnection = BoxStream<'static, Result<FactId, RunError>>;
+#[derive(Clone)]
 pub struct PendingExternalPublication {
     pub publication: ExternalPublicationId,
     pub source: ContentBlob,

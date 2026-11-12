@@ -12131,6 +12131,16 @@ export const contracts: {
                       },
                     ],
                   },
+                  promptCache: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PromptCacheUsage',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['startedAt', 'finished'],
@@ -12204,6 +12214,24 @@ export const contracts: {
                     minimum: 0,
                   },
                 },
+              },
+              PromptCacheUsage: {
+                description: 'Reported cache reads and their share of total prompt input.',
+                type: 'object',
+                properties: {
+                  inputTokens: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  readTokens: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['inputTokens', 'readTokens'],
               },
               HistoryField: {
                 description: 'A readable field in a conversation window, in presentation order.',
@@ -19882,6 +19910,16 @@ export const contracts: {
                       },
                     ],
                   },
+                  promptCache: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PromptCacheUsage',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['startedAt', 'finished'],
@@ -19955,6 +19993,24 @@ export const contracts: {
                     minimum: 0,
                   },
                 },
+              },
+              PromptCacheUsage: {
+                description: 'Reported cache reads and their share of total prompt input.',
+                type: 'object',
+                properties: {
+                  inputTokens: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  readTokens: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['inputTokens', 'readTokens'],
               },
               HistoryField: {
                 description: 'A readable field in a conversation window, in presentation order.',
@@ -36467,6 +36523,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'messageId', 'stepId', 'attemptId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor_text_changed',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                      thinking: {
+                        type: 'boolean',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId', 'thinking'],
                   },
                   {
                     description:

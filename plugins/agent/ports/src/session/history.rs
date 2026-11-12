@@ -512,6 +512,8 @@ pub struct TurnTiming {
     pub finished: Option<TurnFinished>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executor_usage: Option<Box<maka_agent_facts::executor::TurnUsage>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<maka_agent_facts::model::PromptCacheUsage>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -274,6 +274,7 @@ pub(crate) fn model_closure(
     let protocol = serde_json::to_value(ModelClosureProtocol {
         finish_reason,
         provider_options: None,
+        cache_read_reported: None,
         response_id: None,
         model: None,
         timestamp: None,

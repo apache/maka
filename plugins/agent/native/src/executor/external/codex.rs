@@ -238,7 +238,7 @@ async fn run(
                 "Codex instruction-message injection has no acknowledgement".into(),
             ));
         }
-        journal.confirm_instructions(update);
+        journal.confirm_instructions(update).await?;
     }
     bridge.admit()?;
     let mut input = vec![serde_json::json!({"type":"text","text":request["message"]})];
@@ -277,6 +277,7 @@ async fn run(
         final_message_id: None,
         presentation: true,
         fresh_thread,
+        usage_baseline: None,
         usage: None,
     });
     journal
@@ -376,6 +377,7 @@ struct Turn {
     final_message_id: Option<String>,
     presentation: bool,
     fresh_thread: bool,
+    usage_baseline: Option<Value>,
     usage: Option<TurnUsage>,
 }
 #[derive(Default)]
@@ -424,6 +426,18 @@ impl Turn {
             .or_else(|| p.pointer("/turn/id"))
             .and_then(Value::as_str);
         if turn != Some(self.turn.as_str()) {
+            // Resume emits the previous turn's cumulative usage before the new
+            // turn starts. Retain it to report this turn's difference.
+            if self.presentation
+                && !self.fresh_thread
+                && self.usage.is_none()
+                && method == "thread/tokenUsage/updated"
+                && let Some(total) = p
+                    .pointer("/tokenUsage/total")
+                    .filter(|total| total.is_object())
+            {
+                self.usage_baseline = Some(total.clone());
+            }
             return Ok(None);
         }
         match method {
@@ -631,9 +645,17 @@ impl Turn {
                     }
                 }
             }
-            "thread/tokenUsage/updated" if self.presentation && self.fresh_thread => {
-                if let Some(total) = p.pointer("/tokenUsage/total").and_then(Value::as_object) {
-                    let counter = |key| total.get(key).and_then(Value::as_u64);
+            "thread/tokenUsage/updated" if self.presentation => {
+                if let Some(total) = p.pointer("/tokenUsage/total").and_then(Value::as_object)
+                    && (self.fresh_thread || self.usage_baseline.is_some())
+                {
+                    let counter = |key| {
+                        let value = total.get(key).and_then(Value::as_u64)?;
+                        match &self.usage_baseline {
+                            Some(baseline) => value.checked_sub(baseline.get(key)?.as_u64()?),
+                            None => Some(value),
+                        }
+                    };
                     self.usage = Some(TurnUsage {
                         tokens: ModelUsage {
                             input_tokens: counter("inputTokens"),
@@ -688,9 +710,14 @@ struct Sent {
     turn: u64,
     injected: Option<u64>,
     interrupted: Option<u64>,
+    fresh_thread: bool,
 }
 impl Sent {
-    async fn read(input: &mut replay::Stream, binding: &NativeBinding) -> Result<Self, Error> {
+    async fn read(
+        input: &mut replay::Stream,
+        binding: &NativeBinding,
+        request: &Request,
+    ) -> Result<Self, Error> {
         let NativeTask::Codex { thread, turn } = &binding.task else {
             return Err(Error::Unknown);
         };
@@ -700,9 +727,22 @@ impl Sent {
             return Err(Error::Unknown);
         }
         let opened = input.required().await?;
-        let thread_request = request_id(&opened, "thread/start")?;
+        let fresh_thread = opened["method"] == "thread/start";
+        let thread_request = if fresh_thread {
+            request_id(&opened, "thread/start")?
+        } else {
+            if opened["params"]["threadId"] != *thread {
+                return Err(Error::Unknown);
+            }
+            request_id(&opened, "thread/resume")?
+        };
         let cwd = runtime::string(&opened, "/params/cwd")?;
-        if std::path::Path::new(cwd) != binding.resource.resource_ref.join("workspace")
+        let expected_cwd = if binding.snapshot.is_some() {
+            binding.resource.resource_ref.join("workspace")
+        } else {
+            PathBuf::from(&request.cwd)
+        };
+        if std::path::Path::new(cwd) != expected_cwd
             || opened["params"]["approvalPolicy"] != "never"
             || opened["params"]["sandbox"] != "danger-full-access"
         {
@@ -760,6 +800,7 @@ impl Sent {
             turn: start,
             injected,
             interrupted,
+            fresh_thread,
         })
     }
 }
@@ -782,14 +823,15 @@ pub(super) async fn replay(
     let NativeTask::Codex { thread, turn } = &binding.task else {
         return Err(Error::Unknown);
     };
-    let sent = Sent::read(input, binding).await?;
+    let sent = Sent::read(input, binding, request).await?;
     let mut state = Turn {
         thread: thread.clone(),
         turn: turn.clone(),
         messages: Default::default(),
         final_message_id: None,
         presentation: binding.adapter_version >= PRESENTATION_VERSION,
-        fresh_thread: true,
+        fresh_thread: sent.fresh_thread,
+        usage_baseline: None,
         usage: None,
     };
     let mut acknowledged = std::collections::BTreeSet::new();

@@ -20,14 +20,12 @@
 #[cfg(unix)]
 use super::Closure;
 use super::Manifest;
-#[cfg(unix)]
-use super::step_annotations;
 use crate::Command;
 #[cfg(unix)]
 use std::time::Duration;
 use std::{io, path::Path};
 #[cfg(unix)]
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Private current-executable role. Never reconstruct a task from a descriptor:
 /// create_new owner/started is a one-shot effect fence, not a resumable lease.
@@ -77,17 +75,16 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
             environment,
             sandbox,
             size,
-            step_annotation_hook,
+            cwd,
         } => {
-            let mut command = Command::new(executable, resource.join("workspace"));
+            let mut command = Command::new(
+                executable,
+                cwd.unwrap_or_else(|| resource.join("workspace")),
+            );
             command.env_clear().args(args);
             #[cfg(target_os = "macos")]
             {
                 command.private_stdio = true;
-                if step_annotation_hook.is_some() {
-                    command.private_socket =
-                        Some(resource.join("tmp").join(step_annotations::SOCKET));
-                }
             }
             for (key, value) in environment {
                 command.env(key, value);
@@ -125,12 +122,6 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
                     child.close().await?;
                     status
                 } else {
-                    let (annotations, listener) = if step_annotation_hook.is_some() {
-                        let (annotations, listener) = step_annotations::start(&resource)?;
-                        (Some(annotations), Some(listener))
-                    } else {
-                        (None, None)
-                    };
                     let spawned = crate::pipe::spawn(command)
                         .await
                         .map_err(|e| io::Error::other(e.to_string()))?;
@@ -145,14 +136,12 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
                         stdout,
                         tokio::io::stdout(),
                         resource.join("owner/stdout.bin"),
-                        annotations,
                     )
                     .await?;
                     let err = output_pipe(
                         stderr,
                         tokio::io::stderr(),
                         resource.join("owner/stderr.bin"),
-                        None,
                     )
                     .await?;
                     let mut controls = Control::new(&resource).await?;
@@ -176,16 +165,6 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
                     input.finish().await?;
                     out.await.map_err(io::Error::other)??;
                     err.await.map_err(io::Error::other)??;
-                    if let Some(listener) = listener {
-                        listener.await.map_err(io::Error::other)?;
-                    }
-                    if let Some(hook) = step_annotation_hook
-                        && let Err(error) =
-                            tokio::fs::remove_file(resource.join("inputs").join(hook)).await
-                        && error.kind() != io::ErrorKind::NotFound
-                    {
-                        eprintln!("Original step annotation hook cleanup: {error}");
-                    }
                     status
                 };
                 let original = resource.clone();
@@ -208,7 +187,7 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
             }
             #[cfg(not(unix))]
             {
-                let _ = (command, size, step_annotation_hook);
+                let _ = (command, size);
                 Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "task owner unavailable",
@@ -290,10 +269,9 @@ async fn input_pipe(mut target: crate::pipe::Input, resource: &Path) -> io::Resu
 }
 #[cfg(unix)]
 async fn output_pipe<R, W>(
-    source: R,
+    mut source: R,
     mut front: W,
     path: std::path::PathBuf,
-    mut annotations: Option<tokio::sync::mpsc::Receiver<step_annotations::Row>>,
 ) -> io::Result<tokio::task::JoinHandle<io::Result<()>>>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -302,38 +280,19 @@ where
     let mut log = log_file(path).await?;
     Ok(tokio::spawn(async move {
         let mut connected = true;
-        let mut source = BufReader::with_capacity(16384, source);
-        let mut between_rows = true;
+        let mut buffer = [0u8; 16384];
         loop {
-            let row = tokio::select! {
-                biased;
-                Some(row) = async { annotations.as_mut().expect("enabled annotations").recv().await },
-                    if between_rows && annotations.is_some() => Some(row),
-                read = source.fill_buf() => { read?; None },
-            };
-            let buffer = if let Some(row) = &row {
-                row.bytes.as_slice()
-            } else {
-                let available = source.buffer();
-                if available.is_empty() {
-                    break;
-                }
-                let count = if annotations.is_some() {
-                    available
-                        .iter()
-                        .position(|&byte| byte == b'\n')
-                        .map_or(available.len(), |i| i + 1)
-                } else {
-                    available.len()
-                };
-                &available[..count]
-            };
-            log.write_all(buffer).await?;
+            let count = source.read(&mut buffer).await?;
+            if count == 0 {
+                break;
+            }
+            let chunk = &buffer[..count];
+            log.write_all(chunk).await?;
             log.flush().await?;
             if connected {
                 // Buffered stdio can report a detached observer only on flush.
                 let forwarded = async {
-                    front.write_all(buffer).await?;
+                    front.write_all(chunk).await?;
                     front.flush().await
                 }
                 .await;
@@ -347,13 +306,6 @@ where
                         return Err(error);
                     }
                 }
-            }
-            if let Some(row) = row {
-                let _ = row.recorded.send(());
-            } else {
-                let count = buffer.len();
-                between_rows = buffer[count - 1] == b'\n';
-                source.consume(count);
             }
         }
         log.sync_all().await

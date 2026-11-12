@@ -155,6 +155,7 @@ impl Engine {
                     vec![Fact::ExternalTaskPrepared {
                         task,
                         descriptor: prepared.descriptor.reference().clone(),
+                        live_workspace: prepared.live_workspace,
                     }],
                     contents,
                     now,

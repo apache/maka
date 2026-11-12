@@ -28,6 +28,7 @@ use std::{
 };
 
 mod agy;
+mod agy_acp;
 mod attachments;
 mod claude;
 mod codex;
@@ -40,6 +41,7 @@ mod runtime;
 mod steering;
 mod tools;
 const PRESENTATION_VERSION: u32 = 3;
+const AGY_ACP_VERSION: u32 = 5;
 pub(crate) use history::Inputs;
 pub(crate) use tools::{HostEffects, HostTools};
 
@@ -59,16 +61,23 @@ pub(crate) enum NativeTask {
         prompt: String,
         images: usize,
     },
+    ClaudePty {
+        session: String,
+    },
     ClaudeStream {
         session: String,
         input: String,
     },
-    Antigravity {
-        conversation: String,
-        user_step: u64,
-        #[serde(default)]
-        step_annotations: bool,
+    AntigravityAcp {
+        session: String,
+        prompt_id: u64,
     },
+}
+
+impl NativeTask {
+    pub(super) fn is_pty(&self) -> bool {
+        matches!(self, Self::Claude { .. } | Self::ClaudePty { .. })
+    }
 }
 
 /// Native's original task owner durably records this before accepting outputs.
@@ -80,7 +89,7 @@ pub(crate) struct NativeBinding {
     pub adapter_version: u32,
     pub command_basis: String,
     pub resource: maka_process::isolated::Descriptor,
-    pub snapshot: maka_process::isolated::SnapshotProof,
+    pub snapshot: Option<maka_process::isolated::SnapshotProof>,
     pub task: NativeTask,
 }
 
@@ -181,6 +190,7 @@ pub(crate) struct External {
     stop: CancellationToken,
     endpoints: tokio::sync::Mutex<BTreeMap<(String, NativeRuntime), Arc<mcp::Endpoint>>>,
     root: Arc<RootStore>,
+    sessions: maka_host_runtime::storage::Storage,
     package: String,
     activation: String,
     pub basis: String,
@@ -227,8 +237,26 @@ impl External {
             ))
             .map_err(|e| e.to_string())?,
         ));
+        let prefix = hex::encode(Sha256::digest(
+            serde_json::to_vec(&(
+                &persistence.source().state_domain,
+                persistence.source().deployment,
+                context.activation().instance(),
+            ))
+            .map_err(|error| error.to_string())?,
+        ));
+        let sessions = maka_host_runtime::storage::Storage::new(
+            persistence.store().clone(),
+            format!("{prefix}/"),
+            maka_plugin_core::storage::Namespace::new(
+                "maka.agent.external",
+                maka_plugin_core::scope::Scope::Profile,
+            )
+            .map_err(|error| error.to_string())?,
+        );
         Ok(Arc::new(Self {
             commands,
+            sessions,
             queries: Arc::default(),
             catalog: tokio::sync::Mutex::new(Catalog::Empty),
             stop: CancellationToken::new(),
@@ -250,9 +278,6 @@ impl External {
             activation: self.activation.clone(),
         }
     }
-    pub(super) fn command(&self, runtime: NativeRuntime) -> &NativeCommand {
-        &self.commands[&runtime]
-    }
     pub fn admit(
         self: &Arc<Self>,
         request: Request,
@@ -260,7 +285,6 @@ impl External {
         binding: Arc<dyn TaskBinding>,
         inputs: Arc<dyn Inputs>,
         isolated: maka_process::isolated::TaskOwner,
-        credential_seeds: Vec<super::CredentialSeed>,
     ) -> Result<Admitted, Error> {
         self.require_runtime(request.settings.runtime.as_deref())?;
         Ok(Admitted {
@@ -272,7 +296,6 @@ impl External {
                 binding,
                 inputs,
                 isolated,
-                credential_seeds,
             }),
         })
     }
@@ -304,16 +327,20 @@ impl External {
         };
         let runtime = match &binding.task {
             NativeTask::Codex { .. } => NativeRuntime::Codex,
-            NativeTask::Antigravity { .. } => NativeRuntime::Antigravity,
-            NativeTask::Claude { .. } | NativeTask::ClaudeStream { .. } => NativeRuntime::Claude,
+            NativeTask::AntigravityAcp { .. } => NativeRuntime::Antigravity,
+            NativeTask::Claude { .. }
+            | NativeTask::ClaudePty { .. }
+            | NativeTask::ClaudeStream { .. } => NativeRuntime::Claude,
         };
-        if !matches!(binding.adapter_version, 2 | PRESENTATION_VERSION)
-            || request
-                .settings
-                .runtime
-                .as_deref()
-                .and_then(|runtime| runtime.parse::<NativeRuntime>().ok())
-                != Some(runtime)
+        if !matches!(
+            binding.adapter_version,
+            2 | PRESENTATION_VERSION | AGY_ACP_VERSION
+        ) || request
+            .settings
+            .runtime
+            .as_deref()
+            .and_then(|runtime| runtime.parse::<NativeRuntime>().ok())
+            != Some(runtime)
         {
             return Ok(blocked(
                 "Original native binding protocol or runtime does not match this task".into(),
@@ -350,16 +377,14 @@ impl External {
                 ..
             }
         );
-        if evidence.snapshot != binding.snapshot
-            || pipe_receipt != !matches!(binding.task, NativeTask::Claude { .. })
-        {
+        if evidence.snapshot != binding.snapshot || pipe_receipt != !binding.task.is_pty() {
             return Ok(blocked(
                 "Original resource snapshot or transport receipt differs from the recorded binding"
                     .into(),
             ));
         }
         lifecycle.cleanup(OperationCleanup::Confirmed).await?;
-        if matches!(binding.task, NativeTask::Claude { .. }) {
+        if binding.task.is_pty() {
             return Ok(blocked("Original Claude PTY transcript is job-writable; it is not immutable native business-completion evidence".into()));
         }
         let expected_prefix = match expected_prefix {
@@ -640,8 +665,10 @@ impl External {
             .collect();
         let endpoints = self.finish_endpoints(selected).await;
         let queries = self.queries.finish().await.map_err(|e| e.to_string());
+        let sessions = self.sessions.finish().await;
         queries?;
-        endpoints
+        endpoints?;
+        sessions
     }
 }
 struct Call {
@@ -651,7 +678,6 @@ struct Call {
     binding: Arc<dyn TaskBinding>,
     inputs: Arc<dyn Inputs>,
     isolated: maka_process::isolated::TaskOwner,
-    credential_seeds: Vec<super::CredentialSeed>,
 }
 #[derive(Default)]
 struct CallResources {
@@ -786,7 +812,6 @@ impl Call {
             binding,
             inputs,
             isolated,
-            credential_seeds,
         } = *self;
         if cancellation.is_cancelled() || binding.observation_retired().is_cancelled() {
             return Err(Error::ObservationRetired);
@@ -795,34 +820,10 @@ impl Call {
             .root
             .session_for_work(execution.as_ref(), &request.execution.session_id)
             .map_err(|e| Error::Persistence(e.to_string()))?;
-        seed_credentials(
-            &credential_seeds,
-            &isolated,
-            &cancellation,
-            &binding.observation_retired(),
-        )
-        .await?;
-        let workspace = isolated.workspace();
-        let cwd = workspace
-            .to_str()
-            .ok_or_else(|| Error::Invalid("Private workspace must be UTF-8".into()))?;
+        let cwd = request.cwd.as_str();
         let material_root = isolated.inputs();
-        let mut config =
-            owner.commands[&owner.require_runtime(request.settings.runtime.as_deref())?].clone();
-        for (key, path) in [
-            ("HOME", isolated.home()),
-            ("CODEX_HOME", isolated.codex_home()),
-            ("CLAUDE_CONFIG_DIR", isolated.claude_config_dir()),
-        ] {
-            config.env.insert(
-                key.into(),
-                path.to_str()
-                    .ok_or_else(|| {
-                        Error::Invalid("Private native configuration path must be UTF-8".into())
-                    })?
-                    .into(),
-            );
-        }
+        let runtime = owner.require_runtime(request.settings.runtime.as_deref())?;
+        let config = &owner.commands[&runtime];
         let host_tools = tools::Tools::bind(
             host_tools.clone(),
             &request,
@@ -870,14 +871,16 @@ impl Call {
                 return result;
             }
         };
-        let runtime = owner.require_runtime(request.settings.runtime.as_deref())?;
-        let command_basis = runtime::command_basis(&owner.commands[&runtime], &request.cwd)?;
-        let mut journal = journal::ProtocolSession::new(
+        let command_basis = runtime::command_basis(config, cwd)?;
+        let mut journal = journal::ProtocolSession::load(
+            owner.sessions.clone(),
+            &request,
             binding.clone(),
             command_basis,
             &isolated,
             cancellation.clone(),
-        );
+        )
+        .await?;
         let _ = root_resources
             .pipes
             .set(journal.observation().resources.clone());
@@ -891,19 +894,27 @@ impl Call {
             .await
             .map_err(|e| Error::Provider(format!("Canonical history file creation failed: {e}")))?;
         inputs
-            .write_history(request.task_id, None, &mut history)
+            .write_history(request.task_id, journal.last_delivered_run(), &mut history)
             .await?;
         tokio::io::AsyncWriteExt::flush(&mut history)
             .await
             .map_err(|e| Error::Provider(format!("Canonical history file flush failed: {e}")))?;
-        let history_path = history_path
-            .to_str()
-            .ok_or_else(|| Error::Invalid("Private canonical history path must be UTF-8".into()))?;
-        materials.message = format!(
-            "Read the canonical conversation history from this private read-only input file before answering: {}\n\n--- Current user message ---\n{}",
-            serde_json::to_string(history_path).expect("history path is JSON"),
-            materials.message
-        );
+        if history
+            .metadata()
+            .await
+            .map_err(|error| Error::Provider(error.to_string()))?
+            .len()
+            != 0
+        {
+            let history_path = history_path.to_str().ok_or_else(|| {
+                Error::Invalid("Private canonical history path must be UTF-8".into())
+            })?;
+            materials.message = format!(
+                "Read the prior conversation context from this file before answering: {}\n\n--- Current user message ---\n{}",
+                serde_json::to_string(history_path).expect("history path is JSON"),
+                materials.message
+            );
+        }
         if cancellation.is_cancelled() || binding.observation_retired().is_cancelled() {
             return Err(Error::ObservationRetired);
         }
@@ -944,7 +955,7 @@ impl Call {
         let _ = materials.handoff();
         runtime::execute(
             runtime,
-            &config,
+            config,
             cwd,
             native_request.into(),
             &mut journal,
@@ -955,62 +966,4 @@ impl Call {
         )
         .await
     }
-}
-async fn seed_credentials(
-    seeds: &[super::CredentialSeed],
-    owner: &maka_process::isolated::TaskOwner,
-    cancellation: &CancellationToken,
-    retired: &CancellationToken,
-) -> Result<(), Error> {
-    use std::path::Component;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    for seed in seeds {
-        if seed.relative.as_os_str().is_empty()
-            || seed
-                .relative
-                .components()
-                .any(|part| !matches!(part, Component::Normal(_)))
-        {
-            return Err(Error::Invalid(
-                "Native credential seed must have a private relative path".into(),
-            ));
-        }
-        let base = match seed.base {
-            super::CredentialBase::CodexHome => owner.codex_home(),
-            super::CredentialBase::ClaudeConfig => owner.claude_config_dir(),
-        };
-        let path = base.join(&seed.relative);
-        tokio::fs::create_dir_all(path.parent().expect("private credential parent"))
-            .await
-            .map_err(|e| {
-                Error::Provider(format!("Native credential directory creation failed: {e}"))
-            })?;
-        let mut options = tokio::fs::OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options
-            .open(path)
-            .await
-            .map_err(|e| Error::Provider(format!("Native credential seed creation failed: {e}")))?;
-        let source = seed.file.try_clone().map_err(|e| {
-            Error::Provider(format!("Native credential source duplication failed: {e}"))
-        })?;
-        let mut source = tokio::fs::File::from_std(source).take(seed.len);
-        let copied = tokio::select! {
-            biased;
-            () = retired.cancelled() => return Err(Error::ObservationRetired),
-            () = cancellation.cancelled() => return Err(Error::ObservationRetired),
-            copied = tokio::io::copy(&mut source, &mut file) => copied.map_err(|e| Error::Provider(format!("Native credential seed copy failed: {e}")))?,
-        };
-        if copied != seed.len {
-            return Err(Error::Invalid(
-                "Native credential source did not yield its captured length".into(),
-            ));
-        }
-        file.flush()
-            .await
-            .map_err(|e| Error::Provider(format!("Native credential seed flush failed: {e}")))?;
-    }
-    Ok(())
 }

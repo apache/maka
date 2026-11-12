@@ -3380,6 +3380,7 @@ async fn receive(
             let protocol = serde_json::to_value(maka_agent_facts::context::ModelClosureProtocol {
                 finish_reason: step.finish_reason,
                 provider_options: step.provider_options.map(Arc::unwrap_or_clone),
+                cache_read_reported: (step.usage.cache_read_tokens == Some(0)).then_some(true),
                 response_id: step.response_id,
                 model: step.model,
                 timestamp: step.timestamp,

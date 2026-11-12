@@ -394,7 +394,8 @@ pub(crate) fn validate_batch(view: &RunView, changes: &[Change]) -> Result<(), S
             Fact::ExternalTaskClosed { task, outcome, .. } => {
                 let count=changes.iter().filter(|c|matches!(&c.fact,Fact::ExternalPublication{event:ExternalPublicationEvent::Pending{task:id,..}} if id==task)).count();
                 let first = view.external.as_ref().is_none_or(|t| t.publication.is_none());
-                let expected = usize::from(*outcome == Terminal::Completed && first);
+                let staged = view.external.as_ref().is_none_or(|task| !task.live_workspace);
+                let expected = usize::from(*outcome == Terminal::Completed && first && staged);
                 if count != expected {
                     return Err(invalid(
                         "only the first completed task closure must atomically retain one pending publication",
@@ -434,7 +435,7 @@ pub(crate) fn terminal_allowed(view: &RunView, terminal: &Terminal) -> bool {
         if closed.outcome != Terminal::Completed {
             return *terminal != Terminal::Completed && task.publication.is_none();
         }
-        if task.publication.is_none() {
+        if !task.live_workspace && task.publication.is_none() {
             return false;
         }
     }
