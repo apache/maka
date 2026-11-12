@@ -692,7 +692,7 @@ export function SettingsButton(props: {
   disabled?: boolean;
   selected?: boolean;
   tone?: 'primary' | 'quiet' | 'danger';
-  icon?: 'plus' | 'refresh' | 'trash';
+  icon?: 'edit' | 'plus' | 'refresh' | 'trash';
   /** Shows only the icon; the label still names the button. */
   iconOnly?: boolean;
   autoFocus?: boolean;

@@ -53,6 +53,12 @@ pub struct ResolvedTextStyle {
     pub font_variant: FontVariant,
     /// The background of the nested text this run is in (drawing only).
     pub background: Option<TextBackground>,
+    /// Hidden but laid out (`visibility: "hidden"` on the nested text this
+    /// run is in, or on one around it): its characters keep their place in
+    /// the lines, are not drawn (the core makes the run transparent, with
+    /// no background) and are left out of copies and of what screen readers
+    /// read ([`AttributedText::copied_text`], [`AttributedText::visible_text`]).
+    pub hidden: bool,
 }
 
 /// The background of a nested `<Text>` (`backgroundColor` and
@@ -185,6 +191,7 @@ impl Default for ResolvedTextStyle {
             transform: TextTransform::None,
             font_variant: FontVariant(0),
             background: None,
+            hidden: false,
         }
     }
 }
@@ -231,6 +238,20 @@ impl ResolvedTextStyle {
             transform: style.transform.unwrap_or(self.transform),
             font_variant: style.font_variant.unwrap_or(self.font_variant),
             background: self.background,
+            hidden: self.hidden,
+        }
+    }
+
+    /// The style hidden ([`Self::hidden`]): nothing of it is drawn, glyphs,
+    /// decoration lines and background alike, and its metrics stay.
+    #[must_use]
+    pub(crate) fn hide(self) -> Self {
+        Self {
+            color: Color::TRANSPARENT,
+            decoration_color: None,
+            background: None,
+            hidden: true,
+            ..self
         }
     }
 
@@ -245,6 +266,49 @@ impl ResolvedTextStyle {
             && self.italic == other.italic
             && self.letter_spacing == other.letter_spacing
             && self.font_variant == other.font_variant
+    }
+}
+
+/// Whether two span lists over one string style every character alike
+/// but for the colors and what is hidden ([`AttributedText::same_but_colors`]).
+fn spans_same_but_colors(a: &[TextSpan], b: &[TextSpan]) -> bool {
+    let colorless = |s: &ResolvedTextStyle| ResolvedTextStyle {
+        color: Color::TRANSPARENT,
+        decoration_color: None,
+        background: s.background.map(|b| TextBackground {
+            color: Color::TRANSPARENT,
+            ..b
+        }),
+        // Hidden characters keep their place in the lines: whether a run is
+        // drawn is decided when drawing, as its colors are.
+        hidden: false,
+        ..*s
+    };
+    // Both cover the string end to end: walk the pieces where they overlap.
+    let (mut a, mut b) = (a.iter().peekable(), b.iter().peekable());
+    loop {
+        match (a.peek(), b.peek()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) => {
+                let overlap = x.start < y.end && y.start < x.end;
+                if !overlap || colorless(&x.style) != colorless(&y.style) {
+                    return false;
+                }
+                match x.end.cmp(&y.end) {
+                    std::cmp::Ordering::Less => {
+                        a.next();
+                    }
+                    std::cmp::Ordering::Greater => {
+                        b.next();
+                    }
+                    std::cmp::Ordering::Equal => {
+                        a.next();
+                        b.next();
+                    }
+                }
+            }
+            _ => return false,
+        }
     }
 }
 
@@ -456,6 +520,26 @@ fn is_emoji_presentation(c: &str) -> bool {
         })
 }
 
+/// The length of `s` in UTF-16 units.
+fn utf16_len(s: &str) -> u32 {
+    s.chars().map(|c| c.len_utf16() as u32).sum()
+}
+
+/// The byte offset in `s` of the UTF-16 offset `to` and the UTF-16 offset
+/// it is at, counting on from byte `byte`, which is at UTF-16 offset `at`:
+/// the end of `s` past it, the start of a character whose surrogate pair
+/// `to` splits.
+fn seek(s: &str, mut byte: usize, mut at: u32, to: u32) -> (usize, u32) {
+    for c in s[byte..].chars() {
+        let next = at + c.len_utf16() as u32;
+        if next > to {
+            break;
+        }
+        (at, byte) = (next, byte + c.len_utf8());
+    }
+    (byte, at)
+}
+
 /// The character standing for an attachment.
 pub const ATTACHMENT_CHAR: char = '\u{FFFC}';
 
@@ -464,7 +548,11 @@ pub const ATTACHMENT_CHAR: char = '\u{FFFC}';
 /// of its own ([`Self::focus_stop`]): Tab reaches it after its text view,
 /// in text order, the platform reports `FOCUSED` (`focus:`) and `Focus` /
 /// `Blur` for the span's node and presses it on Return, as a view that
-/// takes presses.
+/// takes presses. A span with a hint watching it and no press listeners (a
+/// `RichEditor`'s link mark) is one too, for the pointer only: its events
+/// are `MouseEnter` / `MouseLeave`, it is no stop of Tab, and presses on
+/// its characters go to the views around, as the platforms route only
+/// links whose events take presses.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextLink {
     /// Start offset (UTF-16 units, inclusive).
@@ -511,11 +599,65 @@ impl AttributedText {
         self.spans
             .iter()
             .all(|s| {
-                s.style.color == color
+                // A transition would draw a hidden run in its color.
+                !s.style.hidden
+                    && s.style.color == color
                     && (s.style.decoration.is_none()
                         || s.style.decoration_color.is_none_or(|c| c == color))
             })
             .then_some(color)
+    }
+
+    /// Whether a run is hidden ([`ResolvedTextStyle::hidden`]).
+    pub fn has_hidden(&self) -> bool {
+        self.spans.iter().any(|s| s.style.hidden)
+    }
+
+    /// The text a screen reader reads: all of it but its hidden runs
+    /// ([`ResolvedTextStyle::hidden`]); borrowed when none is.
+    pub fn visible_text(&self) -> std::borrow::Cow<'_, str> {
+        if !self.has_hidden() {
+            return std::borrow::Cow::Borrowed(&self.text);
+        }
+        let mut out = String::with_capacity(self.text.len());
+        self.each_shown(0..self.len_utf16(), |s| out.push_str(s));
+        std::borrow::Cow::Owned(out)
+    }
+
+    /// The characters of the UTF-16 range `range` as a copy gives them:
+    /// without attachments' placeholders ([`ATTACHMENT_CHAR`]) and hidden
+    /// runs ([`ResolvedTextStyle::hidden`]). The range is clamped to the
+    /// text; offsets inside a surrogate pair round down.
+    pub fn copied_text(&self, range: Range<u32>) -> String {
+        let mut out = String::new();
+        self.each_shown(range, |s| {
+            out.extend(s.chars().filter(|&c| c != ATTACHMENT_CHAR));
+        });
+        out
+    }
+
+    /// Calls `f` with each piece of `range` (UTF-16 units) that no hidden
+    /// run covers, in order. Characters past the runs (a text built without
+    /// them) count as shown.
+    fn each_shown(&self, range: Range<u32>, mut f: impl FnMut(&str)) {
+        let end = range.end.min(self.len_utf16().max(utf16_len(&self.text)));
+        let (mut byte, mut at) = seek(&self.text, 0, 0, range.start.min(end));
+        // The first span ending after `at`.
+        let mut spans = self.spans[self.spans.partition_point(|s| s.end <= at)..].iter();
+        while at < end {
+            let (to, hidden) = match spans.next() {
+                Some(s) => (s.end.min(end), s.style.hidden),
+                None => (end, false),
+            };
+            let (next, reached) = seek(&self.text, byte, at, to);
+            if !hidden {
+                f(&self.text[byte..next]);
+            }
+            if reached == at {
+                break;
+            }
+            (byte, at) = (next, reached);
+        }
     }
 
     /// The span containing the UTF-16 offset `index` (the last one past the
@@ -523,6 +665,45 @@ impl AttributedText {
     pub fn span_at(&self, index: u32) -> Option<&TextSpan> {
         let i = self.spans.partition_point(|s| s.end <= index);
         self.spans.get(i.min(self.spans.len().saturating_sub(1)))
+    }
+
+    /// The pieces of the UTF-16 range `range` that no hidden run covers
+    /// ([`ResolvedTextStyle::hidden`]), in order: where a selection's
+    /// highlight is drawn. The whole range when no run is hidden.
+    pub fn visible_ranges(&self, range: Range<u32>) -> Vec<Range<u32>> {
+        if !self.has_hidden() {
+            return vec![range];
+        }
+        let mut out: Vec<Range<u32>> = Vec::new();
+        let mut at = range.start;
+        let first = self.spans.partition_point(|s| s.end <= at);
+        for s in &self.spans[first..] {
+            if at >= range.end {
+                break;
+            }
+            let to = s.end.min(range.end);
+            if !s.style.hidden && to > at {
+                match out.last_mut() {
+                    Some(last) if last.end == at => last.end = to,
+                    _ => out.push(at..to),
+                }
+            }
+            at = at.max(to);
+        }
+        // Characters past the runs count as shown.
+        if at < range.end {
+            match out.last_mut() {
+                Some(last) if last.end == at => last.end = range.end,
+                _ => out.push(at..range.end),
+            }
+        }
+        out
+    }
+
+    /// Whether the character at the UTF-16 offset `index` is in a hidden
+    /// run ([`ResolvedTextStyle::hidden`]): nothing of it is drawn.
+    pub fn hidden_at(&self, index: u32) -> bool {
+        self.span_at(index).is_some_and(|s| s.style.hidden)
     }
 
     /// The background of the character at the UTF-16 offset `index`.
@@ -602,6 +783,82 @@ impl AttributedText {
                 });
             }
         }
+    }
+
+    /// Whether the two texts differ at most in their spans' colors (text,
+    /// decoration and background), which of them are hidden
+    /// ([`ResolvedTextStyle::hidden`]) and test metadata: the same
+    /// characters in the same styles but for those, wherever the spans
+    /// begin and end (neighbors that take the same color merge into one
+    /// span).
+    pub(crate) fn same_but_colors(&self, other: &Self) -> bool {
+        // Enumerating the fields makes additions revisit this comparison.
+        let Self {
+            text,
+            spans,
+            align,
+            max_lines,
+            ellipsize,
+            no_wrap,
+            shadow,
+            links,
+            writing_direction,
+            rtl,
+            selectable,
+            selection_color,
+            attachments,
+            test_ids: _,
+        } = self;
+        text == &other.text
+            && align == &other.align
+            && max_lines == &other.max_lines
+            && ellipsize == &other.ellipsize
+            && no_wrap == &other.no_wrap
+            && shadow == &other.shadow
+            && links == &other.links
+            && writing_direction == &other.writing_direction
+            && rtl == &other.rtl
+            && selectable == &other.selectable
+            && selection_color == &other.selection_color
+            && attachments == &other.attachments
+            && spans_same_but_colors(spans, &other.spans)
+    }
+
+    /// The characters (UTF-16 offsets; ascending, apart) drawn otherwise in
+    /// `other`, when the two texts differ at most in colors, hidden runs
+    /// and test metadata, as the core's colors-only path allows; `None`
+    /// when they differ in anything else. A platform that draws colors from
+    /// the text and keeps the layout redraws only where these lie.
+    pub fn recolored_ranges(&self, other: &Self) -> Option<Vec<std::ops::Range<u32>>> {
+        if !self.same_but_colors(other) {
+            return None;
+        }
+        let mut out: Vec<std::ops::Range<u32>> = Vec::new();
+        // Both cover the string end to end (`same_but_colors`): walk the
+        // pieces where they overlap.
+        let (mut a, mut b) = (self.spans.iter().peekable(), other.spans.iter().peekable());
+        while let (Some(x), Some(y)) = (a.peek(), b.peek()) {
+            let (start, end) = (x.start.max(y.start), x.end.min(y.end));
+            if start < end && x.style != y.style {
+                match out.last_mut() {
+                    Some(last) if last.end >= start => last.end = last.end.max(end),
+                    _ => out.push(start..end),
+                }
+            }
+            match x.end.cmp(&y.end) {
+                std::cmp::Ordering::Less => {
+                    a.next();
+                }
+                std::cmp::Ordering::Greater => {
+                    b.next();
+                }
+                std::cmp::Ordering::Equal => {
+                    a.next();
+                    b.next();
+                }
+            }
+        }
+        Some(out)
     }
 
     /// Equality of the content the platform draws, excluding test metadata.
@@ -725,12 +982,35 @@ pub trait TextEngine {
     /// Size of the prepared text with an optional maximum width.
     fn measure(&self, prepared: &Self::Prepared, max_width: Option<Points>) -> Size<Points>;
 
+    /// How far below the text's top its first line's baseline is, laid out
+    /// `width` wide: a flex container aligning by baseline
+    /// (`align-items: baseline`) lines its items up by it, as CSS does. An
+    /// engine that does not know gives `None`, and the text is aligned by
+    /// its bottom edge, Taffy's fallback for a box without a baseline.
+    fn first_baseline(&self, prepared: &Self::Prepared, width: Points) -> Option<Points> {
+        let _ = (prepared, width);
+        None
+    }
+
     /// Whether each line takes all that fits and [`TextEngine::measure`]'s
     /// width is the widest line's: a maximum width between that width and
     /// the one measured then breaks the lines at the same places, so the
     /// core knows the size without typesetting. A window's resize changes
     /// the width of every text of a page on every size.
     fn breaks_lines_greedily(&self) -> bool {
+        false
+    }
+
+    /// Whether the platform draws a text's colors from the
+    /// [`AttributedText`] mounted with its layout, not from the
+    /// typesetting state: the spans' text, decoration and background
+    /// colors and which spans are hidden ([`ResolvedTextStyle::hidden`]),
+    /// looked up by character when drawing. The prepared state and
+    /// layouts then hold for any text that differs from theirs only in
+    /// those (wherever its spans begin and end), so a change of colors or
+    /// of what is hidden alone keeps them: no new typesetting, measurement
+    /// or layout, only the new text mounted with the layout already drawn.
+    fn draws_colors_from_text(&self) -> bool {
         false
     }
 
@@ -818,8 +1098,16 @@ impl<T: TextEngine> TextEngine for std::rc::Rc<T> {
         (**self).breaks_lines_greedily()
     }
 
+    fn draws_colors_from_text(&self) -> bool {
+        (**self).draws_colors_from_text()
+    }
+
     fn measure(&self, prepared: &Self::Prepared, max_width: Option<Points>) -> Size<Points> {
         (**self).measure(prepared, max_width)
+    }
+
+    fn first_baseline(&self, prepared: &Self::Prepared, width: Points) -> Option<Points> {
+        (**self).first_baseline(prepared, width)
     }
 
     fn layout(&self, prepared: &Self::Prepared, size: Size<Points>) -> TextLayout {

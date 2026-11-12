@@ -268,6 +268,41 @@ export type AgentCompactOutput_AgentCompactRejection =
   | 'archived'
   | 'backend_unavailable'
   | 'workspace_changed';
+export type AgentExternalUsageLimitsOutput_UsageLimit =
+  | {
+      kind: 'window';
+      label?: string | null;
+      period?: AgentExternalUsageLimitsOutput_UsagePeriod | null;
+      /**
+       * Reset time in Unix seconds.
+       */
+      resetsAt?: number | null;
+      usedPercent: number;
+      quantity?: AgentExternalUsageLimitsOutput_UsageQuantity | null;
+    }
+  | {
+      kind: 'balance';
+      label?: string | null;
+      amount: number;
+      unit?: string | null;
+    }
+  | {
+      kind: 'unlimited';
+      label?: string | null;
+    }
+  | {
+      kind: 'disabled';
+      label: string;
+      period: AgentExternalUsageLimitsOutput_UsagePeriod;
+    };
+export type AgentExternalUsageLimitsOutput_UsagePeriod =
+  | {
+      kind: 'duration';
+      seconds: number;
+    }
+  | {
+      kind: 'monthly';
+    };
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
@@ -347,6 +382,11 @@ export type AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceCons
   | 'unverified';
 export type AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentHistoryRequestsInput_HistoryRowAddress = Runtime.HistoryRowAddress;
+export type AgentHistoryRequestsOutput_StepId = string;
+export type AgentHistoryRequestsOutput_ModelAttemptId = string;
+export type AgentHistoryRequestsOutput_ModelPurpose = 'main' | 'summary';
+export type AgentHistoryRequestsOutput_UsageOutcome = ('success' | 'error' | 'aborted') | 'unknown';
 export type AgentLoadHistoryCheckpointOutput_AgentCheckpointLoadState =
   | {
       kind: 'preparing';
@@ -878,6 +918,11 @@ export type SettingsConnectionUsageLimitsOutput_UsageLimit =
   | {
       kind: 'unlimited';
       label?: string | null;
+    }
+  | {
+      kind: 'disabled';
+      label: string;
+      period: SettingsConnectionUsageLimitsOutput_UsagePeriod;
     };
 export type SettingsConnectionUsageLimitsOutput_UsagePeriod =
   | {
@@ -1332,6 +1377,23 @@ export interface ServiceMethods {
       input: Runtime.AgentExternalAgentsRead;
       output: Runtime.AgentExternalAgents;
     };
+    externalUsageLimits: {
+      mode: 'query';
+      input: {
+        runtime: Runtime.AgentNativeRuntime;
+      };
+      output:
+        | {
+            kind: 'ready';
+            limits: AgentExternalUsageLimitsOutput_UsageLimit[];
+          }
+        | {
+            kind: 'unsupported';
+          }
+        | {
+            kind: 'unavailable';
+          };
+    };
     fileCandidates: {
       mode: 'subscription';
       input: Runtime.AgentFileCandidatesRead;
@@ -1402,6 +1464,23 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentHistoryPromptRead;
       output: Runtime.AgentHistoryPrompt | null;
+    };
+    historyRequests: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        through: number;
+        /**
+         * Any original row in the Run being inspected.
+         */
+        position: AgentHistoryRequestsInput_HistoryRowAddress;
+        after?: number | null;
+      };
+      output: {
+        requests: AgentHistoryRequestsOutput_AgentHistoryRequest[];
+        next?: number | null;
+        [k: string]: unknown | undefined;
+      };
     };
     import: {
       mode: 'mutation';
@@ -2989,6 +3068,11 @@ export interface AgentCompactOutput_ContentRef {
   digest: string;
   bytes: number;
 }
+export interface AgentExternalUsageLimitsOutput_UsageQuantity {
+  used: number;
+  limit: number;
+  unit?: string | null;
+}
 export interface AgentHistoryCheckpointHeadOutput_AgentHistoryCheckpointHead {
   revision: string;
   manifest: AgentHistoryCheckpointHeadOutput_AgentHistoryCheckpointObject;
@@ -3081,6 +3165,43 @@ export interface AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspac
   consistency: AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentHistoryCheckpointLoadReceiptOutput_AgentHistoryCheckpointObject;
+}
+export interface AgentHistoryRequestsOutput_AgentHistoryRequest {
+  order: AgentHistoryRequestsOutput_HistoryOrder;
+  stepId: AgentHistoryRequestsOutput_StepId;
+  attemptId: AgentHistoryRequestsOutput_ModelAttemptId;
+  modelId: string;
+  purpose: AgentHistoryRequestsOutput_ModelPurpose;
+  startedAt?: number | null;
+  firstTokenAt?: number | null;
+  finished?: AgentHistoryRequestsOutput_AgentHistoryRequestFinished | null;
+  estimatedInputTokens: number;
+  contextWindow?: number | null;
+  inputLimit?: number | null;
+  [k: string]: unknown | undefined;
+}
+/**
+ * Lexicographic tree order: original marker sequences followed by the leaf
+ * sequence/ordinal. This is presentation order, never a fabricated Root sequence.
+ */
+export interface AgentHistoryRequestsOutput_HistoryOrder {
+  path: number[];
+  itemIndex: number;
+}
+export interface AgentHistoryRequestsOutput_AgentHistoryRequestFinished {
+  at: number;
+  outcome: AgentHistoryRequestsOutput_UsageOutcome;
+  usage: AgentHistoryRequestsOutput_ModelUsage;
+  diagnostic?: string | null;
+  [k: string]: unknown | undefined;
+}
+export interface AgentHistoryRequestsOutput_ModelUsage {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  cache_write_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  [k: string]: unknown | undefined;
 }
 export interface AgentLoadHistoryCheckpointOutput_AgentHistoryCheckpointHead {
   revision: string;
@@ -3494,7 +3615,7 @@ export interface SettingsUpdateInput_ModelOverride {
    */
   adapter?: string;
   /**
-   * Omitted means model-specific defaults; false is an explicit opt-out.
+   * Code Mode is enabled by default. Set false to select direct tool calls.
    */
   codeMode?: boolean;
   /**

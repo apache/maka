@@ -110,6 +110,7 @@ fn fetch_round_trips_through_the_platform_network() {
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     let network = Arc::new(EchoNetwork::default());
@@ -122,6 +123,7 @@ fn fetch_round_trips_through_the_platform_network() {
         }),
         viewport: Size::new(px(320.0), px(480.0)),
         trace: false,
+        content_culling: false,
         network: Some(network),
         websocket: None,
         refuse_connections: None,
@@ -235,6 +237,7 @@ fn fetch_stays_within_the_capabilities() {
         minify: false,
         split: false,
         ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
     })
     .unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -248,6 +251,7 @@ fn fetch_stays_within_the_capabilities() {
         ),
         viewport: Size::new(px(320.0), px(480.0)),
         trace: false,
+        content_culling: false,
         network: Some(Arc::new(RedirectNetwork { seen: seen.clone() })),
         websocket: None,
         refuse_connections: None,
@@ -312,6 +316,97 @@ fn fetch_stays_within_the_capabilities() {
     );
 }
 
+const PATH_APP: &str = r#"
+import { mount, registerFont, signal, Text } from "nsh";
+const text = signal("loading");
+const outcome = (p) => p.then((r) => r.text(), (e) => `${e.code} ${e.resource}`);
+const font = (p) => p.then(({ family }) => `registered ${family}`, (e) => `${e.code ?? e.name}`);
+Promise.all([
+  outcome(fetch("https://api.example.com/public/../private")),
+  font(registerFont("https://api.example.com/public/../private.woff2")),
+  font(registerFont("https://api.example.com/public/%2e%2e/private.woff2")),
+  font(registerFont("https://api.example.com/private/../public/f.woff2")),
+]).then((r) => text.set(r.join(" | ")));
+mount(() => <Text>{text()}</Text>);
+"#;
+
+/// A path rule holds for every request, `registerFont`'s raw URL as much as
+/// `fetch`'s parsed one: the path is matched as WHATWG's parser resolves it,
+/// and the request goes out with that URL.
+#[test]
+fn path_rules_hold_for_every_request() {
+    let dir = std::env::temp_dir().join(format!("nsh-fetch-paths-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = dir.join("App.tsx");
+    std::fs::write(&entry, PATH_APP).unwrap();
+    let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+        entry,
+        minify: false,
+        split: false,
+        ui_sets: vec![nsh_base::registry().into()],
+        ..Default::default()
+    })
+    .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (tx, rx) = mpsc::channel();
+    let config = EngineConfig {
+        // SAFETY: compiled just now by this runtime.
+        app: nsh_engine::App::Js(
+            unsafe { Bundle::bytecode(nsh_js::compile_bytecode(&bundle.code, false).unwrap()) }
+                .with_capabilities_json(Some(
+                    r#"{ "network": { "http": [{ "host": "api.example.com", "pathPrefix": "/public" }] } }"#,
+                ))
+                .unwrap(),
+        ),
+        viewport: Size::new(px(320.0), px(480.0)),
+        trace: false,
+        content_culling: false,
+        network: Some(Arc::new(RedirectNetwork { seen: seen.clone() })),
+        websocket: None,
+        refuse_connections: None,
+        filesystem: None,
+        assets: None,
+        chunk_loader: None,
+        environment: Default::default(),
+        header_heights: (nsh_core::Points(44.0), nsh_core::Points(96.0)),
+        limits: nsh_engine::Limits::default(),
+        ui_sets: Vec::new(),
+        runtime: None,
+        data_dir: None,
+        cache: nsh_engine::CacheOptions::off(),
+        storage: None,
+        clock: Default::default(),
+        context: Default::default(),
+        pinned: Default::default(),
+        clipboard: None,
+        host: Default::default(),
+        picker: None,
+        speech: None,
+        audio: None,
+        windows: None,
+    };
+    let _engine = Engine::start(config, || ApproxTextEngine, Sink(tx)).unwrap();
+    assert_eq!(
+        texts(&rx.recv_timeout(Duration::from_secs(5)).unwrap()),
+        ["loading"]
+    );
+    let result = texts(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).join("");
+    let parts: Vec<&str> = result.split(" | ").collect();
+    assert_eq!(
+        parts[0], "ERR_ACCESS_DENIED https://api.example.com/private",
+        "{result}"
+    );
+    assert_eq!(parts[1], "ERR_ACCESS_DENIED", "{result}");
+    assert_eq!(parts[2], "ERR_ACCESS_DENIED", "{result}");
+    // Granted as resolved, and requested as resolved: no font in the
+    // stand-in's answer, but no refusal either.
+    assert_ne!(parts[3], "ERR_ACCESS_DENIED", "{result}");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["https://api.example.com/public/f.woff2"]
+    );
+}
+
 /// A Rust component whose task fetches: the echo's text shows, and the slow
 /// request is cancelled with the task that waited for it.
 #[nsh_core::element::component]
@@ -339,6 +434,7 @@ fn rust_components_fetch_through_the_platform_network() {
         app: nsh_engine::App::Rust(nsh_core::element::Root::of::<Fetcher>()),
         viewport: Size::new(px(320.0), px(480.0)),
         trace: false,
+        content_culling: false,
         network: Some(network),
         websocket: None,
         refuse_connections: None,

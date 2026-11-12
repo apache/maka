@@ -62,6 +62,9 @@ function App() {
             `Image prefetch: ${await settle(() => Image.prefetch("https://example.com/b.png"))}`,
             `Fetch: ${await settle(() => fetch("https://example.com/data"))}`,
             `WebSocket: ${await settle(() => connect("ws://example.com/feed"))}`,
+            `WebSocket credentials: ${await settle(() => connect("ws://example.com/feed", {
+              headers: { Cookie: "session=fixture", Authorization: "Bearer fixture" },
+            }))}`,
             `Global WebSocket: ${await refused("ws://example.com/feed")}`,
           ]);
         }}

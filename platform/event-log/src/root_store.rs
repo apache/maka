@@ -51,7 +51,7 @@ pub use resource_io::{RequestFileCloseFailure, close_request_file, create_reques
 mod applications;
 pub(crate) mod checkpoints;
 mod control;
-pub use checkpoints::{Checkout, HistoryCheckpoints};
+pub use checkpoints::{Checkout, HistoryCheckpoints, portable};
 mod plugins;
 mod recovery;
 mod retirement;

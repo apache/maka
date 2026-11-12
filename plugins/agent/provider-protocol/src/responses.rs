@@ -25,6 +25,7 @@ pub mod sse;
 
 use crate::output::{Stop, TextKind, Usage};
 pub use replay::Replay;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,9 +46,21 @@ pub struct ItemMetadata {
     pub replay: Option<Replay>,
     pub encrypted_content: Option<String>,
 }
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessagePhase {
+    Commentary,
+    FinalAnswer,
+    #[serde(other)]
+    Unknown,
+}
 #[derive(Debug, Clone)]
 pub enum PartMetadata {
     Item(ItemMetadata),
+    Message {
+        item: ItemMetadata,
+        phase: MessagePhase,
+    },
     PlaintextSummary {
         item_id: String,
         summary_part_lengths: Vec<usize>,
@@ -76,6 +89,7 @@ pub enum Event {
     PartStarted {
         id: String,
         kind: TextKind,
+        phase: Option<MessagePhase>,
     },
     PartDelta {
         id: String,

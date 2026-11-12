@@ -211,7 +211,7 @@ fn validate_tail(
     }
     Ok(())
 }
-fn check_bytes(bytes: &[u8], digest: &str) -> Result<(), StoreError> {
+pub(super) fn check_bytes(bytes: &[u8], digest: &str) -> Result<(), StoreError> {
     if content_digest(bytes) != digest {
         return Err(invalid("canonical history bytes corrupt"));
     }
@@ -354,25 +354,30 @@ pub(super) fn page(
     Ok(HistoryPage { items, next })
 }
 
-pub(super) fn request(
+pub(super) fn request_preparation(
     c: &Connection,
     history: &HistoryNamespace,
     cut: &HistoryCut,
     run: RunId,
     step: StepId,
-) -> Result<RequestSpec, StoreError> {
+) -> Result<(RequestSpec, UnixMillis), StoreError> {
     let owner = check_cut(c, history, cut)?;
     spec(c, history, run)?;
-    let sequence:Option<u64>=c.query_row("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND run=? AND step=? AND kind='step_prepared' AND sequence<=? ORDER BY sequence LIMIT 1",params![owner,history.session,run.to_string(),step.to_string(),bind_u64(cut.through_sequence)?],|r|read_u64(r,0)).optional()?;
+    let sequence:Option<u64>=c.query_row("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND run=? AND step=? AND kind IN ('step_prepared','proactive_summary_prepared') AND sequence<=? ORDER BY sequence LIMIT 1",params![owner,history.session,run.to_string(),step.to_string(),bind_u64(cut.through_sequence)?],|r|read_u64(r,0)).optional()?;
     let sequence =
         sequence.ok_or_else(|| invalid("request Step is outside captured source cut"))?;
     let original = item(c, history, cut, sequence)?
         .ok_or_else(|| invalid("original StepPrepared source missing"))?;
-    let Fact::StepPrepared {
+    let (Fact::StepPrepared {
         step: actual,
         request,
         ..
-    } = original.recorded.fact
+    }
+    | Fact::ProactiveSummaryPrepared {
+        step: actual,
+        request,
+        ..
+    }) = original.recorded.fact
     else {
         return Err(invalid("request source is not its original StepPrepared"));
     };
@@ -383,7 +388,7 @@ pub(super) fn request(
     if request.schema_version != SCHEMA_VERSION || request.step != step {
         return Err(invalid("request original schema/Step differs"));
     }
-    Ok(request)
+    Ok((request, original.recorded.at))
 }
 pub(super) fn validate_source_record(
     c: &Connection,
@@ -469,13 +474,15 @@ fn fact_scope(c: &Connection, record: &RecordedFact) -> Result<HistoryScope, Sto
                 attempt: None,
             });
         }
-        Fact::ModelAttemptPrepared { attempt, step } => {
+        Fact::ModelAttemptPrepared { attempt, step }
+        | Fact::ProactiveSummaryPrepared { attempt, step, .. } => {
             return Ok(HistoryScope {
                 step: Some(*step),
                 attempt: Some(*attempt),
             });
         }
         Fact::ModelAttemptAdmitted { attempt, .. }
+        | Fact::ModelFirstTokenObserved { attempt }
         | Fact::ModelTransportSelected { attempt, .. }
         | Fact::ModelPrivatePartialCaptured { attempt, .. }
         | Fact::ModelSourceFailureCaptured { attempt, .. }
@@ -694,12 +701,20 @@ fn index_refs(
                 }
             }
         }
-        Fact::StepPrepared { step, request, .. } => {
+        Fact::StepPrepared { step, request, .. }
+        | Fact::ProactiveSummaryPrepared { step, request, .. } => {
             let request: RequestSpec = owned_metadata(c, record.run, request)?;
             if request.schema_version != SCHEMA_VERSION || request.step != *step {
                 return Err(invalid("original Step request schema/identity differs"));
             }
             references.extend(request.content_refs().into_iter().cloned());
+        }
+        Fact::ContextCompacted { baseline } => {
+            let compacted: maka_agent_facts::context::CompactedContext =
+                owned_metadata(c, record.run, baseline)?;
+            if compacted.summary_origin.is_some() {
+                references.push(compacted.source_capture);
+            }
         }
         Fact::ExternalSteering {
             event:
@@ -875,7 +890,7 @@ pub(super) fn sources(
                 }
             }
             DeliveryTarget::Step { step } => {
-                let request_spec = request(c, history, cut, run, *step)?;
+                let (request_spec, _) = request_preparation(c, history, cut, run, *step)?;
                 if request_spec.steering.get(position as usize) != Some(&frozen.source) {
                     return Err(invalid(
                         "Step steering differs from original consumed source order",
@@ -1316,6 +1331,7 @@ pub(super) fn view_at(
     history: &HistoryNamespace,
     cut: &HistoryCut,
     run: RunId,
+    mut observe: impl FnMut(u64, &RecordedFact),
 ) -> Result<crate::fold::RunView, StoreError> {
     check_cut(c, history, cut)?;
     let source = run_source(c, history, run)?;
@@ -1323,7 +1339,7 @@ pub(super) fn view_at(
         return Err(invalid("Run was not admitted within the captured cut"));
     }
     let mut view = crate::fold::RunView::admitted(run, source.spec)?;
-    let mut statement=c.prepare_cached("SELECT f.schema_version,b.payload,b.content_sha256 FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence<=? ORDER BY f.revision")?;
+    let mut statement=c.prepare_cached("SELECT f.schema_version,b.payload,b.content_sha256,f.sequence FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence<=? ORDER BY f.revision")?;
     let mut rows = statement.query(params![run.to_string(), bind_u64(cut.through_sequence)?])?;
     while let Some(row) = rows.next()? {
         let bytes: Vec<u8> = row.get(1)?;
@@ -1331,7 +1347,9 @@ pub(super) fn view_at(
         if content_digest(&bytes) != digest {
             return Err(invalid("canonical history bytes corrupt"));
         }
-        view.apply(&decode_record(row.get(0)?, &bytes)?)?;
+        let record = decode_record(row.get(0)?, &bytes)?;
+        view.apply(&record)?;
+        observe(read_u64(row, 3)?, &record);
     }
     Ok(view)
 }

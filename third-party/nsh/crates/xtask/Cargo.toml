@@ -3,6 +3,7 @@ name = "xtask"
 description = "Maintainer tasks: `cargo run` (the gallery), Android builds and the distribution (`cargo xtask --help`)."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

@@ -19,6 +19,7 @@
 /third-party/nsh/.gitattributes whitespace=-blank-at-eof
 /third-party/nsh/docs/dev/browser-js-size.md whitespace=-blank-at-eof
 /third-party/nsh/docs/dev/data-table.md whitespace=-blank-at-eof
+/third-party/nsh/docs/dev/elements.md whitespace=-blank-at-eof
 /third-party/nsh/examples/gallery/TitleBar.tsx whitespace=-blank-at-eof
 /third-party/nsh/examples/gallery/demos/chat/markdown.tsx whitespace=-blank-at-eof
 /third-party/nsh/examples/nsh-gallery-ui/theme.ts whitespace=-blank-at-eof

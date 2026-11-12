@@ -1,12 +1,12 @@
 ---
 name: nsh-design-guides
-description: 'The normative Design Guides for Native Shell (NSH) apps. Read before designing or changing any screen, layout, spacing, visual hierarchy, color, density, component choice, interaction state, overlay, motion, data-heavy view or interface copy in an NSH app, in TSX or Rust, and before reviewing UI work for design quality. Also use when asked what the design rules are, or whether a UI decision follows them.'
+description: 'The normative Design Guides for Native Shell (NSH) apps. Read before designing or changing any screen, layout, spacing, visual hierarchy, color, density, component choice, interaction state, overlay, motion (transitions, springs, gestures, layout animation, shaders), data-heavy view or interface copy in an NSH app, in TSX or Rust, and before reviewing UI work for design quality. Also use when asked what the design rules are, or whether a UI decision follows them.'
 ---
 
 # NSH Design Guides
 
 Resolve the bundled guide relative to this skill’s directory, not the app directory.
-The guide is [references/design-guides.md](references/design-guides.md). It is a
+The guide is general, not a visual style: apply it to the app's own style. It is [references/design-guides.md](references/design-guides.md). It is a
 requirement, not inspiration. Read the guide file itself before doing UI work. Do
 not answer from this page, from an existing screen in the codebase, or from training
 data.
@@ -21,7 +21,7 @@ styled component library before screens. For an existing app, inspect and extend
 those foundations first. Theme colors in presentation code must come from tokens;
 raw color values belong in theme definitions. Style the parts and states of
 `nsh/base` in app-owned reusable controls, then compose pages from them. This is
-the layer corresponding to [`gpui-component`](https://gpui-kit.com/component) above [`gpui-base`](https://gpui-kit.com/base). Plan for the app's
+the app's `ui` layer above `nsh/base`. Plan for the app's
 Desktop, Mobile, Web and TUI targets, adapting input, density, navigation and
 popups while sharing semantics and tokens.
 
@@ -48,14 +48,20 @@ order (`grep -n '^## ' references/design-guides.md`):
 | Start from the task                   | Always; task hierarchy, what to leave out                              |
 | Visual language                       | Color, typography, spacing, radius, borders, elevation, density, icons |
 | Layout patterns                       | Window and page structure, sidebars, toolbars, panels, forms           |
-| Components and composition            | Picking a component, composing parts, when to build a new one          |
+| Components and composition            | Picking a component, composing parts, when to build a new one; component standards (size scale, radius tokens, state tokens) for the app's styled controls |
 | Interaction states                    | Hover, focus, pressed, selected, disabled, loading, validation, danger |
 | Feedback and overlays                 | Dialog, sheet, popover, menu, notification, tooltip, dismissal, focus  |
-| Motion                                | Any animation or transition                                            |
-| Sound                                 | Any sound effect: which sound for which job, when to stay silent       |
+| Motion                                | Any state change, animation, transition, spring, gesture release or shader; which tool, tokens, reduced motion |
+| Sound                                 | Whether the app needs sound at all (not a default), which sound for which job, when to stay silent |
 | Designing data-heavy interfaces       | Tables, lists, trees, dashboards, dense inspectors                     |
 | Interface language                    | Any user-facing text: labels, buttons, titles, errors, empty states    |
 | Internationalization and platform fit | Multi-locale copy, Chinese terminology, platform conventions           |
 | Guidance for AI-generated interfaces  | Always when an agent produces UI                                       |
-| Accessibility checklist               | Before finishing                                                       |
+| Accessibility and keyboard (required) | Always; keyboard operation, focus, names and roles are musts           |
+| Accessibility checklist               | Before finishing; any failure blocks finishing                         |
+| Finishing checklist                   | Before finishing; run every item on the running app and report each group |
 | Design review checklist               | Before finishing; run every item against the work                      |
+
+Before writing a screen, write its motion inventory ("Motion inventory"). Finish by
+running the Finishing checklist on the running app, in light and dark, reporting each
+group as passed or what was fixed, then the Design review checklist.

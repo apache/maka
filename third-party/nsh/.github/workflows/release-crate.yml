@@ -86,6 +86,7 @@ jobs:
       # Wayland / xkbcommon / fontconfig libraries, GTK 3 and WebKitGTK 4.1
       # (feature `webview`) and GStreamer (feature `video`), as in gpui.yml.
       - name: Install Linux dependencies
+        if: runner.environment == 'github-hosted'
         run: |
           sudo apt-get update
           sudo apt-get install -y \

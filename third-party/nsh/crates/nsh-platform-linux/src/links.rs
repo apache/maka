@@ -22,9 +22,11 @@ pub fn set_exec_args(args: Vec<String>) {
     *EXEC_ARGS.lock().unwrap_or_else(|e| e.into_inner()) = args;
 }
 
-/// Writes the app's desktop entry for `schemes` when it is missing or
-/// names another executable, and makes it their default handler.
-pub(crate) fn register(app_id: &str, name: &str, schemes: &[String]) {
+/// Writes the app's desktop entry for `schemes` and the files of
+/// `mime_types` (nsh.json `fileTypes`) when it is missing or differs, and
+/// makes it the schemes' default handler (for files it is one of the apps
+/// in Open With: the user picks the default).
+pub(crate) fn register(app_id: &str, name: &str, schemes: &[String], mime_types: &[String]) {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
@@ -32,7 +34,14 @@ pub(crate) fn register(app_id: &str, name: &str, schemes: &[String]) {
     let file = format!("{app_id}.desktop");
     let path = dir.join(&file);
     let args = EXEC_ARGS.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let entry = entry(app_id, name, &exe.to_string_lossy(), &args, schemes);
+    let entry = entry(
+        app_id,
+        name,
+        &exe.to_string_lossy(),
+        &args,
+        schemes,
+        mime_types,
+    );
     if std::fs::read_to_string(&path).ok().as_deref() != Some(entry.as_str())
         && let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &entry))
     {
@@ -56,8 +65,16 @@ pub(crate) fn register(app_id: &str, name: &str, schemes: &[String]) {
     }
 }
 
-/// The desktop entry: `Exec` quoted as the spec asks, the URL as `%u`.
-fn entry(app_id: &str, name: &str, exe: &str, args: &[String], schemes: &[String]) -> String {
+/// The desktop entry: `Exec` quoted as the spec asks, the URL as `%u`, or
+/// the URLs as `%U` when it opens files.
+fn entry(
+    app_id: &str,
+    name: &str,
+    exe: &str,
+    args: &[String],
+    schemes: &[String],
+    mime_types: &[String],
+) -> String {
     let quote = |arg: &str| -> String {
         let escaped: String = arg
             .chars()
@@ -78,25 +95,52 @@ fn entry(app_id: &str, name: &str, exe: &str, args: &[String], schemes: &[String
     let types: String = schemes
         .iter()
         .map(|s| format!("x-scheme-handler/{s};"))
+        .chain(mime_types.iter().map(|m| format!("{m};")))
         .collect();
+    let field = if mime_types.is_empty() { "%u" } else { "%U" };
     format!(
-        "[Desktop Entry]\nType=Application\nName={name}\nExec={exec} %u\n\
+        "[Desktop Entry]\nType=Application\nName={name}\nExec={exec} {field}\n\
          StartupWMClass={app_id}\nTerminal=false\nNoDisplay=true\nMimeType={types}\n"
     )
 }
 
-/// GApplication's arguments: the program and the URLs among the
-/// process's arguments of `schemes` (what the desktop started it with).
-pub(crate) fn launch_args(schemes: &[String]) -> Vec<String> {
+/// GApplication's arguments: the program, and the URLs of `schemes` and
+/// the files of `file_types` among the process's arguments (what the
+/// desktop started it with), which GApplication hands to `open`.
+pub(crate) fn launch_args(
+    schemes: &[String],
+    file_types: &[nsh_core::file_type::FileType],
+) -> Vec<String> {
     let mut args = std::env::args();
     let program = args.next().unwrap_or_default();
     std::iter::once(program)
-        .chain(args.filter(|arg| is_link(arg, schemes)))
+        .chain(
+            args.filter(|arg| is_link(arg, schemes) || file_url(arg, None, file_types).is_some()),
+        )
         .collect()
 }
 
+/// The `file://` URL of `arg` (a path, relative to `cwd` or the process's
+/// directory, or a `file:` URL) when it names an existing file of one of
+/// `file_types`.
+pub(crate) fn file_url(
+    arg: &str,
+    cwd: Option<&std::path::Path>,
+    file_types: &[nsh_core::file_type::FileType],
+) -> Option<String> {
+    if file_types.is_empty() || arg.starts_with('-') {
+        return None;
+    }
+    let file = match cwd {
+        Some(cwd) => gio::File::for_commandline_arg_and_cwd(arg, cwd),
+        None => gio::File::for_commandline_arg(arg),
+    };
+    let path = file.path()?;
+    (path.is_file() && file_types.iter().any(|t| t.matches(&path))).then(|| file.uri().to_string())
+}
+
 /// Whether `arg` is a URL of one of `schemes`.
-fn is_link(arg: &str, schemes: &[String]) -> bool {
+pub(crate) fn is_link(arg: &str, schemes: &[String]) -> bool {
     arg.split_once(':')
         .is_some_and(|(scheme, _)| schemes.iter().any(|s| s.eq_ignore_ascii_case(scheme)))
 }
@@ -122,8 +166,12 @@ mod tests {
             "/opt/my \"b\"/b",
             &["--app-id".into(), "a%b".into()],
             &["b".into(), "bb".into()],
+            &[],
         );
         assert!(e.contains("Exec=\"/opt/my \\\"b\\\"/b\" \"--app-id\" \"a%%b\" %u\n"));
         assert!(e.contains("MimeType=x-scheme-handler/b;x-scheme-handler/bb;\n"));
+        let e = entry("com.a.b", "B", "b", &[], &[], &["video/mp4".into()]);
+        assert!(e.contains("Exec=\"b\" %U\n"));
+        assert!(e.contains("MimeType=video/mp4;\n"));
     }
 }

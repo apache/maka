@@ -208,6 +208,7 @@ const depth = () => nav.routes().length;
 | `children` | `.child(..)` | `(route: R, index: Accessor<number>) => JSX.Element` | Renders a route. Return a `<NavPage>` for its options. Required. |
 | `style`, `class` | style methods | | The stack's style; usually `flex: 1`. |
 | `testID` | `.test_id(..)` | `string` | Finds the stack in tests and `nsh test --trace`. |
+| `onChange` | an `effect` reading the routes' signal | `({ routes }: { routes: readonly R[] }) => void` | The routes changed: pushed, popped, replaced or set by the app, or a page the user went back from (a back button, a swipe, the browser's back). It runs after the change is rendered, and not for the routes the stack starts with. Use it to track screens, save the navigation state, or set the page's address with [`UrlScheme.setUrl`](../modules/nsh.md#urlscheme). |
 
 The TSX child function receives the route value itself and an accessor of its position in the stack.
 

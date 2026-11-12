@@ -19,6 +19,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    ops::Range,
     rc::Rc,
     sync::Arc,
 };
@@ -63,6 +64,10 @@ impl SelectionTexts for Texts {
         &self.contents[i].text
     }
 
+    fn copied(&self, i: usize, range: std::ops::Range<u32>) -> String {
+        self.contents[i].copied_text(range)
+    }
+
     fn frame(&self, i: usize) -> Bounds<Points> {
         self.frames[i]
     }
@@ -78,6 +83,19 @@ impl SelectionTexts for Texts {
 
     fn continues(&self, i: usize) -> bool {
         self.views[i].state().props.continues_text
+    }
+
+    fn range_bounds(&self, i: usize, range: Range<u32>) -> Option<Bounds<Points>> {
+        let (x, y) = self.origins[i];
+        crate::text::range_rects(&self.views[i].state(), range.start, range.end)
+            .into_iter()
+            .map(|r| {
+                bounds(
+                    point(Points(x + r.origin.x as f32), Points(y + r.origin.y as f32)),
+                    size(Points(r.size.width as f32), Points(r.size.height as f32)),
+                )
+            })
+            .reduce(|a, b| a.union(&b))
     }
 }
 
@@ -206,8 +224,9 @@ struct Active {
     pointer: Cell<Option<(f32, f32)>>,
     /// The virtual list rows its ends are in, kept rendered.
     kept: KeptRows,
-    /// The selected text last reported to the area's `onSelectionChange`.
-    reported: String,
+    /// The selected text and its box last reported to the area's
+    /// `onSelectionChange`.
+    reported: Selected,
 }
 
 impl Active {
@@ -256,9 +275,18 @@ impl Active {
     }
 }
 
+/// What `onSelectionChange` reports: the selected text, where it starts and
+/// the box around it in the area.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Selected {
+    text: String,
+    start: u32,
+    bounds: Option<Bounds<Points>>,
+}
+
 /// Reports the selected text of the area that has the selection to its
-/// `onSelectionChange` when it changed (after the selection's borrow ends:
-/// the handler may change what is shown).
+/// `onSelectionChange` when it changed, or its box moved (after the
+/// selection's borrow ends: the handler may change what is shown).
 fn report(surface: &Surface) {
     let change = {
         let mut active = surface.selection.area.active.borrow_mut();
@@ -275,31 +303,35 @@ fn report(surface: &Surface) {
         if !listens {
             return;
         }
-        let (text, start) = if active.model.is_empty() {
-            (String::new(), 0)
+        let selected = if active.model.is_empty() {
+            Selected::default()
         } else {
             let texts = collect(&area);
-            (active.model.text(&texts), active.model.start_offset(&texts))
+            Selected {
+                text: active.model.text(&texts),
+                start: active.model.start_offset(&texts),
+                bounds: active.model.selected_bounds(&texts),
+            }
         };
-        if text == active.reported {
+        if selected == active.reported {
             return;
         }
-        active.reported.clone_from(&text);
-        (id, text, start)
+        active.reported.clone_from(&selected);
+        (id, selected)
     };
     send(surface, change);
 }
 
-/// Sends `onSelectionChange` with `text` to view `id`.
-fn send(surface: &Surface, (id, text, start): (NodeId, String, u32)) {
-    surface.event(
-        id,
-        EventKind::SelectionChange,
-        EventPayload::Map(vec![
-            ("text", PayloadValue::Str(text)),
-            ("start", PayloadValue::Number(f64::from(start))),
-        ]),
-    );
+/// Sends `onSelectionChange` with `selected` to view `id`.
+fn send(surface: &Surface, (id, selected): (NodeId, Selected)) {
+    let mut fields = vec![
+        ("text", PayloadValue::Str(selected.text)),
+        ("start", PayloadValue::Number(f64::from(selected.start))),
+    ];
+    if let Some(bounds) = selected.bounds {
+        fields.push(("bounds", PayloadValue::Bounds(bounds)));
+    }
+    surface.event(id, EventKind::SelectionChange, EventPayload::Map(fields));
 }
 
 impl AreaSelection {
@@ -317,11 +349,11 @@ impl AreaSelection {
         let active = self.active.borrow_mut().take();
         if let Some(mut active) = active {
             active.hide(surface);
-            if !active.reported.is_empty()
+            if active.reported != Selected::default()
                 && let Some(area) = active.area()
             {
                 let id = area.state().id;
-                send(surface, (id, String::new(), 0));
+                send(surface, (id, Selected::default()));
             }
         }
     }
@@ -334,12 +366,13 @@ impl AreaSelection {
             .is_some_and(|a| !a.model.is_empty())
     }
 
-    /// The selected text, as a copy gives it (`None` without a selection).
+    /// The selected text, as a copy gives it (`None` without a selection,
+    /// or one of hidden characters only).
     pub(crate) fn text(&self) -> Option<String> {
         let active = self.active.borrow();
         let active = active.as_ref().filter(|a| !a.model.is_empty())?;
         let texts = collect(&active.area()?);
-        Some(active.model.text(&texts))
+        Some(active.model.text(&texts)).filter(|t| !t.is_empty())
     }
 
     /// Selects every text of the area last pressed (Cmd+A). False without
@@ -391,7 +424,7 @@ pub(crate) fn down(
         over_press: false,
         pointer: Cell::new(None),
         kept: KeptRows::default(),
-        reported: String::new(),
+        reported: Selected::default(),
     });
     let clicks = clicks.max(1) as u32;
     active.over_press = over_press;

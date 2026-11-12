@@ -48,6 +48,7 @@ fn start_with(
         minify: false,
         split: false,
         ui_sets: ui_sets.iter().map(Into::into).collect(),
+        ..Default::default()
     })
     .unwrap();
     let bytecode = nsh_js::compile_bytecode_with(
@@ -481,4 +482,58 @@ mount(() => (
     // The revoked URL's avatar: its URL and no bytes.
     assert_eq!(failed.len(), 1, "{mounted:?}");
     assert!(failed[0].0.starts_with("blob:"), "{mounted:?}");
+}
+
+/// `Image.getSize` of a `blob:` URL reads the size from its bytes' header,
+/// in the core: no request goes to the platform, so it answers where none
+/// loads images (a headless run). `prefetch` of one resolves at once, its
+/// bytes being in memory; bytes that are no image reject.
+#[test]
+fn get_size_of_a_blob_url_reads_its_header() {
+    const APP: &str = r#"import { mount, signal, Text, Image } from "nsh";
+
+// A PNG's signature and header: 3x2 pixels.
+const png = new Uint8Array([
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+  0, 0, 0, 3, 0, 0, 0, 2, 8, 6, 0, 0, 0,
+]);
+const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+const text = URL.createObjectURL(new Blob(["not an image"], { type: "text/plain" }));
+const shown = signal("waiting");
+setTimeout(async () => {
+  const size = await Image.getSize(url);
+  const ready = await Image.prefetch(url).then(() => true, () => false);
+  const failed = await Image.getSize(text).then(() => "resolved", (e) => String(e.message));
+  shown.set(`${size.width}x${size.height} ${ready} ${failed}`);
+}, 0);
+
+mount(() => <Text>{shown()}</Text>);
+"#;
+    let (_engine, rx) = start(APP, 2.0);
+    let mut shown = String::new();
+    let mut asked = 0;
+    while shown.is_empty() || shown == "waiting" {
+        let Ok(batch) = rx.recv_timeout(WAIT) else {
+            break;
+        };
+        for item in &batch.items {
+            match item {
+                MountItem::Command {
+                    command: Command::ImageInfo { .. },
+                    ..
+                } => asked += 1,
+                MountItem::Text { text, .. } => shown = text.text.clone(),
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(asked, 0, "a blob's size is the core's to read");
+    assert!(
+        shown.starts_with("3x2 true Image.getSize: blob:"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("is not an image whose header gives its size"),
+        "{shown}"
+    );
 }

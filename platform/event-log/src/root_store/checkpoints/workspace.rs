@@ -354,7 +354,11 @@ pub(super) fn inventory(
     objects: &Objects,
     snapshot: &WorkspaceSnapshot,
 ) -> Result<Vec<WorkspaceEntry>, StoreError> {
-    let inventory: Inventory = serde_json::from_reader(objects.read(&snapshot.inventory)?)?;
+    read_inventory(objects.read(&snapshot.inventory)?)
+}
+
+pub(super) fn read_inventory(source: impl Read) -> Result<Vec<WorkspaceEntry>, StoreError> {
+    let inventory: Inventory = serde_json::from_reader(source)?;
     let mut paths = BTreeSet::new();
     let mut directories = BTreeSet::new();
     let mut total = 0u64;
@@ -401,14 +405,23 @@ pub(super) fn materialize_in(
     snapshot: &WorkspaceSnapshot,
     dir: &Dir,
 ) -> Result<(), StoreError> {
-    let entries = inventory(objects, snapshot)?;
+    materialize_entries(inventory(objects, snapshot)?, dir, |object| {
+        objects.read(object)
+    })
+}
+
+pub(super) fn materialize_entries(
+    entries: Vec<WorkspaceEntry>,
+    dir: &Dir,
+    open: impl Fn(&ObjectRef) -> Result<std::fs::File, StoreError>,
+) -> Result<(), StoreError> {
     if dir.entries()?.next().is_some() {
         return Err(invalid("checkpoint workspace destination is occupied"));
     }
-    for entry in entries {
+    for entry in &entries {
         match entry {
             WorkspaceEntry::Directory { path } => {
-                let (parent, name) = parent(dir, &path)?;
+                let (parent, name) = parent(dir, path)?;
                 parent.create_dir(&name)?;
             }
             WorkspaceEntry::File {
@@ -416,8 +429,8 @@ pub(super) fn materialize_in(
                 object,
                 executable,
             } => {
-                let (parent, name) = parent(dir, &path)?;
-                let mut source = objects.read(&object)?;
+                let (parent, name) = parent(dir, path)?;
+                let mut source = open(object)?;
                 let mut options = OpenOptions::new();
                 options
                     .write(true)
@@ -426,7 +439,7 @@ pub(super) fn materialize_in(
                 #[cfg(unix)]
                 {
                     use cap_std::fs::OpenOptionsExt;
-                    options.mode(if executable { 0o700 } else { 0o600 });
+                    options.mode(if *executable { 0o700 } else { 0o600 });
                 }
                 #[cfg(not(unix))]
                 let _ = executable;
@@ -436,18 +449,17 @@ pub(super) fn materialize_in(
             }
         }
     }
-    // Persist directory entries from leaves toward the root before publishing readiness.
-    fn sync(dir: &Dir) -> Result<(), StoreError> {
-        for entry in dir.entries()? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                sync(&dir.open_dir_nofollow(entry.file_name())?)?;
+    // Inventory validation requires parents before children. Sync in reverse
+    // order without holding one open descriptor per directory depth.
+    #[cfg(unix)]
+    {
+        for entry in entries.iter().rev() {
+            if let WorkspaceEntry::Directory { path } = entry {
+                let (parent, name) = parent(dir, path)?;
+                parent.open_dir_nofollow(name)?.open(".")?.sync_all()?;
             }
         }
-        // cap-std directory handles can be O_PATH on Linux; reopen the same
-        // directory for I/O rather than passing a path-only descriptor to fsync.
         dir.open(".")?.sync_all()?;
-        Ok(())
     }
-    sync(dir)
+    Ok(())
 }

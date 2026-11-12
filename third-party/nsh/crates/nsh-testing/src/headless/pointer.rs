@@ -99,6 +99,7 @@ impl Headless {
             self.finger_lifted(finger);
         }
         let parsed = Selector::parse(selector)?;
+        self.input_with(nsh_core::platform::InputModality::Pointer);
         let pick = self.screen.view(&parsed);
         let target = self.picked(pick, selector, "view")?;
         let bounds = self
@@ -343,6 +344,7 @@ impl Headless {
                 page: finger.at,
                 location: point(finger.at.x - finger.origin.x, finger.at.y - finger.origin.y),
                 changed: true,
+                pointer_type: nsh_core::PointerType::Touch,
             }],
             activated,
         };
@@ -438,7 +440,7 @@ impl Headless {
 
     /// Moves the scroll view's offset along its axis to `offset`, as its
     /// platform view reports it.
-    fn scroll_to(&mut self, view: NodeId, offset: Points) {
+    pub(super) fn scroll_to(&mut self, view: NodeId, offset: Points) {
         let Some(scroll) = self.screen.scroll_mut(view) else {
             return;
         };

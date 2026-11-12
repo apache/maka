@@ -25,7 +25,7 @@ import type {
   SettingValue,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { sameValue } from '../../../../plugins/shared/value';
-import { pluginTitle, settingCaption } from './pluginSettingsState.ts';
+import { pluginDescription, pluginTitle, settingCaption } from './pluginSettingsState.ts';
 import type { PluginSettingsOwner, PluginAction } from './pluginSettingsState.ts';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { LoadingIndicator } from './Loading';
@@ -46,7 +46,10 @@ import {
   SettingsTextArea,
 } from './SettingsPage';
 
-export function PluginSettings(props: { owner: PluginSettingsOwner }) {
+/** Whether a plugin is a quick tool, living in the quick launcher rather than in Maka itself. */
+export type QuickToolCheck = (instance: ManagedInstance) => boolean;
+
+export function PluginSettings(props: { owner: PluginSettingsOwner; quickTool: QuickToolCheck }) {
   const owner = props.owner;
   return (
     <If
@@ -81,7 +84,10 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
           {() => {
             const request = owner.action();
             return (
-              <If when={owner.selected()} else={<PluginList owner={owner} request={request} />}>
+              <If
+                when={owner.selected()}
+                else={<PluginList owner={owner} request={request} quickTool={props.quickTool} />}
+              >
                 <If when={owner.editor()} else={<PluginDetail owner={owner} request={request} />}>
                   <PluginField owner={owner} request={request} />
                 </If>
@@ -94,7 +100,11 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
   );
 }
 
-function PluginList(props: { owner: PluginSettingsOwner; request: PluginAction }) {
+function PluginList(props: {
+  owner: PluginSettingsOwner;
+  request: PluginAction;
+  quickTool: QuickToolCheck;
+}) {
   const owner = props.owner;
   return (
     <SettingsBody>
@@ -108,21 +118,51 @@ function PluginList(props: { owner: PluginSettingsOwner; request: PluginAction }
           change={(value) => owner.query.set(value)}
         />
       </If>
-      <SettingsSection
-        title={tr('Plugins')}
+      <PluginGroup
+        owner={owner}
+        request={props.request}
+        title={tr('Maka plugins')}
         note={tr('Manage plugins for this connection. Your conversation and draft stay open.')}
-      >
+        instances={owner.filtered().filter((instance) => !props.quickTool(instance))}
+      />
+      <PluginGroup
+        owner={owner}
+        request={props.request}
+        title={tr('Quick tools')}
+        note={tr('Tools in the quick launcher. Their commands and settings are under Quick tools.')}
+        instances={owner.filtered().filter(props.quickTool)}
+      />
+      <If when={!owner.filtered().length}>
+        <SettingsSection>
+          <SettingsRow label={tr('No matching plugins.')} tone="muted" />
+        </SettingsSection>
+      </If>
+    </SettingsBody>
+  );
+}
+
+function PluginGroup(props: {
+  owner: PluginSettingsOwner;
+  request: PluginAction;
+  title: string;
+  note: string;
+  instances: ManagedInstance[];
+}) {
+  const owner = props.owner;
+  return (
+    <If when={props.instances.length > 0}>
+      <SettingsSection title={props.title} note={props.note}>
         <Each<ManagedInstance>
-          of={owner.filtered()}
+          of={props.instances}
           key={(instance) => JSON.stringify(instance.instance)}
         >
           {(row) => (
             <SettingsRow
               label={pluginTitle(row())}
-              description={row().path.join(' / ')}
+              description={pluginDescription(row()) || row().path.join(' / ')}
               tone={row().disabled ? 'muted' : undefined}
               status={row().parentDisabled ? tr('Parent disabled') : undefined}
-              accessibilityLabel={tr('Open plugin {name}', { name: row().path.join(' / ') })}
+              accessibilityLabel={tr('Open plugin {name}', { name: pluginTitle(row()) })}
               opens
               disabled={owner.disabled()}
               onPress={inputAction(owner.open, {
@@ -132,11 +172,8 @@ function PluginList(props: { owner: PluginSettingsOwner; request: PluginAction }
             />
           )}
         </Each>
-        <If when={!owner.filtered().length}>
-          <SettingsRow label={tr('No matching plugins.')} tone="muted" />
-        </If>
       </SettingsSection>
-    </SettingsBody>
+    </If>
   );
 }
 
@@ -147,8 +184,8 @@ function PluginDetail(props: { owner: PluginSettingsOwner; request: PluginAction
   const locked = () => owner.disabled() || (plugin().disabled && plugin().parentDisabled);
   return (
     <SettingsBody>
-      <If when={plugin().presentation?.description}>
-        <SettingsLede>{plugin().presentation!.description!}</SettingsLede>
+      <If when={pluginDescription(plugin())}>
+        <SettingsLede>{pluginDescription(plugin())!}</SettingsLede>
       </If>
       <SettingsSection
         note={tr(

@@ -42,9 +42,9 @@ function App() {
       <View
         testID="drop"
         style={{ height: 40 }}
-        onFileDragEnter={() => drop.set("enter")}
+        onFileDragEnter={(e) => drop.set(`enter ${e.uris.length}: ${e.uris.join(" ")} [${e.mimeTypes.join(" ")}]`)}
         onFileDragLeave={() => drop.set(drop() + " leave")}
-        onFileDrop={(e) => drop.set(`dropped ${e.uris.length}: ${e.uris.join(" ")}`)}
+        onFileDrop={(e) => drop.set(`dropped ${e.uris.length}: ${e.uris.join(" ")} [${e.mimeTypes.join(" ")}]`)}
       />
       <Text>Drop: {drop()}</Text>
       <View

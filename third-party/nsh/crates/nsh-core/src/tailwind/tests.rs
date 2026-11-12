@@ -1140,6 +1140,7 @@ fn variants() {
         dark: true,
         platform: Platform::Android,
         reduce_motion: false,
+        ..ClassEnvironment::default()
     };
     let (s, _) = styled_with("bg-white dark:bg-black", dark, (390.0, 844.0), 0);
     assert_eq!(s.view.background_color, Color(0x0000_00ff));
@@ -1175,6 +1176,71 @@ fn variants() {
     );
     assert_eq!(s.layout.size.width, taffy::Dimension::length(390.0));
     assert_eq!(s.layout.size.height, taffy::Dimension::length(844.0));
+}
+
+#[test]
+fn pointer_and_terminal_variants_follow_the_device() {
+    // Tailwind's `pointer-fine:` / `pointer-coarse:` and NSH's `terminal:`,
+    // which comes after them: a terminal is a fine pointer too.
+    let theme = themed();
+    let list = parse(
+        &theme,
+        "h-10 pointer-coarse:h-9 pointer-fine:h-7 terminal:h-1",
+    );
+    assert!(list.unknown().is_empty(), "{:?}", list.unknown());
+    assert_eq!(list.deps(), deps::DEVICE);
+    let height = |pointer: Pointer, terminal: bool| {
+        let env = ClassEnvironment {
+            pointer,
+            terminal,
+            ..ClassEnvironment::default()
+        };
+        let (s, _) = styled_with(
+            "h-10 pointer-coarse:h-9 pointer-fine:h-7 terminal:h-1",
+            env,
+            (390.0, 844.0),
+            0,
+        );
+        s.layout.size.height
+    };
+    assert_eq!(
+        height(Pointer::Coarse, false),
+        taffy::Dimension::length(36.0)
+    );
+    assert_eq!(height(Pointer::Fine, false), taffy::Dimension::length(28.0));
+    assert_eq!(height(Pointer::Fine, true), taffy::Dimension::length(4.0));
+    // A hover look that only a pointer gets.
+    let list = parse(&theme, "pointer-fine:hover:bg-white");
+    assert!(list.unknown().is_empty(), "{:?}", list.unknown());
+}
+
+#[test]
+fn focus_visible_is_the_shown_focus_not_any_focus() {
+    // `focus:` holds while the view has the focus, `focus-visible:` only
+    // while the core shows it (the keyboard moved it there).
+    let theme = themed();
+    let list = parse(&theme, "focus-visible:p-2 group-focus-visible:m-2");
+    assert!(list.unknown().is_empty(), "{:?}", list.unknown());
+    // The platform reports `FOCUSED` alone: nothing more to track.
+    assert_eq!(list.tracked_states() & !state::FOCUS_VISIBLE, 0);
+    let pad = |states: u16| {
+        let (env, states) = cx(states);
+        styled_with(
+            "p-1 focus:p-3 focus-visible:p-5",
+            env,
+            (390.0, 844.0),
+            states,
+        )
+        .0
+        .layout
+        .padding
+        .top
+    };
+    let p = |n: f32| taffy::LengthPercentage::length(n);
+    assert_eq!(pad(0), p(4.0));
+    assert_eq!(pad(state::FOCUSED), p(12.0));
+    // After `focus:` in Tailwind's order: it wins while both hold.
+    assert_eq!(pad(state::FOCUSED | state::FOCUS_VISIBLE), p(20.0));
 }
 
 #[test]
@@ -1343,8 +1409,8 @@ fn data_variants() {
     assert_eq!(s.view.background_color, Color(0xffff_ffff));
 }
 
-/// `aria-pressed:`, `aria-busy:`, `aria-checked:` and `aria-selected:`
-/// as Tailwind v4 has them (`&[aria-pressed="true"]`, ...): the core's
+/// `aria-pressed:`, `aria-busy:`, `aria-checked:`, `aria-invalid:` and
+/// `aria-selected:` as Tailwind v4 has them (`&[aria-pressed="true"]`, ...): the core's
 /// states from the accessibility state, ordered by their names after the
 /// pseudo-classes.
 #[test]
@@ -1353,8 +1419,8 @@ fn aria_state_variants() {
     let list = parse(
         &theme,
         "aria-pressed:bg-black aria-busy:opacity-50 aria-checked:p-1 aria-selected:p-2 \
-         group-aria-pressed:rotate-180 group-aria-busy:opacity-0 group-aria-checked:p-3 \
-         group-aria-selected:p-4",
+         aria-invalid:p-5 group-aria-pressed:rotate-180 group-aria-busy:opacity-0 \
+         group-aria-checked:p-3 group-aria-selected:p-4 group-aria-invalid:p-6",
     );
     assert!(list.unknown().is_empty(), "{:?}", list.unknown());
     assert!(list.deps() & deps::STATE != 0 && list.deps() & deps::GROUP != 0);
@@ -1394,19 +1460,31 @@ fn aria_state_variants() {
         pressed,
     );
     assert_eq!(s.view.background_color, Color(0x0000_00ff));
-    // Among themselves, by their names: busy, checked, expanded, pressed,
-    // selected.
-    let all =
-        state::BUSY | state::CHECKED | state::EXPANDED | state::ARIA_PRESSED | state::SELECTED;
+    // Among themselves, by their names: busy, checked, expanded, invalid,
+    // pressed, selected.
+    let all = state::BUSY
+        | state::CHECKED
+        | state::EXPANDED
+        | state::INVALID
+        | state::ARIA_PRESSED
+        | state::SELECTED;
     let order = [
         ("aria-busy", Color(0xfb2c_36ff)),
         ("aria-checked", Color(0x0000_00ff)),
         ("aria-expanded", Color(0xffff_ffff)),
+        ("aria-invalid", Color(0xe4e4_e7ff)),
         ("aria-pressed", Color(0x00bc_7dff)),
         ("aria-selected", Color(0x2b7f_ffff)),
     ];
     let classes = |order: &[(&str, Color)]| {
-        let names = ["red-500", "black", "white", "emerald-500", "blue-500"];
+        let names = [
+            "red-500",
+            "black",
+            "white",
+            "zinc-200",
+            "emerald-500",
+            "blue-500",
+        ];
         order
             .iter()
             .zip(names)
@@ -1416,14 +1494,15 @@ fn aria_state_variants() {
     let mut reversed = classes(&order);
     reversed.reverse();
     let (s, _) = styled_with(&reversed.join(" "), env, at, all);
-    assert_eq!(s.view.background_color, order[4].1);
-    for i in 0..4 {
+    assert_eq!(s.view.background_color, order[5].1);
+    for i in 0..5 {
         let below = order[..=i].iter().fold(0, |states, (v, _)| {
             states
                 | match *v {
                     "aria-busy" => state::BUSY,
                     "aria-checked" => state::CHECKED,
                     "aria-expanded" => state::EXPANDED,
+                    "aria-invalid" => state::INVALID,
                     "aria-pressed" => state::ARIA_PRESSED,
                     _ => state::SELECTED,
                 }
@@ -2086,4 +2165,145 @@ fn env_in_arbitrary_spacing() {
          pb-[calc(env(safe-area-inset-top)*2)] w-[env(safe-area-inset-top)]",
     );
     assert_eq!(list.unknown().len(), 5, "{:?}", list.unknown());
+}
+
+/// `bg-[image:…]`: Tailwind's type hint for an arbitrary background image.
+/// The gradient after it is drawn as the one written without the hint.
+mod bg_image_hint {
+    use super::*;
+
+    fn images(classes: &str) -> Vec<crate::effects::Gradient> {
+        styled(classes)
+            .view
+            .effects
+            .map(|e| e.background_images.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_hinted_gradient_is_the_gradient() {
+        for gradient in [
+            "linear-gradient(#000,#fff)",
+            "linear-gradient(45deg,#f00,#00f)",
+            "linear-gradient(to_right,#ff0000,#0000ff_60%)",
+            "radial-gradient(circle_at_center,#ff0000,#0000ff)",
+            "conic-gradient(from_45deg,#ff0000,#0000ff)",
+            "repeating-linear-gradient(45deg,#000_0,#fff_10px)",
+            "linear-gradient(currentColor,#0000ff)",
+        ] {
+            let hinted = images(&format!("bg-[image:{gradient}]"));
+            assert!(!hinted.is_empty(), "{gradient}");
+            assert_eq!(hinted, images(&format!("bg-[{gradient}]")), "{gradient}");
+        }
+        // Under a variant, and over a color of the same list.
+        let theme = themed();
+        let list = parse(
+            &theme,
+            "bg-red-500 hover:bg-[image:linear-gradient(#000,#fff)]",
+        );
+        assert!(list.unknown().is_empty(), "{:?}", list.unknown());
+    }
+
+    #[test]
+    fn what_is_no_gradient_stays_unknown() {
+        let theme = themed();
+        for class in [
+            "bg-[image:#ff0000]",
+            "bg-[image:url(a.png)]",
+            "bg-[image:linear-gradient(nonsense)]",
+            "bg-[image:]",
+        ] {
+            assert_eq!(parse(&theme, class).unknown().len(), 1, "{class}");
+        }
+        // A color keeps its own hint.
+        assert_eq!(
+            styled("bg-[color:#ff0000]").view.background_color,
+            Color(0xff00_00ff)
+        );
+    }
+}
+
+/// A text color with an opacity modifier where the color is arbitrary or a
+/// design token (`text-[#ff0000]/50`, `text-primary/50`): the color at
+/// that alpha, as `bg-` and `border-` take it. A size keeps its line
+/// height (`text-[14px]/6`).
+mod text_color_opacity {
+    use super::*;
+
+    fn text_color(classes: &str, dark: bool) -> Option<Color> {
+        let env = ClassEnvironment {
+            dark,
+            ..Default::default()
+        };
+        styled_with(classes, env, (390.0, 844.0), 0).0.text.color
+    }
+
+    #[test]
+    fn an_arbitrary_text_color_takes_an_opacity() {
+        for (class, color) in [
+            ("text-[#ff0000]", 0xff00_00ff_u32),
+            ("text-[#ff0000]/50", 0xff00_0080),
+            ("text-[#ff0000]/[0.5]", 0xff00_0080),
+            ("text-[color:#ff0000]/50", 0xff00_0080),
+            ("text-[rgb(0_0_255)]/25", 0x0000_ff40),
+            ("text-[color:rgb(0_0_255)]/25", 0x0000_ff40),
+            ("text-[color:rgb(0_0_255)]", 0x0000_ffff),
+        ] {
+            assert_eq!(text_color(class, false), Some(Color(color)), "{class}");
+        }
+        // What `bg-` makes of the same value.
+        for value in [
+            "[#336699]/30",
+            "[color:#336699]/30",
+            "[hsl(210_50%_40%)]/[30%]",
+        ] {
+            let s = styled(&format!("text-{value} bg-{value}"));
+            assert_eq!(s.text.color, Some(s.view.background_color), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_token_text_color_takes_an_opacity() {
+        let ui = ui_theme();
+        for dark in [false, true] {
+            let primary = ui.color("primary").unwrap();
+            let primary = Color::from(if dark { primary.dark } else { primary.light });
+            let half = primary.with_alpha(0.5);
+            assert_eq!(text_color("text-primary", dark), Some(primary), "{dark}");
+            assert_eq!(text_color("text-primary/50", dark), Some(half), "{dark}");
+            assert_eq!(
+                text_color("text-(--primary)/50", dark),
+                Some(half),
+                "{dark}"
+            );
+            assert_eq!(
+                text_color("text-(color:--primary)/50", dark),
+                Some(half),
+                "{dark}"
+            );
+        }
+        // Under a variant too.
+        let theme = themed();
+        assert!(
+            parse(&theme, "hover:text-muted-foreground/70")
+                .unknown()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_size_keeps_its_line_height() {
+        let s = styled("text-[14px]/6");
+        assert_eq!(s.text.font_size, Some(px(14.0)));
+        assert_eq!(s.text.line_height, Some(px(24.0)));
+        let s = styled("text-[14px]/[1.5]");
+        assert_eq!(s.text.font_size, Some(px(14.0)));
+        assert_eq!(s.text.line_height_multiple, Some(1.5));
+        let s = styled("text-[14px]/[150%]");
+        assert_eq!(s.text.line_height_em, Some(1.5));
+        assert_eq!(s.text.color, None);
+        let s = styled("text-lg/7");
+        assert_eq!(s.text.font_size, Some(px(18.0)));
+        assert_eq!(s.text.line_height, Some(px(28.0)));
+    }
 }

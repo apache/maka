@@ -19,7 +19,7 @@
 
 import { batch, cleanup, computed, signal } from 'nsh';
 import type { Host } from './host';
-import { tr } from './locale';
+import { localizedPresentation, tr } from './locale';
 import { message, UiError } from './text';
 import { sameValue as same } from '../../../../plugins/shared/value';
 import type {
@@ -51,7 +51,10 @@ export type PluginAction = {
   field: string | null;
 };
 export const pluginTitle = (instance: ManagedInstance) =>
-  instance.presentation?.displayName || instance.path.join(' / ');
+  (instance.presentation && localizedPresentation(instance.presentation).displayName) ||
+  instance.path.join(' / ');
+export const pluginDescription = (instance: ManagedInstance) =>
+  instance.presentation && localizedPresentation(instance.presentation).description;
 export const settingCaption = (value: SettingValue | null | undefined) =>
   value?.kind === 'text' || value?.kind === 'number'
     ? value.text

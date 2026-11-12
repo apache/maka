@@ -217,12 +217,9 @@ impl LivePublication {
                 })
                 .collect();
             for resources in resources {
-                if resources.settle().await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            }
-            if !publication.original_cleanup_confirmed() {
-                std::future::pending::<()>().await;
+                // Settlement wakes the owner on failure too. The original
+                // resources still carry the failure for its cleanup probe.
+                let _settlement = resources.settle().await;
             }
         })]
     }

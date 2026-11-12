@@ -3,6 +3,7 @@ name = "nsh-js"
 description = "QuickJS host: runtime setup, host APIs, op decoding and bytecode."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true

@@ -51,6 +51,11 @@ impl UreqNetwork {
         let agent = |redirects| {
             Agent::config_builder()
                 .http_status_as_error(false)
+                .tls_config(
+                    ureq::tls::TlsConfig::builder()
+                        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                        .build(),
+                )
                 .max_redirects(redirects)
                 .max_redirects_will_error(false)
                 .timeout_connect(Some(Duration::from_secs(30)))

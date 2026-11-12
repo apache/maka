@@ -3,6 +3,7 @@ name = "nsh-core"
 description = "Platform-independent core: shadow tree, styles, layout and mount instructions."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -30,6 +31,10 @@ url.workspace = true
 sha2.workspace = true
 # Picked images' sizes and types (`picker.rs`).
 imagesize.workspace = true
+# A GIF's first frame for the SVG layer budget (`svg/layers.rs`).
+gif = { workspace = true, optional = true }
+# Inline SVG style declarations, parsed as usvg parses them (`svg/mod.rs`).
+simplecss = { workspace = true, optional = true }
 naga = { workspace = true, optional = true }
 # WOFF and WOFF2 fonts (`text::font_data`).
 wuff.workspace = true
@@ -39,7 +44,7 @@ ttf-parser.workspace = true
 [features]
 # SVG images for the native backends (`svg`: sniffing, sizes and rasters with
 # resvg). The web runtime leaves it off: the browser draws SVG itself.
-svg = ["dep:resvg", "dep:flate2"]
+svg = ["dep:resvg", "dep:flate2", "dep:gif", "dep:simplecss"]
 # Remote images for the shared image loader (`image::loader`: downloads with
 # ureq). Without it, the loader reads files, assets and inline bytes only.
 loader = ["dep:ureq"]
@@ -62,7 +67,6 @@ cap-std.workspace = true
 futures-util.workspace = true
 tokio-tungstenite.workspace = true
 rustls.workspace = true
-webpki-roots.workspace = true
 # The image disk cache (`image/cache.rs`).
 httpdate.workspace = true
 # The image loader's downloads (`image/loader.rs`, feature `loader`).
@@ -74,6 +78,14 @@ nsh-updater.workspace = true
 # `process`'s children: their process groups and exits (`runtime/process.rs`);
 # the names of Unix error numbers (`element/system.rs`). Emscripten is wasm32
 # and `unix` both, so it needs libc for the `cfg(unix)` code too.
+# WebSocket TLS roots: the system trust store, except on Android, whose
+# verifier needs a JNI init the host does not run; there the bundled roots.
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
+rustls-platform-verifier.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+webpki-roots.workspace = true
+
 [target.'cfg(any(not(target_arch = "wasm32"), target_os = "emscripten"))'.dependencies]
 libc.workspace = true
 

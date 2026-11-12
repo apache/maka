@@ -18,6 +18,7 @@ import StateChecked from "./state-checked";
 import StateIndeterminate from "./state-indeterminate";
 import StateExpanded from "./state-expanded";
 import StatePressed from "./state-pressed";
+import StateFocusVisible from "./state-focus-visible";
 import StateFocusWithin from "./state-focus-within";
 
 const cases: Record<string, () => JSX.Element> = {
@@ -35,6 +36,7 @@ const cases: Record<string, () => JSX.Element> = {
   "state-indeterminate": StateIndeterminate,
   "state-expanded": StateExpanded,
   "state-pressed": StatePressed,
+  "state-focus-visible": StateFocusVisible,
   "state-focus-within": StateFocusWithin,
   "paint-inline-align": PaintInlineAlign,
 };

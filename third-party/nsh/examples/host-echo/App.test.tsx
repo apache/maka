@@ -15,3 +15,9 @@ test("events reach host.on, those sent before the app started too", async () => 
   await app.waitFor("text:ticks: 1");
   await app.waitFor("text:ticks: 2");
 });
+
+test("posts reach the page's host", async () => {
+  const app = await open("./App.tsx");
+  await app.press("label:post");
+  await app.waitFor('text:noted: {"n":2}');
+});

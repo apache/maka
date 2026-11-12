@@ -18,7 +18,78 @@
  */
 
 use super::*;
+use maka_agent_api::{executor::NativeRuntime, external::ExternalUsageLimits};
+
 impl Owner {
+    async fn inspect_external(
+        &self,
+        cwd: String,
+        request: serde_json::Value,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let mut ticket = scope
+            .resources
+            .reserve()
+            .map_err(|error| error.to_string())?;
+        ticket.start();
+        let result = self
+            .executors
+            .external_query(cwd, request, scope.cancellation.clone())
+            .await;
+        ticket.complete(
+            if matches!(
+                result,
+                Err(maka_agent_ports::executor::Error::CleanupUnconfirmed)
+            ) {
+                Err("Native CLI query cleanup is unconfirmed".into())
+            } else {
+                Ok(())
+            },
+        );
+        result.map_err(|error| error.to_string())
+    }
+
+    pub(crate) async fn external_usage_limits(
+        &self,
+        runtime: NativeRuntime,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<serde_json::Value, String> {
+        let encode = |result| serde_json::to_value(result).map_err(|error| error.to_string());
+        if !runtime.reports_usage_limits()
+            || !self
+                .settings
+                .external
+                .as_ref()
+                .is_some_and(|config| config.runtimes.enabled(runtime))
+        {
+            return encode(ExternalUsageLimits::Unsupported);
+        }
+        let cwd = self.external_cwd().await?.or_else(|| {
+            self.home
+                .as_deref()
+                .and_then(std::path::Path::to_str)
+                .map(str::to_owned)
+        });
+        let Some(cwd) = cwd else {
+            return encode(ExternalUsageLimits::Unavailable);
+        };
+        match self
+            .inspect_external(
+                cwd,
+                serde_json::json!({"kind":"usage_limits", "runtime":runtime}),
+                scope,
+            )
+            .await
+        {
+            Ok(Some(value)) => Ok(value),
+            Ok(None) => encode(ExternalUsageLimits::Unsupported),
+            Err(error) => {
+                tracing::debug!(%error, runtime = runtime.as_str(), "Native usage query failed");
+                encode(ExternalUsageLimits::Unavailable)
+            }
+        }
+    }
+
     pub(crate) async fn external_agents(
         &self,
         inspect: bool,
@@ -38,29 +109,9 @@ impl Owner {
                 Ok(None) => ExternalAgentsState::WorkspaceRequired,
                 Err(message) => ExternalAgentsState::Unavailable { message },
                 Ok(Some(cwd)) => {
-                    let mut ticket = scope
-                        .resources
-                        .reserve()
-                        .map_err(|error| error.to_string())?;
-                    ticket.start();
                     let result = self
-                        .executors
-                        .external_query(
-                            cwd.clone(),
-                            serde_json::json!({"kind":"status", "cwd":cwd}),
-                            scope.cancellation.clone(),
-                        )
+                        .inspect_external(cwd, serde_json::json!({"kind":"status"}), scope)
                         .await;
-                    ticket.complete(
-                        if matches!(
-                            &result,
-                            Err(maka_agent_ports::executor::Error::CleanupUnconfirmed)
-                        ) {
-                            Err("Native CLI status cleanup is unconfirmed".into())
-                        } else {
-                            Ok(())
-                        },
-                    );
                     match result {
                         Ok(Some(value)) => match serde_json::from_value(value) {
                             Ok(runtimes) => ExternalAgentsState::Ready { runtimes },
@@ -69,9 +120,7 @@ impl Owner {
                             },
                         },
                         Ok(None) => ExternalAgentsState::Disabled,
-                        Err(error) => ExternalAgentsState::Unavailable {
-                            message: error.to_string(),
-                        },
+                        Err(message) => ExternalAgentsState::Unavailable { message },
                     }
                 }
             }

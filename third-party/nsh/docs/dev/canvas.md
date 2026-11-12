@@ -17,9 +17,10 @@
   for its transform, current path and line style and tests the flattened path; after `draw` returned a kept context
   answers from everything it drew, so press handlers can hit-test the shapes; strokes take joins as round and ignore
   dashes; animated values count as 0, since JS does not see their current values), linear / radial / conic
-  gradients, `drawImage` (all three forms, images by URI or asset: native canvases draw bitmaps, loaded through their
-  platform's image module, whose canvas loads fail an SVG with a warning naming it, as bytes no decoder reads fail;
-  the web's draws what the browser draws). Any number argument and colors may be animated values
+  gradients, `drawImage` (all three forms, images by URI or asset: native canvases load them through their
+  platform's image module, which rasterizes an SVG with `nsh_core::svg` and hands its bitmap to the canvas, as bytes no
+  decoder reads fail; draw an SVG into an explicit destination rectangle, its raster is sized in the loader's own
+  pixels; the web's draws what the browser draws). Any number argument and colors may be animated values
   (`createAnimatedValue`, `interpolate`, ...): those become slots bound like style values (`AnimationProp::CanvasArg`) and the
   platform redraws on its own while they animate, without JS (only what they change on iOS and macOS: "Partial
   redraws" below). Deriving a node again (`interpolate`, `mul`, ... in a `draw`
@@ -36,10 +37,12 @@
   into the `drawRect:` context, keeping its own transform and path in view space; Android `CanvasBox.java` interprets an `int[]` (`encode.rs`). Not
   supported: `getImageData` / `putImageData`, filters.
 
-**Partial redraws.** While animated values animate, iOS and macOS (`NshView::redraw_rect`) redraw only the area the
-changed values affect: `nsh_core::canvas::DamageScan` finds it from the recorded operations, falling back to a full
-redraw (`Damage::All`) when it cannot bound the change, and the platform replays the whole drawing clipped to it, so
-the pixels are those of a full redraw. Linux rasterizes each canvas into tiled textures (`canvas.rs` `Raster`) and
+**Partial redraws.** While animated values animate, iOS, macOS and Windows redraw only the area the changed values
+affect: `nsh_core::canvas::DamageScan` finds it from the recorded operations, falling back to a full redraw
+(`Damage::All`) when it cannot bound the change, and the platform replays the whole drawing clipped to it, so the
+pixels are those of a full redraw. iOS and macOS call `NshView::redraw_rect`; Windows adds the area to the view's
+damage and redraws it over the kept back buffer (`docs/dev/windows.md` "Partial frames"). Linux rasterizes each
+canvas into tiled textures (`canvas.rs` `Raster`) and
 replays only the damaged area; Linux and macOS (`canvas.rs` `Prefix`) also keep what is painted before the first
 animated operation, for long drawings; canvases macOS repaints often are replayed by Core Animation on its threads (`canvas.rs` `Cadence`)
 (`docs/dev/macos.md`). macOS can split a small source-over animated suffix of a shorter drawing into its own
@@ -50,6 +53,23 @@ drawn until it comes into sight: its animations ask for no frames. Android, the 
 included, with tiny-skia into a pixmap in device pixels: `nsh-platform-gpui` `canvas.rs`) still redraw the
 whole canvas. Numbers:
 `docs/dev/performance.md`.
+
+Windows also omits a `source-over` paint whose current values cannot change a pixel before it builds the geometry,
+lays the text out or looks the bitmap up: zero `globalAlpha` (the shadow's alpha is multiplied by it, so it hides
+even a configured shadow), a transparent solid or animated color, an empty or degenerate gradient, and an image at
+zero alpha. A configured shadow keeps a transparent foreground on the regular path; `clearRect`, clipping,
+save/restore and other composite operations are untouched. The decision is read while recording, so a recorded list
+paints again once its values become visible.
+
+Windows also classifies a drawing's animated-slot dependencies once (`canvas.rs` `DamageIndex`): each painting
+operation records the slots that can change its pixels (its own operands, the current path and transform sticky from
+where they were built, and the alpha, paint, line width and dash state it paints with). A changed slot that no
+operation reads returns `Damage::None` without a scan, and a slot that cannot move, resize or re-ink geometry (an
+animated alpha, color or dash offset) reuses the per-slot area `DamageScan` computed, which cannot differ before and
+after the write. Everything the core cannot bound keeps the original full scans: slot-driven transforms, paths, line
+widths, dimensions, text positions or image destinations, a slot-dependent clip, `clearRect`, and any composite
+operation other than `source-over`. The index is made only once a drawing outlives a frame, so a scene recorded
+every frame (a dragged card) keeps the full scans rather than paying for an index it cannot reuse.
 
 Rust components record drawings with `element::Painter` (the same operations; `docs/dev/components.md`), paint with the
 canvas view's paint properties (`Painter::fill_style_from_view` and the like: `Drawing::view_paints` names the

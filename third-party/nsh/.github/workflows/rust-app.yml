@@ -1,38 +1,11 @@
 name: Rust application
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "crates/nsh-bundler/**"
-      - "crates/nsh-cli/**"
-      - "crates/nsh-core/**"
-      - "crates/nsh-dev/**"
-      - "crates/nsh-engine/**"
-      - "crates/nsh-i18n/**"
-      - "crates/nsh-js/**"
-      - "crates/nsh-macros/**"
-      - "crates/nsh-base/**"
-      - "crates/nsh-package/**"
-      - "crates/nsh-updater/**"
-      - "crates/nsh-platform-linux/**"
-      - "crates/nsh-platform-apple/**"
-      - "crates/nsh-platform-macos/**"
-      - "crates/nsh-platform-web/**"
-      - "crates/nsh-platform-windows/**"
-      - "crates/nsh-testing/**"
-      - "examples/counter/**"
-      - "examples/gallery/**"
-      - "examples/gallery-rs/**"
-      - "examples/rust-exports/**"
-      - "examples/tasks/**"
-      - "examples/tasks-rs/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".cargo/**"
-      - "rust-toolchain.toml"
-      - ".github/workflows/rust-app.yml"
-      - ".github/actions/cargo/**"
+  # Pull requests test every change before it merges; main runs every three
+  # hours when it moved, instead of on every push, which only tested again what its pull request
+  # had, and saves the dependencies' caches pull requests restore.
+  schedule:
+    - cron: "0 */3 * * *"
   pull_request:
     # `closed` runs nothing, but it takes the pull request's concurrency group
     # and so cancels its runs still queued or running once it merges or closes.
@@ -59,6 +32,7 @@ on:
       - "examples/gallery/**"
       - "examples/gallery-rs/**"
       - "examples/rust-exports/**"
+      - "examples/post-editor/**"
       - "examples/tasks/**"
       - "examples/tasks-rs/**"
       - "Cargo.toml"
@@ -87,9 +61,18 @@ env:
   RUSTUP_TOOLCHAIN: stable
 
 jobs:
+  # Scheduled runs: only when main moved since the last one.
+  changed:
+    if: github.event_name == 'schedule'
+    permissions:
+      actions: read
+    uses: ./.github/workflows/changed.yml
+
   check:
-    # Nothing for drafts or a pull request being closed.
-    if: github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
     # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
     # push cancels this run before it takes one.
     environment:
@@ -132,9 +115,12 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo clippy -p nsh-macos-app --locked --no-default-features --features js -- -D warnings
       # The crate's unit tests; the app's tests are TypeScript (`nsh test`,
-      # the web job).
+      # the web job). On macOS also nsh-platform-apple's (the code the macOS
+      # and iOS backends share, empty elsewhere), which no other job runs:
+      # in one command with the gallery, its dependencies are built with the
+      # gallery's features, so nothing is built twice.
       - name: Test the crate
-        run: cargo test -p gallery-native --locked
+        run: cargo test -p gallery-native ${{ runner.os == 'macOS' && '-p nsh-platform-apple' || '' }} --locked
       - name: Check the native dependency graph
         run: |
           cargo tree -p gallery-native --locked -e normal > "$RUNNER_TEMP/rust-app-dependencies.txt"
@@ -146,8 +132,10 @@ jobs:
   # The same crate compiled into the app's own web runtime: `nsh package
   # --target web` builds it for wasm32 and publishes the site.
   web:
-    # Nothing for drafts or a pull request being closed.
-    if: github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
     # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
     # push cancels this run before it takes one.
     environment:
@@ -211,7 +199,7 @@ jobs:
           check test '(nsh-bundler|rolldown|oxc_parser)([ _-]|$)' "the bundler"
       - name: Run the examples' tests
         run: |
-          for app in counter gallery rust-exports tasks tasks-rs; do
+          for app in counter gallery post-editor rust-exports tasks tasks-rs; do
             ./target/debug/nsh test "examples/$app"
           done
       # NSH's generated declarations type-check themselves: apps skip
@@ -220,8 +208,9 @@ jobs:
         run: ./target/debug/nsh check examples/counter -- --skipLibCheck false
       # The same tests in the runner's Chrome, headless, with the browser's
       # trusted input (`nsh test --target web`): those a real platform runs
-      # (real time).
+      # (real time). The slowest part of the job: main's scheduled runs only.
       - name: Run the examples' tests in Chrome
+        if: github.event_name != 'pull_request'
         run: |
           ./target/debug/nsh test examples/counter --target web
           for file in device dock form gestures hover links navigation network photos resizable shortcuts storage timers; do
@@ -238,7 +227,7 @@ jobs:
           ./target/debug/nsh test examples/gallery/tests/rich-editor.test.tsx --target web --filter 'Backspace after the caret moves'
           # Apps with Rust crates, in their hosts' runtime: a TSX app and a
           # Rust app (its root).
-          ./target/debug/nsh test examples/rust-exports --target web
+          ./target/debug/nsh test examples/rust-exports/App.test.tsx --target web
           ./target/debug/nsh test examples/gallery-rs/App.test.tsx --target web
           ./target/debug/nsh test examples/gallery-rs/shortcuts.test.tsx --target web
       - name: Publish a TSX app with a Rust crate for the web

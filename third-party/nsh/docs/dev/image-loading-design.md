@@ -112,6 +112,9 @@ platform networking but follow the same policy and budget):
 
 A small LRU of encoded bytes by source key, so that a re-decode at a new size,
 an SVG re-parse, `getSize` and `prefetch` don't re-read the disk or network.
+Its size is `ENCODED_BYTES` unless the app sets its own
+(`loader().set_encoded_limit`): one whose images are on disk anyway can keep
+less, or none, and read the disk again for a decode at another size.
 
 ### L4 — decoded images, one process-wide budget
 
@@ -212,8 +215,6 @@ Known follow-ups of phase 1:
 - Windows scales with WIC after the BGRA conversion, so a JPEG is decoded at
   full size before it shrinks (no decode-time scaling as libjpeg's or
   ImageIO's).
-- The Windows and macOS surfaces carry no access policy (`Access::default()`):
-  every redirect is allowed except HTTPS→HTTP.
 
 Each phase lands with tests for its contract (dedup, eviction order, leases
 pinning, budget accounting including variants, cancellation, bucket choice,

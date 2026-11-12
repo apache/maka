@@ -9,6 +9,7 @@ import EventsGestures from "./events-gestures";
 import EventsInput from "./events-input";
 import EventsLayout from "./events-layout";
 import EventsMedia from "./events-media";
+import EventsPinch from "./events-pinch";
 import EventsPointer from "./events-pointer";
 import EventsScroll from "./events-scroll";
 import EventsTouch from "./events-touch";
@@ -20,6 +21,7 @@ const cases: Record<string, () => JSX.Element> = {
   "events-input": EventsInput,
   "events-layout": EventsLayout,
   "events-media": EventsMedia,
+  "events-pinch": EventsPinch,
   "events-pointer": EventsPointer,
   "events-scroll": EventsScroll,
   "events-touch": EventsTouch,

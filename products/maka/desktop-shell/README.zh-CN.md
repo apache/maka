@@ -32,6 +32,8 @@ just build
 
 构建生成 CLI 和 shell。macOS 上在 `maka` 旁生成 `Maka.app`：shell 位于 `Contents/MacOS`，另有 `Info.plist` 和图标（取自 `assets/logo.png`），系统因此把窗口显示为 Maka 并使用其图标。`maka desktop` 启动的是 bundle 内的 shell，所以只用 Cargo 重新构建 shell 之后，要再运行一次 `just build` 来更新它。`--target TRIPLE` 可选择其他 Rust 目标。原生包包含 `bin/maka` 和 `bin/maka-desktop-shell`，Windows 可执行文件带后缀并附带 service helper；macOS 原生包包含 `bin/maka` 和 `bin/Maka.app/`。
 
+`Maka.app` 默认使用临时签名，macOS 会把每次构建都当成新应用，屏幕录制和辅助功能授权随之失效。要在重新构建后保留授权，创建一个代码签名证书（Xcode 里的 Apple Development 证书，或在钥匙串访问中自签名），构建时把 `MAKA_CODESIGN_IDENTITY` 设为证书名称；用它第一次构建后，运行 `tccutil reset ScreenCapture org.apache.maka.desktop` 和 `tccutil reset Accessibility org.apache.maka.desktop` 清掉旧授权。
+
 通过启动器启动：
 
 ```sh

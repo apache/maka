@@ -36,7 +36,7 @@ fn files() -> impl IntoElement {
         .list_class("p-1")
         .item_class(
             "group rounded-md hover:bg-accent selected:bg-primary/10 \
-             focus:outline-2 focus:-outline-offset-2 focus:outline-ring disabled:opacity-50",
+             focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-50",
         )
         .render_item(|entry: &TreeEntry| {
             view()
@@ -81,7 +81,7 @@ function App() {
       accessibilityLabel="Files"
       class="h-80 w-64 rounded-lg border border-border"
       listClass="p-1"
-      itemClass="group h-8 rounded-md hover:bg-accent selected:bg-primary/10 focus:outline-2 focus:-outline-offset-2 focus:outline-ring disabled:opacity-50"
+      itemClass="group h-8 rounded-md hover:bg-accent selected:bg-primary/10 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
       renderItem={(entry) => (
         <View class="h-8 flex-row items-center gap-2" style={{ paddingLeft: 8 + entry.depth * 16 }}>
           <Text class="w-3 text-muted-foreground transition-transform group-aria-expanded:rotate-90">
@@ -164,12 +164,13 @@ moving through the files previews them one by one, Return or a double click open
 |---|---|---|---|
 | The tree | | `class`, `style` | |
 | The list | the tree | `listClass`, `listStyle` | |
-| A row | the list | `itemClass`, `itemStyle` | `selected:`, `aria-expanded:` (a folder that is open), `focus:` (while the tree has the keyboard focus, the row the keys act on: the selected row, the collapsed item a hidden selection is under, or the first row while nothing is selected), `disabled:`, `hover:`, `active:` |
-| A row's content | a row | `renderItem` | `group-selected:`, `group-aria-expanded:`, `group-focus:`, `group-disabled:` under `group` in `itemClass` |
+| A row | the list | `itemClass`, `itemStyle` | `selected:`, `aria-expanded:` (a folder that is open), `focus:` (while the tree has the keyboard focus, the row the keys act on: the selected row, the collapsed item a hidden selection is under, or the first row while nothing is selected), `focus-visible:` (that row while the tree's focus shows: the keys moved it, not a click), `disabled:`, `hover:`, `active:` |
+| A row's content | a row | `renderItem` | `group-selected:`, `group-aria-expanded:`, `group-focus:`, `group-focus-visible:`, `group-disabled:` under `group` in `itemClass` |
 
-Show the selected row with `selected:` and the keyboard's place with `focus:` (see
+Show the selected row with `selected:` and the keyboard's place with `focus-visible:`, which shows
+once the keys move and not after a click (see
 [Design guides](../docs/design-guides.md#interaction-states)). Draw the focus inside the row
-(`focus:outline-2 focus:-outline-offset-2`): the list clips what reaches past its sides.
+(`focus-visible:outline-2 focus-visible:-outline-offset-2`): the list clips what reaches past its sides.
 
 ## Ref
 

@@ -302,6 +302,29 @@ the shader of node 12: 2:1: `shade` takes the point's `uv: vec2f` and returns it
 
 shader 每个显示帧最多绘制一次，并且只在显示的内容变化时绘制：uniform 固定的 shader 只绘制一次，读取 `nsh.time` 的 shader 每帧绘制，带动画 uniform 的 shader 在动画进行时绘制。
 
+### shader 能否绘制
+
+`nsh` 的 `shadersAvailable()`（Rust 为 `shaders_available()`）表示平台能否绘制 shader，是响应式的。在上述平台和无头测试中它为 `true`；在终端中、以及关闭 `shader` 特性构建的应用中它为 `false`。它从 `true` 开始，当第一个 shader 挂载、而 NSH 打不开这台机器的 GPU 时（例如浏览器没有 WebGL 2）变为 `false`，之后不再变回。无论哪种情况都要显示画面的应用，在它为真时显示 shader，否则显示自己的绘制（画布或图片）：
+
+```rust tabs
+fn backdrop(program: Shader) -> impl IntoElement {
+    when(shaders_available, move || shader().source(program.clone()).size_full())
+        .otherwise(|| canvas(paint_backdrop).size_full())
+}
+```
+
+```tsx tabs
+function Backdrop() {
+  return (
+    <If when={shadersAvailable()} else={<Canvas draw={drawBackdrop} style={{ flex: 1 }} />}>
+      <Shader source={BACKDROP} style={{ flex: 1 }} />
+    </If>
+  );
+}
+```
+
+源码能否编译是另一个问题：`Shader::compile` 会返回它的错误（见[错误](#错误)）。
+
 ## Rust
 
 `shader()`（来自 `nsh_core::element`）创建 shader 视图，`.source(program)` 给它一个已编译的 `Shader`（`nsh_core::shader::Shader::compile(source)`，返回与上文相同的错误）。程序编译一次即可共享：克隆的开销很小。程序也可以绑定，`.source(move || …)`，用来切换程序。

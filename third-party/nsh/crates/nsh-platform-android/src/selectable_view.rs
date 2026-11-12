@@ -75,6 +75,38 @@ impl SelectionTexts for Texts<'_, '_> {
         self.continues.get(i).copied().unwrap_or(false)
     }
 
+    fn copied(&self, i: usize, range: std::ops::Range<u32>) -> String {
+        // Java's text knows its hidden runs (`TextLayouts.shown`).
+        let mut env = self.env.borrow_mut();
+        let copied = env
+            .call_method(
+                self.this,
+                "copiedText",
+                "(III)Ljava/lang/String;",
+                &[
+                    JValue::Int(i as jint),
+                    JValue::Int(range.start as jint),
+                    JValue::Int(range.end as jint),
+                ],
+            )
+            .and_then(|v| v.l());
+        match copied {
+            Ok(s) if !s.is_null() => {
+                let s = JString::from(s);
+                env.get_string(&s).map(String::from).unwrap_or_default()
+            }
+            Ok(_) => String::new(),
+            Err(err) => {
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_describe();
+                    let _ = env.exception_clear();
+                }
+                log::error!("selection copy failed: {err}");
+                String::new()
+            }
+        }
+    }
+
     fn offset_at(&self, i: usize, p: Point<Points>) -> u32 {
         let mut env = self.env.borrow_mut();
         let offset = env

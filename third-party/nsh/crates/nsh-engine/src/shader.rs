@@ -15,7 +15,10 @@
 //! says so, and the backend draws those pixels (premultiplied, in the
 //! [`PixelFormat`] it asked for). So a frame shows one or two display
 //! frames after it is rendered, and a GPU that falls behind skips frames
-//! instead of stalling the main thread.
+//! instead of stalling the main thread. On Apple platforms a backend can
+//! have a view render into IOSurfaces it shows as they are instead
+//! ([`ShaderView::show_on_surfaces`], `shader_surfaces`): no pixels come
+//! back to the CPU.
 //!
 //! Effects, transitions and shaders that read what is behind them get the
 //! platform's pictures ([`ShaderView::set_input`], premultiplied, in the
@@ -50,12 +53,30 @@ use rustc_hash::FxHashMap;
 
 pub use crate::shader_frame::{Frame, MAX_SIDE, PixelFormat};
 
+/// This build links the renderer: a platform reports
+/// `Environment::shaders` from it as it starts (`false` without the
+/// feature), and [`Renderer::new`] says whether a GPU answers.
+pub const LINKED: bool = true;
+
+/// [`Renderer::new`] found no GPU adapter or device in this process: the
+/// machine's answer, the same for every surface, so engines started after
+/// it report `Environment::shaders` `false` without asking again.
+static NO_GPU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether [`Renderer::new`] found no GPU in this process.
+pub(crate) fn no_gpu() -> bool {
+    NO_GPU.load(Ordering::Relaxed)
+}
+
 fn texture_format(format: PixelFormat) -> wgpu::TextureFormat {
     match format {
         PixelFormat::Rgba => wgpu::TextureFormat::Rgba8Unorm,
         PixelFormat::Bgra => wgpu::TextureFormat::Bgra8Unorm,
     }
 }
+
+/// Render pipelines by their shader's hash and the format they render in.
+type Pipelines = FxHashMap<(u64, wgpu::TextureFormat), Option<Arc<wgpu::RenderPipeline>>>;
 
 /// The GPU device shader views render with, and the pipelines of the
 /// shaders it has drawn.
@@ -70,44 +91,80 @@ pub struct Renderer {
     /// What a picture the platform has not given reads: transparent.
     empty: wgpu::TextureView,
     sampler: wgpu::Sampler,
-    /// Pipelines by the hash of their shader's source; `None` for one the
-    /// device refused (reported once).
-    pipelines: std::cell::RefCell<FxHashMap<u64, Option<Arc<wgpu::RenderPipeline>>>>,
+    /// Pipelines by the hash of their shader's source and the format they
+    /// render in; `None` for one the device refused (reported once).
+    pipelines: std::cell::RefCell<Pipelines>,
+}
+
+/// The backends to open a device on, in order: the renderer takes the
+/// first whose device opens, so no setting chooses one.
+///
+/// Linux tries OpenGL first: frames come back to the CPU every display
+/// frame, and Vulkan drivers there (Mesa's ANV on Intel, among others) offer
+/// no host-visible memory both coherent and cached, so wgpu maps its
+/// read-back buffers write-combined and reading a frame out costs several
+/// milliseconds of the main thread (a 2000×300 frame: 8–17 ms against
+/// 0.2 ms through OpenGL). Elsewhere the platform's own API first.
+fn backend_order() -> Vec<wgpu::Backends> {
+    if cfg!(all(target_os = "linux", not(target_os = "android"))) {
+        vec![wgpu::Backends::GL, wgpu::Backends::PRIMARY]
+    } else {
+        vec![wgpu::Backends::PRIMARY | wgpu::Backends::GL]
+    }
 }
 
 impl Renderer {
     /// Opens a GPU device (blocking, once: adapters answer in milliseconds);
-    /// `None` when there is none, which the log says.
+    /// `None` when there is none, which the log says. The platform then
+    /// tells its engine ([`crate::EngineControl::shaders_unavailable`]).
     pub fn new(format: PixelFormat) -> Option<Renderer> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env()
-                .unwrap_or(wgpu::Backends::PRIMARY | wgpu::Backends::GL),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter =
-            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::LowPower,
-                ..Default::default()
-            })) {
-                Ok(adapter) => adapter,
-                Err(e) => {
-                    log::warn!("shaders: no GPU adapter ({e}); shader views draw nothing");
-                    return None;
-                }
-            };
-        let (device, queue) =
+        // The first backend that gives a device: an adapter found may still
+        // refuse its device, and the next backend then gets its turn. On
+        // NVIDIA's driver OpenGL does (wgpu's validation of indirect calls
+        // needs compute shaders its GL context lacks), and Vulkan opens.
+        let mut opened = None;
+        let mut last = None;
+        for backends in backend_order() {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends,
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
+            });
+            let adapter =
+                match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::LowPower,
+                    ..Default::default()
+                })) {
+                    Ok(adapter) => adapter,
+                    Err(e) => {
+                        last = Some(format!("no GPU adapter ({e})"));
+                        continue;
+                    }
+                };
             match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("nsh shaders"),
                 required_limits:
                     wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
                 ..Default::default()
             })) {
-                Ok(device) => device,
-                Err(e) => {
-                    log::warn!("shaders: no GPU device ({e}); shader views draw nothing");
-                    return None;
+                Ok((device, queue)) => {
+                    opened = Some((adapter, device, queue));
+                    break;
                 }
-            };
+                Err(e) => {
+                    let backend = adapter.get_info().backend;
+                    log::debug!(
+                        "shaders: no GPU device on {backend} ({e}); trying the next backend"
+                    );
+                    last = Some(format!("no GPU device on {backend} ({e})"));
+                }
+            }
+        }
+        let Some((adapter, device, queue)) = opened else {
+            let e = last.unwrap_or_default();
+            log::warn!("shaders: {e}; shader views draw nothing");
+            NO_GPU.store(true, Ordering::Relaxed);
+            return None;
+        };
         // What validation missed is a warning, never a panic of the app.
         device.on_uncaptured_error(Arc::new(|e: wgpu::Error| {
             log::warn!("shaders: {e}");
@@ -157,7 +214,7 @@ impl Renderer {
             })
         });
         let empty = device
-            .create_texture(&picture_descriptor(format, 1, 1))
+            .create_texture(&picture_descriptor(texture_format(format), 1, 1))
             .create_view(&Default::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nsh pictures"),
@@ -189,9 +246,28 @@ impl Renderer {
         self.format
     }
 
-    fn pipeline(&self, layer: &ShaderLayer) -> Option<Arc<wgpu::RenderPipeline>> {
+    /// Calls `f`, on a thread of the GPU driver's, once the GPU finished
+    /// the frames rendered so far ([`ShaderView::render`]): a backend
+    /// collects them then instead of polling on every display frame while
+    /// they are [`ShaderView::pending`]. `false` (and `f` dropped) where the
+    /// device cannot tell: the backend polls.
+    pub fn when_done(&self, f: impl FnOnce() + Send + 'static) -> bool {
+        #[cfg(target_vendor = "apple")]
+        return crate::shader_surfaces::when_done(&self.queue, f);
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            drop(f);
+            false
+        }
+    }
+
+    fn pipeline(
+        &self,
+        layer: &ShaderLayer,
+        format: wgpu::TextureFormat,
+    ) -> Option<Arc<wgpu::RenderPipeline>> {
         let shader = &layer.shader;
-        if let Some(p) = self.pipelines.borrow().get(&shader.hash()) {
+        if let Some(p) = self.pipelines.borrow().get(&(shader.hash(), format)) {
             return p.clone();
         }
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -221,7 +297,7 @@ impl Renderer {
                     entry_point: Some("nsh_fragment"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: texture_format(self.format),
+                        format,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -239,7 +315,7 @@ impl Renderer {
         };
         self.pipelines
             .borrow_mut()
-            .insert(shader.hash(), pipeline.clone());
+            .insert((shader.hash(), format), pipeline.clone());
         pipeline
     }
 }
@@ -251,7 +327,7 @@ fn layout_index(layer: &ShaderLayer) -> usize {
 }
 
 fn picture_descriptor(
-    format: PixelFormat,
+    format: wgpu::TextureFormat,
     width: u32,
     height: u32,
 ) -> wgpu::TextureDescriptor<'static> {
@@ -265,7 +341,7 @@ fn picture_descriptor(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: texture_format(format),
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     }
@@ -302,6 +378,7 @@ struct Picture {
     view: wgpu::TextureView,
     width: u32,
     height: u32,
+    format: wgpu::TextureFormat,
 }
 
 /// Where a read-back buffer is.
@@ -384,6 +461,12 @@ pub struct ShaderView {
     transition: Option<(Instant, Duration)>,
     /// It runs backwards: `nsh.progress` goes from 1 to 0.
     backwards: bool,
+    /// Its frames go to IOSurfaces ([`Self::show_on_surfaces`]).
+    #[cfg(target_vendor = "apple")]
+    on_surfaces: bool,
+    /// The surfaces, once a frame was rendered into one.
+    #[cfg(target_vendor = "apple")]
+    surfaces: Option<crate::shader_surfaces::Surfaces>,
 }
 
 impl ShaderView {
@@ -478,21 +561,8 @@ impl ShaderView {
             }
             return;
         };
-        if slot
-            .as_ref()
-            .is_none_or(|p| (p.width, p.height) != (width, height))
-        {
-            let texture =
-                renderer
-                    .device
-                    .create_texture(&picture_descriptor(renderer.format, width, height));
-            let view = texture.create_view(&Default::default());
-            *slot = Some(Picture {
-                texture,
-                view,
-                width,
-                height,
-            });
+        let format = texture_format(renderer.format);
+        if picture_slot(renderer, slot, width, height, format) {
             self.pictures_changed = true;
         }
         let picture = slot.as_ref().expect("a picture");
@@ -516,6 +586,44 @@ impl ShaderView {
             },
         );
         self.dirty = true;
+    }
+
+    /// Takes the frame it shows as the picture of `input` (a transition
+    /// that starts over a running one starts from where it is); `false`
+    /// when it shows none. On the GPU when the frame is on a surface.
+    pub fn set_input_from_frame(&mut self, renderer: &Renderer, input: ShaderInput) -> bool {
+        #[cfg(target_vendor = "apple")]
+        if let Some(texture) = self.surfaces.as_ref().and_then(|s| s.shown_texture()) {
+            let (width, height) = (texture.width(), texture.height());
+            let slot = &mut self.pictures[input.index()];
+            if picture_slot(renderer, slot, width, height, texture.format()) {
+                self.pictures_changed = true;
+            }
+            let picture = slot.as_ref().expect("a picture");
+            let mut encoder = renderer
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            encoder.copy_texture_to_texture(
+                texture.as_image_copy(),
+                picture.texture.as_image_copy(),
+                texture.size(),
+            );
+            renderer.queue.submit([encoder.finish()]);
+            self.dirty = true;
+            return true;
+        }
+        if self.frame.width == 0 {
+            return false;
+        }
+        let frame = std::mem::take(&mut self.frame);
+        let (width, height) = (frame.width, frame.height);
+        self.set_input(
+            renderer,
+            input,
+            Some((&frame.tight(), width, height, width * 4)),
+        );
+        self.frame = frame;
+        true
     }
 
     /// Whether it has the picture of `input`.
@@ -619,17 +727,32 @@ impl ShaderView {
     /// Whether a call to [`Self::render`] has something to do: a frame to
     /// render (something changed, or its time runs) or one to collect.
     pub fn wants_frame(&self) -> bool {
+        self.due() || (self.layer.is_some() && self.pending())
+    }
+
+    /// Whether [`Self::render`] renders a new frame: something changed, or
+    /// its time runs ([`Self::animates`]). One that is only
+    /// [`Self::pending`] waits for the GPU ([`Renderer::when_done`]).
+    pub fn due(&self) -> bool {
+        self.layer.is_some() && (self.dirty || self.animates())
+    }
+
+    /// Whether its frames change with time alone: it reads `nsh.time` and
+    /// is not paused, or a transition runs. Such a view renders on every
+    /// display frame; one that does not, only when something changed.
+    pub fn animates(&self) -> bool {
         let Some(layer) = &self.layer else {
             return false;
         };
-        self.dirty
-            || (layer.shader.animated() && !layer.paused)
-            || self.transition.is_some()
-            || self.pending()
+        (layer.shader.animated() && !layer.paused) || self.transition.is_some()
     }
 
     /// Whether a frame is on its way back from the GPU.
     pub fn pending(&self) -> bool {
+        #[cfg(target_vendor = "apple")]
+        if self.surfaces.as_ref().is_some_and(|s| s.pending()) {
+            return true;
+        }
         self.target.as_ref().is_some_and(|t| {
             t.readbacks
                 .iter()
@@ -637,9 +760,29 @@ impl ShaderView {
         })
     }
 
-    /// The last frame collected (empty until one is).
+    /// The last frame collected (empty until one is, and while its frames
+    /// go to surfaces).
     pub fn frame(&self) -> &Frame {
         &self.frame
+    }
+
+    /// Renders its frames into IOSurfaces the backend shows as they are
+    /// ([`Self::surface`]) rather than reading them back into
+    /// [`Self::frame`]: the window server matches their colours on the
+    /// GPU, and no pixels come back to the CPU. Where the device is not
+    /// Metal's, frames are read back as before.
+    #[cfg(target_vendor = "apple")]
+    pub fn show_on_surfaces(&mut self) {
+        self.on_surfaces = true;
+    }
+
+    /// The surface of the last frame collected, while its frames go to
+    /// surfaces ([`Self::show_on_surfaces`]): premultiplied `'BGRA'`
+    /// pixels in sRGB, the size of the box and its overflow. A new one
+    /// each time [`Self::render`] says the frame is new.
+    #[cfg(target_vendor = "apple")]
+    pub fn surface(&self) -> Option<&objc2_io_surface::IOSurfaceRef> {
+        self.surfaces.as_ref().and_then(|s| s.shown())
     }
 
     /// Collects a frame that came back without rendering another; `true`
@@ -672,25 +815,78 @@ impl ShaderView {
             self.dirty = false;
             return collected;
         }
-        let Some(pipeline) = renderer.pipeline(&layer) else {
+        // On surfaces where asked and possible (else read back): a free one,
+        // or none (all busy: the frame is skipped).
+        #[cfg(target_vendor = "apple")]
+        let mut surface = None;
+        #[cfg(target_vendor = "apple")]
+        if self.on_surfaces {
+            if self
+                .surfaces
+                .as_ref()
+                .is_none_or(|s| (s.width, s.height) != (width, height))
+            {
+                self.surfaces = Some(crate::shader_surfaces::Surfaces::new(width, height));
+            }
+            match self
+                .surfaces
+                .as_mut()
+                .expect("surfaces")
+                .free(&renderer.device)
+            {
+                Ok(Some(i)) => surface = Some(i),
+                Ok(None) => return collected,
+                Err(_) => {
+                    log::debug!("shaders: no IOSurface frames on this device; reading frames back");
+                    self.on_surfaces = false;
+                    self.surfaces = None;
+                }
+            }
+        }
+        #[cfg(target_vendor = "apple")]
+        let on_surfaces = self.on_surfaces;
+        #[cfg(not(target_vendor = "apple"))]
+        let on_surfaces = false;
+        let format = if on_surfaces {
+            #[cfg(target_vendor = "apple")]
+            {
+                crate::shader_surfaces::FORMAT
+            }
+            #[cfg(not(target_vendor = "apple"))]
+            unreachable!()
+        } else {
+            texture_format(renderer.format)
+        };
+        let Some(pipeline) = renderer.pipeline(&layer, format) else {
             self.dirty = false;
             return collected;
         };
-        if self
-            .target
-            .as_ref()
-            .is_none_or(|t| (t.width, t.height) != (width, height))
-        {
-            self.target = Some(target(renderer, width, height));
-        }
-        let target = self.target.as_mut().expect("target");
-        // Both buffers on their way: the GPU is behind, skip this frame.
-        let Some(readback) = target
-            .readbacks
-            .iter_mut()
-            .find(|r| r.state.load(Ordering::Acquire) == state::IDLE)
-        else {
-            return collected;
+        // Where the frame goes: a free surface, or the texture and a free
+        // read-back buffer. None free: the GPU is behind, skip this frame.
+        let destination = if on_surfaces {
+            #[cfg(target_vendor = "apple")]
+            {
+                Destination::Surface(surface.expect("a free surface"))
+            }
+            #[cfg(not(target_vendor = "apple"))]
+            unreachable!()
+        } else {
+            if self
+                .target
+                .as_ref()
+                .is_none_or(|t| (t.width, t.height) != (width, height))
+            {
+                self.target = Some(target(renderer, width, height));
+            }
+            let target = self.target.as_ref().expect("target");
+            match target
+                .readbacks
+                .iter()
+                .position(|r| r.state.load(Ordering::Acquire) == state::IDLE)
+            {
+                Some(i) => Destination::Readback(i),
+                None => return collected,
+            }
         };
         let size = layer.shader.uniform_size();
         let layout = layout_index(&layer);
@@ -722,6 +918,11 @@ impl ShaderView {
                 .queue
                 .write_buffer(buffer, 0, &words_bytes(&self.words));
         }
+        let view = match destination {
+            Destination::Readback(_) => &self.target.as_ref().expect("target").view,
+            #[cfg(target_vendor = "apple")]
+            Destination::Surface(i) => self.surfaces.as_ref().expect("surfaces").view(i),
+        };
         let mut encoder = renderer
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -729,7 +930,7 @@ impl ShaderView {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("nsh shader"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target.view,
+                    view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -746,43 +947,58 @@ impl ShaderView {
             pass.set_bind_group(0, &bindings.group, &[]);
             pass.draw(0..3, 0..1);
         }
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &target.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback.buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(target.stride),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        renderer.queue.submit([encoder.finish()]);
         self.serial += 1;
-        readback.serial = self.serial;
-        readback.state.store(state::MAPPING, Ordering::Release);
-        let flag = readback.state.clone();
-        readback
-            .buffer
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                let s = if result.is_ok() {
-                    state::MAPPED
-                } else {
-                    state::FAILED
-                };
-                flag.store(s, Ordering::Release);
-            });
+        match destination {
+            #[cfg(target_vendor = "apple")]
+            Destination::Surface(i) => {
+                renderer.queue.submit([encoder.finish()]);
+                self.surfaces.as_mut().expect("surfaces").submitted(
+                    i,
+                    self.serial,
+                    &renderer.queue,
+                );
+            }
+            Destination::Readback(i) => {
+                let target = self.target.as_mut().expect("target");
+                let readback = &mut target.readbacks[i];
+                encoder.copy_texture_to_buffer(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &target.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &readback.buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(target.stride),
+                            rows_per_image: Some(height),
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                renderer.queue.submit([encoder.finish()]);
+                readback.serial = self.serial;
+                readback.state.store(state::MAPPING, Ordering::Release);
+                let flag = readback.state.clone();
+                readback
+                    .buffer
+                    .slice(..)
+                    .map_async(wgpu::MapMode::Read, move |result| {
+                        let s = if result.is_ok() {
+                            state::MAPPED
+                        } else {
+                            state::FAILED
+                        };
+                        flag.store(s, Ordering::Release);
+                    });
+            }
+        }
         self.dirty = false;
         let _ = renderer.device.poll(wgpu::PollType::Poll);
         self.collect() || collected
@@ -803,8 +1019,15 @@ impl ShaderView {
         ((w * scale).round() as u32, (h * scale).round() as u32)
     }
 
-    /// Copies the newest mapped frame into [`Self::frame`].
+    /// Shows the newest frame done: on its surface, or copied into
+    /// [`Self::frame`] from the newest mapped buffer.
     fn collect(&mut self) -> bool {
+        #[cfg(target_vendor = "apple")]
+        if let Some(surfaces) = &mut self.surfaces
+            && surfaces.collect()
+        {
+            return true;
+        }
         let Some(target) = &mut self.target else {
             return false;
         };
@@ -842,6 +1065,45 @@ impl ShaderView {
         }
         changed
     }
+}
+
+/// Where [`ShaderView::render`] draws a frame.
+#[derive(Clone, Copy)]
+enum Destination {
+    /// The target's texture, then read-back buffer `.0`.
+    Readback(usize),
+    /// Surface `.0`.
+    #[cfg(target_vendor = "apple")]
+    Surface(usize),
+}
+
+/// Makes `slot` a picture of `width` × `height` pixels in `format` unless
+/// it is one; `true` when it made one (the bind group is stale).
+fn picture_slot(
+    renderer: &Renderer,
+    slot: &mut Option<Picture>,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> bool {
+    if slot
+        .as_ref()
+        .is_some_and(|p| (p.width, p.height, p.format) == (width, height, format))
+    {
+        return false;
+    }
+    let texture = renderer
+        .device
+        .create_texture(&picture_descriptor(format, width, height));
+    let view = texture.create_view(&Default::default());
+    *slot = Some(Picture {
+        texture,
+        view,
+        width,
+        height,
+        format,
+    });
+    true
 }
 
 fn target(renderer: &Renderer, width: u32, height: u32) -> Target {
@@ -1105,6 +1367,136 @@ mod tests {
         assert!(!view.wants_frame());
     }
 
+    /// Renders until a frame shows on a surface; its pixels as RGBA rows.
+    #[cfg(target_vendor = "apple")]
+    fn surface_frame(view: &mut ShaderView, renderer: &Renderer) -> Vec<Vec<[u8; 4]>> {
+        use objc2_io_surface::IOSurfaceLockOptions;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if view.render(renderer, Instant::now()) {
+                let surface = view.surface().expect("a surface");
+                assert_eq!(view.frame().width, 0, "nothing is read back");
+                // SAFETY: the surface is locked while its rows are read.
+                unsafe {
+                    surface.lock(IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut());
+                    let base = surface.base_address().as_ptr().cast::<u8>();
+                    let stride = surface.bytes_per_row();
+                    let rows = (0..surface.height())
+                        .map(|y| {
+                            (0..surface.width())
+                                .map(|x| {
+                                    let p = base.add(y * stride + x * 4);
+                                    // 'BGRA' in memory.
+                                    [*p.add(2), *p.add(1), *p, *p.add(3)]
+                                })
+                                .collect()
+                        })
+                        .collect();
+                    surface.unlock(IOSurfaceLockOptions::ReadOnly, std::ptr::null_mut());
+                    return rows;
+                }
+            }
+            let _ = renderer.device.poll(wgpu::PollType::wait_indefinitely());
+        }
+        panic!("no frame");
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn frames_on_surfaces_have_the_pixels_read_back_ones_have() {
+        let Some(renderer) = Renderer::new(PixelFormat::Rgba) else {
+            eprintln!("no GPU: skipped");
+            return;
+        };
+        let mut view = ShaderView::default();
+        view.show_on_surfaces();
+        view.set_size(size(px(4.0), px(2.0)), 2.0);
+        let split = |color: u32| {
+            layer(
+                "struct Uniforms { color: vec4f }\n\
+                 fn shade(uv: vec2f) -> vec4f {\n\
+                   if (uv.x < 0.5) { return uniforms.color; }\n\
+                   return vec4f(0.0, 0.0, 1.0, 0.5);\n\
+                 }",
+                &[("color", UniformValue::Color(Color(color)))],
+            )
+        };
+        view.set_layer(Some(split(0xff0000ff)));
+        let rows = surface_frame(&mut view, &renderer);
+        assert_eq!((rows[0].len(), rows.len()), (8, 4));
+        assert_eq!(rows[0][0], [255, 0, 0, 255]);
+        // Straight blue at half alpha, premultiplied.
+        let right = rows[3][7];
+        assert_eq!([right[0], right[1]], [0, 0], "{right:?}");
+        assert!((127..=128).contains(&right[2]) && (127..=128).contains(&right[3]));
+        assert!(!view.wants_frame(), "a still shader renders once");
+        // The next frame is on another surface: the one shown stays as it is
+        // while the window server may read it.
+        let first = view.surface().map(|s| s as *const _);
+        view.set_layer(Some(split(0x00ff00ff)));
+        let rows = surface_frame(&mut view, &renderer);
+        assert_eq!(rows[1][0], [0, 255, 0, 255]);
+        assert_ne!(view.surface().map(|s| s as *const _), first);
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn a_frame_on_a_surface_becomes_a_picture_on_the_gpu() {
+        let Some(renderer) = Renderer::new(PixelFormat::Rgba) else {
+            eprintln!("no GPU: skipped");
+            return;
+        };
+        let mut view = ShaderView::default();
+        view.show_on_surfaces();
+        view.set_size(size(px(2.0), px(1.0)), 1.0);
+        assert!(
+            !view.set_input_from_frame(&renderer, ShaderInput::Content),
+            "no frame yet"
+        );
+        view.set_layer(Some(layer(
+            "fn shade(uv: vec2f) -> vec4f { return vec4f(1.0, 0.0, 0.0, 1.0); }",
+            &[],
+        )));
+        surface_frame(&mut view, &renderer);
+        assert!(view.set_input_from_frame(&renderer, ShaderInput::Content));
+        // The shader swaps red and blue of what it was given: the red frame.
+        let effect = (*layer(
+            "fn shade(uv: vec2f) -> vec4f { let c = sample_content(uv); return vec4f(c.b, c.g, c.r, c.a); }",
+            &[],
+        ))
+        .clone()
+        .with_role(ShaderRole::Effect);
+        view.set_layer(Some(Arc::new(effect)));
+        let rows = surface_frame(&mut view, &renderer);
+        assert_eq!(rows[0][0], [0, 0, 255, 255]);
+        assert_eq!(rows[0][1], [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_read_back_frame_becomes_a_picture() {
+        let Some(renderer) = Renderer::new(PixelFormat::Rgba) else {
+            eprintln!("no GPU: skipped");
+            return;
+        };
+        let mut view = ShaderView::default();
+        view.set_size(size(px(2.0), px(1.0)), 1.0);
+        view.set_layer(Some(layer(
+            "fn shade(uv: vec2f) -> vec4f { return vec4f(1.0, 0.0, 0.0, 1.0); }",
+            &[],
+        )));
+        frame(&mut view, &renderer);
+        assert!(view.set_input_from_frame(&renderer, ShaderInput::Content));
+        let effect = (*layer(
+            "fn shade(uv: vec2f) -> vec4f { let c = sample_content(uv); return vec4f(c.b, c.g, c.r, c.a); }",
+            &[],
+        ))
+        .clone()
+        .with_role(ShaderRole::Effect);
+        view.set_layer(Some(Arc::new(effect)));
+        let f = frame(&mut view, &renderer);
+        assert_eq!(pixel(&f, 0, 0), [0, 0, 255, 255]);
+    }
+
     #[test]
     fn effects_read_their_pictures() {
         let Some(renderer) = Renderer::new(PixelFormat::Rgba) else {
@@ -1226,6 +1618,36 @@ mod tests {
             "left of the box: progress 1"
         );
         assert_eq!(pixel(&f, 2, 2), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_changed_view_renders_once_and_the_gpu_says_when_it_is_done() {
+        let Some(renderer) = Renderer::new(PixelFormat::Rgba) else {
+            eprintln!("no GPU: skipped");
+            return;
+        };
+        let mut view = ShaderView::default();
+        view.set_size(size(px(2.0), px(2.0)), 1.0);
+        view.set_layer(Some(layer(
+            "struct Uniforms { a: f32 }\n\
+             fn shade(uv: vec2f) -> vec4f { return vec4f(uniforms.a, 0.0, 0.0, 1.0); }",
+            &[("a", UniformValue::Number(1.0))],
+        )));
+        assert!(view.due() && !view.animates(), "a new layer: one frame");
+        let _ = view.render(&renderer, Instant::now());
+        assert!(!view.due(), "rendered: nothing new until something changes");
+        let (tx, rx) = std::sync::mpsc::channel();
+        if !renderer.when_done(move || {
+            let _ = tx.send(());
+        }) {
+            eprintln!("the device does not say when it is done: skipped");
+            return;
+        }
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("told without polling");
+        assert!(view.collect_frame(&renderer), "the frame is back");
+        assert!(!view.wants_frame(), "nothing left to render or collect");
+        assert_eq!(pixel(view.frame(), 0, 0), [255, 0, 0, 255]);
     }
 
     #[test]

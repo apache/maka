@@ -1,4 +1,4 @@
-import { keymap, platform, signal, Text, View } from "nsh";
+import { keymap, signal, Text, View } from "nsh";
 import { Button, Command, type CommandItem, type CommandRef, Dialog } from "nsh/base";
 import type { IconName } from "../icons";
 import {
@@ -12,12 +12,16 @@ import {
   commandClasses,
   DemoPage,
   desktop,
+  edgeClass,
+  fieldSize,
   Icon,
-  mono,
+  Kbd,
+  LabeledToggle,
+  LastEvent,
+  radius,
   Spinner,
   TERMINAL_GAP,
   terminal,
-  Toggle as Switch,
 } from "../ui";
 
 // `nsh/base`'s `Command` owns the filtering (natively, by label and
@@ -111,20 +115,18 @@ export function CommandDemo() {
     return (
       <Card
         title="Command palette"
-        subtitle={desktop() ? `${keymap.label("mod+k")} opens it in a dialog: recent commands, sections, shortcuts, a disabled one` : "A dialog of commands: recent ones first, sections, a disabled one"}
+        subtitle={desktop() ? `${keymap.label("mod+k")} opens it: recent commands, sections, shortcuts` : "A dialog of commands, recent ones first"}
       >
+        {/* A search field that opens the palette, as shadcn's: the fields' well
+            and height, a muted prompt and the shortcut's key cap at its end. */}
         <Button
           onPress={() => show(true)}
-          class="flex-row items-center gap-2 rounded-lg border border-border bg-raised px-3 transition-colors motion-reduce:transition-none hover:bg-hover active:opacity-70 focus:outline-2 focus:outline-ring"
-          style={{ height: desktop() ? 36 : 44 }}
+          class={`flex-row items-center gap-2 border bg-field active:opacity-70 ${edgeClass({ rest: "border-input", hover: "border-faint", focus: "focus-visible" })}`}
+          style={{ height: desktop() ? fieldSize.height : 44, paddingLeft: fieldSize.pad, paddingRight: 6, borderRadius: radius.control }}
         >
           <Icon name="search" size={16} tint={colors.muted} />
-          <Text style={{ flex: 1, fontSize: 14, color: colors.muted }}>Search commands…</Text>
-          {desktop() ? (
-            <View class="rounded border border-border px-1.5" style={{ height: 20, justifyContent: "center" }}>
-              <Text style={{ fontSize: 11, color: colors.muted }}>{keymap.label("mod+k")}</Text>
-            </View>
-          ) : null}
+          <Text style={{ flex: 1, fontSize: fieldSize.font, color: colors.muted }}>Search commands…</Text>
+          {desktop() ? <Kbd label={keymap.label("mod+k")} /> : null}
         </Button>
         <Caption label={`Recent: ${recent().map((id) => actionOf(id)!.item.label).join(", ")}`} />
         <Dialog
@@ -185,18 +187,8 @@ export function CommandDemo() {
     return (
       <Card
         title="Move to"
-        subtitle="An inline menu: the folder in effect is checked, Spam is the server's"
-        right={
-          // The terminal's switch is a glyph: its label beside it says what it turns on.
-          platform.idiom === "terminal" ? (
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              <Text style={{ fontSize: 12, color: colors.muted }}>Search</Text>
-              <Switch value={searchable()} onChange={(v) => searchable.set(v)} label="Search" />
-            </View>
-          ) : (
-            <Switch value={searchable()} onChange={(v) => searchable.set(v)} label="Search" />
-          )
-        }
+        subtitle="The folder in effect is checked"
+        right={<LabeledToggle label="Search" value={searchable()} onChange={(v) => searchable.set(v)} />}
       >
         <Command
           items={FOLDERS.map((f) => ({ id: f.id, label: f.label, checked: f.id === folder(), disabled: f.id === "spam" }))}
@@ -232,7 +224,7 @@ export function CommandDemo() {
     const count = signal(FILES.length);
     let palette: CommandRef | undefined;
     return (
-      <Card title="5 000 files" subtitle="Filtered natively at every keystroke; only the rows in view are made. Try “rs” or “42”">
+      <Card title="5 000 files" subtitle="Filtered natively as you type; try “rs” or “42”">
         <Command
           ref={(r) => (palette = r)}
           items={FILES}
@@ -288,7 +280,7 @@ export function CommandDemo() {
       }, 450);
     };
     return (
-      <Card title="Directory search" subtitle="The server answers: filterable={false}, loading while it does, its ranking kept">
+      <Card title="Directory search" subtitle="The server finds and ranks people">
         <Command
           items={results()}
           filterable={false}
@@ -317,7 +309,7 @@ export function CommandDemo() {
   function Last() {
     return (
       <Card title="Last event">
-        <Text style={{ fontSize: 13, color: colors.text, fontFamily: mono }}>{last()}</Text>
+        <LastEvent value={last()} hint="Run a command" />
       </Card>
     );
   }

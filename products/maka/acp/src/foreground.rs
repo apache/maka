@@ -341,6 +341,14 @@ impl Foreground {
                             .entry(message_id)
                             .or_insert(event.sequence);
                     }
+                    DeliveryFact::ExecutorTextChanged { message_id, .. } => {
+                        let start = self
+                            .message_starts
+                            .entry(message_id)
+                            .or_insert(event.sequence);
+                        catchup_from = catchup_from.min(start.saturating_sub(1));
+                        catchup = true;
+                    }
                     DeliveryFact::Delta {
                         step_id,
                         attempt_id,
@@ -351,20 +359,22 @@ impl Foreground {
                             .parts
                             .get(&(step_id, attempt_id, part_id))
                             .ok_or("Agent stream delta has no original part")?;
-                        let updates = self.projection.append(&event.turn_id, message, kind, &text);
+                        let updates =
+                            self.projection
+                                .append(&event.turn_id, message, kind, &text)?;
                         self.publish(updates).await?;
                     }
                     DeliveryFact::PartCommitted {
                         step_id,
                         attempt_id,
                         message_id,
-                        ..
+                        ordinal,
                     } => {
                         self.projection.commit_preview(
                             event.run_id,
                             step_id,
                             attempt_id,
-                            Some(&message_id),
+                            Some(ordinal),
                         );
                         if let Some(start) = self.message_starts.remove(&message_id) {
                             catchup_from = catchup_from.min(start.saturating_sub(1));

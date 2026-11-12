@@ -112,6 +112,7 @@ touches and UI tests meet each row once.
 | `empty` | `.empty(el)` | `ListSlot` | | Shown instead of the items while `each` is empty. |
 | `separator` | `.separator(\|\| el)` | `ListSlot` | | Between items (one column). |
 | `initialScrollIndex` | `.initial_scroll_index(i)` | `number` | | Scrolls to this item before the first frame. |
+| `initialScrollAtEnd` | `.initial_scroll_at_end()` | `boolean` | `false` | Opens at the end before the first frame and follows it while rows measure. Short content stays at the top. In TSX this takes precedence over `initialScrollIndex`; in Rust the last initial-scroll builder wins. |
 | `keyExtractor` | `.keys(\|\| ids)` | `(item: T, index: number) => string` | `item.key`, `item.id` or the index | The key of an item in viewability tokens. In Rust, the rows' identities, so rows keep their cells and sizes when rows come and go before them. In TSX, rows whose keys match are the same rows even when `each` holds new objects, so rebuilding the rows (say in a `computed`) keeps their sizes and the reader's place; without it, rows are compared by identity. |
 | `onLoadMore` | `.on_load_more(..)` | `() => void` | | The end is near: load more. |
 | `loadMoreThreshold` | `.load_more_threshold(viewports)` | `number` | `1` | How close to the end (in viewports) `onLoadMore` fires. |
@@ -171,6 +172,7 @@ viewable rows, `changed()` the rows that came or went.
 | `scrollToOffset({ offset, animated? })` | `scroll_to_offset(px(..), animated)` | Scrolls to an offset along the list's axis. |
 | `scrollToEnd({ animated? })` | `scroll_to_end(animated)` | Scrolls to the end of the content (the start of an inverted list). |
 | `scrollTo({ x?, y?, animated? })` | `scroll_to(point(..), animated)` | Scrolls to an offset. |
+| `measureScrollPosition()` | `measure_scroll_position()` | Where the viewport starts among the rows, once this turn's changes are laid out: `{ index, offset }`, the row there and how far into it, as the list lays its rows out; `null` without items. See [keeping a reading position](../docs/lists.md#keeping-a-reading-position). |
 
 ## Examples
 
@@ -241,6 +243,8 @@ user is reading.
 
 ## Platform notes
 
-- Inserting items above the visible rows keeps the visible rows in place on both platforms.
+- Inserting items above the visible rows keeps the visible rows in place on both platforms while the list is scrolled
+  past its start; at its start the new items show, as in a browser. A list with `onLoadMoreAtStart` keeps its rows in
+  place at its start too, so the page it prepends waits above them.
 - Horizontal lists in right-to-left layouts are mirrored natively.
 - Sticky headers are pinned natively on every scroll frame.

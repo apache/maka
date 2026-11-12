@@ -69,7 +69,7 @@ nsh package App.tsx --target linux [--run]   # TSX 应用
   <Name>                 可执行文件：Rust 应用是用它的 crate 构建的自有 runner；TSX 应用是 nsh 的发布版运行器
   nsh/bundle.nshc        编译后的 TSX 应用
   nsh/assets/…           应用导入的资源（也包括 Rust crate 的 `assets!()`）
-  nsh/app.json           窗口标题和应用 id
+  nsh/app.json           窗口标题、应用 id 和 nsh.json 中的窗口设置
   <id>.desktop           桌面条目（StartupWMClass 为应用 id）
   <id>.png               图标（nsh.json 指定了图标时）
 .nsh/out/<Name>.tar.gz
@@ -132,6 +132,42 @@ view.load(Bundle::source(code).into());
 `AppView::set_locale(Some(locale))` 和 `AppView::set_font_scale(Some(scale))` 用你的应用的语言和文字大小代替系统的设置（`None` 恢复跟随系统）：`locale()`、`Intl`、`fontScale()` 和文字立即跟随（[设备与环境](./device-and-environment.md#在嵌入它的应用中)）。
 
 `AppView::set_theme_overrides(Some(json))` 把你的应用的品牌加在应用的[主题](./tailwind.md#主题-token)之上：格式与 `nsh.json` 的 `"theme"` 相同的主题文件，其中的 token 在浅色和深色模式下都覆盖应用的同名 token，应用的其他 token 保持不变；`bg-primary` 等类名立即更新样式，之后加载的应用一开始就使用它（`None` 恢复应用自己的主题；无法解析的文件返回错误，不做任何改动）。
+
+### 多个窗口共享数据
+
+Rust 宿主可以打开任意多个窗口，每个窗口一个 `AppView`，窗口之间像任何 Rust 程序那样共享数据：同一个进程，
+由根组件的 props 携带一个 `Arc`。窗口之间无需传递消息；每个根组件读取共享值，并像监听其他数据源（channel、watch、
+store 调用的回调）那样监听它的变化：
+
+```rust
+use std::sync::{Arc, Mutex};
+use nsh_platform_linux::{gtk4 as gtk, AppOptions, AppView, Root};
+use gtk::prelude::*;
+
+#[derive(Default)]
+struct Store { count: Mutex<u32> }
+
+fn open(app: &gtk::Application, title: &str, root: Root) {
+    let window = gtk::ApplicationWindow::builder().application(app).title(title).build();
+    let view = AppView::new(AppOptions::default());
+    view.load(root.into());
+    window.set_child(Some(&view.widget()));
+    let keep = std::cell::RefCell::new(Some(view));
+    window.connect_destroy(move |_| if let Some(view) = keep.take() { view.stop() });
+    window.present();
+}
+
+app.connect_activate(|app| {
+    let store = Arc::new(Store::default());
+    let main = Arc::clone(&store);
+    open(app, "Main", Root::new::<my_app::Main>(move || my_app::MainProps { store: Arc::clone(&main) }));
+    let chat = Arc::clone(&store);
+    open(app, "Chat", Root::new::<my_app::Chat>(move || my_app::ChatProps { store: Arc::clone(&chat) }));
+});
+```
+
+TSX 应用用 [`<Window>` 和 `Window.open`](../modules/nsh-desktop.md#windows) 打开窗口：它们运行在应用唯一的 JS 运行时中，
+因此直接共享信号和模块。对话框、面板和弹出窗口相对其父窗口是临时窗口，所有窗口由窗口管理器摆放。
 
 原生组件通过 `AppView::register_component` 注册，见[原生组件](./native-components.md#在-linux-上注册rust)。
 `set_ui_sets(sets)` 设置每个引擎提供的 UI 集合：NSH 的（`nsh_base::registry()`）和你的 crate 的（`my_app::registry()`，

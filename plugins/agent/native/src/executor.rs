@@ -39,7 +39,6 @@ use uuid::Uuid;
 
 pub(crate) mod attachments;
 pub(crate) mod cleanup;
-mod credentials;
 pub(crate) mod external;
 pub mod setup;
 
@@ -78,7 +77,6 @@ pub(crate) struct Executors(BTreeMap<String, Backend>);
 pub(super) enum ActiveDelivery {
     Steer,
     InterruptResume,
-    InterruptUnsupported,
     Queue,
 }
 impl Executors {
@@ -183,8 +181,7 @@ impl Executors {
         }
         match accepted.selection.settings.runtime.as_deref() {
             Some("codex" | "claude") => ActiveDelivery::Steer,
-            Some("antigravity") if cfg!(unix) => ActiveDelivery::InterruptResume,
-            Some("antigravity") => ActiveDelivery::InterruptUnsupported,
+            Some("antigravity") => ActiveDelivery::InterruptResume,
             _ => ActiveDelivery::Queue,
         }
     }
@@ -298,17 +295,6 @@ pub(crate) trait TaskBinding: Send + Sync {
     /// Success transfers cleanup-proof custody; only a committed fact is a durable ACK.
     fn cleanup(&self, cleanup: OperationCleanup) -> BoxFuture<'_, Result<(), Error>>;
 }
-pub(crate) enum CredentialBase {
-    CodexHome,
-    ClaudeConfig,
-}
-/// Actual authorized export bytes; never serialized as a permission or task descriptor.
-pub(crate) struct CredentialSeed {
-    pub base: CredentialBase,
-    pub relative: std::path::PathBuf,
-    pub file: std::fs::File,
-    pub len: u64,
-}
 struct NativeBinding(Arc<dyn TaskBinding>);
 impl external::TaskBinding for NativeBinding {
     fn observation_retired(&self) -> CancellationToken {
@@ -372,17 +358,6 @@ impl Backend {
             Implementation::External(_) => None,
         }
     }
-    pub(crate) fn validate_current_access(
-        &self,
-        access: maka_agent_api::contract::WorkspaceAccess,
-    ) -> Result<(), String> {
-        if matches!(self.implementation, Implementation::External(_))
-            && access != maka_agent_api::contract::WorkspaceAccess::DangerFullAccess
-        {
-            return Err("native external runtime requires current full access".into());
-        }
-        Ok(())
-    }
     pub(crate) async fn admit_execution(
         &self,
         input: Request,
@@ -390,7 +365,6 @@ impl Backend {
         inputs: Arc<dyn external::Inputs>,
         actual: maka_sandbox::Sandbox,
         isolated: Option<maka_process::isolated::TaskOwner>,
-        state_root: &std::path::Path,
     ) -> Result<Admitted, Error> {
         input
             .settings
@@ -398,10 +372,6 @@ impl Backend {
             .map_err(|error| Error::Invalid(error.into()))?;
         match &self.implementation {
             Implementation::External(owner) => {
-                let runtime = owner.require_runtime(input.settings.runtime.as_deref())?;
-                let seeds =
-                    credentials::capture(runtime, owner.command(runtime), &actual, state_root)
-                        .await?;
                 let isolated = isolated.ok_or_else(|| {
                     Error::IsolationUnavailable(
                         "original prepared private task owner is unavailable".into(),
@@ -413,7 +383,6 @@ impl Backend {
                     Arc::new(NativeBinding(binding)),
                     inputs,
                     isolated,
-                    seeds,
                 )
             }
             Implementation::Service(service) => {

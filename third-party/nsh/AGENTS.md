@@ -49,7 +49,7 @@ crates/
                        the standard modules among them (`runtime/fs.rs`: `fs/promises`, `runtime/process.rs`, `runtime/net.rs`,
                        `runtime/websocket.rs`, `runtime/os.rs`) on the `System` their calls get (capabilities, data directory, quotas, per-VM state)
   nsh-base/            `nsh/base`, NSH's `gpui-base`: unstyled base components (behavior, state, focus, accessibility; the look is the
-                       app's): navigation (`NavStack`, `NavPage`), `Dialog`, `AlertDialog`, `Button`, `Link`, `Checkbox`, `Radio` / `RadioGroup`, `Switch`, `Tab` / `Tabs`, `Carousel` and its parts (slides on a native scroll view snapping to the slides' laid-out starts, previous / next, a pagination with a followed indicator, keys, a seamless loop of runways and translations the animation graph computes from the scroll offset: `carousel.rs`), `Avatar` / `AvatarGroup` (`avatar.rs`: a picture with its image status tracked natively and a row that places its first `limit`), `Toggle` / `ToggleGroup` (a toggle button and a toolbar of them: `toggle.rs`), `Toolbar` / `ToolbarGroup` / `ToolbarSeparator` (a bar of buttons, toggles and links: `toolbar.rs`; `roving.rs` the roving focus `Tabs`, `RadioGroup`, `ToggleGroup` and `Toolbar` share, its items in tree order through the core's `watch_order`), `Select` and `Combobox` (`select.rs`, `combobox.rs` on `listbox.rs`, the list's state machine they share), `Calendar` (`calendar.rs`: views, disabled dates, the days' keys), `TimeField` (`time_field.rs`: segments over one native text field), `DatePicker` (`date_picker.rs`: a calendar and time field in a popup; `popup.rs`'s `dropdown` is the popup `Select`, `Combobox` and `DatePicker` share), `Collapsible`, `Accordion` and its parts (`accordion.rs`: items open by the app's `value`, one at a time or several, panels revealed as `Collapsible`'s), `Progress`, `Terminal` (a program's output and the keys sent back: `term/`, its emulator on `vte`, `TerminalEmulator` the app's replacement), `Command` (a command palette: a search field over commands filtered natively, virtualized: `command.rs`), `Tree` (items that hold items, virtualized, one Tab stop: `tree.rs`), `Slider` (a value or a range along a track: `slider.rs`, numbers' rules in `numeric.rs`, a focused control's keys in `keys.rs`), `Scrollbar` (a bar of the app's own over a scroll view or list it names: `scrollbar.rs`, on the core's `watch_scroll`), `NumberInput` (a number typed or stepped: `number_input.rs`), `ColorPicker` and its parts `ColorArea`, `ColorSlider`, `ColorField`, `ColorSwatch`, `ColorEyeDropper` (a color in RGB, HSL, HSB or OKLCH: `color_picker/`), `OtpInput`, `Table` and its parts (`table.rs`: a table's roles, the look the app's), the charts' parts in the submodule `nsh/base/plot` (`Plot`, `Line`, `Area`, `Grid`, `Pie`, `Arc`, `Treemap`: `plot/treemap/`), `Input` (a native text input, made by `nsh-js`), the status
+                       app's): navigation (`NavStack`, `NavPage`), `Dialog`, `AlertDialog`, `Button`, `Link`, `Checkbox`, `Radio` / `RadioGroup`, `Switch`, `Tab` / `Tabs`, `Carousel` and its parts (slides on a native scroll view snapping to the slides' laid-out starts, previous / next, a pagination with a followed indicator, keys, a seamless loop of runways and translations the animation graph computes from the scroll offset: `carousel.rs`), `Avatar` / `AvatarGroup` (`avatar.rs`: a picture with its image status tracked natively and a row that places its first `limit`), `Toggle` / `ToggleGroup` (a toggle button and a toolbar of them: `toggle.rs`), `Toolbar` / `ToolbarGroup` / `ToolbarSeparator` (a bar of buttons, toggles and links: `toolbar.rs`; `roving.rs` the roving focus `Tabs`, `RadioGroup`, `ToggleGroup` and `Toolbar` share, its items in tree order through the core's `watch_order`), `Select` and `Combobox` (`select.rs`, `combobox.rs` on `listbox.rs`, the list's state machine they share), `Calendar` (`calendar.rs`: views, disabled dates, the days' keys), `TimeField` (`time_field.rs`: segments over one native text field), `DatePicker` (`date_picker.rs`: a calendar and time field in a popup; `popup.rs`'s `dropdown` is the popup `Select`, `Combobox` and `DatePicker` share), `Collapsible`, `Accordion` and its parts (`accordion.rs`: items open by the app's `value`, one at a time or several, panels revealed as `Collapsible`'s), `Progress`, `Terminal` (a program's output and the keys sent back: `term/`, its emulator on `vte`, `TerminalEmulator` the app's replacement), `Command` (a command palette: a search field over commands filtered natively, virtualized: `command.rs`), `EmojiPicker` (a search field over every emoji in groups, a virtualized grid with 2D keys, the app's recent emoji, names and skin tone: `emoji_picker/`, its data `emoji.tsv` made by `cargo xtask emoji-data` from emojibase-data), `Tree` (items that hold items, virtualized, one Tab stop: `tree.rs`), `Slider` (a value or a range along a track: `slider.rs`, numbers' rules in `numeric.rs`, a focused control's keys in `keys.rs`), `Scrollbar` (a bar of the app's own over a scroll view or list it names: `scrollbar.rs`, on the core's `watch_scroll`), `NumberInput` (a number typed or stepped: `number_input.rs`), `ColorPicker` and its parts `ColorArea`, `ColorSlider`, `ColorField`, `ColorSwatch`, `ColorEyeDropper` (a color in RGB, HSL, HSB or OKLCH: `color_picker/`), `OtpInput`, `Table` and its parts (`table.rs`: a table's roles, the look the app's), the charts' parts in the submodule `nsh/base/plot` (`Plot`, `Line`, `Area`, `Grid`, `Pie`, `Arc`, `Treemap`: `plot/treemap/`), `Input` (a native text input, made by `nsh-js`), the status
                        bar, `TextView` (Markdown / HTML documents: `text_view/`, docs/dev/text-view.md), `ResizablePanelGroup` / `ResizablePanel` (`resizable/`), `DockArea` (a dockable workspace: splits, tab groups and edge docks whose layout is
                        data, `dock/`, docs/dev/dock.md), `Editor` (a code editor: highlighting, several carets, folds, search, diagnostics;
                        `editor/`, docs/dev/editor.md), `DiffView` (the changes between two texts or of a patch, split or unified: `diff/`,
@@ -120,7 +120,9 @@ crates/
                        the test agent's platform part (`agent.rs`: `nsh test --target linux`) (docs/dev/linux.md)
   nsh-linux-host/      Development host on Linux (`nsh run --target linux`): connects to a dev server or runs a bundle
   nsh-linux-app/       Release runner on Linux: the executable of apps built by `nsh package --target linux`
-  nsh-platform-apple/  Shared by the macOS and iOS backends: the Speech recognizer and the notification center
+  nsh-platform-apple/  Shared by the macOS and iOS backends: the Speech recognizer, the notification center, and
+                       `unified_log`, the logger of the release runners and the iOS SDK (the unified log; stderr too
+                       wherever it goes but /dev/null)
   nsh-platform-macos/  AppKit backend (macOS): one flipped, layer-backed `NSView` per node decorated by Core Animation, CoreText text
                        (typeset on the engine thread), desktop input and scroll views as on Linux, navigation, video, web views,
                        native components, AppView, standalone app; feature `dev` as above (docs/dev/macos.md)
@@ -156,7 +158,7 @@ crates/
                        what it prints (`ui.rs`:
                        one line per step, tools' output only on failure, `-v` for everything; docs/dev/tooling.md "Output")
   xtask/               Maintainer tasks: `cargo xtask android` (Android runtime), `ios-embed` (the iOS SDK), `dist` (the distribution),
-                       `web` (the WebAssembly runtime and the website's demos), `compat` (runs `nsh-compat` against this checkout;
+                       `web` (the WebAssembly runtime and the website's demos), `emoji-data` (`EmojiPicker`'s emoji from a release of emojibase-data), `compat` (runs `nsh-compat` against this checkout;
                        `compat record <version>`: records a release there)
 tests/compat/         The apps whose scripts check the API apps use (`nsh-compat` builds and runs them): `cases/<domain>/` (one app per
                       domain, a module per case, `script.txt`), `examples/<app>.txt` (the scripts of examples)
@@ -170,6 +172,7 @@ examples/             Example apps (gallery: a demo index, one module per demo, 
                       inputs, a long list, stubbed requests, dark mode, a manual clock); gallery-rs: the same in Rust, the app's crate in `native/`,
                       TypeScript tests of its root (`*.test.tsx`, about a demo each); rust-exports: a TSX app using one of each export of its crate, the reference
                       for exporting components, modules and classes and registering native components, with Rust and TypeScript tests of the TSX entry; counter,
+                      with a test; tray: a tray app whose main window starts hidden (nsh.json `window.defaultVisible`),
                       with a test; host-echo: an app calling its web page's host (`nsh`'s `host`, nsh.json `web.host`), the host
                       module and their tests), embedding samples
                       (embed-ios, embed-android; embed-gpui: a GPUI Kit app, its own workspace; `run/` the root's
@@ -225,6 +228,7 @@ are never linked into the CLI: it reads their UI sets as data (`nsh_core::elemen
 | `DockArea` and `ResizablePanelGroup`: the layout data, render keys, drag and drop, compact presentation | `docs/dev/dock.md` |
 | `Editor`: the code editor's model, display rows, input, keys, highlighting, search, diagnostics and parts | `docs/dev/editor.md` |
 | `DiffView`: the line diff, pairing and inline changes, rows and separators, patches, parts | `docs/dev/diff.md` |
+| platforms built outside NSH: the extension points, `Environment::platform` (the platform's name beside the device's `Os`), external targets (`nsh-platform-<name>`), the generated `nsh_rust_app` | `docs/dev/platforms.md` |
 | `DataTable`: columns, the virtual rows and columns, huge extents, selection, the layers | `docs/dev/data-table.md` |
 | `RichEditor`: the schema, steps and transactions, positions, states, plugins, node views, formats | `docs/dev/rich-editor.md` |
 | Rust classes TS uses (`#[class]`), module functions' kinds, callbacks, how calls and Rust components' props cross (typed) | `docs/dev/rust-classes.md`, `docs/dev/components.md` |
@@ -334,7 +338,7 @@ empty off macOS (`target_os = "macos"`, not Catalyst). `nsh-platform-windows` an
 check them on Windows, with the MSVC Build Tools, the Windows SDK and LLVM (libclang for QuickJS' bindings);
 `RUST_MIN_STACK=268435456` if rustc overflows its stack on the `windows` crate. The GPUI backend (`crates/gpui`) is
 a workspace of its own: the main workspace's `cargo test --workspace` and clippy never build it, and its CI runs only when
-it changes (and daily). Its crates build on all three desktops and are empty elsewhere; on Linux they need GPUI's X11 /
+it changes (and on main's scheduled runs). Its crates build on all three desktops and are empty elsewhere; on Linux they need GPUI's X11 /
 Wayland / xkbcommon / fontconfig packages plus GTK 3, WebKitGTK 4.1 (feature `webview`, on by default) and GStreamer
 1.20+ with its base plug-ins (feature `video`, the host's); on macOS Xcode's Metal Toolchain, or the
 feature `runtime-shaders` (`docs/dev/gpui.md`), which the CLI turns on when `xcrun metal` fails. It builds into the
@@ -392,7 +396,7 @@ repository's `target/`; dependencies only it uses are declared in `crates/gpui/C
   read forever. The record
   and its checks live in that repository, never here: a change to NSH cannot rewrite them, and the only removals are
   security closures in its `closed.txt`. No release is recorded yet, so nothing is frozen: what is on `main` may still
-  change until the first release recorded, which is not chosen yet (0.3.0 and 0.4.0 are not recorded). A new API lands with its test, a case in
+  change until the first release recorded, which is not chosen yet (0.3.0, 0.4.0 and 0.5.0 are not recorded). A new API lands with its test, a case in
   `tests/compat/cases/<domain>/` whose script checks it (`cargo xtask compat`; `docs/dev/compatibility.md`).
 - **Native views and interaction, app-owned design.** Common controls have one cross-platform home in `nsh/base`.
   A system-styled version of a common control does not justify another public component in a platform module.
@@ -408,7 +412,7 @@ repository's `target/`; dependencies only it uses are declared in `crates/gpui/C
   `CodeHighlighter` or `renderCodeBlock` replaces, and the `Editor`'s default look, its colors the theme's shadcn tokens
   (search matches amber, warnings amber, information blue), its font the theme's `font-mono`, every part overridable by
   the app's `classes` / `styles`, and the same built-in syntax highlighting colors, which the app's `decorations` style over, and `DiffView`'s default look: theme tokens, added green, deleted red, every part
-  overridable by `classes` / `styles`); a component takes the app's styles (`class`, `style`, styles per state) and children, and exposes its
+  overridable by `classes` / `styles`, and the URL hint of `Link` and `TextView`'s links: the theme's popover tokens, so every app shows where a link goes (`link_hint.rs`)); a component takes the app's styles (`class`, `style`, styles per state) and children, and exposes its
   parts instead of fixed markup. Its state is controlled (it reports changes, the app owns the value). The platforms
   draw nothing of NSH's either: no header where the system has none (the desktops and the web place a page's `header`
   slot), no dialog card, scrim or shadow, no native press fade (press feedback is the app's `activeStyle` /
@@ -434,7 +438,8 @@ repository's `target/`; dependencies only it uses are declared in `crates/gpui/C
   "Extensions").
 - **API shapes: one form per thing, shapes that can grow** (decided by the user before the freeze; details and
   examples in `docs/dev/api-naming.md` "Conventions", "Shapes that can grow" and "Units"; the API is being brought to
-  them). Names come from `gpui-base` / GPUI and the DOM; React Native is a reference only.
+  them). Names are short, accurate and neutral: the project's own word for a concept first, then `gpui-base` /
+  GPUI's and the DOM's (`CONTRIBUTING.md` "API design"); React Native is a reference only.
   - Units: one per quantity. Lengths are points; an image's or a video's own size is pixels, typed `PixelSize`
     (never `Size`); times are milliseconds; velocities points per second; shares fractions from 0 to 1 (no `Percent`
     in names). Only media time is seconds (HTML's `currentTime`) and a deceleration the velocity kept per
@@ -445,7 +450,11 @@ repository's `target/`; dependencies only it uses are declared in `crates/gpui/C
     Only the responder callbacks keep React Native's `(e, gestureState)`.
   - Mouse events are the DOM's and GPUI's: `onMouseEnter` / `onMouseMove` / `onMouseLeave`, each with a
     `MouseEvent { position, pagePosition, modifiers, pressedButton }`; `onMouseMove` fires with or without a button
-    down. State styles keep CSS's names (`hover:`, `hoverStyle`).
+    down. `onWheel` passes `WheelEvent { position, pagePosition, delta, deltaMode, modifiers }` (GPUI's
+    `ScrollWheelEvent`, the DOM's sign); a listener nearer than the scroll views under the pointer takes the wheel,
+    and one scroll stays where it went (`input::WheelLatch`). `onPinch` passes a touchpad pinch's
+    `PinchEvent { position, pagePosition, delta, phase, modifiers }` (GPUI's `on_pinch`), routed the same way.
+    State styles keep CSS's names (`hover:`, `hoverStyle`).
   - Returns: an object, never a bare value that may need a second field (`AlertDialog.show` → `{ action }`,
     animations → `{ finished }`); yes / no questions (`hasText()`, `canUndo()`) return booleans.
   - Failures (of what JS calls): a function returning a promise never throws, every failure rejects (arguments,
@@ -576,6 +585,13 @@ Details and examples: "Commits and pull requests" in `CONTRIBUTING.md`.
   (`.github/pull_request_template.md`).
 - A PR review presents, in order: the PR's purpose (the problem and the scope of the changes), whether the requirement
   and approach are reasonable, then concrete findings, the validation performed and its limits.
+- **Scope comes first.** NSH stays a lightweight GUI framework, not an all-in-one platform. Fixes, performance,
+  refinements of existing behavior and options of an existing component that are common in its domain are welcome;
+  a new feature an app can build in Rust (its own crate, native components, platform APIs) or with existing APIs,
+  that one app needs, or that does not work the same on every platform is not accepted, and one that would need a new
+  section or page of the website's documentation opens a new direction, the hardest to accept (`CONTRIBUTING.md`
+  "Scope: what NSH accepts"). A PR adding a new feature without a maintainer's agreement on an issue is flagged before its
+  code is reviewed, and its review recommends closing it rather than polishing it.
 
 ## Performance rules (the project's first priority)
 
@@ -594,7 +610,8 @@ Details and examples: "Commits and pull requests" in `CONTRIBUTING.md`.
 
 ## CI
 
-Each workflow runs only when what it builds changes: the Rust workflows list their crates one by one in `paths`,
+The checks run on pull requests and on `main` every three hours when it moved (and on manual runs), not on every push to `main`: the
+pull request already ran them, and the scheduled run saves the dependencies' caches pull requests restore. Each workflow runs only when what it builds changes: the Rust workflows list their crates one by one in `paths`,
 derived from the dependency graph. A new crate, a new path dependency or a new workflow updates those lists
 (`python3 .github/ci/paths.py --print`); the `CI paths` workflow fails when a list misses a crate its workflow builds.
 It runs on every pull request: its `check` job is the status check main requires, so a pull request no other workflow
@@ -620,7 +637,8 @@ CI builds with huacnlee/cargo, as developers do: `.github/actions/cargo` install
 and caches the dependencies' builds (`~/.cargo/targets/shared-deps`) with the registry, one cache per job, saved by
 `main` and restored by pull requests. It builds without incremental state or debug info and ignores the toolchain
 file's mobile targets (`RUSTUP_TOOLCHAIN=stable`) except in the release. Files a crate reads from outside its
-directory (`include_bytes!`, test fixtures) go into its workflows' `files` in `paths.py`.
+directory (`include_bytes!`, test fixtures) go into its workflows' `files` in `paths.py`. Every workflow,
+the release and the website's deployment included, runs on GitHub's runners (`docs/dev/tooling.md` "Runners").
 
 ## Parallel agents
 

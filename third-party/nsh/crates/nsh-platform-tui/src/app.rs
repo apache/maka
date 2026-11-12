@@ -117,6 +117,10 @@ pub struct TerminalCapabilities {
     /// keyboard protocol. Without it, Ctrl stands in for Cmd in the app's
     /// shortcuts on macOS.
     pub command_key: bool,
+    /// The terminal takes OSC 8 hyperlinks: the text inside a `Link` is
+    /// drawn as a hyperlink to its `href`. Without it, as on the Linux
+    /// console, which shows the sequence, links are plain text.
+    pub hyperlinks: bool,
 }
 
 /// The colors a terminal shows.
@@ -143,6 +147,7 @@ impl Default for TerminalCapabilities {
             background_color: None,
             foreground_color: None,
             command_key: false,
+            hyperlinks: true,
         }
     }
 }
@@ -471,7 +476,7 @@ impl AppView {
         self.keyboard.sync = Some((sender, self.surface.wake.clone()));
         let engine = Engine::start(config, move || CellTextEngine::new(cells), sink)?;
         self.images
-            .set_resources(assets, access, engine.image_cache());
+            .set_resources(assets, access, engine.media_files(), engine.image_cache());
         #[cfg(feature = "dev")]
         if let Some(test) = &self.test {
             test.model.engine_started(engine.control());
@@ -512,7 +517,8 @@ impl AppView {
             local.control().set_perf_monitor(Some(perf.engine.clone()));
         }
         let disk = local.image_cache();
-        self.images.set_resources(assets, access, disk);
+        self.images
+            .set_resources(assets, access, local.media_files(), disk);
         self.surface.local_deadline = local.pump();
         self.surface.laid_out = viewport;
         self.surface.runtime = Some(Runtime::Local(Box::new(local)));
@@ -1131,6 +1137,20 @@ impl AppView {
         if self.input_paused && !matches!(input, Input::Focus(_)) {
             return Handled::Ignored;
         }
+        // What the user gives input with, before it acts: the focus it
+        // moves shows or not (`focus-visible:`).
+        let modality = match &input {
+            Input::Mouse(mouse) if matches!(mouse.kind, crate::MouseKind::Down(_)) => {
+                Some(nsh_core::platform::InputModality::Pointer)
+            }
+            Input::Key { release: false, .. } | Input::KeyRepeat { .. } => {
+                Some(nsh_core::platform::InputModality::Keyboard)
+            }
+            _ => None,
+        };
+        if let (Some(modality), Some(engine)) = (modality, self.surface.control()) {
+            engine.set_input_modality(modality);
+        }
         // Ctrl+C is never the diagnostics panel's: it copies or quits.
         #[cfg(feature = "dev")]
         let interrupt = matches!(&input, Input::Key { key, modifiers, .. }
@@ -1226,6 +1246,17 @@ impl AppView {
                 if matches!(mouse.kind, crate::MouseKind::Down(crate::MouseButton::Left)) {
                     self.surface.wake.notify();
                 }
+                self.pointer.mouse_up(
+                    mouse,
+                    &crate::input::PointerContext {
+                        area: self.area,
+                        cells: self.options.cells,
+                        hits: &self.hits,
+                        geometry: &self.geometry,
+                        tree: &mut self.tree,
+                        control: &control,
+                    },
+                );
                 let handled = if matches!(
                     mouse.kind,
                     crate::MouseKind::Down(crate::MouseButton::Right)
@@ -1615,7 +1646,19 @@ impl AppView {
             || self
                 .keyboard
                 .shortcut(&self.tree, stroke, repeat, command_key, &control)
-            || self.menu_shortcut(stroke, repeat, false)
+        {
+            Handled::Yes
+        } else if self.keyboard.has_focused_control(&self.tree)
+            && nsh_core::input::presses_focused_control(stroke.key, stroke.modifiers)
+        {
+            self.keyboard.action(
+                crate::key_scheme::Action::Activate,
+                &mut self.tree,
+                &self.geometry,
+                &control,
+                modifiers,
+            )
+        } else if self.menu_shortcut(stroke, repeat, false)
             || self.handle_field_key(key, stroke, &control)
             || self.selection.key(
                 key,
@@ -1627,7 +1670,8 @@ impl AppView {
             || crate::key_scheme::arrow(stroke).is_some_and(|arrow| {
                 self.keyboard
                     .shortcut(&self.tree, arrow, repeat, command_key, &control)
-            }) {
+            })
+        {
             Handled::Yes
         } else if let Some(crate::key_scheme::Action::Search(forward)) =
             crate::key_scheme::terminal(stroke)
@@ -2199,6 +2243,7 @@ impl AppView {
                 Message::SixelEncoded { id, key, sixel } => {
                     let _ = self.images.on_sixel_encoded(id, key, sixel);
                 }
+                Message::Run(task) => task.run(),
                 #[cfg(feature = "dev")]
                 Message::Reload => {
                     if let Some(mut dev) = self.dev.take() {
@@ -2451,6 +2496,13 @@ impl AppView {
             perf.pending.draw = drawing.elapsed();
             perf.draw(area, buffer);
         }
+        let painted = if self.options.capabilities.hyperlinks {
+            &self.tree.links
+        } else {
+            &crate::link::Painted::new()
+        };
+        let links = crate::link::finish(buffer, painted, &self.output.links.borrow());
+        *self.output.links.borrow_mut() = links;
         #[cfg(feature = "dev")]
         {
             let requests: Vec<_> = self

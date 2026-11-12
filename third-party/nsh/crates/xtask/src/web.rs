@@ -178,16 +178,20 @@ pub(crate) fn build(out: &Path) -> anyhow::Result<()> {
     step.done("packaged the gallery");
 
     copy(&web.join("index.html"), &out.join("index.html"))?;
-    // The embedded player and playground share the gallery's syntax data.
-    let syntaxes = fs::read_dir(&gallery)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("nsh-syntaxes."))
-        })
-        .context("the gallery has no syntax data")?;
-    copy(&syntaxes, &out.join("nsh-syntaxes.bin"))?;
+    // The embedded player and playground share the gallery's syntax data
+    // and `EmojiPicker`'s emoji.
+    for (data, what) in [("syntaxes", "syntax data"), ("emoji", "emoji")] {
+        let prefix = format!("nsh-{data}.");
+        let file = fs::read_dir(&gallery)?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+            })
+            .with_context(|| format!("the gallery has no {what}"))?;
+        copy(&file, &out.join(format!("nsh-{data}.bin")))?;
+    }
     term::note(out.strip_prefix(&root).unwrap_or(&out).display());
     Ok(())
 }

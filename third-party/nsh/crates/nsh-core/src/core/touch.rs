@@ -46,6 +46,10 @@ pub(crate) struct TouchState {
     blocks: [Option<NodeId>; 2],
     /// The side that blocked last: it wins while both do.
     newest: usize,
+    /// The view whose press (its own or one inside it) was cancelled
+    /// ([`Command::CancelPress`]): its release reports nothing, and it
+    /// shows no `active:` styles, until the next press begins.
+    pub(super) cancelled: Option<NodeId>,
 }
 
 impl TouchState {
@@ -180,12 +184,20 @@ impl<M: TextEngine> Core<M> {
             let slot = self.adopted_host(id).filter(|&host| host != own);
             [Some(own), slot]
         } else {
-            [
-                self.host_of(id)
-                    .or_else(|| self.components.slot_hosts.get(&id).copied())
-                    .or_else(|| self.adopted_host(id)),
-                None,
-            ]
+            // A slot's node: the component it is a slot of (a context
+            // menu's trigger), then the one whose view made it, as its
+            // other events go ([`Core::dispatch_event`]).
+            let slot = self
+                .components
+                .slot_hosts
+                .get(&id)
+                .copied()
+                .or_else(|| self.adopted_host(id));
+            let owner = self.host_of(id).filter(|&host| Some(host) != slot);
+            match slot {
+                Some(slot) => [Some(slot), owner],
+                None => [owner, None],
+            }
         }
     }
 
@@ -364,5 +376,76 @@ impl<M: TextEngine> Core<M> {
             Some(id) => (id, Command::SetJsResponder { block: true }),
             None => (ROOT_ID, Command::ClearJsResponder),
         });
+    }
+}
+
+impl<T: TextEngine> Core<T> {
+    /// The press going on in view `id` or inside it ends without its
+    /// release ([`Command::CancelPress`]): what the platform reports of
+    /// its release is dropped until the next press begins, and the views
+    /// pressed there lose their `active:` styles.
+    pub(super) fn cancel_press(&mut self, id: NodeId) {
+        let Ok(outer) = self.key(id) else { return };
+        self.components.touch.cancelled = Some(id);
+        // The slab's occupied entries: `len` counts them, and a removed
+        // node leaves its key vacant below the highest one.
+        let pressed: Vec<super::Key> = (self.nodes.iter())
+            .filter(|(_, node)| node.states & crate::tailwind::state::PRESSED != 0)
+            .map(|(key, _)| key as super::Key)
+            .filter(|&key| self.is_within(key, outer))
+            .collect();
+        for key in pressed {
+            self.nodes[key as usize].states &= !crate::tailwind::state::PRESSED;
+            self.states_changed(key);
+        }
+    }
+
+    /// Whether view `key` is inside the view whose press was cancelled.
+    pub(super) fn press_cancelled(&self, key: super::Key) -> bool {
+        self.components
+            .touch
+            .cancelled
+            .and_then(|id| self.key(id).ok())
+            .is_some_and(|outer| self.is_within(key, outer))
+    }
+
+    /// Drops the press events of a cancelled press (true), and forgets the
+    /// cancel as the next press begins: a finger going down, a press going
+    /// in. A press's `onPress` is its last event.
+    pub(super) fn drop_cancelled_press(
+        &mut self,
+        id: NodeId,
+        kind: EventKind,
+        payload: &EventPayload,
+    ) -> bool {
+        if self.components.touch.cancelled.is_none() {
+            return false;
+        }
+        match kind {
+            EventKind::Touch => {
+                if let EventPayload::Touch(touch) = payload
+                    && touch.phase == TouchPhase::Start
+                    && touch.points.iter().all(|p| p.changed)
+                {
+                    self.components.touch.cancelled = None;
+                }
+                false
+            }
+            EventKind::PressDown => {
+                self.components.touch.cancelled = None;
+                false
+            }
+            EventKind::Press | EventKind::PressUp => {
+                let Ok(key) = self.key(id) else { return false };
+                if !self.press_cancelled(key) {
+                    return false;
+                }
+                if kind == EventKind::Press {
+                    self.components.touch.cancelled = None;
+                }
+                true
+            }
+            _ => false,
+        }
     }
 }

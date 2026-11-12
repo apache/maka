@@ -261,7 +261,7 @@ final class TabBarComponent implements NshComponent {
             label.setEllipsize(android.text.TextUtils.TruncateAt.END);
             label.setGravity(Gravity.CENTER);
             label.setTextSize(TypedValue.COMPLEX_UNIT_SP, LABEL_SP);
-            label.setTypeface(Typeface.create(Typeface.DEFAULT, 500, false));
+            label.setTypeface(TextLayouts.weighted(Typeface.DEFAULT, 400, false, 500, false));
             LayoutParams lp = new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             lp.topMargin = px(4);
             addView(label, lp);

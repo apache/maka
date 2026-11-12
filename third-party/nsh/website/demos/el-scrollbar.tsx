@@ -1,6 +1,6 @@
 import { mount, Scroll, signal, Text, View, type ScrollRef } from "nsh";
 import { Scrollbar, type ScrollbarMode } from "nsh/base";
-import { desktop, Panel, scrollbarTheme, Segmented, size, Split, ui } from "./palette";
+import { desktop, Panel, scrollbarTheme, sectionSurface, Segmented, size, Split, ui } from "./palette";
 
 // A list of messages in a card whose own indicator is off, with the app's
 // bar over its right edge in the shared look (`scrollbarTheme`, the one the
@@ -44,7 +44,7 @@ function App() {
           </Panel>
         }
       >
-        <View style={{ ...ui().card, flex: 1, minHeight: 320, borderRadius: 16, overflow: "hidden" }}>
+        <View style={{ ...sectionSurface(), flex: 1, minHeight: 320, overflow: "hidden" }}>
           <Scroll
             ref={inbox}
             scrollbar={false}

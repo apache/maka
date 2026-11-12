@@ -201,7 +201,7 @@ NSH is designed for software written with AI, whole apps as much as generated sc
 | Platform | Requires | Backend | Embedded with |
 |---|---|---|---|
 | [iOS](./ios.md) | iOS 15.0+ | UIKit | `NativeShell.xcframework` |
-| [Android](./android.md) | Android 9+ | Android views | `nsh.aar` |
+| [Android](./android.md) | Android 8+ | Android views | `nsh.aar` |
 | [macOS](./macos.md) | macOS 14+ | AppKit | `AppView` |
 | [Windows](./windows.md) | Windows 10 1809+ | Win32, Direct2D | `AppView` |
 | [Linux](./linux.md) | GTK 4.14+ | GTK 4 | `AppView` |

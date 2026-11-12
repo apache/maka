@@ -35,6 +35,38 @@ impl HistoryDataSource {
             Self::Snapshot(source) => source.view_at(run).await,
         }
     }
+    pub async fn executor_view(
+        &self,
+        run: RunId,
+    ) -> Result<(crate::fold::RunView, ExecutorTranscript), StoreError> {
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(ExecutorViewAt(history.clone(), cut.clone(), run))
+                    .await
+            }
+            Self::Snapshot(snapshot) => snapshot.executor_view(run).await,
+        }
+    }
+    pub async fn terminated(
+        &self,
+        run: RunId,
+    ) -> Result<Option<(UnixMillis, Terminal)>, StoreError> {
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(queries::TerminatedAt(
+                        history.namespace.clone(),
+                        cut.clone(),
+                        run,
+                    ))
+                    .await
+            }
+            Self::Snapshot(source) => source.terminated(run).await,
+        }
+    }
     pub async fn request(&self, run: RunId, step: StepId) -> Result<RequestSpec, StoreError> {
         match self {
             Self::Live { history, cut } => {
@@ -186,43 +218,56 @@ impl HistoryDataSource {
 }
 
 impl HistoryDataSource {
-    pub async fn compaction_started_at(
+    pub async fn compaction_duration_ms(
         &self,
         run: RunId,
+        summary_run: RunId,
         summary_step: StepId,
         adopted_sequence: u64,
-    ) -> Result<UnixMillis, StoreError> {
-        let query = CompactionStarted(self.clone(), run, summary_step, adopted_sequence);
+    ) -> Result<u64, StoreError> {
+        let query = CompactionDuration(
+            self.clone(),
+            run,
+            summary_run,
+            summary_step,
+            adopted_sequence,
+        );
         match self {
             Self::Live { history, .. } => history.data.query(query).await,
             Self::Snapshot(snapshot) => {
                 snapshot
-                    .compaction_started_at(run, summary_step, adopted_sequence)
+                    .compaction_duration_ms(run, summary_run, summary_step, adopted_sequence)
                     .await
             }
         }
     }
 }
 
-pub(in crate::session_history) struct CompactionStarted(
+pub(in crate::session_history) struct CompactionDuration(
     pub HistoryDataSource,
+    pub RunId,
     pub RunId,
     pub StepId,
     pub u64,
 );
-impl CompactionStarted {
+impl CompactionDuration {
     fn request(&self, c: &Connection, step: StepId) -> Result<RequestSpec, StoreError> {
         match &self.0 {
             HistoryDataSource::Live { history, cut } => {
-                RequestAt(history.namespace.clone(), cut.clone(), self.1, step).execute(c)
+                RequestAt(history.namespace.clone(), cut.clone(), self.2, step).execute(c)
             }
             HistoryDataSource::Snapshot(snapshot) => {
-                let prepared = self.record(c, "step_prepared", Some(step), None, None)?;
-                let Fact::StepPrepared {
+                let prepared = self.record(c, self.2, "step_prepared", Some(step), None, None)?;
+                let (Fact::StepPrepared {
                     step: original,
                     request,
                     ..
-                } = prepared.recorded.fact
+                }
+                | Fact::ProactiveSummaryPrepared {
+                    step: original,
+                    request,
+                    ..
+                }) = prepared.recorded.fact
                 else {
                     return Err(invalid(
                         "compaction timing request is not its original StepPrepared",
@@ -231,7 +276,7 @@ impl CompactionStarted {
                 if original != step {
                     return Err(invalid("compaction timing original request step differs"));
                 }
-                let request: RequestSpec = snapshot.metadata_in_snapshot(c, self.1, &request)?;
+                let request: RequestSpec = snapshot.metadata_in_snapshot(c, self.2, &request)?;
                 if request.schema_version != SCHEMA_VERSION || request.step != step {
                     return Err(invalid(
                         "compaction timing original request identity/schema differs",
@@ -244,6 +289,7 @@ impl CompactionStarted {
     fn record(
         &self,
         c: &Connection,
+        target_run: RunId,
         kind: &str,
         step: Option<StepId>,
         attempt: Option<ModelAttemptId>,
@@ -280,7 +326,7 @@ impl CompactionStarted {
                 } else {
                     ""
                 };
-                let found: Option<u64> = c.query_row(&format!("SELECT sequence FROM agent_session_history WHERE owner=?1 AND session=?2 AND run=?3 AND kind=?4 AND sequence<=?5 AND {live_key}=?6{attempt_step} ORDER BY sequence LIMIT 1"), params![serde_json::to_string(&history.namespace.owner)?,history.namespace.session,self.1.to_string(),kind,sql::bind_u64(cut.through_sequence)?,key],|row|sql::read_u64(row,0)).optional()?;
+                let found: Option<u64> = c.query_row(&format!("SELECT sequence FROM agent_session_history WHERE owner=?1 AND session=?2 AND run=?3 AND (kind=?4 OR (?4='step_prepared' AND kind='proactive_summary_prepared')) AND sequence<=?5 AND {live_key}=?6{attempt_step} ORDER BY sequence LIMIT 1"), params![serde_json::to_string(&history.namespace.owner)?,history.namespace.session,target_run.to_string(),kind,sql::bind_u64(cut.through_sequence)?,key],|row|sql::read_u64(row,0)).optional()?;
                 let found = found.ok_or_else(|| {
                     invalid("compaction timing original fact is missing from this fixed source cut")
                 })?;
@@ -295,7 +341,7 @@ impl CompactionStarted {
                         "imported message source has no canonical compaction timing",
                     ));
                 };
-                let raw: Option<String> = c.query_row(&format!("SELECT entry_json FROM agent_history_snapshot_entries WHERE snapshot=?1 AND kind='fact' AND run=?2 AND sequence<=?3 AND fact_kind=?4 AND {snapshot_key}=?5 ORDER BY sequence LIMIT 1"),params![snapshot.id().to_string(),self.1.to_string(),sql::bind_u64(cut.through_sequence)?,kind,key],|row|row.get(0)).optional()?;
+                let raw: Option<String> = c.query_row(&format!("SELECT entry_json FROM agent_history_snapshot_entries WHERE snapshot=?1 AND kind='fact' AND run=?2 AND sequence<=?3 AND (fact_kind=?4 OR (?4='step_prepared' AND fact_kind='proactive_summary_prepared')) AND {snapshot_key}=?5 ORDER BY sequence LIMIT 1"),params![snapshot.id().to_string(),target_run.to_string(),sql::bind_u64(cut.through_sequence)?,kind,key],|row|row.get(0)).optional()?;
                 let raw = raw.ok_or_else(|| {
                     invalid("compaction timing snapshot index requires its original cold metadata")
                 })?;
@@ -314,7 +360,7 @@ impl CompactionStarted {
                     return Err(invalid("compaction timing snapshot has another entry kind"));
                 };
                 let recorded: RecordedFact = snapshot.metadata_in_snapshot(c, run, &body)?;
-                if run != self.1
+                if run != target_run
                     || recorded.run != run
                     || recorded.id != id
                     || recorded.revision != revision
@@ -334,9 +380,9 @@ impl CompactionStarted {
         }
     }
 }
-impl Query for CompactionStarted {
-    type Output = UnixMillis;
-    fn execute(self, c: &Connection) -> Result<UnixMillis, StoreError> {
+impl Query for CompactionDuration {
+    type Output = u64;
+    fn execute(self, c: &Connection) -> Result<u64, StoreError> {
         use maka_agent_facts::context::ModelPurpose;
         let source = match &self.0 {
             HistoryDataSource::Live { history, cut } => {
@@ -344,22 +390,42 @@ impl Query for CompactionStarted {
             }
             HistoryDataSource::Snapshot(snapshot) => snapshot.run_in_snapshot(c, self.1)?,
         };
-        let adopted = self.record(c, "context_compacted", None, None, Some(self.3))?;
+        let adopted = self.record(c, self.1, "context_compacted", None, None, Some(self.4))?;
         if !matches!(&adopted.recorded.fact, Fact::ContextCompacted { .. }) {
             return Err(invalid(
                 "compaction timing endpoint is not an actual adoption",
             ));
         }
         if matches!(source.spec.trigger, Trigger::ContextCompact) {
-            return Ok(source.admission.at);
+            return duration(source.admission.at, adopted.recorded.at);
         }
-        let selected = self.request(c, self.2)?;
+        let selected = self.request(c, self.3)?;
         if selected.accounting.purpose != ModelPurpose::Summary {
             return Err(invalid("compaction timing request is not a Summary"));
         }
-        let selected_prepared = self.record(c, "step_prepared", Some(self.2), None, None)?;
+        let selected_prepared =
+            self.record(c, self.2, "step_prepared", Some(self.3), None, None)?;
+        if let Fact::ProactiveSummaryPrepared { attempt, .. } = selected_prepared.recorded.fact {
+            let closed = self.record(c, self.2, "model_closed", None, Some(attempt), None)?;
+            if !matches!(closed.recorded.fact, Fact::ModelClosed { attempt: id, outcome: maka_agent_facts::accounting::Outcome::Success, .. } if id == attempt)
+                || selected_prepared.sequence >= closed.sequence
+                || closed.sequence >= adopted.sequence
+            {
+                return Err(invalid(
+                    "compaction timing has no original successful background closure",
+                ));
+            }
+            return duration(selected_prepared.recorded.at, closed.recorded.at);
+        }
         let first_step = if let Some(original) = selected.summary_repair_of {
-            let recorded = self.record(c, "model_attempt_prepared", None, Some(original), None)?;
+            let recorded = self.record(
+                c,
+                self.2,
+                "model_attempt_prepared",
+                None,
+                Some(original),
+                None,
+            )?;
             match recorded.recorded.fact {
                 Fact::ModelAttemptPrepared { step, attempt, .. }
                     if attempt == original && recorded.sequence < selected_prepared.sequence =>
@@ -373,7 +439,7 @@ impl Query for CompactionStarted {
                 }
             }
         } else {
-            self.2
+            self.3
         };
         let first = self.request(c, first_step)?;
         if first.accounting.purpose != ModelPurpose::Summary
@@ -386,7 +452,7 @@ impl Query for CompactionStarted {
                 "compaction timing repair changed its original frozen source",
             ));
         }
-        let prepared = self.record(c, "step_prepared", Some(first_step), None, None)?;
+        let prepared = self.record(c, self.2, "step_prepared", Some(first_step), None, None)?;
         if !matches!(prepared.recorded.fact,Fact::StepPrepared {step,..} if step==first_step)
             || prepared.sequence > selected_prepared.sequence
             || selected_prepared.sequence >= adopted.sequence
@@ -405,6 +471,13 @@ impl Query for CompactionStarted {
             ));
         }
         // ModelRequested was committed before dispatch; repairs retain that original preparation span.
-        Ok(prepared.recorded.at)
+        duration(prepared.recorded.at, adopted.recorded.at)
     }
+}
+
+fn duration(start: UnixMillis, end: UnixMillis) -> Result<u64, StoreError> {
+    end.0
+        .checked_sub(start.0)
+        .and_then(|elapsed| u64::try_from(elapsed).ok())
+        .ok_or_else(|| invalid("invalid compaction duration"))
 }

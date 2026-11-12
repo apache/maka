@@ -98,14 +98,15 @@ fn hmac(key: &[u8], message: &str) -> [u8; 32] {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Number {
-    Decimal(f64),
+    // Not `f64`; see `plans::Number`.
+    Decimal(serde_json::Number),
     String(String),
 }
 
 impl Number {
     fn nonnegative(&self) -> Option<f64> {
         let value = match self {
-            Self::Decimal(value) => *value,
+            Self::Decimal(value) => value.as_f64()?,
             Self::String(value) => value.trim().parse().ok()?,
         };
         (value.is_finite() && value >= 0.0).then_some(value)

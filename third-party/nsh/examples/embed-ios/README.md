@@ -33,6 +33,16 @@ app.register(component: "embed.badge") { context in Badge(context) }  // Badge: 
 The component gets its props (`setProp`, JSON as Foundation objects) and commands, emits events with
 `context.emit("tap", ["count": n])` and may report its size with `context.setSize(_:)`.
 
+Scroll views: native UI that moves with the app's content in every frame watches a `<Scroll>` by its `nativeID`.
+`main.swift` follows `embedded.scroll`, the app's page, and scrolls it back to the top:
+
+```swift
+app.watchScroll("embedded.scroll", self)              // NshScrollWatcher: onAttached(_:) / onDetached()
+handle.onScroll { x, y, dx, dy in … }                 // main thread, in the frame of the scroll
+handle.stopScrolling()
+handle.scrollBy(dx: 0, dy: -handle.scrollY, animated: true)
+```
+
 The app and its host also talk without a view, through the view's channel (`nsh/host` in the app):
 
 ```swift

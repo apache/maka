@@ -1,11 +1,14 @@
 //! `Tooltip`: the hint an element's `tooltip` shows, as GPUI's
 //! `.tooltip(..)`: a hint overlay of the core (`nsh_core::element::Overlay::hint`)
 //! with the app's look, placement, delay and events. The core shows it for
-//! the keyboard focus on its trigger too, in every idiom, and hides it on
-//! Escape (WAI-ARIA's tooltip pattern). In a terminal it is a line, not a
-//! bubble: what it says shows at once on the status line
-//! ([`crate::status_line`]) while the focus or the pointer is on its
-//! trigger.
+//! the focus the keyboard moves to its trigger too (Tab, an arrow, a
+//! shortcut, the app's `focus()` after a key), in every idiom, and hides it
+//! on Escape (WAI-ARIA's tooltip pattern). A press, a tap or a click that
+//! focuses the trigger leaves it to the pointer, as `focus-visible:` and
+//! Radix's tooltips do, so it never stays up after the pointer left. In a
+//! terminal it is a line, not a bubble: what it says shows at once on the
+//! status line ([`crate::status_line`]) while the keyboard's focus or the
+//! pointer is on its trigger.
 
 use std::time::Duration;
 
@@ -40,9 +43,9 @@ pub struct TooltipProps {
     #[prop(default = Points(4.0))]
     pub margin: Prop<Points>,
     /// Milliseconds the pointer rests on the trigger before it shows
-    /// (default 500); the keyboard focus shows it at once. `Infinity`:
-    /// never by itself (neither the pointer nor the focus), only when the
-    /// app opens it.
+    /// (default 500); the focus the keyboard moves there shows it at once.
+    /// `Infinity`: never by itself (neither the pointer nor the focus),
+    /// only when the app opens it.
     #[prop(default = 500.0)]
     pub delay: Prop<f64>,
     /// No tooltip: it neither shows nor asks to.
@@ -73,9 +76,9 @@ pub struct TooltipProps {
 #[derive(Debug, Clone, PartialEq, Event)]
 pub enum TooltipEvent {
     /// The pointer rested on the trigger, or left or pressed it (`reason`
-    /// `"hover"`), the keyboard focus came to it or left it (`"focus"`),
-    /// or Escape was pressed while it was shown (`"cancel"`): set `open`
-    /// to follow it.
+    /// `"hover"`), the keyboard moved the focus to it or the focus left it
+    /// (`"focus"`), or Escape was pressed while it was shown (`"cancel"`):
+    /// set `open` to follow it.
     #[args(open, reason)]
     OpenChange(bool, OpenChangeReason),
     /// It is shown.
@@ -106,8 +109,10 @@ fn delay(ms: f64) -> Option<Duration> {
 /// `.tooltip(tooltip().child(..))`), as GPUI's `.tooltip(..)`: shown on top
 /// of everything next to the element on the desktops while the pointer
 /// rests on it (after `delay`), until the pointer leaves or presses it, and
-/// in every idiom at once while the keyboard focus is on it, until the
-/// focus leaves; Escape hides it. Touch screens show it otherwise only when
+/// in every idiom at once when the keyboard moves the focus to it (Tab, an
+/// arrow, a shortcut, the app's `focus()` after a key), until the focus
+/// leaves; Escape hides it. A press that focuses the element (a click, a
+/// tap) leaves it to the pointer. Touch screens show it otherwise only when
 /// the app opens it (`open`). It never
 /// takes the pointer or presses, so the element works as it does without
 /// it. It looks like nothing: it is the bubble, styled with its `class` /
@@ -116,8 +121,8 @@ fn delay(ms: f64) -> Option<Duration> {
 /// ending looks (`startingClass`, `endingClass`). In a terminal it shows
 /// at once (no delay but an endless one) and in one frame on the bottom
 /// row of the viewport, the line a toast's message takes while one shows,
-/// with the terminal's colors rather than its look: the keyboard focus and
-/// the pointer on the trigger show it alike.
+/// with the terminal's colors rather than its look: the keyboard's focus
+/// and the pointer on the trigger show it alike.
 #[component]
 pub fn Tooltip(props: TooltipProps, cx: Scope<TooltipEvent>) -> impl IntoElement {
     let terminal = crate::terminal::is_terminal();
@@ -177,11 +182,11 @@ pub fn Tooltip(props: TooltipProps, cx: Scope<TooltipEvent>) -> impl IntoElement
         .child(props.children)
 }
 
-/// A terminal's tooltip: the core's hint follows the focus and the pointer
-/// on the trigger and asks, at once. The hint overlay shows only while the
-/// tooltip has the status line, and takes no Cell by the trigger (no size,
-/// whatever the app's look gives the bubble): it only holds the line, an
-/// overlay of the root view, with what the tooltip says.
+/// A terminal's tooltip: the core's hint follows the keyboard's focus and
+/// the pointer on the trigger and asks, at once. The hint overlay shows
+/// only while the tooltip has the status line, and takes no Cell by the
+/// trigger (no size, whatever the app's look gives the bubble): it only
+/// holds the line, an overlay of the root view, with what the tooltip says.
 fn terminal_tooltip(
     props: TooltipProps,
     cx: Scope<TooltipEvent>,

@@ -11,8 +11,8 @@ use std::{
 
 use anyhow::{Context as _, bail};
 
-/// Minimum Android version (API 28, Android 9), as the runtime is built.
-pub(crate) const MIN_SDK: u32 = 28;
+/// Minimum Android version (API 26, Android 8.0), as the runtime is built.
+pub(crate) const MIN_SDK: u32 = 26;
 /// The Android version apps target unless `nsh.json` `android.targetSdk`
 /// names another (API 35, Android 15: what Google Play requires).
 pub(crate) const DEFAULT_TARGET_SDK: u32 = 35;
@@ -84,6 +84,34 @@ impl Sdk {
         };
         let clang = bin.join(format!("{clang_target}{MIN_SDK}-clang{script}"));
         let env_triple = triple.replace('-', "_");
+        // New NDKs keep the C standard headers their clang carries (stdbool.h
+        // &c.) out of the sysroot: whatever libclang bindgen of the C
+        // dependencies (quickjs-jit-sys) loads, give it that directory to
+        // search as well. Last (`-idirafter`), so the libclang's own headers
+        // still win and `#include_next` reaches the sysroot (#1282: `'stdbool.h'
+        // file not found`, `unknown type name 'uint32_t'` on Windows).
+        let clang_include = fs::read_dir(toolchain.join("lib/clang"))
+            .ok()
+            .and_then(|versions| {
+                versions
+                    .filter_map(|version| version.ok().map(|version| version.path()))
+                    .map(|version| version.join("include"))
+                    .find(|include| include.is_dir())
+            });
+        // bindgen splits this variable like a shell: quoted, with forward slashes,
+        // so that the backslashes and spaces of a Windows path survive.
+        let mut extra = format!(
+            "--target={clang_target}{MIN_SDK} --sysroot=\"{}\"",
+            toolchain
+                .join("sysroot")
+                .display()
+                .to_string()
+                .replace('\\', "/")
+        );
+        if let Some(include) = clang_include {
+            let include = include.display().to_string().replace('\\', "/");
+            extra.push_str(&format!(" -idirafter \"{include}\""));
+        }
         let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
         cmd.env(format!("CC_{env_triple}"), &clang)
             .env(format!("AR_{env_triple}"), bin.join("llvm-ar"))
@@ -91,19 +119,17 @@ impl Sdk {
                 format!("CARGO_TARGET_{}_LINKER", env_triple.to_uppercase()),
                 &clang,
             )
-            // bindgen splits this variable like a shell: quoted, with forward slashes,
-            // so that the backslashes and spaces of a Windows path survive.
-            .env(
-                format!("BINDGEN_EXTRA_CLANG_ARGS_{env_triple}"),
-                format!(
-                    "--target={clang_target}{MIN_SDK} --sysroot=\"{}\"",
-                    toolchain
-                        .join("sysroot")
-                        .display()
-                        .to_string()
-                        .replace('\\', "/")
-                ),
-            );
+            .env(format!("BINDGEN_EXTRA_CLANG_ARGS_{env_triple}"), extra);
+        // Use the NDK's own libclang when it carries one (r27+ do not);
+        // setting LIBCLANG_PATH otherwise would cut clang-sys's discovery off.
+        let ndk_libclang = bin.join(if cfg!(windows) {
+            "libclang.dll"
+        } else {
+            "libclang.so"
+        });
+        if ndk_libclang.exists() {
+            cmd.env("LIBCLANG_PATH", &bin);
+        }
         Ok(cmd)
     }
 
@@ -176,8 +202,16 @@ pub(crate) struct Apk<'a> {
     pub(crate) activity: &'a str,
     /// Development builds: debuggable, cleartext HTTP (the dev server).
     pub(crate) dev: bool,
+    /// Plain HTTP is allowed (`android:usesCleartextTraffic`): development
+    /// builds (the dev server's assets) and apps whose `nsh.json` sets
+    /// `android.usesCleartextTraffic`.
+    pub(crate) cleartext: bool,
     /// The app may show notifications: `POST_NOTIFICATIONS` is declared.
     pub(crate) notifications: bool,
+    /// Web pages may use the microphone and the camera
+    /// (`webview.media`): `RECORD_AUDIO` and `CAMERA` are declared.
+    pub(crate) microphone: bool,
+    pub(crate) camera: bool,
     /// URL schemes that open the app (nsh.json `schemes`): one
     /// `VIEW` intent filter.
     pub(crate) schemes: &'a [String],
@@ -323,7 +357,7 @@ fn manifest_xml(apk: &Apk<'_>) -> String {
     } else {
         ""
     };
-    let cleartext = if apk.dev {
+    let cleartext = if apk.cleartext {
         r#" android:usesCleartextTraffic="true""#
     } else {
         ""
@@ -343,6 +377,13 @@ fn manifest_xml(apk: &Apk<'_>) -> String {
     } else {
         ""
     };
+    let media: String = [(apk.microphone, "RECORD_AUDIO"), (apk.camera, "CAMERA")]
+        .iter()
+        .filter(|(declared, _)| *declared)
+        .map(|(_, name)| {
+            format!("\n    <uses-permission android:name=\"android.permission.{name}\" />")
+        })
+        .collect();
     // A link opens the running app (`onNewIntent`), not another activity in
     // the caller's task.
     let launch_mode = if apk.schemes.is_empty() {
@@ -365,7 +406,15 @@ fn manifest_xml(apk: &Apk<'_>) -> String {
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{package}">
-    <uses-permission android:name="android.permission.INTERNET" />{post_notifications}
+    <uses-permission android:name="android.permission.INTERNET" />{post_notifications}{media}
+    <!-- Text actions (Translate and the like) the selection menu offers,
+        as TextView's: Android 11+ hides other apps' activities otherwise. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT" />
+            <data android:mimeType="text/plain" />
+        </intent>
+    </queries>
     <application android:label="{label}"{icon}{cleartext}
         android:extractNativeLibs="false"
         android:enableOnBackInvokedCallback="true"
@@ -782,7 +831,10 @@ mod tests {
             target_sdk: super::DEFAULT_TARGET_SDK,
             activity: "com.longbridge.nsh.AppActivity",
             dev: false,
+            cleartext: false,
             notifications,
+            microphone: false,
+            camera: false,
             schemes: &[],
             rust,
             dark: false,
@@ -834,6 +886,31 @@ mod tests {
         let permission = "android.permission.POST_NOTIFICATIONS";
         assert!(super::manifest_xml(&apk(false, true)).contains(permission));
         assert!(!super::manifest_xml(&apk(false, false)).contains(permission));
+    }
+
+    #[test]
+    fn only_an_app_whose_pages_capture_media_declares_its_permissions() {
+        let manifest = super::manifest_xml(&super::Apk {
+            microphone: true,
+            ..apk(false, false)
+        });
+        assert!(manifest.contains("android.permission.RECORD_AUDIO"));
+        assert!(!manifest.contains("android.permission.CAMERA"));
+        assert!(!super::manifest_xml(&apk(false, false)).contains("RECORD_AUDIO"));
+    }
+
+    #[test]
+    fn only_an_app_that_asks_allows_cleartext_traffic() {
+        let attribute = r#"android:usesCleartextTraffic="true""#;
+        assert!(!super::manifest_xml(&apk(false, false)).contains(attribute));
+        let manifest = super::manifest_xml(&super::Apk {
+            cleartext: true,
+            ..apk(false, false)
+        });
+        let application = manifest.find("<application").unwrap();
+        let activity = manifest.find("<activity").unwrap();
+        let at = manifest.find(attribute).expect(&manifest);
+        assert!(application < at && at < activity, "{manifest}");
     }
 
     #[test]

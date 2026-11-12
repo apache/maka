@@ -1,7 +1,8 @@
 //! The executable of a packaged nsh app (`nsh package --target macos`):
 //! runs the bundle in its app bundle's resources (`nsh/bundle.nshc`, assets
-//! in `nsh/assets`, the app's name and appearance in `nsh/app.json`), or a
-//! newer signed package of its code it downloaded (`nsh_engine::updates`).
+//! in `nsh/assets`, the app's name, appearance and activation policy in
+//! `nsh/app.json`), or a newer signed package of its code it downloaded
+//! (`nsh_engine::updates`).
 //!
 //! A library so that an app with Rust components of its own (`nsh.json`
 //! `"rust"`) builds the release runner with them: its `main` calls
@@ -50,27 +51,15 @@ pub fn main() -> std::process::ExitCode {
 /// window's options.
 #[cfg(target_os = "macos")]
 fn setup() -> (std::path::PathBuf, nsh_platform_macos::AppOptions) {
-    use nsh_platform_macos::{AppOptions, Appearance, AssetBase, Limits};
+    use nsh_platform_macos::{ActivationPolicy, AppOptions, Appearance, AssetBase, Limits};
 
-    /// Run by `nsh run`: the app's own logs go to its terminal too.
-    static DEVELOPMENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    struct Logger;
-    impl log::Log for Logger {
-        fn enabled(&self, m: &log::Metadata<'_>) -> bool {
-            m.level() <= log::Level::Warn || m.target() == "js" || DEVELOPMENT.get() == Some(&true)
-        }
-        fn log(&self, r: &log::Record<'_>) {
-            if self.enabled(r.metadata()) {
-                eprintln!("{} {}: {}", r.level(), r.target(), r.args());
-            }
-        }
-        fn flush(&self) {}
-    }
-    static LOGGER: Logger = Logger;
+    // Warnings, errors and the app's `js` lines go to the unified log (an
+    // app opened from Finder or the Dock writes stderr to /dev/null). Run by
+    // `nsh run`, the app's own logs go there too, and to its terminal.
     let development = std::env::var_os("NSH_APP_DIR");
-    let _ = DEVELOPMENT.set(development.is_some());
-    let _ = log::set_logger(&LOGGER);
-    log::set_max_level(log::LevelFilter::Info);
+    let mut logging = nsh_platform_apple::unified_log::Options::default();
+    logging.development = development.is_some();
+    nsh_platform_apple::unified_log::install(logging);
 
     // `<App>.app/Contents/MacOS/<exe>` -> `<App>.app/Contents/Resources/nsh`.
     let dir = match development {
@@ -108,6 +97,11 @@ fn setup() -> (std::path::PathBuf, nsh_platform_macos::AppOptions) {
         Some("light") => options.appearance = Appearance::Light,
         Some("dark") => options.appearance = Appearance::Dark,
         _ => {}
+    }
+    // A menu bar app (`nsh.json` `macos.activationPolicy`) is one from the
+    // start: no Dock icon or menu bar shows before its code runs.
+    if field("activationPolicy").as_deref() == Some("accessory") {
+        options.activation_policy = ActivationPolicy::Accessory;
     }
     // `open -a <App> --args --fps` shows the performance monitor, and so
     // does `NSHPerformanceMonitor` (a boolean) in the bundle's Info.plist:

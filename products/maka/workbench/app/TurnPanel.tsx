@@ -18,6 +18,7 @@
  */
 
 import { formatDuration } from './duration';
+import { executorUsageLabel } from './TurnUsage';
 import { LoadingIndicator } from './Loading';
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
@@ -165,7 +166,11 @@ export function TurnSummary(props: {
       platform.idiom !== 'terminal' && props.canFold()
         ? activityCounts(props.groups(), props.row)
         : '';
-    return [status, counts].filter(Boolean).join(' · ') || tr('Completed');
+    const usage = turn.finalOutputIds.length === 0 ? turn.timing?.executorUsage : null;
+    return (
+      [status, counts, usage ? executorUsageLabel(usage) : ''].filter(Boolean).join(' · ') ||
+      tr('Completed')
+    );
   };
   const choose = (action: { turnKey: string; open: boolean }) => {
     if (props.turn().turnKey === action.turnKey && props.canFold()) props.toggle(action.open);
@@ -249,6 +254,7 @@ function ActivityLog(props: {
   previewImage(image: ImagePreview): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   senders?: MessageSenders;
+  inspectTool?(key: string): void;
   userScroll(): void;
   reading(away: boolean): void;
   /** Whether the activity list is scrolled to its end, following or not. */
@@ -463,6 +469,7 @@ function ActivityLog(props: {
                       viewState={props.rowState(ownedId())}
                       toolMaxHeight={bodyMaxHeight}
                       toolProgress={props.toolProgress}
+                      inspectTool={props.inspectTool}
                       onToolReading={(key) => {
                         if (
                           !alive ||
@@ -529,6 +536,7 @@ type TurnPanelProps = {
   previewImage(image: ImagePreview): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   senders?: MessageSenders;
+  inspectTool?(key: string): void;
   userScroll(): void;
   reading(away: boolean): void;
   settled?(atEnd: boolean): void;

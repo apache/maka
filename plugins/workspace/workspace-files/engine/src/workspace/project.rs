@@ -70,7 +70,7 @@ pub async fn resolve_selected(path: &Path) -> io::Result<ResolvedProject> {
     }
     tokio::task::spawn_blocking(move || {
         let workspace = Workspace::capture(&normalized)?;
-        let kind = if git::has_entry(&workspace.path)? {
+        let kind = if git::has_repository(&workspace.path)? {
             let repository = git::discover(&workspace.path)?;
             let root = repository
                 .workdir()

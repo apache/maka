@@ -108,6 +108,15 @@ impl SelectionTexts for Texts<'_> {
             .unwrap()
             .text
     }
+    fn copied(&self, i: usize, range: std::ops::Range<u32>) -> String {
+        self.tree
+            .get(self.geometry[i].id)
+            .unwrap()
+            .text_content
+            .as_ref()
+            .unwrap()
+            .copied_text(range)
+    }
     fn frame(&self, i: usize) -> Bounds<Points> {
         self.geometry[i].text_frame.expect("text geometry")
     }
@@ -422,7 +431,12 @@ impl Selection {
             if self.model.is_empty() {
                 return false;
             }
-            clipboard.set_text(Some(self.model.text(&texts)));
+            // A selection of hidden characters only leaves the clipboard
+            // as it is.
+            let text = self.model.text(&texts);
+            if !text.is_empty() {
+                clipboard.set_text(Some(text));
+            }
             return true;
         }
         if (modifiers.ctrl || modifiers.cmd) && key.eq_ignore_ascii_case("a") {

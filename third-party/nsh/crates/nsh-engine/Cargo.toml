@@ -3,6 +3,7 @@ name = "nsh-engine"
 description = "Engine thread that drives the JS host and the core and emits mount batches."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true
@@ -29,7 +30,7 @@ browser = []
 net = ["dep:ureq"]
 # `shader`: the native backends' shader renderer (`shader`), on wgpu. Without
 # it `shader` has the same API and finds no GPU, so shader views draw nothing.
-shader = ["dep:wgpu", "dep:pollster", "nsh-core/shader"]
+shader = ["dep:wgpu", "dep:pollster", "nsh-core/shader", "dep:objc2", "dep:objc2-metal", "dep:objc2-core-foundation", "dep:block2"]
 
 [dependencies]
 rustc-hash.workspace = true
@@ -50,6 +51,15 @@ pollster = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 # A packaged app's update configuration (`updates`).
 nsh-updater.workspace = true
+
+# Apple: shader frames on IOSurfaces (`shader`; the type is in the API with
+# or without it).
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2-io-surface.workspace = true
+objc2 = { workspace = true, optional = true }
+objc2-metal = { workspace = true, optional = true }
+objc2-core-foundation = { workspace = true, optional = true }
+block2 = { workspace = true, optional = true }
 
 # Thread priority (Apple), process CPU and memory (`perf`).
 [target.'cfg(unix)'.dependencies]

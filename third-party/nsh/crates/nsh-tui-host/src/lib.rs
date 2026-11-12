@@ -16,39 +16,56 @@ mod logging;
 mod shutdown;
 mod terminal;
 
+pub use shutdown::request_exit;
 pub use terminal::convert;
 
+/// The host's options, as its command line gives them. An embedding program parses its own
+/// arguments (`Args::try_parse_from`) or starts from [`Args::default`].
 #[derive(Parser)]
+#[non_exhaustive]
 #[command(
     about = "Run Native Shell in the terminal (C-h e opens logs; Ctrl+C copies a selection, else exits)"
 )]
-struct Args {
+pub struct Args {
+    /// The prebuilt bundle to run.
     #[arg(long, conflicts_with = "dev_server")]
-    bundle: Option<PathBuf>,
+    pub bundle: Option<PathBuf>,
+    /// The development server to load the app from, when no bundle is given.
     #[arg(long)]
-    dev_server: Option<String>,
+    pub dev_server: Option<String>,
+    /// The size of one terminal cell in points.
     #[arg(long, default_value = "8x16")]
-    points_per_cell: CellSize,
+    pub points_per_cell: CellSize,
+    /// Where the host writes its log; a file in the temporary directory when absent.
     #[arg(long)]
-    log_file: Option<PathBuf>,
+    pub log_file: Option<PathBuf>,
+    /// The app's data directory; the engine's default when absent.
     #[arg(long)]
-    data_dir: Option<PathBuf>,
+    pub data_dir: Option<PathBuf>,
+    /// Log at trace level.
     #[arg(long)]
-    trace: bool,
+    pub trace: bool,
     /// Show frame timings and terminal output (C-h p toggles).
     #[arg(long)]
-    fps: bool,
+    pub fps: bool,
     /// Leave the mouse to the terminal (its own text selection) instead of capturing
     /// clicks, hover, dragging and the wheel.
     #[arg(long)]
-    no_mouse: bool,
+    pub no_mouse: bool,
 
     /// Render to an in-memory terminal (used by nsh test).
     #[arg(long, requires = "dev_server")]
-    headless: bool,
+    pub headless: bool,
     /// Initial in-memory viewport in points, rounded up to whole Cells.
     #[arg(long, requires = "headless")]
-    window_size: Option<CellSize>,
+    pub window_size: Option<CellSize>,
+}
+
+impl Default for Args {
+    /// The options of a command line that gives none.
+    fn default() -> Self {
+        Self::parse_from(["nsh-tui-host"])
+    }
 }
 
 /// Parses host arguments and runs the selected bundle. The binary owns logging and diagnostics.
@@ -57,8 +74,18 @@ pub fn main() -> io::Result<()> {
 }
 
 /// Runs the host with an app's registered UI sets and optional Rust root.
-pub fn main_with_options(mut options: AppOptions) -> io::Result<()> {
-    let args = Args::parse();
+pub fn main_with_options(options: AppOptions) -> io::Result<()> {
+    main_with_args(options, Args::parse())
+}
+
+/// Runs the host with an app's registered UI sets and options given by the embedding program
+/// rather than read from its command line, as when the host runs inside another program.
+///
+/// For the run, the host takes the process's SIGINT, SIGTERM and SIGHUP (on Windows, Ctrl+C
+/// and Ctrl+Break through `SetConsoleCtrlHandler`): each asks it to exit, as [`request_exit`]
+/// does, and the program's own handlers do not see them. The host puts back the handlers it
+/// found when the run ends.
+pub fn main_with_args(mut options: AppOptions, args: Args) -> io::Result<()> {
     let log_file = args.log_file.clone().unwrap_or_else(|| {
         std::env::temp_dir().join(format!("nsh-tui-host-{}.log", std::process::id()))
     });
@@ -83,6 +110,11 @@ pub fn main_with_options(mut options: AppOptions) -> io::Result<()> {
         )));
     }
     let _shutdown = shutdown::Guard::install()?;
+    // A request made before the run ends it here: once a request is set, the terminal refuses
+    // writes, so entering the session would fail.
+    if shutdown::requested() {
+        return Ok(());
+    }
     // The terminal answers its startup queries before the surface takes its colors.
     let session = if args.headless {
         None

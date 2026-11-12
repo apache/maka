@@ -14,7 +14,10 @@ use std::{
 
 use nsh_core::{
     Command, EventKind, ImageSource, Op, ROOT_ID,
-    desktop::{DesktopCommand, MenuAction, MenuBarMode, MenuItem, MenuRole, Shortcut, Tray},
+    desktop::{
+        DesktopCommand, MenuAction, MenuBarMode, MenuItem, MenuRole, Shortcut, Tray,
+        TrayTitlePlacement, TrayTitleRun,
+    },
     geometry::{Points, point},
     keymap::When,
     platform::Os,
@@ -46,6 +49,9 @@ pub(crate) struct Menus {
     closed: Cell<JsValue>,
     /// The tray's functions: its menu's and its click's.
     tray: RefCell<Vec<(u32, JsValue)>>,
+    /// The id of the tray's click among them (0: none), whose function gets
+    /// the click's event.
+    tray_click: Cell<u32>,
     /// The global shortcuts registered.
     globals: RefCell<Vec<Global>>,
     /// The root's `onMenu` handler is set.
@@ -59,6 +65,7 @@ impl Default for Menus {
             app: RefCell::default(),
             popup: RefCell::default(),
             tray: RefCell::default(),
+            tray_click: Cell::new(0),
             globals: RefCell::default(),
             closed: Cell::new(UNDEFINED),
             listening: Cell::new(false),
@@ -557,16 +564,45 @@ unsafe extern "C" fn on_menu(
                 .map(|g| unsafe { qjs::JS_DupValue(cx, g.on_press) })
         });
     let Some(f) = f else { return UNDEFINED };
-    // SAFETY: a call of an owned function, freed after it.
+    // The tray's click gets `{ bounds }`: the icon's frame, `null` where
+    // the platform does not report one.
+    let mut event = (id != 0 && id == m.tray_click.get()).then(|| tray_click_event(cx, e));
+    let (argc, argv) = match &mut event {
+        Some(event) => (1, event as *mut JsValue),
+        None => (0, ptr::null_mut()),
+    };
+    // SAFETY: a call of an owned function, freed after it, with its owned
+    // argument.
     unsafe {
-        let r = qjs::JS_Call(cx, f, UNDEFINED, 0, ptr::null_mut());
+        let r = qjs::JS_Call(cx, f, UNDEFINED, argc, argv);
         qjs::JS_FreeValue(cx, f);
+        if let Some(event) = event {
+            qjs::JS_FreeValue(cx, event);
+        }
         if qjs::JS_IsException(r) {
             return r;
         }
         qjs::JS_FreeValue(cx, r);
     }
     UNDEFINED
+}
+
+/// The tray click's event (owned): `{ bounds }`, from the platform's report
+/// `e`.
+fn tray_click_event(cx: *mut JsContext, e: JsValue) -> JsValue {
+    let bounds = get(cx, e, c"bounds");
+    let bounds = if nullish(bounds) {
+        free(cx, bounds);
+        qjs::JS_NULL
+    } else {
+        bounds
+    };
+    // SAFETY: a new object taking the owned value.
+    unsafe {
+        let o = qjs::JS_NewObject(cx);
+        qjs::JS_SetPropertyStr(cx, o, c"bounds".as_ptr(), bounds);
+        o
+    }
 }
 
 /// The next id of a menu item, a tray's click or a global shortcut.
@@ -590,6 +626,7 @@ unsafe extern "C" fn set_tray(
     let options = arg(argc, argv, 0);
     if nullish(options) {
         keep(cx, &menus(cx).tray, Vec::new());
+        menus(cx).tray_click.set(0);
         return send(cx, DesktopCommand::SetTray(None))
             .err()
             .unwrap_or(UNDEFINED);
@@ -603,6 +640,22 @@ unsafe extern "C" fn set_tray(
             return throw(
                 cx,
                 "nsh/desktop: the tray's `icon` is a URL or an imported image",
+            );
+        }
+    };
+    // Before the menu and the click: a bad title must leave the tray shown,
+    // and its functions, as they are.
+    let title = match tray_title(cx, options) {
+        Ok(title) => title,
+        Err(message) => return throw(cx, &message),
+    };
+    let title_placement = match string(cx, options, c"titlePlacement").as_deref() {
+        None | Some("right") => TrayTitlePlacement::Right,
+        Some("left") => TrayTitlePlacement::Left,
+        Some(_) => {
+            return throw(
+                cx,
+                "nsh/desktop: the tray's `titlePlacement` is \"right\" or \"left\"",
             );
         }
     };
@@ -629,15 +682,77 @@ unsafe extern "C" fn set_tray(
         0
     };
     keep(cx, &menus(cx).tray, functions);
+    menus(cx).tray_click.set(click);
     let mut tray = Tray::default();
     tray.icon = icon;
     tray.tooltip = string(cx, options, c"tooltip").unwrap_or_default();
+    tray.title = title;
+    tray.title_placement = title_placement;
     tray.menu = items;
     tray.click = click;
     listen(cx)
         .and_then(|()| send(cx, DesktopCommand::SetTray(Some(tray))))
         .err()
         .unwrap_or(UNDEFINED)
+}
+
+/// The tray's `title`: an array of `{ text, color? }`, `text` a string and
+/// `color` a CSS color.
+fn tray_title(cx: *mut JsContext, options: JsValue) -> Result<Vec<TrayTitleRun>, String> {
+    let list = get(cx, options, c"title");
+    let runs = tray_title_runs(cx, list);
+    free(cx, list);
+    runs
+}
+
+fn tray_title_runs(cx: *mut JsContext, list: JsValue) -> Result<Vec<TrayTitleRun>, String> {
+    const SHAPE: &str =
+        "nsh/desktop: the tray's `title` is an array of `{ text, color? }`, `text` a string";
+    if nullish(list) {
+        return Ok(Vec::new());
+    }
+    // SAFETY: an inline tag check.
+    if !unsafe { qjs::JS_IsArray(list) } {
+        return Err(SHAPE.into());
+    }
+    let mut len: i64 = 0;
+    // SAFETY: the length of a live array.
+    unsafe { qjs::JS_GetLength(cx, list, &mut len) };
+    // Not sized by `len`: the app sets an array's length, holes and all; the
+    // first hole ends the decoding with an error.
+    let mut runs = Vec::new();
+    for i in 0..len.max(0) {
+        // SAFETY: an element of a live array (owned).
+        let v = unsafe { qjs::JS_GetPropertyInt64(cx, list, i) };
+        let fields = is_object(v).then(|| (text_string(cx, v), string(cx, v, c"color")));
+        free(cx, v);
+        let Some((Some(text), color)) = fields else {
+            return Err(SHAPE.into());
+        };
+        let mut run = TrayTitleRun::default();
+        run.text = text;
+        run.color = match color {
+            None => None,
+            Some(color) => Some(color.parse().map_err(|_| {
+                format!("nsh/desktop: the tray's title color `{color}` is not a CSS color")
+            })?),
+        };
+        runs.push(run);
+    }
+    Ok(runs)
+}
+
+/// Property `text` when it is a string (no other value is converted).
+fn text_string(cx: *mut JsContext, object: JsValue) -> Option<String> {
+    let v = get(cx, object, c"text");
+    // SAFETY: an inline tag check.
+    let s = if unsafe { qjs::JS_IsString(v) } {
+        dom::string_arg(cx, v)
+    } else {
+        None
+    };
+    free(cx, v);
+    s
 }
 
 /// `Tray`: an object of its functions.
@@ -1158,6 +1273,25 @@ export interface MenuModule {
   popup(items: readonly (MenuItem | null | undefined | false)[], at?: Point): Promise<void>;
 }
 
+/** A click on the tray's icon. */
+export interface TrayClickEvent {
+  /** The icon's frame on the screen, in points, in the coordinates of
+   * `displays()` and `setBounds` (from the primary display's top left,
+   * `y` growing down): where to place a popup window beside it. `null`
+   * when the system does not say where the icon is (always on Linux). */
+  bounds: Bounds | null;
+}
+
+/** A run of the tray's `title`: text in one color. */
+export interface TrayTitleRun {
+  /** The text. */
+  text: string;
+  /** Its color, a CSS color (`#d92d20`, or a theme token's color from
+   * `token`); without one, the
+   * menu bar's text color, which follows its appearance. */
+  color?: string;
+}
+
 /** The app's icon in the system tray. */
 export interface TrayOptions {
   /** The icon, as `<Image>`'s `src` takes it (an imported file, or a URL).
@@ -1168,11 +1302,20 @@ export interface TrayOptions {
   icon?: ImageAsset | string;
   /** Shown when the pointer rests on the icon (the app's name without it). */
   tooltip?: string;
+  /** Text beside the icon, in runs each of its own color: what the app
+   * keeps in sight, such as a price. macOS's menu bar shows it in its
+   * colors; Linux's panels that show AppIndicator labels show its text;
+   * Windows' notification area shows the icon alone. */
+  title?: readonly TrayTitleRun[];
+  /** Which side of the icon the title shows on: `"right"` (the default) or
+   * `"left"`. macOS only: Linux's panels draw the title right of the icon. */
+  titlePlacement?: "right" | "left";
   /** Its menu, opened by a secondary click (and a primary one without
    * `onClick`). */
   menu?: readonly (MenuItem | null | undefined | false)[];
-  /** Called when the icon is clicked with the primary button. */
-  onClick?: () => void;
+  /** Called when the icon is clicked with the primary button (on Windows,
+   * Enter or Space on the icon too), with where the icon is. */
+  onClick?: (event: TrayClickEvent) => void;
 }
 
 /** The app's icon in the system tray: the notification area on Windows, the

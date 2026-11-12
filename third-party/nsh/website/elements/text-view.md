@@ -273,8 +273,12 @@ Some nodes are several parts, which apply in order: a level 2 heading is `headin
 
 Pass the reply as it grows, with `options={{ streaming: true }}` (`MarkdownOptions { streaming: true, .. }` in Rust). The end of a text that is still arriving often leaves
 syntax open (`**bold`, `` `code ``, `[a link](htt`, a table whose header just arrived); streaming shows it as it will
-look once closed, so the reader never sees stray `**` or `[`. Blocks are kept by position: the blocks that are complete
-keep their views, and only the block being written is made again, so a long reply stays cheap to update.
+look once closed, so the reader never sees stray `**` or `[`. A last line whose meaning the next characters decide
+appears once its line ends: a list marker alone, a `-` or `=` line under a paragraph, a code fence's opening line or a
+closer half typed, so each list item, heading and code block appears as what it will be. A `*` inside a word (`a*b`)
+stays as written. Once the reply ends (`streaming` off), the text is read as written. Blocks are kept by position: the
+blocks that are complete keep their views, and only the block being written is made again, so a long reply stays
+cheap to update.
 
 `streamingCaret` follows the end of the document: inline at the end of the last text, wherever the last block ends (a
 paragraph, a list item, a code block, a table's last cell), else on a line of its own after the last block (a rule,
@@ -370,6 +374,14 @@ text_view().markdown(doc).links(TextViewLinks::Open)
 ```tsx tabs
 <TextView markdown={doc} links="open" />
 ```
+
+On the desktops and the web in the desktop idiom, the pointer resting on a link shows where it goes, below the
+pointer: the link's title, when it has one (`[docs](https://example.com/docs "The guide")`, an HTML link's `title`),
+over its destination in the theme's `muted-foreground`, on one line. A URL shows as it is parsed, its scheme, host and
+port always whole (an international host in its ASCII form, so a look-alike letter shows as what it is), a long path
+cut in the middle; a path or an anchor of the document (`#…`) shows as written. An image in a link shows the link's
+destination and title the same way, below the image. It is the same check as a
+[Link's](./link.md#where-it-goes).
 
 ## Render functions
 
@@ -467,6 +479,10 @@ import { Image, View } from "nsh";
   renderMath={(math) => <MathView tex={math.tex} display={math.display} />}
 />
 ```
+
+An image that stands on its own (a paragraph or a table cell of images) is laid out in a box as wide as the text:
+`w-full` fills that width, `max-w-full` keeps a wider image inside it, and an image of a fixed width keeps it, at the
+start of the line. An image in a line of text keeps the size it asks for.
 
 `Highlighted` and `MathView` (`highlighted` and `math_view` in Rust) stand for the app's own components (a
 highlighter, a formula renderer, or a component of its Rust crate). Without `renderMath` `TextView` typesets a formula itself (`math` and `mathBlock` parts) with KaTeX's TeX support and fonts, in the text's color, the same on every platform; TeX it cannot read shows as its source in monospace.
@@ -818,7 +834,7 @@ parts with [`TextViewParts`](#typed-part-styles).
 |---|---|---|
 | `onLinkPress` | `.on_link_press(\|event: &TextViewLinkPressEvent\| ..)` | A link was pressed: `{ url, modifiers }`: its URL, `#anchor` for a heading, `#footnote-<label>` for a footnote, and the modifier keys held. |
 | `onCodeBlockAction` | `.on_code_block_action(\|event: &TextViewCodeActionEvent\| ..)` | A code block's action was pressed (after `copy` copied). |
-| `onSelectionChange` | `.on_selection_change(\|event: &TextViewSelectionEvent\| ..)` | The selection of a `selectable` `TextView` changed: `{ text, start }`, the selected text as Copy takes it, `""` once nothing is selected ([Reading the selection](./text-selection.md#reading-the-selection)). Inside a selectable view the outer view reports instead. |
+| `onSelectionChange` | `.on_selection_change(\|event: &TextViewSelectionEvent\| ..)` | The selection of a `selectable` `TextView` changed: `{ text, start, bounds, pageBounds }`, the selected text as Copy takes it and its box, `""` once nothing is selected ([Reading the selection](./text-selection.md#reading-the-selection)). Inside a selectable view the outer view reports instead. |
 
 ## Methods
 

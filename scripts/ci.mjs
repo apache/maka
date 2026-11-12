@@ -23,7 +23,7 @@ import { join, resolve } from 'node:path';
 import { command } from './ci/command.mjs';
 import { checkResults, createPlan, documentation, sharedInput } from './ci/plan.mjs';
 import { manifests, suites, workers } from './ci/suites.mjs';
-import { executor } from './ci/run.mjs';
+import { executor, runSuites } from './ci/run.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const temporary = process.env.RUNNER_TEMP ?? join(root, 'target/ci');
@@ -171,7 +171,7 @@ async function main(args) {
     const worker = selected.workers.find((entry) => entry.id === rest[0]);
     if (!worker) throw new Error(`Worker not selected: ${rest[0]}`);
     const run = executor(root, worker);
-    for (const id of worker.suites) await run[action](id, selected.suites[id].filter);
+    await runSuites(worker.suites, (id) => run[action](id, selected.suites[id].filter));
     return;
   }
   throw new Error('Usage: ci.mjs plan|run|check|prepare|verify|archive|replay|gate');

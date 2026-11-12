@@ -31,6 +31,23 @@
 
 `maka --help` 列出 CLI 命令和默认终端参数，`maka terminal-shell --help` 单独查看终端参数。交互入口要求 stdin 和 stdout 都连接终端；任一被重定向时，在打开或创建 Host 前报错退出。自动化使用显式 Host、application、Code 或 ACP 命令。
 
+`host init --settings-stdin` 初始化新的 State Root，并在返回 `rootId` 前从 stdin 读取并写入可选的代理配置、模型连接、凭据与默认目标模型 JSON。例如：
+
+```json
+{
+  "connections": [{
+    "slug": "gateway",
+    "provider": "openai-compatible",
+    "configuration": { "baseUrl": "http://127.0.0.1:8080/v1" },
+    "apiKey": "<API_KEY>",
+    "enabledModelIds": ["my-model"]
+  }],
+  "defaultTarget": { "slug": "gateway", "modelId": "my-model" }
+}
+```
+
+连接还接受 `name`、`enabled`、`requestHeaders`、`modelOverrides` 和 `requestBodyOverlay`。输入及默认模型的 preparation 均在创建 Root 前校验。此命令不能重新配置已有 Root；密钥通过 stdin 传递。
+
 `host serve` 和 `application serve` 输出的 JSON `ready` 行包含 `rootId`、`hostEpoch` 和 `socketPath`。接入时使用该 epoch，并核对实际 Host 身份。Unix socket 位于系统选择的临时目录下的私有子目录中，可通过 `TMPDIR` 指定其他父目录。规范化后的 socket 路径须满足可移植的 100 字节上限；若启动报告路径过长，请选择更短的父目录。
 
 无界面命令（`host`、`application serve`、`code` 和 `acp`）在运行时初始化前安装进程日志订阅器。警告和错误（包括 SQLx 慢查询警告）写入 stderr，不带 ANSI 样式；stdout 保留给命令结果和协议帧。默认不输出普通 DEBUG 查询日志。交互式产品仍自行管理终端输出。
@@ -38,6 +55,19 @@
 独立 Host 将 stderr 捕获到所属 Root 的私有控制缓存文件 `host.stderr.log`：按需启动在创建进程前接好捕获文件，前台服务在选定 Root 后开始捕获。使用 `maka host logs --root-id ID` 读取，添加 `--follow` 持续接收 NDJSON，添加 `--after CURSOR` 从游标续读。每页以 Base64 保留原始字节，并报告尚无捕获文件、文件替换或截断；清理控制缓存也会删除这些日志。读取不要求安装系统服务。
 
 使用 `maka inspect --root DIRECTORY --session SESSION_ID` 查看会话已提交的执行日志。
+
+## 可携带的 Session 存档
+
+从已发布的 checkpoint 回执取出 Session ID 和精确的 revision，导出到新文件。把文件复制到另一台安装了 Maka 的机器，使用新目录打开。
+
+```sh
+maka checkpoint export --root /path/to/host --session "$SESSION_ID" --revision "$REVISION" --output session.tar.gz
+maka checkpoint open session.tar.gz --output inspection
+```
+
+打开后，`checkpoint.json` 记录来源和工作区一致性声明，`history.jsonl` 可逐行查看对话和工具结果，`history.snapshot` 保留完整历史。按 `artifacts.jsonl` 中的摘要可在 `artifacts/` 读取附件。如果存档包含工作区，文件在 `workspace/`。打开过程离线完成，不启动原 Session。源 Head 变化会使导出失败，已有输出也不会被覆盖。
+
+接收端先校验完整性，再发布目标目录。检查目录中所有文件合计的默认限额为 8 GiB，可用 `--max-bytes` 调整；临时校验数据库和暂存对象还需要额外磁盘空间。强制结束进程可能留下隐藏的 `.maka-inspection-*` 临时目录，确认进程退出后可删除。应通过可信渠道获取压缩包，工作区一致性仍以发布时的声明为准。
 
 ## 产品更新、恢复与 URL 安装
 

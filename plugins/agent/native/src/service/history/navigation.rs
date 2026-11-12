@@ -37,14 +37,25 @@ pub(crate) async fn search(
         whole_word: input.whole_word,
         include_internal: input.include_internal,
     };
+    let mut cache = source::Cache::default();
     let page = loop {
         let mut page = tree
             .find_page(request.clone(), scope.cancellation.clone())
             .await
             .map_err(|error| error.to_string())?;
         let mut matches = Vec::new();
-        for found in page.matches {
-            if source::visible(&tree, &found.position, &scope.cancellation).await? {
+        for mut found in page.matches {
+            if let Some((position, order)) = source::search_anchor(
+                &tree,
+                &found.position,
+                found.order,
+                &mut cache,
+                &scope.cancellation,
+            )
+            .await?
+            {
+                found.position = position;
+                found.order = order;
                 matches.push(found);
             }
         }

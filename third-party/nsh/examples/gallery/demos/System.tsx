@@ -28,7 +28,6 @@ function SafeAreaDiagram() {
         borderColor: colors.border,
         backgroundColor: colors.surface,
         backgroundImage: finish.card.backgroundImage,
-        boxShadow: isDark() ? "inset 0 1px 0 rgba(255,255,255,0.06)" : "inset 0 1px 0 #ffffff",
         overflow: "hidden",
       }}
     >
@@ -48,7 +47,7 @@ function Environment() {
     { label: "Left", value: safeArea().left },
   ];
   return (
-    <Card icon="system" title="Environment" subtitle="Updates when the window, insets or keyboard change" right={<Badge label="Live" tone="up" />}>
+    <Card icon="system" title="Environment" subtitle="Follows the window, insets and keyboard" right={<Badge label="Live" tone="up" />}>
       <View style={{ flexDirection: "row", gap: 16, alignItems: "center" }}>
         <View style={{ flex: 1, gap: 12 }}>
           <View style={{ gap: 2 }}>

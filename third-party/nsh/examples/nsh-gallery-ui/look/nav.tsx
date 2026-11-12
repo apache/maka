@@ -60,10 +60,10 @@ export function carouselArrowLook(o?: CarouselArrowOptions) {
     get activeStyle(): ViewStyle {
       return pressSink(0.92).activeStyle;
     },
-    get focusStyle(): ViewStyle {
+    get focusVisibleStyle(): ViewStyle {
       return focusRing(2);
     },
-    disabledStyle: { opacity: 0.3 } as ViewStyle,
+    disabledStyle: { opacity: 0.5 } as ViewStyle,
   };
 }
 
@@ -90,7 +90,7 @@ export function carouselDotItemLook() {
   return {
     class: "group",
     style: (terminal ? {} : { width: carouselSizes.hit + 4, height: carouselSizes.hit, alignItems: "center", justifyContent: "center", borderRadius: carouselSizes.hit / 2 }) as ViewStyle,
-    get focusStyle(): ViewStyle {
+    get focusVisibleStyle(): ViewStyle {
       return focusRing();
     },
   };
@@ -142,7 +142,7 @@ export function linkColor(o?: LinkState): string {
 export function linkLook(o?: { inline?: boolean }) {
   return {
     class: `group flex-row items-center gap-1 rounded-sm active:opacity-60 ${tint} ${o?.inline ? "align-text-bottom" : "self-start"}`,
-    get focusStyle(): ViewStyle {
+    get focusVisibleStyle(): ViewStyle {
       return focusRing(2);
     },
   };
@@ -192,7 +192,7 @@ export function LinkText(props: LinkState & { label: string; color: string; size
 const pageItem =
   "flex-row items-center justify-center gap-1 px-2 rounded-md text-sm text-foreground " +
   "transition-colors duration-200 motion-reduce:transition-none hover:bg-hover active:opacity-70 " +
-  "selected:bg-primary selected:text-primary-foreground disabled:opacity-35 focus:outline-2 focus:outline-ring";
+  "selected:bg-primary selected:text-primary-foreground disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-ring";
 
 /**
  * A `Pagination`'s `itemClass`, over the component's own numbers and

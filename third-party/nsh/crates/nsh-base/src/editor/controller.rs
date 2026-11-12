@@ -426,6 +426,7 @@ impl Ed {
                     KeyOptions {
                         when: When::Always,
                         repeat: binding.repeat,
+                        for_focus: true,
                         ..Default::default()
                     },
                     move |_| e.run(command),
@@ -1421,8 +1422,9 @@ impl Ed {
 
     // Highlighting.
 
-    /// Loads the syntaxes off the engine thread the first time a language
-    /// needs them, then highlights.
+    /// Makes the highlighter the language needs, then highlights: at once
+    /// where there are threads (its first job loads the syntaxes off the
+    /// engine thread); on the web after the syntaxes come from the page.
     fn load_syntaxes(&self) {
         let needs = {
             let st = self.st.borrow();
@@ -1464,71 +1466,96 @@ impl Ed {
         if self.highlighting.replace(true) {
             return;
         }
+        // The first pass starts now, while the engine thread goes on with
+        // its turn (mounting the editor, the edit's other work), not when
+        // the task first runs after it.
+        let Some(mut pass) = self.highlight_pass() else {
+            self.highlighting.set(false);
+            return;
+        };
         let ed = self.clone();
         spawn(async move {
             loop {
-                // A guess of the lines in view when they are far past the
-                // parse from the start, then the parse on towards them,
-                // both off the engine thread.
-                let (guess, job, version) = {
-                    let rows = untracked(|| ed.visible_rows());
-                    let mut st = ed.st.borrow_mut();
-                    let st = &mut *st;
-                    let count = st.display.row_count();
-                    if count == 0 {
-                        break;
-                    }
-                    let first_line = st.display.row(rows.start.min(count - 1)).line;
-                    let last_line = st
-                        .display
-                        .row(rows.end.saturating_sub(1).min(count - 1))
-                        .line;
-                    let start = first_line.saturating_sub(GUESS_CONTEXT);
-                    let start_offset = st.buffer.line_start(start);
-                    let version = st.buffer.version();
-                    let rope = st.buffer.rope().clone();
-                    let Some(h) = &mut st.highlighter else {
-                        break;
-                    };
-                    let guess = (first_line > h.frontier().saturating_add(GUESS_DISTANCE))
-                        .then(|| h.guess(&rope, start, start_offset, last_line))
-                        .flatten();
-                    let job = h.job(&rope, last_line + LOOKAHEAD, SLICE);
-                    (guess, job, version)
-                };
-                if guess.is_none() && job.is_none() {
-                    break;
-                }
-                if let Some(guess) = guess {
-                    let guessed = off_thread(move || guess.run()).await;
-                    let changed = {
-                        let mut st = ed.st.borrow_mut();
-                        let current = st.buffer.version() == version;
-                        match &mut st.highlighter {
-                            Some(h) if current => !h.guessed(guessed).is_empty(),
-                            _ => false,
-                        }
-                    };
-                    if changed {
-                        ed.hl_rev.update(|r| *r += 1);
-                    }
-                }
-                if let Some(job) = job {
-                    let done = off_thread(move || job.run()).await;
-                    let changed = match &mut ed.st.borrow_mut().highlighter {
-                        Some(h) => !h.finish(done).0.is_empty(),
-                        None => false,
-                    };
-                    if changed {
-                        ed.hl_rev.update(|r| *r += 1);
-                    }
-                }
+                pass.await;
                 // Without threads the parse ran here: the frame goes on.
                 #[cfg(target_arch = "wasm32")]
                 next_frame().await;
+                match ed.highlight_pass() {
+                    Some(next) => pass = next,
+                    None => break,
+                }
             }
             ed.highlighting.set(false);
         });
+    }
+
+    /// One pass of highlighting, started off the engine thread: a guess
+    /// of the lines in view when they are far past the parse from the
+    /// start, and the parse on towards them. What it resolves to shows
+    /// what they found. None when there is nothing to highlight.
+    fn highlight_pass(&self) -> Option<impl Future<Output = ()> + use<>> {
+        let (guess, job, version) = {
+            let rows = untracked(|| self.visible_rows());
+            let mut st = self.st.borrow_mut();
+            let st = &mut *st;
+            let count = st.display.row_count();
+            if count == 0 {
+                return None;
+            }
+            let first_line = st.display.row(rows.start.min(count - 1)).line;
+            let last_line = st
+                .display
+                .row(rows.end.saturating_sub(1).min(count - 1))
+                .line;
+            let start = first_line.saturating_sub(GUESS_CONTEXT);
+            let start_offset = st.buffer.line_start(start);
+            let version = st.buffer.version();
+            let rope = st.buffer.rope().clone();
+            let h = st.highlighter.as_mut()?;
+            let guess = (first_line > h.frontier().saturating_add(GUESS_DISTANCE))
+                .then(|| h.guess(&rope, start, start_offset, last_line))
+                .flatten();
+            // The lines in view first, shown as soon as they are done (not
+            // a slice later), then on past them.
+            let to = match h.frontier() <= last_line {
+                true => last_line,
+                false => last_line + LOOKAHEAD,
+            };
+            let job = h.job(&rope, to, SLICE);
+            (guess, job, version)
+        };
+        if guess.is_none() && job.is_none() {
+            return None;
+        }
+        let guess = guess.map(|guess| off_thread(move || guess.run()));
+        let job = job.map(|job| off_thread(move || job.run()));
+        let ed = self.clone();
+        Some(async move {
+            if let Some(guess) = guess {
+                let guessed = guess.await;
+                let changed = {
+                    let mut st = ed.st.borrow_mut();
+                    let current = st.buffer.version() == version;
+                    match &mut st.highlighter {
+                        Some(h) if current => !h.guessed(guessed).is_empty(),
+                        _ => false,
+                    }
+                };
+                if changed {
+                    ed.hl_rev.update(|r| *r += 1);
+                }
+            }
+            if let Some(job) = job {
+                let done = job.await;
+                let changed = match &mut ed.st.borrow_mut().highlighter {
+                    Some(h) => !h.finish(done).0.is_empty(),
+                    None => false,
+                };
+                if changed {
+                    ed.hl_rev.update(|r| *r += 1);
+                }
+            }
+        })
     }
 
     // Scrolling while dragging.
@@ -1670,6 +1697,7 @@ fn always(repeat: bool) -> KeyOptions {
     KeyOptions {
         when: When::Always,
         repeat,
+        for_focus: true,
         ..Default::default()
     }
 }

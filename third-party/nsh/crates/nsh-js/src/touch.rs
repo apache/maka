@@ -990,6 +990,7 @@ mod tests {
                 page: point(px(x), px(y)),
                 location: point(px(x), px(y)),
                 changed: true,
+                pointer_type: nsh_core::PointerType::Touch,
             }],
         }))
     }

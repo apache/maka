@@ -177,8 +177,9 @@ error iPhone 16 Pro: uncaught exception: TypeError: cannot read property 'id' of
 ```
 
 `console.log` formats values like a browser console: strings as they are, errors with their stack, functions by name,
-objects and arrays as JSON. When the host is not connected, logs go to the platform's log (Xcode's console / the
-unified log on iOS, `adb logcat` on Android).
+objects and arrays as JSON. When the host is not connected, its logs go to Xcode's console on iOS (when Xcode runs the
+app) and to `adb logcat` on Android; a packaged app's go to the platform's log
+([A packaged app's logs](#a-packaged-apps-logs)).
 
 A promise that is rejected and still has no handler once the work that rejected it is done (its microtasks ran) is
 logged as an error too, the way a browser reports it: an `async` function that throws while nobody awaits it, a
@@ -205,6 +206,30 @@ perf commit: 10 ops, 151µs (list js 2µs), 8 mount items, 27 nodes
 ```
 
 See [Testing](./testing-and-trace.md) for what these numbers mean.
+
+### A packaged app's logs
+
+On macOS and iOS a packaged app logs to the unified log: its warnings and errors, and its `js` lines (`console.log`,
+`console.info`, `console.warn`, `console.error`, unhandled rejections). The subsystem is the app's id (`nsh.json`
+`"id"`, its bundle identifier) and the category the line's target: `js` for `console.*`, a Rust module's path for
+Rust's lines (`nsh_engine::updates`). In Console, pick
+the Mac or a connected iPhone, start streaming and search for `subsystem:com.example.notes`; in a terminal, `log` reads
+them:
+
+```sh
+log stream --predicate 'subsystem == "com.example.notes"'                              # as they come
+log show --last 1h --predicate 'subsystem == "com.example.notes" AND category == "js"'   # the last hour's console.* lines
+xcrun simctl spawn booted log stream --predicate 'subsystem == "com.example.notes"'     # an app in the iOS simulator
+```
+
+Errors are the log's errors (`messageType == error` in a predicate) and warnings start with `WARN`; a line longer than
+about 1 KB continues in the entries after it. A Mac app also prints its lines to its standard error wherever that goes:
+the terminal it was started from, a file (`2> app.log`, `open --stderr app.log`, launchd's `StandardErrorPath`) or a
+pipe. An iOS app embedding `NativeShell.xcframework` logs the same lines under its own bundle identifier, and Xcode's
+console shows them while Xcode runs it, also with `OS_ACTIVITY_MODE=disable` in the scheme.
+
+Android apps log to logcat (`adb logcat -s nsh`), Windows apps to the debugger's output (`OutputDebugString`, which
+DebugView and Visual Studio show) and Linux apps to their standard error.
 
 ## The error overlay
 

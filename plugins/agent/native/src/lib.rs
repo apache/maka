@@ -22,6 +22,7 @@
 /// Public wire types and generated contracts. 公开协议类型与生成契约。
 use maka_agent_api::contract;
 pub mod checkpoints;
+pub use service::history::snapshot_page as checkpoint_history_page;
 mod diagnostics;
 pub mod executor;
 mod mcp;

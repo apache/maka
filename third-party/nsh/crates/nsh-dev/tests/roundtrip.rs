@@ -523,6 +523,37 @@ fn assets_are_the_apps_media_and_named_files_only() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An entry below its app (`tests/SubApp.tsx`) names its assets from the
+/// app's directory: the server, started at the entry's, serves the media
+/// files from there once a build says so, as a package of the app has them.
+#[test]
+fn the_assets_root_follows_the_build() {
+    let dir = std::env::temp_dir().join(format!("nsh-dev-asset-root-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::create_dir_all(dir.join("tests")).unwrap();
+    std::fs::write(dir.join("assets/dot.png"), b"dot").unwrap();
+    std::fs::write(dir.join("tests/beside.png"), b"beside").unwrap();
+    let server = DevServer::start(
+        "127.0.0.1:0".parse().unwrap(),
+        "bc-1",
+        Some(dir.join("tests")),
+        |_| {},
+    )
+    .unwrap();
+    let addr = server.local_addr();
+    assert_eq!(status(addr, "/assets/beside.png", ""), 200);
+    assert_eq!(status(addr, "/assets/assets/dot.png", ""), 404);
+    server.set_assets_root(Some(dir.clone()));
+    let (line, body) = get(addr, "/assets/assets/dot.png", "*/*");
+    assert!(line.contains("200"), "{line}");
+    assert_eq!(body, "dot");
+    assert_eq!(status(addr, "/assets/tests/beside.png", ""), 200);
+    assert_eq!(status(addr, "/assets/beside.png", ""), 404);
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_websocket_refuses_other_web_pages() {
     use tungstenite::client::IntoClientRequest;

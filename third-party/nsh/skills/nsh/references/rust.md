@@ -548,7 +548,7 @@ fn card(selected: Signal<bool>) -> impl IntoElement {
         // Native states: no binding, nothing runs.
         .hover(|s| s.bg(move || theme().accent))
         .active(|s| s.opacity(0.7))
-        .focus(|s| s.outline(px(2.0)).outline_color(move || theme().ring))
+        .focus_visible(|s| s.outline(px(2.0)).outline_color(move || theme().ring))
         .disabled_style(|s| s.opacity(0.5))
         .dark(|s| s.border_2())
         // App state.
@@ -666,6 +666,7 @@ async fn digest(path: std::path::PathBuf) -> Result<usize, String> {
 | `set_timeout`, `set_interval` | Engine thread | Delayed and repeating work | Yes |
 | `blocking(f)` | tokio's blocking threads | Blocking calls | **No** |
 | `background(fut)` | tokio's threads | `Send` futures, CPU work | **No** |
+| `run_on_main_thread(f)` | The platform's main thread, after the turn's views are mounted | APIs that only work there (AppKit, UIKit); await the result | Engine thread |
 
 - Long work on the engine thread freezes the UI's bindings. Move it to `blocking` or `background`, await the result in a
   `spawn`, and write signals there.

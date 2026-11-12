@@ -54,7 +54,7 @@ mount(Browser);
 |---|---|---|---|
 | `src` | `string` | | The URL of the page to show. |
 | `html` | `string` | | Inline HTML, shown instead of `src`. |
-| `baseUrl` | `string` | | What `html`'s relative links resolve against. |
+| `baseUrl` | `string` | | What `html`'s relative links resolve against. It needs the same grant as a page there (`webview.hosts`); without it the HTML loads with no base URL and `onError` reports `ERR_ACCESS_DENIED`. |
 | `injectedJavaScript` | `string` | | Runs after each page loads. |
 | `injectedJavaScriptBeforeContentLoaded` | `string` | | Runs before each page's own scripts. |
 | `userAgent` | `string` | platform's | The user agent string. |
@@ -93,6 +93,7 @@ interface WebViewNavigation {
 | `goForward()` | Goes forward in its history. |
 | `stopLoading()` | Stops loading. |
 | `injectJavaScript(script)` | Runs `script` in the page. |
+| `evaluate(script, { timeout? })` | Runs `script` in the page and resolves `{ value }`, its result as JSON; see [Evaluating scripts](#evaluating-scripts). |
 | `postMessage(data)` | Sends `data` (a string) to the page: a `message` event on `window`, with `data` as `event.data`. |
 | `load({ src, headers? })` | Loads `src` with `headers` (`Record<string, string>`) on the page's own request only, not on its subresources, later navigations or reloads; for a signed-in page (`Authorization`). The host must be one `webview.hosts` allows. An invalid header throws a `TypeError`. The browser backend does nothing. See [Signed-in pages](../docs/web-view-and-video.md#signed-in-pages-request-headers). |
 
@@ -119,7 +120,7 @@ const message = signal("");
 
 ## Capabilities
 
-When your app declares `capabilities` in `nsh.json`, a web view may only show and navigate to the hosts listed under `webview`; other top-level navigations are refused natively. An app without a `capabilities` key may show anything. See [Sandbox and capabilities](../docs/sandbox-and-capabilities.md).
+When your app declares `capabilities` in `nsh.json`, a web view may only show and navigate to the hosts listed under `webview`; other top-level navigations are refused natively. An app without a `capabilities` key may show anything; on macOS its files keep to one folder: a web view whose `src` is a `file://` page may open files in that page's folder (and below it), and no file outside it. See [Sandbox and capabilities](../docs/sandbox-and-capabilities.md).
 
 ```json
 {
@@ -128,3 +129,65 @@ When your app declares `capabilities` in `nsh.json`, a web view may only show an
   }
 }
 ```
+
+## Evaluating scripts
+
+`await ref.evaluate(script, { timeout })` runs `script` in the page's main
+document and resolves `{ value }`, the script's completion value. A Promise the
+script returns is awaited; to use `await` inside the script, return an async
+function's call. `timeout` is in milliseconds (30 000 by default). Call it after
+`onLoad` when the script reads the loaded document.
+
+```tsx
+const { value: title } = await web.evaluate("document.title");
+const { value: buttons } = await web.evaluate(`
+  Array.from(document.querySelectorAll("button")).map(button => ({
+    text: button.textContent,
+    disabled: button.disabled,
+  }))
+`);
+const { value } = await web.evaluate("(async () => await Promise.resolve(42))()", { timeout: 5000 });
+```
+
+`value` is JSON: strings, finite numbers, booleans, `null`, arrays and plain
+objects, nested up to 64 levels and 1 MiB in all. Convert DOM nodes, dates and
+maps to these in the script, as the example does. A script is up to 1 MiB, and an
+engine runs up to 64 evaluations at once.
+
+An evaluation belongs to the document it started in: a new main-document
+navigation, `load`, `reload`, `goBack`, `goForward`, a source prop that loads
+again, or the web view going away ends it with `ERR_NSH_WEBVIEW_ABORTED`.
+Same-document history updates, subframe loads and refused navigations keep it
+running. Its result is the page's: treat it as untrusted input. The page's Content
+Security Policy applies to the script. `injectJavaScript(script)` runs a script
+without waiting for it.
+
+`WebView.evaluateAvailable()` resolves whether this platform evaluates scripts
+in web views: iOS, Android and macOS do. A failure rejects with an `Error`
+carrying one of these codes; wrong arguments reject with a `TypeError` or
+`RangeError`.
+
+| Code | Meaning |
+|---|---|
+| `ERR_NSH_WEBVIEW_SCRIPT` | The script threw or rejected, its result is not JSON, or the page runs no scripts. |
+| `ERR_NSH_WEBVIEW_ABORTED` | The document navigated, or the web view went away. |
+| `ETIMEDOUT` | The script did not answer within `timeout`. |
+| `ERR_NSH_QUOTA_EXCEEDED` | The script, its result or the number of evaluations is over its limit. |
+| `ERR_ACCESS_DENIED` | The app's capabilities do not grant `webview`. |
+| `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` | This platform evaluates no scripts in web views. |
+
+Rust components evaluate through the web view's element ref:
+
+```rust
+let web = element_ref();
+// web_view("https://example.com").element_ref(&web)
+spawn(async move {
+    match web.evaluate("document.title", EvaluateOptions::default()).await {
+        Ok(evaluation) => log::info!("Page title: {}", evaluation.value),
+        Err(error) => log::warn!("Evaluation failed: {}", error.message()),
+    }
+});
+```
+
+It resolves `Result<Evaluation, JsError>`; `EvaluateOptions { timeout }` is a
+`Duration`.

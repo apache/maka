@@ -487,7 +487,8 @@ pub(crate) const IOS_TYPES: &str = r#"export interface InputAccessoryViewProps {
 "#;
 
 /// `nsh`'s `WebView`: the web view element as a component carrying the
-/// functions of the runtime's module (`inputAvailable`).
+/// functions of the runtime's module (`available`, `evaluateAvailable`,
+/// `inputAvailable`).
 pub(crate) const WEBVIEW_EXPORTS: &[Item] = &[(
     "WebView",
     Export::Value(|cx| {
@@ -496,7 +497,7 @@ pub(crate) const WEBVIEW_EXPORTS: &[Item] = &[(
         webview
     }),
     Ts::value(
-        "A web page (WKWebView / android.webkit.WebView); its `ref` has\n`reload()`, `goBack()`, `goForward()`, `stopLoading()`,\n`injectJavaScript(script)`, `postMessage(data)`, `sendInput(input)` and\n`load({ src, headers })`;\n`WebView.inputAvailable()` says whether `sendInput` works here.",
+        "A web page (WKWebView / android.webkit.WebView); its `ref` has\n`reload()`, `goBack()`, `goForward()`, `stopLoading()`,\n`injectJavaScript(script)`, `evaluate(script, options)`, `postMessage(data)`,\n`sendInput(input)` and `load({ src, headers })`;\n`WebView.available()` says whether a web view shows a page here,\n`WebView.evaluateAvailable()` whether `evaluate` works here, and\n`WebView.inputAvailable()` whether `sendInput` works here.",
         "((props: WebViewProps) => JSX.Element) & WebViewModule",
     ),
 )];

@@ -17,27 +17,15 @@
  * under the License.
  */
 
-import {
-  cleanup,
-  computed,
-  effect,
-  inputAction,
-  lifecycle,
-  platform,
-  signal,
-  Text,
-  untracked,
-  View,
-} from 'nsh';
-import type { SettingsConnectionSummary } from '../../../../packages/plugin-sdk/src/index.js';
+import { inputAction, platform, Text, View } from 'nsh';
 import type { ModelSettingsOwner } from './settings';
 import { ConnectionAdvanced, ConnectionForm } from './ConnectionForm';
 import { ProviderPicker } from './ProviderPicker';
 import { ConnectionModel } from './ConnectionModel';
 import { LoadingIndicator } from './Loading';
-import { currentLocale, tr } from './locale';
+import { tr } from './locale';
 import { useHost } from './host';
-import { watchConnectionUsage, type UsageReading, type UsageResult } from './connectionUsage';
+import { UsageLimits } from './UsageLimits';
 import {
   SettingsBody,
   SettingsConfirm,
@@ -49,7 +37,7 @@ import {
   SettingsSection,
   SettingsSelect,
 } from './SettingsPage';
-import { C, captionTextStyle } from './ui';
+import { C } from './ui';
 
 const choiceKey = (selection: { connectionId: string; modelId: string }) =>
   JSON.stringify([selection.connectionId, selection.modelId]);
@@ -80,6 +68,7 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
 }
 
 function ConnectionList(props: { owner: ModelSettingsOwner }) {
+  const host = useHost();
   const owner = props.owner;
   const unavailable = () => owner.busy() || !owner.pendingKnown() || owner.pending().length > 0;
   const current = () => {
@@ -154,7 +143,10 @@ function ConnectionList(props: { owner: ModelSettingsOwner }) {
                 leading={<Monogram name={item().name} muted={!item().enabled} />}
                 detail={
                   <If when={item().enabled && item().usageLimits}>
-                    <ConnectionUsageLimits connection={item} />
+                    <UsageLimits
+                      revision={item().basis.revision}
+                      query={() => host.query('settings', 'connectionUsageLimits', item().basis)}
+                    />
                   </If>
                 }
                 opens
@@ -178,148 +170,6 @@ function ConnectionList(props: { owner: ModelSettingsOwner }) {
       </If>
       <Status owner={owner} retry={() => void owner.loadConnections()} />
     </SettingsBody>
-  );
-}
-
-function usageWindow(seconds: number) {
-  if (seconds === 604800) return tr('Weekly limit');
-  const units = [
-    ['week', 604800],
-    ['day', 86400],
-    ['hour', 3600],
-    ['minute', 60],
-    ['second', 1],
-  ] as const;
-  const [unit, size] = units.find(([, size]) => seconds % size === 0) ?? units[4];
-  return tr('{duration} limit', {
-    duration: new Intl.NumberFormat(currentLocale(), { style: 'unit', unit }).format(
-      seconds / size,
-    ),
-  });
-}
-
-type Limit = Extract<UsageResult, { kind: 'ready' }>['limits'][number];
-
-function usageNumber(value: number) {
-  return new Intl.NumberFormat(currentLocale(), { maximumFractionDigits: 2 }).format(value);
-}
-
-function usageLabel(limit: Limit) {
-  if (limit.kind === 'balance') return limit.label ?? tr('Balance');
-  if (limit.kind === 'unlimited') return limit.label ?? tr('Usage limit');
-  const period =
-    limit.period?.kind === 'monthly'
-      ? tr('Monthly limit')
-      : limit.period?.kind === 'duration'
-        ? usageWindow(limit.period.seconds)
-        : '';
-  return [limit.label, period].filter(Boolean).join(' · ') || tr('Usage limit');
-}
-
-function usageValue(limit: Limit) {
-  if (limit.kind === 'balance')
-    return [usageNumber(limit.amount), limit.unit].filter(Boolean).join(' ');
-  if (limit.kind === 'unlimited') return tr('Unlimited');
-  const percent = tr('{percent}% used', { percent: usageNumber(limit.usedPercent) });
-  if (!limit.quantity) return percent;
-  const { used, limit: total, unit } = limit.quantity;
-  return `${percent} · ${usageNumber(used)} / ${usageNumber(total)}${unit ? ` ${unit}` : ''}`;
-}
-
-function ConnectionUsageLimits(props: { connection: () => SettingsConnectionSummary }) {
-  const host = useHost();
-  const usage = signal<UsageReading | null>(null);
-  const revision = computed(() => props.connection().basis.revision);
-  const connectionId = untracked(() => props.connection().basis.connectionId);
-  let lastRevision: number | undefined;
-  let stop: (() => void) | undefined;
-  cleanup(() => stop?.());
-  effect(() => {
-    const current = revision();
-    stop?.();
-    stop = undefined;
-    if (current !== lastRevision) usage.set(null);
-    lastRevision = current;
-    if (lifecycle() !== 'active') return;
-    stop = watchConnectionUsage(
-      () => host.query('settings', 'connectionUsageLimits', { connectionId, revision: current }),
-      (reading) => usage.set(reading),
-      untracked(usage),
-    );
-  });
-  const limits = () => {
-    const result = usage()?.result;
-    return result?.kind === 'ready' ? result.limits : [];
-  };
-  const message = () => {
-    if (usage()?.refreshFailed) return tr('Last usage refresh failed');
-    switch (usage()?.result.kind) {
-      case 'ready':
-        return limits().length ? '' : tr('No usage limits reported');
-      case 'unsupported':
-        return '';
-      case 'authentication_required':
-        return tr('Update the connection credential to see usage limits');
-      case 'usage_credential_required':
-        return tr('Add or update the usage access key');
-      case 'unavailable':
-      case 'superseded':
-        return tr('Usage limits unavailable');
-      default:
-        return tr('Loading usage limits…');
-    }
-  };
-  const terminal = platform.idiom === 'terminal';
-  return (
-    <View style={{ gap: terminal ? 0 : 6, marginTop: terminal ? 0 : 4 }}>
-      <If when={message()}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{message()}</Text>
-      </If>
-      <Each of={limits()}>
-        {(entry) => {
-          const reset = () => {
-            const limit = entry();
-            const timestamp = limit.kind === 'window' ? limit.resetsAt : null;
-            return timestamp == null
-              ? ''
-              : tr('Resets {time}', {
-                  time: new Date(timestamp * 1000).toLocaleString(currentLocale(), {
-                    month: 'short',
-                    day: 'numeric',
-                    hour: 'numeric',
-                    minute: '2-digit',
-                  }),
-                });
-          };
-          const used = () => {
-            const limit = entry();
-            return limit.kind === 'window' ? limit.usedPercent : null;
-          };
-          return (
-            <View style={{ gap: terminal ? 0 : 3 }}>
-              <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                {usageLabel(entry())} · {usageValue(entry())}
-              </Text>
-              <If when={!terminal && used() !== null}>
-                <View style={{ height: 3, borderRadius: 2, backgroundColor: C.line }}>
-                  <View
-                    style={{
-                      width: `${Math.min(100, used() ?? 0)}%`,
-                      height: 3,
-                      borderRadius: 2,
-                      backgroundColor: (used() ?? 0) >= 100 ? C.warning : C.accent,
-                    }}
-                  />
-                </View>
-              </If>
-              <If when={reset()}>
-                <Text style={{ ...captionTextStyle, color: C.muted }}>{reset()}</Text>
-              </If>
-            </View>
-          );
-        }}
-      </Each>
-    </View>
   );
 }
 

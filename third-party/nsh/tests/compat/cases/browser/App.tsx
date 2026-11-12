@@ -9,6 +9,7 @@ import BasePopupLooks from "./base-popup-looks";
 import BasePopupsDesktop from "./base-popups-desktop";
 import BaseSelectDesktop from "./base-select-desktop";
 import PropsPlatformWeb from "./props-platform-web";
+import PropsViewWebElement from "./props-view-web-element";
 import PropsTextScaling from "./props-text-scaling";
 import PropsMediaWebviewDesktop from "./props-media-webview-desktop";
 
@@ -17,6 +18,7 @@ import RuntimeIdentities from "./runtime-identities";
 const cases: Record<string, () => JSX.Element> = {
   "runtime-identities": RuntimeIdentities,
   "props-platform-web": PropsPlatformWeb,
+  "props-view-web-element": PropsViewWebElement,
   "props-text-scaling": PropsTextScaling,
   "props-media-webview-desktop": PropsMediaWebviewDesktop,
   "base-popups-desktop": BasePopupsDesktop,

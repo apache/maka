@@ -140,8 +140,14 @@ fn glyphs(text: &AttributedText, cells: CellSize, alignments: &AttachmentAlignme
                     descent: (descent / cells.height()).ceil() as usize,
                 }
             });
+            // A hidden run (`visibility: "hidden"`) keeps its Cells and
+            // shows nothing in them: a terminal draws no transparent text.
+            let hidden = span.is_some_and(|span| span.style.hidden);
+            if hidden {
+                style = Style::default();
+            }
             Glyph {
-                text: if attachment.is_some() {
+                text: if attachment.is_some() || hidden {
                     Arc::from(" ".repeat(width))
                 } else {
                     Arc::from(grapheme)

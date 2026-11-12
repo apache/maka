@@ -1,12 +1,12 @@
 import { type Bounds, type JSX, computed, effect, type InputRef, mount, Scroll, signal, Text, untracked, View, type ScrollRef } from "nsh";
 import { Animated, createAnimatedValue, Easing } from "nsh";
-import { fpsEnabled, platform, setColorScheme, setFpsEnabled, windowSize } from "nsh";
+import { fpsEnabled, platform, setFpsEnabled, windowSize } from "nsh";
 import process from "process";
-import { titleBar } from "nsh/desktop";
-import { Input, Menu, MenuItem, NavPage, NavStack, Scrollbar } from "nsh/base";
+import { Application, isAvailable as desktopWindows, Menu as AppMenu, titleBar } from "nsh/desktop";
+import { AlertDialog, Input, Menu, MenuItem, NavPage, NavStack, Scrollbar } from "nsh/base";
 import { keymap } from "nsh";
 import { Storage } from "nsh";
-import { Icon, LucideIcon } from "./icons";
+import { Icon, LucideIcon, type LucideIconName } from "./icons";
 import { TitleBar } from "./TitleBar";
 import { Toaster } from "./toast";
 import { loadSounds, play, setSoundsOn, soundsOn } from "../nsh-gallery-ui/sound";
@@ -22,7 +22,7 @@ import toggleSound from "./sounds/toggle.wav";
 import warningSound from "./sounds/warning.wav";
 import { type DemoEntry, nav, shownDemo } from "./nav";
 import { field } from "../nsh-gallery-ui/demo";
-import { alpha, Appear, Banner, colors, desktop, focusedSection, focusRing, header, hovered, IconTile, isDark, lazy, Logo, menuItemLabel, menuItemLook, MenuPanel, radius, PageHeader, Press, scrollbarTheme, SIDEBAR, sidebarOpen, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, terminal, SoundToggle, ThemeToggle, ToolButton } from "./ui";
+import { alpha, Appear, Banner, colors, desktop, focusedSection, focusRing, header, hovered, IconTile, isDark, lazy, Logo, menuItemLabel, menuItemLook, radius, PageHeader, Press, scrollbarTheme, SIDEBAR, sidebarOpen, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, terminal, SoundToggle, ThemeToggle, ToolButton, DirectionToggle, demoDirection, rtl, appearance, setAppearance, type Appearance, segmentedLook, menuPopup } from "./ui";
 
 // Loaded once, ahead of the first press: a sound plays within a frame then.
 loadSounds({
@@ -57,8 +57,8 @@ const components: DemoEntry[] = [
   { name: "Avatar", detail: "A team with presence dots, a stacked group and its overflow, a comment thread, a profile, pictures that fail or load slowly", icon: "image", screen: lazy(() => import("./demos/AvatarDemo").then((m) => m.AvatarDemo)) },
   { name: "Button", detail: "Kinds and sizes, icon and split buttons, progress, copying, hold to confirm", icon: "button", screen: lazy(() => import("./demos/ButtonDemo").then((m) => m.ButtonDemo)) },
   { name: "Carousel", detail: "An onboarding stepped by its buttons, a product's photos with thumbnails, banners that roll on, cards three to a view, a ticker", icon: "image", screen: lazy(() => import("./demos/CarouselDemo").then((m) => m.CarouselDemo)) },
-  { name: "Checkbox", detail: "A filter whose “Select all” shows a partial selection", icon: "checkbox", screen: lazy(() => import("./demos/Controls").then((m) => m.CheckboxDemo)) },
-  { name: "Collapsible", detail: "Details under a summary, kept while collapsed", icon: "collapsible", screen: lazy(() => import("./demos/Controls").then((m) => m.CollapsibleDemo)) },
+  { name: "Checkbox", detail: "A filter with “Select all”, a checklist, consent, choice cards, sizes", icon: "checkbox", screen: lazy(() => import("./demos/Controls").then((m) => m.CheckboxDemo)) },
+  { name: "Collapsible", detail: "Storage and advanced settings under their summaries", icon: "collapsible", screen: lazy(() => import("./demos/Controls").then((m) => m.CollapsibleDemo)) },
   { name: "ColorPicker", detail: "An area, sliders of RGB, HSL, HSB or OKLCH, a field and swatches", icon: "styles", screen: lazy(() => import("./demos/ColorPickerDemo").then((m) => m.ColorPickerDemo)) },
   { name: "Combobox", detail: "Topics picked several at once with search, a reviewer picked alone", icon: "select", screen: lazy(() => import("./demos/Controls").then((m) => m.ComboboxDemo)) },
   { name: "Command", detail: "A Cmd+K palette in a dialog, an inline menu, 5 000 files that filter at every keystroke, a search the server answers", icon: "search", screen: lazy(() => import("./demos/CommandDemo").then((m) => m.CommandDemo)) },
@@ -67,6 +67,7 @@ const components: DemoEntry[] = [
   { name: "DiffView", detail: "Two texts side by side or unified, changes navigated, reverted and kept, a patch", icon: "diff", screen: lazy(() => import("./demos/DiffDemo").then((m) => m.DiffDemo)) },
   { name: "Dock", detail: "A workspace of tabs dragged between groups and docks, split, closed, zoomed and resized", icon: "dock", screen: lazy(() => import("./demos/Dock").then((m) => m.Dock)) },
   { name: "Editor", detail: "Code with highlighting, several carets, folding, find and replace, a language server: diagnostics, hover, definitions, completion", icon: "code", screen: lazy(() => import("./demos/EditorDemo").then((m) => m.EditorDemo)) },
+  { name: "EmojiPicker", detail: "A composer's emoji button and a message's reactions: search, skin tones, every group, recent ones first", icon: "chat", screen: lazy(() => import("./demos/EmojiPickerDemo").then((m) => m.EmojiPickerDemo)) },
   { name: "HoverCard", detail: "People behind mentions, a link preview, a live stock quote, the delays tried, a card pinned open", icon: "popover", screen: lazy(() => import("./demos/HoverCardDemo").then((m) => m.HoverCardDemo)) },
   { name: "Input", detail: "Live validation, passwords, search, input groups, the keyboard over the content", icon: "form", screen: lazy(() => import("./demos/Form").then((m) => m.Form)) },
   { name: "Link", detail: "Links in a paragraph, a navigation the app routes, sites outside the app, a footer, visited and disabled", icon: "link", screen: lazy(() => import("./demos/LinkDemo").then((m) => m.LinkDemo)) },
@@ -78,7 +79,7 @@ const components: DemoEntry[] = [
   { name: "Plot", detail: "A live price, an order book's depth, a drawdown, capacity rings, a donut, bars, a profit bridge, a funnel, candles, risk-return bubbles, price targets, dual-axis charts and treemaps, built from plot parts", icon: "chart", screen: lazy(() => import("./demos/Charts").then((m) => m.Charts)) },
   { name: "Popover", detail: "A panel anchored to its trigger; a press outside, Escape or back closes it", icon: "popover", screen: lazy(() => import("./demos/Overlays").then((m) => m.PopoverDemo)) },
   { name: "Progress", detail: "A transfer the app drives, and one of unknown size", icon: "progress", screen: lazy(() => import("./demos/Controls").then((m) => m.ProgressDemo)) },
-  { name: "Radio", detail: "A plan picker: one of a small set, a disabled plan", icon: "radio", screen: lazy(() => import("./demos/Controls").then((m) => m.RadioDemo)) },
+  { name: "Radio", detail: "Plans, delivery options as cards, a reading preference", icon: "radio", screen: lazy(() => import("./demos/Controls").then((m) => m.RadioDemo)) },
   { name: "Resizable", detail: "Panels resized by dragging the lines between them, within their ranges", icon: "sidebar", screen: lazy(() => import("./demos/Resizable").then((m) => m.Resizable)) },
   { name: "RichEditor", detail: "A document editor on Tiptap's extensions: lists, links, tables, Markdown shortcuts, undo and redo", icon: "richtext", screen: lazy(() => import("./demos/RichEditorDemo").then((m) => m.RichEditorDemo)) },
   { name: "Select", detail: "A sort order, fonts in sections with search, a disabled language", icon: "select", screen: lazy(() => import("./demos/Controls").then((m) => m.SelectDemo)) },
@@ -98,7 +99,7 @@ const components: DemoEntry[] = [
 /** The subheadings Elements lists `nsh/base`'s demos under, by what each is for. */
 const purposes: [string, string[]][] = [
   ["Actions", ["Button", "Link", "Toggle", "Toolbar", "Command"]],
-  ["Inputs", ["Input", "NumberInput", "OtpInput", "Checkbox", "Radio", "Switch", "Slider", "Select", "Combobox", "DatePicker", "ColorPicker"]],
+  ["Inputs", ["Input", "NumberInput", "OtpInput", "Checkbox", "Radio", "Switch", "Slider", "Select", "Combobox", "DatePicker", "ColorPicker", "EmojiPicker"]],
   ["Navigation", ["NavStack", "Tabs", "Pagination", "Accordion", "Collapsible", "Carousel", "Tree"]],
   ["Overlays", ["Popover", "HoverCard", "Menu", "Tooltip", "Sheet", "Toast"]],
   ["Data", ["Avatar", "Progress", "DataTable", "Plot", "DiffView"]],
@@ -125,6 +126,7 @@ const allGroups: { title: string; demos: DemoEntry[] }[] = [
       { name: "Stocks", detail: "A live watchlist and a stock: candles, depth, the tape, a tick every 50 ms", icon: "stocks", screen: lazy(() => import("./demos/Stocks").then((m) => m.Stocks)) },
       { name: "AI Chat", detail: "Local Claude / Codex, streaming replies, web simulation", icon: "chat", screen: lazy(() => import("./demos/Chat").then((m) => m.Chat)) },
       { name: "Photos", detail: "A long recycled list: images, pull to refresh, paging", icon: "photos", screen: lazy(() => import("./demos/Photos").then((m) => m.Photos)) },
+      { name: "Block editor", detail: "A Notion-style document: a / menu of blocks, a handle on each block to add, drag and turn it into another, a toolbar over the selection", icon: "richtext", screen: lazy(() => import("./demos/BlockEditorDemo").then((m) => m.BlockEditorDemo)) },
     ],
   },
   {
@@ -254,7 +256,7 @@ function Phone() {
   if (untracked(wasDesktop)) nav.setRoutes([untracked(nav.routes)[0], { name: "demo", demo: untracked(selected) }]);
   effect(() => shownDemo.set(nav.routes().find((r) => r.name === "demo")?.demo ?? null));
   return (
-    <NavStack state={nav} style={{ flex: 1 }}>
+    <NavStack state={nav} style={{ flex: 1, direction: demoDirection() }}>
       {(route) => {
         switch (route.name) {
           case "home":
@@ -292,11 +294,12 @@ const select = (demo: DemoEntry) => {
   selected.set(demo);
 };
 
-/** The sound and theme switches, side by side. */
+/** The sound, direction and theme switches, side by side. */
 function Toggles(props: { bar?: boolean }) {
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: props.bar ? 0 : 2 }}>
       <SoundToggle bar={props.bar} />
+      <DirectionToggle bar={props.bar} />
       <ThemeToggle bar={props.bar} />
     </View>
   );
@@ -387,7 +390,7 @@ function Search() {
     <View style={terminal ? { paddingHorizontal: TERMINAL_COLUMN, paddingBottom: TERMINAL_ROW } : { paddingHorizontal: 12, paddingBottom: 8 }}>
       <Input
         ref={(node) => (input = node)}
-        {...field({ style: terminal ? undefined : { paddingLeft: 26 } })}
+        {...field({ style: terminal ? undefined : { paddingStart: 26 } })}
         value={query()}
         onChange={({ value }) => query.set(value)}
         onKeyPress={(e) => e.key === "Escape" && query.set("")}
@@ -395,7 +398,7 @@ function Search() {
         accessibilityLabel="Search demos"
       />
       <If when={!terminal}>
-        <View style={{ position: "absolute", left: 20, top: 7, pointerEvents: "none" }}>
+        <View style={{ position: "absolute", start: 20, top: 7, pointerEvents: "none" }}>
           <Icon name="search" size={14} tint={colors.faint} />
         </View>
       </If>
@@ -517,15 +520,26 @@ function DemoList() {
  * row changes at once (0 pt collapsed); the panel slides natively, over the
  * content pane. */
 function Sidebar() {
-  const slide = createAnimatedValue(untracked(sidebarOpen) ? 0 : -SIDEBAR);
+  // Hidden, it is past the window's edge at its start: the left, or the
+  // right while the demos run right to left.
+  const away = (right: boolean) => (right ? SIDEBAR : -SIDEBAR);
+  const slide = createAnimatedValue(untracked(sidebarOpen) ? 0 : away(untracked(rtl)));
   let first = true;
+  let wasRtl = untracked(rtl);
   effect(() => {
     const open = sidebarOpen();
+    const flipped = rtl();
     if (first) {
       first = false;
       return;
     }
-    Animated.timing(slide, { toValue: open ? 0 : -SIDEBAR, duration: 220, easing: Easing.out(Easing.cubic) }).start();
+    // The direction changes the side, at once: only showing and hiding slide.
+    if (flipped !== wasRtl) {
+      wasRtl = flipped;
+      slide.set(open ? 0 : away(flipped));
+      return;
+    }
+    Animated.timing(slide, { toValue: open ? 0 : away(flipped), duration: 220, easing: Easing.out(Easing.cubic) }).start();
   });
   return (
     <View style={{ width: sidebarOpen() ? SIDEBAR : 0, flexShrink: 0, zIndex: 1 }}>
@@ -534,12 +548,12 @@ function Sidebar() {
           position: "absolute",
           top: 0,
           bottom: 0,
-          left: 0,
+          start: 0,
           width: SIDEBAR,
           translate: [slide, 0],
           backgroundColor: colors.sidebar,
-          borderRightWidth: 1,
-          borderRightColor: colors.sidebarBorder,
+          borderEndWidth: 1,
+          borderEndColor: colors.sidebarBorder,
         }}
       >
         <View
@@ -547,12 +561,12 @@ function Sidebar() {
           style={
             terminal
               ? { height: TERMINAL_ROW, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", paddingHorizontal: TERMINAL_COLUMN, marginBottom: TERMINAL_ROW }
-              : { height: 44, flexDirection: "row", alignItems: "center", paddingLeft: titleBar().left + 16, paddingRight: 10 }
+              : { height: 44, flexDirection: "row", alignItems: "center", paddingStart: (rtl() ? 0 : titleBar().left) + 16, paddingEnd: 10 }
           }
         >
-          {/* The mark at the sidebar's top left, past the window's controls. */}
+          {/* The mark at the sidebar's top start, past the window's controls (at the left, so right to left the sidebar is clear of them). */}
           {!terminal && <Logo size={22} />}
-          {!terminal && <Text style={{ marginLeft: 8, fontSize: 15, fontWeight: "600", color: colors.text, letterSpacing: -0.2 }}>NSH</Text>}
+          {!terminal && <Text style={{ marginStart: 8, fontSize: 15, fontWeight: "600", color: colors.text, letterSpacing: -0.2 }}>NSH</Text>}
           <View style={{ flex: 1 }} />
           <SidebarToggle />
         </View>
@@ -562,7 +576,7 @@ function Sidebar() {
           style={[
             { flexDirection: "row", alignItems: "center", borderTopWidth: 1, borderTopColor: colors.sidebarBorder },
             // The rule takes a whole row in the terminal: the rest of it is padding.
-            terminal ? { gap: TERMINAL_GAP, paddingTop: TERMINAL_ROW - 1, paddingHorizontal: TERMINAL_COLUMN } : { height: 48, gap: 10, paddingLeft: 16, paddingRight: 10 },
+            terminal ? { gap: TERMINAL_GAP, paddingTop: TERMINAL_ROW - 1, paddingHorizontal: TERMINAL_COLUMN } : { height: 48, gap: 10, paddingStart: 16, paddingEnd: 10 },
           ]}
         >
           {/* Where NSH lives, for screenshots of the gallery. */}
@@ -595,7 +609,52 @@ function SettingItem(props: { label: string; icon: JSX.Element; checked: boolean
   );
 }
 
-/** The sidebar's settings: the performance monitor (`setFpsEnabled`), sounds and the appearance. */
+/** The settings menu's appearance: System, Light and Dark as the segments
+ * of a segmented control, each a radio item of the menu (icons alone; the
+ * terminal, which draws no icons, names them). */
+function ThemeSetting() {
+  const look = segmentedLook({ size: "small" });
+  const option = (value: Appearance, title: string, icon: LucideIconName) => {
+    const on = () => appearance() === value;
+    return (
+      <MenuItem
+        role="menuitemradio"
+        checked={on()}
+        closeOnSelect={false}
+        onSelect={() => setAppearance(value)}
+        accessibilityLabel={title}
+        hoverStyle={on() ? undefined : { backgroundColor: alpha(colors.text, 0.06) }}
+        style={{
+          ...(terminal ? { paddingHorizontal: TERMINAL_COLUMN } : { width: 30 }),
+          alignItems: "center",
+          justifyContent: "center",
+          borderRadius: 6,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: "transparent",
+          ...(on() ? look.thumbStyle : {}),
+        }}
+      >
+        <If when={!terminal} else={<Text style={{ color: on() ? colors.text : colors.muted }}>{title}</Text>}>
+          <LucideIcon name={icon} size={14} tint={on() ? colors.text : colors.muted} />
+        </If>
+      </MenuItem>
+    );
+  };
+  return (
+    <View style={{ ...menuItemLook({ style: terminal ? { height: TERMINAL_ROW, gap: TERMINAL_GAP } : { height: 36, gap: 10 } }).style }}>
+      {!terminal && <LucideIcon name={isDark() ? "moon" : "sun"} size={16} tint={colors.muted} />}
+      <Text style={menuItemLabel()}>Theme</Text>
+      <View style={{ ...look.style, alignSelf: "center" }}>
+        {option("system", "System", "monitor")}
+        {option("light", "Light", "sun")}
+        {option("dark", "Dark", "moon")}
+      </View>
+    </View>
+  );
+}
+
+/** The sidebar's settings: the performance monitor (`setFpsEnabled`), sounds, the demos' direction and the appearance. */
 function SettingsMenu() {
   const flipSounds = () => {
     if (soundsOn()) {
@@ -609,17 +668,16 @@ function SettingsMenu() {
   const trigger = terminal ? (
     <Text style={{ color: colors.text }}>Menu</Text>
   ) : (
-    <View accessibilityLabel="Settings menu" hoverStyle={hovered()} activeStyle={{ backgroundColor: alpha(colors.text, 0.09) }} style={{ width: 28, height: 28, alignItems: "center", justifyContent: "center", borderRadius: radius.control }}>
+    <View accessibilityLabel="Settings menu" hoverStyle={hovered()} activeStyle={{ backgroundColor: alpha(colors.text, 0.09) }} focusVisibleStyle={focusRing()} style={{ width: 28, height: 28, alignItems: "center", justifyContent: "center", borderRadius: radius.control }}>
       <LucideIcon name="settings" size={16} tint={colors.muted} />
     </View>
   );
   return (
-    <Menu placement="top" align="end" offset={6} margin={8} trigger={trigger}>
-      <MenuPanel side="top" minWidth={210}>
-        <SettingItem label="Performance monitor" icon={<LucideIcon name="activity" size={16} tint={colors.muted} />} checked={fpsEnabled()} onSelect={() => setFpsEnabled(!fpsEnabled())} />
-        <SettingItem label="Sounds" icon={<Icon name="volume-high" size={16} tint={colors.muted} />} checked={soundsOn()} onSelect={flipSounds} />
-        <SettingItem label="Dark appearance" icon={<LucideIcon name="moon" size={16} tint={colors.muted} />} checked={isDark()} onSelect={() => setColorScheme(isDark() ? "light" : "dark")} />
-      </MenuPanel>
+    <Menu placement="top" align="end" offset={6} margin={8} {...menuPopup({ side: "top", minWidth: 210 })} trigger={trigger}>
+      <SettingItem label="FPS" icon={<LucideIcon name="activity" size={16} tint={colors.muted} />} checked={fpsEnabled()} onSelect={() => setFpsEnabled(!fpsEnabled())} />
+      <SettingItem label="Sounds" icon={<Icon name="volume-high" size={16} tint={colors.muted} />} checked={soundsOn()} onSelect={flipSounds} />
+      <SettingItem label="RTL" icon={<LucideIcon name="pilcrow" size={16} tint={colors.muted} />} checked={rtl()} onSelect={() => rtl.set(!rtl())} />
+      <ThemeSetting />
     </Menu>
   );
 }
@@ -642,15 +700,17 @@ function DemoPane() {
                   flexDirection: "row",
                   alignItems: "center",
                   gap: 6,
-                  paddingLeft: sidebarOpen() ? 32 : titleBar().left + 12,
-                  paddingRight: 16,
+                  // Clear of the window's controls, at the left: the start
+                  // while the sidebar is hidden, the end right to left.
+                  paddingStart: sidebarOpen() ? 32 : (rtl() ? 0 : titleBar().left) + 12,
+                  paddingEnd: rtl() ? titleBar().left + 12 : 16,
                   borderBottomWidth: 1,
                   borderBottomColor: colors.line,
                 }
           }
         >
           <If when={!sidebarOpen()}>
-            <View style={{ marginRight: terminal ? TERMINAL_COLUMN : 8 }}>
+            <View style={{ marginEnd: terminal ? TERMINAL_COLUMN : 8 }}>
               <SidebarToggle />
             </View>
           </If>
@@ -686,7 +746,7 @@ function Desktop() {
   effect(() => shownDemo.set(selected()));
   keymap.bind("mod+b", toggleSidebar);
   return (
-    <View style={{ flex: 1, flexDirection: "row", backgroundColor: colors.background }}>
+    <View style={{ flex: 1, flexDirection: "row", backgroundColor: colors.background, direction: demoDirection() }}>
       <Sidebar />
       <NavStack state={nav} style={{ flex: 1 }}>
         {(route) => {
@@ -765,8 +825,62 @@ function rememberDemo() {
   });
 }
 
+const SIDEBAR_OPEN = "sidebarOpen";
+
+/**
+ * The gallery's Quit on the desktop: its own item in the application menu
+ * with the quit key, which asks first, as an app with unsaved work does;
+ * then `Application.quit()`. However the app quits (this item, the Dock's
+ * Quit, the last window closing), `Application.on("quit")` saves whether
+ * the sidebar was open, read again at the next launch.
+ */
+function quitWithConfirmation() {
+  if (!desktopWindows) return;
+  const mac = platform.os === "macos";
+  const quitItem = { label: mac ? "Quit NSH Gallery" : "Exit", shortcut: "mod+q", onSelect: () => void confirmQuit() };
+  AppMenu.setApplicationMenu([
+    mac && {
+      label: "NSH Gallery",
+      submenu: [{ role: "about" }, { type: "separator" }, { role: "hide" }, { role: "hideOthers" }, { role: "showAll" }, { type: "separator" }, quitItem],
+    },
+    !mac && { label: "File", submenu: [quitItem] },
+    {
+      label: "Edit",
+      submenu: [{ role: "undo" }, { role: "redo" }, { type: "separator" }, { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" }],
+    },
+    { label: "Window", submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "toggleFullScreen" }, { type: "separator" }, { role: "close" }] },
+  ]);
+  Storage.getItem(SIDEBAR_OPEN).then((open) => {
+    if (open != null) sidebarOpen.set(open === "true");
+  });
+  Application.on("quit", () => Storage.setItem(SIDEBAR_OPEN, String(untracked(sidebarOpen))));
+}
+
+let confirming = false;
+
+/** Asks before quitting; the quit key pressed again while it asks does nothing. */
+async function confirmQuit() {
+  if (confirming) return;
+  confirming = true;
+  try {
+    const { action } = await AlertDialog.show({
+      title: "Quit NSH Gallery?",
+      description: "The demo you have open is opened again at the next launch.",
+      actions: [
+        { label: "Cancel", role: "cancel", id: "cancel" },
+        { label: "Quit", id: "quit" },
+      ],
+      closeOnEscape: true,
+    });
+    if (action === "quit") Application.quit();
+  } finally {
+    confirming = false;
+  }
+}
+
 function App() {
   rememberDemo();
+  quitWithConfirmation();
   // Every scroll view and list draws the gallery's bar.
   Scrollbar.setTheme(scrollbarTheme);
   return (

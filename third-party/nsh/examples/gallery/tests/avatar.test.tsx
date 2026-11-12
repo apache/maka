@@ -17,8 +17,8 @@ test("an avatar shows the initials of its name until its picture loads", async (
   expect(app.shows("FW")).toBe(true);
   // Without a picture, at once; the one without a name shows the app's glyph.
   expect(app.shows("DK")).toBe(true);
-  // The statuses the demo heard: the two without a picture are idle.
-  expect(app.count("text:idle")).toBe(2);
+  // The statuses the demo heard: the two without a picture have nothing to load.
+  expect(app.count("text:Nothing to load")).toBe(2);
 });
 
 test("screen readers hear an image named after the person", async () => {

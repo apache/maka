@@ -6,7 +6,7 @@
 //!   is QuickJS bytecode, anything else JS source).
 //!
 //! - `--fps` logs the performance monitor's readings once a second (frame
-//!   rate, frame phases, commits, CPU and memory; target `nsh::perf`).
+//!   rate, frame phases, commits, CPU and memory; target `nsh::fps`).
 //! - `--window-size 390x844` sets the window size in points (default 1200x800,
 //!   wide enough for desktop layouts such as the gallery's sidebar).
 //! - `--data-dir <dir>` keeps the apps' data there instead of the system's

@@ -81,6 +81,32 @@ pub(super) fn validate_control(
     fact: &Fact,
 ) -> Result<(), StoreError> {
     match fact {
+        Fact::ModelFirstTokenObserved { attempt } => {
+            let seen: bool = c
+                .prepare_cached(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM agent_attempt_ids a
+                        JOIN agent_session_history h INDEXED BY agent_session_history_run
+                          ON h.run=a.run AND h.step=a.step AND h.attempt=a.attempt
+                        JOIN agent_facts f ON f.sequence=h.sequence AND f.run=h.run
+                        WHERE h.owner=? AND h.session=? AND h.run=? AND a.attempt=?
+                          AND h.kind='model_first_token_observed' AND f.revision<=?
+                    )",
+                )?
+                .query_row(
+                    params![
+                        serde_json::to_string(&view.spec.owner)?,
+                        view.spec.session_id,
+                        view.run.to_string(),
+                        attempt.to_string(),
+                        signed(view.revision)?,
+                    ],
+                    |row| row.get(0),
+                )?;
+            if seen {
+                return Err(StoreError::EventConflict);
+            }
+        }
         Fact::ModelTransportSelected { attempt, .. } => {
             let request = original_request(c, view, *attempt)?;
             if request.accounting.purpose != ModelPurpose::Main

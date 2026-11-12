@@ -18,8 +18,8 @@
  */
 
 use super::*;
-use maka_agent_facts::durable::{ExecutionIdentity, UnixMillis};
-use maka_agent_state::queue::{Placement as QueuePlacement, QueueCommand, QueueEdit};
+use maka_agent_facts::durable::{BackendSpec, ExecutionIdentity, UnixMillis};
+use maka_agent_state::queue::{Followup, Placement as QueuePlacement, QueueCommand, QueueEdit};
 
 /// An inert Root statement and its exact reply. Host commits both together.
 pub(crate) enum NativeMutation<T> {
@@ -288,7 +288,43 @@ impl Owner {
         } else {
             latest.filter(|view| view.terminal.is_none())
         };
-        let followup = active.as_ref().map(|view| view.run);
+        let interrupt = if let (Some(view), SendDelivery::Steer) = (&active, delivery)
+            && let BackendSpec::Executor {
+                selection,
+                descriptor,
+            } = &view.spec.backend
+            && selection.settings.runtime.as_deref() == Some("antigravity")
+        {
+            let executor: crate::executor::Accepted = self
+                .run_content(view.run, descriptor)
+                .await
+                .map_err(public_error)?;
+            if &executor.selection != selection {
+                return Err("agent_executor_descriptor_changed".into());
+            }
+            matches!(
+                self.executors.active_delivery(&executor),
+                crate::executor::ActiveDelivery::InterruptResume
+            )
+            .then_some(selection)
+        } else {
+            None
+        };
+        let followup = active.as_ref().map(|view| {
+            if interrupt.is_some() {
+                Followup::Interrupt {
+                    run: view.run,
+                    stop: self.control_id(operation, "steering_interrupt"),
+                }
+            } else {
+                Followup::Queued(view.run)
+            }
+        });
+        let backend = backend.or_else(|| {
+            interrupt.map(|selection| BackendPreference::Executor {
+                selection: selection.clone(),
+            })
+        });
         let basis = match self
             .capture_current_run(&id, backend, operation.fingerprint.clone(), parent)
             .await
@@ -303,7 +339,9 @@ impl Owner {
             }
             Err(CaptureError::Other(error)) => return Err(error),
         };
-        if let (Some(view), maka_agent_api::contract::SendDelivery::Steer) = (&active, delivery) {
+        if let (Some(view), SendDelivery::Steer) = (&active, delivery)
+            && interrupt.is_none()
+        {
             let execution = ExecutionIdentity {
                 session_id: id.clone(),
                 turn_id: view.spec.turn_id.clone(),

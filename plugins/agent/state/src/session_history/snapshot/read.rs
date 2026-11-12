@@ -355,7 +355,9 @@ impl Query for Request {
             return Err(invalid("snapshot Step index has another entry kind"));
         };
         let recorded: RecordedFact = decode(c, &self.0, &body, Some(run))?;
-        let Fact::StepPrepared { step, request, .. } = recorded.fact else {
+        let (Fact::StepPrepared { step, request, .. }
+        | Fact::ProactiveSummaryPrepared { step, request, .. }) = recorded.fact
+        else {
             return Err(invalid("snapshot Step has no original preparation"));
         };
         if step != self.2 || run != self.1 {
@@ -800,6 +802,27 @@ impl Query for ImportedItem {
         decode(c, &self.0, &message, None)
     }
 }
+pub(super) struct Terminated(pub Snapshot, pub RunId);
+impl Query for Terminated {
+    type Output = Option<(UnixMillis, Terminal)>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        authorize(c, &self.0)?;
+        let raw: Option<String> = c.query_row("SELECT entry_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_metrics_attempt WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.attempt') IS NULL AND fact_kind='run_terminated'", params![self.0.id.to_string(), self.1.to_string()], |row| row.get(0)).optional()?;
+        let Some(raw) = raw else { return Ok(None) };
+        let Entry::Fact { run, id, body, .. } = serde_json::from_str(&raw)? else {
+            return Err(invalid("snapshot fact index kind corrupt"));
+        };
+        let record: RecordedFact = decode_registered(c, self.0.id, &body, Some(self.1))?;
+        match record.fact {
+            Fact::RunTerminated { terminal, .. }
+                if record.run == run && run == self.1 && record.id == id =>
+            {
+                Ok(Some((record.at, terminal)))
+            }
+            _ => Err(invalid("snapshot Run termination index names another fact")),
+        }
+    }
+}
 pub(super) struct View(pub Snapshot, pub RunId);
 impl Query for View {
     type Output = crate::fold::RunView;
@@ -811,6 +834,27 @@ pub(super) fn view_with_late(
     c: &Connection,
     snapshot: &Snapshot,
     run_id: RunId,
+) -> Result<(crate::fold::RunView, u64), StoreError> {
+    read_view(c, snapshot, run_id, |_, _| {})
+}
+
+pub(super) struct ExecutorView(pub Snapshot, pub RunId);
+impl Query for ExecutorView {
+    type Output = (crate::fold::RunView, ExecutorTranscript);
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let mut transcript = ExecutorTranscript::default();
+        let (view, _) = read_view(c, &self.0, self.1, |sequence, record| {
+            transcript.observe(sequence, record);
+        })?;
+        Ok((view, transcript))
+    }
+}
+
+fn read_view(
+    c: &Connection,
+    snapshot: &Snapshot,
+    run_id: RunId,
+    mut observe: impl FnMut(u64, &RecordedFact),
 ) -> Result<(crate::fold::RunView, u64), StoreError> {
     authorize(c, snapshot)?;
     let source = run_registered(c, snapshot.id, run_id)?;
@@ -841,6 +885,7 @@ pub(super) fn view_with_late(
             return Err(invalid("snapshot fact identity corrupt"));
         }
         view.apply(&record)?;
+        observe(sequence, &record);
         if matches!(record.fact, Fact::RunTerminated { .. }) {
             terminal_sequence = Some(sequence);
         } else if record.fact.is_late()

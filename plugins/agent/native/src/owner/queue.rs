@@ -19,11 +19,14 @@
 
 mod controls;
 use super::*;
-use futures_util::FutureExt;
+use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use maka_agent_facts::durable::*;
 use maka_agent_facts::tools::ToolError;
 use maka_agent_state::{Admission, ReadyCause, queue::Consume};
 use maka_plugin_core::operation::OperationCleanup;
+
+type AdmissionWaits = FuturesUnordered<BoxFuture<'static, ()>>;
+type AdmissionGuards = (runs::Ordered, Option<tokio::sync::OwnedMutexGuard<()>>);
 
 impl Owner {
     pub fn activated(self: &Arc<Self>) {
@@ -53,6 +56,14 @@ impl Owner {
             Ok(root) => root,
             Err(_) => return,
         };
+        if let Err(error) = self
+            .durable
+            .queue()
+            .recover_stopped_goal_steering(self.run_owner(), UnixMillis(now() as i64))
+            .await
+        {
+            tracing::error!(%error, "Failed to recover steering from stopped Goals");
+        }
         let mut sources = root.capability_changes();
         let mut cause = ReadyCause::CapabilitySourceChanged;
         let mut cold_probe = true;
@@ -71,12 +82,16 @@ impl Owner {
                     "Agent model cleanup reconciliation failed"
                 ),
             }
-            if self.schedule_ready_at(at, cause).await.is_err() {
-                tracing::error!(
-                    stage = "ready_reconciliation_failed",
-                    "Agent ready reconciliation failed"
-                );
-            }
+            let mut admission_waits = match self.schedule_ready_at(at, cause).await {
+                Ok(waits) => waits,
+                Err(_) => {
+                    tracing::error!(
+                        stage = "ready_reconciliation_failed",
+                        "Agent ready reconciliation failed"
+                    );
+                    AdmissionWaits::new()
+                }
+            };
             if cause == ReadyCause::CapabilitySourceChanged {
                 match self
                     .durable
@@ -119,6 +134,7 @@ impl Owner {
                 },
                 changed = changes.changed() => if changed.is_err() { return; },
                 _ = self.wake_notify.notified() => {},
+                _ = admission_waits.next(), if !admission_waits.is_empty() => {},
                 _ = deadline => {
                     if authority_due.is_some_and(|due| due.0 <= now() as i64) {
                         cause = ReadyCause::CapabilitySourceChanged;
@@ -133,7 +149,9 @@ impl Owner {
         self: &Arc<Self>,
         at: UnixMillis,
         cause: ReadyCause,
-    ) -> Result<(), String> {
+    ) -> Result<AdmissionWaits, String> {
+        let waits = AdmissionWaits::new();
+        let mut sessions = BTreeSet::new();
         let mut after = None;
         loop {
             let page = self
@@ -187,17 +205,18 @@ impl Owner {
                 if !ready.entry.placement.is_followup() {
                     continue;
                 }
-                let goal = if matches!(ready.entry.request.spec.trigger, Trigger::Goal { .. }) {
-                    match self.goals.gate.clone().try_lock_owned() {
-                        Ok(goal) => Some(goal),
-                        Err(_) => continue,
+                if !sessions.insert(session.clone()) || self.runs.state().await.busy(&session) {
+                    continue;
+                }
+                let (ordered, goal) = match self.queue_admission(
+                    &session,
+                    matches!(ready.entry.request.spec.trigger, Trigger::Goal { .. }),
+                ) {
+                    Ok(guards) => guards,
+                    Err(wait) => {
+                        waits.push(wait);
+                        continue;
                     }
-                } else {
-                    None
-                };
-                let ordered = match self.runs.try_ordered(&session) {
-                    Ok(ordered) => ordered,
-                    Err(_) => continue,
                 };
                 let owner = self.clone();
                 self.workers.spawn(async move {
@@ -207,7 +226,35 @@ impl Owner {
                 });
             }
         }
-        Ok(())
+        // A queue write can wake us before its admission locks are released.
+        // Retry on unlock even if there are no further durable changes.
+        Ok(waits)
+    }
+
+    pub(super) fn queue_admission(
+        &self,
+        session: &str,
+        is_goal: bool,
+    ) -> Result<AdmissionGuards, BoxFuture<'static, ()>> {
+        let goal = if is_goal {
+            match self.goals.gate.clone().try_lock_owned() {
+                Ok(goal) => Some(goal),
+                Err(_) => {
+                    let gate = self.goals.gate.clone();
+                    return Err(async move { drop(gate.lock_owned().await) }.boxed());
+                }
+            }
+        } else {
+            None
+        };
+        match self.runs.try_ordered(session) {
+            Ok(ordered) => Ok((ordered, goal)),
+            Err(_) => {
+                let runs = self.runs.clone();
+                let session = session.to_owned();
+                Err(async move { drop(runs.ordered(&session).await) }.boxed())
+            }
+        }
     }
 
     async fn admit_queued(
@@ -306,9 +353,7 @@ impl Owner {
         let (lease, effects) = scope.accept(self.stop.child_token());
         let committed: Result<bool, String> = async {
             let selected = lease.store();
-            let custody = selected
-                .work_custody()
-                .map_err(|error| error.to_string())?;
+            let custody = selected.work_custody().map_err(|error| error.to_string())?;
             let writer = self
                 .store
                 .data_writer_for_work(custody.as_ref(), session)
@@ -317,37 +362,40 @@ impl Owner {
                 .durable
                 .with_data_writer(writer)
                 .map_err(|error| error.to_string())?;
-            let mut changed = state.subscribe().map_err(|error| error.to_string())?;
-            changed.borrow_and_update();
-            match state.admit(admission.clone()).await {
-                Ok(_) => return Ok(true),
-                Err(error) if matches!(error.underlying(), maka_event_log::StoreError::CommitUnknown(_) | maka_event_log::StoreError::OperationUnknown | maka_event_log::StoreError::EventConflict) => {}
-                Err(error) if matches!(error.underlying(), maka_event_log::StoreError::RevisionConflict { .. }) => return Ok(false),
-                Err(error) => return Err(error.to_string()),
-            }
-            loop {
-                changed.borrow_and_update();
-                match state.admission_recorded(&admission).await {
-                    Ok(true) => return Ok(true),
-                    Ok(false) => {
-                        match state.admit(admission.clone()).await {
-                            Ok(_) => return Ok(true),
-                            Err(error) if matches!(error.underlying(), maka_event_log::StoreError::CommitUnknown(_) | maka_event_log::StoreError::OperationUnknown | maka_event_log::StoreError::EventConflict) => {},
-                            Err(error) if matches!(error.underlying(), maka_event_log::StoreError::RevisionConflict { .. }) => return Ok(false),
-                            Err(error) => return Err(error.to_string()),
-                        }
-                        match state.admission_recorded(&admission).await {
-                            Ok(true) => return Ok(true),
-                            Ok(false) => {},
-                            Err(error) => tracing::warn!(%run, %error, "Original admission cannot be confirmed"),
-                        }
+            for retry in [false, true] {
+                let error = match state.admit(admission.clone()).await {
+                    Ok(_) => return Ok(true),
+                    Err(error)
+                        if matches!(
+                            error.underlying(),
+                            maka_event_log::StoreError::RevisionConflict { .. }
+                        ) =>
+                    {
+                        return Ok(false);
                     }
-                    Err(error) => tracing::warn!(%run, %error, "Original admission cannot be confirmed"),
+                    Err(error) => error,
+                };
+                if !matches!(
+                    error.underlying(),
+                    maka_event_log::StoreError::CommitUnknown(_)
+                        | maka_event_log::StoreError::OperationUnknown
+                ) {
+                    return Err(error.to_string());
                 }
-                if changed.changed().await.is_err() {
-                    std::future::pending::<()>().await;
+                // The FIFO read settles the original SQL write. The queue cut
+                // is consumed atomically with admission, before any tools run.
+                if state
+                    .admission_recorded(&admission)
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    return Ok(true);
+                }
+                if retry {
+                    return Err(error.to_string());
                 }
             }
+            unreachable!("admission retries once after the original write is proven absent")
         }
         .await;
         if effects.settle().await.is_err() {
@@ -369,15 +417,22 @@ impl Owner {
             .frontier(run)
             .await
             .map_err(|e| e.to_string())?;
-        if view.spec.owner != self.run_owner()
-            || view.terminal.is_some()
-            || !matches!(view.spec.origin, RunOrigin::Local)
-        {
+        if view.spec.owner != self.run_owner() || !matches!(view.spec.origin, RunOrigin::Local) {
             return Ok(());
         }
         {
-            let runs = self.runs.state().await;
-            if runs.closing || runs.busy(&view.spec.session_id) {
+            let mut runs = self.runs.state().await;
+            if view.terminal.is_some() {
+                if runs
+                    .failed_frontiers
+                    .get(&view.spec.session_id)
+                    .is_some_and(|(failed_run, _)| *failed_run == run)
+                {
+                    runs.failed_frontiers.remove(&view.spec.session_id);
+                }
+                return Ok(());
+            }
+            if !runs.can_probe(&view.spec.session_id, run, view.revision) {
                 return Ok(());
             }
         }
@@ -395,11 +450,13 @@ impl Owner {
             return Ok(());
         };
         let mut runs = self.runs.state().await;
-        if runs.closing || runs.busy(&view.spec.session_id) {
+        if !runs.can_probe(&view.spec.session_id, run, view.revision) {
             claim.deactivate();
             return Ok(());
         }
+        let revision = view.revision;
         let session = view.spec.session_id;
+        runs.failed_frontiers.remove(&session);
         let owner = self.clone();
         let token = cancellation.clone();
         let target = session.clone();
@@ -425,7 +482,10 @@ impl Owner {
                 false
             };
             if admitted {
-                let (cleanup, retry_ready) = owner.clone().drive_local(claim, target, token).await;
+                let (cleanup, retry_ready) = owner
+                    .clone()
+                    .drive_local(claim, target, revision, token)
+                    .await;
                 drop(activity);
                 owner.physical_availability_changed_after(retry_ready);
                 return cleanup;
@@ -468,6 +528,7 @@ impl Owner {
         self: Arc<Self>,
         claim: maka_agent_state::DriverClaim,
         session: String,
+        scheduled_revision: u64,
         cancellation: CancellationToken,
     ) -> (OperationCleanup, bool) {
         let run = claim.run();
@@ -497,6 +558,8 @@ impl Owner {
                 {
                     runs.preparing.remove(&session);
                 }
+                runs.failed_frontiers
+                    .insert(session, (run, scheduled_revision));
                 drop(runs);
                 return (OperationCleanup::Confirmed, false);
             }
@@ -504,6 +567,7 @@ impl Owner {
         let mut sources = root.capability_changes();
         sources.borrow_and_update();
         let turn = view.spec.turn_id.clone();
+        let revision = view.revision;
         let (result, cleanup) = self
             .run_with_capabilities(view, claim.clone(), cancellation)
             .await;
@@ -512,6 +576,14 @@ impl Owner {
             tracing::error!(stage = "queue_cleanup_unconfirmed", cause = "cleanup_unconfirmed", consequence = "resources_retained", run_id = %run, session_id = %session, turn_id = %turn, activation = %self.revision.activation, "Agent original Root work remains unconfirmed");
         } else if let Err(error) = &result {
             let cause = match error {
+                RunError::Store(error)
+                    if matches!(
+                        error.underlying(),
+                        maka_event_log::StoreError::EventConflict
+                    ) =>
+                {
+                    "store_event_conflict"
+                }
                 RunError::Store(error)
                     if matches!(error.underlying(), maka_event_log::StoreError::Sqlite(_)) =>
                 {
@@ -575,7 +647,13 @@ impl Owner {
             _ => false,
         };
         let retry = self
-            .finish_local_probe(run, &session, authority_unavailable, &sources)
+            .finish_local_probe(
+                run,
+                &session,
+                authority_unavailable,
+                (result.is_err() && !authority_unavailable).then_some(revision),
+                &sources,
+            )
             .await;
         drop(root);
         (cleanup, retry)
@@ -585,6 +663,7 @@ impl Owner {
         run: RunId,
         session: &str,
         authority_unavailable: bool,
+        failed_revision: Option<u64>,
         sources: &tokio::sync::watch::Receiver<()>,
     ) -> bool {
         let mut runs = self.runs.state().await;
@@ -602,12 +681,24 @@ impl Owner {
         {
             runs.controls.remove(session);
         }
+        if let Some(revision) = failed_revision {
+            runs.failed_frontiers
+                .insert(session.into(), (run, revision));
+        }
         drop(runs);
         // The actual Root is retained by the probing caller until this check.
         let changed = sources
             .has_changed()
             .expect("live probing Root retains its source sender");
         !authority_unavailable || changed
+    }
+}
+
+impl Runs {
+    fn can_probe(&self, session: &str, run: RunId, revision: u64) -> bool {
+        !self.closing
+            && !self.busy(session)
+            && self.failed_frontiers.get(session) != Some(&(run, revision))
     }
 }
 
@@ -637,5 +728,19 @@ mod tests {
             );
         }
         assert!(due.is_none());
+    }
+
+    #[test]
+    fn failed_probe_waits_for_new_run_evidence_without_blocking_other_runs() {
+        let run = RunId::new();
+        let mut runs = Runs::default();
+        assert!(runs.can_probe("conversation", run, 7));
+        runs.failed_frontiers
+            .insert("conversation".into(), (run, 7));
+
+        assert!(!runs.can_probe("conversation", run, 7));
+        assert!(runs.can_probe("conversation", run, 8));
+        assert!(runs.can_probe("conversation", RunId::new(), 7));
+        assert!(runs.can_probe("another conversation", RunId::new(), 7));
     }
 }

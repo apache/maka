@@ -40,8 +40,8 @@ pub(crate) fn compat(record: Option<&str>) -> anyhow::Result<()> {
     cargo.arg(if record.is_some() { "run" } else { "test" });
     // Cargo's own option, so before `run`'s `--`.
     cargo.arg("--target-dir").arg(root.join("target"));
-    // The cases compile shaders, which nsh-core leaves out without this.
-    cargo.args(["--features", "nsh-core/shader"]);
+    // The cases use shaders and EmojiPicker, both opt-in runtime features.
+    cargo.args(["--features", "nsh-core/shader,nsh-base/emoji-picker"]);
     if let Some(version) = record {
         cargo.args(["--", "record", version]);
     }

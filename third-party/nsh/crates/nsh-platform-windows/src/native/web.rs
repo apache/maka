@@ -28,9 +28,9 @@
 //! made in the background, from the first props (`incognito` makes an
 //! InPrivate controller, whose website data stays in memory). Props and
 //! commands that come before the controller is ready wait for it
-//! ([`WebItem::ready`]). The WebView2 loader is linked statically
-//! (`WebView2LoaderStatic.lib`), so apps do not ship `WebView2Loader.dll`;
-//! the WebView2 runtime itself comes with Windows 11 (and Edge's installer
+//! ([`WebItem::ready`]). With MSVC the WebView2 loader is linked
+//! statically (`WebView2LoaderStatic.lib`), so apps do not ship
+//! `WebView2Loader.dll` (`create_environment`); the WebView2 runtime itself comes with Windows 11 (and Edge's installer
 //! on Windows 10). Without it, a web view draws a neutral placeholder, as
 //! on Linux.
 //!
@@ -66,6 +66,7 @@ use std::{
 
 use nsh_core::{
     Color, Command, EventKind, EventPayload, NodeId, PayloadValue, ROOT_ID, WebProps, WebSource,
+    access::WebMedia,
 };
 use webview2_com::{
     AddScriptToExecuteOnDocumentCreatedCompletedHandler,
@@ -87,16 +88,18 @@ use webview2_com::{
         COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_DOUBLE_CLICK,
         COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_DOWN, COREWEBVIEW2_MOUSE_EVENT_KIND_X_BUTTON_UP,
         COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
-        COREWEBVIEW2_POINTER_EVENT_KIND, COREWEBVIEW2_WEB_ERROR_STATUS,
-        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, ICoreWebView2, ICoreWebView2_2,
-        ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2Controller2,
-        ICoreWebView2Controller3, ICoreWebView2Environment, ICoreWebView2Environment2,
-        ICoreWebView2Environment3, ICoreWebView2Environment10,
+        COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        COREWEBVIEW2_PERMISSION_STATE_DENY, COREWEBVIEW2_POINTER_EVENT_KIND,
+        COREWEBVIEW2_WEB_ERROR_STATUS, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, ICoreWebView2,
+        ICoreWebView2_2, ICoreWebView2CompositionController, ICoreWebView2Controller,
+        ICoreWebView2Controller2, ICoreWebView2Controller3, ICoreWebView2Environment,
+        ICoreWebView2Environment2, ICoreWebView2Environment3, ICoreWebView2Environment10,
         ICoreWebView2ExecuteScriptCompletedHandler, ICoreWebView2Settings2, ICoreWebView2Settings6,
     },
     MoveFocusRequestedEventHandler, NavigationCompletedEventHandler,
-    NavigationStartingEventHandler, WebMessageReceivedEventHandler,
-    WebResourceRequestedEventHandler, take_pwstr,
+    NavigationStartingEventHandler, PermissionRequestedEventHandler,
+    WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
 };
 use windows::{
     Win32::{
@@ -139,8 +142,15 @@ use crate::{
 /// Lets pages talk to the app: `window.nsh.postMessage(data)`.
 const BRIDGE: &str = "window.nsh = window.nsh || { postMessage: function (data) { window.chrome.webview.postMessage(String(data)); } };";
 
-// The loader, linked statically (webview2-com-sys imports it from
-// `WebView2Loader.dll`, which would have to ship next to every app).
+// `CreateCoreWebView2EnvironmentWithOptions`.
+//
+// With MSVC the loader is linked statically (`WebView2LoaderStatic.lib`,
+// which webview2-com-sys ships and puts on the link path), so apps do not
+// ship `WebView2Loader.dll`. Other toolchains (`windows-gnu`) cannot link
+// that MSVC library: there the loader DLL is loaded when the first web view
+// starts, so an app that never shows one needs neither, and a missing DLL
+// draws the placeholder as a missing runtime does.
+#[cfg(target_env = "msvc")]
 #[link(name = "WebView2LoaderStatic", kind = "static")]
 unsafe extern "system" {
     #[link_name = "CreateCoreWebView2EnvironmentWithOptions"]
@@ -150,6 +160,41 @@ unsafe extern "system" {
         options: *mut std::ffi::c_void,
         handler: *mut std::ffi::c_void,
     ) -> HRESULT;
+}
+
+#[cfg(not(target_env = "msvc"))]
+unsafe fn create_environment(
+    browser_folder: PCWSTR,
+    user_data_folder: PCWSTR,
+    options: *mut std::ffi::c_void,
+    handler: *mut std::ffi::c_void,
+) -> HRESULT {
+    use windows::{
+        Win32::{
+            Foundation::E_NOINTERFACE,
+            System::LibraryLoader::{GetProcAddress, LoadLibraryW},
+        },
+        core::{s, w},
+    };
+    type Create = unsafe extern "system" fn(
+        PCWSTR,
+        PCWSTR,
+        *mut std::ffi::c_void,
+        *mut std::ffi::c_void,
+    ) -> HRESULT;
+    // SAFETY: loading a DLL by name and reading an export of the known
+    // signature; the module stays loaded for the process.
+    unsafe {
+        let Ok(module) = LoadLibraryW(w!("WebView2Loader.dll")) else {
+            return E_NOINTERFACE;
+        };
+        let Some(create) = GetProcAddress(module, s!("CreateCoreWebView2EnvironmentWithOptions"))
+        else {
+            return E_NOINTERFACE;
+        };
+        let create: Create = std::mem::transmute(create);
+        create(browser_folder, user_data_folder, options, handler)
+    }
 }
 
 /// A web view: its visuals and, once made, its controller.
@@ -313,7 +358,9 @@ impl WebItem {
         });
     }
 
-    /// No web view: the placeholder shows.
+    /// No web view: the placeholder shows, and the app hears why
+    /// (`onError`, `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`) to show what it
+    /// has instead.
     fn unavailable(&self, why: &str) {
         self.failed.set(true);
         self.portal.borrow_mut().take();
@@ -324,6 +371,18 @@ impl WebItem {
                 "WebView is not available ({why}; is the WebView2 runtime installed?): it shows a placeholder"
             );
         }
+        self.emitter.emit(EventKind::Error, || {
+            EventPayload::Map(vec![
+                (
+                    "message",
+                    PayloadValue::Str(format!("WebView is not available: {why}")),
+                ),
+                (
+                    "code",
+                    PayloadValue::Str(nsh_core::element::codes::UNAVAILABLE.into()),
+                ),
+            ])
+        });
         self.invalidate();
     }
 
@@ -538,9 +597,33 @@ impl WebItem {
             });
             Ok(())
         }));
+        let weak = Rc::downgrade(self);
+        let permission = PermissionRequestedEventHandler::create(Box::new(move |_, args| {
+            let (Some(item), Some(args)) = (weak.upgrade(), args) else {
+                return Ok(());
+            };
+            let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+            // SAFETY: WebView2 calls on the event's live object.
+            unsafe { args.PermissionKind(&mut kind)? };
+            let media = match kind {
+                COREWEBVIEW2_PERMISSION_KIND_MICROPHONE => WebMedia::Microphone,
+                COREWEBVIEW2_PERMISSION_KIND_CAMERA => WebMedia::Camera,
+                // Other permissions keep WebView2's own handling.
+                _ => return Ok(()),
+            };
+            let state = if item.allows_media(media) {
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW
+            } else {
+                log::warn!(target: "js", "web view {} capture is not granted: add it to capabilities.webview.media", media.as_str());
+                COREWEBVIEW2_PERMISSION_STATE_DENY
+            };
+            // SAFETY: as above.
+            unsafe { args.SetState(state) }
+        }));
         // SAFETY: WebView2 calls on the live web view; the handlers hold the
         // item weakly, and go with the web view.
         unsafe {
+            let _ = webview.add_PermissionRequested(&permission, &mut token);
             let _ = webview.add_NavigationStarting(&starting, &mut token);
             let _ = webview.add_NavigationCompleted(&completed, &mut token);
             let _ = webview.add_WebMessageReceived(&message, &mut token);
@@ -650,6 +733,16 @@ impl WebItem {
         };
         let access = surface.native.access.borrow().clone();
         access.is_none_or(|a: Arc<nsh_engine::Access>| a.allows_webview(url))
+    }
+
+    /// Whether the page may capture `media` (`webview.media`): never
+    /// without a declaration.
+    fn allows_media(&self, media: WebMedia) -> bool {
+        let Some(surface) = self.surface.upgrade() else {
+            return false;
+        };
+        let access = surface.native.access.borrow().clone();
+        access.is_some_and(|a| a.allows_web_media(media))
     }
 
     pub(crate) fn set(self: &Rc<Self>, surface: &Rc<Surface>, view: &NshView, p: &WebProps) {

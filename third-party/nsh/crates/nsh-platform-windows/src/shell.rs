@@ -461,6 +461,9 @@ pub(crate) struct Shell {
     pub(crate) closing: Cell<bool>,
     /// The title bar's area last reported (windows of the app's own).
     pub(crate) title_bar: Cell<Option<Edges<Points>>>,
+    /// The material is the zoomed one's ([`set_material`]): square
+    /// corners, no border over the screen's edges.
+    pub(crate) zoomed_material: Cell<bool>,
 }
 
 impl Shell {
@@ -482,6 +485,7 @@ impl Shell {
             tab_deleted: Cell::new(false),
             closing: Cell::new(false),
             title_bar: Cell::new(None),
+            zoomed_material: Cell::new(false),
         }
     }
 
@@ -756,11 +760,19 @@ fn set_tab(hwnd: HWND, show: bool) {
 fn set_material(hwnd: HWND, attrs: &Attrs) {
     let frameless = attrs.frameless();
     let backdrop = attrs.backdrop != Backdrop::None;
+    // A zoomed frameless window's client area is the monitor's: the
+    // extended frame's border would run along the screen's edges and the
+    // rounded corners would cut them (a system-framed window hides both
+    // beyond the monitor, which a frameless one has no room for). A
+    // zoomed window has no use for its shadow either, so its material is
+    // the bare one's while zoomed.
+    // SAFETY: a plain query on a live window.
+    let zoomed = frameless && unsafe { IsZoomed(hwnd) }.as_bool();
     // A frameless window's shadow is the frame's, extended by a pixel;
     // a backdrop shows through the whole client area.
     let margin = if backdrop {
         -1
-    } else if frameless && attrs.shadow && !attrs.transparent {
+    } else if frameless && attrs.shadow && !attrs.transparent && !zoomed {
         1
     } else {
         0
@@ -775,8 +787,8 @@ fn set_material(hwnd: HWND, attrs: &Attrs) {
     // No shadow and square corners: a frameless window without a shadow
     // (or see-through) is only what the app draws.
     let bare = frameless && (!attrs.shadow || attrs.transparent);
-    let policy: i32 = if bare { 1 } else { 0 };
-    let corners: i32 = if bare { 1 } else { 0 };
+    let policy: i32 = if bare || zoomed { 1 } else { 0 };
+    let corners: i32 = if bare || zoomed { 1 } else { 0 };
     let set = |attribute, value: &i32| {
         // SAFETY: an i32-sized attribute value.
         unsafe {
@@ -794,6 +806,23 @@ fn set_material(hwnd: HWND, attrs: &Attrs) {
     let _ = set(DWMWA_WINDOW_CORNER_PREFERENCE, &corners);
     // SAFETY: a plain call with a local structure.
     let _ = unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) };
+    if let Some(shell) = crate::window::shell(hwnd) {
+        shell.zoomed_material.set(zoomed);
+    }
+}
+
+/// A window was maximized or restored (`WM_SIZE`): its material follows
+/// the zoom state, which [`set_material`] only saw when its attributes
+/// changed.
+pub(crate) fn zoom_changed(hwnd: HWND) {
+    let Some(shell) = crate::window::shell(hwnd) else {
+        return;
+    };
+    // SAFETY: a plain query on a live window.
+    let zoomed = shell.attrs().frameless() && unsafe { IsZoomed(hwnd) }.as_bool();
+    if shell.zoomed_material.get() != zoomed {
+        set_material(hwnd, &shell.attrs());
+    }
 }
 
 /// The window's frame dark or light: its own scheme, else the app's.

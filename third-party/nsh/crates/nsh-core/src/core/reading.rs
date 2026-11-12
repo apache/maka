@@ -20,6 +20,7 @@ impl<M: TextEngine> Core<M> {
         if list.horizontal || list.inverted || list.parent {
             return SourceGeometry::default();
         }
+        let point = list.reading_point().cloned();
         let mut seats = Vec::new();
         for (cell, y) in self.source_cells(key) {
             self.source_seats(
@@ -30,11 +31,28 @@ impl<M: TextEngine> Core<M> {
                 &mut seats,
             );
         }
-        self.source_geometry(seats)
+        self.source_geometry(seats, point.as_ref())
     }
 
-    fn source_geometry(&mut self, seats: Vec<Seat>) -> SourceGeometry {
+    fn source_geometry(&mut self, seats: Vec<Seat>, point: Option<&SourcePoint>) -> SourceGeometry {
         let keys: Vec<_> = seats.iter().map(|seat| seat.key).collect();
+        if let Some(point) = point {
+            for &key in &keys {
+                let node = &self.nodes[key as usize];
+                let holds_point = node
+                    .layout
+                    .and_then(|layout| self.layout.get_node_context(layout))
+                    .is_some_and(
+                        |cx| matches!(cx, LeafContext::Text(cx) if cx.sources.contains(point)),
+                    );
+                // Reflow can move the anchored glyph outside the old native
+                // viewport. Its text must be realized before deciding the
+                // source disappeared, just as a focus command realizes its target.
+                if !node.created && holds_point {
+                    self.uncull(key);
+                }
+            }
+        }
         // This is the same cached text layout used by the final mount flush.
         // Taffy's final content box is already available even when a resized
         // cell has not yet queued descendant frame notifications.
@@ -201,7 +219,7 @@ impl<M: TextEngine> Core<M> {
                 &mut seats,
             );
         }
-        self.source_geometry(seats)
+        self.source_geometry(seats, Some(point))
             .position(point)
             .map_or(SourcePosition::Closed, SourcePosition::Ready)
     }

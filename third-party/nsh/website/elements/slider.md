@@ -71,10 +71,10 @@ function App() {
       onChange={({ value }) => strength.set(value as number)}
       accessibilityLabel="Option strength"
       class="flex-row items-center gap-2"
-      trackClass="h-2 flex-1 px-2 rounded-full bg-muted focus-within:ring-2 focus-within:ring-primary/36 focus-within:ring-offset-2 focus-within:ring-offset-background disabled:opacity-35"
+      trackClass="h-2 flex-1 px-2 rounded-full bg-muted disabled:opacity-35"
       indicatorClass="h-full"
       rangeClass="-ml-2 rounded-full bg-linear-to-r from-primary via-primary to-muted-foreground"
-      thumbClass="h-2 w-4 rounded-full bg-muted-foreground transition hover:brightness-110 active:brightness-125 focus:outline-none disabled:brightness-100 motion-reduce:transition-none"
+      thumbClass="h-2 w-4 rounded-full bg-muted-foreground transition hover:brightness-110 active:brightness-125 focus-visible:outline-3 focus-visible:outline-primary/36 disabled:brightness-100 motion-reduce:transition-none"
       thumbStyle={{ boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.42)" }}
     >
       <Text class="w-[42px] text-right font-mono text-[11px] text-muted-foreground">{`${strength()}%`}</Text>
@@ -176,15 +176,15 @@ size. Two ways to lay them out:
 
 States the parts show:
 
-- A thumb: `hover:` under the pointer, `active:` while it is dragged, `focus:` with the keyboard focus, `disabled:`.
+- A thumb: `hover:` under the pointer, `active:` while it is dragged, `focus-visible:` with the keyboard focus (`focus:` after a drag too), `disabled:`.
 - The track: `active:` while a press on it drags; it is a `group`, so the indicator, the range and the thumbs take
   `group-hover:` and `group-active:` from it.
 - Every part: `disabled:` while the slider is.
 
 The thumbs move as the value changes, and follow a drag at once. Motion of the thumbs' states is the app's choice
 (`transition` for a thumb that brightens on `hover:` and `active:`), and `motion-reduce:` keeps it still for
-people who ask for less motion. The keyboard focus is a thumb's: `focus-within:` on the track rings the whole rail
-while a thumb has it, and the thumb's `focus:outline-none` takes the place of the platform's own focus outline.
+people who ask for less motion. The keyboard focus is a thumb's: its `focus-visible:` classes ring it while the
+keyboard moved the focus there, and not after a press or a drag.
 
 ## Keyboard
 

@@ -137,3 +137,56 @@ for (const crossOrigin of [false, true]) {
       } finally { await rm(dir,{recursive:true,force:true}); }
     });
 }
+
+for (const viewport of [false, true]) {
+  test(`a ${viewport ? 'viewport' : 'container'} dialog goes and comes back with the view that holds it`,
+    { skip: !chromium }, async () => {
+      const generated = fileURLToPath(new URL('../../../../.nsh/', import.meta.url));
+      await mkdir(generated, { recursive: true });
+      const dir = await mkdtemp(join(generated, 'modal-host-browser-'));
+      try {
+        const source = await readFile(new URL('./nsh.js', import.meta.url), 'utf8');
+        const module = 'data:text/javascript;base64,' + Buffer.from(source + '\nexport { Player };').toString('base64');
+        // The browser's graph removes a component's views at once and deletes them only once they are collected:
+        // a dialog (a child of the root) must not wait for its `Delete`.
+        const html = `<!doctype html><style>html,body{margin:0}#app{width:320px;height:240px}</style>
+          <div id="app"></div><script type="module">
+          import { Player } from '${module}';
+          const check = (ok, message) => { if (!ok) throw Error(message); };
+          const pause = () => new Promise(r => setTimeout(r, 60));
+          try {
+            const p = new Player(document.querySelector('#app'), { dialogs:${viewport ? "'viewport'" : 'undefined'}, history:false });
+            p.size = [320,240]; p.syncHistorySoon = () => {};
+            const events = [];
+            p.event = (id, name) => events.push([id, name]);
+            p.wasm = { nsh_root_size: () => -1 };
+            p.call = f => f(p.wasm);
+            Object.assign(p.root, { _id:1, _kind:'root', _events:new Set(), _animation:{} }); p.views.set(1, p.root);
+            // A view (2) holds a component's view (4) with a dialog (10), whose content (12) holds another (20).
+            p.apply([['c',2,'view'],['c',4,'view'],['c',10,'modal'],['c',12,'view'],['c',20,'modal'],['c',22,'view'],
+              ['i',20,22,null],['i',12,20,null],['i',10,12,null],['mc',10,'none',true],['mc',20,'none',true],
+              ['i',4,10,null],['i',2,4,null],['i',1,2,null]]);
+            await pause();
+            const [outer, inner] = [p.views.get(10), p.views.get(20)];
+            const shown = el => el.parentNode === p.root && !el._leaving;
+            check(shown(outer) && shown(inner), 'dialogs not presented');
+            p.apply([['r',4]]); await pause();
+            check(!outer.isConnected && !inner.isConnected, 'dialogs stayed after their view left');
+            check(!events.some(([, name]) => name === 'onDismiss'), 'a dialog that went with its view reported a dismissal');
+            check(!p.root.querySelector('[aria-modal]') && ![...p.root.children].some(c => c.inert), 'the page stayed inert');
+            p.apply([['i',2,4,null]]); await pause();
+            check(shown(outer) && shown(inner), 'dialogs did not come back with their view');
+            p.apply([['r',4],['d',4],['d',10],['d',12],['d',20],['d',22]]); await pause();
+            check(!outer.isConnected && !inner.isConnected, 'deleted dialogs stayed');
+            document.body.dataset.result = 'passed';
+          } catch(e) { document.body.dataset.result = 'failed: ' + e.message; }
+          </script>`;
+        await writeFile(join(dir, 'index.html'), html);
+        const result = execFileSync(chromium, ['--headless', '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu',
+          '--allow-file-access-from-files', '--window-size=640,480', '--virtual-time-budget=3000',
+          '--user-data-dir=' + join(dir, 'profile'), '--dump-dom', pathToFileURL(join(dir, 'index.html')).href],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60000, maxBuffer: 8 * 1024 * 1024 });
+        assert.equal(result.match(/data-result="([^"]*)"/)?.[1], 'passed');
+      } finally { await rm(dir, { recursive: true, force: true }); }
+    });
+}

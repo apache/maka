@@ -18,8 +18,8 @@
  */
 
 use super::{
-    Citation, Error, Event as OutputEvent, ItemMetadata, PartMetadata, ReasoningMode, Result,
-    ToolInput,
+    Citation, Error, Event as OutputEvent, ItemMetadata, MessagePhase, PartMetadata, ReasoningMode,
+    Result, ToolInput,
 };
 use crate::output::{Stop, TextKind, Usage as OutputUsage};
 use serde::{Deserialize, Serialize};
@@ -76,6 +76,7 @@ enum Item {
     #[serde(rename = "message")]
     Message {
         id: String,
+        phase: Option<MessagePhase>,
         #[serde(default)]
         content: Vec<Text>,
     },
@@ -199,6 +200,7 @@ struct Usage {
 #[derive(Deserialize)]
 struct InputTokens {
     cached_tokens: Option<u64>,
+    cache_write_tokens: Option<u64>,
 }
 #[derive(Deserialize)]
 struct OutputTokens {
@@ -363,7 +365,13 @@ impl Decoder {
             out.push(OutputEvent::ToolInputFinished { id: call_id.into() });
         }
     }
-    fn start(&mut self, id: &str, kind: TextKind, out: &mut Vec<OutputEvent>) -> Result<()> {
+    fn start(
+        &mut self,
+        id: &str,
+        kind: TextKind,
+        phase: Option<MessagePhase>,
+        out: &mut Vec<OutputEvent>,
+    ) -> Result<()> {
         if id.is_empty() || !self.seen.insert(id.into()) {
             return Err(Self::invalid("invalid or duplicate Responses output item"));
         }
@@ -380,6 +388,7 @@ impl Decoder {
         out.push(OutputEvent::PartStarted {
             id: id.into(),
             kind,
+            phase,
         });
         Ok(())
     }
@@ -425,7 +434,7 @@ impl Decoder {
         out: &mut Vec<OutputEvent>,
     ) -> Result<()> {
         if !self.seen.contains(&id) {
-            self.start(&id, kind, out)?;
+            self.start(&id, kind, None, out)?;
         }
         let part = self
             .open
@@ -488,7 +497,7 @@ impl Decoder {
             encrypted_content: None,
         };
         match item {
-            Item::Message { id, content } => {
+            Item::Message { id, phase, content } => {
                 let mut text = String::new();
                 for (index, part) in content.into_iter().enumerate() {
                     if !matches!(part.r#type.as_str(), "output_text" | "refusal") {
@@ -502,13 +511,14 @@ impl Decoder {
                 if self.done.contains(&id) {
                     return Ok(());
                 }
-                self.finish_part(
-                    id.clone(),
-                    text,
-                    TextKind::Text,
-                    Some(PartMetadata::Item(metadata(&id))),
-                    out,
-                )?;
+                let item = metadata(&id);
+                let metadata = match phase {
+                    Some(phase @ (MessagePhase::Commentary | MessagePhase::FinalAnswer)) => {
+                        PartMetadata::Message { item, phase }
+                    }
+                    _ => PartMetadata::Item(item),
+                };
+                self.finish_part(id, text, TextKind::Text, Some(metadata), out)?;
             }
             Item::Reasoning {
                 id,
@@ -688,8 +698,12 @@ impl Decoder {
             Event::Added { item } => {
                 self.observe(&item, true, &mut out)?;
                 match item {
-                    Item::Message { id, .. } => self.start(&id, TextKind::Text, &mut out)?,
-                    Item::Reasoning { id, .. } => self.start(&id, TextKind::Reasoning, &mut out)?,
+                    Item::Message { id, phase, .. } => {
+                        self.start(&id, TextKind::Text, phase, &mut out)?
+                    }
+                    Item::Reasoning { id, .. } => {
+                        self.start(&id, TextKind::Reasoning, None, &mut out)?
+                    }
                     Item::Search { .. } => {
                         self.observed_output = true;
                         self.replay_safe = false;
@@ -794,7 +808,11 @@ impl Decoder {
                         output: usage.output_tokens,
                         cache_read: usage
                             .input_tokens_details
+                            .as_ref()
                             .and_then(|details| details.cached_tokens),
+                        cache_write: usage
+                            .input_tokens_details
+                            .and_then(|details| details.cache_write_tokens),
                         reasoning: usage
                             .output_tokens_details
                             .and_then(|details| details.reasoning_tokens),
@@ -1044,6 +1062,33 @@ mod tests {
             matches!(&end[..], [OutputEvent::Finished { reason: Stop::Stop, usage, .. }] if usage.input == Some(5) && usage.output == Some(3))
         );
         decoder.end().unwrap();
+    }
+
+    #[test]
+    fn completion_preserves_reported_cache_reads_and_writes() {
+        for (details, read, write) in [
+            (json!({}), None, None),
+            (
+                json!({"cached_tokens":0,"cache_write_tokens":80}),
+                Some(0),
+                Some(80),
+            ),
+            (
+                json!({"cached_tokens":80,"cache_write_tokens":0}),
+                Some(80),
+                Some(0),
+            ),
+        ] {
+            let end = Decoder::new(ReasoningMode::Encrypted, None)
+                .push(
+                    json!({"type":"response.completed","response":{"output":[],"usage":{
+                        "input_tokens":100,"input_tokens_details":details
+                    }}}),
+                )
+                .unwrap();
+            assert!(matches!(&end[..], [OutputEvent::Finished { usage, .. }]
+                if (usage.input, usage.cache_read, usage.cache_write) == (Some(100), read, write)));
+        }
     }
 
     #[test]

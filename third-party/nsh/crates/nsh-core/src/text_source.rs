@@ -325,6 +325,14 @@ pub(crate) struct SourceGeometry {
 }
 
 impl SourceMap {
+    pub(crate) fn contains(&self, point: &SourcePoint) -> bool {
+        self.0.iter().any(|range| {
+            range.id == point.id
+                && range.source_start <= point.byte
+                && point.byte < range.source_end
+        })
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

@@ -4,6 +4,7 @@
 // highlighted, and the shortcut's keys at the end of a row. Every state is
 // the row's class (`group` in `commandClasses.item`), so a row's drawing is
 // made once per item and the highlight moves without drawing anything.
+import type { ViewStyle } from "nsh";
 import { Text, View } from "nsh";
 import type { CommandEntry, CommandGroup } from "nsh/base";
 import { desktop, size } from "./demo";
@@ -25,7 +26,7 @@ export const commandClasses = {
    */
   searchBar: `flex-row items-center gap-2 border-b border-border ${terminal ? "" : "px-3"}`,
   /** The search field. */
-  search: `flex-1 ${terminal ? "px-2 " : ""}${desktop ? "h-11 text-sm" : "h-12 text-base"} text-foreground placeholder:text-faint`,
+  search: `flex-1 ${terminal ? "px-2 " : ""}${desktop ? "h-11 text-sm" : "h-12 text-base"} text-foreground placeholder:text-muted-foreground`,
   /**
    * The scroll view of the rows. A terminal's rows set their text off
    * the edge with their own padding, as the field does.
@@ -38,19 +39,26 @@ export const commandClasses = {
   /** A row: quiet until hovered, tinted while highlighted, dimmed while disabled. */
   item:
     "group rounded-md border border-transparent transition-colors duration-100 motion-reduce:transition-none " +
-    "hover:bg-hover focus:border-brand/30 focus:bg-brand-tint active:opacity-70 disabled:opacity-40",
+    "hover:bg-hover focus:border-brand/30 focus:bg-brand-tint active:opacity-70 disabled:opacity-50",
 };
+
+/**
+ * A shortcut's keys (`⌘K`, `⇧⌘P`): a small key cap, 20 points tall, the
+ * raised fill with a hairline edge and the label in the muted color. One
+ * look for every shortcut the gallery shows: a palette's rows, a field's
+ * hint, a menu's or a section's shortcut.
+ */
+export function Kbd(props: { label: string; style?: ViewStyle }) {
+  return (
+    <View class="rounded border border-border bg-raised px-1.5" style={[{ height: 20, justifyContent: "center" }, props.style ?? null]}>
+      <Text style={{ fontSize: 11, fontWeight: "500", color: colors.muted, fontVariant: ["tabular-nums"], numberOfLines: 1 }}>{props.label}</Text>
+    </View>
+  );
+}
 
 /** A shortcut's keys, as hints show them here (`entry.shortcutLabel`). */
 export function CommandKeys(props: { label: string }) {
-  return (
-    <View
-      class="rounded border border-border bg-raised px-1.5"
-      style={{ height: 20, justifyContent: "center" }}
-    >
-      <Text style={{ fontSize: 11, fontWeight: "500", color: colors.muted, fontVariant: ["tabular-nums"] }}>{props.label}</Text>
-    </View>
-  );
+  return <Kbd label={props.label} />;
 }
 
 /** A section's heading: small capitals in the faint color. */

@@ -240,9 +240,7 @@ impl Source {
                 accepted: AcceptedModel {
                     public_model,
                     editing_tools: Some(editing_tools(row, &selection.model_id, &model.base_url)),
-                    tool_mode: ToolMode::for_model(
-                        &selection.model_id,
-                        &model.base_url,
+                    tool_mode: ToolMode::from_override(
                         row.model_overrides
                             .as_ref()
                             .and_then(|models| models.get(&selection.model_id))
@@ -445,27 +443,15 @@ fn request_context(
     model: &ModelInfo,
     overrides: Option<&ModelOverride>,
 ) -> Result<ModelRequestContext, RunError> {
-    if matches!((model.context_window, model.input_limit), (Some(capacity), Some(input)) if input > capacity)
-    {
-        tracing::warn!(stage = "request_context", cause = "input_limit_exceeds_context", connection_id = %row.connection_id, "Model preparation failed");
-        return Err(unavailable());
-    }
-    let input =
-        maka_agent_facts::context::effective_input_limit(model.context_window, model.input_limit);
     let context = ModelRequestContext {
         operation: maka_agent_facts::context::ModelOperation::Inference,
         codex: None,
         provider_id: row.provider.name.clone(),
-        context_window: input,
+        context_window: model.input_limit,
         model_context_window: model.context_window,
         declared_window: overrides
             .and_then(|profile| profile.compaction_threshold)
-            .or_else(|| {
-                maka_agent_facts::context::default_compaction_threshold(
-                    model.context_window,
-                    model.input_limit,
-                )
-            }),
+            .or_else(|| maka_agent_facts::context::default_compaction_threshold(model.input_limit)),
     };
     context.validate().map_err(|_| {
         tracing::warn!(stage = "request_context", cause = "request_context_invalid", connection_id = %row.connection_id, "Model preparation failed");

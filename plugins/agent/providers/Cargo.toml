@@ -42,3 +42,5 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 maka-provider-protocol.workspace = true
+# Match the JSON number representation enabled by the product UI bundler.
+serde_json = { workspace = true, features = ["arbitrary_precision"] }

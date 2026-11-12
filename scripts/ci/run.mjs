@@ -35,6 +35,18 @@ import { createInterface } from 'node:readline';
 import { command } from './command.mjs';
 import { manifests, suites, taskHelperBinaries, taskHelperConsumers } from './suites.mjs';
 
+export async function runSuites(ids, execute) {
+  const failures = [];
+  for (const id of ids) {
+    try {
+      await execute(id);
+    } catch (cause) {
+      failures.push(new Error(`CI suite ${id} failed`, { cause }));
+    }
+  }
+  if (failures.length) throw new AggregateError(failures, 'CI suites failed');
+}
+
 const buildValues = new Set([
   '-p',
   '--package',
@@ -350,7 +362,7 @@ export function executor(
         'run',
         ...suites[id].cargoArgs,
         ...(filter === 'all()' ? [] : ['-E', filter]),
-        ...(noRun ? ['--no-run'] : []),
+        ...(noRun ? ['--no-run'] : ['--no-fail-fast']),
         ...extra,
       ],
       {
@@ -422,6 +434,25 @@ export function executor(
           '-p',
           'gallery-native',
         ]);
+      } else if (id === 'macos-nsh') {
+        await cargo([
+          'check',
+          ...suites[id].cargoArgs.filter((arg) => arg !== '--lib'),
+          '--all-targets',
+        ]);
+        await cargo([
+          'build',
+          '--locked',
+          '--manifest-path',
+          manifests.nsh,
+          '-p',
+          'nsh-cli',
+          '-p',
+          'nsh-macos-host',
+          '--features',
+          'nsh-platform-macos/terminal',
+          '--bins',
+        ]);
       }
     } else if (id === 'bridge') {
       await node(['scripts/rust/check-cua-build.mjs']);
@@ -454,8 +485,27 @@ export function executor(
       await cargo([...args, '--features', 'windows-legacy']);
       await nextest(id, true);
     } else if (id === 'nsh') {
-      await nextest(id, true);
-      await cargo(['nextest', 'run', ...webTextArgs, '--no-run']);
+      await runSuites(['native', 'web-text', 'wasm'], async (stage) => {
+        if (stage === 'native') await nextest(id, true);
+        else if (stage === 'web-text') await cargo(['nextest', 'run', ...webTextArgs, '--no-run']);
+        else {
+          await run('rustup', ['target', 'add', 'wasm32-unknown-unknown']);
+          await cargo(
+            [
+              'check',
+              '--locked',
+              '-p',
+              'nsh-platform-web',
+              '--target',
+              'wasm32-unknown-unknown',
+              '--no-default-features',
+              '--features',
+              'browser,linkable,dev,compiler,browser-tests',
+            ],
+            { cwd: join(root, 'third-party/nsh') },
+          );
+        }
+      });
     } else if (id === 'native') {
       if (process.platform === 'darwin') await nextest(id, true, filter, extra);
       else await cargo(['check', ...suites.native.cargoArgs]);
@@ -488,12 +538,40 @@ export function executor(
     } else if (id === 'bridge') {
       await run(join(target, 'ci/maka-bridge'), ['--version']);
       await nextest(id);
+    } else if (id === 'macos-nsh') {
+      await runSuites(['unit', 'menu', 'undo'], async (stage) => {
+        if (stage === 'unit')
+          await nextest(id, false, filter, ['--no-tests=fail', '-j', '1', ...extra]);
+        else if (stage === 'menu')
+          await cargo(
+            [
+              'test',
+              '--locked',
+              '--manifest-path',
+              manifests.nsh,
+              '-p',
+              'nsh-platform-macos',
+              '--features',
+              'terminal',
+              '--test',
+              'native',
+              '--',
+              '--ignored',
+            ],
+            { env: { ...suiteEnv(id), NSH_MENU_LABELS_CHECK_ONLY: '1' } },
+          );
+        else
+          await run(
+            join(target, 'debug/nsh'),
+            ['test', 'crates/nsh-platform-macos/tests/host/Undo.test.tsx', '--target', 'macos'],
+            { cwd: join(root, 'third-party/nsh'), env: suiteEnv(id) },
+          );
+      });
     } else if (
       [
         'desktop',
         'pixels',
         'macos-desktop',
-        'macos-nsh',
         'macos-surface',
         'windows-desktop',
         'windows-skills',
@@ -511,6 +589,7 @@ export function executor(
         'run',
         ...suites[id].cargoArgs,
         '--no-tests=fail',
+        '--no-fail-fast',
         '--run-ignored=all',
         '-j',
         '1',
@@ -524,6 +603,7 @@ export function executor(
         'run',
         ...suites[id].cargoArgs,
         '--no-tests=fail',
+        '--no-fail-fast',
         '-j',
         '1',
       ]);
@@ -561,10 +641,32 @@ export function executor(
       await node(['scripts/rust/product.mjs', 'test']);
       await check('notices');
     } else if (id === 'nsh') {
-      await nextest(id);
-      await cargo(['test', ...suites.nsh.cargoArgs, '--doc']);
-      await cargo(['nextest', 'run', ...webTextArgs]);
-      await node(['--test', 'third-party/nsh/crates/nsh-platform-web/web/nsh.test.mjs']);
+      await runSuites(['native', 'docs', 'web-text', 'bootstrap', 'browser'], async (stage) => {
+        if (stage === 'native') await nextest(id);
+        else if (stage === 'docs')
+          await cargo(['test', ...suites.nsh.cargoArgs, '--doc', '--no-fail-fast']);
+        else if (stage === 'web-text')
+          await cargo(['nextest', 'run', ...webTextArgs, '--no-fail-fast']);
+        else if (stage === 'bootstrap')
+          await cargo([
+            'run',
+            '--locked',
+            '--manifest-path',
+            manifests.nsh,
+            '-p',
+            'nsh-bundler',
+            '--example',
+            'browser_bootstrap',
+            '--',
+            '--check',
+          ]);
+        else
+          await node([
+            '--test',
+            'third-party/nsh/crates/nsh-platform-web/web/nsh.test.mjs',
+            'third-party/nsh/crates/nsh-platform-web/web/browser/dom.test.mjs',
+          ]);
+      });
     } else if (!['native', 'native-build'].includes(id)) {
       throw new Error(`Unknown suite: ${id}`);
     }

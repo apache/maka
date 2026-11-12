@@ -19,7 +19,7 @@
 
 //! Agent-owned SQL. All mutations execute synchronously in the Root writer transaction.
 #[path = "sql_compaction.rs"]
-mod compaction;
+pub(crate) mod compaction;
 #[path = "sql_model_evidence.rs"]
 mod model_evidence;
 use crate::{
@@ -283,7 +283,8 @@ impl Targets {
                 self.blockers
                     .extend(adjudications.iter().map(ToString::to_string));
             }
-            Fact::ModelAttemptPrepared { attempt, step } => {
+            Fact::ModelAttemptPrepared { attempt, step }
+            | Fact::ProactiveSummaryPrepared { attempt, step, .. } => {
                 self.attempts.insert(attempt.to_string());
                 self.steps.insert(step.to_string());
             }
@@ -292,6 +293,7 @@ impl Targets {
             | Fact::ModelPrivatePartialCaptured { attempt, .. }
             | Fact::ModelInterrupted { attempt, .. }
             | Fact::ModelAttemptAdmitted { attempt, .. }
+            | Fact::ModelFirstTokenObserved { attempt }
             | Fact::ModelClosed { attempt, .. }
             | Fact::ModelCleanupObserved { attempt, .. }
             | Fact::AttemptRecoveryRecorded { attempt, .. }
@@ -394,13 +396,14 @@ pub(crate) fn load(
             "Run indexes have an old projection schema; rebuild required",
         ));
     }
-    let (phase, finish): (String, bool) = c.query_row(
-        "SELECT retry_phase,finish_requested FROM agent_runs WHERE run=?",
+    let (phase, finish, proactive_summary): (String, bool, Option<String>) = c.query_row(
+        "SELECT retry_phase,finish_requested,proactive_summary FROM agent_runs WHERE run=?",
         [run.to_string()],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
     view.retry_phase = identity(phase)?;
     view.finish_requested = finish;
+    view.proactive_summary = proactive_summary.map(identity).transpose()?;
     view.revision = raw.1;
     view.control_version = raw.2;
     view.stopped = raw.3;
@@ -461,9 +464,13 @@ pub(crate) fn load(
     if let Some(step) = view.current_step {
         targets.steps.insert(step.to_string());
     }
-    for attempt in [view.current_attempt, view.retry_pending]
-        .into_iter()
-        .flatten()
+    for attempt in [
+        view.current_attempt,
+        view.retry_pending,
+        view.proactive_summary,
+    ]
+    .into_iter()
+    .flatten()
     {
         targets.attempts.insert(attempt.to_string());
     }
@@ -498,6 +505,12 @@ pub(crate) fn load(
     {
         targets.steps.insert(value.step.to_string());
         view.attempts.insert(identity(key)?, value);
+    }
+    if view
+        .proactive_summary
+        .is_some_and(|id| !view.attempts.contains_key(&id))
+    {
+        return Err(invalid("proactive Summary attempt projection is missing"));
     }
     let blocked_cells = view.recovery_failures().filter_map(|reason| match reason {
         BlockerKind::CodeCellRecoveryUnavailable { cell } => Some(cell.clone()),
@@ -544,6 +557,8 @@ fn upsert<T: Serialize>(
 struct ExternalHeader<'a> {
     task: ExternalTaskId,
     descriptor: &'a ContentRef,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    live_workspace: bool,
     admitted: bool,
     binding: &'a Option<ContentRef>,
     observed: u64,
@@ -556,6 +571,7 @@ fn external_header(task: &fold::ExternalTask) -> Result<String, serde_json::Erro
     serde_json::to_string(&ExternalHeader {
         task: task.task,
         descriptor: &task.descriptor,
+        live_workspace: task.live_workspace,
         admitted: task.admitted,
         binding: &task.binding,
         observed: task.observed,
@@ -571,7 +587,7 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
         .query_row([view.run.to_string()], |r| column_u64(r, 0))?;
     c.prepare_cached("INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,control_version,stopped,terminal,tokens,retries,retry_due_at,retry_pending,current_step,current_attempt,cancelled_by_risk,replans,baseline,external,stop_request,stop_assessed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run) DO UPDATE SET schema_version=excluded.schema_version,revision=excluded.revision,control_version=excluded.control_version,stopped=excluded.stopped,terminal=excluded.terminal,tokens=excluded.tokens,retries=excluded.retries,retry_due_at=excluded.retry_due_at,retry_pending=excluded.retry_pending,current_step=excluded.current_step,current_attempt=excluded.current_attempt,cancelled_by_risk=excluded.cancelled_by_risk,replans=excluded.replans,baseline=excluded.baseline,external=excluded.external,stop_request=excluded.stop_request,stop_assessed=excluded.stop_assessed")?.execute(params![view.run.to_string(),HEADER_SCHEMA_VERSION,serde_json::to_string(&view.spec.owner)?,view.spec.session_id,signed(admission_sequence)?,matches!(view.spec.origin,RunOrigin::Local),signed(view.revision)?,signed(view.control_version)?,view.stopped,view.terminal.as_ref().map(serde_json::to_string).transpose()?,signed(view.tokens)?,view.retries,view.retry_due_at.map(|t|t.0),view.retry_pending.map(|v|v.to_string()),view.current_step.map(|v|v.to_string()),view.current_attempt.map(|v|v.to_string()),view.cancelled_by_risk,serde_json::to_string(&view.replans)?,view.baseline.as_ref().map(serde_json::to_string).transpose()?,view.external.as_ref().map(external_header).transpose()?,view.stop_request.map(|id|id.to_string()),view.stop_assessed.map(|id|id.to_string())])?;
     c.execute(
-        "UPDATE agent_runs SET retry_phase=?,finish_requested=? WHERE run=?",
+        "UPDATE agent_runs SET retry_phase=?,finish_requested=?,proactive_summary=? WHERE run=?",
         params![
             match view.retry_phase {
                 maka_agent_facts::model::retry_transport::RetryTransportPhase::Primary => "primary",
@@ -579,6 +595,7 @@ fn persist(c: &Connection, view: &RunView) -> Result<(), StoreError> {
                     "fallback",
             },
             view.finish_requested(),
+            view.proactive_summary.map(|attempt| attempt.to_string()),
             view.run.to_string()
         ],
     )?;
@@ -642,6 +659,7 @@ fn validate_request(
     step: StepId,
     reference: &ContentRef,
     adjudications: &[BlockerId],
+    proactive: bool,
 ) -> Result<(RequestSpec, Option<StepId>), StoreError> {
     let existing: Option<(String, i64)> = c
         .prepare_cached("SELECT run,content_id FROM agent_request_specs WHERE step=?")?
@@ -657,7 +675,12 @@ fn validate_request(
     let request: RequestSpec = decode(c, reference)?;
     version(request.schema_version)?;
     request.accounting.validate().map_err(invalid)?;
-    let fallback = validate_request_lineage(c, view, &request)?;
+    let fallback = if proactive {
+        compaction::validate_proactive_request(c, view, &request)?;
+        None
+    } else {
+        validate_request_lineage(c, view, &request)?
+    };
     if request.step != step {
         return Err(invalid("request belongs to another logical Step"));
     }
@@ -715,7 +738,8 @@ fn validate_request(
     for reference in request.content_refs() {
         pin(c, view.run, reference)?;
     }
-    if adjudications.is_empty()
+    if !proactive
+        && adjudications.is_empty()
         && let Some(pending) = view.retry_pending
         && let Some(AttemptRecovery::ProjectPrefixSafe { prefix, .. }) = view
             .attempts
@@ -1002,19 +1026,20 @@ fn record(c: &Connection, fact: &RecordedFact) -> Result<(), StoreError> {
     for reference in fact.fact.content_refs() {
         pin(c, fact.run, reference)?;
     }
-    match &fact.fact {
-        Fact::StepPrepared { step, request, .. } => {
-            c.prepare_cached("INSERT INTO agent_request_specs(step,run,content_id) VALUES(?,?,?) ON CONFLICT(step) DO NOTHING")?.execute(params![step.to_string(),fact.run.to_string(),content_id(c,request)?])?;
-        }
-        Fact::ModelAttemptPrepared { attempt, step } => {
-            c.prepare_cached("INSERT INTO agent_attempt_ids(attempt,run,step) VALUES(?,?,?)")?
-                .execute(params![
-                    attempt.to_string(),
-                    fact.run.to_string(),
-                    step.to_string()
-                ])?;
-        }
-        _ => {}
+    if let Fact::StepPrepared { step, request, .. }
+    | Fact::ProactiveSummaryPrepared { step, request, .. } = &fact.fact
+    {
+        c.prepare_cached("INSERT INTO agent_request_specs(step,run,content_id) VALUES(?,?,?) ON CONFLICT(step) DO NOTHING")?.execute(params![step.to_string(),fact.run.to_string(),content_id(c,request)?])?;
+    }
+    if let Fact::ModelAttemptPrepared { attempt, step }
+    | Fact::ProactiveSummaryPrepared { attempt, step, .. } = &fact.fact
+    {
+        c.prepare_cached("INSERT INTO agent_attempt_ids(attempt,run,step) VALUES(?,?,?)")?
+            .execute(params![
+                attempt.to_string(),
+                fact.run.to_string(),
+                step.to_string()
+            ])?;
     }
     model_item(c, fact)?;
     answer_part(c, fact)?;
@@ -1360,7 +1385,7 @@ pub(crate) fn append(
     insert_blobs(c, contents)?;
     let mut facts = Vec::new();
     let mut steering_used = false;
-    for change in changes {
+    for (index, change) in changes.iter().enumerate() {
         if change.fact.is_admission() {
             view.check_effect_admission()?;
         }
@@ -1369,7 +1394,13 @@ pub(crate) fn append(
             view.validate_blocker_resolution(*blocker)?;
         }
         if let Fact::ContextCompacted { baseline } = &change.fact {
-            compaction::validate(c, &view, baseline, change.at)?;
+            // A deferred checkpoint can become visible to the next Run once
+            // this same commit closes the current Run.
+            let saving_for_next_run = matches!(
+                &changes[index + 1..],
+                [next] if next.at == change.at && compaction::ends_run(&next.fact)
+            );
+            compaction::validate(c, &view, baseline, change.at, saving_for_next_run)?;
         }
         if let Fact::ApprovalRecorded {
             approval,
@@ -1428,7 +1459,8 @@ pub(crate) fn append(
                 }
             crate::interactions::consume(c, run, tool, *approval, input, resources)?;
         }
-        if let Fact::ModelAttemptPrepared { attempt, .. } = &change.fact
+        if let Fact::ModelAttemptPrepared { attempt, .. }
+        | Fact::ProactiveSummaryPrepared { attempt, .. } = &change.fact
             && c.prepare_cached("SELECT 1 FROM agent_attempt_ids WHERE attempt=?")?
                 .query_row([attempt.to_string()], |r| r.get::<_, i64>(0))
                 .optional()?
@@ -1445,7 +1477,8 @@ pub(crate) fn append(
             adjudications,
         } = &change.fact
         {
-            let (prepared, fallback) = validate_request(c, &view, *step, request, adjudications)?;
+            let (prepared, fallback) =
+                validate_request(c, &view, *step, request, adjudications, false)?;
             if let Some(consume) = steering {
                 if prepared.summary_repair_of.is_some() || fallback.is_some() {
                     return Err(invalid(
@@ -1460,6 +1493,9 @@ pub(crate) fn append(
                 )?;
                 steering_used = true;
             }
+        }
+        if let Fact::ProactiveSummaryPrepared { step, request, .. } = &change.fact {
+            validate_request(c, &view, *step, request, &[], true)?;
         }
         if let Fact::ToolResultAccepted {
             result,
@@ -1484,8 +1520,11 @@ pub(crate) fn append(
         };
         view.apply(&recorded)?;
         record(c, &recorded)?;
-        if matches!(recorded.fact, Fact::StopRequested { .. }) {
+        if let Fact::StopRequested { diagnostic } = &recorded.fact {
             crate::queue::stop_completions(c, &view.spec.session_id, run, recorded.at)?;
+            if diagnostic == crate::queue::GOAL_CONTROL_STOP {
+                crate::queue::release_steering(c, &view.spec.session_id, run, recorded.at)?;
+            }
         }
         model_evidence::validate_partial(c, &view, &recorded)?;
         model_evidence::validate_source_failure(c, &view, &recorded)?;
@@ -1548,6 +1587,29 @@ pub(crate) fn history(
         facts.push(fact);
     }
     Ok(facts)
+}
+pub(crate) fn tool_admission_revision(
+    c: &Connection,
+    run: RunId,
+    tool: ToolKey,
+) -> Result<Option<u64>, StoreError> {
+    let locator = maka_agent_facts::tool_call::tool_use_id(run, &fold::tool_key(&tool));
+    let id: Option<String> = c
+        .prepare_cached(
+            "SELECT h.fact_id FROM agent_run_specs s
+             CROSS JOIN agent_session_history h INDEXED BY agent_session_history_tool
+             WHERE s.run=?1 AND h.owner=s.owner AND h.session=s.session AND h.run=s.run
+               AND h.tool_use_id=?2 AND h.kind='tool_admitted'",
+        )?
+        .query_row(params![run.to_string(), locator], |row| row.get(0))
+        .optional()?;
+    let Some(id) = id else { return Ok(None) };
+    let recorded = fact(c, run, identity(id)?)?
+        .ok_or_else(|| invalid("tool admission index is missing its canonical fact"))?;
+    if !matches!(recorded.fact, Fact::ToolAdmitted { tool: admitted } if admitted == tool) {
+        return Err(invalid("tool admission index names another fact"));
+    }
+    Ok(Some(recorded.revision))
 }
 pub(crate) fn request(c: &Connection, run: RunId, step: StepId) -> Result<RequestSpec, StoreError> {
     let bytes: Vec<u8> = c.prepare_cached("SELECT c.payload FROM agent_request_specs r JOIN contents c ON c.id=r.content_id WHERE r.run=? AND r.step=?")?
@@ -1666,13 +1728,19 @@ pub(crate) fn rebuild(c: &Connection, run: RunId) -> Result<Head, StoreError> {
                 adjudications,
             } = &recorded.fact
             {
-                validate_request(c, &view, *step, request, adjudications)?;
+                validate_request(c, &view, *step, request, adjudications, false)?;
+            }
+            if let Fact::ProactiveSummaryPrepared { step, request, .. } = &recorded.fact {
+                validate_request(c, &view, *step, request, &[], true)?;
             }
             model_evidence::validate_control(c, &view, &recorded.fact)?;
             model_evidence::validate_partial(c, &view, &recorded)?;
             model_evidence::validate_source_failure(c, &view, &recorded)?;
             if let Fact::ContextCompacted { baseline } = &recorded.fact {
-                compaction::validate(c, &view, baseline, recorded.at)?;
+                let saving_for_next_run = history(c, run, recorded.revision, 1)?
+                    .first()
+                    .is_some_and(|next| next.at == recorded.at && compaction::ends_run(&next.fact));
+                compaction::validate(c, &view, baseline, recorded.at, saving_for_next_run)?;
             }
             validate_external_final_message(c, &view, &recorded.fact)?;
             validate_private_provider_effect(c, &view, &recorded.fact)?;
@@ -2090,12 +2158,11 @@ pub(crate) fn model_items(
     after: Option<u64>,
     count: u32,
 ) -> Result<Vec<RecordedFact>, StoreError> {
-    let mut statement=c.prepare_cached("SELECT f.schema_version,c.payload FROM agent_model_items i JOIN agent_facts f ON f.id=i.fact_id JOIN contents c ON c.id=f.body_content_id WHERE i.run=? AND i.attempt=? AND (? IS NULL OR i.item_index>?) ORDER BY i.item_index LIMIT ?")?;
+    let mut statement=c.prepare_cached("SELECT f.schema_version,c.payload FROM agent_model_items i JOIN agent_facts f ON f.id=i.fact_id JOIN contents c ON c.id=f.body_content_id WHERE i.run=? AND i.attempt=? AND i.item_index>? ORDER BY i.item_index LIMIT ?")?;
     let mut rows = statement.query(params![
         run.to_string(),
         attempt.to_string(),
-        after.map(signed).transpose()?,
-        after.map(signed).transpose()?,
+        after.map(signed).transpose()?.unwrap_or(-1),
         limit(count)?
     ])?;
     let mut result = Vec::new();

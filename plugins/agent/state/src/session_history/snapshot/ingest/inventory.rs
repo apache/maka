@@ -42,7 +42,22 @@ impl Snapshot {
         self.data
             .query(Entries {
                 snapshot: self.clone(),
-                scope: None,
+                filter: Filter::All,
+                after,
+                limit,
+            })
+            .await
+    }
+    /// The rows needed to enumerate the verified media closure across Forks/imports.
+    pub async fn artifacts_and_markers(
+        &self,
+        after: Option<u64>,
+        limit: u32,
+    ) -> Result<(Vec<(u64, Entry)>, Option<u64>), StoreError> {
+        self.data
+            .query(Entries {
+                snapshot: self.clone(),
+                filter: Filter::ArtifactsAndMarkers,
                 after,
                 limit,
             })
@@ -58,7 +73,7 @@ impl Snapshot {
         self.data
             .query(Entries {
                 snapshot: self.clone(),
-                scope: Some((Some(owner), session)),
+                filter: Filter::Session(Some(owner), session),
                 after,
                 limit,
             })
@@ -75,7 +90,7 @@ impl Snapshot {
         self.data
             .query(Entries {
                 snapshot: self.clone(),
-                scope: Some((None, session)),
+                filter: Filter::Session(None, session),
                 after,
                 limit,
             })
@@ -107,9 +122,14 @@ impl Query for ArtifactRecord {
         Ok(Some(record))
     }
 }
+enum Filter {
+    All,
+    ArtifactsAndMarkers,
+    Session(Option<RunOwner>, String),
+}
 struct Entries {
     snapshot: Snapshot,
-    scope: Option<(Option<RunOwner>, String)>,
+    filter: Filter,
     after: Option<u64>,
     limit: u32,
 }
@@ -119,9 +139,17 @@ impl Query for Entries {
         read::authorize(c, &self.snapshot)?;
         let limit = super::super::super::sql::limit(self.limit)?;
         let after = self.after.map(bind_u64).transpose()?.unwrap_or(-1);
-        let (sql, values): (&str, Vec<rusqlite::types::Value>) = match &self.scope {
-            None => return inventory_page(c, &self.snapshot, after, limit),
-            Some((Some(owner), session)) => (
+        let (sql, values): (&str, Vec<rusqlite::types::Value>) = match &self.filter {
+            Filter::All => return inventory_page(c, &self.snapshot, after, limit),
+            Filter::ArtifactsAndMarkers => (
+                "SELECT ordinal,entry_json FROM agent_history_snapshot_entries WHERE snapshot=?1 AND ordinal>?2 AND (kind='artifact' OR (kind='run' AND historical=1)) ORDER BY ordinal LIMIT ?3",
+                vec![
+                    self.snapshot.id.to_string().into(),
+                    after.into(),
+                    i64::from(limit + 1).into(),
+                ],
+            ),
+            Filter::Session(Some(owner), session) => (
                 "SELECT ordinal,entry_json FROM agent_history_snapshot_entries WHERE snapshot=?1 AND kind='artifact' AND json_extract(entry_json,'$.owner')=?2 AND json_extract(entry_json,'$.session')=?3 AND ordinal>?4 ORDER BY ordinal LIMIT ?5",
                 vec![
                     self.snapshot.id.to_string().into(),
@@ -131,7 +159,7 @@ impl Query for Entries {
                     i64::from(limit + 1).into(),
                 ],
             ),
-            Some((None, session)) => (
+            Filter::Session(None, session) => (
                 "SELECT ordinal,entry_json FROM agent_history_snapshot_entries WHERE snapshot=?1 AND kind='artifact' AND json_extract(entry_json,'$.session')=?2 AND ordinal>?3 ORDER BY ordinal LIMIT ?4",
                 vec![
                     self.snapshot.id.to_string().into(),

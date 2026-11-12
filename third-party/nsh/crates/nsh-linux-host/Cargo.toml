@@ -3,6 +3,7 @@ name = "nsh-linux-host"
 description = "Development host app (GTK 4) that runs a nsh bundle on Linux."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 readme.workspace = true

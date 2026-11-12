@@ -196,7 +196,7 @@ export function SkillInput(props: Props) {
           content: { padding: 0 },
           caret: { backgroundColor: C.text },
           placeholder: { color: C.muted },
-          nodes: { paragraph: bodyTextStyle },
+          nodes: { paragraph: bodyTextStyle, skill: { verticalAlign: 'text-bottom' } },
         }}
         style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
         onChange={(event) => {

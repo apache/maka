@@ -24,7 +24,7 @@ macOS 上的默认目标为 AppKit。Mac Catalyst（`--target catalyst`）和 iO
 
 ## 安装发布版本
 
-每个 [GitHub release](https://github.com/longbridge/nsh/releases) 都附带 macOS（Apple silicon）、Linux x86_64 和 Windows x86_64 的预构建发行包（见下文）。无论用哪种方式安装，`PATH` 上得到的都是同一个 `nsh` 命令。
+每个 [GitHub release](https://github.com/longbridge/nsh/releases) 都附带 macOS（Apple silicon 和 Intel）、Linux（x86_64 和 arm64）和 Windows（x86_64 和 arm64）的预构建发行包（见下文）。无论用哪种方式安装，`PATH` 上得到的都是同一个 `nsh` 命令。
 
 **macOS 和 Linux**，使用安装脚本：
 
@@ -42,13 +42,13 @@ irm https://nsh.dev/install.ps1 | iex
 
 它安装到 `%LOCALAPPDATA%\nsh`，并把其中的 `bin` 加入用户 `PATH`（之后打开新的终端）。`$env:NSH_VERSION` 和 `$env:NSH_INSTALL_DIR` 的用法同上。
 
-**Homebrew**（macOS 和 Linux）：
+**Homebrew**（Apple silicon Mac 和 x86_64 Linux）：
 
 ```sh
 brew install longbridge/tap/nsh
 ```
 
-**Scoop**（Windows）：
+**Scoop**（x86_64 Windows）：
 
 ```powershell
 scoop install https://github.com/longbridge/nsh/releases/latest/download/nsh.json
@@ -60,19 +60,46 @@ scoop install https://github.com/longbridge/nsh/releases/latest/download/nsh.jso
 mise use -g github:longbridge/nsh
 ```
 
-压缩包（`nsh-macos-arm64.tar.gz`、`nsh-linux-x86_64.tar.gz`、`nsh-windows-x86_64.zip`，各带一个 `.sha256`）的文件名不含版本号，所以 `https://github.com/longbridge/nsh/releases/latest/download/<压缩包>` 总是下载最新版本。嵌入用的 SDK 也单独发布，供不需要 CLI 的原生应用使用：`nsh-embed-ios.zip` 和 `nsh-embed-android.zip`。
+压缩包（`nsh-macos-arm64.tar.gz`、`nsh-macos-x86_64.tar.gz`、`nsh-linux-x86_64.tar.gz`、`nsh-linux-arm64.tar.gz`、`nsh-windows-x86_64.zip`、`nsh-windows-arm64.zip`，各带一个 `.sha256`）的文件名不含版本号，所以 `https://github.com/longbridge/nsh/releases/latest/download/<压缩包>` 总是下载最新版本。每个压缩包包含 CLI 和所在平台自己的运行时；其他平台的运行时是[组件](#组件)，第一次用到时再安装。嵌入用的 SDK 单独发布，供嵌入 NSH 的原生应用使用：`nsh-embed-ios.zip` 和 `nsh-embed-android.zip`。
 
 > [!NOTE]
-> 二进制文件暂未签名。macOS 会隔离浏览器下载的文件；安装脚本、Homebrew 和 mise 用 `curl` 下载，不受影响，否则请运行 `xattr -dr com.apple.quarantine <目录>`。Linux 运行时需要 glibc 2.39 和 GTK 4.14 或更新版本（Ubuntu 24.04 及以后）。目前没有 Intel Mac 和 arm64 Linux / Windows 的构建，请从源码构建。
+> 二进制文件暂未签名。macOS 会隔离浏览器下载的文件；安装脚本、Homebrew 和 mise 用 `curl` 下载，不受影响，否则请运行 `xattr -dr com.apple.quarantine <目录>`。Linux 运行时需要 glibc 2.39 和 GTK 4.14 或更新版本（Ubuntu 24.04 及以后）。Homebrew 和 Scoop 安装 Apple silicon、x86_64 Linux 和 x86_64 Windows 的构建，其他平台请用安装脚本。
+
+## 组件
+
+开发所在平台之外的运行时是发布版的组件，就像 `rustup component add` 安装工具链的组成部分。第一个用到它的命令（例如 `nsh run --target android` 或 `nsh package --target web`）会从当前 `nsh` 所属的发布版下载它，校验 SHA-256，并安装到 CLI 旁边。也可以用 `nsh component` 提前管理：
+
+```sh
+nsh component list            # 本机可用的组件，以及是否已安装
+nsh component add android web # 提前安装，例如离线之前
+nsh component remove gpui     # 删除以释放空间
+```
+
+| 组件 | 内容 | 发布平台 |
+|---|---|---|
+| `android` | Android 运行时（`--target android`） | 所有平台 |
+| `android-symbols` | Android 运行时的符号，用于崩溃报告和 `ndk-stack` | 所有平台 |
+| `ios` | iOS 和 Mac Catalyst 运行时（`--target ios`、`catalyst`） | Apple silicon 的 macOS |
+| `web` | Web 运行时（`--target web`） | 所有平台 |
+| `gpui` | [GPUI](./gpui.md) 开发宿主（`--target gpui`） | 所有平台，各自构建 |
+| `tui` | 终端开发宿主（`--target tui`） | 所有平台，各自构建 |
+
+组件总是来自与 CLI 相同的构建。`nsh update` 会从更新到的发布版重新安装已安装的组件。nightly 构建的组件每晚都会替换，因此较早一晚的 nightly `nsh` 会提示先运行 `nsh update`。
 
 ## 用 Rust 编写的应用
 
-通过 [rustup](https://rustup.rs) 安装 Rust，开发时推荐使用 [huacnlee/cargo](#从源码构建)。`nsh` 用 Cargo 为每个目标构建 Rust 应用的运行器，使用你的 crate 以及 crates.io 上与 CLI 同版本的 NSH crate，所以请添加你要运行的平台对应的 Rust 目标：
+通过 [rustup](https://rustup.rs) 安装 Rust。`nsh` 用 Cargo 为每个目标构建 Rust 应用的运行器，使用你的 crate 以及 crates.io 上与 CLI 同版本的 NSH crate，所以请添加你要运行的平台对应的 Rust 目标：
 
 ```sh
 rustup target add aarch64-apple-ios-sim aarch64-apple-ios aarch64-apple-ios-macabi   # iOS 模拟器、真机、Mac Catalyst
 rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android # Android（配合 SDK 中的 NDK）
 rustup target add wasm32-unknown-unknown                                             # Web
+```
+
+推荐使用 [huacnlee/cargo](https://github.com/huacnlee/cargo) 构建：这是 [huacnlee](https://github.com/huacnlee) 基于官方 Cargo 优化的分支，专门避免 Rust 编译产物把磁盘占满。所有项目和 Git worktree 共用一个构建目录，它会自己控制在大小限制之内；实测在 50 个 worktree 的场景下比官方 Cargo 少占约 90% 的磁盘空间，512 GB 的硬盘基本就够用。它直接替换 `~/.cargo/bin/cargo`，不需要任何配置：
+
+```sh
+curl -fsSL https://huacnlee.github.io/cargo/install.sh | sh     # Windows：irm https://huacnlee.github.io/cargo/install.ps1 | iex
 ```
 
 桌面平台为你所在的机器构建。在 Rust 应用目录中运行 `cargo run` 会直接在桌面后端上启动它，构建时使用该后端的开发库（[平台工具](#平台工具)）。Android 构建还会使用 SDK 中的 **NDK**，与[构建 Android 运行时](#构建-android-运行时)相同。
@@ -91,88 +118,61 @@ dist/nsh/runtime/macos/{nsh-macos-host,nsh-macos-app}        # the macOS (AppKit
 dist/nsh/runtime/linux/{nsh-linux-host,nsh-linux-app}        # the Linux development host and release runner
 dist/nsh/runtime/windows/{nsh-windows-host,nsh-windows-app}.exe  # the Windows development host and release runner
 dist/nsh/runtime/gpui/nsh-gpui-host[.exe]                    # the GPUI development host, for this OS
+dist/nsh/runtime/tui/nsh-tui-host[.exe]                      # 终端开发宿主（nsh run --target tui）
 dist/nsh/runtime/web/{nsh.wasm,nsh-dev.wasm,nsh.js}          # the web runtimes (nsh package / run --target web)
 dist/nsh/embed/ios/{NativeShell,NativeShellDev}.xcframework  # embedding in iOS apps
 dist/nsh/embed/android/{nsh,nsh-dev}.aar                     # embedding in Android apps
 ```
 
-把 `dist/nsh/bin` 加入 `PATH`（或直接调用 `dist/nsh/bin/nsh`），并保持目录完整：`nsh` 会在自身旁边的 `bin/../runtime` 中查找运行时（通过指向它的符号链接运行时也一样，安装脚本就是这样做的）。
+把 `dist/nsh/bin` 加入 `PATH`（或直接调用 `dist/nsh/bin/nsh`），并保持目录完整：`nsh` 会在自身旁边的 `bin/../runtime` 中查找运行时（通过指向它的符号链接运行时也一样，安装脚本就是这样做的）。发布用的压缩包由它生成：每个平台的压缩包保留 `bin` 和自己的运行时，其他运行时成为[组件](#组件)，`embed` 成为 SDK 压缩包。
 
 ```sh
 export PATH="$PWD/dist/nsh/bin:$PATH"
 nsh --version
 ```
 
-发行包由源码仓库中的 `cargo xtask dist` 生成（见下文）。其中的 `nsh` 可执行文件是为该机器构建的。在装有 Xcode 的 Mac 上，它包含 iOS 和 macOS 运行时（Apple Silicon）；在 Linux 上，它改为包含为该机器构建的 Linux 运行时；在 Windows 上则包含 Windows 运行时，CLI 为 `bin\nsh.exe`。每个发行包还包含为该机器构建的 [GPUI](./gpui.md) 开发宿主。它们都包含
+发行包由源码仓库中的 `cargo xtask dist` 生成（见下文）。其中的 `nsh` 可执行文件是为该机器构建的。在装有 Xcode 的 Mac 上，它包含 iOS 和 macOS 运行时（Apple Silicon）；在 Linux 上，它改为包含为该机器构建的 Linux 运行时；在 Windows 上则包含 Windows 运行时，CLI 为 `bin\nsh.exe`。每个发行包还包含为该机器构建的 [GPUI](./gpui.md) 开发宿主和终端开发宿主。它们都包含
 Android 运行时（在 Windows 上，只有找到 Android SDK 时才包含）。
 
 ## 安装 nightly 版本
 
-`main` 有新提交的每一天，夜间都会构建并发布为 [nightly release](https://github.com/longbridge/nsh/releases/tag/nightly)，包含和正式版相同的发行包。在 macOS 和 Linux 上用安装脚本安装：
+`main` 有新提交的每一天，夜间都会构建并发布为 [nightly release](https://github.com/longbridge/nsh/releases/tag/nightly)，包含和正式版相同的发行包：
 
 ```sh
 curl -fsSL https://nsh.dev/install.sh | sh -s -- --nightly
-nsh -V # nsh 0.1.1 (abcdef0)
+nsh -V # nsh 0.4.0 (abcdef0 nightly)
 ```
 
-它和正式版一样安装到 `~/.nsh`，再次运行即可更新到最新的 nightly；不带参数的命令则回到最新正式版。`-V` 显示构建所用的 `main` 提交。用 Rust 编写的应用会用 crates.io 上与 CLI 同版本号的 NSH crate 构建 runner，也就是上一个正式版的 crate；这类应用请使用正式版或源码版。
+用 Rust 编写的应用会用 crates.io 上与 CLI 同版本号的 NSH crate 构建 runner，也就是上一个正式版的 crate；这类应用请使用正式版或源码版。
 
-## 安装最新源码版
+## 更新
 
-在 macOS 和 Linux 上，准备好 Git、Rust 和下文的平台构建依赖后，可以安装最新 `main`：
+`nsh update` 把已安装的 `nsh` 更新到所在渠道的最新构建：正式版更新到最新正式版，nightly 版更新到最新 nightly。指定渠道即切换过去，与 `rustup update nightly` 一致：
 
 ```sh
-curl -fsSL https://nsh.dev/install.sh | sh -s -- --source
-nsh -V # nsh 0.1.1 (abcdef0)
+nsh update                    # 所在渠道的最新版本
+nsh update nightly            # 切换到 main 的 nightly 构建
+nsh update stable             # 回到最新正式版
 ```
 
-安装器保留 `~/.nsh/source` 中的源码，构建 release CLI，并链接到 `~/.local/bin`。再次运行即可更新；更新前需要保存本地源码改动。NSH 使用保留的源码按需构建原生运行时。Cargo 使用已有配置和 target 目录。`NSH_INSTALL_DIR` 修改安装目录；`NSH_VERSION` 仅用于选择预构建发行版。`-V` 和 `--version` 都显示版本号和七位源码提交 SHA。
+它下载和安装脚本相同的压缩包，校验 SHA-256，替换整个发行包目录，并重新安装之前已安装的组件。Homebrew、Scoop 和 mise 安装的 `nsh` 由它们自己更新（`brew upgrade nsh`、`scoop update nsh`、`mise upgrade`）。
 
 ## 从源码构建
 
-你需要通过 [rustup](https://rustup.rs) 安装 Rust。仓库中的 `rust-toolchain.toml` 会选择 stable 工具链，并在首次使用时安装 iOS 和 Android 目标。
-
-开发时推荐使用 [huacnlee/cargo](https://github.com/huacnlee/cargo)，一个可以直接替换官方 Cargo 的分支：所有 Git worktree 共用一个构建目录，它会自己控制在大小限制之内，不需要任何配置。它会替换 `~/.cargo/bin/cargo`，`rust-toolchain.toml` 和 `cargo +nightly` 照常可用，并且会自动更新；恢复 rustup 自带版本的方法见它的 README。
+准备好 Git、Rust 和[平台工具](#平台工具)后，在 macOS 和 Linux 上：
 
 ```sh
-curl -fsSL https://huacnlee.github.io/cargo/install.sh | sh     # Windows：irm https://huacnlee.github.io/cargo/install.ps1 | iex
+curl -fsSL https://nsh.dev/install.sh | sh -s -- --source
 ```
 
+它把源码保留在 `~/.nsh/source`，构建 CLI 并链接到 `~/.local/bin`；再次运行即可更新。如果要开发 NSH 本身，克隆仓库并在其中构建 CLI；运行时缺少的桌面和 Web 运行时会自动构建：
+
 ```sh
-git clone https://github.com/longbridge/nsh.git
-cd nsh
+git clone https://github.com/longbridge/nsh.git && cd nsh
 cargo build -p nsh-cli          # ./target/debug/nsh
 ```
 
-然后为每个要运行的目标构建开发宿主，构建一次即可，更新源码后再重新构建：
-
-```sh
-cargo build -p nsh-ios-host --target aarch64-apple-ios-macabi   # nsh run (Mac Catalyst window)
-cargo build -p nsh-ios-host --target aarch64-apple-ios-sim      # nsh run --target ios
-cargo xtask android --dev                                       # nsh run --target android
-cargo build -p nsh-macos-host                                   # nsh run --target macos (built for you in a checkout)
-cargo build -p nsh-linux-host                                   # nsh run on Linux (built for you in a checkout)
-cargo build -p nsh-windows-host                                 # nsh run on Windows (built for you in a checkout)
-cargo build --manifest-path crates/gpui/Cargo.toml --target-dir target -p nsh-gpui-host   # nsh run --target gpui (built for you in a checkout)
-cargo build --profile web -p nsh-platform-web --target wasm32-unknown-unknown   # nsh run --target web (built for you in a checkout)
-```
-
-如果要使用 `nsh package`，还需要构建发布版运行器：
-
-```sh
-cargo build -p nsh-ios-app --target aarch64-apple-ios-sim       # nsh package --target ios-simulator
-cargo build -p nsh-ios-app --target aarch64-apple-ios           # nsh package --target ios
-cargo xtask android                                             # nsh package --target android
-cargo build -p nsh-macos-app                                    # nsh package --target macos
-cargo build -p nsh-linux-app                                    # nsh package --target linux
-cargo build -p nsh-windows-app                                  # nsh package --target windows
-# nsh package --target web uses the same web runtime as nsh run --target web
-```
-
-从源码构建的 CLI 会按自身的 profile 在 `target/<triple>/<profile>`（macOS、Linux、Windows 和 GPUI 运行时为本机构建，位于 `target/<profile>`）和 `target/android/<profile>[-dev]` 中查找运行时：`./target/debug/nsh` 使用 debug 运行时，`./target/release/nsh` 使用 release 运行时。请用相同的 profile 构建两者（若希望应用更快，给所有命令都加上 `--release`）。
-
-> [!TIP]
-> 设置 `NSH_RUNTIME=/path/to/runtime` 后，无论 CLI 位于何处，`nsh` 都会使用这个目录作为运行时，其结构与发行包的 `runtime/` 相同。
+iOS、Android 运行时和发布版运行器的构建命令见仓库的 [AGENTS.md](https://github.com/longbridge/nsh/blob/main/AGENTS.md#commands)。
 
 ## 平台工具
 
@@ -188,7 +188,7 @@ cargo build -p nsh-windows-app                                  # nsh package --
   - `platforms;android-35` 和较新的 `build-tools`（NSH 使用其中的 `aapt2`、`zipalign` 和 `apksigner`，不使用 Gradle）；
   - `platform-tools`（`adb`）。
 - **JDK**（首次打包时 `keytool` 会在 `~/.android/debug.keystore` 创建调试密钥库，`apksigner` 也需要 Java）。
-- 一个正在运行的模拟器，或通过 `adb` 连接的设备。应用要求 Android 9（API 28）及以上。
+- 一个正在运行的模拟器，或通过 `adb` 连接的设备。应用要求 Android 8（API 26）及以上。
 
 ```sh
 sdkmanager "platforms;android-35" "build-tools;35.0.1" "platform-tools"
