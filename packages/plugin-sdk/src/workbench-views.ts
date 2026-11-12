@@ -96,7 +96,16 @@ export interface QuickEntry {
   run?(): void;
 }
 
+export interface QuickPreview {
+  image?: string | undefined;
+  text?: string | undefined;
+  fields: readonly { label: string; value: string }[];
+}
+
 export interface QuickToolHandle {
+  emptyMessage?(): string;
+  /** Opts the entered tool into a two-column list and detail view. */
+  preview?(itemId: string): QuickPreview | undefined;
   /** Results for the query; for a blank query, whatever could be recommended. */
   items(): readonly QuickItem[];
   entries(): readonly QuickEntry[];

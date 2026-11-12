@@ -25,6 +25,7 @@ use serde_json::Value;
 #[derive(Clone, Copy)]
 pub(crate) enum Kind {
     Read,
+    ReadImage,
     Write,
     Edit,
     Patch,
@@ -33,16 +34,21 @@ pub(crate) enum Kind {
     Grep,
     Fetch,
     Search,
+    CreateSession,
+    ForkSession,
+    SendSession,
 }
 
 impl Kind {
     pub(super) fn render(self, input: &Value) -> Option<Text> {
         // ToolCatalog has validated this already parsed input against its schema.
         let target = match self {
-            Self::Read | Self::Write | Self::Edit | Self::List => &input["path"],
+            Self::Read | Self::ReadImage | Self::Write | Self::Edit | Self::List => &input["path"],
             Self::Patch => &input["operation"]["path"],
             Self::Glob | Self::Grep => &input["pattern"],
             Self::Fetch => &input["url"],
+            Self::CreateSession | Self::ForkSession => &input["title"],
+            Self::SendSession => &input["message"],
             Self::Search => &input["query"],
         };
         let continuation = match self {
@@ -55,12 +61,22 @@ impl Kind {
         let target = continuation
             .as_ref()
             .map_or_else(|| target.as_str(), |read| Some(read.path()))?;
+        if matches!(self, Self::SendSession) {
+            let line = target.lines().find(|line| !line.trim().is_empty())?.trim();
+            let mut chars = line.chars();
+            let mut preview: String = chars.by_ref().take(96).collect();
+            if chars.next().is_some() {
+                preview.push('…');
+            }
+            return self.render_target(&preview, false);
+        }
         self.render_target(target, continuation.is_some())
     }
 
     pub(crate) fn render_target(self, target: &str, continuation: bool) -> Option<Text> {
         let (en, zh, tw) = match self {
             Self::Read => ("Read file", "读取文件", "讀取檔案"),
+            Self::ReadImage => ("Read image", "读取图片", "讀取圖片"),
             Self::Write => ("Write file", "写入文件", "寫入檔案"),
             Self::Edit => ("Edit file", "编辑文件", "編輯檔案"),
             Self::Patch => ("Patch file", "修补文件", "修補檔案"),
@@ -69,6 +85,9 @@ impl Kind {
             Self::Grep => ("Search files", "搜索文件", "搜尋檔案"),
             Self::Fetch => ("Read web page", "读取网页", "讀取網頁"),
             Self::Search => ("Search the web", "搜索网络", "搜尋網路"),
+            Self::CreateSession => ("Create conversation", "创建会话", "建立對話"),
+            Self::ForkSession => ("Branch conversation", "从会话分支", "從對話建立分支"),
+            Self::SendSession => ("Send message to agent", "向协作者发消息", "傳訊息給協作者"),
         };
         let target = Text::single_line(target)?.fallback;
         let (en_more, zh_more, tw_more) = if continuation {

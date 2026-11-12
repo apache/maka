@@ -452,6 +452,7 @@ impl Owner {
                         parent_session_id: Some(source_session.clone()),
                         backend: None,
                         compaction_prompt: None,
+                        applied_preset: None,
                         collaboration_mode: CollaborationMode::Agent,
                         tools: basis.allowed_tools.clone(),
                         title: fire.title.clone(),

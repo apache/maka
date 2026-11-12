@@ -42,7 +42,7 @@ impl DriverModel {
     ) -> Result<RecordedInputs, RunError> {
         let mut original = RecordedInputs::default();
         let mut cells = BTreeMap::<CellId, CellView>::new();
-        let mut recovered = BTreeSet::new();
+        let mut recovered = BTreeMap::new();
         let mut after = 0;
         'history: loop {
             let page = reader.history(view.run, after, 256).await?;
@@ -57,6 +57,9 @@ impl DriverModel {
                 match &fact.fact {
                     Fact::Cell { event } => {
                         let cell = event.cell();
+                        if recovered.contains_key(&cell) || original.cells.contains_key(&cell) {
+                            continue;
+                        }
                         if matches!(event, CellEvent::Started { .. }) {
                             let source = CellView::started(event).map_err(|error| {
                                 RunError::ReconciliationRequired(error.to_string())
@@ -80,7 +83,23 @@ impl DriverModel {
                         outcome: AcceptedResult::CellRecovered { cell },
                         ..
                     } => {
-                        recovered.insert(*cell);
+                        if let std::collections::btree_map::Entry::Vacant(entry) =
+                            recovered.entry(*cell)
+                            && !original.cells.contains_key(cell)
+                        {
+                            let source = cells.remove(cell).ok_or_else(|| {
+                                RunError::ReconciliationRequired(
+                                    "Cell knowledge is absent from the original tool acceptance"
+                                        .into(),
+                                )
+                            })?;
+                            // Later cleanup can advance the Run without changing this accepted result.
+                            entry.insert(FrozenCellKnowledge {
+                                cell: *cell,
+                                through: fact.revision,
+                                children: source.children,
+                            });
+                        }
                     }
                     _ => {}
                 }
@@ -113,25 +132,13 @@ impl DriverModel {
                     }
                     for knowledge in frozen.recovered_cells {
                         // A consumed observation never acquires later child knowledge.
+                        recovered.remove(&knowledge.cell);
                         original.cells.entry(knowledge.cell).or_insert(knowledge);
                     }
                 }
             }
         }
-        for cell in recovered {
-            if let std::collections::btree_map::Entry::Vacant(entry) = original.cells.entry(cell) {
-                let source = cells.remove(&cell).ok_or_else(|| {
-                    RunError::ReconciliationRequired(
-                        "Cell knowledge is absent from the selected canonical head".into(),
-                    )
-                })?;
-                entry.insert(FrozenCellKnowledge {
-                    cell,
-                    through: view.revision,
-                    children: source.children,
-                });
-            }
-        }
+        original.cells.append(&mut recovered);
         Ok(original)
     }
 }

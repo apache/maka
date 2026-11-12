@@ -90,6 +90,10 @@ export function errorText(reason: unknown): UiText {
     case 'client journal still has active preparation':
     case 'client operation ended before dispatch':
       return '';
+    case 'downloads_read_denied':
+      return message(
+        'Allow Maka to read Downloads in System Settings > Privacy & Security > Files and Folders.',
+      );
     case 'agent_observation_closed':
     case 'agent_closed':
       return message('Connection interrupted. Your draft is kept.');

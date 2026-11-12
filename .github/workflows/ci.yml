@@ -23,6 +23,11 @@ on:
   push:
     branches: [main, rust-preview]
   workflow_dispatch:
+    inputs:
+      worker:
+        description: "Validate one registered worker (leave empty for full CI)"
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -55,6 +60,8 @@ jobs:
           node-version: "26"
           package-manager-cache: false
       - id: plan
+        env:
+          MAKA_CI_WORKER: ${{ inputs.worker }}
         run: node scripts/ci.mjs plan
       - name: Check documentation source headers
         if: steps.plan.outputs.tooling != 'true'
@@ -268,6 +275,7 @@ jobs:
           if [ -d target ]; then du -sh target; fi
 
   test:
+    name: ${{ inputs.worker && format('test ({0})', inputs.worker) || 'test' }}
     needs: [plan, tooling, root-build, root-tests, suites]
     if: always()
     runs-on: ubuntu-latest

@@ -580,19 +580,6 @@ impl ExternalOwner {
         self.checking.is_none()
     }
     /// Join only admitted observation/control I/O; never start a closure read or control.
-    pub(crate) async fn finish_observation_io(&mut self) -> io::Result<()> {
-        let checked = if let Some(checking) = self.checking.as_mut() {
-            let result = checking.await;
-            self.checking = None;
-            result
-                .map_err(io::Error::other)
-                .and_then(|result| result.map(|_| ()))
-        } else {
-            Ok(())
-        };
-        let controlled = self.settle_control().await.map(|_| ());
-        checked.and(controlled)
-    }
     pub(crate) async fn confirm(&mut self) -> io::Result<()> {
         let result = async {
             if self.checking.is_none() {

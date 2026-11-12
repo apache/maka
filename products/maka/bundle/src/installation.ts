@@ -170,6 +170,31 @@ export function installation(
       'List selectable native models and enabled executor runtimes. Search model IDs, labels and source names with query. Pass a choice selection as SessionCreate/SessionSend backend; its kind preserves the execution source. Thinking levels are source-specific. Continue with the returned revision and next cursor; restart on changed. This is a catalog observation, not an execution or permissions grant.',
     ],
     [
+      'presets',
+      'SubagentPresetList',
+      'List shared subagent preset summaries: stable ID, name, description, native model, revision and availability, without full instructions. For task selection use availability.kind=available; disabled or invalid entries remain visible for management. Query when a role is relevant, not before every conversation. No match or an empty list still permits ordinary delegation.',
+    ],
+    [
+      'preset',
+      'SubagentPresetRead',
+      'Read a shared subagent preset by stable ID, including its full instruction, revision and availability. Use before editing or resolving an ambiguous role; null means not found. Description explains when to select a role; instruction guides its execution; the current task belongs in SessionSend.',
+    ],
+    [
+      'createPreset',
+      'SubagentPresetCreate',
+      'Persist a shared subagent preset only when the user explicitly asks to create a reusable role. Do not save one-off task requirements. Clarify an ambiguous name or missing description/model choice. Use a native ModelList kind=model choice as model: {connectionId, modelId}, with its optional thinkingLevel; executor choices are unsupported. Instruction may be empty. Report success only for kind=saved and show the actual returned saved configuration. For an unknown outcome recover the original operation receipt; never submit a replacement creation.',
+    ],
+    [
+      'updatePreset',
+      'SubagentPresetUpdate',
+      'Modify a shared preset only at the user\'s explicit request. Read its current revision and supply expectedRevision. Send only requested fields; omitted fields remain unchanged, instruction="" clears the role instruction, thinkingLevel={kind:"default"} restores default, and enabled toggles availability. Changes affect future sessions only. On conflict re-read and reconcile the requested change, never blindly overwrite. Only kind=saved is success; report other outcomes accurately. Recover an unknown outcome from the original operation receipt without submitting another edit.',
+    ],
+    [
+      'deletePreset',
+      'SubagentPresetDelete',
+      'Delete the explicitly requested shared preset by stable ID and its observed expectedRevision. Follow the ordinary operation flow without extra mandatory confirmation rounds. Existing sessions retain their applied role. Only kind=deleted is success; on conflict re-read and reconcile, and recover unknown outcomes using the original operation receipt rather than resubmitting.',
+    ],
+    [
       'list',
       'SessionList',
       'Find conversations by task title, workspace/project or status. Use scope=children with your sessionId to enumerate workers you created. Child conversations remain discoverable here even though the human sidebar hides them.',
@@ -187,7 +212,7 @@ export function installation(
     [
       'create',
       'SessionCreate',
-      'Create a child conversation for a distinct delegated task. Choose a concise, specific task title that a person can recognize later (for example, "Fix queued-message cancellation", not "worker 1"). The child inherits your current sandbox policy, not your one-off approvals. Select a workspace by directory path (absolute, ~ allowed, within the configured workspace locations) or reuse a conversation\'s with kind=session, then use SessionSend to provide the objective, relevant context, constraints and expected deliverable.',
+      'Create a child conversation for a distinct delegated task. Choose a concise, specific task title that a person can recognize later (for example, "Fix queued-message cancellation", not "worker 1"). The child inherits your current sandbox policy, not your one-off approvals. Select a workspace by directory path (absolute, ~ allowed, within the configured workspace locations) or reuse a conversation\'s with kind=session, then use SessionSend to provide the objective, relevant context, constraints and expected deliverable. To apply a reusable role, pass presetId from SubagentPresetList and omit backend; creation rechecks the latest preset and captures its instruction and model. Do not copy its instruction into the task. If an explicitly requested preset is unavailable, report the specific reason without substituting another role or model. With no explicit role, choose an appropriate available preset or delegate normally. Recover uncertain creation using its original operation receipt, not another SessionCreate.',
     ],
     [
       'fork',
@@ -207,7 +232,7 @@ export function installation(
     [
       'send',
       'SessionSend',
-      'Send a task or follow-up to a conversation. For additional context, corrections, progress updates or guidance for ongoing work, omit delivery or use delivery=steer (the default). Use delivery=queue only when the message should wait until the current turn ends. Give the objective, necessary context, constraints and expected result; the child does not automatically share your conversation history. Your source conversation is attributed automatically. Active native model, Codex and Claude turns accept steering; Antigravity uses soft interrupt/resume where supported. Other executors queue follow-ups. For a new conversation, supply a backend selection from ModelList; omission requires a saved target backend preference. A started/queued receipt confirms admission, not completion; queued may also mean pending steering. For native model callers, set onComplete=notify_caller to request a best-effort Host notification when that message finishes, fails or is cancelled, and once per pending interaction or authority blocker that needs attention. An attention notification does not finish the task or remove its completion watch; inspect the referenced interaction or SessionWork, address it within your existing authority or ask the user, and do not redispatch the task. Check completion in the receipt: registered means the watch was saved with task admission, so do other work or finish your turn instead of polling for completion. Progress queries remain available. Use SessionWork/SessionHistory to read actual results before reporting success.',
+      'Send a task or follow-up to a conversation. For additional context, corrections, progress updates or guidance for ongoing work, omit delivery or use delivery=steer (the default). Use delivery=queue only when the message should wait until the current turn ends. Give the objective, necessary context, constraints and expected result; the child does not automatically share your conversation history. Your source conversation is attributed automatically. Active native model, Codex and Claude turns accept steering; Antigravity uses soft interrupt/resume where supported. Other executors queue follow-ups. For a preset conversation, omit backend to preserve its selected model; only supply backend for an explicit model override. Other new conversations may use a backend selection from ModelList; omission requires a saved target backend preference. A started/queued receipt confirms admission, not completion; queued may also mean pending steering. For native model callers, set onComplete=notify_caller to request a best-effort Host notification when that message finishes, fails or is cancelled, and once per pending interaction or authority blocker that needs attention. An attention notification does not finish the task or remove its completion watch; inspect the referenced interaction or SessionWork, address it within your existing authority or ask the user, and do not redispatch the task. Check completion in the receipt: registered means the watch was saved with task admission, so do other work or finish your turn instead of polling for completion. Progress queries remain available. Use SessionWork/SessionHistory to read actual results before reporting success.',
     ],
     [
       'stop',

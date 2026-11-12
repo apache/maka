@@ -333,22 +333,15 @@ function App(
     if (!owner) throw new Error(tr('Maka Bot could not be opened'));
     return owner.openBot();
   };
-  const openAssistant = async (id: string, message?: string) => {
-    if (!alive || blocked()) return;
-    if (id !== selected() && !sideFor(id)) {
-      assistant.set(
-        createSide(id, assistantShell, message, {
-          expand: () => void expandAssistant(),
-          close: () => void closeLauncher(),
-        }),
-      );
-      return;
-    }
-    if (message !== undefined) return;
-    // Already on screen: bring it forward rather than remounting it in the popup.
-    if (sideFor(id)) mainWindow.focus();
-    else if (!(await showSession(id))) return;
-    launcherClosed();
+  const openAssistant = (id: string, message?: string) => {
+    // Navigation or dismissal may have won while the launcher was preparing the draft.
+    if (!alive || blocked() || !launcherOpened() || id === selected() || sideFor(id)) return;
+    assistant.set(
+      createSide(id, assistantShell, message, {
+        expand: () => void expandAssistant(),
+        close: () => void closeLauncher(),
+      }),
+    );
   };
   const expandAssistant = async () => {
     const id = assistant()?.id();

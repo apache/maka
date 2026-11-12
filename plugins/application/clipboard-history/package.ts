@@ -24,17 +24,17 @@ export default {
   id: 'maka.clipboard-history',
   displayName: 'Clipboard History',
   description:
-    'Type "cb" in the quick launcher to copy recent text again on macOS. Kept in memory only, and password managers are skipped.',
+    'Type "cb" in the quick launcher to copy recent text, images, PDFs and files again on macOS. Kept in memory only, and password managers are skipped.',
   localizations: {
     'zh-CN': {
       displayName: '剪贴板历史',
       description:
-        '在 macOS 的快捷启动器输入“剪贴板”或 cb，再次复制最近的文本。仅保存在内存中，并跳过密码管理器的内容。',
+        '在 macOS 的快捷启动器输入“剪贴板”或 cb，再次复制最近的文本、图片、PDF 和文件。仅保存在内存中，并跳过密码管理器的内容。',
     },
     'zh-TW': {
       displayName: '剪貼簿歷史',
       description:
-        '在 macOS 的快速啟動器輸入「剪贴板」或 cb，再次複製最近的文字。僅保存在記憶體中，並跳過密碼管理器的內容。',
+        '在 macOS 的快速啟動器輸入「剪贴板」或 cb，再次複製最近的文字、圖片、PDF 和檔案。僅保存在記憶體中，並跳過密碼管理器的內容。',
     },
   },
   application: {

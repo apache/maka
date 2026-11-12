@@ -168,7 +168,6 @@ impl Owner {
             workspace: current.configuration.workspace,
             binding: current.configuration.binding,
             fingerprint,
-            tools: Arc::new(selection.services.clone()),
         };
         Ok((basis, selection))
     }
@@ -197,27 +196,20 @@ impl Owner {
         let live_tools = mcp
             .for_run(access, live.tools)
             .map_err(RunError::InvalidInput)?;
-        // A changed binding is unavailable, never resolved through its new namesake.
+        // Keep the admitted tool declarations across Host activations.
         let direct_only: std::collections::BTreeSet<_> =
             live_tools.direct_only().names().into_iter().collect();
         let excluded: Vec<_> = live_tools
             .definitions()
             .filter(|definition| {
-                !frozen
-                    .definitions
-                    .iter()
-                    .any(|original| original == *definition)
-                    || (direct_only.contains(&definition.name)
-                        != frozen.direct_only.contains(&definition.name))
-                    || frozen
-                        .services
-                        .iter()
-                        .find(|tool| tool.name() == definition.name)
-                        .is_some_and(|original| !live.basis.contains(original))
-                    || frozen
-                        .internal_bindings
-                        .get(&definition.name)
-                        .is_some_and(|binding| mcp.bindings.get(&definition.name) != Some(binding))
+                !frozen.definitions.iter().any(|original| {
+                    original.name == definition.name
+                        && super::driver::same_tool_contract(original, definition)
+                }) || (direct_only.contains(&definition.name)
+                    != frozen.direct_only.contains(&definition.name))
+                    || !frozen.matches_service(&definition.name, &live.basis)
+                    || frozen.internal_bindings.get(&definition.name)
+                        != mcp.bindings.get(&definition.name)
             })
             .map(|definition| definition.name.as_str())
             .collect();

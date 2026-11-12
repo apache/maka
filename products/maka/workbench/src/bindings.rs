@@ -21,6 +21,7 @@
 
 mod assets;
 mod diagrams;
+mod file_search;
 mod files;
 mod links;
 mod mutation;
@@ -228,8 +229,19 @@ impl Bindings {
 
     /// Fence new native tasks, close the original Host session and finish admitted IO.
     pub async fn close(&self) -> Result<(), String> {
+        self.close_with(self.owner.client.close()).await
+    }
+
+    pub async fn quit_ephemeral(&self) -> Result<(), String> {
+        self.close_with(self.owner.client.quit_ephemeral()).await
+    }
+
+    async fn close_with(
+        &self,
+        close: impl std::future::Future<Output = Result<(), String>>,
+    ) -> Result<(), String> {
         let tasks = self.owner.tasks.lock().unwrap().take();
-        let (closed, ()) = tokio::join!(self.owner.client.close(), async move {
+        let (closed, ()) = tokio::join!(close, async move {
             if let Some(tasks) = tasks {
                 tasks.close();
                 tasks.wait().await;
@@ -379,6 +391,16 @@ impl ApplicationHost {
         execute(owner, quick_tools::search_file_names(query)).await
     }
 
+    pub async fn scoped_file_search(
+        this: Instance<Self>,
+        query: String,
+        roots: Vec<String>,
+    ) -> Result<file_search::SearchResult, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, file_search::search(query, roots)).await
+    }
+
     pub async fn open_local_path(this: Instance<Self>, path: String) -> Result<(), String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
@@ -392,6 +414,24 @@ impl ApplicationHost {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
         execute(owner, quick_tools::clipboard_text_change(seen)).await
+    }
+
+    pub async fn clipboard_history_change(
+        this: Instance<Self>,
+        seen: Option<f64>,
+    ) -> Result<quick_tools::HistoryChange, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::clipboard_history_change(seen)).await
+    }
+
+    pub async fn restore_clipboard_entry(
+        this: Instance<Self>,
+        entry: quick_tools::ClipboardEntry,
+    ) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::restore_clipboard_entry(entry)).await
     }
 
     pub async fn recent_workspaces(this: Instance<Self>) -> Result<JsonValue, String> {

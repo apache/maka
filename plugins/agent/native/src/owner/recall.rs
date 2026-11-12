@@ -427,7 +427,21 @@ impl ToolPreparer for Recall {
                 }
                 _ => return Err(ToolRejection::Unavailable),
             };
-            Ok(PreparedEffect::new(move |cancellation| {
+            let title = match &input {
+                Input::Search { query, .. } => {
+                    let query = query.terms.join(", ");
+                    maka_agent_facts::display::Text::single_line(&query).map(|query| {
+                        let query = query.fallback;
+                        maka_agent_facts::display::Text::localized(
+                            &format!("Search conversation history · {query}"),
+                            &format!("搜索会话历史 · {query}"),
+                            &format!("搜尋對話歷史 · {query}"),
+                        )
+                    })
+                }
+                Input::More(_) => None,
+            };
+            let effect = PreparedEffect::new(move |cancellation| {
                 Box::pin(async move {
                     // The Engine supplies the admitted ToolCallContext. The
                     // original native activation owns the request and settlement.
@@ -469,7 +483,13 @@ impl ToolPreparer for Recall {
                         .map_err(ToolError::CleanupUnconfirmed)?;
                     result
                 })
-            }))
+            })
+            .presented(format!("maka.agent.Builtin@1/{name}"));
+            Ok(if let Some(title) = title {
+                effect.titled(title)
+            } else {
+                effect
+            })
         })
     }
 }

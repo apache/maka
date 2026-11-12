@@ -41,7 +41,7 @@ pub use store::{
     Commit, ContentBlob, DriverClaim, DriverDomain, DriverPurpose, Head, ImmutableContentBody,
     LocalResult, ModelCleanupItem, NotificationAttention, NotificationState, PublicationRead,
     ReadyCause, ReadyRun, RunObservation, SessionObligation, SessionQuiescence,
-    SessionQuiescenceGuard, Store,
+    SessionQuiescenceGuard, StopOutcome, StopRun, Store,
 };
 
 pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
@@ -209,5 +209,10 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         version: 37,
         description: "track proactive summary attempts",
         sql: include_str!("../migrations/0037_proactive_summary.sql"),
+    },
+    maka_event_log::migration::Migration {
+        version: 38,
+        description: "subagent presets",
+        sql: include_str!("../migrations/0038_subagent_presets.sql"),
     },
 ];

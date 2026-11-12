@@ -28,10 +28,10 @@ import {
 } from '../../../products/maka/workbench/app/SettingsPage';
 import { tr } from '../../../products/maka/workbench/app/locale';
 import { errorText, renderText } from '../../../products/maka/workbench/app/text';
-import { LIMITS, type Limit } from './history';
+import { LIMITS, type HistoryEntry, type Limit } from './history';
 
 export type History = {
-  entries: Signal<readonly string[]>;
+  entries: Signal<readonly HistoryEntry[]>;
   limit: Signal<Limit>;
   failure: Signal<unknown>;
   setLimit(limit: Limit): void;
