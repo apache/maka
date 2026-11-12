@@ -28,10 +28,10 @@ pub(super) fn volume(directory: &Dir) -> io::Result<String> {
         return Err(io::Error::last_os_error());
     }
     let filesystem = unsafe { filesystem.assume_init() };
+    // Cap-std may hold an O_PATH directory. Ioctls use a read handle to its `.`.
     match filesystem.f_type {
-        libc::EXT4_SUPER_MAGIC | libc::BTRFS_SUPER_MAGIC | libc::TMPFS_MAGIC => {
-            // These filesystems derive f_fsid from a filesystem UUID. Btrfs includes
-            // the subvolume ID, which scopes its inode numbers.
+        libc::EXT4_SUPER_MAGIC | libc::TMPFS_MAGIC => {
+            // These filesystems derive f_fsid from their superblock UUID.
             // SAFETY: Linux fsid_t has two C int fields and both bit patterns are valid.
             let [first, second]: [u32; 2] = unsafe { std::mem::transmute(filesystem.f_fsid) };
             if [first, second] == [0, 0] {
@@ -42,6 +42,7 @@ pub(super) fn volume(directory: &Dir) -> io::Result<String> {
                 filesystem.f_type
             ))
         }
+        libc::BTRFS_SUPER_MAGIC => btrfs_volume(directory),
         libc::XFS_SUPER_MAGIC => {
             // XFS f_fsid is a device number. Read its on-disk UUID via XFS_IOC_FSGEOMETRY_V1.
             #[repr(C)]
@@ -57,23 +58,66 @@ pub(super) fn volume(directory: &Dir) -> io::Result<String> {
                 uuid: [0; 16],
                 flags: [0; 7],
             };
-            ioctl_read(directory, b'X', 100, &mut geometry)?;
+            ioctl_read(&directory.open(".")?, b'X', 100, &mut geometry)?;
             uuid(&geometry.uuid)
         }
         _ => {
             // FS_IOC_GETFSUUID supplies the filesystem UUID on other filesystems
             // that expose one. A missing UUID cannot authorize a durable grant.
             let mut fsuuid = [0_u8; 17];
-            ioctl_read(directory, 0x15, 0, &mut fsuuid)?;
+            ioctl_read(&directory.open(".")?, 0x15, 0, &mut fsuuid)?;
             let size = usize::from(fsuuid[0]);
             uuid(fsuuid.get(1..1 + size).ok_or_else(no_identity)?)
         }
     }
 }
 
-fn ioctl_read<T>(directory: &Dir, kind: u8, number: u8, buffer: &mut T) -> io::Result<()> {
-    // Cap-std may hold an O_PATH directory. Open '.' relative to that held handle.
+fn btrfs_volume(directory: &Dir) -> io::Result<String> {
+    #[repr(C)]
+    struct FilesystemInfo {
+        devices: [u64; 2],
+        fsid: [u8; 16],
+        geometry: [u32; 4],
+        flags: u64,
+        generation: u64,
+        metadata_uuid: [u8; 16],
+        reserved: [u8; 944],
+    }
+    #[repr(C)]
+    struct SubvolumeInfo {
+        tree_id: u64,
+        data: [u8; 496],
+    }
+    const METADATA_UUID: u64 = 1 << 2;
+    let mut filesystem = FilesystemInfo {
+        devices: [0; 2],
+        fsid: [0; 16],
+        geometry: [0; 4],
+        flags: METADATA_UUID,
+        generation: 0,
+        metadata_uuid: [0; 16],
+        reserved: [0; 944],
+    };
+    let mut subvolume = SubvolumeInfo {
+        tree_id: 0,
+        data: [0; 496],
+    };
     let directory = directory.open(".")?;
+    // A cloned filesystem may have a temporary mount FSID. The metadata UUID
+    // and the on-disk subvolume tree ID do not depend on that mount.
+    ioctl_read(&directory, 0x94, 31, &mut filesystem)?;
+    ioctl_read(&directory, 0x94, 60, &mut subvolume)?;
+    if filesystem.flags & METADATA_UUID == 0 || subvolume.tree_id == 0 {
+        return Err(no_identity());
+    }
+    Ok(format!(
+        "{}:{:016x}",
+        uuid(&filesystem.metadata_uuid)?,
+        subvolume.tree_id
+    ))
+}
+
+fn ioctl_read<T>(directory: &impl AsRawFd, kind: u8, number: u8, buffer: &mut T) -> io::Result<()> {
     // Linux x86_64/aarch64 use the asm-generic _IOR encoding.
     let request =
         (2 << 30) | ((size_of::<T>() as u32) << 16) | (u32::from(kind) << 8) | u32::from(number);
