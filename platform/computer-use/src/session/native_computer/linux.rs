@@ -408,14 +408,14 @@ impl Session {
             }
             _ => {}
         }
-        let window = if value.get("window").is_some_and(|value| !value.is_null()) {
+        let (window, preview) = if value.get("window").is_some_and(|value| !value.is_null()) {
             let selected: WindowReference = native_decode(value["window"].clone())?;
-            let (window, _) = self
+            let (window, generation) = self
                 .raw_window(u64::from(selected.id), invocation, cancellation, language)
                 .await?;
-            Some(window)
+            (Some(window.clone()), Some((window, generation)))
         } else {
-            None
+            (None, None)
         };
         match method {
             ActivateWindow => {
@@ -641,6 +641,9 @@ impl Session {
         // Native admission/ownership is checked before and inside the actual
         // SDK actuator. A successfully posted click may intentionally close
         // its window; no extra inventory read may turn that into a refusal.
+        if let Some((window, generation)) = preview {
+            self.publish_window_preview("", &window, &generation, invocation);
+        }
         Ok(Value::Null)
     }
 
@@ -729,6 +732,7 @@ impl Session {
             crate::linux_ax::ReadCoverage::for_query(query),
         );
         let tree = tree_from_rows(public.metadata().map_err(failed)?)?;
+        self.publish_window_preview("", &current_window, &generation, invocation);
         Ok(
             json!({"window":public_linux_window(observed_window),"ax_tree":tree,"ax_tree_source":snapshot.source,"screenshots":screenshots}),
         )

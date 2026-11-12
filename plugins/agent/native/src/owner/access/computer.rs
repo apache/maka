@@ -20,7 +20,8 @@
 use super::*;
 use maka_agent_api::{contract::WorkspaceAccess, session::ResolvedConfiguration};
 use maka_agent_authority::computer::{
-    ComputerAccess, ComputerAppObservation, ComputerAppStatus, NativeCallAccess, NativeCallContext,
+    ComputerAccess, ComputerAppObservation, ComputerAppStatus, ComputerPreviewAccess,
+    NativeCallAccess, NativeCallContext,
 };
 use maka_agent_facts::{
     artifact::Artifact,
@@ -394,6 +395,155 @@ impl NativeCallAccess for BoundCall {
         })
     }
 }
+struct RetainedPreview {
+    access: std::sync::Weak<RunAccess>,
+    execution: ExecutionIdentity,
+    basis: PermissionBasis,
+    tool: String,
+}
+fn preview_store(access: &RunAccess) -> Result<computer::ComputerStore, ToolError> {
+    Ok(computer::ComputerStore::new(
+        access.data_writer().map_err(ToolError::Failed)?,
+    ))
+}
+impl RetainedPreview {
+    fn access(&self) -> Result<Arc<RunAccess>, ToolError> {
+        self.access
+            .upgrade()
+            .ok_or_else(|| ToolError::Failed("Computer preview Run retired".into()))
+    }
+}
+impl ComputerPreviewAccess for RetainedPreview {
+    fn execution(&self) -> &ExecutionIdentity {
+        &self.execution
+    }
+    fn current(&self) -> BoxFuture<'_, Result<ResolvedConfiguration, ToolError>> {
+        Box::pin(async move {
+            let access = self.access()?;
+            match access
+                ._work
+                .session_retirement(&self.execution.session_id)
+                .await
+            {
+                Ok(None) => {}
+                Ok(Some(_)) => {
+                    return Err(ToolError::Failed("Computer preview Session retired".into()));
+                }
+                Err(maka_event_log::StoreError::ConnectionClosed)
+                    if matches!(
+                        access._work.work_custody(),
+                        Err(maka_event_log::StoreError::ConnectionClosed)
+                    ) =>
+                {
+                    return Err(ToolError::Failed("Computer preview Run retired".into()));
+                }
+                Err(error) => return Err(ToolError::Persistence(error.to_string())),
+            }
+            let current = access.live_configuration().await?;
+            if current.permission_basis() != self.basis
+                || current.permissions.access == WorkspaceAccess::ReadOnly
+                || current
+                    .tools
+                    .as_ref()
+                    .is_some_and(|tools| !tools.contains(&self.tool))
+                || !matches!(
+                    access.spec.permission_ceiling.sandbox,
+                    maka_sandbox::Sandbox::Disabled
+                )
+            {
+                return Err(ToolError::Failed(
+                    "Computer preview permission boundary changed".into(),
+                ));
+            }
+            Ok(current)
+        })
+    }
+    fn granted<'a>(
+        &'a self,
+        target: &'a maka_agent_facts::interaction::GrantTarget,
+    ) -> BoxFuture<'a, Result<(), ToolError>> {
+        Box::pin(async move {
+            let current = self.current().await?;
+            if current.permissions.access == WorkspaceAccess::DangerFullAccess {
+                return Ok(());
+            }
+            let access = self.access()?;
+            let grant = access
+                .owner()
+                .map_err(ToolError::Failed)?
+                .durable
+                .interactions()
+                .client_capability_grant(&self.execution.session_id, target)
+                .await
+                .map_err(|e| ToolError::Persistence(e.to_string()))?;
+            if grant.is_none_or(|grant| grant.basis != Some(self.basis)) {
+                return Err(ToolError::Failed(
+                    "Computer preview grant missing or revoked".into(),
+                ));
+            }
+            Ok(())
+        })
+    }
+    fn native_current(&self) -> BoxFuture<'_, Result<(), ToolError>> {
+        Box::pin(async move {
+            self.current().await?;
+            let access = self.access()?;
+            if preview_store(&access)?
+                .native_turn_interrupted(&self.execution)
+                .await
+                .map_err(|e| ToolError::Persistence(e.to_string()))?
+            {
+                return Err(ToolError::Failed(
+                    "Native source interrupted in this turn".into(),
+                ));
+            }
+            Ok(())
+        })
+    }
+    fn app_status<'a>(
+        &'a self,
+        operation: &'a str,
+        target: &'a maka_computer_use::ComputerAppTarget,
+    ) -> BoxFuture<'a, Result<ComputerAppStatus, ToolError>> {
+        Box::pin(async move {
+            let current = self.current().await?;
+            let access = self.access()?;
+            let store = preview_store(&access)?;
+            let subject = store
+                .subject(&self.execution.session_id, operation)
+                .await
+                .map_err(|e| ToolError::Persistence(e.to_string()))?
+                .ok_or_else(|| ToolError::Failed("Computer source was not observed".into()))?;
+            if subject.activity.execution != self.execution
+                || subject.basis != current.permission_basis()
+            {
+                return Err(ToolError::Failed(
+                    "Computer preview belongs to another execution or permission basis".into(),
+                ));
+            }
+            let grant = &subject.activity.target;
+            if grant.capability != maka_agent_facts::interaction::GrantCapability::ComputerUse
+                || !matches!(
+                    &grant.scope,
+                    maka_agent_facts::interaction::GrantScope::ComputerApp { platform, application_id }
+                        if *platform == target.identity.platform
+                            && application_id == &target.identity.application_id
+                )
+                || subject.activity.display.app_path != target.display.app_path
+            {
+                return Err(ToolError::Failed(
+                    "Computer preview target differs from its observed application".into(),
+                ));
+            }
+            store
+                .status(&self.execution.session_id, operation)
+                .await
+                .map(BoundCall::status)
+                .map_err(|e| ToolError::Persistence(e.to_string()))
+        })
+    }
+}
+
 struct RetainedAudioPolicy {
     session: maka_event_log::root_store::SessionStore,
     basis: PermissionBasis,
@@ -441,6 +591,33 @@ impl maka_agent_authority::computer::SessionAudioRetention for RetainedAudioPoli
     }
 }
 impl ComputerAccess for BoundCall {
+    fn run_current(&self) -> BoxFuture<'_, Result<(), ToolError>> {
+        Box::pin(async move {
+            self.access.fresh().await.map_err(ToolError::Failed)?;
+            Ok(())
+        })
+    }
+    fn retain_preview<'a>(
+        &'a self,
+        basis: &'a PermissionBasis,
+    ) -> BoxFuture<'a, Result<Arc<dyn ComputerPreviewAccess>, ToolError>> {
+        Box::pin(async move {
+            let current = self.current().await?;
+            if current.permission_basis() != *basis || self.host_original.get().is_none() {
+                return Err(ToolError::Failed(
+                    "Computer preview requires its admitted Host original".into(),
+                ));
+            }
+            let retained: Arc<dyn ComputerPreviewAccess> = Arc::new(RetainedPreview {
+                access: Arc::downgrade(&self.access),
+                execution: self.call.execution.clone(),
+                basis: *basis,
+                tool: self.tool.clone(),
+            });
+            retained.current().await?;
+            Ok(retained)
+        })
+    }
     fn session_audio_retention<'a>(
         &'a self,
         basis: &'a PermissionBasis,
@@ -857,4 +1034,29 @@ impl ComputerAccess for BoundCall {
             )))
         })
     }
+}
+
+// State-only fixture: Host dispatch validation has separate boundary tests.
+#[cfg(test)]
+pub(in crate::owner) async fn preview_fixture(
+    access: Arc<RunAccess>,
+    call: ToolCallContext,
+    original: RecoveryRef,
+) -> Result<Arc<dyn ComputerAccess>, ToolError> {
+    let target = access.target_for_context(&call).await?;
+    let bound = Arc::new(BoundCall {
+        access,
+        call,
+        target,
+        tool: "cua_repl".into(),
+        cancellation: CancellationToken::new(),
+        host_original: Default::default(),
+    });
+    let basis = bound.current().await?.permission_basis();
+    assert!(
+        bound.retain_preview(&basis).await.is_err(),
+        "Unbound input minted preview"
+    );
+    bound.host_original.set(original).unwrap();
+    Ok(bound)
 }

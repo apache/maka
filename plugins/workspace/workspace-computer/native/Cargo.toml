@@ -38,6 +38,7 @@ maka-plugin-core.workspace = true
 maka-sandbox.workspace = true
 maka-workspace-support.workspace = true
 maka-workspace-api.workspace = true
+base64 = "0.23.1"
 futures-util.workspace = true
 jsonschema.workspace = true
 serde_json.workspace = true

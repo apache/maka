@@ -613,3 +613,109 @@ fn wanted_sizes_pick_buckets_by_natural_size() {
         4000
     );
 }
+
+/// Occupy every real decode worker so jobs submitted next cannot start.
+fn occupy_decoders(loader: &'static Loader) -> Vec<mpsc::Sender<()>> {
+    let (started, ready) = mpsc::channel();
+    let mut releases = Vec::new();
+    for _ in 0..decoders() {
+        let (release, opening) = mpsc::channel();
+        let started = started.clone();
+        loader
+            .decode(Priority::Normal, move || {
+                started.send(()).unwrap();
+                opening.recv_timeout(Duration::from_secs(10)).unwrap();
+            })
+            .detach();
+        releases.push(release);
+    }
+    for _ in 0..decoders() {
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+    releases
+}
+
+#[test]
+fn cancelled_queued_decodes_release_bytes_and_queue_entries_immediately() {
+    let loader = own_loader();
+    let releases = occupy_decoders(loader);
+    for _ in 0..512 {
+        let bytes: Arc<[u8]> = vec![0_u8; 4096].into();
+        let alive = Arc::downgrade(&bytes);
+        let bytes = ImageData::new(bytes);
+        let ticket = loader.decode(Priority::Visible, move || {
+            // Capture the actual bytes, not just a cancellation flag.
+            assert_eq!(bytes.bytes().len(), 4096);
+            panic!("cancelled decode ran");
+        });
+        assert!(alive.upgrade().is_some());
+        drop(ticket);
+        assert!(
+            alive.upgrade().is_none(),
+            "bytes released before any worker is free"
+        );
+        assert!(
+            lock(&loader.decodes).is_empty(),
+            "no cancelled queue entries accumulate"
+        );
+    }
+    // Dropping a captured ticket re-enters cancellation on the same queue.
+    let inner = loader.decode(Priority::Normal, || panic!("nested cancelled decode ran"));
+    let outer = loader.decode(Priority::Normal, move || drop(inner));
+    drop(outer);
+    assert!(lock(&loader.decodes).is_empty());
+    for release in releases {
+        release.send(()).unwrap();
+    }
+}
+
+#[test]
+fn decode_cancellation_preserves_other_jobs_priority_and_fifo_order() {
+    let loader = own_loader();
+    let mut releases = occupy_decoders(loader);
+    let (ran, events) = mpsc::channel();
+    let mut tickets = Vec::new();
+    for (priority, name) in [
+        (Priority::Prefetch, "prefetch"),
+        (Priority::Visible, "first visible"),
+        (Priority::Normal, "normal"),
+        (Priority::Visible, "cancelled visible"),
+        (Priority::Visible, "second visible"),
+    ] {
+        let ran = ran.clone();
+        tickets.push(loader.decode(priority, move || {
+            ran.send(name).unwrap();
+        }));
+    }
+    drop(tickets.remove(3));
+    // Free just one real worker so start order is observable without races.
+    releases.remove(0).send(()).unwrap();
+    for expected in ["first visible", "second visible", "normal", "prefetch"] {
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(5)).unwrap(),
+            expected
+        );
+    }
+    assert!(events.try_recv().is_err());
+    for release in releases {
+        release.send(()).unwrap();
+    }
+    drop(tickets);
+}
+
+#[test]
+fn cancelling_a_running_decode_allows_it_to_finish() {
+    let loader = own_loader();
+    let (started, ready) = mpsc::channel();
+    let (release, opening) = mpsc::channel();
+    let (finished, completed) = mpsc::channel();
+    let ticket = loader.decode(Priority::Normal, move || {
+        started.send(()).unwrap();
+        opening.recv_timeout(Duration::from_secs(5)).unwrap();
+        finished.send(()).unwrap();
+    });
+    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    drop(ticket);
+    release.send(()).unwrap();
+    completed.recv_timeout(Duration::from_secs(5)).unwrap();
+}

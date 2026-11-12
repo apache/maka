@@ -575,14 +575,16 @@ impl ImageLoader {
                 seen.len()
             });
             let cost = (size.width * scale * size.height * scale * 4.0) as usize * frames;
-            // SAFETY: NSString key and CachedImage value, as declared.
-            unsafe {
-                self.cache.setObject_forKey_cost(
-                    &CachedImage::new(decoded.clone()),
-                    &NSString::from_str(key),
-                    cost,
-                )
-            };
+            if !nsh_core::image::is_live_frame(&inflight.uri) {
+                // SAFETY: NSString key and CachedImage value, as declared.
+                unsafe {
+                    self.cache.setObject_forKey_cost(
+                        &CachedImage::new(decoded.clone()),
+                        &NSString::from_str(key),
+                        cost,
+                    )
+                };
+            }
             // Shown now: the encoded bytes are not needed any more.
             // SAFETY: an NSString key, as declared.
             unsafe {

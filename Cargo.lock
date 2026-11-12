@@ -6727,6 +6727,7 @@ dependencies = [
 name = "maka-computer-native"
 version = "0.2.0"
 dependencies = [
+ "base64 0.23.1",
  "futures-util",
  "hex",
  "jsonschema 0.60.1",

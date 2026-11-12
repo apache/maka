@@ -779,3 +779,34 @@ mod tests {
         ));
     }
 }
+
+impl Command {
+    pub(crate) fn bound_handle(&self) -> Option<&Handle> {
+        match self {
+            Self::TabPageAssetsList { handle, .. }
+            | Self::TabPageAssetsBundle { handle, .. }
+            | Self::Observe { handle, .. }
+            | Self::Action { handle, .. }
+            | Self::BrowserScreenshot { handle, .. }
+            | Self::BrowserMarkTab { handle, .. }
+            | Self::TabMetadata { handle, .. }
+            | Self::ClipboardRead { handle, .. }
+            | Self::ClipboardReadText { handle, .. }
+            | Self::ClipboardWrite { handle, .. }
+            | Self::ClipboardWriteText { handle, .. }
+            | Self::GetJsDialog { handle, .. }
+            | Self::HandleJsDialog { handle, .. }
+            | Self::BrowserEvaluate { handle, .. }
+            | Self::BrowserRead { handle, .. }
+            | Self::BrowserMutation { handle, .. }
+            | Self::BrowserCua { handle, .. }
+            | Self::BrowserWait { handle, .. }
+            | Self::BrowserFileChooserWait { handle, .. }
+            | Self::BrowserFileChooserSetFiles { handle, .. }
+            | Self::BrowserDownloadWait { handle, .. }
+            | Self::BrowserDownloadPath { handle, .. }
+            | Self::BrowserDownloadMedia { handle, .. } => Some(handle),
+            _ => None,
+        }
+    }
+}

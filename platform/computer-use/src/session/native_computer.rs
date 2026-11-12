@@ -203,15 +203,36 @@ impl Session {
         }
         #[cfg(target_os = "windows")]
         {
-            return self
+            let result = self
                 .raw_windows(call, invocation, cancellation, language)
                 .await;
+            if result.is_ok()
+                && let Some(approved) = invocation.app_target()
+                && let Some(binding) = approved.binding.clone()
+            {
+                self.publish_binding_preview(binding, approved.display.name.clone(), invocation);
+            }
+            return result;
         }
         #[cfg(target_os = "macos")]
         {
-            return self
+            let result = self
                 .raw_macos(call, invocation, cancellation, language)
                 .await;
+            if result.is_ok()
+                && let Some(approved) = invocation.app_target()
+            {
+                let key = MacApplicationKey::of(approved);
+                if let Some(handle) = self
+                    .raw_computer
+                    .mac_targets
+                    .get(&key)
+                    .and_then(|record| record.window.retained())
+                {
+                    self.publish_native_preview(handle, invocation);
+                }
+            }
+            return result;
         }
         #[allow(unreachable_code)]
         Err(failed(

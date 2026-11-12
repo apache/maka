@@ -148,6 +148,7 @@ struct Owner {
     closing: Option<NativeCleanup>,
     disconnected: CancellationToken,
     shared: Vec<JoinHandle<()>>,
+    preview_tasks: Vec<JoinHandle<()>>,
 }
 
 enum Epoch {
@@ -160,6 +161,8 @@ type EpochTask = futures_util::future::Shared<
 >;
 
 struct EpochWorker {
+    preview_epoch: NativeEpochId,
+    preview: crate::preview::PreviewRegistry,
     session: String,
     queue: mpsc::UnboundedSender<Operation>,
     task: EpochTask,
@@ -168,6 +171,7 @@ struct EpochWorker {
 
 enum Operation {
     Invoke {
+        app_target: Option<crate::ComputerAppTarget>,
         id: u64,
         cancellation: CancellationToken,
         session: String,
@@ -235,6 +239,63 @@ struct Authorization {
     id: u64,
     events: mpsc::UnboundedSender<Event>,
     identity: Option<ScopeIdentity>,
+}
+
+impl crate::preview::PreviewAuthority for Authorization {
+    fn authorize(
+        &self,
+        subject: crate::preview::PreviewSubject,
+        cancellation: CancellationToken,
+    ) -> crate::AuthorizationFuture {
+        self.request(
+            AuthorizationMode::Check,
+            BrowserAuthorizationRequest::Preview(super::preview::AuthorizationRequest::Subject(
+                subject,
+            )),
+            cancellation,
+        )
+    }
+    fn browser_effect_scope(&self) -> Option<Arc<dyn crate::BrowserEffectScope>> {
+        Some(Arc::new(Authorization {
+            callbacks: self.callbacks.clone(),
+            id: self.id,
+            events: self.events.clone(),
+            identity: None,
+        }))
+    }
+}
+impl crate::BrowserEffectScope for Authorization {
+    fn check_session_preparation(
+        &self,
+        binding: crate::BrowserPreparationBinding,
+        cancellation: CancellationToken,
+    ) -> crate::AuthorizationFuture {
+        self.request(
+            AuthorizationMode::Check,
+            BrowserAuthorizationRequest::Preview(
+                super::preview::AuthorizationRequest::Preparation(binding),
+            ),
+            cancellation,
+        )
+    }
+}
+fn preview_registry(
+    owners: &HashMap<String, Owner>,
+    owner: &str,
+    epoch: &str,
+    session: &str,
+) -> Result<(crate::preview::PreviewRegistry, NativeEpochId), ToolError> {
+    let owner = owners
+        .get(owner)
+        .filter(|owner| owner.session == session && owner.closing.is_none())
+        .ok_or_else(|| failed("preview owner is unavailable"))?;
+    let Some(Epoch::Open(epoch)) = owner.epochs.get(epoch) else {
+        return Err(failed("preview epoch is unavailable"));
+    };
+    if epoch.closing.is_some() {
+        return Err(failed("preview epoch retired"));
+    }
+    Ok((epoch.preview.clone(), epoch.preview_epoch))
 }
 
 impl Authorization {
@@ -419,6 +480,7 @@ impl EpochWorker {
         epoch_id: String,
         callbacks: WorkerCallbacks,
     ) -> Self {
+        let (preview_epoch, preview) = local.preview_binding();
         let (queue, mut receive) = mpsc::unbounded_channel();
         let task = tokio::spawn(async move {
             let mut pending = PendingInvocations::default();
@@ -433,6 +495,7 @@ impl EpochWorker {
                 };
                 match operation {
                     Operation::Invoke {
+                        app_target,
                         id,
                         cancellation,
                         session,
@@ -483,6 +546,9 @@ impl EpochWorker {
                                                         preparation_policy,
                                                     )
                                                     .with_browser_authorization(authorization);
+                                                    if let Some(target) = app_target {
+                                                        context = context.with_app_target(target);
+                                                    }
                                                     if let Some(operation_id) = operation_id {
                                                         context =
                                                             context.with_operation_id(operation_id);
@@ -689,6 +755,8 @@ impl EpochWorker {
         .shared();
         tokio::spawn(task.clone());
         Self {
+            preview_epoch,
+            preview,
             session,
             queue,
             task,
@@ -697,6 +765,7 @@ impl EpochWorker {
     }
 
     fn close(&mut self) -> NativeCleanup {
+        self.preview.retire_epoch(self.preview_epoch);
         if self
             .closing
             .as_ref()
@@ -832,6 +901,7 @@ impl Owner {
             closing: None,
             disconnected,
             shared: Vec::new(),
+            preview_tasks: Vec::new(),
         }
     }
 
@@ -850,7 +920,8 @@ impl Owner {
                     .values_mut()
                     .map(|epoch| (epoch.close(), epoch.task()))
                     .collect();
-                let shared = std::mem::take(&mut self.shared);
+                let mut shared = std::mem::take(&mut self.shared);
+                shared.extend(std::mem::take(&mut self.preview_tasks));
                 let resources = self.resources.clone();
                 let disconnected = self.disconnected.clone();
                 let (reply, observation) = watch::channel(None);
@@ -986,6 +1057,11 @@ impl Invocations {
         self.authorizations
             .insert(id, (authorization_id, callback.reply));
         let frame = match callback.request {
+            BrowserAuthorizationRequest::Preview(request) => WorkerFrame::PreviewAuthorization {
+                id,
+                authorization_id,
+                request,
+            },
             BrowserAuthorizationRequest::Access(access) => WorkerFrame::BrowserAuthorization {
                 id,
                 authorization_id,
@@ -1093,6 +1169,25 @@ fn dispatch(
     cancellation: CancellationToken,
     context: &WorkerContext<'_>,
 ) -> Result<(), ToolError> {
+    for owner in owners.values_mut() {
+        let mut i = 0;
+        while i < owner.preview_tasks.len() {
+            if owner.preview_tasks[i].is_finished() {
+                owner
+                    .preview_tasks
+                    .swap_remove(i)
+                    .now_or_never()
+                    .expect("finished preview task")
+                    .map_err(|error| {
+                        ToolError::CleanupUnconfirmed(format!(
+                            "preview worker task failed: {error}"
+                        ))
+                    })?;
+            } else {
+                i += 1;
+            }
+        }
+    }
     let driver = context.driver;
     let events = context.events;
     let disconnected = context.disconnected;
@@ -1126,7 +1221,105 @@ fn dispatch(
         _ => {}
     }
     match request {
+        Request::PreviewWatch {
+            owner,
+            epoch,
+            session,
+            after,
+        } => {
+            let (registry, native_epoch) = preview_registry(owners, &owner, &epoch, &session)?;
+            let stop = registry.epoch_stop(native_epoch)?;
+            let events = events.clone();
+            owners.get_mut(&owner).expect("validated preview owner").preview_tasks.push(tokio::spawn(async move {
+                let result = async {
+                    let mut changed = registry.subscribe();
+                    loop {
+                        let snapshot = registry.snapshot_epoch(native_epoch);
+                        if after != Some(snapshot.revision) { return serde_json::to_value(snapshot).map_err(failed); }
+                        tokio::select! {
+                            result = changed.changed() => result.map_err(failed)?,
+                            () = stop.cancelled() => return Err(failed("preview epoch retired")),
+                            () = cancellation.cancelled() => return Err(failed("preview watch cancelled")),
+                        }
+                    }
+                }.await;
+                let _ = events.send(Event::Response {
+                    id,
+                    result: result.map_err(Failure::from),
+                    audio: None,
+                });
+            }));
+            Ok(())
+        }
+        Request::PreviewRead {
+            owner,
+            epoch,
+            session,
+            target,
+            pixels,
+        } => {
+            let (registry, native_epoch) = preview_registry(owners, &owner, &epoch, &session)?;
+            if !registry
+                .snapshot_epoch(native_epoch)
+                .targets
+                .iter()
+                .any(|current| {
+                    current.id == target.id
+                        && current.binding_id == target.binding_id
+                        && current.revision == target.revision
+                        && current.epoch == target.epoch
+                })
+            {
+                return Err(failed("preview source generation changed"));
+            }
+            let authority = Arc::new(Authorization {
+                callbacks: callbacks.clone(),
+                id,
+                events: events.clone(),
+                identity: None,
+            });
+            let events = events.clone();
+            owners
+                .get_mut(&owner)
+                .expect("validated preview owner")
+                .preview_tasks
+                .push(tokio::spawn(async move {
+                    let result = async {
+                        if pixels {
+                            let frame = registry
+                                .capture(&target.id, authority, cancellation)
+                                .await?;
+                            if frame.revision != target.revision
+                                || frame.binding_id != target.binding_id
+                            {
+                                return Err(failed("preview source generation changed"));
+                            }
+                            super::preview::encode_frame(frame)
+                        } else {
+                            registry
+                                .authorize(&target.id, authority, cancellation)
+                                .await?;
+                            if !registry.snapshot_epoch(native_epoch).targets.iter().any(
+                                |current| {
+                                    current.id == target.id && current.revision == target.revision
+                                },
+                            ) {
+                                return Err(failed("preview source generation changed"));
+                            }
+                            Ok(Value::Null)
+                        }
+                    }
+                    .await;
+                    let _ = events.send(Event::Response {
+                        id,
+                        result: result.map_err(Failure::from),
+                        audio: None,
+                    });
+                }));
+            Ok(())
+        }
         Request::Invoke {
+            app_target,
             owner,
             epoch,
             session,
@@ -1174,6 +1367,7 @@ fn dispatch(
                 return Err(failed("Computer Use Session identity mismatch"));
             }
             epoch.invoke(Operation::Invoke {
+                app_target,
                 id,
                 cancellation,
                 session,
@@ -1326,7 +1520,23 @@ fn dispatch(
             if owner.session != session {
                 return Err(failed("Computer Use Session identity mismatch"));
             }
-            owner.shared.retain(|task| !task.is_finished());
+            let mut i = 0;
+            while i < owner.preview_tasks.len() {
+                if owner.preview_tasks[i].is_finished() {
+                    owner
+                        .preview_tasks
+                        .swap_remove(i)
+                        .now_or_never()
+                        .expect("finished preview task")
+                        .map_err(|error| {
+                            ToolError::CleanupUnconfirmed(format!(
+                                "preview worker task failed: {error}"
+                            ))
+                        })?;
+                } else {
+                    i += 1;
+                }
+            }
             let drains = owner
                 .epochs
                 .values()
@@ -1597,3 +1807,6 @@ pub(super) async fn serve(
         None => status,
     }
 }
+
+#[cfg(test)]
+mod preview_tests;

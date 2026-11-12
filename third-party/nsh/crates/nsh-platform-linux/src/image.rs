@@ -877,9 +877,12 @@ pub(crate) fn set(
         }
         image.generation += 1;
         if !same_source {
+            let retain = options.retain_previous && source.is_some() && image.source.is_some();
             image.source = source.cloned();
-            image.image = None;
-            image.lease = Lease::none();
+            if !retain {
+                image.image = None;
+                image.lease = Lease::none();
+            }
             image.load = None;
             image.fade = None;
             if let Some(mut p) = image.playback.take() {
@@ -936,10 +939,9 @@ fn start(surface: &Rc<Surface>, view: &NshView) {
         let Some(image) = s.image.as_ref() else {
             return;
         };
-        let source = image
-            .source
-            .clone()
-            .filter(|_| image.image.is_none() && image.load.is_none());
+        let source = image.source.clone().filter(|_| {
+            image.load.is_none() && (image.image.is_none() || image.options.retain_previous)
+        });
         (image.generation, events, id, source, frame, image.mode)
     };
     let want = want(view, frame, mode);
@@ -1177,7 +1179,13 @@ fn loaded(
                     image.placeholder_load = None;
                 }
             }
-            Err(message) => log::warn!("image failed: {message}"),
+            Err(message) => {
+                if image.options.retain_previous {
+                    image.image = None;
+                    image.lease = Lease::none();
+                }
+                log::warn!("image failed: {message}");
+            }
         }
         (events, id, image.fade.is_some(), hook)
     };

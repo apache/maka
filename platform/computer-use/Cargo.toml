@@ -32,7 +32,6 @@ native-desktop = [
     "dep:cua-driver-sdk",
     "dep:cua-driver-core",
     "dep:libc",
-    "dep:base64",
     "dep:cursor-overlay",
     "dep:sha2",
     "dep:tempfile",
@@ -52,6 +51,7 @@ native-desktop = [
 ]
 
 [dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"], optional = true }
 sysinfo = { version = "0.31.4", default-features = false, features = ["system"], optional = true }
 anyhow = { version = "1", optional = true }
 maka-code-runtime.workspace = true
@@ -68,7 +68,7 @@ schemars.workspace = true
 uuid.workspace = true
 libc = { workspace = true, optional = true }
 reqwest.workspace = true
-base64 = { version = "0.23.1", optional = true }
+base64 = "0.23.1"
 cursor-overlay = { git = "https://github.com/maka-agent/cua", rev = "b97a7e7a97b1dabc669b7c362ba39691766df761", features = ["theme-authoring"], optional = true }
 sha2 = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
@@ -95,7 +95,6 @@ platform-windows = { git = "https://github.com/maka-agent/cua", rev = "b97a7e7a9
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Storage_FileSystem"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"], optional = true }
 platform-linux = { git = "https://github.com/maka-agent/cua", rev = "b97a7e7a97b1dabc669b7c362ba39691766df761", optional = true }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

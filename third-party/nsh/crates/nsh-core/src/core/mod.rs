@@ -4483,6 +4483,7 @@ impl<M: TextEngine> Core<M> {
                         }
                         ImageProp::BlurRadius(r) => image.options.blur_radius = r.max(Points::ZERO),
                         ImageProp::FadeDuration(ms) => image.options.fade_ms = ms,
+                        ImageProp::RetainPrevious(value) => image.options.retain_previous = value,
                     }
                     flags |= dirty::IMAGE;
                 }
@@ -6207,6 +6208,7 @@ impl<M: TextEngine> Core<M> {
                             .map(|s| s.resolved(ratio)),
                         blur_radius: image.options.blur_radius,
                         fade_ms: image.options.fade_ms,
+                        retain_previous: image.options.retain_previous,
                         position: node.view_style.object_position,
                     },
                 });

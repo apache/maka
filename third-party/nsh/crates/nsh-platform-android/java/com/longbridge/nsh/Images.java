@@ -501,7 +501,7 @@ final class Images {
 
     private void finish(String key, Image image, String error) {
         Inflight request = inflight.remove(key);
-        if (image != null && image.content instanceof Bitmap) CACHE.put(key, image);
+        if (image != null && image.content instanceof Bitmap && !key.contains(";nsh-live=1;")) CACHE.put(key, image);
         if (request == null) return;
         // Shown now: the encoded bytes are not needed any more.
         if (image != null) DATA.remove(request.uri);

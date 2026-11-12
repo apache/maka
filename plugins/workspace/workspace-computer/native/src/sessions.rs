@@ -331,7 +331,10 @@ impl NativeInterruptionObserver {
 pub(super) struct Epoch {
     pub files: Arc<super::browser_files::SessionFiles>,
     pub id: String,
+    pub native_epoch: maka_computer_use::NativeEpochId,
     pub native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
+    pub preview: maka_computer_use::preview::PreviewRegistry,
+    pub preview_authority: Mutex<Option<Arc<super::preview::Authority>>>,
     audio: Mutex<Option<Arc<AudioReceipt>>>,
     browser_preparations: Mutex<Vec<Arc<BrowserPreparationReceipt>>>,
     pub(super) native_monitors: Mutex<Vec<Arc<super::native_monitor::Receipt>>>,
@@ -395,6 +398,17 @@ impl Sessions {
             Some(repl) if !repl.is_closed() => ReplState::Ready,
             _ => ReplState::Fresh,
         }
+    }
+    pub(super) fn preview_epoch(&self, session: &str) -> Option<Arc<Epoch>> {
+        let entry = self.entries.lock().unwrap().get(session).cloned()?;
+        if entry.retiring.is_cancelled() {
+            return None;
+        }
+        let epochs = entry.epochs.lock().unwrap();
+        epochs
+            .last()
+            .filter(|epoch| !epoch.vm_joined.load(std::sync::atomic::Ordering::Acquire))
+            .cloned()
     }
     pub fn get(&self, session: &str) -> Result<Arc<Interaction>, ToolError> {
         let mut entries = self.entries.lock().unwrap();
@@ -634,7 +648,7 @@ pub(super) async fn drain_ended_turns(
 }
 
 async fn turn_ended(cleanup: &TurnCleanup) -> Result<bool, ToolError> {
-    match cleanup.authority.current().await {
+    match cleanup.authority.run_current().await {
         Ok(_) => Ok(false),
         Err(ToolError::Failed(_)) => Ok(true),
         Err(error) => Err(error),
@@ -816,6 +830,8 @@ impl Kernel {
         // Retained transport for an admitted RPC does not keep this VM's
         // automatic attached-service producer alive after reset/retirement.
         self.admission.close_admission();
+        self.epoch.preview.retire_epoch(self.epoch.native_epoch);
+        self.epoch.preview_authority.lock().unwrap().take();
         self.epoch.seal_native_monitors(None);
         let mut failures = Vec::new();
         if let Some(runtime) = self.repl
@@ -854,6 +870,9 @@ impl Interaction {
         let epoch = Arc::new(Epoch {
             files: Arc::default(),
             id: native.native_epoch().to_string(),
+            native_epoch: native.native_epoch(),
+            preview: self.native_owner.preview(),
+            preview_authority: Default::default(),
             native: Arc::new(tokio::sync::Mutex::new(native)),
             audio: Default::default(),
             browser_preparations: Default::default(),
@@ -991,6 +1010,13 @@ impl Interaction {
         // Fence fixed producers synchronously, before any sibling cleanup wait.
         for epoch in &epochs {
             epoch.seal_native_monitors(Some(&execution));
+            let mut preview = epoch.preview_authority.lock().unwrap();
+            if preview
+                .as_ref()
+                .is_some_and(|authority| authority.execution() == &execution)
+            {
+                preview.take();
+            }
         }
         let native_owner = self.native_owner.clone();
         let session = execution.session_id.clone();

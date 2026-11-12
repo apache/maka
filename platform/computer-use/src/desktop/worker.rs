@@ -22,6 +22,7 @@ mod callbacks;
 mod connection;
 #[cfg(all(target_os = "macos", feature = "native-desktop"))]
 mod macos;
+pub(in crate::desktop) mod preview;
 #[cfg(all(target_os = "macos", feature = "native-desktop"))]
 pub(crate) use macos::{MacRole, macos_finite};
 #[cfg(feature = "native-desktop")]
@@ -61,7 +62,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 const ENTRY: &str = "__maka-cua-desktop";
-const PROTOCOL: u32 = 2;
+const PROTOCOL: u32 = 3;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -76,6 +77,19 @@ struct Hello {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Request {
+    PreviewWatch {
+        owner: String,
+        epoch: String,
+        session: String,
+        after: Option<u64>,
+    },
+    PreviewRead {
+        owner: String,
+        epoch: String,
+        session: String,
+        target: crate::preview::PreviewTarget,
+        pixels: bool,
+    },
     #[cfg(all(target_os = "windows", feature = "native-desktop"))]
     NativeInvoke {
         key: native_owner::NativeKey,
@@ -95,6 +109,7 @@ pub(crate) enum Request {
         key: native_owner::NativeKey,
     },
     Invoke {
+        app_target: Option<crate::ComputerAppTarget>,
         owner: String,
         epoch: String,
         session: String,
@@ -214,6 +229,11 @@ enum ParentFrame {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum WorkerFrame {
+    PreviewAuthorization {
+        id: u64,
+        authorization_id: u64,
+        request: preview::AuthorizationRequest,
+    },
     #[cfg(all(target_os = "windows", feature = "native-desktop"))]
     NativeInterruption {
         key: native_owner::NativeKey,
@@ -325,6 +345,7 @@ fn seal_parent_callbacks(callbacks: &callbacks::ParentCallbacks, request: &Reque
     reason = "Both authorization purposes share the existing invocation queue and keep request payloads inline"
 )]
 enum BrowserAuthorizationRequest {
+    Preview(preview::AuthorizationRequest),
     Access(BrowserAccess),
     SessionPreparation {
         identity: callbacks::ScopeIdentity,

@@ -243,3 +243,28 @@
   patterns count each time they are drawn) is refused with an `svg::Error`. A panic in usvg or resvg is an
   `svg::Error` too (`catch_unwind`): the decoders run in GCD blocks and JNI functions, where an unwinding panic aborts.
   Android's decode threads also catch `OutOfMemoryError`, so a load that runs out of memory fails instead of hanging.
+
+## Live image frames
+
+Rust `ImageSrc::live_frame(mime, bytes)` reuses the native image renderer for
+continuous encoded image previews. It carries bytes directly, without a blob URL
+registry or file path. Its digest key has `;nsh-live=1;`, distinct from ordinary
+images of the same bytes. The shared desktop decoded cache and macOS filtered
+variants retain these entries only while display leases exist; their final lease
+releases the pixels, GPU copies and natural-size metadata. iOS and Android skip
+the decoded history cache for these sources. In-memory bytes bypass disk and
+encoded download caches. Normal image caching is unchanged.
+
+Changing the source or clearing/unmounting the image cancels its old waiter;
+native source-generation/key checks prevent an obsolete decode from displaying.
+An already executing platform decode can finish and release its temporary pixels.
+Callers must bound encoded size and pixel dimensions at their ingress and coalesce
+their transport to the latest frame, rather than enqueue a frame history. This is
+an image preview path, not a video codec or a browser WebCodecs pipeline.
+
+Desktop live previews may opt into Image.retainPrevious (Rust: retain_previous):
+keep the decoded picture and its budget lease while a nonempty replacement loads,
+then swap in the decoded replacement on the same node. Empty source, load failure
+and unmount clear the picture. Callers must clear or remount when changing the
+pixel owner; the renderer does not infer session or target identity. The default
+is false. LiveImage enables it inside its immutable authority lifetime.

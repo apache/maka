@@ -246,6 +246,7 @@ struct Entry<V> {
     value: V,
     cost: usize,
     leases: u32,
+    transient: bool,
     /// When it was last used (its place in `unused` while not in use).
     stamp: u64,
 }
@@ -312,6 +313,15 @@ where
     /// lease returned, and evicts what no longer fits in the budget. An
     /// entry already there is replaced, its leases carried over.
     pub fn insert(&self, key: K, value: V, cost: usize) -> Lease {
+        self.insert_with_lifetime(key, value, cost, false)
+    }
+
+    /// Keeps an entry only until its last display lease is released.
+    pub fn insert_transient(&self, key: K, value: V, cost: usize) -> Lease {
+        self.insert_with_lifetime(key, value, cost, true)
+    }
+
+    fn insert_with_lifetime(&self, key: K, value: V, cost: usize, transient: bool) -> Lease {
         let budget = &self.inner.budget;
         let stamp = budget.tick();
         let old = {
@@ -331,6 +341,7 @@ where
                     value,
                     cost,
                     leases: leases + 1,
+                    transient,
                     stamp,
                 },
             );
@@ -434,7 +445,7 @@ impl<K: Hash + Eq + Clone + Send, V: Send> Inner<K, V> {
             if entry.leases > 0 {
                 return;
             }
-            if entry.cost > self.budget.limit() {
+            if entry.transient || entry.cost > self.budget.limit() {
                 // Larger than the whole budget: it goes with its view.
                 state.entries.remove(key)
             } else {
@@ -604,6 +615,44 @@ mod tests {
     use crate::geometry::{Points, size};
 
     const MB: usize = 1 << 20;
+
+    #[test]
+    fn transient_entries_release_pixels_only_after_the_last_display_lease() {
+        let budget = Budget::new(4 * MB);
+        let released = Arc::new(Mutex::new(Vec::new()));
+        let events = released.clone();
+        let cache = MemoryCache::with_on_evict(&budget, move |key, _: &u8| {
+            events.lock().unwrap().push(*key);
+        });
+        let first = cache.insert_transient("frame", 17, MB);
+        let cloned = first.clone();
+        let (pixels, hit) = cache.get(&"frame").unwrap();
+        assert_eq!(pixels, 17);
+        drop(first);
+        drop(cloned);
+        assert!(cache.contains(&"frame"));
+        assert_eq!(budget.used(), MB);
+        assert!(released.lock().unwrap().is_empty());
+        drop(hit);
+        assert!(cache.get(&"frame").is_none());
+        assert_eq!(budget.used(), 0);
+        assert_eq!(*released.lock().unwrap(), vec!["frame"]);
+    }
+
+    #[test]
+    fn normal_entries_remain_reusable_after_their_display_lease_ends() {
+        let budget = Budget::new(MB);
+        let cache = MemoryCache::new(&budget);
+        drop(cache.insert("photo", 23_u8, MB));
+        let (pixels, lease) = cache.get(&"photo").unwrap();
+        assert_eq!(pixels, 23);
+        drop(lease);
+        assert_eq!(budget.used(), MB);
+        assert!(cache.contains(&"photo"));
+        budget.clear();
+        assert!(cache.get(&"photo").is_none());
+        assert_eq!(budget.used(), 0);
+    }
 
     #[test]
     fn unused_entries_go_oldest_first() {

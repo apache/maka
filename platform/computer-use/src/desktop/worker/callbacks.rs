@@ -284,6 +284,7 @@ pub(super) enum ParentMessage {
 
 #[derive(Clone, Default)]
 pub(super) struct ParentCapabilities {
+    pub preview: Option<Arc<dyn crate::preview::PreviewAuthority>>,
     pub files: Option<Arc<dyn crate::BrowserAssetFiles>>,
     pub native_interruption: Option<Arc<dyn crate::NativeInterruptionObserver>>,
     pub authorization: Option<Arc<dyn BrowserAuthorization>>,

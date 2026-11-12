@@ -428,7 +428,12 @@ impl<V: Clone + Send + Sync + 'static> Images<V> {
                     entry.0 = natural;
                     entry.1 += 1;
                 }
-                let lease = self.memory.insert(key.clone(), decoded.clone(), cost);
+                let lease = if super::is_live_frame(&key.source) {
+                    self.memory
+                        .insert_transient(key.clone(), decoded.clone(), cost)
+                } else {
+                    self.memory.insert(key.clone(), decoded.clone(), cost)
+                };
                 for (_, done) in take(&key) {
                     done(Ok((decoded.clone(), lease.clone())));
                 }
@@ -475,6 +480,23 @@ mod tests {
             source: source.into(),
             longest,
             frames: Frames::All,
+        }
+    }
+
+    #[test]
+    fn unobserved_live_frames_leave_no_decoded_history_or_metadata() {
+        let budget = Budget::new(1024);
+        let images = Images::new(&budget, |_, _| unreachable!());
+        for i in 0..128 {
+            let source = format!("data:image/png;nsh-live=1;nsh-key={i}");
+            let location = Location::Memory(source.clone().into(), ImageData::default());
+            for source in [source, location.key()] {
+                let frame = key(&source, 1);
+                images.decoded(frame.clone(), Ok((i, Natural::Pixels(1, 1), 4)));
+                assert!(images.memory.get(&frame).is_none());
+                assert_eq!(images.natural(&source), None);
+                assert_eq!(budget.used(), 0);
+            }
         }
     }
 

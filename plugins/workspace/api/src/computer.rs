@@ -17,6 +17,9 @@
  * under the License.
  */
 
+mod stage;
+pub use stage::*;
+
 use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -239,6 +242,9 @@ pub fn contract() -> Contract {
         transport: Transport::Remote,
         interface: Interface::Service {
             methods: BTreeMap::from([
+                stage::method::<WatchStage, StageSnapshot>("watchStage", MethodMode::Subscription),
+                stage::method::<WatchFrames, FrameNotice>("watchFrames", MethodMode::Subscription),
+                stage::method::<ReadFrame, FrameResult>("readFrame", MethodMode::Query),
                 (
                     "evaluate".into(),
                     Method {
@@ -263,7 +269,7 @@ pub fn contract() -> Contract {
                     "state".into(),
                     Method {
                         mode: MethodMode::Query,
-                        input: empty.into(),
+                        input: empty.clone().into(),
                         output: schemars::schema_for!(ReplState).into(),
                         progress: None,
                         resources: BTreeMap::new(),

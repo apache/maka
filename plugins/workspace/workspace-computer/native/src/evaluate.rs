@@ -136,6 +136,8 @@ impl Computer {
         let kernel = kernels.as_mut().expect("current Computer kernel");
         let epoch = kernel.epoch.clone();
         access::granted(self, &call, basis).await?;
+        let preview = super::preview::Authority::new(self, &call, basis).await?;
+        *epoch.preview_authority.lock().unwrap() = Some(Arc::new(preview));
         sessions::drain_ended_turns(self, &interaction, language).await?;
         sessions::watch_turn(self, &interaction, &call, language).await?;
         let platform = {

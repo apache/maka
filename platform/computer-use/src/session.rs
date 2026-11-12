@@ -18,6 +18,7 @@
  */
 
 mod native_computer;
+mod preview;
 
 use crate::{driver::Driver, protocol::*};
 use cua_driver_contract::{
@@ -73,6 +74,7 @@ impl Session {
         epoch: crate::desktop::NativeEpochId,
         owner: crate::desktop::SessionOwner,
     ) -> Self {
+        owner.preview().open_epoch(epoch);
         Self {
             raw_computer: Default::default(),
             native: native.clone(),
@@ -91,6 +93,15 @@ impl Session {
             owner,
             audio: None,
         }
+    }
+
+    pub(crate) fn preview_binding(
+        &self,
+    ) -> (
+        crate::desktop::NativeEpochId,
+        crate::preview::PreviewRegistry,
+    ) {
+        (self.epoch, self.owner.preview())
     }
 
     /// Internal service path for a retained page event, never a model command.
@@ -116,9 +127,18 @@ impl Session {
             ));
         }
         let cursor = self.owner.cursor();
-        self.browsers
+        let response = self
+            .browsers
             .adopt_extension_popup(request, invocation, &cursor, cancellation, language)
-            .await
+            .await?;
+        if let Some(value) = response.get("handle") {
+            let Handle::Tab(handle) = serde_json::from_value(value.clone()).map_err(failed)? else {
+                unreachable!("popup adoption returns a tab")
+            };
+            self.browsers
+                .publish_preview(&handle, &self.owner.preview(), invocation);
+        }
+        Ok(response)
     }
 
     async fn invoke_native(
@@ -352,9 +372,47 @@ impl Session {
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<Value, ToolError> {
+        if let Command::BrowserRelease { browser_id } = &command {
+            self.browsers
+                .retire_browser_preview(browser_id, &self.owner.preview());
+        }
+        let bound = command.bound_handle().map(|handle| match handle {
+            Handle::App(id) => Handle::App(id.clone()),
+            Handle::Tab(id) => Handle::Tab(id.clone()),
+        });
+        let binds_target = matches!(
+            &command,
+            Command::GetApp { .. }
+                | Command::GetTab { .. }
+                | Command::CreateBrowserTab { .. }
+                | Command::BrowserTab { .. }
+                | Command::BrowserSelectedTab { .. }
+                | Command::BrowserUserClaimTab { .. }
+        );
         let result = self
             .invoke_in_turn(command, invocation, cancellation, language)
             .await;
+        if let Ok(value) = &result {
+            let returned = if binds_target {
+                value
+                    .get("handle")
+                    .cloned()
+                    .map(serde_json::from_value::<Handle>)
+                    .transpose()
+                    .map_err(failed)?
+            } else {
+                None
+            };
+            if let Some(handle) = returned.or(bound) {
+                match handle {
+                    Handle::App(id) => self.publish_native_preview(&id, invocation),
+                    Handle::Tab(id) => {
+                        self.browsers
+                            .publish_preview(&id, &self.owner.preview(), invocation)
+                    }
+                }
+            }
+        }
         #[cfg(target_os = "macos")]
         if let Err(error) = result {
             return Err(
@@ -1035,6 +1093,12 @@ impl Session {
         })).collect::<Vec<_>>()))
     }
     async fn retire_target(&mut self, handle: &str) -> Result<(), ToolError> {
+        if let Some(target) = self.targets.get(handle) {
+            self.owner.preview().remove(
+                self.epoch,
+                &preview::window_key(&target.window, &target.process),
+            );
+        }
         #[cfg(target_os = "macos")]
         {
             self.raw_computer.retiring_mac_window(handle);
@@ -2187,6 +2251,7 @@ impl Session {
         result.map(|result| result.structured_content.unwrap_or(Value::Null))
     }
     pub async fn close_native(&mut self) -> Result<(), ToolError> {
+        self.owner.preview().retire_epoch(self.epoch);
         match &self.state {
             EpochState::Closed => return Ok(()),
             EpochState::Open | EpochState::Closing => {}

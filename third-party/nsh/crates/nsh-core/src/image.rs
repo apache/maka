@@ -133,6 +133,11 @@ pub(crate) fn data_key(mime: &str, bytes: &[u8]) -> String {
     key
 }
 
+/// Whether a source URI or loader cache key belongs to an uncached live frame.
+pub fn is_live_frame(key: &str) -> bool {
+    (key.starts_with("data:") || key.starts_with("inline:data:")) && key.contains(";nsh-live=1;")
+}
+
 fn base64(s: &str) -> Result<Vec<u8>, String> {
     let value = |c: u8| match c {
         b'A'..=b'Z' => Some(c - b'A'),

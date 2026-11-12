@@ -122,6 +122,21 @@ impl From<&ImageAsset> for ImageSrc {
 }
 
 impl ImageSrc {
+    /// An encoded live image frame. Decoded pixels live only while displayed;
+    /// this source owns the bytes, without registering an object URL.
+    pub fn live_frame(mime: &str, data: crate::ImageData) -> Self {
+        let source = crate::ImageSource::default().with_bytes(mime, data);
+        Self {
+            uri: source
+                .uri
+                .replace(";nsh-key=", ";nsh-live=1;nsh-key=")
+                .into(),
+            size: None,
+            scales: crate::ImageScales::NONE,
+            data: source.data,
+        }
+    }
+
     /// Whether its URL is empty: no image, as an `<Image>` whose `src`
     /// is `""` shows none.
     pub fn is_empty(&self) -> bool {

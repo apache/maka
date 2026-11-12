@@ -2845,6 +2845,38 @@ export interface ServiceMethods {
       output: Runtime.SkillLibraryChangeResult;
     };
   };
+  workspaceComputer: {
+    evaluate: {
+      mode: 'mutation';
+      input: Runtime.ComputerEvaluate;
+      output: Runtime.ComputerResult;
+    };
+    readFrame: {
+      mode: 'query';
+      input: Runtime.ComputerReadFrame;
+      output: Runtime.ComputerFrameResult;
+    };
+    reset: {
+      mode: 'mutation';
+      input: {};
+      output: Runtime.ComputerResult;
+    };
+    state: {
+      mode: 'query';
+      input: {};
+      output: Runtime.ComputerReplState;
+    };
+    watchFrames: {
+      mode: 'subscription';
+      input: Runtime.ComputerWatchFrames;
+      output: Runtime.ComputerFrameNotice;
+    };
+    watchStage: {
+      mode: 'subscription';
+      input: Runtime.ComputerWatchStage;
+      output: Runtime.ComputerStageSnapshot;
+    };
+  };
 }
 /**
  * One message the Bot deliberately sent to its user.

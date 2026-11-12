@@ -38,6 +38,12 @@ import {
 } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { CompactComposer } from './CompactComposer';
+import { Window, isAvailable as desktopAvailable } from 'nsh/desktop';
+import { ComputerStageView } from './ComputerStageView';
+import { createComputerStage, type ComputerSnapshot } from './computerStageController';
+import type { ComputerFrameSource } from './computerFrames';
+import type { UiSubscription } from '../../../../packages/plugin-sdk/src/workbench.js';
+import { computerText } from './computerText';
 import { backendName } from '../../../../products/maka/workbench/app/modelSelection';
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
@@ -2136,10 +2142,46 @@ export function createConversationUi(
       );
     },
   };
+  const computerSource = computed<ComputerFrameSource | null>(() => {
+    const sessionId = selected();
+    const service = context.services.computer?.[0];
+    if (
+      !desktopAvailable ||
+      !platform.desktop ||
+      platform.idiom === 'terminal' ||
+      !sessionId ||
+      !service
+    )
+      return null;
+    return {
+      sessionId,
+      service,
+      subscribe: () =>
+        service.subscribe('watchStage', { sessionId }) as Promise<UiSubscription<ComputerSnapshot>>,
+    };
+  });
+  const computerVisible = computed(() => {
+    const state = Window.get('main')?.state();
+    return (
+      platform.desktop &&
+      platform.idiom !== 'terminal' &&
+      state?.visible === true &&
+      !state.minimized &&
+      !reloading() &&
+      (shell()?.visible() ?? false)
+    );
+  });
+  const computer = createComputerStage({
+    source: computerSource,
+    visible: computerVisible,
+    report: (reason) => console.warn('Computer Stage:', reason),
+  });
   const previewHandle = {
-    shown: resources.shown,
-    close: () => workspace()?.close(),
-    focused: resources.focused,
+    shown: () => resources.shown(),
+    close: () => {
+      workspace()?.close();
+    },
+    focused: () => resources.focused(),
     modalSuppressed: () => workspace()?.modalSuppressed() ?? false,
   };
   return {
@@ -2154,7 +2196,7 @@ export function createConversationUi(
     preview(input: ConversationPreviewInput) {
       bind(input.shell);
       input.attach(previewHandle);
-      return runtime.renderView(
+      const workspaceView = runtime.renderView(
         context.configuration.workspace as UiTarget,
         workspaceViewContract,
         {
@@ -2176,6 +2218,18 @@ export function createConversationUi(
             return input.surface !== 'overlays';
           },
         },
+      );
+      if (input.surface !== 'overlays') return workspaceView;
+      return (
+        <>
+          <ComputerStageView
+            controller={computer}
+            source={computerSource}
+            visible={computerVisible}
+            report={(reason) => console.warn('Computer Stage:', reason)}
+          />
+          {workspaceView}
+        </>
       );
     },
     session(input: ConversationSessionInput) {
@@ -2414,6 +2468,27 @@ export function createConversationUi(
             onFileDragLeave={() => fileDragging.set(false)}
             style={input.compact ? { flexShrink: 1, minHeight: 0 } : { flex: 1, minHeight: 0 }}
           >
+            <If
+              when={
+                computer.hidden() &&
+                (computer.targets().length > 0 || computer.fault() !== null) &&
+                input.compact === undefined
+              }
+            >
+              <Button
+                accessibilityLabel={computerText('Show live view')}
+                onPress={inputAction(() => {
+                  computer.hidden.set(false);
+                }, null)}
+                style={controlStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+              >
+                <Text style={{ color: C.accent, fontSize: 12 }}>
+                  {computerText('Show live view')}
+                </Text>
+              </Button>
+            </If>
             <If when={input.compact !== undefined}>
               <CompactComposer
                 session={composerSession}

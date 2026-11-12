@@ -45,6 +45,7 @@ pub(crate) mod provider;
 use provider::Provider;
 mod playwright;
 mod screenshot;
+mod preview;
 mod surface;
 pub(crate) use ownership::Host;
 use ownership::{BrowserIdentity, TabIdentity};

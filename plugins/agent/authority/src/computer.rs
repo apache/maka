@@ -97,7 +97,30 @@ pub trait SessionAudioRetention: Send + Sync {
     fn current(&self) -> BoxFuture<'_, Result<bool, ToolError>>;
 }
 
+/// Retained read authority for one actual Run. No input, consent publication,
+/// original-call capsule or work lease can be obtained from this interface.
+pub trait ComputerPreviewAccess: Send + Sync {
+    fn execution(&self) -> &maka_agent_facts::durable::ExecutionIdentity;
+    fn current(&self) -> BoxFuture<'_, Result<ResolvedConfiguration, ToolError>>;
+    fn granted<'a>(&'a self, target: &'a GrantTarget) -> BoxFuture<'a, Result<(), ToolError>>;
+    fn native_current(&self) -> BoxFuture<'_, Result<(), ToolError>>;
+    /// Read-only status of an observed app in this exact execution and current
+    /// permission basis, independent of the observing call's input obligation.
+    /// This cannot request consent or authorize native input.
+    fn app_status<'a>(
+        &'a self,
+        operation: &'a str,
+        target: &'a maka_computer_use::ComputerAppTarget,
+    ) -> BoxFuture<'a, Result<ComputerAppStatus, ToolError>>;
+}
+
 pub trait ComputerAccess: NativeCallAccess {
+    /// Observe the creating Run's lifetime, never its settled input obligation.
+    fn run_current(&self) -> BoxFuture<'_, Result<(), ToolError>>;
+    fn retain_preview<'a>(
+        &'a self,
+        basis: &'a maka_sandbox::workspace::PermissionBasis,
+    ) -> BoxFuture<'a, Result<Arc<dyn ComputerPreviewAccess>, ToolError>>;
     fn session_audio_retention<'a>(
         &'a self,
         basis: &'a maka_sandbox::workspace::PermissionBasis,

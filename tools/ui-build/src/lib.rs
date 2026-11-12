@@ -126,6 +126,7 @@ pub fn compile(entry: &Path, output: &Path) -> Result<CompiledUi> {
         "host",
         "AttachmentPicker",
         "ComposerInput",
+        "LiveImage",
         "TerminalGrid",
         "UploadIntake",
     ]);
