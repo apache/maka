@@ -431,37 +431,34 @@ impl Owner {
         input: Input,
     ) -> Result<Value, ToolError> {
         let _gate = self.scheduler.gate.lock().await;
-        // Retain the source Session order through each bounded read or atomic write.
-        let source = if self.bot.is(&context.execution.session_id) {
-            context.execution.session_id.clone()
-        } else {
-            self.scheduler
-                .investigation()
-                .await
-                .map_err(ToolError::Failed)?
-                .1
-                .ok_or_else(|| ToolError::Failed("discovery_not_active".into()))?
-                .bot
-        };
-        let _ordered = self.runs.ordered(&source).await;
-        let runs = self.runs.state().await;
-        if runs.closing {
-            return Err(ToolError::Failed("agent_closed".into()));
-        }
-        drop(runs);
-        self.discovery_memory_locked(context, input).await
-    }
-    async fn discovery_memory_locked(
-        &self,
-        context: ToolCallContext,
-        input: Input,
-    ) -> Result<Value, ToolError> {
         let fail = ToolError::Failed;
         if !self.settings.scheduled_tasks {
             return Err(fail("scheduler_disabled".into()));
         }
         let bot = self.bot.is(&context.execution.session_id);
-        let (scope, worker) = if bot {
+        let worker = if bot {
+            None
+        } else {
+            let (revision, job) = self.scheduler.investigation().await.map_err(fail)?;
+            Some((
+                revision,
+                job.ok_or_else(|| fail("discovery_not_active".into()))?,
+            ))
+        };
+        let source = worker
+            .as_ref()
+            .map_or(context.execution.session_id.as_str(), |(_, job)| &job.bot);
+        // Retain the source Session order through each bounded read or atomic write.
+        let _ordered = self.runs.ordered(source).await;
+        if self.runs.state().await.closing {
+            return Err(fail("agent_closed".into()));
+        }
+        let scope = if let Some((_, job)) = &worker {
+            self.check_discovery_invocation(&context, job)
+                .await
+                .map_err(fail)?;
+            job_scope(job).map_err(fail)?
+        } else {
             self.check_bot_invocation(&context).await.map_err(fail)?;
             let session = self
                 .session(&context.execution.session_id)
@@ -475,21 +472,11 @@ impl Owner {
                 boundary_revision: config.boundary_revision,
                 binding: config.binding,
             };
-            (
-                scope(
-                    &target,
-                    self.settings.recall && self.tools.contains("Recall"),
-                )
-                .map_err(fail)?,
-                None,
+            scope(
+                &target,
+                self.settings.recall && self.tools.contains("Recall"),
             )
-        } else {
-            let (revision, job) = self.scheduler.investigation().await.map_err(fail)?;
-            let job = job.ok_or_else(|| fail("discovery_not_active".into()))?;
-            self.check_discovery_invocation(&context, &job)
-                .await
-                .map_err(fail)?;
-            (job_scope(&job).map_err(fail)?, Some((revision, job)))
+            .map_err(fail)?
         };
         match &input {
             Input::List {

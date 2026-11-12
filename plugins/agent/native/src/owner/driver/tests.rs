@@ -433,6 +433,9 @@ impl Rig {
                 "botOutbox",
                 "schedule",
                 "schedules",
+                "metadata",
+                "project",
+                "projects",
                 "selectBackend",
                 "stop",
             ]
