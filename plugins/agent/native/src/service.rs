@@ -93,7 +93,10 @@ impl Handler for Agent {
         }
         if matches!(
             method.as_str(),
-            "markRead"
+            "createPreset"
+                | "updatePreset"
+                | "deletePreset"
+                | "markRead"
                 | "stop"
                 | "stopComputerApp"
                 | "editQueue"
@@ -119,6 +122,17 @@ impl Handler for Agent {
                 let result: Result<HandlerValue, String> = async {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     match method.as_str() {
+                        "createPreset" => owner
+                            .create_preset(decode(input)?, context.scope())
+                            .await?
+                            .complete(&context),
+                        "updatePreset" => owner
+                            .update_preset(decode(input)?, context.scope())
+                            .await?
+                            .complete(&context),
+                        "deletePreset" => owner
+                            .delete_preset(decode(input)?, context.scope())?
+                            .complete(&context),
                         "project" => owner
                             .project(decode(input)?, context.scope())
                             .await?
@@ -205,10 +219,10 @@ impl Handler for Agent {
                                     requested: false,
                                 })?));
                             }
-                            let (requested, change) = owner
+                            owner
                                 .prepare_stop_run(&input.session_id, input.run_id, operation)
-                                .await?;
-                            complete_control(&context, encode(Stopped { requested })?, change)
+                                .await?
+                                .complete(&context)
                         }
                         "stopComputerApp" => {
                             let (value, change) = owner
@@ -229,6 +243,11 @@ impl Handler for Agent {
         }
         let result = async move {
             match method.as_str() {
+                "presets" => {
+                    let _: maka_agent_api::preset::PresetsRead = decode(input)?;
+                    encode(owner.presets().await?)
+                }
+                "preset" => encode(owner.preset(decode(input)?).await?),
                 "work" => encode(owner.work(decode(input)?).await?),
                 "workReadiness" => encode(owner.work_readiness(decode(input)?).await?),
                 "list" => encode(catalog_page(&owner, &decode(input)?).await?),

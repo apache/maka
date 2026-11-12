@@ -204,11 +204,6 @@ impl Owner {
             workspace: session.configuration.workspace.clone(),
             binding: session.configuration.binding,
             fingerprint,
-            tools: if external && !host_bridge {
-                Arc::default()
-            } else {
-                self.tool_basis.clone()
-            },
         };
         Ok(basis)
     }

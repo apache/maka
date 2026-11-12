@@ -32,7 +32,7 @@ impl NativeCapture {
             return Err(failed("preview process generation changed"));
         }
         #[cfg(target_os = "macos")]
-        {
+        objc2::rc::autoreleasepool(|_| {
             crate::macos::require_desktop_blocking()?;
             crate::macos::tcc::require(crate::macos::tcc::Grant::ScreenRecording)?;
             let PreviewSubject::Native { target, .. } = &self.subject else {
@@ -44,8 +44,8 @@ impl NativeCapture {
                 binding.window_id,
                 &binding.process_generation,
                 maka_agent_facts::language::Language::En,
-            )?;
-        }
+            )
+        })?;
         #[cfg(target_os = "linux")]
         if !crate::Driver::linux_x11_selected()
             || !platform_linux::x11::window_belongs_to_pid(binding.window_id, binding.pid)
@@ -114,10 +114,12 @@ impl Capture for NativeCapture {
                     return Err(failed("preview capture cancelled"));
                 }
                 #[cfg(target_os = "macos")]
-                let bytes = platform_macos::capture::screenshot_window_bytes(
-                    u32::try_from(capture.binding.window_id).map_err(failed)?,
-                )
-                .map_err(failed)?;
+                let bytes = objc2::rc::autoreleasepool(|_| {
+                    platform_macos::capture::screenshot_window_bytes(
+                        u32::try_from(capture.binding.window_id).map_err(failed)?,
+                    )
+                    .map_err(failed)
+                })?;
                 #[cfg(target_os = "linux")]
                 let bytes =
                     platform_linux::capture::screenshot_window_bytes(capture.binding.window_id)

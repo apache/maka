@@ -32,6 +32,24 @@ import { dirname, join } from 'node:path';
 import { checkResults, createPlan, documentation } from './ci/plan.mjs';
 import { suites } from './ci/suites.mjs';
 
+test('manual worker validation runs its suites without claiming full CI coverage', () => {
+  const plan = createPlan({ root, revision: 'head', worker: 'native-windows' });
+  assert.equal(plan.full, false);
+  assert.deepEqual(
+    plan.workers.map(({ id }) => id),
+    ['native-windows'],
+  );
+  assert.equal(plan.workers[0].runner, 'windows-latest');
+  assert.equal(plan.suites['windows-nsh'].filter, 'all()');
+  assert.equal(plan.suites.desktop.filter, suites.desktop.filter);
+  assert.equal(plan.suites.root, undefined);
+  assert.equal(plan.suites['macos-nsh'], undefined);
+  assert.throws(
+    () => createPlan({ root, revision: 'head', worker: 'missing' }),
+    /Unknown CI worker/,
+  );
+});
+
 test('worker suites all execute and preserve every failure', async () => {
   const attempted = [];
   const errors = [new Error('native compile failed'), new Error('pixel assertion failed')];

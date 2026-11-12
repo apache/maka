@@ -12,6 +12,7 @@ use rolldown::{
     plugin::Pluginable,
 };
 use rolldown_common::{ChunkFilenamesOutputOption, CodeSplittingMode, Output};
+use rolldown_error::{EventKind, Severity};
 
 use crate::{compile, compile::strip_ansi, plugin};
 
@@ -32,6 +33,9 @@ pub struct BundleOptions {
     /// otherwise the bundle holds the whole app, dynamically imported
     /// modules included.
     pub split: bool,
+    /// Fail when a dependency cannot be resolved. Registered native modules
+    /// remain imports resolved by the host.
+    pub fail_on_unresolved_imports: bool,
     /// The UI sets the hosts serve, described (`nsh_base::registry()`
     /// and an app's own, as `SetDescription`s): their modules stay imports.
     pub ui_sets: Vec<nsh_core::element::description::SetDescription>,
@@ -699,6 +703,17 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
             None => BundleError::new(e.into_vec()),
         }
     })?;
+    if options.fail_on_unresolved_imports {
+        let unresolved = output
+            .warnings
+            .into_iter()
+            .filter(|diagnostic| matches!(diagnostic.kind(), EventKind::UnresolvedImport))
+            .map(|diagnostic| diagnostic.with_severity(Severity::Error))
+            .collect::<Vec<_>>();
+        if !unresolved.is_empty() {
+            return Err(BundleError::new(unresolved));
+        }
+    }
     let mut entry_chunk = None;
     let mut chunks = Vec::new();
     for asset in output.assets {

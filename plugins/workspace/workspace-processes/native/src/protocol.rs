@@ -17,8 +17,8 @@
  * under the License.
  */
 
-//! Isolated private protocol tasks. Losing a Root observer detaches I/O;
-//! only the explicit close mutation controls the original helper group.
+//! Isolated private protocol tasks. Their original worker settles the process
+//! group on cancellation, independently of the observer and its replies.
 use super::*;
 use maka_agent_authority::executor::Error as ExecutorError;
 use maka_agent_authority::executor::ExecutorCallContext;

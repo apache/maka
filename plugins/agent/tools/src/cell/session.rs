@@ -1049,7 +1049,10 @@ impl CodeCells {
             ),
             CellObservation::Interrupted { cell_id, report } => (
                 Vec::new(),
-                json!({"state":"interrupted","cell_id":cell_id,"report":report,"heap":"expired","bindings":"invalid"}),
+                json!({
+                    "state":"interrupted","cell_id":cell_id,"diagnostic":report["diagnostic"],
+                    "heap":"expired","bindings":"invalid"
+                }),
             ),
         };
         let mut remaining = max_tokens.saturating_mul(4);

@@ -1847,6 +1847,7 @@ pub struct ToolNames {
     pub names: Vec<String>,
 }
 pub fn contract() -> Contract {
+    use crate::preset::*;
     fn method<I: JsonSchema, O: JsonSchema>(mode: MethodMode) -> Method {
         Method {
             progress: None,
@@ -1866,6 +1867,11 @@ pub fn contract() -> Contract {
         transport: Transport::Remote,
         interface: Interface::Service {
             methods: BTreeMap::from([
+                ("presets".into(), method::<PresetsRead, Vec<PresetSummary>>(MethodMode::Query)),
+                ("preset".into(), method::<PresetRead, Option<PresetDetail>>(MethodMode::Query)),
+                ("createPreset".into(), method::<PresetCreate, PresetResult>(MethodMode::Mutation)),
+                ("updatePreset".into(), method::<PresetUpdate, PresetResult>(MethodMode::Mutation)),
+                ("deletePreset".into(), method::<PresetDelete, PresetResult>(MethodMode::Mutation)),
                 ("sessionMcp".into(), method::<SessionMcp, SessionMcpAttached>(MethodMode::Subscription)),
                 ("projectMcp".into(), method::<McpRead, McpView>(MethodMode::Query)),
                 ("trustProjectMcp".into(), method::<McpTrust, McpTrustResult>(MethodMode::Mutation)),

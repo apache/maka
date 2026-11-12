@@ -527,18 +527,14 @@ impl Store {
             artifacts: Default::default(),
         })
     }
-    /// Stop this exact Run at its current head. Only its first Stop while latest
-    /// in the Session also retracts pending interactive requests.
-    pub fn prepare_stop_latest(
-        &self,
-        run: RunId,
-        change: Change,
-    ) -> maka_event_log::root_store::DataChange {
-        self.data.prepare(StopRun {
+    /// Stop this exact Run at its current head. The first Stop while latest also
+    /// retracts pending interactive requests and reports that Session fence.
+    pub fn stop_run_statement(&self, run: RunId, change: Change) -> StopRun {
+        StopRun {
             run,
             change,
             retract_pending: true,
-        })
+        }
     }
     pub async fn external_effect_descriptor(
         &self,
@@ -1341,33 +1337,43 @@ impl Statement for ObserveArtifacts {
         Admit::isolated_rejection(error)
     }
 }
-pub(crate) struct StopRun {
+#[derive(Debug)]
+pub enum StopOutcome {
+    Inactive,
+    AlreadyStopped,
+    Requested { latest: bool },
+}
+
+pub struct StopRun {
     pub(crate) run: RunId,
     pub(crate) change: Change,
     pub(crate) retract_pending: bool,
 }
 impl Statement for StopRun {
-    type Value = Commit;
-    type Output = Commit;
-    fn execute(self, c: &Connection) -> Result<Prepared<Commit>, StoreError> {
+    type Value = StopOutcome;
+    type Output = StopOutcome;
+    fn execute(self, c: &Connection) -> Result<Prepared<StopOutcome>, StoreError> {
         if !matches!(self.change.fact, Fact::StopRequested { .. }) {
             return Err(invalid("latest-head control accepts StopRequested only"));
         }
         let view = sql::load(c, self.run, &[], false)?;
         if view.terminal.is_some() || view.stopped {
             return Ok(Prepared {
-                value: Commit {
-                    head: Head::from(&view),
-                    facts: Vec::new(),
+                value: if view.stopped {
+                    StopOutcome::AlreadyStopped
+                } else {
+                    StopOutcome::Inactive
                 },
                 changed: false,
                 notification: Notification::NONE,
             });
         }
-        if self.retract_pending && sql::latest(c, view.spec.session_id.clone())? == Some(self.run) {
+        let latest =
+            self.retract_pending && sql::latest(c, view.spec.session_id.clone())? == Some(self.run);
+        if latest {
             crate::queue::retract_interactive(c, &view.spec.session_id, &self.change)?;
         }
-        let (value, changed) = sql::append(
+        let (_, changed) = sql::append(
             c,
             self.run,
             Some(Head::from(&view)),
@@ -1380,12 +1386,12 @@ impl Statement for StopRun {
             None,
         )?;
         Ok(Prepared {
-            value,
+            value: StopOutcome::Requested { latest },
             changed,
             notification: sql::notification(c, self.run, changed)?,
         })
     }
-    fn committed(value: Commit) -> Commit {
+    fn committed(value: StopOutcome) -> StopOutcome {
         value
     }
     fn isolated_rejection(error: &StoreError) -> bool {

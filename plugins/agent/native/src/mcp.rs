@@ -181,10 +181,9 @@ impl Servers {
                         preapproved: config.preapproved,
                         read_only: tool.read_only,
                         input_projection,
-                        access: None,
                     },
                 };
-                servers.registrations.push(live.registration(None));
+                servers.registrations.push(live.declaration());
                 servers.live_bindings.push(live);
             }
             servers.connections.push(connection);
@@ -224,14 +223,21 @@ impl LiveBinding {
     pub(super) fn name(&self) -> &str {
         &self.definition.name
     }
-    pub(super) fn registration(&self, access: Option<Arc<RunAccess>>) -> ToolRegistration {
-        let mut binding = self.binding.clone();
-        binding.access = access;
+    pub(super) fn declaration(&self) -> ToolRegistration {
+        self.registration(ToolHandler::Declaration(self.definition.name.clone()))
+    }
+    pub(super) fn for_run(&self, access: Arc<RunAccess>) -> ToolRegistration {
+        self.registration(ToolHandler::Prepared(Arc::new(RunBinding {
+            binding: self.binding.clone(),
+            access,
+        })))
+    }
+    fn registration(&self, handler: ToolHandler) -> ToolRegistration {
         ToolRegistration {
             definition: self.definition.clone(),
             nesting: ToolNesting::Nestable,
             semantics: ToolSemantics::Parallel,
-            handler: ToolHandler::Prepared(Arc::new(binding)),
+            handler,
         }
     }
 }
@@ -239,7 +245,6 @@ impl LiveBinding {
 #[derive(Clone)]
 struct Binding {
     connection: Connection,
-    access: Option<Arc<RunAccess>>,
     name: String,
     remote_name: String,
     server: String,
@@ -247,6 +252,10 @@ struct Binding {
     preapproved: bool,
     read_only: bool,
     input_projection: Projection,
+}
+struct RunBinding {
+    binding: Binding,
+    access: Arc<RunAccess>,
 }
 pub(crate) fn require_compatible_floor(floor: &maka_sandbox::Sandbox) -> Result<(), &'static str> {
     if matches!(floor, maka_sandbox::Sandbox::Disabled) {
@@ -264,9 +273,9 @@ fn permitted(configuration: &ResolvedConfiguration, name: &str, read_only: bool)
         .is_none_or(|names| names.iter().any(|allowed| allowed == name))
         && (configuration.permissions.access != WorkspaceAccess::ReadOnly || read_only)
 }
-impl ToolPreparer for Binding {
+impl ToolPreparer for RunBinding {
     fn names(&self) -> Vec<String> {
-        vec![self.name.clone()]
+        vec![self.binding.name.clone()]
     }
     fn prepare(
         &self,
@@ -275,17 +284,16 @@ impl ToolPreparer for Binding {
         context: ToolCallContext,
         cancellation: CancellationToken,
     ) -> PreparationFuture {
-        let connection = self.connection.clone();
+        let connection = self.binding.connection.clone();
         let access = self.access.clone();
-        let expected = self.name.clone();
-        let remote = self.remote_name.clone();
-        let server = self.server.clone();
-        let generation = self.generation.clone();
-        let read_only = self.read_only;
-        let preapproved = self.preapproved;
-        let input_projection = self.input_projection;
+        let expected = self.binding.name.clone();
+        let remote = self.binding.remote_name.clone();
+        let server = self.binding.server.clone();
+        let generation = self.binding.generation.clone();
+        let read_only = self.binding.read_only;
+        let preapproved = self.binding.preapproved;
+        let input_projection = self.binding.input_projection;
         Box::pin(async move {
-            let access = access.ok_or(ToolRejection::Unavailable)?;
             let target = access.target_for_context(&context).await.map_err(|error| {
                 ToolRejection::PreparationFailed {
                     message: error.to_string(),

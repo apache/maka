@@ -78,6 +78,8 @@ pub enum RunError {
     IsolationUnavailable(String),
     #[error("context compaction failed: {0}")]
     CompactionFailed(String),
+    #[error("pending input no longer matches the original compaction prefix or route")]
+    CompactionMismatch,
     #[error("execution cancelled")]
     Cancelled,
     #[error("model output was incomplete; local tools from this response were not executed")]

@@ -69,6 +69,7 @@ mod notifications;
 mod patches;
 mod predictions;
 mod preferences;
+mod presets;
 mod projects;
 mod queue;
 mod recall;
@@ -136,7 +137,6 @@ struct CapturedRun {
     workspace: Workspace,
     binding: maka_sandbox::workspace::BindingStamp,
     fingerprint: String,
-    tools: Arc<Vec<crate::tools::SelectedTool>>,
     language: Language,
 }
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -218,8 +218,6 @@ pub(crate) struct Owner {
     todo: Arc<todo::Todo>,
     bot: Arc<bot::Bot>,
     goals: Arc<goal::Goals>,
-    completion_epoch: std::sync::atomic::AtomicU64,
-    completion_drained: std::sync::atomic::AtomicU64,
     recap_storage: Arc<maka_host_runtime::storage::Storage>,
     auxiliary: auxiliary::Auxiliary,
     titles: title::Registry,
@@ -240,7 +238,7 @@ pub(crate) struct Owner {
     /// stands for.
     pub home: Option<std::path::PathBuf>,
     code_executor: maka_tools::CodeExecutor,
-    tools: maka_tools::ToolCatalog,
+    tools: crate::tools::Declarations,
     internal_registrations: Vec<maka_agent_facts::tools::ToolRegistration>,
     mcp: crate::mcp::Servers,
     mcp_projects: Arc<crate::mcp::Projects>,
@@ -495,30 +493,7 @@ impl Owner {
             .iter()
             .map(|tool| tool.definition.clone())
             .collect();
-        let prepared_tools = crate::tools::catalog(
-            context.services(),
-            configuration.clone(),
-            &settings.tools,
-            additional,
-            workers.clone(),
-        )
-        .and_then(|mut catalog| {
-            if settings.goals {
-                catalog.tools = catalog
-                    .tools
-                    .with_always_visible(goal::tools::NAMES)
-                    .map_err(|error| error.to_string())?;
-            }
-            // The Bot's only voice and its rules must not hide behind tool discovery.
-            // Other Sessions never select SendUser, so this does not reach them.
-            if settings.bot {
-                catalog.tools = catalog
-                    .tools
-                    .with_always_visible(&[bot::SEND_USER, bot::SLEEP])
-                    .map_err(|error| error.to_string())?;
-            }
-            Ok(catalog)
-        });
+        let prepared_tools = crate::tools::catalog(context.services(), &settings.tools, additional);
         let crate::tools::Catalog {
             tools,
             basis: tool_basis,
@@ -592,8 +567,6 @@ impl Owner {
             auxiliary,
             todo,
             bot,
-            completion_epoch: std::sync::atomic::AtomicU64::new(1),
-            completion_drained: std::sync::atomic::AtomicU64::new(0),
             recap_storage,
             scheduler,
             recall,
@@ -1182,33 +1155,26 @@ impl Owner {
         &self,
         session: &str,
         basis: &CapturedRun,
-        discovery: bool,
         editing: Option<maka_agent_facts::execution::EditingTools>,
-    ) -> Result<maka_tools::ToolCatalog, String> {
+    ) -> Result<crate::tools::Declarations, String> {
         let catalog = match &basis.mcp_catalog {
             Some(catalog) => catalog.clone(),
             None => self.mcp_projects.catalog(basis.mcp_revision.as_deref())?,
         };
-        let selected = self.select_catalog_tools(
+        Ok(self.select_catalog_tools(
             &catalog.tools,
             Some(session),
             basis.allowed_tools.as_deref(),
             editing,
-        );
-        let selected = if discovery {
-            selected.with_discovery()
-        } else {
-            selected
-        };
-        Ok(selected)
+        ))
     }
     fn select_catalog_tools(
         &self,
-        catalog: &maka_tools::ToolCatalog,
+        catalog: &crate::tools::Declarations,
         session: Option<&str>,
         allowed_tools: Option<&[String]>,
         editing: Option<maka_agent_facts::execution::EditingTools>,
-    ) -> maka_tools::ToolCatalog {
+    ) -> crate::tools::Declarations {
         let bot = session.is_some_and(|session| self.bot.is(session));
         let excluded: Vec<_> = catalog
             .definitions()
@@ -1262,14 +1228,9 @@ impl Owner {
     ) -> Option<Box<dyn maka_host_runtime::application::NativeRetirement>> {
         let producer = self.producer_gate.clone().try_lock_owned().ok()?;
         let runs = self.runs.clone().try_lock_owned().ok()?;
-        // Close makes the final probe of retained cleanup and reports any failure.
-        if self
-            .completion_epoch
-            .load(std::sync::atomic::Ordering::SeqCst)
-            != self
-                .completion_drained
-                .load(std::sync::atomic::Ordering::SeqCst)
-            || !runs.controls.is_empty()
+        // The producer gate fences actual completion delivery. Durable
+        // subscriptions can wait for work or authority across Host lifetimes.
+        if !runs.controls.is_empty()
             || !runs.preparing.is_empty()
             || !self.workers.is_empty()
             || !self.cleanup_workers.is_empty()

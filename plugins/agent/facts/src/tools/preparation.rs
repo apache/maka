@@ -303,12 +303,15 @@ pub trait ToolPreparer: Send + Sync + 'static {
 
 #[derive(Clone)]
 pub enum ToolHandler {
+    /// Validated metadata without an executable tool.
+    Declaration(String),
     Immediate(Arc<dyn ToolExecutor>),
     Prepared(Arc<dyn ToolPreparer>),
 }
 impl ToolHandler {
     pub fn names(&self) -> Vec<String> {
         match self {
+            Self::Declaration(name) => vec![name.clone()],
             Self::Immediate(executor) => executor.names(),
             Self::Prepared(preparer) => preparer.names(),
         }
@@ -322,6 +325,7 @@ impl ToolHandler {
         cancellation: CancellationToken,
     ) -> PreparationFuture {
         match self {
+            Self::Declaration(_) => Box::pin(async { Err(ToolRejection::Unavailable) }),
             Self::Immediate(executor) => {
                 let executor = executor.clone();
                 Box::pin(async move {
