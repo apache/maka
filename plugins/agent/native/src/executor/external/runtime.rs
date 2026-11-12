@@ -658,7 +658,6 @@ pub(super) struct Pipe {
     line_bytes: usize,
     parsing: Option<BoxFuture<'static, Result<Value, Error>>>,
     encoding: Option<BoxFuture<'static, Result<String, Error>>>,
-    pending_input: Option<BoxFuture<'static, Result<Value, Error>>>,
     events: std::collections::VecDeque<(Value, usize)>,
     pub cancellation: CancellationToken,
     pub retired: CancellationToken,
@@ -670,22 +669,6 @@ pub(super) struct Pipe {
     exit_deadline: Option<tokio::time::Instant>,
 }
 impl Pipe {
-    pub async fn prepare_input(
-        &mut self,
-        input: BoxFuture<'static, Result<Value, Error>>,
-    ) -> Result<Value, Error> {
-        if let Some(previous) = self.pending_input.as_mut() {
-            let _settled = previous.await;
-        }
-        self.pending_input = Some(input);
-        let result = self
-            .pending_input
-            .as_mut()
-            .expect("original pending input")
-            .await;
-        self.pending_input = None;
-        result
-    }
     pub fn turn_started(&self) {
         if let Some(observation) = &self.observation {
             observation
@@ -888,10 +871,6 @@ impl Pipe {
             let _settled = parsing.await;
         }
         self.parsing = None;
-        if let Some(input) = self.pending_input.as_mut() {
-            let _settled = input.await;
-        }
-        self.pending_input = None;
     }
     async fn drain(&mut self) -> Result<(), Error> {
         self.settle_codecs().await;
@@ -1129,7 +1108,6 @@ async fn pipe_owned<P: PipeProtocol>(
                 line_bytes: 0,
                 parsing: None,
                 encoding: None,
-                pending_input: None,
                 events: Default::default(),
                 cancellation: if interruptible {
                     CancellationToken::new()
@@ -1248,7 +1226,7 @@ fn child_error(
     }
 }
 
-async fn original_child_wait(
+pub(super) async fn original_child_wait(
     child: &mut maka_process::pipe::Child,
     observation: &Observation,
     stop: &CancellationToken,
@@ -1368,7 +1346,6 @@ async fn pipe_unowned<P: PipeProtocol>(
                     line_bytes: 0,
                     parsing: None,
                     encoding: None,
-                    pending_input: None,
                     events: Default::default(),
                     cancellation,
                     retired: retired.clone(),

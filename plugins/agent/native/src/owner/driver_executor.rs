@@ -73,7 +73,7 @@ struct FrozenInput {
     request: Request,
     recovery: Option<RecoveryDescriptor>,
     private_resource: maka_process::isolated::Descriptor,
-    publication: ExternalPublicationId,
+    publication: Option<ExternalPublicationId>,
 }
 #[derive(Serialize)]
 struct PublicationSource {
@@ -83,7 +83,7 @@ struct PublicationSource {
 struct Publications {
     send: mpsc::Sender<Result<FactId, RunError>>,
     witness: ExternalWitness,
-    publication_source: ContentBlob,
+    publication_source: Option<PendingExternalPublication>,
     authority: Option<Arc<dyn ExecutorAccess>>,
     publication: Mutex<PublicationState>,
     frozen: TaskDescriptor<FrozenInput>,
@@ -260,16 +260,14 @@ impl Publications {
         {
             return Err(Error::Unknown);
         }
-        if closure.0 == Terminal::Completed {
-            let pending = task.publication.as_ref().ok_or(Error::Unknown)?;
-            if pending.id != self.frozen.payload.publication
-                || pending.task != task.task
-                || pending.source != *self.publication_source.reference()
-            {
-                return Err(Error::Unknown);
-            }
-        } else if task.publication.is_some() {
-            return Err(Error::Unknown);
+        match (&task.publication, &self.publication_source, &closure.0) {
+            (Some(actual), Some(expected), Terminal::Completed)
+                if actual.id == expected.publication
+                    && actual.task == task.task
+                    && actual.source == *expected.source.reference() => {}
+            (None, None, Terminal::Completed) => {}
+            (None, _, Terminal::Failed | Terminal::Cancelled) => {}
+            _ => return Err(Error::Unknown),
         }
         Ok(true)
     }
@@ -352,12 +350,11 @@ impl TaskBinding for Publications {
                 publication.closed = Some(closure);
                 return Ok(());
             }
-            let pending = matches!(closure.0, Terminal::Completed).then(|| {
-                maka_agent_engine::ports::PendingExternalPublication {
-                    publication: self.frozen.payload.publication,
-                    source: self.publication_source.clone(),
-                }
-            });
+            let pending = if closure.0 == Terminal::Completed {
+                self.publication_source.clone()
+            } else {
+                None
+            };
             let committed = self
                 .publish_locked(
                     &mut publication,
@@ -597,10 +594,6 @@ impl DriverExecutor {
                 "external task workspace changed".into(),
             ));
         }
-        // A cwd, environment or CLI sandbox flag is not Host-enforced isolation.
-        self.backend
-            .validate_current_access(configuration.permissions.access)
-            .map_err(RunError::InvalidInput)?;
         let owner = self
             .access
             .owner
@@ -698,17 +691,30 @@ impl DriverExecutor {
                 },
                 ConnectionMode::Observe => (None, None),
             };
-        let publication_source = ContentBlob::json(
-            &maka_agent_facts::external_publication::ExternalPublicationSource {
-                schema_version: SCHEMA_VERSION,
-                execution: frozen.payload.request.execution.clone(),
-                task: frozen.payload.request.task_id,
-                payload: PublicationSource {
-                    resource: frozen.payload.private_resource.clone(),
-                    original_task_descriptor: task.descriptor.clone(),
-                },
-            },
-        )?;
+        if task.live_workspace != frozen.payload.publication.is_none() {
+            return Err(blocked(descriptor));
+        }
+        let publication_source = frozen
+            .payload
+            .publication
+            .map(|publication| {
+                let source = ContentBlob::json(
+                    &maka_agent_facts::external_publication::ExternalPublicationSource {
+                        schema_version: SCHEMA_VERSION,
+                        execution: frozen.payload.request.execution.clone(),
+                        task: frozen.payload.request.task_id,
+                        payload: PublicationSource {
+                            resource: frozen.payload.private_resource.clone(),
+                            original_task_descriptor: task.descriptor.clone(),
+                        },
+                    },
+                )?;
+                Ok::<_, RunError>(PendingExternalPublication {
+                    publication,
+                    source,
+                })
+            })
+            .transpose()?;
         let publications = Arc::new(Publications {
             publication_source,
             state: self.state.clone(),
@@ -736,7 +742,6 @@ impl DriverExecutor {
         let inputs = self.inputs.clone();
         let cleanup = self.cleanup.clone();
         let retained = self.retained.clone();
-        let state_root = self.state_root.clone();
         self.workers.spawn(async move {
             let work = async {
                 let settlement = if fresh {
@@ -753,7 +758,6 @@ impl DriverExecutor {
                             inputs,
                             actual,
                             isolated,
-                            &state_root,
                         )
                         .await
                         .map_err(|error| external_error(error, descriptor.clone()))?;
@@ -857,6 +861,7 @@ impl ExternalPorts for DriverExecutor {
                     "external runtime requires original message input".into(),
                 ));
             };
+            let live_workspace = self.backend.service_binding().is_none();
             let request = Request {
                 task_id: task,
                 language: view.spec.language,
@@ -875,6 +880,7 @@ impl ExternalPorts for DriverExecutor {
                     return Err(RunError::InvalidInput("original private preparation no longer matches this task and permission epoch".into()));
                 }
                 return Ok(PreparedExternal {
+                    live_workspace,
                     descriptor: prepared.descriptor.clone(),
                     contents: vec![],
                 });
@@ -887,51 +893,65 @@ impl ExternalPorts for DriverExecutor {
             let agent = self.access.owner.upgrade().ok_or_else(|| {
                 RunError::Internal("original native executor owner is unavailable".into())
             })?;
-            let managed_profile = self
-                .backend
-                .setup_binding()
-                .map_err(RunError::InvalidInput)?
-                .is_some();
-            let privacy = tokio::task::spawn_blocking(move || {
-                if managed_profile {
-                    super::setup::managed_profile_policy()
-                } else {
-                    Ok(maka_sandbox::filesystem::Policy::uniform(
-                        maka_sandbox::filesystem::Access::Write,
-                    ))
-                }
-            })
-            .await
-            .map_err(|error| RunError::Internal(error.to_string()))?
-            .map_err(|error| RunError::InvalidInput(error.to_string()))?;
-            let owner = maka_process::isolated::TaskOwner::prepare(
-                std::path::Path::new(&request.cwd),
-                &self.state_root,
-                &agent.helper,
-                &actual,
-                &privacy,
-                self.cancellation.child_token(),
-            )
-            .await
-            .map_err(isolation_error)?;
-            let capture = tokio::task::spawn_blocking(move || {
-                let capture = owner.candidate_capture()?;
-                Ok::<_, maka_process::isolated::Error>((owner, capture))
-            })
-            .await
-            .map_err(|error| RunError::Internal(error.to_string()))?
-            .map_err(isolation_error)?;
+            let source = std::path::Path::new(&request.cwd);
+            let (owner, capture) = if live_workspace {
+                let owner = maka_process::isolated::TaskOwner::prepare_live(
+                    source,
+                    &self.state_root,
+                    &agent.helper,
+                    self.cancellation.child_token(),
+                )
+                .await
+                .map_err(isolation_error)?;
+                (owner, None)
+            } else {
+                let managed_profile = self
+                    .backend
+                    .setup_binding()
+                    .map_err(RunError::InvalidInput)?
+                    .is_some();
+                let privacy = tokio::task::spawn_blocking(move || {
+                    if managed_profile {
+                        super::setup::managed_profile_policy()
+                    } else {
+                        Ok(maka_sandbox::filesystem::Policy::uniform(
+                            maka_sandbox::filesystem::Access::Write,
+                        ))
+                    }
+                })
+                .await
+                .map_err(|error| RunError::Internal(error.to_string()))?
+                .map_err(|error| RunError::InvalidInput(error.to_string()))?;
+                let owner = maka_process::isolated::TaskOwner::prepare(
+                    source,
+                    &self.state_root,
+                    &agent.helper,
+                    &actual,
+                    &privacy,
+                    self.cancellation.child_token(),
+                )
+                .await
+                .map_err(isolation_error)?;
+                tokio::task::spawn_blocking(move || {
+                    let capture = owner.candidate_capture()?;
+                    Ok::<_, maka_process::isolated::Error>((owner, Some(capture)))
+                })
+                .await
+                .map_err(|error| RunError::Internal(error.to_string()))?
+                .map_err(isolation_error)?
+            };
             if self.access.live_configuration().await?.permission_basis() != basis {
                 return Err(RunError::InvalidInput(
                     "private workspace preparation permission epoch changed".into(),
                 ));
             }
             self.fresh_authority(&request, &self.cancellation).await?;
-            let (owner, capture) = capture;
             let private_resource = owner.descriptor();
-            self.candidate_capture.set(capture).map_err(|_| {
-                RunError::InvalidInput("original private candidate owner already exists".into())
-            })?;
+            if let Some(capture) = capture {
+                self.candidate_capture.set(capture).map_err(|_| {
+                    RunError::InvalidInput("original private candidate owner already exists".into())
+                })?;
+            }
             let frozen = TaskDescriptor {
                 protocol: NATIVE_TASK_PROTOCOL.into(),
                 source: self.backend.source_identity(),
@@ -940,7 +960,7 @@ impl ExternalPorts for DriverExecutor {
                     request,
                     recovery: None,
                     private_resource,
-                    publication: ExternalPublicationId::new(),
+                    publication: (!live_workspace).then(ExternalPublicationId::new),
                 },
             };
             let descriptor = ContentBlob::json(&frozen)?;
@@ -952,6 +972,7 @@ impl ExternalPorts for DriverExecutor {
                 descriptor: descriptor.clone(),
             });
             Ok(PreparedExternal {
+                live_workspace,
                 descriptor,
                 contents: vec![],
             })
@@ -1032,11 +1053,13 @@ fn external_error(error: Error, descriptor: ContentRef) -> RunError {
         Error::Cancelled => RunError::Cancelled,
         Error::IsolationUnavailable(message) => RunError::IsolationUnavailable(message),
         Error::Blocked { reason, .. } => RunError::Blocked(reason),
-        Error::ObservationRetired
-        | Error::Unknown
-        | Error::CleanupUnconfirmed
-        | Error::Invalid(_)
-        | Error::Persistence(_) => blocked(descriptor),
+        Error::ObservationRetired | Error::Unknown | Error::CleanupUnconfirmed => {
+            blocked(descriptor)
+        }
+        error @ (Error::Invalid(_) | Error::Persistence(_)) => {
+            tracing::warn!(%error, "Original external task could not be observed");
+            blocked(descriptor)
+        }
         error => RunError::Internal(error.to_string()),
     }
 }

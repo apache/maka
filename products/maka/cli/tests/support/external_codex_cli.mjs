@@ -18,6 +18,7 @@
  */
 
 import net from 'node:net';
+import { writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
@@ -118,7 +119,12 @@ const fail = async (error) => {
 };
 socket.on('error', () => process.exit(1));
 socket.on('close', () => process.exit(finished ? 0 : 1));
-await record('hello', { cwd: process.cwd(), home: process.env.HOME, rootPid });
+await record('hello', {
+  cwd: process.cwd(),
+  home: process.env.HOME,
+  tmp: process.env.TMPDIR,
+  rootPid,
+});
 
 async function rpc(method, params, id) {
   const headers = {
@@ -238,9 +244,18 @@ async function hostEffect() {
     await response.arrayBuffer();
   }
 }
+function tokenUsage(turnId, totalTokens) {
+  return event('thread/tokenUsage/updated', {
+    threadId: thread,
+    turnId,
+    tokenUsage: { total: { totalTokens } },
+  });
+}
+
 async function terminal(status) {
   if (finished || !job) throw Error('Duplicate terminal');
   finished = true;
+  if (status === 'completed') await tokenUsage(turn, job.label === 'D' ? 15 : 10);
   await event('turn/completed', { threadId: thread, turn: { id: turn, status } });
   await record('terminal', { thread, turn, status });
   socket.end(() => process.exit(0));
@@ -253,16 +268,18 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       await record('method', { method });
       if (method === 'initialize') return reply(id, { userAgent: 'owned-codex-upstream' });
       if (method === 'initialized') return;
-      if (method === 'thread/start') {
+      if (method === 'thread/start' || method === 'thread/resume') {
         if (thread) throw Error('Second thread');
-        thread = randomUUID();
+        thread = method === 'thread/resume' ? params.threadId : randomUUID();
         mcp = params.config.mcp_servers.maka;
-        return reply(id, {
+        await reply(id, {
           thread: { id: thread },
           model: params.model,
           approvalPolicy: 'never',
           sandbox: { type: 'dangerFullAccess' },
         });
+        if (method === 'thread/resume') await tokenUsage('previous-turn', 10);
+        return;
       }
       if (method === 'thread/inject_items') {
         if (params.threadId !== thread) throw Error('Wrong instruction thread');
@@ -274,11 +291,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
           marker = text.lastIndexOf('MAKA_EXTERNAL_CASE ');
         if (marker < 0) throw Error('Missing closed test input');
         job = JSON.parse(text.slice(marker + 'MAKA_EXTERNAL_CASE '.length));
-        if (!['A', 'B', 'C'].includes(job.label)) throw Error('Unknown test scenario');
+        if (!['A', 'B', 'C', 'D'].includes(job.label)) throw Error('Unknown test scenario');
         turn = randomUUID();
         await reply(id, { turn: { id: turn } });
         await record('started', { thread, turn });
         if (job.effect) await hostEffect();
+        await writeFile('direct-write-' + job.label, job.label);
         const checkpoint = 'bound:' + thread + ':' + turn;
         await event('item/completed', {
           threadId: thread,
@@ -295,7 +313,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         await reply(id, {});
         return terminal('interrupted');
       }
-      throw Error('Unsupported method; never resume or resubmit');
+      throw Error('Unsupported method or duplicate submission');
     })
     .catch(fail);
 });
@@ -322,7 +340,8 @@ createInterface({ input: socket }).on('line', (line) => {
       }
       if (command.action === 'challenge' && job && !finished)
         return record('challenge', { nonce: command.nonce, thread, turn });
-      if (command.action === 'complete' && job?.label === 'B') return terminal('completed');
+      if (command.action === 'complete' && ['B', 'D'].includes(job?.label))
+        return terminal('completed');
       throw Error('Invalid controller action');
     })
     .catch(fail);

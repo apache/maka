@@ -1313,6 +1313,7 @@ async fn executor_progress_and_failed_result_keep_the_original_call() {
                 Fact::ExternalTaskPrepared {
                     task,
                     descriptor: descriptor.reference().clone(),
+                    live_workspace: false,
                 },
                 Fact::ExternalTaskAdmitted { task },
             ]

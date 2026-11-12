@@ -557,6 +557,8 @@ fn upsert<T: Serialize>(
 struct ExternalHeader<'a> {
     task: ExternalTaskId,
     descriptor: &'a ContentRef,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    live_workspace: bool,
     admitted: bool,
     binding: &'a Option<ContentRef>,
     observed: u64,
@@ -569,6 +571,7 @@ fn external_header(task: &fold::ExternalTask) -> Result<String, serde_json::Erro
     serde_json::to_string(&ExternalHeader {
         task: task.task,
         descriptor: &task.descriptor,
+        live_workspace: task.live_workspace,
         admitted: task.admitted,
         binding: &task.binding,
         observed: task.observed,

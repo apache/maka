@@ -43,7 +43,6 @@ pub(super) async fn execute(
     _steering: &mut steering::Steering,
     owner: maka_process::isolated::TaskOwner,
 ) -> Result<Outcome, Error> {
-    let provisional = journal.native_session().is_none();
     let mut submitted = false;
     let result = prepare(
         config,
@@ -82,9 +81,6 @@ pub(super) async fn execute(
             | Error::IsolationUnavailable(_) => return result,
             _ => {}
         }
-        if provisional && journal.native_session().is_some() {
-            journal.revoke_unsubmitted();
-        }
         if !matches!(error, Error::Cancelled) {
             return Ok(Outcome::Failed {
                 message: error.to_string(),
@@ -121,10 +117,6 @@ async fn prepare(
     #[cfg(target_os = "macos")]
     let (owner, hook) = {
         let mut owner = owner;
-        owner
-            .use_account_profile(".gemini/antigravity-cli")
-            .await
-            .map_err(runtime::isolation_error)?;
         let tmp = owner.tmp();
         let executable = owner
             .record_step_annotations(&hook_path)
@@ -326,12 +318,7 @@ async fn converse(
                     recoverable: false,
                 });
             }
-            if let Some(update) = update {
-                journal.confirm_instructions(update);
-            }
-            if !journal.bootstrap_completed() {
-                journal.complete_bootstrap();
-            }
+            journal.confirm_instructions(update).await?;
         }
         let prompt = user_message(&native_prompt(request)?);
         io.turn_started();
@@ -826,11 +813,22 @@ pub(super) async fn replay(
         .instructions
         .as_deref()
         .map(|text| journal::instruction_text(Some(text)));
-    let bootstrap_input = input.required().await?;
-    if bootstrap_input != user_message(&runtime::bootstrap_message(instructions.as_deref())) {
-        return Err(Error::Unknown);
+    let first = input.required().await?;
+    let (bootstrap_input, actual_input) = match input.next().await? {
+        Some(actual) => (Some(first), actual),
+        None => (None, first),
+    };
+    if let Some(bootstrap_input) = &bootstrap_input {
+        let instruction = runtime::bootstrap_message(instructions.as_deref());
+        let setup_only = runtime::bootstrap_message(None);
+        let clear = runtime::bootstrap_message(Some(&journal::instruction_text(None)));
+        if ![instruction, setup_only, clear]
+            .iter()
+            .any(|message| *bootstrap_input == user_message(message))
+        {
+            return Err(Error::Unknown);
+        }
     }
-    let actual_input = input.required().await?;
     if actual_input["event"] != "user"
         || actual_input
             .pointer("/message/content")
@@ -857,29 +855,31 @@ pub(super) async fn replay(
         return Err(Error::Unknown);
     }
     let mut cursor = TurnCursor::default();
-    let mut bootstrap = NativeTurn::new(
-        None,
-        false,
-        *step_annotations,
-        binding.adapter_version >= PRESENTATION_VERSION,
-    );
-    loop {
-        let event = stream.required().await?;
-        if let Some(outcome) = bootstrap
-            .event(event, conversation, &mut cursor, output, None)
-            .await?
-        {
-            if !matches!(outcome, Outcome::Completed { .. }) {
-                return Err(Error::Unknown);
+    if bootstrap_input.is_some() {
+        let mut bootstrap = NativeTurn::new(
+            None,
+            false,
+            *step_annotations,
+            binding.adapter_version >= PRESENTATION_VERSION,
+        );
+        loop {
+            let event = stream.required().await?;
+            if let Some(outcome) = bootstrap
+                .event(event, conversation, &mut cursor, output, None)
+                .await?
+            {
+                if !matches!(outcome, Outcome::Completed { .. }) {
+                    return Err(Error::Unknown);
+                }
+                break;
             }
-            break;
         }
-    }
-    if cursor
-        .highest_step
-        .is_none_or(|previous| previous >= *user_step)
-    {
-        return Err(Error::Unknown);
+        if cursor
+            .highest_step
+            .is_some_and(|previous| previous >= *user_step)
+        {
+            return Err(Error::Unknown);
+        }
     }
     let mut turn = NativeTurn::new(
         cursor.highest_step,

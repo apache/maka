@@ -50,13 +50,17 @@ impl CandidateCapture {
     pub(super) fn from_owner(owner: &TaskOwner) -> Result<Self, Error> {
         let resource = super::evidence::open_resource(&owner.resource)?;
         // Verify the original baseline identity before capturing working custody.
-        BaselineReader::from_resource(&resource, owner.snapshot.clone())?;
+        let proof = owner
+            .snapshot
+            .clone()
+            .ok_or_else(|| io::Error::other("live task has no publication candidate"))?;
+        BaselineReader::from_resource(&resource, proof.clone())?;
         let working = directory_at(&resource, OsStr::new("workspace"))?;
         Ok(Self {
             input: Arc::new(CaptureInput {
                 resource,
                 working,
-                proof: owner.snapshot.clone(),
+                proof,
             }),
         })
     }
