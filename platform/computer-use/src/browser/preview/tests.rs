@@ -242,6 +242,76 @@ impl Fixture {
     }
 }
 
+#[test]
+fn browser_inventory_runs_through_session_on_a_normal_worker_stack() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(2 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        tokio::spawn(async {
+            let fixture = Fixture::new().await;
+            let Provider::Cdp(connection) = &fixture.provider else {
+                panic!("expected loopback CDP provider")
+            };
+            let driver = Arc::new(tokio::sync::Mutex::new(crate::Driver::default()));
+            let mut session = crate::Session::new(driver);
+            session
+                .configure(
+                    maka_capabilities::computer::Desktop::Local,
+                    vec![connection.clone()],
+                    Language::En,
+                )
+                .unwrap();
+            let invocation = crate::InvocationContext::new(
+                "session",
+                "turn",
+                crate::ExecutionCorrelation::new("inventory").unwrap(),
+            );
+            let stop = CancellationToken::new();
+            let browser = session
+                .invoke(
+                    serde_json::from_value(
+                        json!({"method":"getBrowser","options":{"id":"fixture"}}),
+                    )
+                    .unwrap(),
+                    &invocation,
+                    &stop,
+                    Language::En,
+                )
+                .await
+                .unwrap();
+            assert_eq!(browser["id"], "fixture");
+            let tabs = session
+                .invoke(
+                    serde_json::from_value(
+                        json!({"method":"listTabs","options":{"browser":"fixture"}}),
+                    )
+                    .unwrap(),
+                    &invocation,
+                    &stop,
+                    Language::En,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                tabs.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|tab| (tab["id"].as_str().unwrap(), tab["url"].as_str().unwrap()))
+                    .collect::<Vec<_>>(),
+                [("fixture:tab", "https://example.test/")]
+            );
+            session.close().await.unwrap();
+            fixture.close().await;
+        })
+        .await
+        .unwrap();
+    });
+}
+
 #[tokio::test]
 async fn preview_rejects_loader_url_generation_or_grant_changes_before_delivering_pixels() {
     for change in ["loader", "url", "generation", "grant-before", "grant-after"] {

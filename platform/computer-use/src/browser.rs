@@ -44,8 +44,8 @@ mod ownership;
 pub(crate) mod provider;
 use provider::Provider;
 mod playwright;
-mod screenshot;
 mod preview;
+mod screenshot;
 mod surface;
 pub(crate) use ownership::Host;
 use ownership::{BrowserIdentity, TabIdentity};
@@ -780,7 +780,6 @@ impl Browsers {
         if let Command::BrowserRelease { browser_id } = &command {
             return self.release_browser(browser_id, turn, execution).await;
         }
-        let call = BrowserCall::new(invocation, cancellation, language);
         if matches!(
             &command,
             Command::ListBrowsers { .. }
@@ -824,221 +823,229 @@ impl Browsers {
             self.extension_errors = discovered.errors;
         }
         self.reconcile_extension_command(&command).await?;
+        self.dispatch(command, invocation, cursor, cancellation, language)
+            .await
+    }
+
+    // Return before polling: debug builds reserve separate construction stack
+    // slots for mutually exclusive branches, even when each future is boxed.
+    fn dispatch<'a>(
+        &'a mut self,
+        command: Command,
+        invocation: &'a crate::InvocationContext<'_>,
+        cursor: &'a crate::cursor::Spec,
+        cancellation: &'a CancellationToken,
+        language: Language,
+    ) -> futures_util::future::BoxFuture<'a, Result<Value, ToolError>> {
+        let turn = invocation.turn();
+        let execution = invocation.execution_correlation();
+        let call = BrowserCall::new(invocation, cancellation, language);
         match command {
             Command::BrowserViewportSet {
                 browser_id,
                 options,
-            } => Box::pin(self.set_browser_viewport(&browser_id, Some(options), call)).await,
+            } => Box::pin(async move {
+                self.set_browser_viewport(&browser_id, Some(options), call)
+                    .await
+            }),
             Command::BrowserViewportReset { browser_id } => {
-                Box::pin(self.set_browser_viewport(&browser_id, None, call)).await
+                Box::pin(async move { self.set_browser_viewport(&browser_id, None, call).await })
             }
             Command::TabPageAssetsList {
                 handle: Handle::Tab(handle),
-            } => {
-                Box::pin(async move {
-                    let identity = self
-                        .targets
-                        .get(&handle)
-                        .ok_or_else(|| failed("stale_tab: bind it again"))?
-                        .identity()?;
-                    self.use_tab(&identity, turn, execution, cancellation).await?;
-                    let tab = self.targets.get_mut(&handle).expect("checked browser tab");
-                    tab.last_turn = turn.to_owned();
-                    tab.last_execution = execution.clone();
-                    tab.page_assets_list(call).await
-                })
-                .await
-            }
+            } => Box::pin(async move {
+                let identity = self
+                    .targets
+                    .get(&handle)
+                    .ok_or_else(|| failed("stale_tab: bind it again"))?
+                    .identity()?;
+                self.use_tab(&identity, turn, execution, cancellation)
+                    .await?;
+                let tab = self.targets.get_mut(&handle).expect("checked browser tab");
+                tab.last_turn = turn.to_owned();
+                tab.last_execution = execution.clone();
+                tab.page_assets_list(call).await
+            }),
             Command::TabPageAssetsBundle {
                 handle: Handle::Tab(handle),
                 options,
-            } => {
-                Box::pin(async move {
-                    let identity = self
-                        .targets
-                        .get(&handle)
-                        .ok_or_else(|| failed("stale_tab: bind it again"))?
-                        .identity()?;
-                    self.use_tab(&identity, turn, execution, cancellation).await?;
-                    let tab = self.targets.get_mut(&handle).expect("checked browser tab");
-                    tab.last_turn = turn.to_owned();
-                    tab.last_execution = execution.clone();
-                    tab.page_assets_bundle(options, call).await
-                })
-                .await
-            }
+            } => Box::pin(async move {
+                let identity = self
+                    .targets
+                    .get(&handle)
+                    .ok_or_else(|| failed("stale_tab: bind it again"))?
+                    .identity()?;
+                self.use_tab(&identity, turn, execution, cancellation)
+                    .await?;
+                let tab = self.targets.get_mut(&handle).expect("checked browser tab");
+                tab.last_turn = turn.to_owned();
+                tab.last_execution = execution.clone();
+                tab.page_assets_bundle(options, call).await
+            }),
 
             Command::BrowserSelect { selection } => {
-                Box::pin(self.select_browser(selection)).await
+                Box::pin(async move { self.select_browser(selection).await })
             }
             Command::BrowserSelectedTab { browser_id } => {
-                Box::pin(self.selected_tab(&browser_id, call)).await
+                Box::pin(async move { self.selected_tab(&browser_id, call).await })
             }
             Command::BrowserNameSession { browser_id, name } => {
-                Box::pin(self.name_session(&browser_id, &name, call)).await
+                Box::pin(async move { self.name_session(&browser_id, &name, call).await })
             }
-            Command::BrowserHistory { browser_id, options } => {
-                Box::pin(self.user_history(&browser_id, options, call)).await
-            }
-            Command::BrowserCua { handle: Handle::Tab(handle), operation } => {
-                Box::pin(self.cua(&handle, operation, call, cursor)).await
-            }
+            Command::BrowserHistory {
+                browser_id,
+                options,
+            } => Box::pin(async move { self.user_history(&browser_id, options, call).await }),
+            Command::BrowserCua {
+                handle: Handle::Tab(handle),
+                operation,
+            } => Box::pin(async move { self.cua(&handle, operation, call, cursor).await }),
             Command::BrowserManagedTabs { browser_id } => {
-                Box::pin(self.managed_tabs(&browser_id, call)).await
+                Box::pin(async move { self.managed_tabs(&browser_id, call).await })
             }
             Command::BrowserUserOpenTabs { browser_id } => {
-                Box::pin(self.user_tabs(&browser_id)).await
+                Box::pin(async move { self.user_tabs(&browser_id).await })
             }
-            Command::BrowserScreenshot { handle: Handle::Tab(handle), options } =>
-                Box::pin(self.screenshot(&handle, options, call)).await,
+            Command::BrowserScreenshot {
+                handle: Handle::Tab(handle),
+                options,
+            } => Box::pin(async move { self.screenshot(&handle, options, call).await }),
             Command::BrowserMarkTab {
                 handle: Handle::Tab(handle),
                 status,
-            } => {
-                Box::pin(self.mark_tab(&handle, status, invocation, cancellation, language)).await
-            }
-            Command::BrowserUserGetTabContext { browser_id, tab_id } => {
-                Box::pin(self.user_tab_context(&browser_id, &tab_id, invocation, cancellation)).await
-            }
-            Command::BrowserUserClaimTab { browser_id, tab_id } => {
-                Box::pin(
-                    self.claim_user_tab(&browser_id, &tab_id, invocation, cancellation, language)
-                )
-                .await
-            }
-            Command::ListBrowsers { .. } => {
-                Box::pin(async move {
-                    let mut browsers = Vec::new();
-                    let mut failure = None;
-                    for provider in self.providers(None)? {
-                        match self.visible_inventory(&provider).await {
-                            Ok(_) => browsers.push(provider.info()),
-                            Err(error) => retain_inventory_error(&mut failure, error),
-                        }
+            } => Box::pin(async move {
+                self.mark_tab(&handle, status, invocation, cancellation, language)
+                    .await
+            }),
+            Command::BrowserUserGetTabContext { browser_id, tab_id } => Box::pin(async move {
+                self.user_tab_context(&browser_id, &tab_id, invocation, cancellation)
+                    .await
+            }),
+            Command::BrowserUserClaimTab { browser_id, tab_id } => Box::pin(async move {
+                self.claim_user_tab(&browser_id, &tab_id, invocation, cancellation, language)
+                    .await
+            }),
+            Command::ListBrowsers { .. } => Box::pin(async move {
+                let mut browsers = Vec::new();
+                let mut failure = None;
+                for provider in self.providers(None)? {
+                    match self.visible_inventory(&provider).await {
+                        Ok(_) => browsers.push(provider.info()),
+                        Err(error) => retain_inventory_error(&mut failure, error),
                     }
-                    self.append_handoff_candidate(&mut browsers).await?;
-                    if browsers.is_empty() {
-                        if let Some(error) = failure {
-                            return Err(error);
-                        }
-                        if !self.extension_errors.is_empty() {
-                            return Err(failed(self.extension_errors.join("\n")));
-                        }
-                    }
-                    Ok(json!(browsers))
-                })
-                .await
-            }
-            Command::ListTabs { options } => {
-                Box::pin(async move {
-                    let mut tabs = Vec::new();
-                    for provider in self.providers(options.browser.as_deref())? {
-                        let (_, listed) = self.visible_inventory(&provider).await?;
-                        tabs.extend(listed.iter().map(|tab| tab_info(&provider, tab)));
-                    }
-                    Ok(json!(tabs))
-                })
-                .await
-            }
-            Command::GetBrowser { options } => {
-                Box::pin(async move {
-                    if options.id.is_none()
-                        && let Some(url) = options.url
-                    {
-                        normalized_url(&url)?;
-                    }
-                    let id = options.id.as_deref();
-                    let fallback = id == Some("opencli")
-                        && options.extension_instance_id.is_none()
-                        && !self
-                            .providers(None)?
-                            .iter()
-                            .any(|provider| provider.id() == "opencli");
-                    let mut matches = Vec::new();
-                    let mut failure = None;
-                    for provider in self.providers(if fallback { None } else { id })? {
-                        if options.extension_instance_id.as_deref().is_some_and(|id| {
-                            provider
-                                .extension()
-                                .is_none_or(|extension| extension.identity().instance_id != id)
-                        }) {
-                            continue;
-                        }
-                        match self.visible_inventory(&provider).await {
-                            Ok(_) => matches.push(provider),
-                            Err(error) => retain_inventory_error(&mut failure, error),
-                        }
-                    }
-                    if matches.is_empty()
-                        && let Some(error) = failure
-                    {
+                }
+                self.append_handoff_candidate(&mut browsers).await?;
+                if browsers.is_empty() {
+                    if let Some(error) = failure {
                         return Err(error);
                     }
-                    if matches.len() != 1 {
-                        return Err(failed(match language {
-                            Language::En => {
-                                "browser selection is ambiguous or missing; select an ID from listBrowsers"
-                            }
-                            Language::ZhCn => "浏览器选择不明确或缺失；请从 listBrowsers 选择 ID",
-                            Language::ZhTw => "瀏覽器選擇不明確或缺少；請從 listBrowsers 選擇 ID",
-                        }));
+                    if !self.extension_errors.is_empty() {
+                        return Err(failed(self.extension_errors.join("\n")));
                     }
-                    Ok(matches[0].info())
-                })
-                .await
-            }
+                }
+                Ok(json!(browsers))
+            }),
+            Command::ListTabs { options } => Box::pin(async move {
+                let mut tabs = Vec::new();
+                for provider in self.providers(options.browser.as_deref())? {
+                    let (_, listed) = self.visible_inventory(&provider).await?;
+                    tabs.extend(listed.iter().map(|tab| tab_info(&provider, tab)));
+                }
+                Ok(json!(tabs))
+            }),
+            Command::GetBrowser { options } => Box::pin(async move {
+                if options.id.is_none()
+                    && let Some(url) = options.url
+                {
+                    normalized_url(&url)?;
+                }
+                let id = options.id.as_deref();
+                let fallback = id == Some("opencli")
+                    && options.extension_instance_id.is_none()
+                    && !self
+                        .providers(None)?
+                        .iter()
+                        .any(|provider| provider.id() == "opencli");
+                let mut matches = Vec::new();
+                let mut failure = None;
+                for provider in self.providers(if fallback { None } else { id })? {
+                    if options.extension_instance_id.as_deref().is_some_and(|id| {
+                        provider
+                            .extension()
+                            .is_none_or(|extension| extension.identity().instance_id != id)
+                    }) {
+                        continue;
+                    }
+                    match self.visible_inventory(&provider).await {
+                        Ok(_) => matches.push(provider),
+                        Err(error) => retain_inventory_error(&mut failure, error),
+                    }
+                }
+                if matches.is_empty()
+                    && let Some(error) = failure
+                {
+                    return Err(error);
+                }
+                if matches.len() != 1 {
+                    return Err(failed(match language {
+                        Language::En => {
+                            "browser selection is ambiguous or missing; select an ID from listBrowsers"
+                        }
+                        Language::ZhCn => "浏览器选择不明确或缺失；请从 listBrowsers 选择 ID",
+                        Language::ZhTw => "瀏覽器選擇不明確或缺少；請從 listBrowsers 選擇 ID",
+                    }));
+                }
+                Ok(matches[0].info())
+            }),
             Command::BrowserTab {
                 browser_id,
                 reference,
-            } => {
-                Box::pin(async move {
-                    let provider = self.providers(Some(&browser_id))?[0].clone();
-                    match reference {
-                        BrowserTabReference::New => {
-                            self.create(
-                                provider,
-                                None,
-                                InitialState::Deferred,
-                                invocation,
-                                cancellation,
-                                language,
-                            )
-                            .await
-                        }
-                        BrowserTabReference::Existing(id) => {
-                            if id.is_empty() {
-                                return Err(failed("tab ID is required"));
-                            }
-                            let (generation, info) = match provider.extension() {
-                                Some(_) => self.extension_exact_metadata(&provider, &id, call).await?,
-                                None => {
-                                    let (generation, tabs) = provider.inventory().await?;
-                                    let info = tabs
-                                        .into_iter()
-                                        .find(|tab| tab_matches(&provider, tab, &id))
-                                        .ok_or_else(|| {
-                                            failed("tab is unavailable in the selected browser")
-                                        })?;
-                                    (generation, info)
-                                }
-                            };
-                            self.bind(
-                                TabSource {
-                                    provider,
-                                    generation,
-                                    info,
-                                },
-                                InitialState::Deferred,
-                                invocation,
-                                cancellation,
-                                language,
-                            )
-                            .await
-                        }
+            } => Box::pin(async move {
+                let provider = self.providers(Some(&browser_id))?[0].clone();
+                match reference {
+                    BrowserTabReference::New => {
+                        self.create(
+                            provider,
+                            None,
+                            InitialState::Deferred,
+                            invocation,
+                            cancellation,
+                            language,
+                        )
+                        .await
                     }
-                })
-                .await
-            }
+                    BrowserTabReference::Existing(id) => {
+                        if id.is_empty() {
+                            return Err(failed("tab ID is required"));
+                        }
+                        let (generation, info) = match provider.extension() {
+                            Some(_) => self.extension_exact_metadata(&provider, &id, call).await?,
+                            None => {
+                                let (generation, tabs) = provider.inventory().await?;
+                                let info = tabs
+                                    .into_iter()
+                                    .find(|tab| tab_matches(&provider, tab, &id))
+                                    .ok_or_else(|| {
+                                        failed("tab is unavailable in the selected browser")
+                                    })?;
+                                (generation, info)
+                            }
+                        };
+                        self.bind(
+                            TabSource {
+                                provider,
+                                generation,
+                                info,
+                            },
+                            InitialState::Deferred,
+                            invocation,
+                            cancellation,
+                            language,
+                        )
+                        .await
+                    }
+                }
+            }),
             command @ (Command::ClipboardRead {
                 handle: Handle::Tab(_),
             }
@@ -1052,73 +1059,85 @@ impl Browsers {
             | Command::ClipboardWriteText {
                 handle: Handle::Tab(_),
                 ..
-            }) => {
-                Box::pin(async move {
-                    let handle = match &command {
-                        Command::ClipboardRead {
-                            handle: Handle::Tab(handle),
-                        }
-                        | Command::ClipboardReadText {
-                            handle: Handle::Tab(handle),
-                        }
-                        | Command::ClipboardWrite {
-                            handle: Handle::Tab(handle),
-                            ..
-                        }
-                        | Command::ClipboardWriteText {
-                            handle: Handle::Tab(handle),
-                            ..
-                        } => handle,
-                        _ => unreachable!(),
-                    };
-                    let identity = self
-                        .targets
-                        .get(handle)
-                        .ok_or_else(|| failed("stale_tab: bind it again"))?
-                        .identity()?;
-                    self.use_tab(&identity, turn, execution, cancellation).await?;
-                    let tab = self.targets.get_mut(handle).unwrap();
-                    tab.last_turn = turn.to_owned();
-                    tab.last_execution = execution.clone();
-                    tab.authorize(None, invocation, cancellation, language)
-                        .await?;
-                    tab.ensure_clipboard_bridge(turn, call).await?;
-                    check_input(cancellation)?;
-                    let store = &tab.clipboard_store;
-                    store
-                        .access(|items| {
-                            check_input(cancellation)?;
-                            match command {
-                                Command::ClipboardRead { .. } => Ok(json!(items)),
-                                Command::ClipboardReadText { .. } => Ok(json!(
-                                    items
-                                        .iter()
-                                        .flat_map(ClipboardItem::entries)
-                                        .find(|entry| entry.mime_type() == "text/plain")
-                                        .and_then(|entry| match entry.payload() {
-                                            ClipboardPayload::Text { text } => Some(text.as_str()),
-                                            ClipboardPayload::Base64 { .. } => None,
-                                        })
-                                        .unwrap_or_default()
-                                )),
-                                Command::ClipboardWrite {
-                                    items: replacement, ..
-                                } => {
-                                    *items = replacement.into_vec();
-                                    Ok(Value::Null)
-                                }
-                                Command::ClipboardWriteText { text, .. } => {
-                                    *items = ClipboardItems::text(text).into_vec();
-                                    Ok(Value::Null)
-                                }
-                                _ => unreachable!(),
+            }) => Box::pin(async move {
+                let handle = match &command {
+                    Command::ClipboardRead {
+                        handle: Handle::Tab(handle),
+                    }
+                    | Command::ClipboardReadText {
+                        handle: Handle::Tab(handle),
+                    }
+                    | Command::ClipboardWrite {
+                        handle: Handle::Tab(handle),
+                        ..
+                    }
+                    | Command::ClipboardWriteText {
+                        handle: Handle::Tab(handle),
+                        ..
+                    } => handle,
+                    _ => unreachable!(),
+                };
+                let identity = self
+                    .targets
+                    .get(handle)
+                    .ok_or_else(|| failed("stale_tab: bind it again"))?
+                    .identity()?;
+                self.use_tab(&identity, turn, execution, cancellation)
+                    .await?;
+                let tab = self.targets.get_mut(handle).unwrap();
+                tab.last_turn = turn.to_owned();
+                tab.last_execution = execution.clone();
+                tab.authorize(None, invocation, cancellation, language)
+                    .await?;
+                tab.ensure_clipboard_bridge(turn, call).await?;
+                check_input(cancellation)?;
+                let store = &tab.clipboard_store;
+                store
+                    .access(|items| {
+                        check_input(cancellation)?;
+                        match command {
+                            Command::ClipboardRead { .. } => Ok(json!(items)),
+                            Command::ClipboardReadText { .. } => Ok(json!(
+                                items
+                                    .iter()
+                                    .flat_map(ClipboardItem::entries)
+                                    .find(|entry| entry.mime_type() == "text/plain")
+                                    .and_then(|entry| match entry.payload() {
+                                        ClipboardPayload::Text { text } => Some(text.as_str()),
+                                        ClipboardPayload::Base64 { .. } => None,
+                                    })
+                                    .unwrap_or_default()
+                            )),
+                            Command::ClipboardWrite {
+                                items: replacement, ..
+                            } => {
+                                *items = replacement.into_vec();
+                                Ok(Value::Null)
                             }
-                        })
-                        .await
-                })
+                            Command::ClipboardWriteText { text, .. } => {
+                                *items = ClipboardItems::text(text).into_vec();
+                                Ok(Value::Null)
+                            }
+                            _ => unreachable!(),
+                        }
+                    })
+                    .await
+            }),
+            Command::BrowserFileChooserSetFiles {
+                handle,
+                file_chooser_id,
+                files,
+                options,
+            } => Box::pin(async move {
+                self.set_file_chooser_files(
+                    handle,
+                    file_chooser_id,
+                    files,
+                    options,
+                    BrowserCall::new(invocation, cancellation, language),
+                )
                 .await
-            }
-            Command::BrowserFileChooserSetFiles {handle,file_chooser_id,files,options} => Box::pin(self.set_file_chooser_files(handle,file_chooser_id,files,options,BrowserCall::new(invocation,cancellation,language))).await,
+            }),
             Command::BrowserDownloadPath {
                 handle: Handle::Tab(handle),
                 scope,
@@ -1128,14 +1147,19 @@ impl Browsers {
                 Box::pin(async move {
                     // Check actual acquisition history before use_tab can update
                     // the logical lease's recorded turn.
-                    self.check_download_tab_lease(&handle, invocation.turn(), invocation.execution_correlation())
-                        .await?;
+                    self.check_download_tab_lease(
+                        &handle,
+                        invocation.turn(),
+                        invocation.execution_correlation(),
+                    )
+                    .await?;
                     let identity = self
                         .targets
                         .get(&handle)
                         .ok_or_else(|| failed("stale_tab: bind it again"))?
                         .identity()?;
-                    self.use_tab(&identity, turn, execution, cancellation).await?;
+                    self.use_tab(&identity, turn, execution, cancellation)
+                        .await?;
                     let tab = self
                         .targets
                         .get_mut(&handle)
@@ -1152,134 +1176,156 @@ impl Browsers {
                         .path(self.owner, &identity.browser, &scope, &download_id)
                         .await
                 })
-                .await
             }
             Command::BrowserDownloadMedia {
                 handle: Handle::Tab(handle),
                 target,
                 options,
-            } => {
-                Box::pin(async move {
-                    let identity = self
-                        .targets
-                        .get(&handle)
-                        .ok_or_else(|| failed("stale_tab: bind it again"))?
-                        .identity()?;
-                    self.use_tab(&identity, turn, execution, cancellation).await?;
-                    let tab = self
-                        .targets
-                        .get_mut(&handle)
-                        .expect("checked browser handle");
-                    match target {
-                        BrowserMediaTarget::Locator { locator } => {
-                            tab.last_turn = turn.to_owned();
-                    tab.last_execution = execution.clone();
-                            tab.authorize(None, invocation, cancellation, language)
-                                .await?;
-                            tab.verify(BrowserCall::new(invocation, cancellation, language))
-                                .await?;
-                            let document = tab.document();
-                            tab.playwright_download_media(&locator, &options, document, call)
-                                .await
-                        }
-                        BrowserMediaTarget::Coordinates { .. } | BrowserMediaTarget::DomNode { .. } => {
-                            let command = if matches!(target, BrowserMediaTarget::Coordinates { .. }) {
-                                "cua_download_media"
-                            } else {
-                                "dom_cua_download_media"
-                            };
-                            let info = tab.provider.info();
-                            let name = info["name"].as_str().unwrap_or("Browser");
-                            Err(failed(format!(
-                                "{name} does not support command \"{command}\"."
-                            )))
-                        }
+            } => Box::pin(async move {
+                let identity = self
+                    .targets
+                    .get(&handle)
+                    .ok_or_else(|| failed("stale_tab: bind it again"))?
+                    .identity()?;
+                self.use_tab(&identity, turn, execution, cancellation)
+                    .await?;
+                let tab = self
+                    .targets
+                    .get_mut(&handle)
+                    .expect("checked browser handle");
+                match target {
+                    BrowserMediaTarget::Locator { locator } => {
+                        tab.last_turn = turn.to_owned();
+                        tab.last_execution = execution.clone();
+                        tab.authorize(None, invocation, cancellation, language)
+                            .await?;
+                        tab.verify(BrowserCall::new(invocation, cancellation, language))
+                            .await?;
+                        let document = tab.document();
+                        tab.playwright_download_media(&locator, &options, document, call)
+                            .await
                     }
-                })
-                .await
-            }
+                    BrowserMediaTarget::Coordinates { .. } | BrowserMediaTarget::DomNode { .. } => {
+                        let command = if matches!(target, BrowserMediaTarget::Coordinates { .. }) {
+                            "cua_download_media"
+                        } else {
+                            "dom_cua_download_media"
+                        };
+                        let info = tab.provider.info();
+                        let name = info["name"].as_str().unwrap_or("Browser");
+                        Err(failed(format!(
+                            "{name} does not support command \"{command}\"."
+                        )))
+                    }
+                }
+            }),
             Command::BrowserMutation {
                 handle: Handle::Tab(handle),
                 locator,
                 operation,
-            } => {
-                Box::pin(async move {
-                    playwright::validate_mutation(&operation)?;
-                    let identity = self
-                        .targets
-                        .get(&handle)
-                        .ok_or_else(|| failed("stale_tab: bind it again"))?
-                        .identity()?;
-                    self.use_tab(&identity, turn, execution, cancellation).await?;
-                    let tab = self.targets.get_mut(&handle).unwrap();
-                    tab.last_turn = turn.to_owned();
-                    tab.last_execution = execution.clone();
-                    tab.authorize(None, invocation, cancellation, language)
-                        .await?;
-                    let document = tab.document();
-                    tab.playwright_mutation(&locator, operation, document, cursor, call)
-                        .await
-                })
-                .await
-            }
+            } => Box::pin(async move {
+                playwright::validate_mutation(&operation)?;
+                let identity = self
+                    .targets
+                    .get(&handle)
+                    .ok_or_else(|| failed("stale_tab: bind it again"))?
+                    .identity()?;
+                self.use_tab(&identity, turn, execution, cancellation)
+                    .await?;
+                let tab = self.targets.get_mut(&handle).unwrap();
+                tab.last_turn = turn.to_owned();
+                tab.last_execution = execution.clone();
+                tab.authorize(None, invocation, cancellation, language)
+                    .await?;
+                let document = tab.document();
+                tab.playwright_mutation(&locator, operation, document, cursor, call)
+                    .await
+            }),
             Command::BrowserEvaluate {
-                handle: Handle::Tab(handle), locator, mode, script_json, options,
+                handle: Handle::Tab(handle),
+                locator,
+                mode,
+                script_json,
+                options,
             } => Box::pin(async move {
                 if (mode == BrowserEvaluateMode::Page) != locator.is_none() {
-                    return Err(failed("browser evaluation mode does not match its selector scope"));
+                    return Err(failed(
+                        "browser evaluation mode does not match its selector scope",
+                    ));
                 }
-                let identity = self.targets.get(&handle)
-                    .ok_or_else(|| failed("stale_tab: bind it again"))?.identity()?;
-                self.use_tab(&identity, turn, execution, cancellation).await?;
-                let tab = self.targets.get_mut(&handle).expect("checked browser handle");
+                let identity = self
+                    .targets
+                    .get(&handle)
+                    .ok_or_else(|| failed("stale_tab: bind it again"))?
+                    .identity()?;
+                self.use_tab(&identity, turn, execution, cancellation)
+                    .await?;
+                let tab = self
+                    .targets
+                    .get_mut(&handle)
+                    .expect("checked browser handle");
                 tab.last_turn = turn.to_owned();
-                    tab.last_execution = execution.clone();
-                let mut budget = Some(ReadBudget { remaining:options.budget()? });
-                tab.authorize_with_budget(None,invocation,cancellation,language,
-                    extension::ClaimIntent::Implicit,&mut budget).await?;
-                tab.playwright_evaluate(locator.as_ref(),mode,&script_json,&options,
-                    budget.expect("evaluate budget remains owned by this call"),call).await
-            }).await,
+                tab.last_execution = execution.clone();
+                let mut budget = Some(ReadBudget {
+                    remaining: options.budget()?,
+                });
+                tab.authorize_with_budget(
+                    None,
+                    invocation,
+                    cancellation,
+                    language,
+                    extension::ClaimIntent::Implicit,
+                    &mut budget,
+                )
+                .await?;
+                tab.playwright_evaluate(
+                    locator.as_ref(),
+                    mode,
+                    &script_json,
+                    &options,
+                    budget.expect("evaluate budget remains owned by this call"),
+                    call,
+                )
+                .await
+            }),
 
             Command::BrowserRead {
                 handle: Handle::Tab(handle),
                 locator,
                 operation,
                 options,
-            } => {
-                Box::pin(async move {
-                    playwright::validate(&operation, &options)?;
-                    let identity = self
-                        .targets
-                        .get(&handle)
-                        .ok_or_else(|| failed("stale_tab: bind it again"))?
-                        .identity()?;
-                    self.use_tab(&identity, turn, execution, cancellation).await?;
-                    let tab = self.targets.get_mut(&handle).unwrap();
-                    tab.last_turn = turn.to_owned();
-                    tab.last_execution = execution.clone();
-                    let mut budget = Some(ReadBudget::new(&options)?);
-                    tab.authorize_with_budget(
-                        None,
-                        invocation,
-                        cancellation,
-                        language,
-                        extension::ClaimIntent::Implicit,
-                        &mut budget,
-                    )
+            } => Box::pin(async move {
+                playwright::validate(&operation, &options)?;
+                let identity = self
+                    .targets
+                    .get(&handle)
+                    .ok_or_else(|| failed("stale_tab: bind it again"))?
+                    .identity()?;
+                self.use_tab(&identity, turn, execution, cancellation)
                     .await?;
-                    let document = tab.document();
-                    tab.playwright_read(
-                        &locator,
-                        operation,
-                        budget.expect("read budget remains owned by this call"),
-                        document,
-                        call,
-                    )
-                    .await
-                })
+                let tab = self.targets.get_mut(&handle).unwrap();
+                tab.last_turn = turn.to_owned();
+                tab.last_execution = execution.clone();
+                let mut budget = Some(ReadBudget::new(&options)?);
+                tab.authorize_with_budget(
+                    None,
+                    invocation,
+                    cancellation,
+                    language,
+                    extension::ClaimIntent::Implicit,
+                    &mut budget,
+                )
+                .await?;
+                let document = tab.document();
+                tab.playwright_read(
+                    &locator,
+                    operation,
+                    budget.expect("read budget remains owned by this call"),
+                    document,
+                    call,
+                )
                 .await
-            }
+            }),
             command @ (Command::GetJsDialog {
                 handle: Handle::Tab(_),
                 ..
@@ -1287,80 +1333,78 @@ impl Browsers {
             | Command::HandleJsDialog {
                 handle: Handle::Tab(_),
                 ..
-            }) => {
-                Box::pin(async move {
-                    let handle = match &command {
-                        Command::GetJsDialog {
-                            handle: Handle::Tab(handle),
-                        }
-                        | Command::HandleJsDialog {
-                            handle: Handle::Tab(handle),
-                            ..
-                        } => handle,
-                        _ => unreachable!(),
-                    };
-                    let identity = self
-                        .targets
-                        .get(handle)
-                        .ok_or_else(|| failed("stale_tab: bind it again"))?
-                        .identity()?;
-                    self.use_tab(&identity, turn, execution, cancellation).await?;
-                    let tab = self.targets.get_mut(handle).unwrap();
-                    tab.last_turn = turn.to_owned();
-                    tab.last_execution = execution.clone();
-                    tab.authorize(None, invocation, cancellation, language)
-                        .await?;
-                    if let Some(controller) = &tab.dialogs {
-                        controller.link.synchronize().await;
+            }) => Box::pin(async move {
+                let handle = match &command {
+                    Command::GetJsDialog {
+                        handle: Handle::Tab(handle),
                     }
-                    match command {
-                        Command::GetJsDialog { .. } => Ok(tab
-                            .dialogs
-                            .as_ref()
-                            .and_then(|controller| controller.link.state.current())
-                            .map(|dialog| json!(dialog.metadata))
-                            .unwrap_or(Value::Null)),
-                        Command::HandleJsDialog {
-                            dialog_id,
-                            action,
-                            prompt_text,
-                            ..
-                        } => {
-                            tab.handle_dialog(&dialog_id, action, prompt_text, invocation, cancellation)
-                                .await
-                        }
-                        _ => unreachable!(),
+                    | Command::HandleJsDialog {
+                        handle: Handle::Tab(handle),
+                        ..
+                    } => handle,
+                    _ => unreachable!(),
+                };
+                let identity = self
+                    .targets
+                    .get(handle)
+                    .ok_or_else(|| failed("stale_tab: bind it again"))?
+                    .identity()?;
+                self.use_tab(&identity, turn, execution, cancellation)
+                    .await?;
+                let tab = self.targets.get_mut(handle).unwrap();
+                tab.last_turn = turn.to_owned();
+                tab.last_execution = execution.clone();
+                tab.authorize(None, invocation, cancellation, language)
+                    .await?;
+                if let Some(controller) = &tab.dialogs {
+                    controller.link.synchronize().await;
+                }
+                match command {
+                    Command::GetJsDialog { .. } => Ok(tab
+                        .dialogs
+                        .as_ref()
+                        .and_then(|controller| controller.link.state.current())
+                        .map(|dialog| json!(dialog.metadata))
+                        .unwrap_or(Value::Null)),
+                    Command::HandleJsDialog {
+                        dialog_id,
+                        action,
+                        prompt_text,
+                        ..
+                    } => {
+                        tab.handle_dialog(&dialog_id, action, prompt_text, invocation, cancellation)
+                            .await
                     }
-                })
-                .await
-            }
+                    _ => unreachable!(),
+                }
+            }),
             Command::TabMetadata {
                 handle: Handle::Tab(handle),
-            } => {
-                Box::pin(async move {
-                    let identity = self
-                        .targets
-                        .get(&handle)
-                        .ok_or_else(|| failed("stale_tab: bind it again"))?
-                        .identity()?;
-                    self.use_tab(&identity, turn, execution, cancellation).await?;
-                    let tab = self.targets.get_mut(&handle).unwrap();
-                    tab.last_turn = turn.to_owned();
-                    tab.last_execution = execution.clone();
-                    tab.refresh_info(call).await?;
-                    if let Some(extension) = &tab.info.extension {
-                        Ok(extension::tab_info(extension))
-                    } else {
-                        Ok(json!({"titleJson":tab.info.title,"url":tab.info.url}))
-                    }
-                })
-                .await
-            }
+            } => Box::pin(async move {
+                let identity = self
+                    .targets
+                    .get(&handle)
+                    .ok_or_else(|| failed("stale_tab: bind it again"))?
+                    .identity()?;
+                self.use_tab(&identity, turn, execution, cancellation)
+                    .await?;
+                let tab = self.targets.get_mut(&handle).unwrap();
+                tab.last_turn = turn.to_owned();
+                tab.last_execution = execution.clone();
+                tab.refresh_info(call).await?;
+                if let Some(extension) = &tab.info.extension {
+                    Ok(extension::tab_info(extension))
+                } else {
+                    Ok(json!({"titleJson":tab.info.title,"url":tab.info.url}))
+                }
+            }),
             Command::GetTab { reference, options } => {
                 Box::pin(async move {
                     let mut matches = Vec::new();
                     for provider in self.providers(options.browser.as_deref())? {
-                        if provider.extension().is_some() && matches!(&reference, TabReference::Id(_)) {
+                        if provider.extension().is_some()
+                            && matches!(&reference, TabReference::Id(_))
+                        {
                             let (generation, tabs) =
                                 self.extension_session_metadata(&provider, call).await?;
                             if let Some(tab) = tabs.into_iter().find(|tab| match &reference {
@@ -1415,7 +1459,13 @@ impl Browsers {
                             .await?
                     {
                         let bound = self
-                            .claim_user_tab(provider.id(), &tab.id, invocation, cancellation, language)
+                            .claim_user_tab(
+                                provider.id(),
+                                &tab.id,
+                                invocation,
+                                cancellation,
+                                language,
+                            )
                             .await?;
                         let Handle::Tab(handle) =
                             serde_json::from_value(bound["handle"].clone()).map_err(failed)?
@@ -1449,63 +1499,53 @@ impl Browsers {
                     )
                     .await
                 })
-                .await
             }
             Command::CreateBrowserTab {
                 browser_id,
                 url,
                 options,
-            } => {
-                Box::pin(async move {
-                    let provider = self.providers(Some(&browser_id))?[0].clone();
-                    if let Some(name) = options.session_name {
-                        self.name_session(&browser_id, &name, call).await?;
-                    }
-                    if options.visible.is_some() {
-                        return Err(failed(
-                            "Capability is not available: visibility",
-                        ));
-                    }
-                    let url = url.map(|url| convenience_url(&url));
-                    self.create(
-                        provider,
-                        url,
-                        InitialState::Observe,
-                        invocation,
-                        cancellation,
-                        language,
-                    )
-                    .await
-                })
+            } => Box::pin(async move {
+                let provider = self.providers(Some(&browser_id))?[0].clone();
+                if let Some(name) = options.session_name {
+                    self.name_session(&browser_id, &name, call).await?;
+                }
+                if options.visible.is_some() {
+                    return Err(failed("Capability is not available: visibility"));
+                }
+                let url = url.map(|url| convenience_url(&url));
+                self.create(
+                    provider,
+                    url,
+                    InitialState::Observe,
+                    invocation,
+                    cancellation,
+                    language,
+                )
                 .await
-            }
+            }),
             Command::Observe {
                 handle: Handle::Tab(handle),
                 kind,
                 options,
-            } => {
-                Box::pin(
-                    self.observe(
-                        &handle,
-                        kind,
-                        !options.disable_diffing,
-                        invocation,
-                        cancellation,
-                        language,
-                    )
+            } => Box::pin(async move {
+                self.observe(
+                    &handle,
+                    kind,
+                    !options.disable_diffing,
+                    invocation,
+                    cancellation,
+                    language,
                 )
                 .await
-            }
+            }),
             Command::Action {
                 handle: Handle::Tab(handle),
                 action,
-            } => {
-                Box::pin(
-                    self.action(&handle, action, invocation, cursor, cancellation, language)
-                )
-                .await
-            }
-            _ => Err(failed("invalid browser operation")),
+            } => Box::pin(async move {
+                self.action(&handle, action, invocation, cursor, cancellation, language)
+                    .await
+            }),
+            _ => Box::pin(std::future::ready(Err(failed("invalid browser operation")))),
         }
     }
     fn providers(&self, id: Option<&str>) -> Result<Vec<Provider>, ToolError> {
