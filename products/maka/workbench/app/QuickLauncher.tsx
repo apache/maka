@@ -45,6 +45,7 @@ import {
   quickToolView,
   type QuickIcon,
   type QuickPreview,
+  type QuickTextEditor,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { matchOf } from '../../../../plugins/shared/quick-search';
 import { Icon } from './Icon';
@@ -61,7 +62,9 @@ import {
   quickInputStyle,
 } from './QuickBar';
 import { tr } from './locale';
-import type { ToolEntry } from './QuickCommands';
+import { SettingsEditor } from './SettingsField';
+import { SettingsButton } from './SettingsPage';
+import { toolStoragePath, type ToolEntry } from './QuickCommands';
 import { entryMatch } from './quick-commands';
 import { createToolNavigation, QuickToolSettings, type QuickTools } from './QuickTools';
 import {
@@ -378,7 +381,7 @@ function Launcher(
       .filter(({ tool }) => !props.scope() || props.scope()!.tool.key === tool.key)
       .flatMap(({ tool, handle }) =>
         handle.items().map((item) => {
-          const key = `${tool.instance.path.join('/')}/${tool.id}/${item.id}`;
+          const key = `${toolStoragePath(tool)}/${item.id}`;
           return {
             key,
             itemId: item.id,
@@ -790,6 +793,27 @@ function Launcher(
 }
 
 /** A popup from the app's one engine; it never activates Maka over the app in use. */
+function QuickEditor(props: { editor: QuickTextEditor; back(): void }) {
+  cleanup(keymap.bind('escape', props.back, { when: 'always' }));
+  return (
+    <View style={[frameStyle(), { height: 380, padding: 14, gap: 10 }]}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+        <SettingsButton label={tr('Back')} onPress={props.back} />
+        <Text style={{ color: C.text, fontSize: 16 }}>{props.editor.title}</Text>
+      </View>
+      <SettingsEditor
+        autoFocus
+        label={tr('Content')}
+        value={props.editor.value()}
+        change={(value) => props.editor.change(value)}
+      />
+      <If when={!!props.editor.error()}>
+        <Text style={{ color: C.warning }}>{props.editor.error()}</Text>
+      </If>
+    </View>
+  );
+}
+
 export function QuickLauncher(
   props: Navigation & {
     opened: Signal<boolean>;
@@ -810,6 +834,7 @@ export function QuickLauncher(
   // Tools live as long as the app, not the popup, so their commands run from shortcuts too.
   const tools = computed(() => quick.tools().filter(quick.toolEnabled));
   const scope = signal<ToolEntry | null>(null);
+  const editor = signal<QuickTextEditor | null>(null);
   const inside = () => scope() !== null;
   const leave = () => {
     scope.set(null);
@@ -827,6 +852,17 @@ export function QuickLauncher(
         if (!entered) return query();
         return entered.tool.key === tool.key ? `${entered.entry.keywords[0]} ${query()}` : '';
       },
+      editText: (next) => editor.set(next),
+      enter: (id, text) => {
+        const entry = quick
+          .entries()
+          .find((row) => row.tool.key === tool.key && row.entry.id === id);
+        if (entry)
+          batch(() => {
+            scope.set(entry);
+            query.set(text);
+          });
+      },
       close: () => void props.close(),
       report: (reason) =>
         failure.set(errorText(reason, 'Could not run {tool}.', { tool: quick.title(tool) })),
@@ -835,6 +871,7 @@ export function QuickLauncher(
   };
   const show = (entered: ToolEntry | null) => {
     query.set('');
+    editor.set(null);
     scope.set(entered);
     failure.set(null);
     page.set(null);
@@ -908,7 +945,7 @@ export function QuickLauncher(
         sizeToContent="height"
         // Escape stops a running reply, and every way out has to save the draft first. In a tool's
         // settings Escape goes back, and a picker the page opens must not close it.
-        closeOnEscape={!props.conversing() && page() === null && !inside()}
+        closeOnEscape={!props.conversing() && page() === null && !inside() && editor() === null}
         closeOnBlur={!props.conversing() && page() === null}
         onFocusChange={({ focused }) => {
           // Keep the conversation mounted until its pending draft has been saved.
@@ -919,6 +956,7 @@ export function QuickLauncher(
         open={props.opened() && quick.enabled()}
         onOpenChange={({ open }) => {
           if (open) return;
+          editor.set(null);
           page.set(null);
           scope.set(null);
           props.closed();
@@ -927,19 +965,26 @@ export function QuickLauncher(
         <If
           when={props.conversing()}
           else={
-            <Launcher
-              openBot={props.openBot}
-              vacate={props.vacate}
-              open={props.open}
-              quick={quick}
-              usage={usage}
-              query={query}
-              failure={failure}
-              page={page}
-              scope={scope}
-              inside={inside}
-              leave={leave}
-            />
+            <If
+              when={editor() !== null}
+              else={
+                <Launcher
+                  openBot={props.openBot}
+                  vacate={props.vacate}
+                  open={props.open}
+                  quick={quick}
+                  usage={usage}
+                  query={query}
+                  failure={failure}
+                  page={page}
+                  scope={scope}
+                  inside={inside}
+                  leave={leave}
+                />
+              }
+            >
+              <QuickEditor editor={editor()!} back={() => editor.set(null)} />
+            </If>
           }
         >
           <View style={[frameStyle(), { maxHeight: MAX_HEIGHT }]}>{props.conversation()}</View>
