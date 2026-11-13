@@ -24,7 +24,7 @@ import { historyTurnKey, type Row } from '../../../../products/maka/workbench/ap
 import type { ScopedTrajectoryRequest } from '../../../../products/maka/workbench/app/trajectory';
 
 type Trace = { through: number; finished: boolean; requests: HistoryRequest[] };
-type Source = { turnKey: string; position: HistoryRowAddress; finished: boolean };
+type Source = { turnKey: string; position: HistoryRowAddress };
 
 export function createTrajectoryRequests(props: {
   active(): boolean;
@@ -37,6 +37,7 @@ export function createTrajectoryRequests(props: {
   ): Promise<{
     requests: HistoryRequest[];
     next?: number | null;
+    runTerminated: boolean;
   }>;
   failed(reason: unknown): void;
 }) {
@@ -52,7 +53,6 @@ export function createTrajectoryRequests(props: {
         result.set(key, {
           turnKey,
           position: row.position,
-          finished: row.position.kind === 'snapshot' || row.timing?.finished != null,
         });
     }
     return result;
@@ -73,32 +73,38 @@ export function createTrajectoryRequests(props: {
     const loaded = sources();
     const cached = traces();
     if (loading) return;
-    const pending = [...loaded].findLast(([key, source]) => {
+    const pending = [...loaded].findLast(([key]) => {
       if (failures.get(key) === through) return false;
       const trace = cached.get(key);
-      return !trace || (!trace.finished && (trace.through !== through || source.finished));
+      return !trace || (!trace.finished && trace.through !== through);
     });
     if (!pending) return;
     const [key, source] = pending;
     const prior = cached.get(key);
     const requests: HistoryRequest[] = [];
-    // Completed attempts cannot change. Re-read the unfinished suffix when the
-    // history fence advances so an active record keeps the same identity.
+    // Re-read a failed attempt until its retry starts or is cancelled.
     if (prior && prior.through <= through) {
       for (const request of prior.requests) {
-        if (!request.finished) break;
+        if (
+          request.finished?.outcome !== 'success' &&
+          request.retry?.kind !== 'started' &&
+          request.retry?.kind !== 'cancelled'
+        )
+          break;
         requests.push(request);
       }
     }
     loading = true;
     void (async () => {
       let after = requests.at(-1)?.order.path.at(-1);
+      let finished = source.position.kind === 'snapshot';
       try {
         do {
           const page = await props.read(through, source.position, after);
           if (!alive || !sources().has(key)) return;
           requests.push(...page.requests);
           after = page.next ?? undefined;
+          finished ||= page.runTerminated;
         } while (after !== undefined);
         failures.delete(key);
       } catch (reason) {
@@ -111,7 +117,7 @@ export function createTrajectoryRequests(props: {
         if (alive) {
           const current = new Map([...traces()].filter(([id]) => sources().has(id)));
           if (sources().has(key) && failures.get(key) !== through)
-            current.set(key, { through, finished: source.finished, requests });
+            current.set(key, { through, finished, requests });
           traces.set(current);
         }
       }

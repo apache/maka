@@ -113,7 +113,10 @@ pub(super) async fn requests(
     scope: &Scope,
     input: ui::HistoryRequestsRead,
 ) -> Result<ui::HistoryRequests, String> {
-    use maka_agent_state::session_history::source_tree::{SourceItem, SourceTree};
+    use maka_agent_state::session_history::{
+        ModelRequestRetry,
+        source_tree::{SourceItem, SourceTree},
+    };
     const LIMIT: u32 = 24;
     let history = open(owner, scope, &input.session_id).await?;
     let cut = cut(&history, Some(input.through)).await?;
@@ -129,6 +132,7 @@ pub(super) async fn requests(
         return Ok(ui::HistoryRequests {
             requests: Vec::new(),
             next: None,
+            run_terminated: false,
         });
     };
     let qualified = tree
@@ -153,10 +157,10 @@ pub(super) async fn requests(
         .ok_or("agent_history_source_missing")?;
     let mut result = Vec::new();
     let mut last = None;
-    let more = traces.len() > LIMIT as usize;
+    let more = traces.requests.len() > LIMIT as usize;
     let millis =
         |value: UnixMillis| u64::try_from(value.0).map_err(|_| "agent_history_timestamp_invalid");
-    for trace in traces.into_iter().take(LIMIT as usize) {
+    for trace in traces.requests.into_iter().take(LIMIT as usize) {
         if scope.cancellation.is_cancelled() {
             return Err("agent_history_cancelled".into());
         }
@@ -194,12 +198,21 @@ pub(super) async fn requests(
                     })
                 })
                 .transpose()?,
+            retry: match trace.retry {
+                Some(ModelRequestRetry::Scheduled { at }) => {
+                    Some(ui::HistoryRequestRetry::Scheduled { at: millis(at)? })
+                }
+                Some(ModelRequestRetry::Started) => Some(ui::HistoryRequestRetry::Started),
+                Some(ModelRequestRetry::Cancelled) => Some(ui::HistoryRequestRetry::Cancelled),
+                None => None,
+            },
         });
     }
     authorize(owner, scope, &input.session_id).await?;
     Ok(ui::HistoryRequests {
         requests: result,
         next: if more { last } else { None },
+        run_terminated: traces.run_terminated,
     })
 }
 
