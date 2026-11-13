@@ -322,7 +322,12 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
           <If when={output.stdout !== '' || output.stderr === ''}>
             <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
               <View style={{ flex: 1, minWidth: 0 }}>
-                <CodeText text={output.stdout} tone="output" userScroll={props.userScroll} />
+                <CodeText
+                  text={output.stdout}
+                  tone="output"
+                  wrap={desktop}
+                  userScroll={props.userScroll}
+                />
               </View>
               <If when={output.stdout !== ''}>
                 <Copy label={tr('Copy stdout')} text={() => output.stdout} source={props.source} />
@@ -337,6 +342,7 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
               source={props.source}
               userScroll={props.userScroll}
               tone="warning"
+              wrap={desktop}
             />
           </If>
           <If when={output.stdoutTruncated || output.stderrTruncated}>
