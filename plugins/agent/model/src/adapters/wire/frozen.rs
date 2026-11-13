@@ -561,13 +561,13 @@ impl WirePlan {
             counts: Counts::default(),
             expected: self.counts,
         });
-        let Sink::Backed(build) = emit(
+        let Sink::Backed(build) = Box::pin(emit(
             &self.encoding,
             self.source.as_ref(),
             work.budget(),
             sink,
             self.projection,
-        )
+        ))
         .await?
         else {
             unreachable!("backed encoding pass")
@@ -605,13 +605,14 @@ pub(super) async fn count(
 ) -> Result<WirePlan, ModelError> {
     let work = resources.acquire_work().await.map_err(error)?;
     let budget = work.budget();
-    let Sink::Count(counts) = emit(
+    // Keep the codec's large async state out of the enclosing request futures.
+    let Sink::Count(counts) = Box::pin(emit(
         &encoding,
         source.as_ref(),
         budget,
         Sink::Count(Counts::default()),
         projection,
-    )
+    ))
     .await?
     else {
         unreachable!("count pass")
@@ -664,13 +665,13 @@ pub(super) async fn build(
         counts: Counts::default(),
         expected: count,
     };
-    let Sink::Build(mut build) = emit(
+    let Sink::Build(mut build) = Box::pin(emit(
         &encoding,
         source.as_ref(),
         budget,
         Sink::Build(build),
         projection,
-    )
+    ))
     .await?
     else {
         unreachable!("build pass")
