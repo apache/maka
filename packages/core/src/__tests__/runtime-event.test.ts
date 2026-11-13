@@ -20,6 +20,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { encodeCanonicalRuntimeEvent } from '../canonical-runtime-event.js';
 import {
   decodeMessageContent,
   hasMeaningfulMessageContent,
@@ -95,6 +96,34 @@ test('Stored assistant reasoning parts survive recovery decoding', () => {
   assert.equal(stored.type, 'assistant');
   if (stored.type !== 'assistant') throw new Error('unreachable');
   assert.deepEqual(stored.thinking?.parts, parts);
+});
+
+test('model text providerOptions survives the durable persistence round-trip (#6323)', () => {
+  const event = baseEvent({
+    role: 'model',
+    content: {
+      kind: 'text',
+      text: 'Maka is current.',
+      providerOptions: {
+        openai: {
+          itemId: 'message-1',
+          annotations: [{ type: 'url_citation', url: 'https://maka.example/' }],
+        },
+      },
+    },
+  });
+  const { json } = encodeCanonicalRuntimeEvent(JSON.parse(JSON.stringify(event)));
+  const decoded = decodeRuntimeEvent(JSON.parse(json));
+  assert.deepEqual(decoded, event);
+});
+
+test('text decoding keeps absent providerOptions a missing key (#6323)', () => {
+  const decoded = decodeRuntimeEvent(
+    JSON.parse(JSON.stringify(baseEvent({ content: { kind: 'text', text: 'plain answer' } }))),
+  );
+  const content = decoded.content;
+  if (content?.kind !== 'text') throw new Error('unreachable');
+  assert.equal('providerOptions' in content, false);
 });
 
 test('decodes released Automation origins as read-only legacy provenance', () => {
