@@ -112,7 +112,16 @@ export interface QuickToolHandle {
 }
 
 /** A tool living in the quick launcher, which draws what it attaches. */
+export interface QuickTextEditor {
+  title: string;
+  value(): string;
+  change(value: string): void;
+  error(): string | undefined;
+}
+
 export interface QuickToolInput {
+  editText(editor: QuickTextEditor): void;
+  enter(entryId: string, query: string): void;
   query(): string;
   /** Dismisses the launcher once a result has done its work. */
   close(): void;

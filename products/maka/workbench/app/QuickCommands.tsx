@@ -53,8 +53,12 @@ const apple = platform.os === 'macos' || platform.os === 'ios';
 /** An entry a quick tool offers, with the key its choices are kept under across runs. */
 export type ToolEntry = { key: string; tool: UiContributionRef; entry: QuickEntry };
 
+// Keep the original storage namespace for library aliases, shortcuts and result history.
+export const toolStoragePath = (tool: UiContributionRef) =>
+  `${tool.instance.path.join('/')}/${tool.instance.package.id === 'maka.quick-library' ? 'tool' : tool.id}`;
+
 export const entryKey = (tool: UiContributionRef, entry: QuickEntry) =>
-  `${tool.instance.path.join('/')}/${tool.id}/${entry.id}`;
+  `${toolStoragePath(tool)}/${entry.id}`;
 
 type ShortcutProblem = 'Taken by another app' | 'Could not register shortcut';
 
