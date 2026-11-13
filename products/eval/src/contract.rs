@@ -491,11 +491,6 @@ pub fn decode_eval_result(value: &Value, where_label: &str) -> Result<EvalResult
             )));
         }
     };
-    if status == EvalResultStatus::Completed && failure_reason.is_some() {
-        return Err(ContractError::Invalid(format!(
-            "{where_label}.failureReason must be null when completed"
-        )));
-    }
     let score = nullable_f64(obj.get("score").unwrap(), &format!("{where_label}.score"))?;
     let usage = match obj.get("usage").unwrap() {
         Value::Null => None,
@@ -505,11 +500,6 @@ pub fn decode_eval_result(value: &Value, where_label: &str) -> Result<EvalResult
         obj.get("costUsd").unwrap(),
         &format!("{where_label}.costUsd"),
     )?;
-    if cost_usd.is_some() && usage.is_none() {
-        return Err(ContractError::Invalid(format!(
-            "{where_label}.costUsd requires usage"
-        )));
-    }
     let duration_ms = nonnegative_u64(
         obj.get("durationMs").unwrap(),
         &format!("{where_label}.durationMs"),
@@ -584,7 +574,7 @@ pub enum AttemptCancellation {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VerifierOutcome {
     Verified {
         score: f64,
@@ -604,7 +594,7 @@ pub enum VerifierOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CleanupState {
     Confirmed,
     Unconfirmed { reason: String },
@@ -614,7 +604,8 @@ pub enum CleanupState {
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
-    rename_all_fields = "camelCase"
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
 )]
 pub enum EgressAuditState {
     NotRequired,
@@ -647,7 +638,7 @@ impl EgressAuditState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CriticalArtifactsState {
     Present,
     Missing { paths: Vec<String> },
@@ -657,7 +648,8 @@ pub enum CriticalArtifactsState {
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
-    rename_all_fields = "camelCase"
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
 )]
 pub enum PricingEvidence {
     Model {
@@ -705,7 +697,7 @@ impl PricingEvidence {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(
     tag = "state",
     rename_all = "snake_case",
@@ -722,6 +714,53 @@ pub enum AttemptMetering {
         #[serde(default)]
         pricing: Option<PricingEvidence>,
     },
+}
+
+impl<'de> Deserialize<'de> for AttemptMetering {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        let state = value
+            .as_object()
+            .and_then(|obj| obj.get("state"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| serde::de::Error::custom("metering.state is required"))?;
+        let metering = match state {
+            "unknown" => {
+                exact_object(&value, "metering", &["state"], &[])
+                    .map_err(serde::de::Error::custom)?;
+                Self::Unknown
+            }
+            "lower_bound" => {
+                let obj = exact_object(&value, "metering", &["state", "usage"], &[])
+                    .map_err(serde::de::Error::custom)?;
+                Self::LowerBound {
+                    usage: serde_json::from_value(obj.get("usage").unwrap().clone())
+                        .map_err(serde::de::Error::custom)?,
+                }
+            }
+            "complete" => {
+                let obj = exact_object(&value, "metering", &["state", "usage"], &["pricing"])
+                    .map_err(serde::de::Error::custom)?;
+                let pricing = match obj.get("pricing") {
+                    None | Some(Value::Null) => None,
+                    Some(p) => {
+                        Some(serde_json::from_value(p.clone()).map_err(serde::de::Error::custom)?)
+                    }
+                };
+                Self::Complete {
+                    usage: serde_json::from_value(obj.get("usage").unwrap().clone())
+                        .map_err(serde::de::Error::custom)?,
+                    pricing,
+                }
+            }
+            _ => return Err(serde::de::Error::custom("metering.state is invalid")),
+        };
+        metering.validate().map_err(serde::de::Error::custom)?;
+        Ok(metering)
+    }
 }
 
 impl AttemptMetering {
@@ -839,6 +878,24 @@ impl<'de> Deserialize<'de> for V2AttemptRecord {
 }
 
 impl V2AttemptRecord {
+    fn is_completed(&self) -> bool {
+        matches!(self.cleanup_state, CleanupState::Confirmed)
+            && self.cancellation != AttemptCancellation::BeforeVerification
+            && matches!(
+                self.critical_artifacts_state,
+                CriticalArtifactsState::Present
+            )
+            && matches!(
+                self.audit_state,
+                EgressAuditState::NotRequired | EgressAuditState::Recorded { .. }
+            )
+            && self.execution_outcome == ExecutionOutcome::Completed
+            && matches!(
+                self.verifier_outcome,
+                VerifierOutcome::Verified { .. } | VerifierOutcome::Skipped
+            )
+    }
+
     pub fn validate(&self) -> Result<(), ContractError> {
         if self.schema_version != SchemaVersion::V2 {
             return Err(ContractError::Invalid(
@@ -869,6 +926,11 @@ impl V2AttemptRecord {
                 ));
             }
             _ => {}
+        }
+        if self.is_completed() && self.failure_reason.is_some() {
+            return Err(ContractError::Invalid(
+                "v2 completed attempt record must not set failureReason".into(),
+            ));
         }
         self.metering.validate()?;
         Ok(())

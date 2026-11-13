@@ -167,7 +167,8 @@ fn canonical_selector_picks_earliest_valid_attempt_and_treats_zero_score_as_term
 
 #[test]
 fn contract_deserialization_rejects_illegal_states_and_v1_round_trips_losslessly() {
-    // V1CellAttempt rejects sequence == 0, Completed with failureReason, and costUsd without usage.
+    // Frozen v1 accepts subject-reported costUsd with usage=null and completed with failureReason,
+    // while still rejecting sequence == 0 and negative costUsd. Stricter checks belong in v2.
     let valid_v1 = json!({
         "cellId": "t1::1::maka",
         "sequence": 1,
@@ -189,18 +190,53 @@ fn contract_deserialization_rejects_illegal_states_and_v1_round_trips_losslessly
     zero_seq["sequence"] = json!(0);
     assert!(serde_json::from_value::<V1CellAttempt>(zero_seq).is_err());
 
+    let mut negative_v1_cost = valid_v1.clone();
+    negative_v1_cost["result"]["costUsd"] = json!(-0.01);
+    assert!(serde_json::from_value::<V1CellAttempt>(negative_v1_cost).is_err());
+
     let mut cost_without_usage = valid_v1.clone();
+    cost_without_usage["result"]["score"] = json!(0.0);
     cost_without_usage["result"]["costUsd"] = json!(0.01);
-    assert!(serde_json::from_value::<V1CellAttempt>(cost_without_usage).is_err());
+    let parsed_cost_without_usage: V1CellAttempt =
+        serde_json::from_value(cost_without_usage).unwrap();
+    assert_eq!(parsed_cost_without_usage.result.cost_usd, Some(0.01));
+    assert_eq!(parsed_cost_without_usage.result.usage, None);
+    let encoded_cost_without_usage = serde_json::to_value(&parsed_cost_without_usage).unwrap();
+    assert_eq!(
+        decode_v1_cell_attempt(&encoded_cost_without_usage).unwrap(),
+        parsed_cost_without_usage
+    );
 
+    let completed_with_reason_result = json!({
+        "score": 0.0,
+        "usage": null,
+        "costUsd": null,
+        "durationMs": 10,
+        "status": "completed",
+        "failureReason": "external subject detail",
+        "artifacts": []
+    });
+    let parsed_eval_result: EvalResult =
+        serde_json::from_value(completed_with_reason_result.clone()).unwrap();
+    assert_eq!(
+        parsed_eval_result.failure_reason.as_deref(),
+        Some("external subject detail")
+    );
     let mut completed_with_reason = valid_v1.clone();
-    completed_with_reason["result"]["status"] = json!("completed");
-    completed_with_reason["result"]["failureReason"] = json!("unexpected");
-    assert!(serde_json::from_value::<V1CellAttempt>(completed_with_reason).is_err());
+    completed_with_reason["result"] = completed_with_reason_result;
+    let parsed_completed_with_reason: V1CellAttempt =
+        serde_json::from_value(completed_with_reason).unwrap();
+    let encoded_completed_with_reason =
+        serde_json::to_value(&parsed_completed_with_reason).unwrap();
+    assert_eq!(
+        decode_v1_cell_attempt(&encoded_completed_with_reason).unwrap(),
+        parsed_completed_with_reason
+    );
 
-    // V2AttemptRecord rejects schemaVersion != maka.eval.v2 and invalid metering combinations.
-    let v2_wrong_schema = json!({
-        "schemaVersion": "maka.eval.v1",
+    // V2AttemptRecord rejects schemaVersion != maka.eval.v2, illegal metering states,
+    // unknown fields on closed tagged enums, and completed attempts with failureReason.
+    let v2_base = json!({
+        "schemaVersion": "maka.eval.v2",
         "cellId": "t1::1::maka",
         "sequence": 1,
         "startedAt": 10,
@@ -218,25 +254,48 @@ fn contract_deserialization_rejects_illegal_states_and_v1_round_trips_losslessly
         "failureReason": null,
         "artifacts": []
     });
-    assert!(serde_json::from_value::<V2AttemptRecord>(v2_wrong_schema.clone()).is_err());
+    assert!(serde_json::from_value::<V2AttemptRecord>(v2_base.clone()).is_ok());
 
-    let mut complete_without_usage = v2_wrong_schema.clone();
-    complete_without_usage["schemaVersion"] = json!("maka.eval.v2");
+    let mut v2_wrong_schema = v2_base.clone();
+    v2_wrong_schema["schemaVersion"] = json!("maka.eval.v1");
+    assert!(serde_json::from_value::<V2AttemptRecord>(v2_wrong_schema).is_err());
+
+    let mut complete_without_usage = v2_base.clone();
     complete_without_usage["metering"] = json!({ "state": "complete", "usage": null });
     assert!(serde_json::from_value::<V2AttemptRecord>(complete_without_usage).is_err());
 
-    let mut negative_cost = v2_wrong_schema;
-    negative_cost["schemaVersion"] = json!("maka.eval.v2");
+    let mut unknown_with_pricing = v2_base.clone();
+    unknown_with_pricing["metering"] = json!({
+        "state": "unknown",
+        "pricing": { "kind": "subject_reported", "costUsd": 0.01 }
+    });
+    assert!(serde_json::from_value::<V2AttemptRecord>(unknown_with_pricing).is_err());
+
+    let valid_usage = json!({
+        "inputTokens": 10,
+        "outputTokens": 5,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "totalTokens": 15
+    });
+
+    let mut lower_bound_with_pricing = v2_base.clone();
+    lower_bound_with_pricing["metering"] = json!({
+        "state": "lower_bound",
+        "usage": valid_usage,
+        "pricing": { "kind": "subject_reported", "costUsd": 0.01 }
+    });
+    assert!(serde_json::from_value::<V2AttemptRecord>(lower_bound_with_pricing).is_err());
+
+    let mut completed_v2_with_reason = v2_base.clone();
+    completed_v2_with_reason["failureReason"] = json!("unexpected");
+    assert!(serde_json::from_value::<V2AttemptRecord>(completed_v2_with_reason).is_err());
+
+    let mut negative_cost = v2_base;
     negative_cost["metering"] = json!({
         "state": "complete",
-        "usage": {
-            "inputTokens": 10,
-            "outputTokens": 5,
-            "cacheReadTokens": 0,
-            "cacheWriteTokens": 0,
-            "reasoningTokens": 0,
-            "totalTokens": 15
-        },
+        "usage": valid_usage,
         "pricing": { "kind": "subject_reported", "costUsd": -0.5 }
     });
     assert!(serde_json::from_value::<V2AttemptRecord>(negative_cost).is_err());
