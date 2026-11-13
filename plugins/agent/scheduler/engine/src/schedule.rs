@@ -37,6 +37,12 @@ pub enum Recurrence {
     deny_unknown_fields
 )]
 pub enum Schedule {
+    Script {
+        source: String,
+        #[serde(default = "script_interval")]
+        every_seconds: u32,
+        start_at: i64,
+    },
     Once {
         run_at: i64,
     },
@@ -53,11 +59,23 @@ pub enum Schedule {
         start_at: i64,
     },
 }
+fn script_interval() -> u32 {
+    60
+}
+
 impl Schedule {
     pub fn validate(&self) -> Result<(), Error> {
+        if let Self::Script { source, .. } = self {
+            crate::task::text(source)?;
+        }
         let anchor = match self {
             Self::Once { run_at } => *run_at,
-            Self::Interval {
+            Self::Script {
+                every_seconds,
+                start_at,
+                ..
+            }
+            | Self::Interval {
                 every_seconds,
                 start_at,
             } => {
@@ -87,7 +105,12 @@ impl Schedule {
         timestamp(after)?;
         let next = match self {
             Self::Once { run_at } => Some(*run_at),
-            Self::Interval {
+            Self::Script {
+                every_seconds,
+                start_at,
+                ..
+            }
+            | Self::Interval {
                 every_seconds,
                 start_at,
             } => {
@@ -124,14 +147,19 @@ impl Schedule {
         timestamp(at)?;
         let latest = match self {
             Self::Once { run_at } => Some(*run_at),
-            Self::Interval {
+            Self::Script {
+                every_seconds,
+                start_at,
+                ..
+            }
+            | Self::Interval {
                 every_seconds,
                 start_at,
             } if *start_at <= at => {
                 let step = i64::from(*every_seconds) * 1000;
                 Some(at - (at - start_at) % step)
             }
-            Self::Interval { .. } => None,
+            Self::Script { .. } | Self::Interval { .. } => None,
             Self::Calendar {
                 recurrence,
                 anchor_at,

@@ -45,6 +45,9 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             };
         }
         if let Some(schedule) = patch.schedule {
+            if next.task.schedule != schedule {
+                next.condition_matched = false;
+            }
             next.task.schedule = schedule;
         }
         if let Some(effect) = patch.effect {
@@ -99,7 +102,6 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
     }
     pub fn pause(&self, now: i64) -> Self {
         let mut next = self.clone();
-        next.cancel_waiting_notification();
         if next.task.status == Status::Active {
             next.task.status = Status::Paused;
             next.task.updated_at = next.task.updated_at.max(now);
@@ -142,33 +144,6 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             next.check_expiry()?;
         }
         next.task.updated_at = next.task.updated_at.max(now);
-        Ok(next)
-    }
-    pub fn snooze(&self, delay_ms: i64, now: i64) -> Result<Self, Error> {
-        if delay_ms <= 0 {
-            return Err(invalid("snooze must be positive"));
-        }
-        if self.task.status != Status::Active
-            || (self.pending.is_some() && !self.waiting_notification())
-        {
-            return Err(invalid("only unclaimed active tasks can be snoozed"));
-        }
-        let at = self
-            .task
-            .next_fire_at
-            .ok_or_else(|| invalid("task has no trigger"))?
-            .max(now);
-        let mut next = self.clone();
-        next.cancel_waiting_notification();
-        next.task.next_fire_at = Some(
-            at.checked_add(delay_ms)
-                .ok_or_else(|| invalid("time overflow"))?,
-        );
-        if let Some(at) = next.task.next_fire_at {
-            crate::schedule::timestamp(at)?;
-        }
-        next.task.updated_at = next.task.updated_at.max(now);
-        next.check_expiry()?;
         Ok(next)
     }
     pub fn clear_history(&self, now: i64) -> Self {

@@ -224,8 +224,17 @@ export function MessageRow({
         const actionRow = () => platform.idiom === 'terminal' || row().finalOutput || sourceMode();
         const sourceId = () => `${sessionId}/${rowKey(row())}`;
         const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
-        if (sender()) {
-          const title = () => senderLabel(sender()!, senders);
+        const automation = () => {
+          const origin = row().origin;
+          return row().role === 'user' && origin?.kind === 'automation' ? origin : null;
+        };
+        if (sender() || automation()) {
+          const title = () => {
+            const origin = automation();
+            return origin
+              ? tr('Automation: {title}', { title: origin.title })
+              : senderLabel(sender()!, senders);
+          };
           const preview = computed(() => {
             if (expanded()) return '';
             const value = row();
@@ -260,7 +269,7 @@ export function MessageRow({
               <Disclosure
                 label={preview() ? `${title()} · ${preview()}` : title()}
                 tooltip={title()}
-                icon="split"
+                icon={automation() ? 'activity' : 'split'}
                 open={expanded()}
                 terminalInset={controlStyle.paddingHorizontal}
                 onPress={inputAction(setExpanded, {
@@ -271,7 +280,9 @@ export function MessageRow({
                 trailing={
                   <If when={expanded()}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <SenderLink sessionId={() => sender()!} senders={senders} />
+                      <If when={sender()}>
+                        <SenderLink sessionId={() => sender()!} senders={senders} />
+                      </If>
                       <MessageCopy
                         row={row}
                         ownerKey={() => rowKey(row())}

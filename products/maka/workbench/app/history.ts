@@ -175,6 +175,10 @@ export function stableRowId(
   throw new Error('Transcript row has neither a source address nor a live message identity.');
 }
 
+export function activityMessage(origin: MessageOrigin | null | undefined): boolean {
+  return origin?.kind === 'automation' || senderSession(origin) !== null;
+}
+
 export function senderSession(origin: MessageOrigin | null | undefined): string | null {
   if (origin?.kind === 'session') return origin.execution.sessionId;
   // A Bot Turn started because a worker finished names that worker.

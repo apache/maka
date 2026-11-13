@@ -221,6 +221,7 @@ impl ToolPreparer for Goals {
                                     thinking_level: accepted.thinking_level,
                                     accepted_model: accepted,
                                     language: view.spec.language,
+                                    sandbox_ceiling: None,
                                 };
                                 let arm = Arm {
                                     language: grant.language,

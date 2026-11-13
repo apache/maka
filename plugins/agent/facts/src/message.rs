@@ -38,6 +38,10 @@ pub enum MessageOrigin {
     Session {
         execution: crate::durable::ExecutionIdentity,
     },
+    Automation {
+        automation_id: String,
+        title: String,
+    },
     Goal {
         goal_id: String,
         objective: String,
@@ -83,6 +87,16 @@ impl MessageOrigin {
                 crate::interaction::entity_id(goal_id)?;
                 if objective.trim().is_empty() {
                     return Err("Goal objective is empty");
+                }
+                Ok(())
+            }
+            Self::Automation {
+                automation_id,
+                title,
+            } => {
+                crate::interaction::entity_id(automation_id)?;
+                if title.trim().is_empty() {
+                    return Err("Automation title is empty");
                 }
                 Ok(())
             }

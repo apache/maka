@@ -29,8 +29,9 @@ pub use maka_scheduler::{plan::Misfire as TaskMisfire, schedule::Schedule as Tas
 )]
 #[schemars(rename = "AgentScheduledEffect")]
 pub enum ScheduledEffect {
-    Reminder,
     Session {
+        #[serde(default)]
+        delivery: AutomationDelivery,
         target: ScheduledTarget,
         model: ModelSelection,
         thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
@@ -41,10 +42,17 @@ pub enum ScheduledEffect {
         thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
     },
 }
+impl ScheduledEffect {
+    pub fn target(&self) -> &ScheduledTarget {
+        match self {
+            Self::Session { target, .. } | Self::AgentRun { target, .. } => target,
+        }
+    }
+}
+
 impl maka_scheduler::task::TaskEffect for ScheduledEffect {
     fn validate(&self) -> Result<(), maka_scheduler::Error> {
         match self {
-            Self::Reminder => Ok(()),
             Self::Session { target, .. } | Self::AgentRun { target, .. } => {
                 if target.session_id.is_empty()
                     || target.boundary_revision > maka_agent_facts::interaction::MAX_SAFE_INTEGER
@@ -59,10 +67,15 @@ impl maka_scheduler::task::TaskEffect for ScheduledEffect {
             }
         }
     }
-    fn is_notification(&self) -> bool {
-        matches!(self, Self::Reminder)
-    }
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationDelivery {
+    #[default]
+    Steering,
+    Followup,
+}
+
 /// Exact observed source boundary. This data is checked against the original
 /// Session; passing it never grants execution by itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -107,11 +120,11 @@ pub struct ScheduledSummary {
     pub id: String,
     pub revision: u64,
     pub title: String,
+    pub session_id: String,
+    pub script: bool,
     pub status: maka_scheduler::task::Status,
-    pub approved: bool,
     pub next_fire_at: Option<i64>,
     pub pending_fire: Option<String>,
-    pub reminder: bool,
     pub last_error: Option<String>,
 }
 #[derive(Serialize, JsonSchema)]
@@ -122,7 +135,6 @@ pub struct ScheduledDetail {
     pub task: maka_scheduler::task::Task<ScheduledEffect>,
     pub timezone: String,
     pub misfire: TaskMisfire,
-    pub approved: bool,
     pub pending_fire: Option<String>,
 }
 #[derive(Serialize, JsonSchema)]
@@ -163,10 +175,6 @@ pub enum ScheduleChange {
         revision: u64,
         input: ScheduledInput,
     },
-    Approve {
-        task_id: String,
-        revision: u64,
-    },
     Pause {
         task_id: String,
         revision: u64,
@@ -178,16 +186,6 @@ pub enum ScheduleChange {
     TriggerNow {
         task_id: String,
         revision: u64,
-    },
-    Snooze {
-        task_id: String,
-        revision: u64,
-        delay_ms: i64,
-    },
-    Acknowledge {
-        task_id: String,
-        revision: u64,
-        fire_id: String,
     },
     ClearHistory {
         task_id: String,
@@ -211,25 +209,3 @@ pub enum ScheduleResult {
     Conflict { actual: Option<u64> },
     Rejected { reason: String },
 }
-
-#[derive(Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentScheduledReminder")]
-pub struct ScheduledReminder {
-    pub task_id: String,
-    pub fire_id: String,
-    pub title: String,
-    pub body: String,
-}
-#[derive(Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentScheduleAlerts")]
-pub struct ScheduleAlerts {
-    pub pending: u32,
-    pub reminders: Vec<ScheduledReminder>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(rename = "AgentScheduleAlertsRead")]
-pub struct ScheduleAlertsRead {}

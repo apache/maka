@@ -71,6 +71,7 @@ const CONTROL_METHODS: &[&str] = &[
     "fork",
     "openBot",
     "changeGoal",
+    "schedule",
 ];
 const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
@@ -830,8 +831,8 @@ impl Client {
         }
         let owner = self.service_owner("agent").await?;
         let correlation = control_correlation(method, &input, &owner)?;
-        // Creation targets no existing Session.
-        let session_id = if matches!(method, "create" | "openBot") {
+        // Some controls are scoped to the Host, rather than a Session.
+        let session_id = if matches!(method, "create" | "openBot" | "schedule") {
             None
         } else {
             Some(

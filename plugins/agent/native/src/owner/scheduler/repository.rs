@@ -35,15 +35,17 @@ pub(super) struct ReadyIndex {
     pub due: BTreeMap<i64, std::collections::BTreeSet<String>>,
 }
 fn due_at(plan: &Plan) -> Option<i64> {
+    if plan.pending.is_some() {
+        return plan.task.expires_at;
+    }
     if plan.task.status != Status::Active || plan.authorization.is_none() {
         return None;
     }
-    let next = if plan.pending.is_none() {
-        plan.task.next_fire_at
-    } else {
-        None
-    };
-    next.into_iter().chain(plan.task.expires_at).min()
+    plan.task
+        .next_fire_at
+        .into_iter()
+        .chain(plan.task.expires_at)
+        .min()
 }
 impl ReadyIndex {
     pub(super) fn next_after(&self, loaded_at: i64) -> Option<i64> {
@@ -67,11 +69,7 @@ impl ReadyIndex {
             }
         }
         if let Some(plan) = new {
-            if plan
-                .pending
-                .as_ref()
-                .is_some_and(|fire| !matches!(fire.effect, ScheduledEffect::Reminder))
-            {
+            if plan.pending.is_some() {
                 self.pending.insert(id.to_owned());
             }
             if let Some(at) = due_at(plan) {
@@ -114,13 +112,13 @@ fn schedule_budget(
     .map_err(reason)?;
     plan.validate().map_err(reason)?;
     if plan.task.id != id
-        || plan.task.status != maka_scheduler::task::Status::Active
+        || !matches!(plan.task.status, Status::Active | Status::Paused)
         || plan.task.expires_at.is_some_and(|at| now() as i64 >= at)
     {
         return Err("scheduler_authorization_changed".into());
     }
     let Some(Approval::Execution { approval }) = &plan.authorization else {
-        return Err("scheduler_user_approval_required".into());
+        return Err("scheduler_execution_unavailable".into());
     };
     let fire = plan
         .pending
@@ -443,7 +441,7 @@ impl ScheduleMutation {
         connection: &rusqlite::Connection,
         saved: Option<Saved>,
     ) -> Result<(ScheduleResult, Vec<Mutation>), StoreError> {
-        let actual = saved.as_ref().map(|saved| saved.revision);
+        let actual = saved.as_ref().map(|saved| saved.plan.edit_revision);
         if expected_revision(&self.input) != actual {
             return Ok((ScheduleResult::Conflict { actual }, vec![]));
         }
@@ -480,13 +478,17 @@ impl ScheduleMutation {
             }
             plan.authorization = Some(approval.authorization.clone());
         }
+        let revision = actual.unwrap_or(0) + 1;
+        if let Some(plan) = &mut plan {
+            plan.edit_revision = revision;
+        }
         let catalog = self.catalog(connection, saved)?;
         let (mutations, _, _) = prepare_commit(&catalog, &self.id, plan.as_ref())
             .map_err(StoreError::InvalidTransition)?;
         Ok((
             ScheduleResult::Committed {
                 task_id: self.id.clone(),
-                revision: actual.unwrap_or(0) + 1,
+                revision,
             },
             mutations,
         ))
@@ -559,23 +561,22 @@ impl Saved {
     pub fn summary(&self) -> ScheduledSummary {
         ScheduledSummary {
             id: self.plan.task.id.clone(),
-            revision: self.revision,
+            revision: self.plan.edit_revision,
             title: self.plan.task.title.clone(),
+            session_id: self.plan.task.effect.target().session_id.clone(),
+            script: matches!(self.plan.task.schedule, TaskSchedule::Script { .. }),
             status: self.plan.task.status,
-            approved: self.plan.authorization.is_some(),
             next_fire_at: self.plan.task.next_fire_at,
             pending_fire: self.plan.pending.as_ref().map(|fire| fire.id.clone()),
-            reminder: matches!(self.plan.task.effect, ScheduledEffect::Reminder),
             last_error: self.plan.task.last_error.clone(),
         }
     }
     pub fn detail(&self) -> ScheduledDetail {
         ScheduledDetail {
-            revision: self.revision,
+            revision: self.plan.edit_revision,
             task: self.plan.task.clone(),
             timezone: self.plan.timezone.clone(),
             misfire: self.plan.misfire,
-            approved: self.plan.authorization.is_some(),
             pending_fire: self.plan.pending.as_ref().map(|fire| fire.id.clone()),
         }
     }
