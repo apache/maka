@@ -202,6 +202,8 @@ export interface WorkspaceGlobInput {
   pattern: string;
   limit?: number;
   abortSignal?: AbortSignal;
+  /** When set, matched paths that resolve outside this root are dropped. */
+  containmentRoot?: string;
 }
 
 export interface WorkspaceGlobResult {
