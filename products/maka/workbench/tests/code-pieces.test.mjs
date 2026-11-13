@@ -34,9 +34,15 @@ const hooks = registerHooks({
     return next(specifier, context);
   },
 });
-const { codePieces, columns, largestTextSize, lineColumns, pieceLines } = await import(
-  new URL('codePieces.ts', app)
-);
+const {
+  codePieces,
+  columns,
+  largestTextSize,
+  lineColumns,
+  narrowColumns,
+  pieceLines,
+  wrappedLineColumns,
+} = await import(new URL('codePieces.ts', app));
 hooks.deregister();
 
 const numbered = (count) => Array.from({ length: count }, (_, index) => `line ${index + 1}`);
@@ -106,4 +112,32 @@ test('a line too wide for one layer is cut, its note included in the limit', () 
     assert.ok(line.startsWith(kept));
     assert.equal([...kept].length + Number(count), [...line].length);
   }
+});
+
+test('wrapped text is split by the rows its lines take at a narrow column', () => {
+  const long = 'w'.repeat(narrowColumns * 10);
+  const lines = [...Array.from({ length: 30 }, () => long), ...numbered(5)];
+  const pieces = codePieces(lines.join('\n'), undefined, true);
+  // Twenty ten-row lines fill a piece; the other ten and the short lines follow.
+  assert.deepEqual(
+    pieces.map((piece) => piece.text.split('\n').length),
+    [20, 15],
+  );
+  assert.deepEqual(
+    pieces.flatMap((piece) => piece.text.split('\n')),
+    lines,
+  );
+  // Unwrapped, the same text is one piece of short rows.
+  assert.equal(codePieces(lines.join('\n')).length, 1);
+});
+
+test('a wrapped line is cut where it would take more than 100 rows', () => {
+  const [piece] = codePieces('w'.repeat(wrappedLineColumns * 2), undefined, true);
+  assert.ok(columns(piece.text) <= wrappedLineColumns);
+  assert.match(piece.text, / … \d+ more characters$/u);
+  const fits = 'w'.repeat(wrappedLineColumns);
+  assert.equal(codePieces(fits, undefined, true)[0].text, fits);
+  // At the largest text size, 200 rows stay under the layer limit even at two
+  // thirds of the narrow column.
+  assert.ok(((pieceLines * 3) / 2) * 20 * largestTextSize * 2 < 16384);
 });
