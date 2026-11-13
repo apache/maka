@@ -5042,7 +5042,7 @@ async fn compaction_cancels_background_request_when_main_finishes() {
                 let body = if request["tools"].as_array().is_some_and(|tools| !tools.is_empty()) {
                     release.notified().await;
                     Body::from(chunk(json!({"role":"assistant","content":"Main completed."}), Value::Null)
-                        + &chunk(json!({}), json!("stop")) + "data: [DONE]\n\n")
+                        + chunk(json!({}), json!("stop")).as_str() + "data: [DONE]\n\n")
                 } else {
                     let first = chunk(json!({"role":"assistant","content":"Background summary still running."}), Value::Null);
                     Body::from_stream(futures_util::stream::once(async { Ok::<_, std::io::Error>(Bytes::from(first)) })
