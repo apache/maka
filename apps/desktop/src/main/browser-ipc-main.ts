@@ -40,6 +40,8 @@ interface BrowserIpcDeps {
 }
 
 export interface BrowserIpcController {
+  /** Main-process only: called after Host admission for this exact tool invocation. */
+  admitAction(sessionId: string, signal: AbortSignal): () => void;
   refreshVisibility(): void;
   retireTarget(scope: DesktopTargetScope): Promise<void>;
 }
@@ -53,6 +55,9 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     viewport: BrowserViewRect | null;
   }
 
+  const admittedActions = new Map<string, Set<() => void>>();
+  const hasAdmission = (sessionId: string) =>
+    !!admittedActions.get(sessionId)?.size && deps.isHostActive(parseDesktopSessionResourceKey(sessionId));
   const selections = new Map<Electron.WebContents, RendererSelection>();
   const observedRenderers = new WeakSet<Electron.WebContents>();
   const ownsRenderer = (contents: Electron.WebContents): boolean =>
@@ -83,7 +88,10 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   };
   const parentForSession = (sessionId: string): Electron.View | undefined => {
     const owner = ownerForSession(sessionId);
-    return owner ? browserParentForRenderer(owner) : undefined;
+    if (owner) return browserParentForRenderer(owner);
+    // A hidden worker owns its own page; it never borrows the parent's Session identity.
+    const window = hasAdmission(sessionId) ? deps.mainWindowController.browserWindow() : undefined;
+    return window && !window.isDestroyed() ? window.contentView : undefined;
   };
   const views = deps.mainWindowController.getBrowserViews(parentForSession);
 
@@ -96,6 +104,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
       window.isVisible() && !window.isMinimized();
   };
   const canRunInBackground = (sessionId: string): boolean => {
+    if (hasAdmission(sessionId)) return true;
     const owner = ownerForSession(sessionId);
     if (!owner || !browserParentForRenderer(owner)) return false;
     const ref = parseDesktopSessionResourceKey(sessionId);
@@ -365,8 +374,29 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   });
 
   return {
+    admitAction(sessionId, signal) {
+      signal.throwIfAborted();
+      if (!deps.isHostActive(parseDesktopSessionResourceKey(sessionId)))
+        throw new Error('Runtime Host is unavailable');
+      const actions = admittedActions.get(sessionId) ?? new Set<() => void>();
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        signal.removeEventListener('abort', release);
+        actions.delete(release);
+        if (!actions.size) admittedActions.delete(sessionId);
+        revokeHiddenActions();
+      };
+      actions.add(release);
+      admittedActions.set(sessionId, actions);
+      signal.addEventListener('abort', release, { once: true });
+      return release;
+    },
     refreshVisibility: revokeHiddenActions,
     async retireTarget(scope) {
+      for (const [sessionId, actions] of admittedActions)
+        if (belongsToTarget(sessionId, scope)) for (const release of [...actions]) release();
       for (const selection of selections.values()) {
         const sessionId = selection.sessionId;
         if (!sessionId || !belongsToTarget(sessionId, scope)) continue;

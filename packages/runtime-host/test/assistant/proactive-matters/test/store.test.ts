@@ -759,3 +759,48 @@ test('AI progress previews are bounded, transactional and persist across restart
   assert.equal(result.progressSummary, '验收通过，报告已保存');
   assert.equal(f.reopen().get(m.id).matter.progressSummary, result.progressSummary);
 });
+
+test('completed task accepts a new requirement once in the original session; cancellation needs explicit resume', (t) => {
+  const f = fixture(t);
+  let m = f.store.claim(f.m.id)!.matter;
+  settle(f.store, m, 'complete');
+  assert.throws(
+    () => f.store.ingest(m.id, { key: 'finishing', source: 'coordinator', text: '再核实 B' }, true),
+    /still finishing/,
+  );
+  f.store.finish(m.id, m.activation!.id);
+  assert.equal(
+    f.store.ingest(m.id, { key: 'passive', source: 'bot_clarification', text: '旧反馈' }),
+    false,
+  );
+  f.advance(86400000);
+  f.store.enqueueDue();
+  assert.equal(f.store.claim(m.id), null, 'completed work must not reopen from a stale timer');
+  const previous = f.store.get(m.id).matter;
+  const event = {
+    key: 'amendment-1',
+    source: 'coordinator',
+    text: '再核实 B 的押金，不用重新找房。',
+  };
+  assert.equal(f.store.ingest(m.id, event, true), true);
+  assert.equal(f.store.get(m.id).matter.status, 'active');
+  assert.equal(f.store.get(m.id).matter.sessionId, previous.sessionId);
+  assert.equal(f.store.get(m.id).matter.stateText, previous.stateText);
+  assert.equal(f.store.list().length, 1);
+  f.reopen();
+  m = f.store.claim(m.id)!.matter;
+  settle(f.store, m, 'complete');
+  f.store.finish(m.id, m.activation!.id);
+  assert.equal(
+    f.store.ingest(m.id, event, true),
+    false,
+    'retry after completion cannot reopen it twice',
+  );
+  assert.equal(f.store.get(m.id).matter.status, 'completed');
+  f.store.control(m.id, 'resume');
+  f.store.control(m.id, 'cancel');
+  assert.equal(f.store.ingest(m.id, { ...event, key: 'amendment-2' }, true), false);
+  assert.equal(f.store.get(m.id).matter.status, 'cancelled');
+  f.store.control(m.id, 'resume');
+  assert.equal(f.store.get(m.id).matter.status, 'active');
+});

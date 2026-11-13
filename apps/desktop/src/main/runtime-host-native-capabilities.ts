@@ -107,6 +107,8 @@ export interface DesktopNativeCapabilityProviderInput {
     readonly arguments: Record<string, unknown>;
     readonly signal: AbortSignal;
   }) => string | Promise<string>;
+  /** Grants execution only after Host policy approval; scoped to the admitted invocation. */
+  readonly admitBrowserAction?: (sessionId: string, signal: AbortSignal) => () => void;
   readonly releaseBrowserSession: (sessionId: string) => void | Promise<void>;
   readonly computerUseTools: ComputerUseToolSet;
   readonly releaseDesktopInteractionSession: (
@@ -447,13 +449,18 @@ async function invokeNativeTool(
       requestUserForm: options.requestInteraction,
       ...(options.progress ? { emitProgress: options.progress } : {}),
     });
-  const output = await (admissionEvidence.kind === "browser_url"
-    ? withBrowserOriginAdmission(
-        { sessionId, url: admissionEvidence.url },
-        execute,
-      )
-    : execute());
-  return projectToolResult(binding.tool, frame.toolCallId, args, output);
+  const release = admissionEvidence.kind === "browser_url"
+    ? input.admitBrowserAction?.(sessionId, signal)
+    : undefined;
+  try {
+    signal.throwIfAborted();
+    const output = await (admissionEvidence.kind === "browser_url"
+      ? withBrowserOriginAdmission({ sessionId, url: admissionEvidence.url }, execute)
+      : execute());
+    return projectToolResult(binding.tool, frame.toolCallId, args, output);
+  } finally {
+    release?.();
+  }
 }
 
 function browserOrigin(value: string): string {

@@ -330,3 +330,104 @@ for (const tool of ['MemorySourceQuery', 'MemoryOriginal']) {
     });
   }
 }
+
+test('long repeated titles are bounded and shared without truncating the original body', async (t) => {
+  const { f, objects } = await setup(t);
+  for (const object of objects) object.title = '超长标题'.repeat(5000);
+  const page = await f.invoke('MemorySourceQuery', {
+    source: 'one',
+    view: 'content',
+    maxChars: 3000,
+  });
+  assert.ok(JSON.stringify(page).length <= 3000);
+  assert.ok(page.items.length > 1);
+  assert.equal(page.titles.length, 1);
+  assert.ok(page.titles[0].length <= 120);
+  assert.ok(
+    page.items.every((item: any) => item.titleIndex === 0 && item.content.includes('完整消息')),
+  );
+  const original = await f.invoke('MemoryOriginal', { ref: page.items[0].ref });
+  assert.equal(original.object.title, objects[0].title);
+});
+
+test('test evidence and generated summaries remain distinguishable in query, history, extractor and cached reads', async (t) => {
+  const f = await fixture({ tickMs: 600000 });
+  t.after(() => f.close());
+  const object = {
+    id: 'test-choice',
+    revision: '1',
+    kind: 'message',
+    locator: { id: 'test-choice' },
+  };
+  f.sources.register({
+    id: 'synthetic',
+    evidenceKind: 'test',
+    description: 'Explicit synthetic source',
+    queryHelp: '{}',
+    scope: {},
+    enumerate: async () => ({ items: [object] }),
+    query: async () => ({ items: [object] }),
+    authorize: async (items: any[]) => items.map((x) => x.id),
+    read: async () => ({
+      status: 'ok',
+      object,
+      content: 'User chose reimbursement reminder in a UI test',
+    }),
+  });
+  const page = await f.invoke('MemorySourceQuery', { source: 'synthetic', view: 'content' });
+  assert.equal(page.items[0].evidenceKind, 'test');
+  assert.match(page.items[0].evidenceNotice, /不是用户事实/);
+  const range = await f.invoke('MemoryRange', { sources: ['synthetic'] });
+  const history = await f.invoke('MemoryHistory', { from: null, to: range.to, mode: 'messages' });
+  assert.equal(history.items[0].evidenceKind, 'test');
+  await f.restart();
+  const cached = await f.invoke('MemoryOriginal', { ref: page.items[0].ref, view: 'content' });
+  assert.equal(cached.items[0].evidenceKind, 'test');
+  await f.invoke('MemoryExtract', {
+    from: null,
+    to: range.to,
+    requirements: 'What does the user want?',
+    maxInputChars: 10000,
+  });
+  assert.match(JSON.stringify(f.llmCalls.at(-1)), /不是用户事实/);
+});
+
+test('explicit synthetic Session labels survive original and index navigation; generated source kinds stay marked', async (t) => {
+  const f = await fixture({ tickMs: 600000 });
+  t.after(() => f.close());
+  const range = await f.invoke('MemoryRange', { sources: ['maka'] });
+  f.sessionLabels.set('chat-a', ['synthetic-test-data']);
+  await f.invoke('MemoryRange', { sources: ['maka'] });
+  const history = await f.invoke('MemoryHistory', { from: null, to: range.to, mode: 'messages' });
+  const item = history.items.find((x: any) => x.recordId === 'chat-a');
+  assert.equal(item.evidenceKind, 'test', 'local history marker');
+  const original = await f.invoke('MemoryOriginal', { ref: item.ref, view: 'content' });
+  assert.equal(original.items[0].evidenceKind, 'test', 'local original marker');
+  const made = await f.invoke('MemoryIndexCreate', {
+    name: 'Fixture events',
+    instructions: 'Summarize with citations',
+    cursor: range.to,
+    background: false,
+  });
+  const index = await f.invoke('MemoryIndexContent', { indexId: made.index.id, view: 'full' });
+  assert.equal(index.items[0].sourceEvidence[0].evidenceKind, 'test');
+  const object = {
+    id: 'summary',
+    revision: '1',
+    kind: 'computer_history_summary',
+    locator: { id: 'summary' },
+  };
+  f.sources.register({
+    id: 'generated',
+    description: 'Generated summaries',
+    queryHelp: '{}',
+    scope: {},
+    enumerate: async () => ({ items: [object] }),
+    query: async () => ({ items: [object] }),
+    authorize: async () => ['summary'],
+    read: async () => ({ status: 'ok', object, content: 'Generated description of a UI test' }),
+  });
+  const summary = await f.invoke('MemorySourceQuery', { source: 'generated', view: 'content' });
+  assert.equal(summary.items[0].evidenceKind, 'generated');
+  assert.match(summary.items[0].evidenceNotice, /测试或模拟/);
+});

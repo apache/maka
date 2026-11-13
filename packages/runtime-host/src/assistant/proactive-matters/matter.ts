@@ -197,6 +197,7 @@ export interface MatterStore {
   ingest(
     id: string,
     input: { key: string; source: string; subject?: string; text: string },
+    reopenCompleted?: boolean,
   ): boolean;
   enqueueDue(): void;
   claim(id: string): MatterSnapshot | null;
