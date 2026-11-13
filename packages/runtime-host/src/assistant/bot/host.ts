@@ -34,13 +34,13 @@ export const BOT_ROLE = `你是用户的个人助手，要贴心。可以直接�
 
 用户消息、主动发现、任务和索引反馈通过 Inbox 送达，每条都要处理。你负责调度任务，管理索引及来源和维护配置，设置主动发现的启停与周期，并接住后台的失败、阻塞和澄清请求，处理或向用户寻求帮助。委派的工作由执行者推进和等待，结果返回给你。
 
-后台消息也必须逐条处理：有具体理由过滤的，在 Sleep.notNotified 中记录省略内容和理由；其余内容加工后通过 SendUser 发给用户，不能只说留待以后。消化信息，用自然、直接的日常口吻表达，合理划分 message，保留要点，不以第三方口吻转述后台 Agent。
+后台消息也必须逐条处理：有具体理由过滤的，在 Sleep.notNotified 中记录省略内容和理由；主动发现加工后通过 ReplyDiscovery 发给用户并关联来源，其他内容通过 SendUser 发送，不能只说留待以后。消化信息，用自然、直接的日常口吻表达，合理划分 message，保留要点，不以第三方口吻转述后台 Agent。
 
 从用户的处境出发，主动提出替用户接手烦心、耗时的事情，帮用户把事情做完、少操心。不要只停在提醒进展或提供零碎建议。用户同意后再安排执行，需要确认的地方再问；已有授权的事情直接按约定推进。
 
 用户回应已发送的主动发现时，用 DiscoveryFeedback 关联对应消息；普通聊天不是主动发现反馈。
 
-只有 SendUser 会向用户发消息，普通文本不会发送，也不能结束循环。通过 InboxCheck 接收消息，没有需要继续处理的事情就调用 Sleep，新消息会再次唤醒。发送和休眠彼此独立。
+SendUser 和 ReplyDiscovery 会向用户发消息，普通文本不会发送，也不能结束循环。通过 InboxCheck 接收消息，没有需要继续处理的事情就调用 Sleep，新消息会再次唤醒。发送和休眠彼此独立。
 
 系统提示词规定你的职责和做事方式，角色人设决定你的说话风格。按这里的机制处理事情，用角色的口吻与用户交流。
 
@@ -207,7 +207,7 @@ export function initializeBot(
     (input: any) => store.read(input.id, input.offset, input.limit),
     true,
   );
-  register(
+  const sendUser = [
     'SendUser',
     '向用户发送一批聊天消息，messages 按顺序显示为独立气泡。每项可填写 text（完整正文）和 stickerId（表情素材 ID），至少一个；填 stickerId 即可直接发表情，不用查链接。表情包也是你的日常表达方式，可以和文字一起发，也可以单独接话。用户需要选择、确认处理方式或回应具体帮助时，使用 card 提供可点击的选项，省去打字。注意不要因为使用卡片而强行把可以处理的事情交给用户审批；普通解释、提醒和闲聊直接用文字，简单追问无需为了选项堆砌说明。card.type 为 recommendation（候选比较）、offer（帮助或确认）、delivery（成果入口）；填写 title 和 items，一个事项用一个 item，多个候选各用一个。单项标题可与 card.title 相同，界面不重复显示；description、facts、image 按需省略，不必配图。actions 填用户可选的回应，选项同等展示，不要求主次按钮。每张卡片只接受一次选择，提交成功后所有选项禁用；需要分别回答的事情请分开发卡片。reply 的 label 是简短、明确的按钮文字，value 是带事项上下文和操作范围的完整用户请求；点击即提交给助手继续处理，不用再发送。link 的 value 是直接打开的 HTTP(S) 地址，图片同样使用 HTTP(S) 地址。不写 HTML/CSS。卡片不受 summary 折叠影响，text 不必重复卡片内容。summary 可选；正文超过 200 字时填写独立摘要，短消息可省略，摘要由你概括，不是截断正文。转达主动发现时，在该项 discoveryIds 填对应的 discovery 类型 Inbox 消息 ID，记录实际送达关系；普通聊天留空。messageId 标识这批发送，重试时复用。发送后循环继续。',
     z
@@ -309,10 +309,26 @@ export function initializeBot(
       await bot.flush();
       return { sent: true, messageIds };
     },
+  ] as const;
+  register(...sendUser);
+  register(
+    'ReplyDiscovery',
+    '回应主动发现并发送给用户。每项 messages 必须提供 discoveryIds，引用对应 discovery 类型 Inbox 消息；可合并多个来源。其余字段与 SendUser 相同。来源关联与消息一起提交，messageId 重试保持不变。普通聊天使用 SendUser。',
+    sendUser[2].safeExtend({
+      messages: z
+        .array(
+          sendUser[2].shape.messages.element.safeExtend({
+            discoveryIds: z.array(z.string().min(1)).min(1).max(100),
+          }),
+        )
+        .min(1)
+        .max(100),
+    }),
+    sendUser[3],
   );
   register(
     'DiscoveryFeedback',
-    '仅当用户在回应已发送的主动发现时，关联用户的 Inbox 消息 ID 和 SendUser 返回的实际消息 ID。根据交流内容判断关联，不把普通聊天或新任务当反馈；无需改写用户原话。可以回查 Inbox 和 AssistantConversation。',
+    '仅当用户在回应已发送的主动发现时，关联用户的 Inbox 消息 ID 和 SendUser 或 ReplyDiscovery 返回的实际消息 ID。根据交流内容判断关联，不把普通聊天或新任务当反馈；无需改写用户原话。可以回查 Inbox 和 AssistantConversation。',
     z
       .object({
         userMessageId: z.string().min(1),

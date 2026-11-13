@@ -29,8 +29,12 @@ test('llm generation uses Host authority unless a matching adapter overrides it'
   const root = new Context();
   const agents = new PluginAgentService(root);
   const llm = new PluginLlmService(root, agents);
+  const reasoning: Array<'least' | undefined> = [];
   llm.bindRuntime({
-    generate: async (_input, invocation) => ({ text: invocation.sessionId, modelId: 'host' }),
+    generate: async (input, invocation) => {
+      reasoning.push(input.reasoning);
+      return { text: invocation.sessionId, modelId: 'host' };
+    },
   });
   const plugin = root.extend({
     maka: { rootId: 'profile', packageId: 'fixture', entryId: 'fixture', generation: 1 },
@@ -50,6 +54,8 @@ test('llm generation uses Host authority unless a matching adapter overrides it'
   };
   await agents.withInvocation(context, async () => {
     assert.equal((await llm.generate({ prompt: 'hello' })).text, 'session-a');
+    assert.equal((await llm.generate({ prompt: 'screen', reasoning: 'least' })).text, 'session-a');
+    assert.deepEqual(reasoning, [undefined, 'least']);
     assert.equal((await llm.generate({ prompt: 'hello', model: 'fixture/model' })).text, 'adapter');
   });
   await root.fiber.dispose();
@@ -163,3 +169,55 @@ function toolContext(abortSignal = new AbortController().signal): MakaToolContex
     emitOutput: () => undefined,
   };
 }
+
+test('one-shot model selection reaches Host without changing invocation identity', async () => {
+  const root = new Context();
+  const agents = new PluginAgentService(root);
+  const llm = new PluginLlmService(root, agents);
+  llm.bindRuntime({
+    generate: async (input, invocation) => {
+      assert.equal(input.modelKey, 'small::flash');
+      assert.equal(invocation.sessionId, 'session-a');
+      return { text: 'ok', modelId: 'flash' };
+    },
+  });
+  try {
+    const result = await agents.withInvocation(toolContext(), () =>
+      llm.generate({ prompt: 'assess', modelKey: 'small::flash' }),
+    );
+    assert.equal(result.modelId, 'flash');
+  } finally {
+    await root.fiber.dispose();
+  }
+});
+
+test('model budget uses the same owner and explicit model selection as generation', async () => {
+  const root = new Context();
+  const agents = new PluginAgentService(root);
+  const llm = new PluginLlmService(root, agents);
+  llm.bindRuntime({
+    budget: async (input, invocation) => {
+      assert.equal(input.modelKey, 'small::flash');
+      assert.equal(input.maxOutputTokens, 2048);
+      assert.equal(invocation.sessionId, 'session-a');
+      return {
+        modelId: 'flash',
+        maxInputTokens: 8000,
+        maxOutputTokens: 2048,
+        estimate: 'utf8-conservative',
+      };
+    },
+    generate: async () => {
+      throw Error('budget must not invoke a model');
+    },
+  });
+  try {
+    assert.throws(() => llm.budget({}));
+    const budget = await agents.withInvocation(toolContext(), () =>
+      llm.budget({ modelKey: 'small::flash', maxOutputTokens: 2048 }),
+    );
+    assert.equal(budget.maxInputTokens, 8000);
+  } finally {
+    await root.fiber.dispose();
+  }
+});

@@ -374,7 +374,7 @@ export class BotController {
       feedback:
         this.store.head() > this.deliveredThrough
           ? UNREAD_SLEEP_FEEDBACK
-          : '你是 Inbox 驱动的 Bot。普通文本不会发送给用户，也不会让你休眠。需要交流用 SendUser，无需继续时调用 Sleep。若 Inbox 还有未投递消息，用 InboxCheck 接收正文后自行决定如何处理；读取不要求回复或完成事情。',
+          : '你是 Inbox 驱动的 Bot。普通文本不会发送给用户，也不会让你休眠。普通交流用 SendUser，回应主动发现用 ReplyDiscovery 并引用来源，无需继续时调用 Sleep。若 Inbox 还有未投递消息，用 InboxCheck 接收正文后自行决定如何处理；读取不要求回复或完成事情。',
     };
   }
   async close() {
