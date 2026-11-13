@@ -313,37 +313,39 @@ impl Session {
     }
 
     /// Arm deferred browser waits before the caller releases its Session lock.
-    pub async fn prepare_invoke(
-        &mut self,
+    // Keep operation future sizes out of the enclosing desktop/Host poll stack.
+    pub fn prepare_invoke<'a>(
+        &'a mut self,
         command: Command,
-        invocation: &crate::InvocationContext<'_>,
-        cancellation: &CancellationToken,
+        invocation: &'a crate::InvocationContext<'_>,
+        cancellation: &'a CancellationToken,
         language: Language,
-    ) -> Result<crate::InvocationCompletion, ToolError> {
-        if let Command::BrowserWait { handle, operation } = command {
-            self.admit_invocation(invocation.session(), cancellation)?;
-            return self
-                .browsers
-                .prepare_wait(handle, operation, invocation, cancellation, language)
-                .await;
+    ) -> futures_util::future::BoxFuture<'a, Result<crate::InvocationCompletion, ToolError>> {
+        match command {
+            Command::BrowserWait { handle, operation } => Box::pin(async move {
+                self.admit_invocation(invocation.session(), cancellation)?;
+                self.browsers
+                    .prepare_wait(handle, operation, invocation, cancellation, language)
+                    .await
+            }),
+            Command::BrowserFileChooserWait { handle, options } => Box::pin(async move {
+                self.admit_invocation(invocation.session(), cancellation)?;
+                self.browsers
+                    .prepare_file_chooser(handle, options, invocation, cancellation, language)
+                    .await
+            }),
+            Command::BrowserDownloadWait { handle, options } => Box::pin(async move {
+                self.admit_invocation(invocation.session(), cancellation)?;
+                self.browsers
+                    .prepare_download(handle, options, invocation, cancellation, language)
+                    .await
+            }),
+            command => Box::pin(async move {
+                self.invoke_immediate(command, invocation, cancellation, language)
+                    .await
+                    .map(crate::InvocationCompletion::ready)
+            }),
         }
-        if let Command::BrowserFileChooserWait { handle, options } = command {
-            self.admit_invocation(invocation.session(), cancellation)?;
-            return self
-                .browsers
-                .prepare_file_chooser(handle, options, invocation, cancellation, language)
-                .await;
-        }
-        if let Command::BrowserDownloadWait { handle, options } = command {
-            self.admit_invocation(invocation.session(), cancellation)?;
-            return self
-                .browsers
-                .prepare_download(handle, options, invocation, cancellation, language)
-                .await;
-        }
-        self.invoke_immediate(command, invocation, cancellation, language)
-            .await
-            .map(crate::InvocationCompletion::ready)
     }
 
     fn admit_invocation(
