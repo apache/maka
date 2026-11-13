@@ -304,9 +304,22 @@ pub fn join_upstream_url(base_url: &str, request_uri: &str) -> Result<String, St
     Ok(base.to_string())
 }
 
+fn rewrite_url_origin(target_url: &str, origin_override: &str) -> Result<String, String> {
+    let target = Url::parse(target_url).map_err(|e| format!("invalid target URL: {e}"))?;
+    let mut dest =
+        Url::parse(origin_override).map_err(|e| format!("invalid origin override: {e}"))?;
+    dest.set_path(target.path());
+    dest.set_query(target.query());
+    dest.set_fragment(None);
+    Ok(dest.to_string())
+}
+
+pub const UPSTREAM_TARGET_HEADER: &str = "x-maka-eval-upstream-target";
+
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
     pub upstream_base_url: String,
+    pub transport_origin_override: Option<String>,
     pub upstream_api_key: String,
     pub profile: String,
     pub gateway_credential: String,
@@ -632,10 +645,26 @@ async fn handle_gateway_request(
             ));
         }
     };
+    let connect_url = match &state.config.transport_origin_override {
+        Some(origin) => match rewrite_url_origin(&target_url, origin) {
+            Ok(u) => u,
+            Err(_) => {
+                finish_in_flight(&state).await;
+                return Ok(json_error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "invalid gateway transport origin override",
+                ));
+            }
+        },
+        None => target_url.clone(),
+    };
 
     let reqwest_method =
         reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::POST);
-    let mut upstream_req = state.client.request(reqwest_method, &target_url);
+    let mut upstream_req = state.client.request(reqwest_method, &connect_url);
+    if state.config.transport_origin_override.is_some() {
+        upstream_req = upstream_req.header(UPSTREAM_TARGET_HEADER, &target_url);
+    }
     let uses_x_api_key =
         headers.contains_key("x-api-key") && !headers.contains_key(hyper::header::AUTHORIZATION);
     for (name, value) in &headers {
@@ -648,6 +677,7 @@ async fn handle_gateway_request(
                 | "connection"
                 | "authorization"
                 | "x-api-key"
+                | UPSTREAM_TARGET_HEADER
         ) {
             continue;
         }
@@ -860,6 +890,7 @@ mod tests {
 
         let gateway = EvalMeteringGateway::start(GatewayConfig {
             upstream_base_url: format!("http://{upstream_addr}/v1"),
+            transport_origin_override: None,
             upstream_api_key: "real-upstream-secret".into(),
             profile: "maka".into(),
             gateway_credential: "attempt-gateway-token".into(),

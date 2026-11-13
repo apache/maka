@@ -132,10 +132,14 @@ with tempfile.TemporaryDirectory(prefix="maka-native-eval-") as raw:
     assert len(Provider.captured_requests[0].get("tools", [])) > 0, (
         f"default product tools must not be pruned: {list(Provider.captured_requests[0].keys())}"
     )
+    expected_maka_sha = hashlib.sha256(Path(os.environ["MAKA_TEST_MAKA"]).read_bytes()).hexdigest()
+    assert data["makaExecutableSha256"] == expected_maka_sha, data
     receipt = json.loads((root / "artifacts" / "execution-receipt.json").read_text())
     assert receipt["operationId"] == data["operationId"]
     assert receipt["runId"] == data["invocationId"]
     assert receipt["rootPath"] == str(root / "host")
+    assert receipt["makaExecutable"] == os.environ["MAKA_TEST_MAKA"]
+    assert receipt["makaExecutableSha256"] == expected_maka_sha
     assert receipt["sessionId"]
     transcript = json.loads((root / "artifacts" / "transcript.json").read_text())
     assert any("Done." in chunk.get("text", "") for page in transcript for chunk in page["chunks"])

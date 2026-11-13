@@ -39,12 +39,15 @@ use crate::environment::{
     BoxFuture, CommandRunner, SubjectExecutionContext, SubjectProcessOutput, SubjectProcessRequest,
     SubjectProcessTermination,
 };
+use crate::measurement::{UPSTREAM_TARGET_HEADER, join_upstream_url};
 use crate::subject::SubjectAdapter;
 use crate::subject::maka::native::{
     apply_public_host_preferences, commit_client_mutation, sandbox_mode_to_workspace_access,
-    shutdown_host_client, start_host_client,
+    shutdown_host_client, start_host_client_with_env,
 };
-use crate::subject::maka::{MakaSubjectConfig, RustHostSubject, bootstrap_maka_host_root};
+use crate::subject::maka::{
+    MakaSubjectConfig, RustHostSubject, bootstrap_maka_host_root, url_route_signature,
+};
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
@@ -62,6 +65,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -157,6 +161,8 @@ pub struct ParitySnapshot {
     pub max_output_tokens: Value,
     pub context_policy: Value,
     pub wire_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_target_url: Option<String>,
     pub wire_model: Option<String>,
     pub wire_messages: Value,
     pub wire_tools: Value,
@@ -166,7 +172,68 @@ pub struct ParitySnapshot {
 #[derive(Debug, Clone)]
 struct CapturedWireRequest {
     path: String,
+    upstream_target: Option<String>,
     body: Value,
+}
+
+struct OfflineProxyGuard {
+    addr: std::net::SocketAddr,
+    shutdown: CancellationToken,
+    worker: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl OfflineProxyGuard {
+    async fn start() -> Result<Self, String> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| format!("failed to bind offline proxy guard: {e}"))?;
+        let addr = listener
+            .local_addr()
+            .map_err(|e| format!("failed to read offline proxy guard address: {e}"))?;
+        let shutdown = CancellationToken::new();
+        let shutdown_clone = shutdown.clone();
+        let worker = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown_clone.cancelled() => break,
+                    accepted = listener.accept() => {
+                        let Ok((mut stream, _)) = accepted else { break; };
+                        tokio::spawn(async move {
+                            let mut buf = [0u8; 4096];
+                            let _ = tokio::time::timeout(
+                                Duration::from_millis(200),
+                                stream.read(&mut buf),
+                            )
+                            .await;
+                            let _ = stream
+                                .write_all(
+                                    b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                )
+                                .await;
+                            let _ = stream.shutdown().await;
+                        });
+                    }
+                }
+            }
+        });
+        Ok(Self {
+            addr,
+            shutdown,
+            worker: Some(worker),
+        })
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+
+    async fn close(mut self) {
+        self.shutdown.cancel();
+        if let Some(w) = self.worker.take() {
+            w.abort();
+        }
+    }
 }
 
 struct ParityProbeServer {
@@ -249,6 +316,11 @@ async fn handle_probe_request(
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let method = req.method().clone();
     let path = req.uri().path().to_owned();
+    let upstream_target = req
+        .headers()
+        .get(UPSTREAM_TARGET_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     let bytes = req
         .into_body()
         .collect()
@@ -287,6 +359,7 @@ async fn handle_probe_request(
     if method == hyper::Method::POST {
         store.lock().await.push(CapturedWireRequest {
             path: path.clone(),
+            upstream_target,
             body: body_json,
         });
     }
@@ -406,6 +479,7 @@ async fn handle_probe_request(
 struct LocalProcessRunner {
     work_dir: PathBuf,
     timeout: Duration,
+    extra_env: Vec<(String, String)>,
 }
 
 impl CommandRunner for LocalProcessRunner {
@@ -418,10 +492,14 @@ impl CommandRunner for LocalProcessRunner {
             cmd.args(&request.args)
                 .current_dir(&self.work_dir)
                 .env_remove("MAKA_EVAL_RESULT_TOKEN")
+                .env_remove("REQUEST_METHOD")
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
+            for (k, v) in &self.extra_env {
+                cmd.env(k, v);
+            }
             for (k, v) in &request.environment {
                 cmd.env(k, v);
             }
@@ -508,27 +586,51 @@ pub async fn verify_product_parity(
     let maka_executable_sha256 = sha256_hex(&maka_bytes);
     let maka_version = read_maka_version(&maka_path).await?;
 
+    let offline_proxy = OfflineProxyGuard::start().await?;
+    let offline_proxy_url = offline_proxy.url();
     let probe = ParityProbeServer::start(config.model.clone()).await?;
-    let probe_base_url = probe.base_url_for(&config.base_url);
+    let probe_origin = format!("http://{}", probe.addr);
 
     let temp = tempfile::tempdir().map_err(|e| format!("tempdir failed: {e}"))?;
     let shared_workspace = temp.path().join("workspace");
     prepare_shared_workspace(input.workspace_source.as_deref(), &shared_workspace)?;
 
-    let normal_root = temp.path().join("normal-root");
-    let normal_journal_dir = temp.path().join("normal-client");
-    fs::create_dir_all(&normal_journal_dir).map_err(|e| e.to_string())?;
+    let normal_origin_root = temp.path().join("normal-origin-root");
+    let normal_origin_journal_dir = temp.path().join("normal-origin-client");
+    fs::create_dir_all(&normal_origin_journal_dir).map_err(|e| e.to_string())?;
 
-    let normal_session_id = run_normal_product_client(
+    let origin_prep = run_normal_origin_preparation(
         &config,
-        &probe_base_url,
-        &normal_root,
-        &normal_journal_dir,
+        &offline_proxy_url,
+        &normal_origin_root,
+        &normal_origin_journal_dir,
         &shared_workspace,
         &input.task_input,
     )
     .await;
-    let normal_requests = probe.take_requests().await;
+
+    let (normal_wire_res, mut normal_requests) = match &origin_prep {
+        Ok((_, accepted_route_base_url)) => {
+            let normal_wire_root = temp.path().join("normal-wire-root");
+            let normal_wire_journal_dir = temp.path().join("normal-wire-client");
+            fs::create_dir_all(&normal_wire_journal_dir).map_err(|e| e.to_string())?;
+            let probe_base_url = probe.base_url_for(accepted_route_base_url);
+            let res = run_normal_product_client(
+                &config,
+                &probe_base_url,
+                &offline_proxy_url,
+                &normal_wire_root,
+                &normal_wire_journal_dir,
+                &shared_workspace,
+                &input.task_input,
+            )
+            .await
+            .map(|sid| (normal_wire_root, sid));
+            let reqs = probe.take_requests().await;
+            (res, reqs)
+        }
+        Err(err) => (Err(err.clone()), Vec::new()),
+    };
 
     let eval_roots_dir = temp.path().join("eval-roots");
     let eval_artifacts_dir = temp.path().join("eval-artifacts");
@@ -539,7 +641,8 @@ pub async fn verify_product_parity(
         &input.subject_id,
         &input.subject_config,
         &input.subject_credentials,
-        &probe_base_url,
+        &probe_origin,
+        &offline_proxy_url,
         &eval_roots_dir,
         &eval_artifacts_dir,
         &shared_workspace,
@@ -554,27 +657,38 @@ pub async fn verify_product_parity(
     .await;
     let eval_requests = probe.take_requests().await;
     probe.close().await;
+    offline_proxy.close().await;
 
-    let normal_session_id = normal_session_id?;
+    let (normal_origin_session_id, accepted_route_base_url) = origin_prep?;
+    let (normal_wire_root, normal_wire_session_id) = normal_wire_res?;
     let (eval_root, eval_session_id) = eval_run?;
 
-    verify_maka_inspect(&maka_path, &normal_root, &normal_session_id).await?;
+    verify_maka_inspect(&maka_path, &normal_origin_root, &normal_origin_session_id).await?;
+    verify_maka_inspect(&maka_path, &normal_wire_root, &normal_wire_session_id).await?;
     verify_maka_inspect(&maka_path, &eval_root, &eval_session_id).await?;
 
     let normal_wire = normal_requests
-        .first()
+        .first_mut()
         .ok_or("normal Maka client did not emit a model request")?;
+    normal_wire.upstream_target = Some(join_upstream_url(
+        &accepted_route_base_url,
+        &normal_wire.path,
+    )?);
     let eval_wire = eval_requests
         .first()
         .ok_or("Eval Maka entry point did not emit a model request")?;
 
     let normal_snapshot = extract_committed_parity_snapshot(
-        &normal_root,
-        &normal_session_id,
+        &normal_origin_root,
+        &normal_origin_session_id,
+        &normal_wire_root,
+        &normal_wire_session_id,
         &shared_workspace,
         normal_wire,
     )?;
     let eval_snapshot = extract_committed_parity_snapshot(
+        &eval_root,
+        &eval_session_id,
         &eval_root,
         &eval_session_id,
         &shared_workspace,
@@ -671,11 +785,320 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Runs Maka's normal public client flow with the untouched declared `config.base_url`
+/// under an offline proxy guard so Maka commits `RunSpec`, `AcceptedModel` (with the true
+/// product-resolved `route.base_url`), and `step_prepared` `RequestSpec` without external calls.
+async fn run_normal_origin_preparation(
+    config: &MakaSubjectConfig,
+    offline_proxy_url: &str,
+    root_path: &Path,
+    journal_dir: &Path,
+    workspace_path: &Path,
+    task_input: &str,
+) -> Result<(String, String), String> {
+    let deadline = Duration::from_millis(u64::from(config.host_settlement_timeout_ms));
+    let maka_executable = Path::new(&config.maka_executable);
+    let api_key = std::env::var(&config.api_key_environment)
+        .unwrap_or_else(|_| "parity-probe-credential".into());
+    let init_payload = config.host_init_settings(&config.base_url, api_key);
+
+    tokio::time::timeout(
+        deadline,
+        bootstrap_maka_host_root(maka_executable, root_path, &init_payload),
+    )
+    .await
+    .map_err(|_| "normal Maka origin Host initialization timed out".to_owned())??;
+
+    let env_all_proxied = [
+        ("ALL_PROXY", offline_proxy_url),
+        ("all_proxy", offline_proxy_url),
+        ("HTTP_PROXY", offline_proxy_url),
+        ("http_proxy", offline_proxy_url),
+        ("HTTPS_PROXY", offline_proxy_url),
+        ("https_proxy", offline_proxy_url),
+        ("NO_PROXY", ""),
+        ("no_proxy", ""),
+    ];
+
+    let journal = Journal::open(&journal_dir.join("client-journal.sqlite")).await?;
+    let (mut child, client) = start_host_client_with_env(
+        maka_executable,
+        root_path,
+        u64::from(config.host_settlement_timeout_ms),
+        journal.clone(),
+        &env_all_proxied,
+    )
+    .await?;
+
+    let workspace_str = workspace_path.to_string_lossy().into_owned();
+    let configured =
+        apply_public_host_preferences(&workspace_str, &config.session_settings, &client).await;
+    let cleanup = shutdown_host_client(&mut child, &client, deadline).await;
+    configured?;
+    cleanup?;
+
+    let (mut child, client) = start_host_client_with_env(
+        maka_executable,
+        root_path,
+        u64::from(config.host_settlement_timeout_ms),
+        journal,
+        &env_all_proxied,
+    )
+    .await?;
+
+    let session_res = async {
+        let connections = client
+            .query("settings", "connections", json!({"kind": "start"}))
+            .await?;
+        let connection = connections["connections"]
+            .as_array()
+            .and_then(|items| items.iter().find(|c| c["slug"] == config.connection_slug))
+            .ok_or("normal Maka connection unavailable")?;
+        let backend = json!({
+            "kind": "model",
+            "connectionId": connection["basis"]["connectionId"],
+            "modelId": config.model,
+            "thinkingLevel": config.session_settings.thinking_level,
+        });
+        let created = commit_client_mutation(
+            client
+                .control(
+                    Uuid::new_v4(),
+                    "create",
+                    json!({
+                        "title": "Task",
+                        "automaticTitle": false,
+                        "labels": [],
+                        "backend": backend,
+                        "workspace": {
+                            "kind": "directory",
+                            "path": workspace_str,
+                        },
+                        "tools": Value::Null,
+                    }),
+                )
+                .await?,
+        )
+        .await?;
+        if created["kind"] != "created" {
+            return Err(format!("normal Maka session creation rejected: {created}"));
+        }
+        let session_obj = &created["session"];
+        let session_id = session_obj["id"]
+            .as_str()
+            .ok_or("normal Maka session id missing")?
+            .to_owned();
+
+        if let Some(request_permissions) = config.session_settings.request_permissions {
+            let access = match &config.session_settings.sandbox_mode {
+                Some(mode) => sandbox_mode_to_workspace_access(mode)?.to_owned(),
+                None => session_obj["permissions"]["access"]
+                    .as_str()
+                    .unwrap_or("workspace_write")
+                    .to_owned(),
+            };
+            let revision = session_obj["revision"]
+                .as_u64()
+                .ok_or("normal session revision missing")?;
+            let updated = commit_client_mutation(
+                client
+                    .control(
+                        Uuid::new_v4(),
+                        "metadata",
+                        json!({
+                            "sessionId": session_id,
+                            "expectedRevision": revision,
+                            "title": "Task",
+                            "labels": [],
+                            "permissions": {
+                                "settings": {
+                                    "access": access,
+                                    "requestPermissions": request_permissions,
+                                },
+                                "revokeGrants": false,
+                            },
+                        }),
+                    )
+                    .await?,
+            )
+            .await?;
+            if updated["kind"] != "committed" {
+                return Err("normal Maka session permission update rejected".into());
+            }
+        }
+
+        let draft = client
+            .save_draft(
+                "agent",
+                &session_id,
+                "composer",
+                None,
+                task_input.to_owned().into(),
+            )
+            .await?;
+        let mutation = client
+            .reserve_send_draft(
+                Uuid::new_v4(),
+                "agent",
+                &session_id,
+                "composer",
+                draft.revision,
+                json!({"backend": backend}),
+            )
+            .await?
+            .open()
+            .await?;
+        let watch = client
+            .subscribe("agent", "watch", json!({"sessionId": session_id, "after": 0}))
+            .await?;
+        let accepted = commit_client_mutation(mutation).await?;
+        let run_id = match accepted["kind"].as_str() {
+            Some("started") => accepted["runId"]
+                .as_str()
+                .ok_or("normal Maka runId missing")?
+                .to_owned(),
+            Some("queued") => {
+                let msg_id = accepted["messageId"]
+                    .as_str()
+                    .ok_or("normal Maka queued messageId missing")?;
+                let mut wait_interval = tokio::time::interval(Duration::from_millis(50));
+                loop {
+                    wait_interval.tick().await;
+                    let work = client
+                        .query(
+                            "agent",
+                            "work",
+                            json!({
+                                "sessionId": session_id,
+                                "target": {"kind": "message", "messageId": msg_id},
+                                "cursor": null
+                            }),
+                        )
+                        .await?;
+                    match work["kind"].as_str() {
+                        Some("delivered") => {
+                            break work["execution"]["runId"]
+                                .as_str()
+                                .ok_or("normal Maka delivered runId missing")?
+                                .to_owned();
+                        }
+                        Some("pending") => {}
+                        _ => return Err(format!("normal Maka queued message failed: {work}")),
+                    }
+                }
+            }
+            _ => return Err(format!("normal Maka send rejected: {accepted}")),
+        };
+
+        let mut prepared = false;
+        let mut stopping = false;
+        let mut interval = tokio::time::interval(Duration::from_millis(25));
+        let mut next = Box::pin(watch.next());
+        loop {
+            tokio::select! {
+                ev = &mut next => {
+                    match ev? {
+                        Some(SubscriptionEvent::Item(page)) => {
+                            if let Some(events) = page.get("events").and_then(Value::as_array) {
+                                for event in events.iter().filter(|e| e["runId"] == run_id) {
+                                    if event["fact"]["kind"] == "step_prepared" {
+                                        prepared = true;
+                                    }
+                                }
+                            }
+                            if prepared && !stopping {
+                                let exec = client
+                                    .query("agent", "execution", json!({"sessionId": session_id, "runId": run_id}))
+                                    .await?;
+                                if matches!(
+                                    exec["execution"]["state"]["kind"].as_str(),
+                                    Some("admitted" | "running" | "waiting")
+                                ) {
+                                    let _ = commit_client_mutation(
+                                        client
+                                            .control(
+                                                Uuid::new_v4(),
+                                                "stop",
+                                                json!({"sessionId": session_id, "runId": run_id}),
+                                            )
+                                            .await?,
+                                    )
+                                    .await;
+                                    stopping = true;
+                                }
+                            }
+                            next = Box::pin(watch.next());
+                        }
+                        _ => return Err("normal Maka origin watch ended prematurely".into()),
+                    }
+                }
+                _ = interval.tick() => {
+                    let exec = client
+                        .query("agent", "execution", json!({"sessionId": session_id, "runId": run_id}))
+                        .await?;
+                    match exec["execution"]["state"]["kind"].as_str() {
+                        Some("completed" | "failed" | "cancelled") => break,
+                        Some("admitted" | "running" | "waiting") if prepared && !stopping => {
+                            let _ = commit_client_mutation(
+                                client
+                                    .control(
+                                        Uuid::new_v4(),
+                                        "stop",
+                                        json!({"sessionId": session_id, "runId": run_id}),
+                                    )
+                                    .await?,
+                            )
+                            .await;
+                            stopping = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        drop(next);
+        watch.close().await?;
+        Ok::<String, String>(session_id)
+    }
+    .await;
+
+    let cleanup = shutdown_host_client(&mut child, &client, deadline).await;
+    let session_id = session_res?;
+    cleanup?;
+
+    let accepted_route_base_url = read_accepted_route_base_url(root_path, &session_id)?;
+    Ok((session_id, accepted_route_base_url))
+}
+
+fn read_accepted_route_base_url(root_path: &Path, session_id: &str) -> Result<String, String> {
+    let db_path = root_path.join(ROOT_SQLITE_FILENAME);
+    let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("failed opening {}: {e}", db_path.display()))?;
+    let spec_bytes: Vec<u8> = conn
+        .query_row(
+            "SELECT c.payload FROM agent_run_specs s JOIN contents c ON c.id = s.spec_content_id WHERE s.session = ? ORDER BY s.rowid ASC LIMIT 1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("failed reading RunSpec for session {session_id}: {e}"))?;
+    let run_spec: Value =
+        serde_json::from_slice(&spec_bytes).map_err(|e| format!("invalid RunSpec JSON: {e}"))?;
+    let accepted_model = read_content_json(&conn, &run_spec["backend"]["descriptor"])?;
+    accepted_model
+        .pointer("/route/base_url")
+        .or_else(|| accepted_model.pointer("/route/baseUrl"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "AcceptedModel.route.base_url missing".into())
+}
+
 /// Runs a session using Maka's normal public client flow directly against `probe_base_url`
 /// (with no `EvalMeteringGateway` and no `maka-eval` wrapper).
 async fn run_normal_product_client(
     config: &MakaSubjectConfig,
     probe_base_url: &str,
+    offline_proxy_url: &str,
     root_path: &Path,
     journal_dir: &Path,
     workspace_path: &Path,
@@ -694,12 +1117,24 @@ async fn run_normal_product_client(
     .await
     .map_err(|_| "normal Maka Host initialization timed out".to_owned())??;
 
+    let env_loopback_direct = [
+        ("ALL_PROXY", offline_proxy_url),
+        ("all_proxy", offline_proxy_url),
+        ("HTTP_PROXY", offline_proxy_url),
+        ("http_proxy", offline_proxy_url),
+        ("HTTPS_PROXY", offline_proxy_url),
+        ("https_proxy", offline_proxy_url),
+        ("NO_PROXY", "127.0.0.1,localhost"),
+        ("no_proxy", "127.0.0.1,localhost"),
+    ];
+
     let journal = Journal::open(&journal_dir.join("client-journal.sqlite")).await?;
-    let (mut child, client) = start_host_client(
+    let (mut child, client) = start_host_client_with_env(
         maka_executable,
         root_path,
         u64::from(config.host_settlement_timeout_ms),
         journal.clone(),
+        &env_loopback_direct,
     )
     .await?;
 
@@ -710,11 +1145,12 @@ async fn run_normal_product_client(
     configured?;
     cleanup?;
 
-    let (mut child, client) = start_host_client(
+    let (mut child, client) = start_host_client_with_env(
         maka_executable,
         root_path,
         u64::from(config.host_settlement_timeout_ms),
         journal,
+        &env_loopback_direct,
     )
     .await?;
 
@@ -902,13 +1338,14 @@ async fn run_normal_product_client(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "parity entry-point harness binds subject config, probe endpoint, isolated roots, artifacts, workspace, task input, step budget, and timeout explicitly"
+    reason = "parity entry-point harness binds subject config, probe origin, offline proxy, isolated roots, artifacts, workspace, task input, step budget, and timeout explicitly"
 )]
 async fn run_eval_subject_entry(
     subject_id: &str,
     subject_config: &JsonObject,
     subject_credentials: &[String],
-    probe_base_url: &str,
+    probe_origin: &str,
+    offline_proxy_url: &str,
     eval_roots_dir: &Path,
     eval_artifacts_dir: &Path,
     workspace_path: &Path,
@@ -917,7 +1354,6 @@ async fn run_eval_subject_entry(
     timeout: Duration,
 ) -> Result<(PathBuf, String), String> {
     let mut cfg = subject_config.clone();
-    cfg.insert("baseUrl".into(), Value::String(probe_base_url.to_owned()));
     cfg.insert(
         "runtimeHostsPath".into(),
         Value::String(eval_roots_dir.to_string_lossy().into_owned()),
@@ -973,6 +1409,20 @@ async fn run_eval_subject_entry(
     let runner = Arc::new(LocalProcessRunner {
         work_dir: eval_artifacts_dir.to_path_buf(),
         timeout,
+        extra_env: vec![
+            (
+                "MAKA_EVAL_GATEWAY_TRANSPORT_ORIGIN".into(),
+                probe_origin.to_owned(),
+            ),
+            ("ALL_PROXY".into(), offline_proxy_url.to_owned()),
+            ("all_proxy".into(), offline_proxy_url.to_owned()),
+            ("HTTP_PROXY".into(), offline_proxy_url.to_owned()),
+            ("http_proxy".into(), offline_proxy_url.to_owned()),
+            ("HTTPS_PROXY".into(), offline_proxy_url.to_owned()),
+            ("https_proxy".into(), offline_proxy_url.to_owned()),
+            ("NO_PROXY".into(), "127.0.0.1,localhost".into()),
+            ("no_proxy".into(), "127.0.0.1,localhost".into()),
+        ],
     });
     let context = SubjectExecutionContext {
         cwd: workspace_path.to_string_lossy().into_owned(),
@@ -1027,12 +1477,11 @@ fn read_content_json(conn: &Connection, content_ref: &Value) -> Result<Value, St
     serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON in content {digest}: {e}"))
 }
 
-fn extract_committed_parity_snapshot(
+fn build_ephemeral_normalizer_for_session(
     root_path: &Path,
     session_id: &str,
     workspace_path: &Path,
-    wire: &CapturedWireRequest,
-) -> Result<ParitySnapshot, String> {
+) -> Result<(Connection, String, Value, Value, EphemeralNormalizer), String> {
     let db_path = root_path.join(ROOT_SQLITE_FILENAME);
     let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("failed opening {}: {e}", db_path.display()))?;
@@ -1069,6 +1518,30 @@ fn extract_committed_parity_snapshot(
         root_raw: root_path.to_string_lossy().into_owned(),
         root_canonical: canonical_root.to_string_lossy().into_owned(),
     };
+    Ok((conn, run_id, run_spec, accepted_model, normalizer))
+}
+
+fn extract_committed_parity_snapshot(
+    facts_root_path: &Path,
+    facts_session_id: &str,
+    wire_root_path: &Path,
+    wire_session_id: &str,
+    workspace_path: &Path,
+    wire: &CapturedWireRequest,
+) -> Result<ParitySnapshot, String> {
+    let (conn, run_id, run_spec, accepted_model, normalizer) =
+        build_ephemeral_normalizer_for_session(facts_root_path, facts_session_id, workspace_path)?;
+    let wire_normalizer =
+        if facts_root_path == wire_root_path && facts_session_id == wire_session_id {
+            None
+        } else {
+            let (_, _, _, _, wn) = build_ephemeral_normalizer_for_session(
+                wire_root_path,
+                wire_session_id,
+                workspace_path,
+            )?;
+            Some(wn)
+        };
 
     let system_prompt_blob = read_content_json(&conn, &run_spec["systemPrompt"])?;
     let system_prompt_text = system_prompt_blob["text"]
@@ -1195,7 +1668,8 @@ fn extract_committed_parity_snapshot(
         "bodyOverlay": accepted_model.get("body_overlay").cloned().unwrap_or(Value::Null),
     }));
 
-    let wire_normalized = normalizer.normalize_value(&wire.body);
+    let wire_norm = wire_normalizer.as_ref().unwrap_or(&normalizer);
+    let wire_normalized = wire_norm.normalize_value(&wire.body);
     let mut wire_rest = wire_normalized.as_object().cloned().unwrap_or_default();
     let wire_model = wire_rest
         .remove("model")
@@ -1254,6 +1728,7 @@ fn extract_committed_parity_snapshot(
             .unwrap_or(Value::Null),
         context_policy,
         wire_path: wire.path.clone(),
+        upstream_target_url: wire.upstream_target.as_deref().map(url_route_signature),
         wire_model,
         wire_messages,
         wire_tools,
@@ -1594,6 +2069,11 @@ pub fn compare_parity_snapshots(
                 "wirePath",
                 Value::String(normal.wire_path.clone()),
                 Value::String(eval.wire_path.clone()),
+            ),
+            (
+                "upstreamTargetUrl",
+                serde_json::to_value(&normal.upstream_target_url).unwrap(),
+                serde_json::to_value(&eval.upstream_target_url).unwrap(),
             ),
             (
                 "wireModel",

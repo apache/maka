@@ -41,9 +41,11 @@ use crate::subject::{SubjectAdapter, SubjectExecutionResult};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -284,6 +286,12 @@ pub enum HostedExecutionProjection {
         #[serde(rename = "invocationId", default)]
         invocation_id: Option<String>,
         #[serde(
+            rename = "makaExecutableSha256",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        maka_executable_sha256: Option<String>,
+        #[serde(
             rename = "blockedInteraction",
             default,
             skip_serializing_if = "Option::is_none"
@@ -305,6 +313,12 @@ pub enum HostedExecutionProjection {
         operation_id: Option<String>,
         #[serde(rename = "invocationId", default)]
         invocation_id: Option<String>,
+        #[serde(
+            rename = "makaExecutableSha256",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        maka_executable_sha256: Option<String>,
     },
 }
 
@@ -663,6 +677,86 @@ pub fn url_route_signature(raw_url: &str) -> String {
     parsed.to_string()
 }
 
+/// Resolves the actual outbound model route (`base_url`) using Maka's provider policy
+/// against the declared connection endpoint before attaching local metering forwarding.
+pub async fn resolve_product_route_base_url(
+    provider_name: &str,
+    connection_slug: &str,
+    declared_base_url: &str,
+    model_id: &str,
+    model_override: Option<&JsonObject>,
+    thinking_level: Option<&str>,
+) -> Result<String, String> {
+    static BUNDLED_CATALOG: OnceLock<Result<Arc<maka_providers::catalog::Snapshot>, String>> =
+        OnceLock::new();
+    let snapshot = BUNDLED_CATALOG
+        .get_or_init(|| maka_providers::catalog::Snapshot::bundled().map(Arc::new))
+        .as_ref()
+        .map_err(Clone::clone)?;
+
+    let package = if provider_name == "chatgpt" {
+        maka_providers::codex::ID
+    } else {
+        maka_providers::api::ID
+    };
+    let identity = maka_agent_facts::provider::Identity {
+        package_id: package.into(),
+        entry_id: package.into(),
+        scope: Default::default(),
+        name: provider_name.to_owned(),
+    };
+    let definition = maka_providers::definition(&identity, snapshot.clone())
+        .map_err(|e| format!("unavailable Maka provider '{provider_name}': {e}"))?;
+    let configuration = definition
+        .configure(serde_json::json!({ "baseUrl": declared_base_url }))
+        .map_err(|e| format!("invalid Maka provider configuration for '{provider_name}': {e}"))?;
+
+    let overrides = model_override
+        .map(|ov| {
+            serde_json::from_value::<maka_agent_facts::configuration::ModelOverride>(Value::Object(
+                ov.clone(),
+            ))
+        })
+        .transpose()
+        .map_err(|e| format!("invalid Maka modelOverride for '{model_id}': {e}"))?;
+    let thinking = thinking_level
+        .map(|lvl| {
+            serde_json::from_value::<maka_agent_facts::execution::ThinkingLevel>(Value::String(
+                lvl.to_owned(),
+            ))
+        })
+        .transpose()
+        .map_err(|e| format!("invalid Maka thinkingLevel '{thinking_level:?}': {e}"))?;
+
+    let reference = overrides.as_ref().and_then(|v| v.catalog_model.as_ref());
+    let public_model = snapshot
+        .model_base(provider_name, model_id, reference)
+        .map(Cow::into_owned);
+    let model_snapshot = Arc::new(
+        maka_providers::catalog::Snapshot::for_model(provider_name, model_id, public_model)
+            .map_err(|e| format!("invalid Maka catalog snapshot for '{model_id}': {e}"))?,
+    );
+    let model_definition = maka_providers::definition(&identity, model_snapshot)
+        .map_err(|e| format!("unavailable Maka provider '{provider_name}': {e}"))?;
+    let resolved = model_definition
+        .prepare(maka_agent_ports::provider::Resolve {
+            connection: maka_agent_ports::provider::Connection {
+                id: connection_slug.to_owned(),
+                revision: 0,
+                configuration,
+            },
+            model: maka_agent_facts::configuration::ModelInfo::new(model_id),
+            overrides,
+            thinking_level: thinking,
+        })
+        .await
+        .map_err(|e| {
+            format!("failed resolving Maka model route for '{provider_name}/{model_id}': {e}")
+        })?;
+
+    Ok(resolved.base_url)
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct RustHostSubject;
 
@@ -767,28 +861,54 @@ impl SubjectAdapter for RustHostSubject {
 
             if process.termination != SubjectProcessTermination::Exited {
                 let projection = try_decode_matching_projection(&process.stdout, &execution_id);
-                let (usage, metering_state, cost_usd, subject_reported_cost, op_id, inv_id) =
-                    match projection {
-                        Some(HostedExecutionProjection::Settled {
-                            usage,
-                            metering_state,
-                            cost_usd,
-                            operation_id,
-                            invocation_id,
-                            ..
-                        }) => (
-                            usage.clone(),
-                            metering_state,
-                            usage
-                                .as_ref()
-                                .filter(|_| metering_state == MeteringState::Complete)
-                                .and_then(|u| estimate_deepseek_cost(u, &config.model)),
-                            cost_usd,
-                            operation_id,
-                            invocation_id,
-                        ),
-                        _ => (None, MeteringState::Unknown, None, None, None, None),
-                    };
+                let (
+                    usage,
+                    metering_state,
+                    cost_usd,
+                    subject_reported_cost,
+                    op_id,
+                    inv_id,
+                    exe_sha,
+                ) = match projection {
+                    Some(HostedExecutionProjection::Settled {
+                        usage,
+                        metering_state,
+                        cost_usd,
+                        operation_id,
+                        invocation_id,
+                        maka_executable_sha256,
+                        ..
+                    }) => (
+                        usage.clone(),
+                        metering_state,
+                        usage
+                            .as_ref()
+                            .filter(|_| metering_state == MeteringState::Complete)
+                            .and_then(|u| estimate_deepseek_cost(u, &config.model)),
+                        cost_usd,
+                        operation_id,
+                        invocation_id,
+                        maka_executable_sha256,
+                    ),
+                    Some(HostedExecutionProjection::Indeterminate {
+                        operation_id,
+                        invocation_id,
+                        maka_executable_sha256,
+                        ..
+                    }) => (
+                        None,
+                        MeteringState::Unknown,
+                        None,
+                        None,
+                        operation_id,
+                        invocation_id,
+                        maka_executable_sha256,
+                    ),
+                    None => (None, MeteringState::Unknown, None, None, None, None, None),
+                };
+                let binary_identity = exe_sha
+                    .as_deref()
+                    .map(|sha| (config.maka_executable.as_str(), sha));
                 return SubjectExecutionResult {
                     output: None,
                     usage,
@@ -799,6 +919,7 @@ impl SubjectAdapter for RustHostSubject {
                     failure_reason: Some("Maka subject exceeded the framework timeout".into()),
                     artifacts: maka_artifacts(
                         Some(&execution_id),
+                        binary_identity,
                         Some(&process),
                         subject_reported_cost,
                         None,
@@ -898,22 +1019,35 @@ fn project_into_execution_result(
             failure_reason,
             operation_id,
             invocation_id,
+            maka_executable_sha256,
             ..
-        } => SubjectExecutionResult {
-            output,
-            usage: None,
-            metering_state: MeteringState::Unknown,
-            cost_usd: None,
-            duration_ms,
-            outcome: ExecutionOutcome::Indeterminate,
-            failure_reason: Some(safe_maka_failure_reason(
-                &failure_reason,
-                "Maka execution did not settle",
-            )),
-            artifacts: maka_artifacts(Some(execution_id), process, None, None, None),
-            operation_id,
-            invocation_id,
-        },
+        } => {
+            let binary_identity = maka_executable_sha256
+                .as_deref()
+                .map(|sha| (config.maka_executable.as_str(), sha));
+            SubjectExecutionResult {
+                output,
+                usage: None,
+                metering_state: MeteringState::Unknown,
+                cost_usd: None,
+                duration_ms,
+                outcome: ExecutionOutcome::Indeterminate,
+                failure_reason: Some(safe_maka_failure_reason(
+                    &failure_reason,
+                    "Maka execution did not settle",
+                )),
+                artifacts: maka_artifacts(
+                    Some(execution_id),
+                    binary_identity,
+                    process,
+                    None,
+                    None,
+                    None,
+                ),
+                operation_id,
+                invocation_id,
+            }
+        }
         HostedExecutionProjection::Settled {
             status,
             failure_reason,
@@ -922,6 +1056,7 @@ fn project_into_execution_result(
             cost_usd: subject_cost,
             operation_id,
             invocation_id,
+            maka_executable_sha256,
             blocked_interaction,
             environment_limitation,
             ..
@@ -940,8 +1075,12 @@ fn project_into_execution_result(
                 .filter(|_| metering_state == MeteringState::Complete)
                 .and_then(|u| estimate_deepseek_cost(u, &config.model));
 
+            let binary_identity = maka_executable_sha256
+                .as_deref()
+                .map(|sha| (config.maka_executable.as_str(), sha));
             let artifacts = maka_artifacts(
                 Some(execution_id),
+                binary_identity,
                 process,
                 subject_cost,
                 blocked_interaction.as_deref(),
@@ -1081,6 +1220,7 @@ pub fn safe_maka_failure_reason(value: &str, fallback: &str) -> String {
 
 pub fn maka_artifacts(
     execution_id: Option<&str>,
+    binary_identity: Option<(&str, &str)>,
     process: Option<&SubjectProcessOutput>,
     subject_reported_cost_usd: Option<f64>,
     blocked_interaction: Option<&UnattendedInteractionBlock>,
@@ -1128,6 +1268,10 @@ pub fn maka_artifacts(
     if let Some(id) = execution_id {
         runtime_state.insert("executionId".into(), Value::String(id.into()));
     }
+    if let Some((exe, sha)) = binary_identity {
+        runtime_state.insert("makaExecutable".into(), Value::String(exe.into()));
+        runtime_state.insert("makaExecutableSha256".into(), Value::String(sha.into()));
+    }
     out.push(runtime_state);
 
     let mut stdout_art = Map::new();
@@ -1157,7 +1301,7 @@ fn subject_failure(
     cancelled: bool,
     process: Option<&SubjectProcessOutput>,
 ) -> SubjectExecutionResult {
-    let mut artifacts = maka_artifacts(None, process, None, None, None);
+    let mut artifacts = maka_artifacts(None, None, process, None, None, None);
     let mut failure_art = Map::new();
     failure_art.insert("kind".into(), Value::String("subject-failure".into()));
     failure_art.insert("stage".into(), Value::String(stage.into()));

@@ -25,7 +25,9 @@
 use super::{
     EnvironmentLimitation, HostedExecutionProjection, MakaHostInitSettingsPayload,
     MakaPublicSessionSettings, UnattendedInteractionBlock, bootstrap_maka_host_root,
+    resolve_product_route_base_url,
 };
+use crate::contract::sha256_hex;
 use crate::measurement::{EvalMeteringGateway, GatewayConfig, MeteringState, derive_metering};
 use crate::store::write_atomic_bytes;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -126,13 +128,37 @@ pub(crate) async fn start_host_client(
     settlement_timeout_ms: u64,
     journal: Journal,
 ) -> Result<(Child, Client)> {
-    let mut child = Command::new(maka_executable)
-        .args(["host", "serve", "--root"])
+    start_host_client_with_env(
+        maka_executable,
+        root_path,
+        settlement_timeout_ms,
+        journal,
+        &[],
+    )
+    .await
+}
+
+pub(crate) async fn start_host_client_with_env(
+    maka_executable: &Path,
+    root_path: &Path,
+    settlement_timeout_ms: u64,
+    journal: Journal,
+    env_overrides: &[(&str, &str)],
+) -> Result<(Child, Client)> {
+    let mut cmd = Command::new(maka_executable);
+    cmd.args(["host", "serve", "--root"])
         .arg(root_path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    if !env_overrides.is_empty() {
+        cmd.env_remove("REQUEST_METHOD");
+    }
+    for &(key, val) in env_overrides {
+        cmd.env(key, val);
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("native Host spawn failed: {e}"))?;
     let mut stdout = BufReader::new(
@@ -365,6 +391,7 @@ async fn observe_pending_interaction(
 
 async fn execute(
     request: &Request,
+    maka_executable_sha256: Option<&str>,
     client: &Client,
     stop: CancellationToken,
 ) -> Result<SessionOutcome> {
@@ -532,6 +559,8 @@ async fn execute(
         "runId": run,
         "sessionId": session,
         "rootPath": request.root_path,
+        "makaExecutable": request.maka_executable,
+        "makaExecutableSha256": maka_executable_sha256,
     });
     let bytes = serde_json::to_vec(&receipt).map_err(|e| e.to_string())?;
     tokio::fs::write(request.artifact_root.join("execution-receipt.json"), bytes)
@@ -721,16 +750,37 @@ pub async fn run(payload: &str, stop: CancellationToken) -> Result<HostedExecuti
     tokio::fs::create_dir_all(&request.artifact_root)
         .await
         .map_err(|e| e.to_string())?;
-    let credential_name = &request
+    let maka_executable_sha256 = tokio::fs::read(&request.maka_executable)
+        .await
+        .ok()
+        .map(|b| sha256_hex(&b));
+    let conn = request
         .host_init_settings
         .connections
         .first()
-        .ok_or("Eval connection missing")?
-        .api_key;
+        .ok_or("Eval connection missing")?;
+    let credential_name = &conn.api_key;
     let key = std::env::var(credential_name).map_err(|_| "Eval provider credential unavailable")?;
+    let model_id = &request.host_init_settings.default_target.model_id;
+    let model_override = conn
+        .model_overrides
+        .as_ref()
+        .and_then(|map| map.get(model_id));
+    let resolved_base_url = resolve_product_route_base_url(
+        &conn.provider,
+        &conn.slug,
+        &request.base_url,
+        model_id,
+        model_override,
+        request.execution.session_settings.thinking_level.as_deref(),
+    )
+    .await?;
     let credential = Uuid::new_v4().to_string();
     let gateway = EvalMeteringGateway::start(GatewayConfig {
-        upstream_base_url: request.base_url.clone(),
+        upstream_base_url: resolved_base_url.clone(),
+        transport_origin_override: std::env::var("MAKA_EVAL_GATEWAY_TRANSPORT_ORIGIN")
+            .ok()
+            .filter(|s| !s.is_empty()),
         upstream_api_key: key,
         profile: "maka".into(),
         gateway_credential: credential.clone(),
@@ -740,7 +790,7 @@ pub async fn run(payload: &str, stop: CancellationToken) -> Result<HostedExecuti
     })
     .await?;
     let settings = request.host_init_settings.with_endpoint_and_credential(
-        gateway.base_url_matching_upstream(&request.base_url),
+        gateway.base_url_matching_upstream(&resolved_base_url),
         credential,
     );
     tokio::time::timeout(
@@ -771,6 +821,7 @@ pub async fn run(payload: &str, stop: CancellationToken) -> Result<HostedExecuti
                 cost_usd: None,
                 operation_id: None,
                 invocation_id: None,
+                maka_executable_sha256,
                 blocked_interaction: None,
                 environment_limitation: Some(Box::new(EnvironmentLimitation {
                     category: "host_startup_failed".into(),
@@ -796,7 +847,12 @@ pub async fn run(payload: &str, stop: CancellationToken) -> Result<HostedExecuti
     )
     .await?;
     let result = {
-        let work = execute(&request, &client, stop.clone());
+        let work = execute(
+            &request,
+            maka_executable_sha256.as_deref(),
+            &client,
+            stop.clone(),
+        );
         tokio::pin!(work);
         tokio::select! {
             result = &mut work => result,
@@ -827,6 +883,7 @@ pub async fn run(payload: &str, stop: CancellationToken) -> Result<HostedExecuti
         },
         operation_id: (!outcome.operation_id.is_empty()).then_some(outcome.operation_id),
         invocation_id: (!outcome.run_id.is_empty()).then_some(outcome.run_id),
+        maka_executable_sha256,
         blocked_interaction: outcome.blocked_interaction.map(Box::new),
         environment_limitation: outcome.environment_limitation.map(Box::new),
     })

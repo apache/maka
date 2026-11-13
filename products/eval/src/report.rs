@@ -498,20 +498,95 @@ pub fn evaluate_milestone_gate(
             ));
             continue;
         }
-        let exe_path = Path::new(&decoded.maka_executable);
-        if exe_path.is_file()
-            && let Ok(bytes) = std::fs::read(exe_path)
-        {
-            let actual_exe_sha = sha256_hex(&bytes);
-            if actual_exe_sha != report.maka_executable_sha256 {
+        let subject_cell_ids: Vec<String> = expand_experiment(spec)
+            .into_iter()
+            .filter(|cell| cell.subject.id == subject.id)
+            .map(|cell| cell.id)
+            .collect();
+        let settled_attempts: Vec<(&String, &V1CellAttempt)> = subject_cell_ids
+            .iter()
+            .filter_map(|cell_id| canonical_v1.get(cell_id).map(|att| (cell_id, att)))
+            .collect();
+        if settled_attempts.is_empty() {
+            violations.push(format!(
+                "subject '{}' has no settled runtime execution evidence to confirm Maka binary identity",
+                subject.id
+            ));
+            continue;
+        }
+        let violations_before = violations.len();
+        for (cell_id, attempt) in settled_attempts {
+            let runtime_state =
+                attempt.result.artifacts.iter().find(|art| {
+                    art.get("kind").and_then(Value::as_str) == Some("maka-runtime-state")
+                });
+            let Some(runtime_state) = runtime_state else {
                 violations.push(format!(
-                    "subject '{}' Maka executable digest ({}) differs from parity-verified binary ({})",
-                    subject.id, actual_exe_sha, report.maka_executable_sha256
+                    "subject '{}' cell '{}' is missing 'maka-runtime-state' runtime binary evidence",
+                    subject.id, cell_id
+                ));
+                continue;
+            };
+            let runtime_exe = runtime_state
+                .get("makaExecutable")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
+            let runtime_sha = runtime_state
+                .get("makaExecutableSha256")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
+            let Some(runtime_sha) = runtime_sha else {
+                violations.push(format!(
+                    "subject '{}' cell '{}' is missing runtime makaExecutableSha256 evidence",
+                    subject.id, cell_id
+                ));
+                continue;
+            };
+            if runtime_exe != Some(decoded.maka_executable.as_str()) {
+                violations.push(format!(
+                    "subject '{}' cell '{}' runtime makaExecutable ({:?}) does not match declared '{}'",
+                    subject.id, cell_id, runtime_exe, decoded.maka_executable
+                ));
+                continue;
+            }
+            if runtime_sha != report.maka_executable_sha256 {
+                violations.push(format!(
+                    "subject '{}' cell '{}' runtime Maka binary digest ({}) differs from parity-verified binary ({})",
+                    subject.id, cell_id, runtime_sha, report.maka_executable_sha256
                 ));
                 continue;
             }
         }
-        parity_verified_subjects.push(subject.id.clone());
+        let exe_path = Path::new(&decoded.maka_executable);
+        match std::fs::symlink_metadata(exe_path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => match std::fs::read(exe_path) {
+                Ok(bytes) => {
+                    let actual_exe_sha = sha256_hex(&bytes);
+                    if actual_exe_sha != report.maka_executable_sha256 {
+                        violations.push(format!(
+                            "subject '{}' Maka executable digest ({}) differs from parity-verified binary ({})",
+                            subject.id, actual_exe_sha, report.maka_executable_sha256
+                        ));
+                    }
+                }
+                Err(err) => {
+                    violations.push(format!(
+                        "subject '{}' Maka executable '{}' could not be read to confirm binary identity: {err}",
+                        subject.id, decoded.maka_executable
+                    ));
+                }
+            },
+            Err(err) => {
+                violations.push(format!(
+                    "subject '{}' Maka executable '{}' metadata check failed: {err}",
+                    subject.id, decoded.maka_executable
+                ));
+            }
+        }
+        if violations.len() == violations_before {
+            parity_verified_subjects.push(subject.id.clone());
+        }
     }
 
     if milestone == MilestoneGate::M5ProductionDelivery {

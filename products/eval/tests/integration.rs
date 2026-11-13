@@ -56,7 +56,7 @@ use maka_eval::subject::external_cli::{
 };
 use maka_eval::subject::maka::{
     HostedExecutionProjection, MakaHostInitSettingsPayload, MakaSubjectConfig, RustHostSubject,
-    bootstrap_maka_host_root, export_paginated_transcript,
+    bootstrap_maka_host_root, export_paginated_transcript, resolve_product_route_base_url,
 };
 use serde_json::{Map, Value, json};
 use std::fs;
@@ -1001,6 +1001,7 @@ impl CommandRunner for FakeActiveTrial {
                 cost_usd: Some(0.0001107),
                 operation_id: Some("op-settled-1".into()),
                 invocation_id: Some("inv-settled-1".into()),
+                maka_executable_sha256: None,
                 blocked_interaction: None,
                 environment_limitation: None,
             };
@@ -1754,15 +1755,22 @@ async fn real_maka_product_parity_gate_verifies_instructions_tools_and_policies_
         m3_missing.violations
     );
 
-    // With matching parity report, M3 passes; M5 still requires complete settled cells.
-    let m3_passed = evaluate_milestone_gate(
+    // Without settled runtime execution evidence, even a valid parity report MUST NOT pass M3.
+    let m3_without_runtime = evaluate_milestone_gate(
         MilestoneGate::M3Acceptance,
         &spec,
         &empty_canonical,
         &reports,
     );
-    assert!(m3_passed.passed, "{:?}", m3_passed.violations);
-    assert_eq!(m3_passed.parity_verified_subjects, vec!["maka".to_owned()]);
+    assert!(!m3_without_runtime.passed);
+    assert!(
+        m3_without_runtime
+            .violations
+            .iter()
+            .any(|v| v.contains("no settled runtime execution evidence")),
+        "expected missing runtime evidence violation, got {:?}",
+        m3_without_runtime.violations
+    );
 
     let m5_incomplete = evaluate_milestone_gate(
         MilestoneGate::M5ProductionDelivery,
@@ -1796,7 +1804,7 @@ async fn real_maka_product_parity_gate_verifies_instructions_tools_and_policies_
             .any(|v| v.contains("does not match declared public configuration"))
     );
 
-    // With all cells settled cleanly AND parity verified, M5 production delivery passes.
+    // With runtime execution evidence confirming binary identity AND parity verified, M3 and M5 pass.
     let mut settled_canonical = std::collections::BTreeMap::new();
     settled_canonical.insert(
         "task-1::1::maka".to_owned(),
@@ -1819,10 +1827,28 @@ async fn real_maka_product_parity_gate_verifies_instructions_tools_and_policies_
                 }),
                 cost_usd: None,
                 failure_reason: None,
-                artifacts: vec![],
+                artifacts: vec![
+                    json!({
+                        "kind": "maka-runtime-state",
+                        "makaExecutable": maka.to_string_lossy(),
+                        "makaExecutableSha256": reports[0].maka_executable_sha256,
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ],
             },
         },
     );
+    let m3_passed = evaluate_milestone_gate(
+        MilestoneGate::M3Acceptance,
+        &spec,
+        &settled_canonical,
+        &reports,
+    );
+    assert!(m3_passed.passed, "{:?}", m3_passed.violations);
+    assert_eq!(m3_passed.parity_verified_subjects, vec!["maka".to_owned()]);
+
     let m5_passed = evaluate_milestone_gate(
         MilestoneGate::M5ProductionDelivery,
         &spec,
@@ -1860,6 +1886,7 @@ fn parity_gate_detects_instruction_tool_pruning_and_policy_drift() {
         max_output_tokens: json!(16384),
         context_policy: json!({"contextWindow": 200000}),
         wire_path: "/v1/chat/completions".into(),
+        upstream_target_url: Some("https://api.openai.com/v1/chat/completions".into()),
         wire_model: Some("gpt-4.1".into()),
         wire_messages: json!([
             {"role": "system", "content": "You are Maka."},
@@ -2012,6 +2039,36 @@ fn parity_gate_detects_instruction_tool_pruning_and_policy_drift() {
     )
     .unwrap();
     assert!(check_declared_endpoint_route_parity(&explicit_deepseek).is_empty());
+
+    // Endpoint replacement that alters model-specific upstream routing fails execution_policies.
+    let mut zenmux_normal = baseline.clone();
+    zenmux_normal.wire_path = "/api/anthropic/v1/messages".into();
+    zenmux_normal.upstream_target_url = Some("https://zenmux.ai/api/anthropic/v1/messages".into());
+    let mut zenmux_drifted = zenmux_normal.clone();
+    zenmux_drifted.wire_path = "/api/v1/messages".into();
+    zenmux_drifted.upstream_target_url = Some("https://zenmux.ai/api/v1/messages".into());
+    let route_report = compare_parity_snapshots(
+        "maka",
+        "0.2.0",
+        "exe-sha",
+        "cfg-sha",
+        &zenmux_normal,
+        &zenmux_drifted,
+        vec![],
+    );
+    assert!(!route_report.passed);
+    assert!(
+        route_report
+            .mismatches
+            .iter()
+            .any(|m| m.dimension == "execution_policies" && m.field == "wirePath")
+    );
+    assert!(
+        route_report
+            .mismatches
+            .iter()
+            .any(|m| m.dimension == "execution_policies" && m.field == "upstreamTargetUrl")
+    );
 }
 
 #[cfg(unix)]
@@ -2208,5 +2265,506 @@ async fn unattended_maka_execution_preserves_interaction_semantics_without_silen
     assert_eq!(
         recorded_interactions["entries"][0]["kind"],
         json!("question")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn zenmux_and_cohere_model_route_overrides_preserve_product_routing_under_eval_and_parity() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let zenmux_resolved = resolve_product_route_base_url(
+        "zenmux",
+        "zenmux-main",
+        "https://zenmux.ai/api/v1",
+        "anthropic/claude-3.5-haiku",
+        None,
+        None,
+    )
+    .await
+    .expect("zenmux claude route resolution must succeed");
+    assert_eq!(zenmux_resolved, "https://zenmux.ai/api/anthropic/v1");
+
+    let cohere_resolved = resolve_product_route_base_url(
+        "cohere",
+        "cohere-main",
+        "https://api.cohere.com/v2",
+        "north-mini-code-1-0",
+        None,
+        None,
+    )
+    .await
+    .expect("cohere north-mini-code-1-0 route resolution must succeed");
+    assert_eq!(cohere_resolved, "https://api.cohere.ai/compatibility/v1");
+
+    let temp = TempDir::new().unwrap();
+    let (maka, _eval) = stage_real_maka_and_eval_binaries(temp.path());
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(workspace.join("README.md"), "# Zenmux Route Test\n").unwrap();
+
+    // Offline proxy so RuntimeCatalog inside `maka host serve` never touches external network.
+    let offline_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let offline_addr = offline_listener.local_addr().unwrap();
+    let offline_shutdown = CancellationToken::new();
+    let offline_shutdown_clone = offline_shutdown.clone();
+    let offline_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = offline_shutdown_clone.cancelled() => break,
+                accepted = offline_listener.accept() => {
+                    let Ok((mut s, _)) = accepted else { break; };
+                    tokio::spawn(async move {
+                        let mut b = [0u8; 2048];
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_millis(100),
+                            s.read(&mut b),
+                        ).await;
+                        let _ = s.write_all(
+                            b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        ).await;
+                    });
+                }
+            }
+        }
+    });
+
+    // Local Anthropic SSE probe capturing exact request path and upstream target header.
+    let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let probe_addr = probe_listener.local_addr().unwrap();
+    let observed = Arc::new(tokio::sync::Mutex::new(
+        Vec::<(String, Option<String>)>::new(),
+    ));
+    let observed_clone = observed.clone();
+    let probe_shutdown = CancellationToken::new();
+    let probe_shutdown_clone = probe_shutdown.clone();
+    let probe_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = probe_shutdown_clone.cancelled() => break,
+                accepted = probe_listener.accept() => {
+                    let Ok((mut stream, _)) = accepted else { break; };
+                    let store = observed_clone.clone();
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        let header_end = loop {
+                            let Ok(n) = stream.read(&mut chunk).await else { return; };
+                            if n == 0 { return; }
+                            buf.extend_from_slice(&chunk[..n]);
+                            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break pos + 4;
+                            }
+                        };
+                        let headers_str = String::from_utf8_lossy(&buf[..header_end]).into_owned();
+                        let mut lines = headers_str.lines();
+                        let req_line = lines.next().unwrap_or_default();
+                        let path = req_line.split_whitespace().nth(1).unwrap_or_default().to_owned();
+                        let mut target_hdr = None;
+                        let mut content_len = 0usize;
+                        for line in lines {
+                            if let Some((k, v)) = line.split_once(':') {
+                                if k.eq_ignore_ascii_case(maka_eval::measurement::UPSTREAM_TARGET_HEADER) {
+                                    target_hdr = Some(v.trim().to_owned());
+                                } else if k.eq_ignore_ascii_case("content-length") {
+                                    content_len = v.trim().parse().unwrap_or(0);
+                                }
+                            }
+                        }
+                        while buf.len() < header_end + content_len {
+                            let Ok(n) = stream.read(&mut chunk).await else { break; };
+                            if n == 0 { break; }
+                            buf.extend_from_slice(&chunk[..n]);
+                        }
+                        store.lock().await.push((path, target_hdr));
+                        let sse = concat!(
+                            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_z\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"anthropic/claude-3.5-haiku\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":15,\"output_tokens\":0}}}\n\n",
+                            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"OK\"}}\n\n",
+                            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+                            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":3}}\n\n",
+                            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+                        );
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            sse.len(),
+                            sse
+                        );
+                        let _ = stream.write_all(resp.as_bytes()).await;
+                    });
+                }
+            }
+        }
+    });
+
+    struct EnvLocalRunner(Vec<(String, String)>);
+    impl CommandRunner for EnvLocalRunner {
+        fn execute<'a>(
+            &'a self,
+            request: SubjectProcessRequest,
+        ) -> BoxFuture<'a, Result<SubjectProcessOutput, String>> {
+            Box::pin(async move {
+                let mut cmd = tokio::process::Command::new(&request.command);
+                cmd.args(&request.args)
+                    .env_remove("MAKA_EVAL_RESULT_TOKEN")
+                    .env_remove("REQUEST_METHOD")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .kill_on_drop(true);
+                for (k, v) in &self.0 {
+                    cmd.env(k, v);
+                }
+                for (k, v) in &request.environment {
+                    cmd.env(k, v);
+                }
+                for target in request.credential_environment.keys() {
+                    cmd.env(target, "sk-zenmux-test");
+                }
+                let out = cmd.output().await.map_err(|e| e.to_string())?;
+                Ok(SubjectProcessOutput {
+                    termination: SubjectProcessTermination::Exited,
+                    exit_code: out.status.code().unwrap_or(1),
+                    stdout: if request.capture_stdout {
+                        String::from_utf8_lossy(&out.stdout).into_owned()
+                    } else {
+                        String::new()
+                    },
+                    stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                    diagnostic: None,
+                })
+            })
+        }
+    }
+
+    // 1. Live `RustHostSubject` execution with official Zenmux baseUrl + Claude model.
+    let spec_json = json!({
+        "schemaVersion": "maka.eval.v2",
+        "id": "zenmux-route-exp",
+        "benchmark": { "id": "tb", "version": "1.0", "config": {} },
+        "executor": { "kind": "local", "config": {} },
+        "subjects": [
+            {
+                "id": "maka-zenmux",
+                "kind": "maka",
+                "credentials": ["ZENMUX_API_KEY"],
+                "config": {
+                    "makaExecutable": maka.to_string_lossy(),
+                    "runtimeHostsPath": temp.path().join("hosts-eval").to_string_lossy(),
+                    "hostSettlementTimeoutMs": 30000,
+                    "provider": "zenmux",
+                    "connectionSlug": "zenmux",
+                    "baseUrl": "https://zenmux.ai/api/v1",
+                    "model": "anthropic/claude-3.5-haiku"
+                }
+            }
+        ],
+        "tasks": [
+            { "id": "t1", "input": "Reply with OK.", "config": {} }
+        ],
+        "repetitions": 1,
+        "budget": { "maxSteps": 5 },
+        "verifier": {}
+    });
+    let spec = parse_experiment_spec(&spec_json).unwrap();
+    let cells = expand_experiment(&spec);
+    let artifact_root = temp.path().join("eval-artifacts");
+    let mut metadata = Map::new();
+    metadata.insert(
+        "artifactRoot".into(),
+        Value::String(artifact_root.to_string_lossy().into_owned()),
+    );
+    let offline_url = format!("http://{offline_addr}");
+    let exec_res = RustHostSubject::new()
+        .execute(
+            &cells[0],
+            SubjectExecutionContext {
+                cwd: workspace.to_string_lossy().into_owned(),
+                task_input: cells[0].task.input.clone(),
+                metadata,
+                cancel: CancellationToken::new(),
+                runner: Arc::new(EnvLocalRunner(vec![
+                    (
+                        "MAKA_EVAL_GATEWAY_TRANSPORT_ORIGIN".into(),
+                        format!("http://{probe_addr}"),
+                    ),
+                    ("ALL_PROXY".into(), offline_url.clone()),
+                    ("HTTP_PROXY".into(), offline_url.clone()),
+                    ("HTTPS_PROXY".into(), offline_url.clone()),
+                    ("NO_PROXY".into(), "127.0.0.1,localhost".into()),
+                ])),
+            },
+        )
+        .await;
+
+    probe_shutdown.cancel();
+    offline_shutdown.cancel();
+    let _ = probe_task.await;
+    let _ = offline_task.await;
+
+    assert_eq!(
+        exec_res.outcome,
+        ExecutionOutcome::Completed,
+        "zenmux claude Eval execution failed: {:?}",
+        exec_res.failure_reason
+    );
+    let reqs = observed.lock().await.clone();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].0, "/api/anthropic/v1/messages");
+    assert_eq!(
+        reqs[0].1.as_deref(),
+        Some("https://zenmux.ai/api/anthropic/v1/messages")
+    );
+
+    // 2. End-to-end `verify_product_parity` on the exact reviewer scenario:
+    //    `zenmux` + `anthropic/claude-3.5-haiku` + `https://zenmux.ai/api/v1`.
+    let parity_report = verify_product_parity(&ParityCheckInput {
+        subject_id: "maka-zenmux".into(),
+        subject_config: spec.subjects[0].config.clone(),
+        subject_credentials: spec.subjects[0].credentials.clone(),
+        workspace_source: Some(workspace),
+        task_input: "Reply with OK.".into(),
+        max_steps: 5,
+    })
+    .await
+    .expect("zenmux claude parity verification must succeed");
+    assert!(
+        parity_report.passed,
+        "zenmux claude parity failed: {:?}",
+        parity_report.mismatches
+    );
+    assert!(parity_report.mismatches.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn milestone_m3_cli_enforces_runtime_binary_identity_for_local_and_container_paths() {
+    let temp = TempDir::new().unwrap();
+    let (maka, eval) = stage_real_maka_and_eval_binaries(temp.path());
+
+    let spec_json = json!({
+        "schemaVersion": "maka.eval.v2",
+        "id": "m3-binary-identity-exp",
+        "benchmark": { "id": "tb", "version": "1.0", "config": {} },
+        "executor": { "kind": "harbor", "config": {} },
+        "subjects": [
+            {
+                "id": "maka",
+                "kind": "maka",
+                "credentials": ["OPENAI_API_KEY"],
+                "config": {
+                    "makaExecutable": maka.to_string_lossy(),
+                    "runtimeHostsPath": temp.path().join("hosts").to_string_lossy(),
+                    "hostSettlementTimeoutMs": 30000,
+                    "provider": "openai-compatible",
+                    "connectionSlug": "eval-gateway",
+                    "baseUrl": "https://api.openai.com/v1",
+                    "model": "gpt-4.1"
+                }
+            }
+        ],
+        "tasks": [
+            { "id": "task-1", "input": "Reply with OK.", "config": {} }
+        ],
+        "repetitions": 1,
+        "budget": { "maxSteps": 5 },
+        "verifier": {}
+    });
+
+    let parity_out = temp.path().join("parity.json");
+    let orig_spec_path = temp.path().join("spec-orig.json");
+    fs::write(
+        &orig_spec_path,
+        serde_json::to_vec_pretty(&spec_json).unwrap(),
+    )
+    .unwrap();
+
+    let parity_cli = tokio::process::Command::new(&eval)
+        .args([
+            "parity",
+            orig_spec_path.to_str().unwrap(),
+            "--out",
+            parity_out.to_str().unwrap(),
+        ])
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        parity_cli.status.success(),
+        "parity CLI failed: {}",
+        String::from_utf8_lossy(&parity_cli.stderr)
+    );
+    let parity_reports: Vec<maka_eval::parity::ParityVerificationReport> =
+        serde_json::from_slice(&fs::read(&parity_out).unwrap()).unwrap();
+    let verified_exe_sha = parity_reports[0].maka_executable_sha256.clone();
+
+    // Reviewer reproduction: mutate `makaExecutable` to a nonexistent path and run
+    // `report --milestone m3 --format v1` with no runtime execution evidence -> MUST fail!
+    let mut nonexistent_spec_json = spec_json.clone();
+    nonexistent_spec_json["subjects"][0]["config"]["makaExecutable"] =
+        json!("/opt/isolated-container/maka");
+    let nonexistent_spec_path = temp.path().join("spec-container.json");
+    fs::write(
+        &nonexistent_spec_path,
+        serde_json::to_vec_pretty(&nonexistent_spec_json).unwrap(),
+    )
+    .unwrap();
+
+    let empty_out_dir = temp.path().join("out-empty");
+    let empty_m3 = tokio::process::Command::new(&eval)
+        .args([
+            "report",
+            nonexistent_spec_path.to_str().unwrap(),
+            "--out",
+            empty_out_dir.to_str().unwrap(),
+            "--milestone",
+            "m3",
+            "--format",
+            "v1",
+            "--parity-report",
+            parity_out.to_str().unwrap(),
+        ])
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        !empty_m3.status.success(),
+        "report --milestone m3 --format v1 must fail when runtime binary identity evidence is absent"
+    );
+    assert!(
+        String::from_utf8_lossy(&empty_m3.stderr).contains("no settled runtime execution evidence"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&empty_m3.stderr)
+    );
+
+    // Legitimate isolated container path: `/opt/isolated-container/maka` does not exist on the
+    // reporting host, but settled journal runtime evidence confirms both path and SHA-256 -> PASSES!
+    let container_spec = parse_experiment_spec(&nonexistent_spec_json).unwrap();
+    let valid_container_out = temp.path().join("out-container-valid");
+    let valid_dir = ExperimentDirectory::open(&valid_container_out, &container_spec).unwrap();
+    valid_dir
+        .attempts
+        .append_v1(&V1CellAttempt {
+            cell_id: "task-1::1::maka".into(),
+            sequence: 1,
+            started_at: 10,
+            completed_at: 20,
+            result: EvalResult {
+                status: EvalResultStatus::Completed,
+                score: Some(1.0),
+                duration_ms: 10,
+                usage: None,
+                cost_usd: None,
+                failure_reason: None,
+                artifacts: vec![
+                    json!({
+                        "kind": "maka-runtime-state",
+                        "makaExecutable": "/opt/isolated-container/maka",
+                        "makaExecutableSha256": verified_exe_sha,
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ],
+            },
+        })
+        .unwrap();
+
+    let valid_m3 = tokio::process::Command::new(&eval)
+        .args([
+            "report",
+            nonexistent_spec_path.to_str().unwrap(),
+            "--out",
+            valid_container_out.to_str().unwrap(),
+            "--milestone",
+            "m3",
+            "--format",
+            "v1",
+            "--parity-report",
+            parity_out.to_str().unwrap(),
+        ])
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        valid_m3.status.success(),
+        "isolated container path with matching runtime binary digest must pass M3: {}",
+        String::from_utf8_lossy(&valid_m3.stderr)
+    );
+
+    // Tampering `spec.json`'s `makaExecutable` to a different nonexistent path after trials ran
+    // MUST fail M3 because runtime evidence recorded `/opt/isolated-container/maka`!
+    let mut tampered_path_spec = nonexistent_spec_json.clone();
+    tampered_path_spec["subjects"][0]["config"]["makaExecutable"] =
+        json!("/opt/other-unverified/maka");
+    let tampered_spec_path = temp.path().join("spec-tampered-path.json");
+    fs::write(
+        &tampered_spec_path,
+        serde_json::to_vec_pretty(&tampered_path_spec).unwrap(),
+    )
+    .unwrap();
+    // Note: ExperimentDirectory verifies `experiment.json` matches `spec`, so evaluate against a
+    // store opened for `tampered_path_spec` carrying the runtime receipt from `/opt/isolated-container/maka`
+    // as well as one with a mismatched digest.
+    let mismatch_spec = parse_experiment_spec(&tampered_path_spec).unwrap();
+    let mismatch_out = temp.path().join("out-container-mismatch");
+    let mismatch_dir = ExperimentDirectory::open(&mismatch_out, &mismatch_spec).unwrap();
+    mismatch_dir
+        .attempts
+        .append_v1(&V1CellAttempt {
+            cell_id: "task-1::1::maka".into(),
+            sequence: 1,
+            started_at: 10,
+            completed_at: 20,
+            result: EvalResult {
+                status: EvalResultStatus::Completed,
+                score: Some(1.0),
+                duration_ms: 10,
+                usage: None,
+                cost_usd: None,
+                failure_reason: None,
+                artifacts: vec![
+                    json!({
+                        "kind": "maka-runtime-state",
+                        "makaExecutable": "/opt/other-unverified/maka",
+                        "makaExecutableSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ],
+            },
+        })
+        .unwrap();
+
+    let mismatch_m3 = tokio::process::Command::new(&eval)
+        .args([
+            "report",
+            tampered_spec_path.to_str().unwrap(),
+            "--out",
+            mismatch_out.to_str().unwrap(),
+            "--milestone",
+            "m3",
+            "--format",
+            "v1",
+            "--parity-report",
+            parity_out.to_str().unwrap(),
+        ])
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        !mismatch_m3.status.success(),
+        "mismatched runtime binary digest must fail M3"
+    );
+    assert!(
+        String::from_utf8_lossy(&mismatch_m3.stderr)
+            .contains("differs from parity-verified binary"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&mismatch_m3.stderr)
     );
 }
