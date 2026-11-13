@@ -73,6 +73,12 @@ export const workspaceMessages = {
   Pin: ['Pin', '置顶', '置頂'],
   Unpin: ['Unpin', '取消置顶', '取消置頂'],
   'Rename…': ['Rename…', '重命名…', '重新命名…'],
+  '{count} more': ['{count} more', '还有 {count} 个', '還有 {count} 個'],
+  '{count} more in Maka Bot': [
+    '{count} more in Maka Bot',
+    'Maka Bot 里还有 {count} 个',
+    'Maka Bot 裡還有 {count} 個',
+  ],
   'Fork…': ['Fork…', '分支…', '分支…'],
   'Compaction prompt…': ['Compaction prompt…', '压缩提示词…', '壓縮提示詞…'],
   'Open to the side': ['Open to the side', '在右侧打开', '在右側開啟'],

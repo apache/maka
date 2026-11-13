@@ -71,3 +71,37 @@ export function nestCreated(sessions: readonly Nestable[]): {
     .flatMap(({ id }) => [id, ...(children.get(id) ?? [])]);
   return { order, nested };
 }
+
+/**
+ * The sessions with every one created, directly or through others listed
+ * here, by `ancestor` left out. The Bot's workers stay on the Bot's page.
+ */
+export function withoutDescendants<T extends Nestable>(
+  sessions: readonly T[],
+  ancestor: string | null,
+): T[] {
+  if (ancestor === null) return [...sessions];
+  const parents = new Map(sessions.map((session) => [session.id, session.parentSessionId]));
+  const verdicts = new Map<string, boolean>();
+  const descends = (id: string): boolean => {
+    const path: string[] = [];
+    let at: string | null | undefined = parents.get(id);
+    let result = false;
+    while (at != null && path.length <= sessions.length) {
+      if (at === ancestor) {
+        result = true;
+        break;
+      }
+      const known = verdicts.get(at);
+      if (known !== undefined) {
+        result = known;
+        break;
+      }
+      path.push(at);
+      at = parents.get(at);
+    }
+    for (const member of path) verdicts.set(member, result);
+    return result;
+  };
+  return sessions.filter((session) => !descends(session.id));
+}

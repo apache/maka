@@ -58,6 +58,8 @@ import {
   projectSessionLimit,
   type ConversationGroup,
 } from './conversationGroups';
+import { withoutDescendants } from './sessionNesting';
+import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import {
   hasForkPrefix,
   sessionActionTarget,
@@ -90,6 +92,8 @@ export type WorkspaceBrowserProps = {
   openBot?(expectedSessionId: string | null): void;
   /** The Bot Session, listed only through its own entry. */
   botSession?(): string | null | undefined;
+  /** The conversations the Bot created; the running and waiting ones show under its entry. */
+  botWorkers?(): readonly AgentSession[];
   settings(expectedSessionId: string | null): void;
   search(expectedSessionId: string | null): void;
   changeSession(action: SessionAction, expectedSessionId: string | null): Promise<void>;
@@ -107,6 +111,43 @@ export type WorkspaceBrowserProps = {
 };
 
 type WorkspaceGroup = ConversationGroup<BrowserProject> & { name: string };
+
+// Nested rows' guide line, a little inside the parent's title.
+const guideInset = 10;
+const nestInset = 16;
+// The line runs on past a row, or bends into the last one of its family.
+function GuideLine(props: { last(): boolean; height(): number }) {
+  return (
+    <View
+      style={[
+        props.last()
+          ? {
+              position: 'absolute',
+              left: guideInset,
+              top: 0,
+              width: nestInset - guideInset,
+              height: props.height() / 2,
+              borderLeftWidth: 1,
+              borderBottomWidth: 1,
+              borderBottomLeftRadius: 6,
+              borderColor: C.muted,
+            }
+          : {
+              position: 'absolute',
+              left: guideInset,
+              top: 0,
+              bottom: 0,
+              width: 1,
+              backgroundColor: C.muted,
+            },
+        // The row separator's color is lost on the sidebar; quieter text is not.
+        { opacity: 0.45, pointerEvents: 'none' },
+      ]}
+    />
+  );
+}
+// At most this many of the Bot's running or waiting conversations show under it.
+const botWorkerCap = 5;
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const titleBarRow = () => ownTitleBar && props.docked();
@@ -126,8 +167,28 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const visibleSessions = computed(() => {
     const bot = props.botSession?.() ?? null;
     const sessions = browser.sessions();
-    return bot === null ? sessions : sessions.filter((session) => session.id !== bot);
+    return withoutDescendants(
+      bot === null ? sessions : sessions.filter((session) => session.id !== bot),
+      bot,
+    );
   });
+  // Running and waiting first-hand work of the Bot, waiting first; the open
+  // one stays while it is open. The rest are on the Bot's page.
+  const activeBotWorkers = computed(() => {
+    if (platform.idiom === 'terminal') return [];
+    const selected = props.selected();
+    return (props.botWorkers?.() ?? [])
+      .filter(
+        (session) => !session.archived && (session.activity !== 'idle' || session.id === selected),
+      )
+      .sort(
+        (a, b) =>
+          Number(b.activity === 'waiting') - Number(a.activity === 'waiting') ||
+          b.updatedAt - a.updatedAt,
+      );
+  });
+  const shownBotWorkers = () => activeBotWorkers().slice(0, botWorkerCap);
+  const moreBotWorkers = () => Math.max(0, activeBotWorkers().length - botWorkerCap);
   const choosingWorkspace = signal(false);
   const automationsOpen = signal(false);
   const actions = signal<{ session: SessionActionTarget; origin: string | null } | null>(null);
@@ -195,6 +256,16 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     ),
   );
   const nestedRows = computed(() => new Set(groups().flatMap((group) => [...group.nested])));
+  // A nested row's guide line ends at the last of its family.
+  const lastNestedRows = computed(() => {
+    const nested = nestedRows();
+    const last = new Set<string>();
+    for (const group of groups())
+      group.sessions.forEach((id, index) => {
+        if (nested.has(id) && !nested.has(group.sessions[index + 1] ?? '')) last.add(id);
+      });
+    return last;
+  });
   const groupsById = computed(() => new Map(groups().map((group) => [group.key, group])));
   const rowIds = computed(() =>
     platform.idiom === 'terminal'
@@ -470,6 +541,80 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             <Icon name="bot" color={navIcon()} />
             <Text style={selectedNavText(botSelected())}>{tr('Maka Bot')}</Text>
           </Button>
+          <Each of={shownBotWorkers()} key={(worker) => worker.id}>
+            {(worker) => (
+              <View style={{ height: navigationRowHeight(), paddingLeft: nestInset }}>
+                <GuideLine
+                  last={() =>
+                    moreBotWorkers() === 0 && shownBotWorkers().at(-1)?.id === worker().id
+                  }
+                  height={navigationRowHeight}
+                />
+                <Button
+                  accessibilityLabel={tr('Open conversation {title}', {
+                    title: worker().title || tr('Untitled conversation'),
+                  })}
+                  disabled={props.switching()}
+                  selected={props.selected() === worker().id}
+                  onPress={inputAction(select, { id: worker().id, origin: props.selected() })}
+                  style={{
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                    paddingHorizontal: 8,
+                    borderRadius: 8,
+                    backgroundColor: props.selected() === worker().id ? C.raised : 'transparent',
+                  }}
+                  hoverStyle={{ backgroundColor: C.raised }}
+                  focusStyle={{ backgroundColor: C.raised }}
+                  disabledStyle={controlDisabledStyle}
+                >
+                  <Text
+                    style={[
+                      { color: navText(), fontSize: 13, flex: 1, minWidth: 0 },
+                      { numberOfLines: 1 },
+                    ]}
+                  >
+                    {worker().title || tr('Untitled conversation')}
+                  </Text>
+                  <Text
+                    style={{
+                      ...captionTextStyle,
+                      color: worker().activity === 'waiting' ? C.accent : C.muted,
+                    }}
+                  >
+                    {worker().activity === 'idle' ? '' : sessionStatusCaption[worker().activity]}
+                  </Text>
+                </Button>
+              </View>
+            )}
+          </Each>
+          <If when={moreBotWorkers() > 0}>
+            <View style={{ height: navigationRowHeight(), paddingLeft: nestInset }}>
+              <GuideLine last={() => true} height={navigationRowHeight} />
+              <Button
+                accessibilityLabel={tr('{count} more in Maka Bot', { count: moreBotWorkers() })}
+                disabled={props.switching()}
+                onPress={inputAction(
+                  (origin: string | null) => props.openBot?.(origin),
+                  props.selected(),
+                )}
+                style={{
+                  flex: 1,
+                  justifyContent: 'center',
+                  paddingHorizontal: 8,
+                  borderRadius: 8,
+                }}
+                hoverStyle={{ backgroundColor: C.raised }}
+                focusStyle={{ backgroundColor: C.raised }}
+              >
+                <Text style={{ ...captionTextStyle, color: C.muted }}>
+                  {tr('{count} more', { count: moreBotWorkers() })}
+                </Text>
+              </Button>
+            </View>
+          </If>
         </If>
         <If when={platform.idiom === 'terminal'}>
           <Button
@@ -934,9 +1079,12 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       paddingVertical: compact() ? 0 : 2,
                       // Under the conversation that created it.
                       paddingLeft:
-                        platform.idiom !== 'terminal' && nestedRows().has(key()) ? 16 : 0,
+                        platform.idiom !== 'terminal' && nestedRows().has(key()) ? nestInset : 0,
                     }}
                   >
+                    <If when={platform.idiom !== 'terminal' && nestedRows().has(key())}>
+                      <GuideLine last={() => lastNestedRows().has(key())} height={rowHeight} />
+                    </If>
                     <View
                       onMouseEnter={() => hovered.set(true)}
                       onMouseLeave={() => hovered.set(false)}

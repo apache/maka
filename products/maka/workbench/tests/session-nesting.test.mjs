@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nestCreated } from '../app/sessionNesting.ts';
+import { nestCreated, withoutDescendants } from '../app/sessionNesting.ts';
 
 const session = (id, parentSessionId = null) => ({ id, parentSessionId });
 
@@ -44,4 +44,20 @@ test('a creation cycle leaves every conversation listed once', () => {
   const { order } = nestCreated([session('a', 'b'), session('b', 'a'), session('c')]);
   assert.deepEqual([...order].sort(), ['a', 'b', 'c']);
   assert.equal(new Set(order).size, 3);
+});
+
+test("the Bot's workers and what they created leave the list; others stay", () => {
+  const kept = withoutDescendants(
+    [
+      session('bot'),
+      session('worker', 'bot'),
+      session('helper', 'worker'),
+      session('mine'),
+      session('child', 'mine'),
+      session('orphan', 'gone'),
+    ],
+    'bot',
+  ).map(({ id }) => id);
+  assert.deepEqual(kept, ['bot', 'mine', 'child', 'orphan']);
+  assert.equal(withoutDescendants([session('a', 'b')], null).length, 1);
 });
