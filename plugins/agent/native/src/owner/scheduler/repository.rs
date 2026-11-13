@@ -46,6 +46,16 @@ fn due_at(plan: &Plan) -> Option<i64> {
     next.into_iter().chain(plan.task.expires_at).min()
 }
 impl ReadyIndex {
+    pub(super) fn next_after(&self, loaded_at: i64) -> Option<i64> {
+        // A deadline crossed during loading still needs an immediate next tick.
+        self.due
+            .range((
+                std::ops::Bound::Excluded(loaded_at),
+                std::ops::Bound::Unbounded,
+            ))
+            .next()
+            .map(|(at, _)| *at)
+    }
     fn update(&mut self, id: &str, old: Option<&Plan>, new: Option<&Plan>) {
         self.pending.remove(id);
         if let Some(at) = old.and_then(due_at)
@@ -568,5 +578,31 @@ impl Saved {
             approved: self.plan.authorization.is_some(),
             pending_fire: self.plan.pending.as_ref().map(|fire| fire.id.clone()),
         }
+    }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+
+    #[test]
+    fn deadline_crossed_during_loading_remains_the_next_wake() {
+        let ready = ReadyIndex {
+            due: BTreeMap::from([(1_001, std::collections::BTreeSet::from(["task".into()]))]),
+            ..Default::default()
+        };
+        let loaded_at = 1_000;
+        assert!(ready.due.range(..=loaded_at).next().is_none());
+        let finished_at = 1_002;
+        let wake = ready.next_after(loaded_at).unwrap();
+        assert!(
+            wake <= finished_at,
+            "an unprocessed due task must wake immediately"
+        );
+        assert_eq!(
+            ready.next_after(1_001),
+            None,
+            "do not spin on an already processed deadline"
+        );
     }
 }
