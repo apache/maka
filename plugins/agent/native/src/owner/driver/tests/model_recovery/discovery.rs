@@ -489,7 +489,7 @@ async fn discovery_uses_approved_session_tools_and_retains_progress_after_reopen
     tool(
         &mut socket,
         "DiscoveryComplete",
-        json!({"kind":"no_report","note":note,"notes":[observation]}),
+        json!({"kind":"no_report","note":note,"notes":json!([observation]).to_string()}),
     )
     .await;
     let done = f.settled(&task, 1).await;

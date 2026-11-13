@@ -42,19 +42,49 @@ pub(super) const VISIBLE_TOOLS: &[&str] = &[COMPLETE, MEMORY, CONTEXT];
 const ACTIVE: &str = "discovery/active";
 mod context;
 mod records;
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum SubmittedNotes {
+    Array(Vec<records::Note>),
+    /// The same JSON array encoded as a string.
+    Encoded(String),
+}
+
+fn deserialize_notes<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<records::Note>, D::Error> {
+    match SubmittedNotes::deserialize(deserializer)? {
+        SubmittedNotes::Array(notes) => Ok(notes),
+        SubmittedNotes::Encoded(json) => {
+            serde_json::from_str(&json).map_err(serde::de::Error::custom)
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Report {
     /// Nothing worth notifying; record what was checked without waking the Bot.
     NoReport {
         note: String,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(
+            default,
+            skip_serializing_if = "Vec::is_empty",
+            deserialize_with = "deserialize_notes"
+        )]
+        #[schemars(with = "SubmittedNotes")]
         notes: Vec<records::Note>,
     },
     /// Actual findings and their source references, not instructions for the Bot.
     Report {
         text: String,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(
+            default,
+            skip_serializing_if = "Vec::is_empty",
+            deserialize_with = "deserialize_notes"
+        )]
+        #[schemars(with = "SubmittedNotes")]
         notes: Vec<records::Note>,
     },
 }
@@ -284,7 +314,7 @@ impl scheduler::Scheduler {
         ToolRegistration {
             definition: ToolDefinition {
                 provider: None, name: COMPLETE.into(),
-                description: "Finish this investigation. Both no_report and report can include notes with concise new observations and source references for future investigations. Use report for findings worth notifying the user about. This stores the result and ends the Turn.".into(),
+                description: "Finish this investigation. Both no_report and report accept optional notes, an array of {text, references} objects with concise new observations and source references. Use report for findings worth notifying the user about. This stores the result and ends the Turn.".into(),
                 input_schema: serde_json::to_value(schemars::schema_for!(Report)).expect("discovery schema"),
                 output_schema: None, freeform: None,
             },
