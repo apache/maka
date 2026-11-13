@@ -17,13 +17,10 @@
  * under the License.
  */
 
-use deno_core::{
-    JsRuntime, ModuleLoadOptions, ModuleLoadReferrer, ModuleLoadResponse, ModuleLoader,
-    ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType, ResolutionKind, RuntimeOptions,
-};
+use deno_core::{JsRuntime, RuntimeOptions};
 use deno_error::JsErrorBox;
 use deno_permissions::{PermissionsContainer, RuntimePermissionDescriptorParser};
-use std::{io::Read, path::Path, process::ExitCode, rc::Rc, sync::Arc};
+use std::{io::Read, process::ExitCode, rc::Rc, sync::Arc};
 
 pub const WORKER: &str = "__maka-automation-script";
 
@@ -50,6 +47,10 @@ pub fn run() -> ExitCode {
 }
 
 async fn evaluate(source: String) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let main = deno_core::resolve_path(".maka-automation.ts", &cwd)?;
+    let loader = loader::Loader::new(cwd, main.clone(), source).await?;
+    let fs = deno_fs::sync::MaybeArc::new(deno_fs::RealFs);
     let mut extensions = vec![
         deno_webidl::deno_webidl::init(),
         deno_web::deno_web::init(
@@ -60,18 +61,31 @@ async fn evaluate(source: String) -> Result<(), Box<dyn std::error::Error>> {
         ),
         deno_telemetry::deno_telemetry::init(),
         deno_io::deno_io::init(Some(Default::default())),
-        deno_fs::deno_fs::init(deno_fs::sync::MaybeArc::new(deno_fs::RealFs)),
+        deno_fs::deno_fs::init(fs.clone()),
         deno_os::deno_os::init(Some(Default::default())),
         deno_process::deno_process::init(None),
         deno_net::deno_net::init(None, None),
         deno_fetch::deno_fetch::init(Default::default()),
+        deno_websocket::deno_websocket::init(),
+        deno_http::deno_http::init(Default::default()),
+        deno_crypto::deno_crypto::init(None),
+        deno_node_crypto::deno_node_crypto::init(),
+        deno_node::deno_node::init(Some(loader.node_services()?), fs),
     ];
     crate::embedded::embed(&mut extensions)?;
+    extensions.extend([
+        deno_napi::deno_napi::init(None),
+        deno_node_sqlite::deno_node_sqlite::init(),
+        node_host::maka_automation_node_host::init(),
+    ]);
     let mut runtime = JsRuntime::try_new(RuntimeOptions {
         extensions,
-        module_loader: Some(Rc::new(Loader)),
+        module_loader: Some(Rc::new(loader)),
+        inspector: true,
         ..Default::default()
     })?;
+    let inspector = runtime.inspector();
+    runtime.op_state().borrow_mut().put(inspector);
     runtime
         .op_state()
         .borrow_mut()
@@ -80,93 +94,25 @@ async fn evaluate(source: String) -> Result<(), Box<dyn std::error::Error>> {
         )));
     runtime.execute_script(
         "maka:automation/bootstrap",
-        include_str!("automation/bootstrap.js"),
+        format!(
+            "const bootstrap = {}\nbootstrap({}, {}, {});",
+            include_str!("automation/bootstrap.js"),
+            serde_json::to_string(main.as_str())?,
+            serde_json::to_string(env!("MAKA_DENO_TARGET"))?,
+            serde_json::to_string(deno_core::v8::V8::get_version())?,
+        ),
     )?;
-    let path = std::env::current_dir()?.join(".maka-automation.ts");
-    let main = deno_core::resolve_path(&path.to_string_lossy(), Path::new("."))?;
-    let source = typescript::transpile(&source, &path)?;
-    let id = runtime.load_main_es_module_from_code(&main, source).await?;
+    let id = runtime.load_main_es_module(&main).await?;
     let evaluation = runtime.mod_evaluate(id);
     runtime.run_event_loop(Default::default()).await?;
     evaluation.await?;
     Ok(())
 }
 
-struct Loader;
-
-impl ModuleLoader for Loader {
-    fn resolve(
-        &self,
-        specifier: &str,
-        referrer: &str,
-        _: ResolutionKind,
-    ) -> Result<ModuleSpecifier, JsErrorBox> {
-        deno_core::resolve_import(specifier, referrer).map_err(JsErrorBox::from_err)
-    }
-
-    fn load(
-        &self,
-        specifier: &ModuleSpecifier,
-        _: Option<&ModuleLoadReferrer>,
-        options: ModuleLoadOptions,
-    ) -> ModuleLoadResponse {
-        let specifier = specifier.clone();
-        ModuleLoadResponse::Async(Box::pin(async move {
-            let (source, found) = match specifier.scheme() {
-                "file" => {
-                    let path = specifier
-                        .to_file_path()
-                        .map_err(|_| JsErrorBox::generic("Invalid module file path"))?;
-                    (
-                        tokio::fs::read_to_string(path).await.map_err(js_error)?,
-                        specifier.clone(),
-                    )
-                }
-                "http" | "https" => {
-                    let response = reqwest::get(specifier.clone())
-                        .await
-                        .map_err(js_error)?
-                        .error_for_status()
-                        .map_err(js_error)?;
-                    let found = response.url().clone();
-                    (response.text().await.map_err(js_error)?, found)
-                }
-                scheme => {
-                    return Err(JsErrorBox::generic(format!(
-                        "Unsupported module scheme: {scheme}"
-                    )));
-                }
-            };
-            let path = Path::new(found.path());
-            let (source, kind) = if matches!(
-                options.requested_module_type,
-                deno_core::RequestedModuleType::Json
-            ) {
-                (source, ModuleType::Json)
-            } else if matches!(
-                path.extension().and_then(|value| value.to_str()),
-                Some("ts" | "mts" | "cts")
-            ) {
-                (
-                    typescript::transpile(&source, path).map_err(js_error)?,
-                    ModuleType::JavaScript,
-                )
-            } else {
-                (source, ModuleType::JavaScript)
-            };
-            Ok(ModuleSource::new_with_redirect(
-                kind,
-                ModuleSourceCode::String(source.into()),
-                &specifier,
-                &found,
-                None,
-            ))
-        }))
-    }
-}
-
-#[path = "automation/transpile.rs"]
-mod typescript;
+#[path = "automation/loader.rs"]
+mod loader;
+#[path = "automation/node_host.rs"]
+mod node_host;
 
 fn js_error(error: impl std::fmt::Display) -> JsErrorBox {
     JsErrorBox::generic(error.to_string())

@@ -19,16 +19,21 @@
 
 use std::path::Path;
 
-pub fn transpile(source: &str, path: &Path) -> Result<String, String> {
+pub fn transpile(source: &str, path: &Path, typescript: bool) -> Result<String, String> {
     use oxc_allocator::Allocator;
-    use oxc_codegen::Codegen;
+    use oxc_codegen::{Codegen, CodegenOptions};
     use oxc_parser::Parser;
     use oxc_semantic::SemanticBuilder;
     use oxc_span::SourceType;
     use oxc_transformer::{TransformOptions, Transformer};
 
     let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, source, SourceType::ts()).parse();
+    let source_type = if typescript {
+        SourceType::ts()
+    } else {
+        SourceType::mjs()
+    };
+    let parsed = Parser::new(&allocator, source, source_type).parse();
     if let Some(error) = parsed.diagnostics.into_iter().next() {
         return Err(error.render_with_source_code(source.to_owned()));
     }
@@ -43,5 +48,12 @@ pub fn transpile(source: &str, path: &Path) -> Result<String, String> {
     if let Some(error) = transformed.diagnostics.into_iter().next() {
         return Err(error.render_with_source_code(source.to_owned()));
     }
-    Ok(Codegen::new().build(&program).code)
+    Ok(Codegen::new()
+        .with_options(CodegenOptions {
+            ascii_only: true,
+            comments: Default::default(),
+            ..CodegenOptions::minify()
+        })
+        .build(&program)
+        .code)
 }

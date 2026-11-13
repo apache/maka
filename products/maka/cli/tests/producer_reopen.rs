@@ -1463,7 +1463,8 @@ async fn automation_delivery(
         .map_err(|e| e.to_string())?;
     tokio::fs::write(
         sandbox.workspace.join("readiness.ts"),
-        "export async function ready(): Promise<boolean> { return (await Deno.readTextFile('status.txt')).trim() === 'ready'; }",
+        r#"import { readFile } from "node:fs/promises";
+           export async function ready(): Promise<boolean> { return (await readFile("status.txt", "utf8")).trim() === "ready"; }"#,
     )
     .await
     .map_err(|e| e.to_string())?;

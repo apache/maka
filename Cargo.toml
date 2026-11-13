@@ -16,7 +16,7 @@
 # under the License.
 
 [workspace]
-exclude = ["third-party/nsh", "third-party/async-io", "third-party/gix-index", "third-party/gix-discover", "third-party/sqlx-sqlite", "third-party/image-webp", "third-party/termina"]
+exclude = ["third-party/nsh", "third-party/async-io", "third-party/gix-index", "third-party/gix-discover", "third-party/sqlx-sqlite", "third-party/image-webp", "third-party/termina", "third-party/deno-node-sqlite"]
 default-members = ["products/maka/cli", "platform/python-runtime"]
 members = [
     "platform/session-state",
@@ -255,6 +255,8 @@ sqlx-sqlite = { path = "third-party/sqlx-sqlite" }
 async-io = { path = "third-party/async-io" }
 # Deno published this crate before its upstream rustls security update.
 deno_tls = { path = "third-party/deno-tls" }
+# Share the workspace SQLite library with Deno’s Node SQLite extension.
+deno_node_sqlite = { path = "third-party/deno-node-sqlite" }
 
 # Shared terminal image codec.
 icy_sixel = { path = "third-party/nsh/third-party/icy_sixel" }

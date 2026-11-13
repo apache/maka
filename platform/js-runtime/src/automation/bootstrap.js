@@ -17,8 +17,9 @@
  * under the License.
  */
 
-(() => {
-  const { core } = Deno;
+(mainModule, target, v8Version) => {
+  const { core, internals } = globalThis.__bootstrap;
+  core.setBuildInfo(target);
   const load = (path) => core.loadExtScript(`ext:${path}`);
   const { DOMException } = load('deno_web/01_dom_exception.js');
   core.registerErrorBuilder(
@@ -37,6 +38,15 @@
     ['deno_web/03_abort_signal.js', ['AbortController', 'AbortSignal']],
     ['deno_web/06_streams.js', ['ReadableStream', 'WritableStream', 'TransformStream']],
     ['deno_web/09_file.js', ['Blob', 'File']],
+    [
+      'deno_web/13_message_port.js',
+      ['MessageChannel', 'MessagePort', 'MessageEvent', 'structuredClone'],
+    ],
+    [
+      'deno_web/15_performance.js',
+      ['performance', 'Performance', 'PerformanceEntry', 'PerformanceMark', 'PerformanceMeasure'],
+    ],
+    ['deno_crypto/00_crypto.js', ['crypto', 'Crypto', 'CryptoKey', 'SubtleCrypto']],
     ['deno_fetch/20_headers.js', ['Headers']],
     ['deno_fetch/21_formdata.js', ['FormData']],
     ['deno_fetch/23_request.js', ['Request']],
@@ -63,7 +73,8 @@
   const fs = load('deno_fs/30_fs.js');
   const { FsFile, fsFileConstructorKey, ...files } = fs;
   const { Command } = load('deno_process/40_process.js');
-  const { env, exit, hostname, osRelease } = load('deno_os/30_os.js');
+  const { env, exit, hostname, osRelease, execPath } = load('deno_os/30_os.js');
+  const { stdin, stdout, stderr } = load('deno_io/12_io.js');
   const errors = {
     BadResource: core.BadResource,
     Interrupted: core.Interrupted,
@@ -101,6 +112,44 @@
     core.registerErrorClass(name, ErrorClass);
     errors[name] = ErrorClass;
   }
-  globalThis.Deno = { ...files, FsFile, Command, env, errors, exit, hostname, osRelease };
+  const args = [];
+  const version = { v8: v8Version };
+  const build = { ...core.build, standalone: false };
+  globalThis.Deno = {
+    ...files,
+    FsFile,
+    Command,
+    env,
+    errors,
+    exit,
+    hostname,
+    osRelease,
+    execPath,
+    stdin,
+    stdout,
+    stderr,
+    args,
+    version,
+    build,
+    mainModule,
+  };
+  internals.__nodeBootstrapArgs = {
+    runningOnMainThread: true,
+    denoArgs: args,
+    denoVersion: version,
+  };
+  for (const [name, module, key] of [
+    ['process', 'node:process', 'default'],
+    ['Buffer', 'node:buffer', 'Buffer'],
+    ['WebSocket', 'ext:deno_websocket/01_websocket.js', 'WebSocket'],
+  ]) {
+    const load = core.createLazyLoader(module);
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      get() {
+        return load()[key];
+      },
+    });
+  }
   delete globalThis.__bootstrap;
-})();
+};
