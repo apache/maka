@@ -288,6 +288,18 @@ on your selected branch. It explains Session coordination; it does not install M
 npx skills add apache/maka --skill maka-cli
 ```
 
+## Code blocks in the TUI
+
+The live conversation and detailed transcript reader highlight tagged Markdown code blocks using
+the terminal's existing color settings. `NO_COLOR` and `TERM=dumb` disable highlighting colors.
+
+Supported languages are Bash (`sh`, `shell`, `zsh`), C, C++ (`c++`), C# (`cs`), CSS, diff, Go,
+Java, JavaScript (`js`, `jsx`, `mjs`, `cjs`), JSON, Markdown (`md`), PowerShell (`ps1`),
+Python (`py`), Rust (`rs`), SQL, TypeScript (`ts`, `tsx`), XML (`html`, `htm`, `svg`), and
+YAML (`yml`). Tags are case-insensitive. Missing or unknown tags, highlighting failures, and
+blocks longer than 4,096 UTF-16 code units render as plain code. Language auto-detection is
+disabled; highlighting never changes stored message content.
+
 ## Upgrade
 
 Update within the nightly line by pinning the exact release (`--target` accepts `latest`,

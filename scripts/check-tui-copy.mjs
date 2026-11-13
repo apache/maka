@@ -58,6 +58,7 @@ export const EXCLUDED_TUI_FILES = [
   'packages/cli/src/tui-editor-render.ts',
   'packages/cli/src/tui-mcp-control.ts',
   'packages/cli/src/tui-mcp-remote-publication.ts',
+  'packages/cli/src/tui-syntax-highlight.ts',
 ];
 
 const CJK = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;

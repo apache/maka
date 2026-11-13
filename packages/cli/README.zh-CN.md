@@ -262,6 +262,17 @@ skill 本身不安装 Maka CLI：
 npx skills add apache/maka --skill maka-cli
 ```
 
+## TUI 代码块
+
+实时对话和详细记录阅读器会按终端现有的颜色设置，高亮带语言标签的 Markdown 代码块。
+设置 `NO_COLOR` 或 `TERM=dumb` 可禁用高亮颜色。
+
+支持 Bash（`sh`、`shell`、`zsh`）、C、C++（`c++`）、C#（`cs`）、CSS、diff、Go、Java、
+JavaScript（`js`、`jsx`、`mjs`、`cjs`）、JSON、Markdown（`md`）、PowerShell（`ps1`）、
+Python（`py`）、Rust（`rs`）、SQL、TypeScript（`ts`、`tsx`）、XML（`html`、`htm`、`svg`）
+和 YAML（`yml`），标签不区分大小写。标签缺失或未知、高亮失败，以及长度超过 4,096 个
+UTF-16 代码单元的代码块均显示为纯文本。不自动检测语言，高亮不会修改保存的消息内容。
+
 ## 升级
 
 在 nightly 线内更新时固定精确版本（`--target` 只接受 `latest`、`next` 或精确的 Maka
