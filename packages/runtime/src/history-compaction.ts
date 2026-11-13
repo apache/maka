@@ -70,8 +70,6 @@ export interface SafePrefixOptions {
    * capacity measurement from the request that actually goes out.
    */
   isPinned?: (event: RuntimeEvent) => boolean;
-  /** Invocations sealed by a terminal event cannot produce a later tool result. */
-  terminalInvocationIds?: ReadonlySet<string>;
 }
 
 export type SafePrefixBoundary =
@@ -109,7 +107,7 @@ export function selectSafeCompactionPrefix(
     firstPartialIndex === -1 ? events.length : firstPartialIndex,
     firstPinnedIndex === -1 ? events.length : firstPinnedIndex,
   );
-  const pairSpans = toolPairSpans(events, options.terminalInvocationIds);
+  const pairSpans = toolPairSpans(events);
   for (let cut = maxCut; cut >= 1; cut -= 1) {
     if (straddlesToolPair(pairSpans, cut)) continue;
     return { ok: true, coveredCount: cut };
@@ -120,20 +118,15 @@ export function selectSafeCompactionPrefix(
 interface ToolPairSpan {
   callIndex?: number;
   responseIndex?: number;
-  terminal?: boolean;
 }
 
-function toolPairSpans(
-  events: readonly RuntimeEvent[],
-  terminalInvocationIds?: ReadonlySet<string>,
-): ToolPairSpan[] {
+function toolPairSpans(events: readonly RuntimeEvent[]): ToolPairSpan[] {
   const byCallId = new Map<string, ToolPairSpan>();
   events.forEach((event, index) => {
     const content = event.content;
     if (content?.kind === 'function_call') {
       const span = byCallId.get(content.id) ?? {};
       span.callIndex = index;
-      span.terminal = terminalInvocationIds?.has(event.invocationId) ?? false;
       byCallId.set(content.id, span);
     } else if (content?.kind === 'function_response') {
       const span = byCallId.get(content.id) ?? {};
@@ -148,16 +141,14 @@ function toolPairSpans(
  * A cut at exclusive index `cut` straddles a pair if exactly one side is
  * covered. A call whose response is not in the pool yet is an OPEN span:
  * covering it would orphan the response that arrives later (a result with no
- * call in the projection), so any cut past a still-live call is unsafe. An
- * invocation with a terminal event is sealed and cannot produce a response.
- * A response
+ * call in the projection), so any cut past the call is unsafe. A response
  * without a call is inert — its call lives before the pool, so no cut inside
  * the pool can split that pair.
  */
 function straddlesToolPair(spans: readonly ToolPairSpan[], cut: number): boolean {
   for (const span of spans) {
     if (span.callIndex !== undefined && span.responseIndex === undefined) {
-      if (!span.terminal && span.callIndex < cut) return true;
+      if (span.callIndex < cut) return true;
       continue;
     }
     if (span.callIndex === undefined || span.responseIndex === undefined) continue;
@@ -166,39 +157,6 @@ function straddlesToolPair(spans: readonly ToolPairSpan[], cut: number): boolean
     if (callCovered !== responseCovered) return true;
   }
   return false;
-}
-
-/**
- * The summarizer must not send an unmatched tool call to a provider. Preserve
- * its intent as text without claiming whether the interrupted tool ran.
- * This is only an input projection; checkpoint coverage still hashes the ledger.
- */
-function renderUnfinishedCallsForSummary(
-  events: readonly RuntimeEvent[],
-  terminalInvocationIds: ReadonlySet<string>,
-): RuntimeEvent[] {
-  const results = new Set(
-    events.flatMap((event) =>
-      event.content?.kind === 'function_response' ? [event.content.id] : [],
-    ),
-  );
-  return events.map((event) => {
-    const content = event.content;
-    if (
-      content?.kind !== 'function_call' ||
-      !terminalInvocationIds.has(event.invocationId) ||
-      results.has(content.id)
-    ) {
-      return event;
-    }
-    return {
-      ...event,
-      content: {
-        kind: 'text',
-        text: `[Interrupted tool call; result unknown] ${content.name} ${JSON.stringify(content.args)}`,
-      },
-    };
-  });
 }
 
 // ============================================================================
@@ -351,16 +309,10 @@ export async function planHistoryCompaction(
       ? { decision: 'fail_open', reason: 'summarizer_failed', diagnosticReason: 'input_too_large' }
       : { decision: 'fail_open', reason: 'no_safe_completed_span' };
   let maxCoveredCount = input.orderedEvents.length;
-  const terminalInvocationIds = new Set(
-    input.invocations
-      ?.filter((invocation) => invocation.terminalEvent)
-      .map((invocation) => invocation.invocationId),
-  );
   while (maxCoveredCount > 0) {
     const boundary = selectSafeCompactionPrefix(input.orderedEvents, {
       reserveTailEvents: input.reserveTailEvents ?? (phase === 'standalone' ? 0 : 1),
       maxCoveredCount,
-      terminalInvocationIds,
       isPinned: (event) =>
         (phase === 'pre_turn' && event.id === input.headAnchor?.runtimeEventId) ||
         (event.turnId === input.headAnchor?.turnId &&
@@ -453,14 +405,8 @@ export async function planHistoryCompaction(
     try {
       compacted = await Promise.resolve(
         input.summarize({
-          coveredRuntimeEvents: renderUnfinishedCallsForSummary(
-            effectiveCoveredRuntimeEvents ?? coveredRuntimeEvents,
-            terminalInvocationIds,
-          ),
-          newlyFoldedRuntimeEvents: renderUnfinishedCallsForSummary(
-            effectiveNewlyFoldedRuntimeEvents ?? newlyFoldedRuntimeEvents,
-            terminalInvocationIds,
-          ),
+          coveredRuntimeEvents: effectiveCoveredRuntimeEvents ?? coveredRuntimeEvents,
+          newlyFoldedRuntimeEvents: effectiveNewlyFoldedRuntimeEvents ?? newlyFoldedRuntimeEvents,
           ...(previousCheckpoint ? { previousCheckpoint } : {}),
         }),
       );

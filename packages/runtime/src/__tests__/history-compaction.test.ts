@@ -143,43 +143,6 @@ describe('plan context compaction', () => {
     assert.equal(result.decision, 'compacted');
   });
 
-  test('folds past an interrupted call from a sealed invocation without inventing a result', async () => {
-    const events = [
-      user('old', 'old-turn'),
-      call('interrupted', 'call-lost', 'old-turn'),
-      model('later', 'later-turn'),
-      user('anchor', 'turn-1'),
-    ];
-    let summarized: readonly RuntimeEvent[] = [];
-    const result = await planHistoryCompaction(
-      planInput({
-        phase: 'pre_turn',
-        orderedEvents: events,
-        invocations: [
-          testInvocationRecord({
-            sessionId: 'session-1',
-            runId: 'run-1',
-            turnId: 'old-turn',
-            outcome: 'failed',
-          }),
-        ],
-        summarize: ({ coveredRuntimeEvents }) => {
-          summarized = coveredRuntimeEvents;
-          return structuredSummary('The interrupted tool outcome is unknown.');
-        },
-      }),
-    );
-    assert.equal(result.decision, 'compacted');
-    if (result.decision !== 'compacted') return;
-    assert.deepEqual(
-      result.coveredRuntimeEvents.map((event) => event.id),
-      ['old', 'interrupted', 'later'],
-    );
-    assert.equal(summarized[1]?.content?.kind, 'text');
-    assert.match(JSON.stringify(summarized[1]?.content), /result unknown/);
-    assert.equal(result.coveredRuntimeEvents[1]?.content?.kind, 'function_call');
-  });
-
   test('compacts a safe prefix, keeps the head anchor verbatim, and continues with the tail', async () => {
     const result = await planHistoryCompaction(planInput());
     assert.equal(result.decision, 'compacted');

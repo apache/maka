@@ -16888,7 +16888,7 @@ describe('AiSdkBackend steering durability and identity', () => {
     assert.equal(unprivilegedModel.doStreamCalls.length, 0);
   });
 
-  test('a completed explicit message retires a prior unknown tool outcome for later turns', async () => {
+  test('a completed explicit message keeps the prior unknown tool outcome visible for later turns', async () => {
     const args = { command: 'touch marker.txt' };
     const priorIdentity = {
       invocationId: 'prior-invocation',
@@ -16982,8 +16982,8 @@ describe('AiSdkBackend steering durability and identity', () => {
     assert.equal(automatedModel.doStreamCalls.length, 1);
     assert.equal(
       JSON.stringify(automatedModel.doStreamCalls[0]?.prompt).includes('outcome_unknown'),
-      false,
-      'a retired unknown must not be projected again, as notice or as tool result',
+      true,
+      'the durable unknown tool result must remain visible in later history',
     );
 
     // An explicit turn that failed never projected a usable answer, so the
