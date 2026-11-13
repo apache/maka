@@ -159,6 +159,8 @@ export interface InteractiveRunComposerInput {
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
   readonly resolveAdditionalTools?: (hostTools: readonly MakaTool[]) => readonly MakaTool[];
+  /** Session-scoped restriction over the complete composed catalog, including built-in tools. */
+  readonly filterTools?: (tools: readonly MakaTool[]) => readonly MakaTool[];
   /** Reassembles the scoped Plugin prompt surface before each logical model step. */
   readonly resolveAdditionalSystemPrompt?: (
     context: HostModelPromptContext,
@@ -273,7 +275,8 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
             (tool) => tool.categoryHint !== 'subagent' && !AGENT_COLLABORATION_TOOLS.has(tool.name),
           )
         : [...selectedTools];
-    const resolved = topicGate ? permitted.map((tool) => topicGate.wrap(tool)) : permitted;
+    const filtered = input.filterTools ? input.filterTools(permitted) : permitted;
+    const resolved = topicGate ? filtered.map((tool) => topicGate.wrap(tool)) : filtered;
     assertUniqueToolNames(resolved);
     return Object.freeze(resolved);
   };
@@ -425,6 +428,10 @@ export interface InteractiveRunComposerFactoryInput
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly resolveTavilyWebSearchReadiness: () => Promise<boolean>;
   readonly resolveToolCeiling?: (sessionId: string) => readonly MakaTool[] | undefined;
+  readonly filterSessionTools?: (
+    sessionId: string,
+    tools: readonly MakaTool[],
+  ) => readonly MakaTool[];
   readonly resolveRootTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
   readonly resolvePluginTools?: (
     sessionId: string,
@@ -575,6 +582,11 @@ export function createInteractiveRunComposerFactory(
                   tavilyReady,
                 }).hostTools;
               },
+            }
+          : {}),
+        ...(input.filterSessionTools
+          ? {
+              filterTools: (tools) => input.filterSessionTools!(backendContext.sessionId, tools),
             }
           : {}),
         ...(input.resolvePluginSystemPrompt && !backendContext.tools
