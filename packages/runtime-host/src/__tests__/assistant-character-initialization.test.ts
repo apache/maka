@@ -38,7 +38,8 @@ function fixture(t: any) {
   let owner: string | undefined = 'owner';
   let calls = 0,
     fail = false,
-    enabled = false;
+    enabled = false,
+    matterStatus = 'active';
   const visible: any[] = [];
   const posts: any[] = [];
   const invocation = new AsyncLocalStorage<{ sessionId: string }>();
@@ -80,8 +81,13 @@ function fixture(t: any) {
                 'permission is persisted before scheduling',
               );
               if (fail) throw Error('lost response after creation');
-              return { id: 'matter', sessionId: 'worker' };
+              return { id: 'matter', sessionId: 'worker', status: matterStatus };
             },
+          },
+          {
+            name: 'MatterTasks',
+            parameters: z.object({ id: z.string().optional() }),
+            impl: async (input: any) => ({ id: input.id, status: matterStatus }),
           },
         ],
       }),
@@ -103,6 +109,7 @@ function fixture(t: any) {
     calls: () => calls,
     setOwner: (id?: string) => (owner = id),
     fail: (value: boolean) => (fail = value),
+    setMatterStatus: (value: string) => (matterStatus = value),
     get init() {
       return init;
     },
@@ -351,4 +358,96 @@ test('an old invalid unadmitted request can be skipped or replaced instead of re
   assert.notEqual(f.store.get<any>('petInitialization').phase, 'starting');
   await f.init.setup({ kind: 'pet', action: 'skip' });
   assert.equal(f.store.get<any>('petInitialization').phase, 'skipped');
+});
+
+test('a completed settlement without finish_initialization adopts an existing persona', async (t) => {
+  const f = fixture(t);
+  await f.init.setup({ kind: 'assistant', action: 'create', preferences: '茶摊' });
+  assert.equal(f.init.state()?.phase, 'running');
+  f.pack.writeDocument('persona', '# 月球茶摊', f.pack.readDocument('persona').revision);
+  f.init.delivered({
+    id: 'settled',
+    type: 'task_update',
+    source: 'worker',
+    content: { status: 'completed' },
+  });
+  assert.equal(f.init.state()?.phase, 'completed');
+  assert.equal(f.init.state()?.adopted, true);
+  assert.equal(f.init.isWorker('worker'), false);
+});
+
+test('a completed settlement without a persona reopens setup instead of sticking in running', async (t) => {
+  const f = fixture(t);
+  await f.init.setup({ kind: 'assistant', action: 'create', preferences: '茶摊' });
+  f.init.delivered({
+    id: 'settled',
+    type: 'task_update',
+    source: 'worker',
+    content: { status: 'completed' },
+  });
+  assert.equal(f.init.state()?.phase, 'offered');
+  assert.match(f.init.state()!.error!, /已结束/);
+  await f.init.setup({ kind: 'assistant', action: 'skip' });
+  assert.equal(f.init.state()?.phase, 'skipped');
+});
+
+test('setup skip is honored while the initialization task is running', async (t) => {
+  const f = fixture(t);
+  await f.init.setup({ kind: 'assistant', action: 'create', preferences: '茶摊' });
+  assert.equal(f.init.state()?.phase, 'running');
+  await f.init.setup({ kind: 'assistant', action: 'skip' });
+  assert.equal(f.init.state()?.phase, 'skipped');
+});
+
+test('the periodic tick retires a running phase whose Matter was cancelled or settled silently', async (t) => {
+  const f = fixture(t);
+  f.setMatterStatus('active');
+  await f.init.setup({ kind: 'assistant', action: 'create', preferences: '茶摊' });
+  assert.equal(f.init.state()?.phase, 'running');
+  f.setMatterStatus('cancelled');
+  await f.init.tick();
+  assert.equal(f.init.state()?.phase, 'offered');
+  f.setMatterStatus('active');
+  await f.init.setup({ kind: 'assistant', action: 'create', preferences: '橘子' });
+  assert.equal(f.init.state()?.phase, 'running');
+  f.setMatterStatus('completed');
+  f.pack.writeDocument('persona', '# 阿橘', f.pack.readDocument('persona').revision);
+  await f.init.tick();
+  assert.equal(f.init.state()?.phase, 'completed');
+  assert.equal(f.init.state()?.adopted, true);
+});
+
+test('a cancelled pet Matter retires the running pet phase', async (t) => {
+  const f = fixture(t);
+  f.setMatterStatus('active');
+  await f.init.setup({ kind: 'assistant', action: 'skip' });
+  await f.init.setup({ kind: 'pet', action: 'create', preferences: '布偶猫' });
+  assert.equal(f.store.get<any>('petInitialization').phase, 'running');
+  f.setMatterStatus('cancelled');
+  await f.init.tick();
+  assert.equal(f.store.get<any>('petInitialization').phase, 'offered');
+});
+
+test('a settled Matter identity is never resurrected by a repeated create', async (t) => {
+  const f = fixture(t);
+  f.setMatterStatus('active');
+  await f.init.setup({ kind: 'assistant', action: 'create', preferences: '茶摊' });
+  assert.equal(f.init.state()?.phase, 'running');
+  f.setMatterStatus('completed');
+  f.init.delivered({
+    id: 'settled',
+    type: 'task_update',
+    source: 'worker',
+    content: { status: 'completed' },
+  });
+  assert.equal(f.init.state()?.phase, 'offered');
+  const before = f.calls();
+  await f.init.setup({ kind: 'assistant', action: 'create', preferences: '茶摊' });
+  assert.equal(f.init.state()?.phase, 'offered', 'a settled Matter must not re-enter running');
+  assert.equal(f.calls(), before + 1);
+  assert.match(f.init.state()!.error!, /已结束/);
+  assert.ok(
+    f.posts.some((post: any) => /已结束/.test(post.content?.message ?? '')),
+    'the Bot is told why the retry bounced',
+  );
 });
