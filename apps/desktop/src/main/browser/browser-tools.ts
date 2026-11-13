@@ -27,9 +27,17 @@ import {
   type BrowserPageRun,
   type TakeoverMode,
   browserAutomationAvailable,
+  BrowserActionBlockedError,
+  BrowserActionRevokedError,
   withBrowserPage,
 } from './session.js';
 import { parseNavigable } from './logic.js';
+import { runPreviewPreflight, type PreviewPreflightAuthority } from '../preview-preflight.js';
+import { createPreviewPreflightAuthority } from '../preview-preflight-probes.js';
+import {
+  BrowserEvidenceError, type BrowserVerificationResult,
+  observeDocument, redactPreviewCapabilities, verificationFailure,
+} from './browser-verification.js';
 
 /**
  * Generic observe→act browser tools over opencli's numbered-ref model:
@@ -45,8 +53,8 @@ import { parseNavigable } from './logic.js';
 
 const BROWSER_TOOL_CATEGORY = 'browser' as const;
 
-// Above opencli's internal 30s CDP guard so a slow load surfaces the CDP
-// command timeout (which names the navigation) rather than our generic one.
+// Preserve the existing action budget above opencli's 30s guard. Its goto can
+// swallow a load-event timeout; controller observation must still reject success.
 const NAVIGATE_TIMEOUT_MS = 35_000;
 const MAX_WAIT_SECONDS = 120;
 /** Per-call markdown budget; long pages page through `start`/`next_start_char`. */
@@ -117,7 +125,10 @@ async function runBrowserAction<T>(input: {
       assertOriginLease(lease);
       const value = await input.run(guardBrowserPage(page, lease), info);
       const finished = assertOriginLease(lease);
-      if ((input.takeover ?? 'observe') === 'mutate' && finished.epoch !== started.epoch) {
+      if ((input.takeover ?? 'observe') !== 'navigate' && (
+        finished.epoch !== started.epoch ||
+        finished.document?.load?.navigationId !== started.document?.load?.navigationId
+      )) {
         return { kind: 'navigated', url: finished.url, requiresApproval: false };
       }
       return { kind: 'completed', value };
@@ -162,110 +173,171 @@ function guardBrowserPage(page: IPage, lease: BrowserOriginLease): IPage {
   }) as IPage;
 }
 
-export function buildBrowserNavigateTool(): MakaTool<{ url: string }, string> {
+/** Preserve Runtime cancellation; failures are explicit business results, not successful text. */
+async function verifiedAction(
+  action: BrowserVerificationResult['action'],
+  signal: AbortSignal,
+  run: () => Promise<BrowserVerificationResult>,
+): Promise<BrowserVerificationResult> {
+  try {
+    const result = await run();
+    signal.throwIfAborted();
+    return result;
+  } catch (error) {
+    if (signal.aborted || (error instanceof Error && error.name === 'BrowserActionCanceledError')) throw error;
+    if (error instanceof BrowserActionBlockedError) {
+      return verificationFailure(action, new BrowserEvidenceError('unknown', 'view_unavailable', 'This conversation does not currently admit browser actions.'));
+    }
+    if (error instanceof BrowserActionRevokedError) {
+      return verificationFailure(action, new BrowserEvidenceError('invalidated', 'view_revoked', 'The conversation lost browser admission during the action.'));
+    }
+    return verificationFailure(action, error);
+  }
+}
+
+function invalidatedResult(
+  action: BrowserVerificationResult['action'],
+  result: { url: string; requiresApproval: boolean },
+): BrowserVerificationResult {
+  return {
+    ...verificationFailure(action, new BrowserEvidenceError('invalidated', 'document_changed', 'The page navigated during the action; observe it again before verifying content or interaction.')),
+    summary: navigationResult(result.url, result.requiresApproval),
+  };
+}
+
+function verificationOutcome(result: BrowserVerificationResult) {
+  return result.status === 'completed' ? 'success' as const : 'error' as const;
+}
+
+export function buildBrowserNavigateTool(
+  preflight: PreviewPreflightAuthority = createPreviewPreflightAuthority(),
+): MakaTool<{ url: string }, BrowserVerificationResult> {
   return {
     name: 'browser_navigate',
     displayName: '浏览器导航',
     description:
-      'Open a URL in the conversation\'s embedded browser. Pass a full http:// or https:// URL; other schemes are rejected. ' +
-      'Returns the sanitized URL actually landed on (after redirects). Follow with browser_snapshot to see what is on the page.',
+      'Open an http:// or https:// URL in the conversation\'s embedded browser. Returns structured opened/loaded evidence, sanitized observed URL, title and error. ' +
+      'loaded confirms browser load, not the intended content. Follow with browser_snapshot and check the requested title/content before reporting a preview verified. Never infer interaction success from navigation or click alone.',
     parameters: z.object({
       url: z.string().min(1).max(4000).describe('Full http:// or https:// URL to open. Other schemes are rejected.'),
     }),
     categoryHint: BROWSER_TOOL_CATEGORY,
+    resultOutcome: verificationOutcome,
     impl: async ({ url: rawUrl }, { sessionId, abortSignal }) => {
-      // Validate BEFORE goto: opencli's goto sends Page.navigate directly,
-      // bypassing the view's will-navigate guard, so the scheme check is here.
       const url = parseNavigable(rawUrl);
-      if (!url) {
-        throw new Error(`Not a navigable URL: ${JSON.stringify(rawUrl)}. Pass a full http:// or https:// URL.`);
-      }
-      const result = await runBrowserAction({
-        sessionId,
-        label: 'navigate',
-        abortSignal,
-        timeoutMs: NAVIGATE_TIMEOUT_MS,
-        // goto re-commits the document with the stealth script, so this clears a
-        // pending takeover without an extra reload.
-        takeover: 'navigate',
-        run: async (page, info) => {
-          await page.goto(url, { waitUntil: 'load' });
-          // Read the document's real location: goto caches the REQUESTED url, so
-          // getCurrentUrl() would just echo it back and a redirect would never
-          // be visible.
-          const landed = await page.evaluate<string>('window.location.href').catch(() => url);
-          return { landed: typeof landed === 'string' && landed ? landed : url, info };
-        },
+      if (!url) throw new Error('Not a navigable URL. Pass a full http:// or https:// URL.');
+      return verifiedAction('navigate', abortSignal, async () => {
+        // Consume #5234's classification. No extra endpoint probe: a listener is not load evidence.
+        const capabilities = await runPreviewPreflight(preflight, { sessionId, abortSignal });
+        if (capabilities.surface !== 'verified') {
+          return {
+            ...verificationFailure('navigate', new BrowserEvidenceError(capabilities.surface, 'preview_surface', capabilities.summary)),
+            preflight: capabilities,
+          };
+        }
+        const result = await runBrowserAction({
+          sessionId, label: 'navigate', abortSignal, timeoutMs: NAVIGATE_TIMEOUT_MS,
+          takeover: 'navigate',
+          run: async (page, info) => {
+            const lease = info.originLease!;
+            const before = lease.snapshot();
+            await page.goto(url, { waitUntil: 'load' });
+            // opencli can resolve goto after a load-event timeout or Page.navigate errorText.
+            // The controller already owns the actual commit/error/loading facts.
+            const observation = await observeDocument(page, lease, true);
+            if (lease.snapshot().epoch === before.epoch) {
+              throw new BrowserEvidenceError('unknown', 'no_document_commit', 'Navigation did not confirm a new document; the previous page is not target evidence.');
+            }
+            return { observation, info };
+          },
+        });
+        if (result.kind === 'navigated') return invalidatedResult('navigate', result);
+        const { observation, info } = result.value;
+        return {
+          kind: 'browser_verification', action: 'navigate', status: 'completed',
+          opened: true, loaded: true, url: observation.url, title: observation.title,
+          documentId: observation.documentId, matchesRequestedUrl: observation.rawUrl === url,
+          evidence: ['controller_navigation_commit', 'controller_load_complete', 'dom_location_and_title'],
+          preflight: capabilities,
+          summary: `Loaded ${observation.url}. Observe the requested content before verifying the preview.` + takeoverNote(info),
+        };
       });
-      if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
-      return `Loaded ${sanitizedPageUrl(result.value.landed)}` + takeoverNote(result.value.info);
     },
   };
 }
 
-export function buildBrowserSnapshotTool(): MakaTool<Record<string, never>, string> {
+export function buildBrowserSnapshotTool(): MakaTool<Record<string, never>, BrowserVerificationResult> {
   return {
     name: 'browser_snapshot',
     displayName: '浏览器快照',
     description:
-      'Observe the current page as a list of interactive elements (links, buttons, inputs), each tagged with a `[N]` ' +
-      'reference you pass to browser_click / browser_type. This is the primary way to see what is on the page before acting.',
+      'Observe the current document as structured URL/title/load evidence and a snapshot with interactive `[N]` references for browser_click/browser_type. ' +
+      'Compare the requested content and post-action state using observations with the same documentId. A click result alone never verifies an interaction.',
     parameters: z.object({}),
     categoryHint: BROWSER_TOOL_CATEGORY,
-    impl: async (_args, { sessionId, abortSignal }) => {
+    resultOutcome: verificationOutcome,
+    impl: async (_args, { sessionId, abortSignal }) => verifiedAction('snapshot', abortSignal, async () => {
       const result = await runBrowserAction({
-        sessionId,
-        label: 'snapshot',
-        abortSignal,
+        sessionId, label: 'snapshot', abortSignal,
         run: async (page, info) => {
+          const observation = await observeDocument(page, info.originLease!);
           const snapshot = await page.snapshot({ interactive: true });
-          const url = (await page.getCurrentUrl?.()) ?? '';
-          return { snapshot, url, info };
+          // Re-check controller facts after snapshot; the outer action fences the epoch too.
+          const after = await observeDocument(page, info.originLease!);
+          if (observation.documentId !== after.documentId) throw new BrowserEvidenceError('invalidated', 'document_changed', 'The document changed during snapshot.');
+          return { snapshot, observation: after, info };
         },
       });
-      if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
-      const text =
-        typeof result.value.snapshot === 'string'
-          ? result.value.snapshot
-          : JSON.stringify(result.value.snapshot, null, 2);
-      return (result.value.url ? `${result.value.url}\n\n${text}` : text) + takeoverNote(result.value.info);
-    },
+      if (result.kind === 'navigated') return invalidatedResult('snapshot', result);
+      const { snapshot, observation, info } = result.value;
+      const text = redactPreviewCapabilities(
+        (typeof snapshot === 'string' ? snapshot : JSON.stringify(snapshot, null, 2))
+          .replaceAll(observation.rawUrl, observation.url),
+      );
+      return {
+        kind: 'browser_verification', action: 'snapshot', status: 'completed',
+        opened: true, loaded: true, url: observation.url, title: observation.title,
+        documentId: observation.documentId, snapshot: text,
+        evidence: ['controller_load_complete', 'dom_location_and_title', 'browser_snapshot'],
+        summary: `${observation.url}\n\n${text}` + takeoverNote(info),
+      };
+    }),
   };
 }
 
-export function buildBrowserClickTool(): MakaTool<{ ref: string }, string> {
+export function buildBrowserClickTool(): MakaTool<{ ref: string }, BrowserVerificationResult> {
   return {
     name: 'browser_click',
     displayName: '浏览器点击',
     description:
-      'Click an element by its browser_snapshot reference (like "[12]") or a CSS selector. ' +
-      'Reports how many elements matched and the match confidence; re-snapshot if multiple matched.',
+      'Click an element by its browser_snapshot reference (like "[12]") or a CSS selector. Returns match evidence, not interaction verification. ' +
+      'Take another browser_snapshot and compare the requested change on the same documentId to verify the interaction.',
     parameters: z.object({
       ref: z.string().min(1).max(2000).describe('Element reference from browser_snapshot (like "[12]") or a CSS selector.'),
     }),
     categoryHint: BROWSER_TOOL_CATEGORY,
-    impl: async ({ ref }, { sessionId, abortSignal }) => {
+    resultOutcome: verificationOutcome,
+    impl: async ({ ref }, { sessionId, abortSignal }) => verifiedAction('click', abortSignal, async () => {
       const result = await runBrowserAction({
-        sessionId,
-        label: 'click',
-        abortSignal,
-        // A mutating action: harden a taken-over page (reload once) before clicking.
-        takeover: 'mutate',
+        sessionId, label: 'click', abortSignal, takeover: 'mutate',
         run: async (page, info) => {
+          await observeDocument(page, info.originLease!);
           const outcome = await page.click(normalizeElementRef(ref));
-          return { outcome, info };
+          const observation = await observeDocument(page, info.originLease!);
+          return { outcome, observation, info };
         },
       });
-      if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
-      const { matches_n, match_level } = result.value.outcome;
-      return (
-        `Clicked ${ref} (matched ${matches_n} element${matches_n === 1 ? '' : 's'}, ${match_level} match).` +
-        (matches_n > 1
-          ? ' Multiple matches — verify the right element reacted, or re-snapshot for a tighter ref.'
-          : '') +
-        takeoverNote(result.value.info)
-      );
-    },
+      if (result.kind === 'navigated') return invalidatedResult('click', result);
+      const { outcome, observation, info } = result.value;
+      return {
+        kind: 'browser_verification', action: 'click', status: 'completed',
+        opened: true, loaded: true, url: observation.url, title: observation.title,
+        documentId: observation.documentId,
+        click: { matches: outcome.matches_n, confidence: outcome.match_level, interaction: 'not_verified' },
+        evidence: ['controller_load_complete', 'dom_location_and_title', 'browser_click_match'],
+        summary: `Clicked (matched ${outcome.matches_n} element(s), ${outcome.match_level} match). Verify the requested change with browser_snapshot.` + takeoverNote(info),
+      };
+    }),
   };
 }
 
@@ -273,7 +345,7 @@ function sanitizedPageUrl(value: string): string {
   try {
     const url = new URL(value);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'an unapproved page';
-    return `${url.origin}${url.pathname}`;
+    return redactPreviewCapabilities(`${url.origin}${url.pathname}`);
   } catch {
     return 'an unapproved page';
   }

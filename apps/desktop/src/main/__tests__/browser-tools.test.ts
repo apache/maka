@@ -26,6 +26,7 @@
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import type { IPage } from '@jackwener/opencli/types';
+import type { BrowserVerificationResult } from '../browser/browser-verification.js';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { withBrowserOriginAdmission } from '../browser/browser-origin-admission.js';
@@ -40,7 +41,7 @@ import {
   readHtmlJs,
   takeoverNote,
 } from '../browser/browser-tools.js';
-import { type BridgeLike, resetBrowserSessionsForTest, setBridgeFactoryForTest } from '../browser/session.js';
+import { type BridgeLike, resetBrowserSessionsForTest, revokeHiddenBrowserActions, setBridgeFactoryForTest } from '../browser/session.js';
 import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
 import {
   type BrowserViewHost,
@@ -54,6 +55,14 @@ type FakePageConfig = {
   afterClickUrl?: string;
   afterFillUrl?: string;
   title?: string;
+  locationError?: string;
+  loading?: boolean;
+  alive?: boolean;
+  loadError?: { code: number };
+  httpStatus?: number;
+  load?: { navigationId: number; state: 'unknown' | 'loading' | 'completed' | 'failed' | 'stopped'; errorCode?: number };
+  gotoImpl?: (browser: FakeBrowser, url: string) => Promise<void>;
+  evaluateImpl?: (browser: FakeBrowser) => void;
   click?: { matches_n: number; match_level: 'exact' | 'stable' | 'reidentified' };
   fill?: { verified: boolean; actual: string; match_level: 'exact' | 'stable' | 'reidentified' };
   snapshot?: unknown;
@@ -91,9 +100,13 @@ function createFakeBrowser(url: string): FakeBrowser {
 function makeFakePage(cfg: FakePageConfig, browser: FakeBrowser): IPage {
   return {
     getCurrentUrl: async () => browser.url || null,
-    goto: async (url: string) => browser.navigate(cfg.afterGotoUrl ?? url),
+    goto: async (url: string) => cfg.gotoImpl ? cfg.gotoImpl(browser, url) : browser.navigate(cfg.afterGotoUrl ?? url),
     evaluate: async (js: string) => {
-      if (js.includes('location.href')) return browser.url as never;
+      if (js.includes('location.href')) {
+        if (cfg.locationError) throw new Error(cfg.locationError);
+        cfg.evaluateImpl?.(browser);
+        return (js.includes('document.title') ? { url: browser.url, title: cfg.title ?? '' } : browser.url) as never;
+      }
       if (js.includes('document.title')) return (cfg.title ?? '') as never;
       if (js.includes('outerHTML')) {
         cfg.extractImpl?.(browser);
@@ -152,7 +165,11 @@ function install(cfg: FakePageConfig): FakeBrowser {
     openOriginLease: (_sessionId, approvedUrl, kind) => {
       const lease = originLeases.open(approvedUrl, kind);
       cfg.onLeaseOpened?.(browser);
-      return lease;
+      return { ...lease, snapshot: () => ({ ...lease.snapshot(), document: {
+        viewId: 'view-1', alive: cfg.alive ?? true, loading: cfg.loading ?? false,
+        loadError: cfg.loadError ?? null, httpStatus: cfg.httpStatus ?? 200,
+        load: cfg.load ?? { navigationId: 1, state: 'completed' },
+      } }) };
     },
     canDrive: () => true,
     resolveEndpoint: async (id) => ({ cdpEndpoint: `ws://127.0.0.1:1/${id}` }),
@@ -177,10 +194,15 @@ function ctx(): MakaToolContext {
   };
 }
 
-function run<P>(tool: MakaTool<P, string>, args: P): Promise<string> {
+async function run<P>(tool: MakaTool<P, string | BrowserVerificationResult>, args: P): Promise<string> {
+  const result = await runRaw(tool, args);
+  return typeof result === 'string' ? result : result.summary;
+}
+
+function runRaw<P, R>(tool: MakaTool<P, R>, args: P, signal?: AbortSignal): Promise<R> {
   return withBrowserOriginAdmission(
     { sessionId: 's1', url: 'https://example.com/approved?secret=grant' },
-    () => Promise.resolve(tool.impl(args, ctx())) as Promise<string>,
+    () => Promise.resolve(tool.impl(args, { ...ctx(), ...(signal ? { abortSignal: signal } : {}) })),
   );
 }
 
@@ -206,6 +228,25 @@ describe('browser tool helpers', () => {
 });
 
 describe('browser tool execution', () => {
+  it('does not report Loaded when observing the destination loses the connection', async () => {
+    install({ locationError: 'CDP connection closed' });
+    const output = await run(buildBrowserNavigateTool(), { url: 'https://example.com/preview' });
+    assert.doesNotMatch(output, /Loaded/);
+    const result = await runRaw(buildBrowserNavigateTool(), { url: 'https://example.com/preview' });
+    assert.equal(result.status, 'failed');
+    assert.equal(result.loaded, false);
+    assert.equal(result.url, null);
+  });
+
+  it('discards a snapshot that spans a same-Origin navigation', async () => {
+    install({ snapshotImpl: (browser) => {
+      browser.navigate('https://example.com/replacement');
+      return 'stale document evidence';
+    } });
+    const output = await run(buildBrowserSnapshotTool(), {});
+    assert.doesNotMatch(output, /stale document evidence/);
+  });
+
   it('navigate rejects a non-web URL before connecting', async () => {
     install({});
     await assert.rejects(run(buildBrowserNavigateTool(), { url: 'file:///etc/passwd' }), /Not a navigable URL/);
@@ -292,15 +333,13 @@ describe('browser tool execution', () => {
       },
     );
     assert.equal(resolved, 2);
-    assert.deepEqual(result, {
-      outcome: 'success',
-      content: [
-        {
-          type: 'text',
-          text: 'Navigated to https://other.example. Access to the new site requires approval on the next Browser call.',
-        },
-      ],
-    });
+    assert.equal(result.outcome, 'error');
+    assert.deepEqual(result.content, []);
+    const evidence = result.structuredContent as BrowserVerificationResult;
+    assert.equal(evidence.status, 'invalidated');
+    assert.equal(evidence.loaded, false);
+    assert.equal(evidence.url, null);
+    assert.equal(evidence.summary, 'Navigated to https://other.example. Access to the new site requires approval on the next Browser call.');
     assert.doesNotMatch(JSON.stringify(result), /private snapshot|token/);
   });
 
@@ -400,6 +439,219 @@ describe('browser tool execution', () => {
 
   it('a tool fails with a clear message when no host is injected', async () => {
     // no install(): host stays null
-    await assert.rejects(run(buildBrowserSnapshotTool(), {}), /only available inside the desktop app/);
+    const result = await runRaw(buildBrowserNavigateTool(), { url: 'https://example.com/' });
+    assert.equal(result.status, 'unsupported');
+    assert.equal(result.opened, false);
+    assert.equal(result.preflight?.surface, 'unsupported');
+  });
+});
+
+describe('structured browser verification', () => {
+  for (const failed of [false, true]) {
+    it(`publishes actual Browser result through Client Capability structuredContent (${failed ? 'failure' : 'success'})`, async () => {
+      install({ title: 'Preview 5235', ...(failed ? { httpStatus: 404 } : {}) });
+      const computerUseTools = [] as unknown as ComputerUseToolSet;
+      computerUseTools.clearSession = () => undefined;
+      computerUseTools.sessionEvents = {} as ComputerUseToolSet['sessionEvents'];
+      const provider = createDesktopNativeCapabilityProvider({
+        browserTools: [buildBrowserNavigateTool()],
+        resolveBrowserUrl: () => 'https://example.com/preview',
+        releaseBrowserSession() {}, computerUseTools, releaseDesktopInteractionSession() {},
+      });
+      const result = await provider.call!({
+        kind: 'client.capability.call', invocationId: 'i1', registrationId: 'r1',
+        offerId: 'desktop_browser', serverId: 'desktop_browser', toolName: 'browser_navigate',
+        arguments: { url: 'https://example.com/preview' },
+        sessionId: 's1', turnId: 't1', toolCallId: 'c1', cwd: '/tmp',
+      }, {
+        signal: new AbortController().signal, accept: async () => undefined,
+        requestInteraction: async () => assert.fail('Unexpected interaction'),
+      });
+      assert.equal(result.outcome, failed ? 'error' : 'success');
+      assert.deepEqual(result.content, []);
+      const evidence = result.structuredContent as BrowserVerificationResult;
+      assert.equal(evidence.kind, 'browser_verification');
+      assert.equal(evidence.loaded, !failed);
+      assert.equal(evidence.title, failed ? null : 'Preview 5235');
+      assert.equal(evidence.status, failed ? 'failed' : 'completed');
+    });
+  }
+
+  it('returns load evidence and a stable document identity without exposing a preview capability', async () => {
+    const token = 'a'.repeat(64);
+    const url = `https://example.com/${token}/index.html?secret=private#fragment`;
+    install({ title: 'Preview 5235', snapshot: `PREVIEW_READY_5235 ${url} [1] button "0"` });
+    const navigation = await runRaw(buildBrowserNavigateTool(), { url });
+    assert.equal(navigation.status, 'completed');
+    assert.equal(navigation.opened, true);
+    assert.equal(navigation.loaded, true);
+    assert.equal(navigation.title, 'Preview 5235');
+    assert.equal(navigation.matchesRequestedUrl, true);
+    assert.equal(navigation.preflight?.surface, 'verified');
+    assert.equal(navigation.preflight?.capabilities.find((c) => c.id === 'url_schemes')?.status, 'unsupported');
+    const before = await runRaw(buildBrowserSnapshotTool(), {});
+    const click = await runRaw(buildBrowserClickTool(), { ref: '[1]' });
+    const after = await runRaw(buildBrowserSnapshotTool(), {});
+    assert.equal(before.documentId, navigation.documentId);
+    assert.equal(after.documentId, before.documentId);
+    assert.equal(click.click?.interaction, 'not_verified');
+    // No fake counter mutation: only a real browser may prove the HTML script worked.
+    assert.equal(before.snapshot, after.snapshot);
+    assert.doesNotMatch(JSON.stringify([navigation, before, click, after]), new RegExp(`${token}|secret=|private|fragment`));
+  });
+
+  it('does not relabel an old page as a newly loaded target', async () => {
+    install({ gotoImpl: async () => {} });
+    const result = await runRaw(buildBrowserNavigateTool(), { url: 'https://example.com/new' });
+    assert.equal(result.status, 'unknown');
+    assert.equal(result.error?.code, 'no_document_commit');
+    assert.equal(result.url, null);
+    assert.equal(result.opened, false);
+  });
+
+  for (const config of [{ loadError: { code: -102 } }, { httpStatus: 404 }, { httpStatus: 500 }]) {
+    it(`rejects controller load failure ${JSON.stringify(config)}`, async () => {
+      install(config);
+      const result = await runRaw(buildBrowserNavigateTool(), { url: 'https://example.com/preview' });
+      assert.equal(result.status, 'failed');
+      assert.equal(result.error?.code, 'load_failed');
+      assert.deepEqual(result.evidence, ['loadError' in config ? 'controller_load_error' : 'controller_http_status']);
+      assert.equal(result.opened, false);
+      assert.equal(result.loaded, false);
+      assert.equal(result.title, null);
+      assert.equal(buildBrowserNavigateTool().resultOutcome?.(result), 'error');
+    });
+  }
+
+  it('reports the swallowed goto load-event timeout honestly when the controller is still loading', async () => {
+    install({ loading: true });
+    const result = await runRaw(buildBrowserNavigateTool(), { url: 'https://example.com/slow' });
+    assert.equal(result.status, 'timeout');
+    assert.equal(result.opened, false);
+    assert.equal(result.loaded, false);
+  });
+
+  for (const [state, status, errorCode] of [
+    ['failed', 'failed', -354], ['stopped', 'invalidated', -3], ['unknown', 'unknown', undefined],
+    ['loading', 'unknown', undefined],
+  ] as const) {
+    for (const action of ['navigate', 'snapshot', 'click'] as const) {
+      it(`${action} rejects a readable non-loading document with ${state} load evidence`, async () => {
+        const browser = install({ loading: false, load: { navigationId: 2, state, errorCode } });
+        const result = action === 'navigate'
+          ? await runRaw(buildBrowserNavigateTool(), { url: 'https://example.com/preview' })
+          : action === 'snapshot' ? await runRaw(buildBrowserSnapshotTool(), {})
+          : await runRaw(buildBrowserClickTool(), { ref: '1' });
+        assert.equal(result.status, status);
+        assert.equal(result.opened, false);
+        assert.equal(result.loaded, false);
+        assert.equal(result.documentId, undefined);
+        assert.equal(browser.clicks, 0);
+      });
+    }
+  }
+
+  it('invalidates observation when a new navigation starts before committing', async () => {
+    const config: FakePageConfig = { evaluateImpl: () => {
+      config.load = { navigationId: 2, state: 'loading' };
+    } };
+    install(config);
+    const result = await runRaw(buildBrowserSnapshotTool(), {});
+    assert.equal(result.status, 'invalidated');
+    assert.equal(result.loaded, false);
+    assert.equal(result.snapshot, undefined);
+  });
+
+  it('discards a snapshot spanning an entire same-URL reload even before an epoch update', async () => {
+    const config: FakePageConfig = { snapshotImpl: () => {
+      config.load = { navigationId: 2, state: 'completed' };
+      return 'old document snapshot';
+    } };
+    install(config);
+    const result = await runRaw(buildBrowserSnapshotTool(), {});
+    assert.notEqual(result.status, 'completed');
+    assert.equal(result.loaded, false);
+    assert.equal(result.snapshot, undefined);
+  });
+
+  it('bounds a goto that never settles using the existing session deadline', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    install({ gotoImpl: async () => { started(); await new Promise(() => {}); } });
+    const pending = runRaw(buildBrowserNavigateTool(), { url: 'https://example.com/slow' });
+    await entered;
+    t.mock.timers.tick(35_000);
+    const result = await pending;
+    assert.equal(result.status, 'timeout');
+    assert.equal(result.loaded, false);
+    t.mock.timers.reset();
+  });
+
+  it('preserves cancellation instead of reporting a verification finding', async () => {
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    install({ gotoImpl: async () => { started(); await new Promise(() => {}); } });
+    const controller = new AbortController();
+    const pending = runRaw(buildBrowserNavigateTool(), { url: 'https://example.com/slow' }, controller.signal);
+    await entered;
+    controller.abort();
+    await assert.rejects(pending, /canceled/);
+  });
+
+  it('consumes unknown preflight reasons without attempting navigation', async () => {
+    let navigated = false;
+    install({ gotoImpl: async () => { navigated = true; } });
+    const result = await runRaw(buildBrowserNavigateTool({
+      guiSurfaceAvailable: () => true,
+      browserDrivable: () => false,
+      probeLoopback: () => assert.fail('Navigation does not introduce a listener probe'),
+    }), { url: 'https://example.com/' });
+    assert.equal(result.status, 'unknown');
+    assert.equal(result.preflight?.surface, 'unknown');
+    assert.equal(result.opened, false);
+    assert.equal(navigated, false);
+  });
+
+  it('discards snapshot evidence when the page closes during observation', async () => {
+    const config: FakePageConfig = { snapshotImpl: () => {
+      config.alive = false;
+      return 'closed page evidence';
+    } };
+    install(config);
+    const result = await runRaw(buildBrowserSnapshotTool(), {});
+    assert.equal(result.status, 'invalidated');
+    assert.equal(result.snapshot, undefined);
+    assert.equal(result.documentId, undefined);
+    assert.equal(result.loaded, false);
+  });
+
+  it('invalidates navigation evidence when visibility admission is revoked', async () => {
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    install({ gotoImpl: async () => { started(); await new Promise(() => {}); } });
+    const pending = runRaw(buildBrowserNavigateTool(), { url: 'https://example.com/slow' });
+    await entered;
+    revokeHiddenBrowserActions(() => false);
+    const result = await pending;
+    assert.equal(result.status, 'invalidated');
+    assert.equal(result.error?.code, 'view_revoked');
+    assert.equal(result.documentId, undefined);
+    assert.equal(result.loaded, false);
+  });
+
+  it('marks an actual same-Origin redirect as observed rather than echoing the request', async () => {
+    install({ afterGotoUrl: 'https://example.com/final', title: 'Final' });
+    const result = await runRaw(buildBrowserNavigateTool(), { url: 'https://example.com/start' });
+    assert.equal(result.url, 'https://example.com/final');
+    assert.equal(result.matchesRequestedUrl, false);
+  });
+
+  it('does not export raw CDP errors containing a bearer URL', async () => {
+    const token = 'b'.repeat(64);
+    install({ locationError: `Error observing https://example.com/${token}/index.html?secret=private` });
+    const result = await runRaw(buildBrowserNavigateTool(), { url: 'https://example.com/preview' });
+    assert.equal(result.status, 'failed');
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(`${token}|private|secret=`));
   });
 });
