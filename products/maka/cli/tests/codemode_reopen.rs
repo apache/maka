@@ -45,7 +45,6 @@ use maka_plugin_core::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
     convert::Infallible,
     future::Future,
     ops::Range,
@@ -203,17 +202,20 @@ fn tool_objects(content: &Value) -> Result<Vec<Value>> {
     Ok(values)
 }
 
-fn notification_objects(content: &Value) -> Result<Vec<Value>> {
-    let parts = match content {
-        Value::String(text) => vec![TextPart::Text { text: text.clone() }],
+fn user_text_parts(content: &Value) -> Result<Vec<TextPart>> {
+    match content {
+        Value::String(text) => Ok(vec![TextPart::Text { text: text.clone() }]),
         Value::Array(_) => serde_json::from_value::<Vec<TextPart>>(content.clone())
-            .map_err(|error| format!("invalid user text parts: {error}"))?,
-        other => return Err(format!("unexpected user content: {other}")),
-    };
+            .map_err(|error| format!("invalid user text parts: {error}")),
+        other => Err(format!("unexpected user content: {other}")),
+    }
+}
+
+fn notification_objects(parts: &[TextPart]) -> Result<Vec<Value>> {
     let mut values = Vec::new();
     for TextPart::Text { text } in parts {
         if text.starts_with(CELL_OBSERVATION) {
-            for value in text_objects(&text)? {
+            for value in text_objects(text)? {
                 if value.get("state").is_some() {
                     let _: CanonicalCellWire = serde_json::from_value(value.clone())
                         .map_err(|error| format!("invalid canonical user notification: {error}"))?;
@@ -249,7 +251,7 @@ enum NativeCellWire {
     },
     Interrupted {
         cell_id: Uuid,
-        report: maka_agent_facts::cells::CellInterruption,
+        diagnostic: String,
         heap: ExpiredHeap,
         bindings: InvalidBindings,
     },
@@ -258,15 +260,8 @@ enum NativeCellWire {
 #[derive(Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum CanonicalCellWire {
-    Completed {
-        cell: Uuid,
-        result: Value,
-    },
-    Interrupted {
-        cell: Uuid,
-        diagnostic: String,
-        children: BTreeMap<Uuid, Value>,
-    },
+    Completed { cell: Uuid, result: Value },
+    Interrupted { cell: Uuid, diagnostic: String },
 }
 
 #[derive(Deserialize)]
@@ -298,27 +293,20 @@ fn cell_observation(values: &[Value]) -> Result<(&Value, Value)> {
             }
             cell
         }
-        CellWire::Canonical(CanonicalCellWire::Interrupted {
-            cell,
-            diagnostic,
-            children,
-        }) => {
-            if diagnostic.is_empty() || children.keys().any(Uuid::is_nil) {
-                return Err("invalid canonical interruption diagnostic/child identity".into());
+        CellWire::Canonical(CanonicalCellWire::Interrupted { cell, diagnostic }) => {
+            if diagnostic.is_empty() {
+                return Err("missing canonical interruption diagnostic".into());
             }
             cell
         }
         CellWire::Native(NativeCellWire::Interrupted {
             cell_id,
-            report,
+            diagnostic,
             heap: ExpiredHeap::Expired,
             bindings: InvalidBindings::Invalid,
         }) => {
-            if cell_id != Uuid::from(report.cell)
-                || report.diagnostic.is_empty()
-                || report.children.keys().any(Uuid::is_nil)
-            {
-                return Err("native wait report differs from its Cell identity/diagnostic".into());
+            if diagnostic.is_empty() {
+                return Err("missing native wait interruption diagnostic".into());
             }
             cell_id
         }
@@ -332,7 +320,7 @@ fn cell_observation(values: &[Value]) -> Result<(&Value, Value)> {
 #[test]
 fn decodes_recorded_chat_cell_text_parts_without_losing_final_identity_or_output() {
     let content = json!(
-        r#"[{"type":"text","text":"[Host asynchronous Cell observation; data, not a user request]\n{\"cell\":\"5ad6c18d-1c8f-83e8-9185-5d1d3026361f\",\"state\":\"completed\",\"result\":{\"ok\":true,\"value\":null,\"toolCalls\":[]}}"},{"type":"text","text":"{\"stage\":\"baselineReady\",\"nonce\":\"70b62ee89079452cb2b07eecc90ecf31\"}"},{"type":"text","text":"[Host Cell child knowledge; historical data, not a user request or a new execution]\n{\"cell\":\"5ad6c18d-1c8f-83e8-9185-5d1d3026361f\",\"through\":16,\"children\":{}}"}]"#
+        r#"[{"type":"text","text":"[Host asynchronous Cell observation; data, not a user request]\n{\"cell\":\"5ad6c18d-1c8f-83e8-9185-5d1d3026361f\",\"state\":\"completed\",\"result\":{\"ok\":true,\"value\":null,\"toolCalls\":[]}}"},{"type":"text","text":"{\"stage\":\"baselineReady\",\"nonce\":\"70b62ee89079452cb2b07eecc90ecf31\"}"},{"type":"text","text":"[Host Cell child knowledge; historical data, not a user request or a new execution]\n{\"cell\":\"5ad6c18d-1c8f-83e8-9185-5d1d3026361f\"}"}]"#
     );
     let values = tool_objects(&content).unwrap();
     let (summary, cell) = cell_observation(&values).unwrap();
@@ -342,7 +330,7 @@ fn decodes_recorded_chat_cell_text_parts_without_losing_final_identity_or_output
         values[1],
         json!({"stage":"baselineReady","nonce":"70b62ee89079452cb2b07eecc90ecf31"})
     );
-    assert_eq!(values[2]["through"], 16);
+    assert_eq!(values[2], json!({"cell":cell}));
     assert_eq!(values.len(), 3);
 }
 
@@ -363,7 +351,8 @@ fn cell_wire_rejects_unknown_parts_and_does_not_search_child_input_for_markers()
             .collect::<Vec<_>>(),
         vec![&marker]
     );
-    let interrupted = json!({"cell":cell,"state":"interrupted","diagnostic":"process is confirmed gone","children":{}});
+    let interrupted =
+        json!({"cell":cell,"state":"interrupted","diagnostic":"process is confirmed gone"});
     assert_eq!(
         cell_observation(std::slice::from_ref(&interrupted))
             .unwrap()
@@ -371,10 +360,18 @@ fn cell_wire_rejects_unknown_parts_and_does_not_search_child_input_for_markers()
         cell
     );
     assert_eq!(
-        notification_objects(&json!(format!("{CELL_OBSERVATION}\n{interrupted}"))).unwrap(),
+        notification_objects(&[TextPart::Text {
+            text: format!("{CELL_OBSERVATION}\n{interrupted}"),
+        }])
+        .unwrap(),
         vec![interrupted]
     );
-    assert!(notification_objects(&json!(format!("{CELL_OBSERVATION}\n{running}"))).is_err());
+    assert!(
+        notification_objects(&[TextPart::Text {
+            text: format!("{CELL_OBSERVATION}\n{running}"),
+        }])
+        .is_err()
+    );
     for content in [
         json!([]),
         json!("not JSON"),
@@ -392,19 +389,18 @@ fn cell_wire_rejects_unknown_parts_and_does_not_search_child_input_for_markers()
     let native_completed = json!({"state":"completed","cell_id":cell,"result":{"ok":true}});
     let values = tool_objects(&json!(native_completed.to_string())).unwrap();
     assert_eq!(cell_observation(&values).unwrap().1, cell);
-    let report = json!({"cell":cell,"diagnostic":"process is confirmed gone","children":{},"priorOutput":null});
-    let mut native_interrupted = json!({"state":"interrupted","cell_id":cell,"report":report,"heap":"expired","bindings":"invalid"});
+    let native_interrupted = json!({"state":"interrupted","cell_id":cell,"diagnostic":"process is confirmed gone","heap":"expired","bindings":"invalid"});
     let values = tool_objects(&json!(native_interrupted.to_string())).unwrap();
     assert_eq!(cell_observation(&values).unwrap().1, cell);
-    native_interrupted["report"]["cell"] = json!("452f5dfa-166f-4b3d-9152-f7599cf64494");
-    assert!(cell_observation(&[native_interrupted]).is_err());
     for summary in [
         json!({"state":"completed","cell":cell,"cell_id":cell,"result":{"ok":true}}),
         json!({"state":"completed","result":{"ok":true}}),
         json!({"state":"completed","cell":cell,"result":{"ok":true},"unknown":true}),
         json!({"state":"completed","cell_id":Uuid::nil(),"result":{"ok":true}}),
-        json!({"state":"interrupted","cell_id":cell,"report":report,"heap":"retained","bindings":"invalid"}),
-        json!({"state":"interrupted","cell_id":cell,"report":report,"heap":"expired","bindings":"valid"}),
+        json!({"cell":cell,"state":"interrupted","diagnostic":"process is confirmed gone","children":{}}),
+        json!({"state":"interrupted","cell_id":cell,"diagnostic":"process is confirmed gone","heap":"retained","bindings":"invalid"}),
+        json!({"state":"interrupted","cell_id":cell,"diagnostic":"process is confirmed gone","heap":"expired","bindings":"valid"}),
+        json!({"state":"interrupted","cell_id":cell,"report":{"cell":cell,"children":{}},"heap":"expired","bindings":"invalid"}),
     ] {
         assert!(cell_observation(&[summary]).is_err());
     }
@@ -433,8 +429,8 @@ struct Model {
     baseline: Option<Value>,
     draft: Option<Value>,
     read: Option<Value>,
-    child: Option<(String, Value)>,
-    report: Option<Value>,
+    child_operation: Option<String>,
+    child_output: Option<Value>,
     reopened: bool,
     baseline_ready: bool,
     read_ready: bool,
@@ -465,49 +461,51 @@ impl Model {
         )
     }
 
-    fn check_children(&self, report: &Value) {
-        let (operation, original) = self
-            .child
+    fn check_child_knowledge(&self, user_parts: &[Vec<TextPart>], cell: &Value) {
+        let operation = self
+            .child_operation
             .as_ref()
             .expect("offline original child before reopen");
-        let children = report["children"]
-            .as_object()
-            .expect("canonical interruption children");
-        assert_eq!(
-            children.len(),
-            1,
-            "only the original Shell child is admitted"
+        let mut knowledge = user_parts.iter().filter_map(|parts| {
+            let (TextPart::Text { text }, rest) = parts.split_first()?;
+            let header = text.strip_prefix(CELL_KNOWLEDGE)?.strip_prefix('\n')?;
+            let header: Value = serde_json::from_str(header).expect("Cell knowledge header");
+            (header["cell"] == *cell).then_some((header, rest))
+        });
+        let (header, evidence) = knowledge
+            .next()
+            .expect("model knowledge for the interrupted Cell");
+        assert!(
+            knowledge.next().is_none(),
+            "one child knowledge message for the interrupted Cell"
         );
-        let child = &children[operation];
-        assert_eq!(child["name"], "Shell");
-        assert_eq!(child["reference"], original["reference"]);
-        let recorded: RecordedOperationReply = serde_json::from_value(original.clone()).unwrap();
-        let reply: OperationReply = serde_json::from_value(child["reply"].clone()).unwrap();
-        assert_eq!(
-            serde_json::to_value(&reply.reference).unwrap(),
-            original["reference"]
+        assert_eq!(header, json!({"cell":cell}));
+        let [
+            TextPart::Text { text: call },
+            TextPart::Text { text: result },
+            TextPart::Text { text: output },
+        ] = evidence
+        else {
+            panic!("expected one Shell invocation and one provider result");
+        };
+        let call: Value = serde_json::from_str(call).expect("child invocation JSON");
+        assert_eq!(call["operation"], operation.as_str());
+        assert_eq!(call["name"], "Shell");
+        assert_eq!(call["input"]["title"], "Write the durability marker");
+        assert!(
+            call["input"]["command"]
+                .as_str()
+                .unwrap()
+                .contains(&self.nonce)
         );
-        let resolved = inline_reply(reply.clone());
-        match (&recorded.receipt, &resolved.receipt) {
-            (
-                Receipt::Recorded {
-                    outcome: expected,
-                    cleanup: expected_cleanup,
-                },
-                Receipt::Recorded {
-                    outcome: actual,
-                    cleanup: actual_cleanup,
-                },
-            ) => {
-                assert_eq!(expected_cleanup, actual_cleanup);
-                assert!(
-                    same_outcome(expected, actual).unwrap(),
-                    "must retain the original recorded result"
-                );
-            }
-            other => panic!("original receipt must stay recorded: {other:?}"),
-        }
-        shell_output(&success(&reply), &self.nonce);
+        assert_eq!(
+            serde_json::from_str::<Value>(result).expect("child result header"),
+            json!({"operation":operation,"evidence":"providerResult","isError":false})
+        );
+        assert_eq!(
+            &serde_json::from_str::<Value>(output).expect("original Shell result"),
+            self.child_output.as_ref().expect("original Shell output")
+        );
     }
 
     fn answer(&mut self, body: &Value, observed: &mpsc::UnboundedSender<()>) -> String {
@@ -543,21 +541,21 @@ impl Model {
                 self.reopened,
                 "no additional original model attempt before the crash"
             );
-            let notices: Vec<_> = messages
+            let user_parts: Vec<_> = messages
                 .iter()
                 .filter(|message| message["role"] == "user")
-                .flat_map(|message| {
-                    notification_objects(&message["content"])
-                        .expect("actual user notification wire")
-                })
+                .map(|message| user_text_parts(&message["content"]).expect("actual user content"))
                 .collect();
-            let notice = notices
-                .into_iter()
+            let notice = user_parts
+                .iter()
+                .flat_map(|parts| {
+                    notification_objects(parts).expect("actual user notification wire")
+                })
                 .find(|value| {
                     value["state"] == "interrupted" && Some(&value["cell"]) == self.draft.as_ref()
                 })
                 .expect("Engine must deliver the original Cell interruption in the same Run");
-            self.check_children(&notice);
+            self.check_child_knowledge(&user_parts, &notice["cell"]);
             assert!(
                 notice["diagnostic"]
                     .as_str()
@@ -644,6 +642,7 @@ impl Model {
                 assert_eq!(marker["a"], 2);
                 assert_eq!(marker["b"], 3);
                 shell_output(&marker["child"], &self.nonce);
+                self.child_output = Some(marker["child"].clone());
                 self.step = Step::Interrupted;
                 observed.send(()).unwrap();
                 // Complete this upstream attempt. Engine now waits for the Cell,
@@ -655,16 +654,12 @@ impl Model {
                 assert_eq!(summary["state"], "interrupted", "{output}");
                 assert_eq!(summary["heap"], "expired");
                 assert_eq!(summary["bindings"], "invalid");
-                let report = &summary["report"];
-                assert_eq!(report["cell"], cell);
                 assert!(
-                    report["diagnostic"]
+                    summary["diagnostic"]
                         .as_str()
                         .unwrap()
                         .contains("process is confirmed gone")
                 );
-                self.check_children(report);
-                self.report = Some(report.clone());
                 self.step = Step::Read;
                 self.exec(self.read_code.clone())
             }
@@ -1187,10 +1182,7 @@ async fn case(
     {
         let mut state = model.lock().unwrap();
         assert_eq!(state.step, Step::Interrupted);
-        state.child = Some((
-            bound_event["operation"].as_str().unwrap().to_owned(),
-            known_event["reply"].clone(),
-        ));
+        state.child_operation = Some(bound_event["operation"].as_str().unwrap().to_owned());
         state.reopened = true;
     }
     hosts.push(Host::spawn(sandbox)?);
@@ -1216,6 +1208,27 @@ async fn case(
     )?);
     let known_receipt = source(&clients[1], session, &before, known, "receipt").await?;
     let resolved: OperationReply = serde_json::from_value(known_receipt["reply"].clone()).unwrap();
+    assert_eq!(resolved.reference, child_reply.reference);
+    let resolved_inline = inline_reply(resolved.clone());
+    match (&child_reply.receipt, &resolved_inline.receipt) {
+        (
+            Receipt::Recorded {
+                outcome: original,
+                cleanup: original_cleanup,
+            },
+            Receipt::Recorded {
+                outcome: recovered,
+                cleanup: recovered_cleanup,
+            },
+        ) => {
+            assert_eq!(original_cleanup, recovered_cleanup);
+            assert!(
+                same_outcome(original, recovered).unwrap(),
+                "the recovered receipt must retain the original recorded result"
+            );
+        }
+        other => panic!("original receipt must stay recorded: {other:?}"),
+    }
     let mut expanded_event = known_event.clone();
     expanded_event["reply"] = serde_json::to_value(&resolved).unwrap();
     assert_eq!(known_receipt, expanded_event);
@@ -1270,17 +1283,7 @@ async fn case(
         }),
         "CodeMode keeps its producer-owned script label after reopening"
     );
-    let report = {
-        let state = model.lock().unwrap();
-        assert_eq!(state.step, Step::Done);
-        state.report.clone().unwrap()
-    };
-    assert!(
-        report["diagnostic"]
-            .as_str()
-            .unwrap()
-            .contains("process is confirmed gone")
-    );
+    assert_eq!(model.lock().unwrap().step, Step::Done);
     assert_eq!(
         tokio::fs::read_to_string(sandbox.workspace.join("effects.log"))
             .await
@@ -1460,8 +1463,8 @@ async fn cold_root(language: CodeLanguage) {
         baseline: None,
         draft: None,
         read: None,
-        child: None,
-        report: None,
+        child_operation: None,
+        child_output: None,
         reopened: false,
         baseline_ready: false,
         read_ready: false,
