@@ -30,6 +30,11 @@ pub const EXPORT: &str = "files";
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "WorkspaceFileResult")]
 pub enum FileResult {
+    PermissionDenied {
+        #[serde(rename = "executionState")]
+        execution_state: crate::NotStarted,
+        denial: Box<maka_agent_facts::tools::PermissionDenial>,
+    },
     Completed {
         value: Value,
     },

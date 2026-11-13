@@ -619,6 +619,7 @@ impl Owner {
             };
             let tool_error_variant = match error {
                 RunError::Tool(error) => match error {
+                    ToolError::PermissionDenied(_) => "permission_denied",
                     ToolError::Failed(_) => "failed",
                     ToolError::Native(_) => "native",
                     ToolError::Io { .. } => "io",

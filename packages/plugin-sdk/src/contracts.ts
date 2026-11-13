@@ -45771,6 +45771,23 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'permission_denied',
+                  },
+                  executionState: {
+                    $ref: '#/$defs/NotStarted',
+                  },
+                  denial: {
+                    $ref: '#/$defs/PermissionDenial',
+                  },
+                },
+                required: ['kind', 'executionState', 'denial'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'completed',
                   },
                   value: true,
@@ -45796,6 +45813,156 @@ export const contracts: {
             ],
             title: 'WorkspaceFileResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              NotStarted: {
+                type: 'string',
+                enum: ['not_started'],
+              },
+              PermissionDenial: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  reason: {
+                    $ref: '#/$defs/PermissionDenialReason',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/Permissions',
+                  },
+                  command: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PermissionCommand',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['reason', 'permissions', 'message'],
+                description:
+                  'A Host decision made before the requested effect starts. Never inferred from stderr.',
+              },
+              PermissionDenialReason: {
+                type: 'string',
+                enum: [
+                  'requests_disabled',
+                  'user_denied',
+                  'protected_boundary',
+                  'approval_insufficient',
+                  'grant_expired',
+                ],
+              },
+              Permissions: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  filesystem: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Rule',
+                    },
+                  },
+                  network: {
+                    $ref: '#/$defs/Network',
+                  },
+                },
+                required: ['filesystem', 'network'],
+              },
+              Rule: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  scope: {
+                    $ref: '#/$defs/Scope',
+                  },
+                  access: {
+                    $ref: '#/$defs/Access',
+                  },
+                },
+                required: ['path', 'scope', 'access'],
+                description:
+                  'Paths have executor-native meaning. Validate and materialize them on the\nexecution host, never on a remote Desktop. This document alone grants nothing.',
+              },
+              Scope: {
+                type: 'string',
+                enum: ['subtree', 'exact'],
+              },
+              Access: {
+                type: 'string',
+                enum: ['read', 'write', 'deny'],
+                description:
+                  'Equal-path conflict priority is different from authority breadth: deny wins.',
+              },
+              Network: {
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['denied', 'allowed'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      restricted: {
+                        type: 'object',
+                        properties: {
+                          destinations: {
+                            type: 'array',
+                            uniqueItems: true,
+                            items: {
+                              $ref: '#/$defs/Destination',
+                            },
+                          },
+                        },
+                        additionalProperties: false,
+                        required: ['destinations'],
+                      },
+                    },
+                    required: ['restricted'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              Destination: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  host: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: 253,
+                  },
+                  port: {
+                    type: 'integer',
+                    format: 'uint16',
+                    minimum: 1,
+                    maximum: 65535,
+                  },
+                },
+                required: ['host', 'port'],
+                description:
+                  'Destination authority, independent of the upstream proxy used to reach it.\nA domain grant does not authorize its subdomains or other ports.',
+              },
+              PermissionCommand: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  command: {
+                    type: 'string',
+                  },
+                  cwd: {
+                    type: 'string',
+                  },
+                },
+                required: ['command', 'cwd'],
+              },
+            },
           },
           resources: {},
         },
@@ -45829,6 +45996,23 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'permission_denied',
+                  },
+                  executionState: {
+                    $ref: '#/$defs/NotStarted',
+                  },
+                  denial: {
+                    $ref: '#/$defs/PermissionDenial',
+                  },
+                },
+                required: ['kind', 'executionState', 'denial'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'completed',
                   },
                   value: true,
@@ -45854,6 +46038,156 @@ export const contracts: {
             ],
             title: 'WorkspaceFileResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              NotStarted: {
+                type: 'string',
+                enum: ['not_started'],
+              },
+              PermissionDenial: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  reason: {
+                    $ref: '#/$defs/PermissionDenialReason',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/Permissions',
+                  },
+                  command: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PermissionCommand',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['reason', 'permissions', 'message'],
+                description:
+                  'A Host decision made before the requested effect starts. Never inferred from stderr.',
+              },
+              PermissionDenialReason: {
+                type: 'string',
+                enum: [
+                  'requests_disabled',
+                  'user_denied',
+                  'protected_boundary',
+                  'approval_insufficient',
+                  'grant_expired',
+                ],
+              },
+              Permissions: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  filesystem: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Rule',
+                    },
+                  },
+                  network: {
+                    $ref: '#/$defs/Network',
+                  },
+                },
+                required: ['filesystem', 'network'],
+              },
+              Rule: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  scope: {
+                    $ref: '#/$defs/Scope',
+                  },
+                  access: {
+                    $ref: '#/$defs/Access',
+                  },
+                },
+                required: ['path', 'scope', 'access'],
+                description:
+                  'Paths have executor-native meaning. Validate and materialize them on the\nexecution host, never on a remote Desktop. This document alone grants nothing.',
+              },
+              Scope: {
+                type: 'string',
+                enum: ['subtree', 'exact'],
+              },
+              Access: {
+                type: 'string',
+                enum: ['read', 'write', 'deny'],
+                description:
+                  'Equal-path conflict priority is different from authority breadth: deny wins.',
+              },
+              Network: {
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['denied', 'allowed'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      restricted: {
+                        type: 'object',
+                        properties: {
+                          destinations: {
+                            type: 'array',
+                            uniqueItems: true,
+                            items: {
+                              $ref: '#/$defs/Destination',
+                            },
+                          },
+                        },
+                        additionalProperties: false,
+                        required: ['destinations'],
+                      },
+                    },
+                    required: ['restricted'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              Destination: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  host: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: 253,
+                  },
+                  port: {
+                    type: 'integer',
+                    format: 'uint16',
+                    minimum: 1,
+                    maximum: 65535,
+                  },
+                },
+                required: ['host', 'port'],
+                description:
+                  'Destination authority, independent of the upstream proxy used to reach it.\nA domain grant does not authorize its subdomains or other ports.',
+              },
+              PermissionCommand: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  command: {
+                    type: 'string',
+                  },
+                  cwd: {
+                    type: 'string',
+                  },
+                },
+                required: ['command', 'cwd'],
+              },
+            },
           },
           resources: {},
         },
@@ -45885,6 +46219,23 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'permission_denied',
+                  },
+                  executionState: {
+                    $ref: '#/$defs/NotStarted',
+                  },
+                  denial: {
+                    $ref: '#/$defs/PermissionDenial',
+                  },
+                },
+                required: ['kind', 'executionState', 'denial'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'completed',
                   },
                   value: true,
@@ -45910,6 +46261,156 @@ export const contracts: {
             ],
             title: 'WorkspaceFileResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              NotStarted: {
+                type: 'string',
+                enum: ['not_started'],
+              },
+              PermissionDenial: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  reason: {
+                    $ref: '#/$defs/PermissionDenialReason',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/Permissions',
+                  },
+                  command: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PermissionCommand',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['reason', 'permissions', 'message'],
+                description:
+                  'A Host decision made before the requested effect starts. Never inferred from stderr.',
+              },
+              PermissionDenialReason: {
+                type: 'string',
+                enum: [
+                  'requests_disabled',
+                  'user_denied',
+                  'protected_boundary',
+                  'approval_insufficient',
+                  'grant_expired',
+                ],
+              },
+              Permissions: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  filesystem: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Rule',
+                    },
+                  },
+                  network: {
+                    $ref: '#/$defs/Network',
+                  },
+                },
+                required: ['filesystem', 'network'],
+              },
+              Rule: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  scope: {
+                    $ref: '#/$defs/Scope',
+                  },
+                  access: {
+                    $ref: '#/$defs/Access',
+                  },
+                },
+                required: ['path', 'scope', 'access'],
+                description:
+                  'Paths have executor-native meaning. Validate and materialize them on the\nexecution host, never on a remote Desktop. This document alone grants nothing.',
+              },
+              Scope: {
+                type: 'string',
+                enum: ['subtree', 'exact'],
+              },
+              Access: {
+                type: 'string',
+                enum: ['read', 'write', 'deny'],
+                description:
+                  'Equal-path conflict priority is different from authority breadth: deny wins.',
+              },
+              Network: {
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['denied', 'allowed'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      restricted: {
+                        type: 'object',
+                        properties: {
+                          destinations: {
+                            type: 'array',
+                            uniqueItems: true,
+                            items: {
+                              $ref: '#/$defs/Destination',
+                            },
+                          },
+                        },
+                        additionalProperties: false,
+                        required: ['destinations'],
+                      },
+                    },
+                    required: ['restricted'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              Destination: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  host: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: 253,
+                  },
+                  port: {
+                    type: 'integer',
+                    format: 'uint16',
+                    minimum: 1,
+                    maximum: 65535,
+                  },
+                },
+                required: ['host', 'port'],
+                description:
+                  'Destination authority, independent of the upstream proxy used to reach it.\nA domain grant does not authorize its subdomains or other ports.',
+              },
+              PermissionCommand: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  command: {
+                    type: 'string',
+                  },
+                  cwd: {
+                    type: 'string',
+                  },
+                },
+                required: ['command', 'cwd'],
+              },
+            },
           },
           resources: {},
         },
@@ -45942,6 +46443,23 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'permission_denied',
+                  },
+                  executionState: {
+                    $ref: '#/$defs/NotStarted',
+                  },
+                  denial: {
+                    $ref: '#/$defs/PermissionDenial',
+                  },
+                },
+                required: ['kind', 'executionState', 'denial'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'completed',
                   },
                   value: true,
@@ -45967,6 +46485,156 @@ export const contracts: {
             ],
             title: 'WorkspaceFileResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              NotStarted: {
+                type: 'string',
+                enum: ['not_started'],
+              },
+              PermissionDenial: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  reason: {
+                    $ref: '#/$defs/PermissionDenialReason',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/Permissions',
+                  },
+                  command: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PermissionCommand',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['reason', 'permissions', 'message'],
+                description:
+                  'A Host decision made before the requested effect starts. Never inferred from stderr.',
+              },
+              PermissionDenialReason: {
+                type: 'string',
+                enum: [
+                  'requests_disabled',
+                  'user_denied',
+                  'protected_boundary',
+                  'approval_insufficient',
+                  'grant_expired',
+                ],
+              },
+              Permissions: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  filesystem: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Rule',
+                    },
+                  },
+                  network: {
+                    $ref: '#/$defs/Network',
+                  },
+                },
+                required: ['filesystem', 'network'],
+              },
+              Rule: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  scope: {
+                    $ref: '#/$defs/Scope',
+                  },
+                  access: {
+                    $ref: '#/$defs/Access',
+                  },
+                },
+                required: ['path', 'scope', 'access'],
+                description:
+                  'Paths have executor-native meaning. Validate and materialize them on the\nexecution host, never on a remote Desktop. This document alone grants nothing.',
+              },
+              Scope: {
+                type: 'string',
+                enum: ['subtree', 'exact'],
+              },
+              Access: {
+                type: 'string',
+                enum: ['read', 'write', 'deny'],
+                description:
+                  'Equal-path conflict priority is different from authority breadth: deny wins.',
+              },
+              Network: {
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['denied', 'allowed'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      restricted: {
+                        type: 'object',
+                        properties: {
+                          destinations: {
+                            type: 'array',
+                            uniqueItems: true,
+                            items: {
+                              $ref: '#/$defs/Destination',
+                            },
+                          },
+                        },
+                        additionalProperties: false,
+                        required: ['destinations'],
+                      },
+                    },
+                    required: ['restricted'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              Destination: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  host: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: 253,
+                  },
+                  port: {
+                    type: 'integer',
+                    format: 'uint16',
+                    minimum: 1,
+                    maximum: 65535,
+                  },
+                },
+                required: ['host', 'port'],
+                description:
+                  'Destination authority, independent of the upstream proxy used to reach it.\nA domain grant does not authorize its subdomains or other ports.',
+              },
+              PermissionCommand: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  command: {
+                    type: 'string',
+                  },
+                  cwd: {
+                    type: 'string',
+                  },
+                },
+                required: ['command', 'cwd'],
+              },
+            },
           },
           resources: {},
         },
@@ -46214,6 +46882,23 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'permission_denied',
+                  },
+                  executionState: {
+                    $ref: '#/$defs/NotStarted',
+                  },
+                  denial: {
+                    $ref: '#/$defs/PermissionDenial',
+                  },
+                },
+                required: ['kind', 'executionState', 'denial'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'completed',
                   },
                   value: true,
@@ -46239,6 +46924,156 @@ export const contracts: {
             ],
             title: 'WorkspaceFileResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              NotStarted: {
+                type: 'string',
+                enum: ['not_started'],
+              },
+              PermissionDenial: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  reason: {
+                    $ref: '#/$defs/PermissionDenialReason',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/Permissions',
+                  },
+                  command: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PermissionCommand',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['reason', 'permissions', 'message'],
+                description:
+                  'A Host decision made before the requested effect starts. Never inferred from stderr.',
+              },
+              PermissionDenialReason: {
+                type: 'string',
+                enum: [
+                  'requests_disabled',
+                  'user_denied',
+                  'protected_boundary',
+                  'approval_insufficient',
+                  'grant_expired',
+                ],
+              },
+              Permissions: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  filesystem: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Rule',
+                    },
+                  },
+                  network: {
+                    $ref: '#/$defs/Network',
+                  },
+                },
+                required: ['filesystem', 'network'],
+              },
+              Rule: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  scope: {
+                    $ref: '#/$defs/Scope',
+                  },
+                  access: {
+                    $ref: '#/$defs/Access',
+                  },
+                },
+                required: ['path', 'scope', 'access'],
+                description:
+                  'Paths have executor-native meaning. Validate and materialize them on the\nexecution host, never on a remote Desktop. This document alone grants nothing.',
+              },
+              Scope: {
+                type: 'string',
+                enum: ['subtree', 'exact'],
+              },
+              Access: {
+                type: 'string',
+                enum: ['read', 'write', 'deny'],
+                description:
+                  'Equal-path conflict priority is different from authority breadth: deny wins.',
+              },
+              Network: {
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['denied', 'allowed'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      restricted: {
+                        type: 'object',
+                        properties: {
+                          destinations: {
+                            type: 'array',
+                            uniqueItems: true,
+                            items: {
+                              $ref: '#/$defs/Destination',
+                            },
+                          },
+                        },
+                        additionalProperties: false,
+                        required: ['destinations'],
+                      },
+                    },
+                    required: ['restricted'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              Destination: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  host: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: 253,
+                  },
+                  port: {
+                    type: 'integer',
+                    format: 'uint16',
+                    minimum: 1,
+                    maximum: 65535,
+                  },
+                },
+                required: ['host', 'port'],
+                description:
+                  'Destination authority, independent of the upstream proxy used to reach it.\nA domain grant does not authorize its subdomains or other ports.',
+              },
+              PermissionCommand: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  command: {
+                    type: 'string',
+                  },
+                  cwd: {
+                    type: 'string',
+                  },
+                },
+                required: ['command', 'cwd'],
+              },
+            },
           },
           resources: {},
         },
@@ -46268,6 +47103,23 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'permission_denied',
+                  },
+                  executionState: {
+                    $ref: '#/$defs/NotStarted',
+                  },
+                  denial: {
+                    $ref: '#/$defs/PermissionDenial',
+                  },
+                },
+                required: ['kind', 'executionState', 'denial'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'completed',
                   },
                   value: true,
@@ -46293,6 +47145,156 @@ export const contracts: {
             ],
             title: 'WorkspaceFileResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              NotStarted: {
+                type: 'string',
+                enum: ['not_started'],
+              },
+              PermissionDenial: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  reason: {
+                    $ref: '#/$defs/PermissionDenialReason',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/Permissions',
+                  },
+                  command: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PermissionCommand',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['reason', 'permissions', 'message'],
+                description:
+                  'A Host decision made before the requested effect starts. Never inferred from stderr.',
+              },
+              PermissionDenialReason: {
+                type: 'string',
+                enum: [
+                  'requests_disabled',
+                  'user_denied',
+                  'protected_boundary',
+                  'approval_insufficient',
+                  'grant_expired',
+                ],
+              },
+              Permissions: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  filesystem: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Rule',
+                    },
+                  },
+                  network: {
+                    $ref: '#/$defs/Network',
+                  },
+                },
+                required: ['filesystem', 'network'],
+              },
+              Rule: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  scope: {
+                    $ref: '#/$defs/Scope',
+                  },
+                  access: {
+                    $ref: '#/$defs/Access',
+                  },
+                },
+                required: ['path', 'scope', 'access'],
+                description:
+                  'Paths have executor-native meaning. Validate and materialize them on the\nexecution host, never on a remote Desktop. This document alone grants nothing.',
+              },
+              Scope: {
+                type: 'string',
+                enum: ['subtree', 'exact'],
+              },
+              Access: {
+                type: 'string',
+                enum: ['read', 'write', 'deny'],
+                description:
+                  'Equal-path conflict priority is different from authority breadth: deny wins.',
+              },
+              Network: {
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['denied', 'allowed'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      restricted: {
+                        type: 'object',
+                        properties: {
+                          destinations: {
+                            type: 'array',
+                            uniqueItems: true,
+                            items: {
+                              $ref: '#/$defs/Destination',
+                            },
+                          },
+                        },
+                        additionalProperties: false,
+                        required: ['destinations'],
+                      },
+                    },
+                    required: ['restricted'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              Destination: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  host: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: 253,
+                  },
+                  port: {
+                    type: 'integer',
+                    format: 'uint16',
+                    minimum: 1,
+                    maximum: 65535,
+                  },
+                },
+                required: ['host', 'port'],
+                description:
+                  'Destination authority, independent of the upstream proxy used to reach it.\nA domain grant does not authorize its subdomains or other ports.',
+              },
+              PermissionCommand: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  command: {
+                    type: 'string',
+                  },
+                  cwd: {
+                    type: 'string',
+                  },
+                },
+                required: ['command', 'cwd'],
+              },
+            },
           },
           resources: {},
         },
@@ -46492,6 +47494,23 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'permission_denied',
+                  },
+                  executionState: {
+                    $ref: '#/$defs/NotStarted',
+                  },
+                  denial: {
+                    $ref: '#/$defs/PermissionDenial',
+                  },
+                },
+                required: ['kind', 'executionState', 'denial'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'completed',
                   },
                   value: true,
@@ -46515,6 +47534,156 @@ export const contracts: {
             ],
             title: 'WorkspaceProcessResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              NotStarted: {
+                type: 'string',
+                enum: ['not_started'],
+              },
+              PermissionDenial: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  reason: {
+                    $ref: '#/$defs/PermissionDenialReason',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/Permissions',
+                  },
+                  command: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PermissionCommand',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['reason', 'permissions', 'message'],
+                description:
+                  'A Host decision made before the requested effect starts. Never inferred from stderr.',
+              },
+              PermissionDenialReason: {
+                type: 'string',
+                enum: [
+                  'requests_disabled',
+                  'user_denied',
+                  'protected_boundary',
+                  'approval_insufficient',
+                  'grant_expired',
+                ],
+              },
+              Permissions: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  filesystem: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Rule',
+                    },
+                  },
+                  network: {
+                    $ref: '#/$defs/Network',
+                  },
+                },
+                required: ['filesystem', 'network'],
+              },
+              Rule: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  scope: {
+                    $ref: '#/$defs/Scope',
+                  },
+                  access: {
+                    $ref: '#/$defs/Access',
+                  },
+                },
+                required: ['path', 'scope', 'access'],
+                description:
+                  'Paths have executor-native meaning. Validate and materialize them on the\nexecution host, never on a remote Desktop. This document alone grants nothing.',
+              },
+              Scope: {
+                type: 'string',
+                enum: ['subtree', 'exact'],
+              },
+              Access: {
+                type: 'string',
+                enum: ['read', 'write', 'deny'],
+                description:
+                  'Equal-path conflict priority is different from authority breadth: deny wins.',
+              },
+              Network: {
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['denied', 'allowed'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      restricted: {
+                        type: 'object',
+                        properties: {
+                          destinations: {
+                            type: 'array',
+                            uniqueItems: true,
+                            items: {
+                              $ref: '#/$defs/Destination',
+                            },
+                          },
+                        },
+                        additionalProperties: false,
+                        required: ['destinations'],
+                      },
+                    },
+                    required: ['restricted'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              Destination: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  host: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: 253,
+                  },
+                  port: {
+                    type: 'integer',
+                    format: 'uint16',
+                    minimum: 1,
+                    maximum: 65535,
+                  },
+                },
+                required: ['host', 'port'],
+                description:
+                  'Destination authority, independent of the upstream proxy used to reach it.\nA domain grant does not authorize its subdomains or other ports.',
+              },
+              PermissionCommand: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  command: {
+                    type: 'string',
+                  },
+                  cwd: {
+                    type: 'string',
+                  },
+                },
+                required: ['command', 'cwd'],
+              },
+            },
           },
           resources: {},
         },
@@ -46547,6 +47716,23 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'permission_denied',
+                  },
+                  executionState: {
+                    $ref: '#/$defs/NotStarted',
+                  },
+                  denial: {
+                    $ref: '#/$defs/PermissionDenial',
+                  },
+                },
+                required: ['kind', 'executionState', 'denial'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'completed',
                   },
                   value: true,
@@ -46570,6 +47756,156 @@ export const contracts: {
             ],
             title: 'WorkspaceProcessResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              NotStarted: {
+                type: 'string',
+                enum: ['not_started'],
+              },
+              PermissionDenial: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  reason: {
+                    $ref: '#/$defs/PermissionDenialReason',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/Permissions',
+                  },
+                  command: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PermissionCommand',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['reason', 'permissions', 'message'],
+                description:
+                  'A Host decision made before the requested effect starts. Never inferred from stderr.',
+              },
+              PermissionDenialReason: {
+                type: 'string',
+                enum: [
+                  'requests_disabled',
+                  'user_denied',
+                  'protected_boundary',
+                  'approval_insufficient',
+                  'grant_expired',
+                ],
+              },
+              Permissions: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  filesystem: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Rule',
+                    },
+                  },
+                  network: {
+                    $ref: '#/$defs/Network',
+                  },
+                },
+                required: ['filesystem', 'network'],
+              },
+              Rule: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  scope: {
+                    $ref: '#/$defs/Scope',
+                  },
+                  access: {
+                    $ref: '#/$defs/Access',
+                  },
+                },
+                required: ['path', 'scope', 'access'],
+                description:
+                  'Paths have executor-native meaning. Validate and materialize them on the\nexecution host, never on a remote Desktop. This document alone grants nothing.',
+              },
+              Scope: {
+                type: 'string',
+                enum: ['subtree', 'exact'],
+              },
+              Access: {
+                type: 'string',
+                enum: ['read', 'write', 'deny'],
+                description:
+                  'Equal-path conflict priority is different from authority breadth: deny wins.',
+              },
+              Network: {
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['denied', 'allowed'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      restricted: {
+                        type: 'object',
+                        properties: {
+                          destinations: {
+                            type: 'array',
+                            uniqueItems: true,
+                            items: {
+                              $ref: '#/$defs/Destination',
+                            },
+                          },
+                        },
+                        additionalProperties: false,
+                        required: ['destinations'],
+                      },
+                    },
+                    required: ['restricted'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              Destination: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  host: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: 253,
+                  },
+                  port: {
+                    type: 'integer',
+                    format: 'uint16',
+                    minimum: 1,
+                    maximum: 65535,
+                  },
+                },
+                required: ['host', 'port'],
+                description:
+                  'Destination authority, independent of the upstream proxy used to reach it.\nA domain grant does not authorize its subdomains or other ports.',
+              },
+              PermissionCommand: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  command: {
+                    type: 'string',
+                  },
+                  cwd: {
+                    type: 'string',
+                  },
+                },
+                required: ['command', 'cwd'],
+              },
+            },
           },
           resources: {},
         },
@@ -46595,6 +47931,23 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'permission_denied',
+                  },
+                  executionState: {
+                    $ref: '#/$defs/NotStarted',
+                  },
+                  denial: {
+                    $ref: '#/$defs/PermissionDenial',
+                  },
+                },
+                required: ['kind', 'executionState', 'denial'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'completed',
                   },
                   value: true,
@@ -46618,6 +47971,156 @@ export const contracts: {
             ],
             title: 'WorkspaceProcessResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              NotStarted: {
+                type: 'string',
+                enum: ['not_started'],
+              },
+              PermissionDenial: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  reason: {
+                    $ref: '#/$defs/PermissionDenialReason',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/Permissions',
+                  },
+                  command: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PermissionCommand',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['reason', 'permissions', 'message'],
+                description:
+                  'A Host decision made before the requested effect starts. Never inferred from stderr.',
+              },
+              PermissionDenialReason: {
+                type: 'string',
+                enum: [
+                  'requests_disabled',
+                  'user_denied',
+                  'protected_boundary',
+                  'approval_insufficient',
+                  'grant_expired',
+                ],
+              },
+              Permissions: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  filesystem: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Rule',
+                    },
+                  },
+                  network: {
+                    $ref: '#/$defs/Network',
+                  },
+                },
+                required: ['filesystem', 'network'],
+              },
+              Rule: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  scope: {
+                    $ref: '#/$defs/Scope',
+                  },
+                  access: {
+                    $ref: '#/$defs/Access',
+                  },
+                },
+                required: ['path', 'scope', 'access'],
+                description:
+                  'Paths have executor-native meaning. Validate and materialize them on the\nexecution host, never on a remote Desktop. This document alone grants nothing.',
+              },
+              Scope: {
+                type: 'string',
+                enum: ['subtree', 'exact'],
+              },
+              Access: {
+                type: 'string',
+                enum: ['read', 'write', 'deny'],
+                description:
+                  'Equal-path conflict priority is different from authority breadth: deny wins.',
+              },
+              Network: {
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['denied', 'allowed'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      restricted: {
+                        type: 'object',
+                        properties: {
+                          destinations: {
+                            type: 'array',
+                            uniqueItems: true,
+                            items: {
+                              $ref: '#/$defs/Destination',
+                            },
+                          },
+                        },
+                        additionalProperties: false,
+                        required: ['destinations'],
+                      },
+                    },
+                    required: ['restricted'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              Destination: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  host: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: 253,
+                  },
+                  port: {
+                    type: 'integer',
+                    format: 'uint16',
+                    minimum: 1,
+                    maximum: 65535,
+                  },
+                },
+                required: ['host', 'port'],
+                description:
+                  'Destination authority, independent of the upstream proxy used to reach it.\nA domain grant does not authorize its subdomains or other ports.',
+              },
+              PermissionCommand: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  command: {
+                    type: 'string',
+                  },
+                  cwd: {
+                    type: 'string',
+                  },
+                },
+                required: ['command', 'cwd'],
+              },
+            },
           },
           resources: {},
         },
@@ -46643,6 +48146,23 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'permission_denied',
+                  },
+                  executionState: {
+                    $ref: '#/$defs/NotStarted',
+                  },
+                  denial: {
+                    $ref: '#/$defs/PermissionDenial',
+                  },
+                },
+                required: ['kind', 'executionState', 'denial'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'completed',
                   },
                   value: true,
@@ -46666,6 +48186,156 @@ export const contracts: {
             ],
             title: 'WorkspaceProcessResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              NotStarted: {
+                type: 'string',
+                enum: ['not_started'],
+              },
+              PermissionDenial: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  reason: {
+                    $ref: '#/$defs/PermissionDenialReason',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/Permissions',
+                  },
+                  command: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PermissionCommand',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['reason', 'permissions', 'message'],
+                description:
+                  'A Host decision made before the requested effect starts. Never inferred from stderr.',
+              },
+              PermissionDenialReason: {
+                type: 'string',
+                enum: [
+                  'requests_disabled',
+                  'user_denied',
+                  'protected_boundary',
+                  'approval_insufficient',
+                  'grant_expired',
+                ],
+              },
+              Permissions: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  filesystem: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Rule',
+                    },
+                  },
+                  network: {
+                    $ref: '#/$defs/Network',
+                  },
+                },
+                required: ['filesystem', 'network'],
+              },
+              Rule: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  scope: {
+                    $ref: '#/$defs/Scope',
+                  },
+                  access: {
+                    $ref: '#/$defs/Access',
+                  },
+                },
+                required: ['path', 'scope', 'access'],
+                description:
+                  'Paths have executor-native meaning. Validate and materialize them on the\nexecution host, never on a remote Desktop. This document alone grants nothing.',
+              },
+              Scope: {
+                type: 'string',
+                enum: ['subtree', 'exact'],
+              },
+              Access: {
+                type: 'string',
+                enum: ['read', 'write', 'deny'],
+                description:
+                  'Equal-path conflict priority is different from authority breadth: deny wins.',
+              },
+              Network: {
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['denied', 'allowed'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      restricted: {
+                        type: 'object',
+                        properties: {
+                          destinations: {
+                            type: 'array',
+                            uniqueItems: true,
+                            items: {
+                              $ref: '#/$defs/Destination',
+                            },
+                          },
+                        },
+                        additionalProperties: false,
+                        required: ['destinations'],
+                      },
+                    },
+                    required: ['restricted'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              Destination: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  host: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: 253,
+                  },
+                  port: {
+                    type: 'integer',
+                    format: 'uint16',
+                    minimum: 1,
+                    maximum: 65535,
+                  },
+                },
+                required: ['host', 'port'],
+                description:
+                  'Destination authority, independent of the upstream proxy used to reach it.\nA domain grant does not authorize its subdomains or other ports.',
+              },
+              PermissionCommand: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  command: {
+                    type: 'string',
+                  },
+                  cwd: {
+                    type: 'string',
+                  },
+                },
+                required: ['command', 'cwd'],
+              },
+            },
           },
           resources: {},
         },
@@ -46745,6 +48415,23 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'permission_denied',
+                  },
+                  executionState: {
+                    $ref: '#/$defs/NotStarted',
+                  },
+                  denial: {
+                    $ref: '#/$defs/PermissionDenial',
+                  },
+                },
+                required: ['kind', 'executionState', 'denial'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'completed',
                   },
                   value: true,
@@ -46768,6 +48455,156 @@ export const contracts: {
             ],
             title: 'WorkspaceProcessResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              NotStarted: {
+                type: 'string',
+                enum: ['not_started'],
+              },
+              PermissionDenial: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  reason: {
+                    $ref: '#/$defs/PermissionDenialReason',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/Permissions',
+                  },
+                  command: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PermissionCommand',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                required: ['reason', 'permissions', 'message'],
+                description:
+                  'A Host decision made before the requested effect starts. Never inferred from stderr.',
+              },
+              PermissionDenialReason: {
+                type: 'string',
+                enum: [
+                  'requests_disabled',
+                  'user_denied',
+                  'protected_boundary',
+                  'approval_insufficient',
+                  'grant_expired',
+                ],
+              },
+              Permissions: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  filesystem: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Rule',
+                    },
+                  },
+                  network: {
+                    $ref: '#/$defs/Network',
+                  },
+                },
+                required: ['filesystem', 'network'],
+              },
+              Rule: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  scope: {
+                    $ref: '#/$defs/Scope',
+                  },
+                  access: {
+                    $ref: '#/$defs/Access',
+                  },
+                },
+                required: ['path', 'scope', 'access'],
+                description:
+                  'Paths have executor-native meaning. Validate and materialize them on the\nexecution host, never on a remote Desktop. This document alone grants nothing.',
+              },
+              Scope: {
+                type: 'string',
+                enum: ['subtree', 'exact'],
+              },
+              Access: {
+                type: 'string',
+                enum: ['read', 'write', 'deny'],
+                description:
+                  'Equal-path conflict priority is different from authority breadth: deny wins.',
+              },
+              Network: {
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['denied', 'allowed'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      restricted: {
+                        type: 'object',
+                        properties: {
+                          destinations: {
+                            type: 'array',
+                            uniqueItems: true,
+                            items: {
+                              $ref: '#/$defs/Destination',
+                            },
+                          },
+                        },
+                        additionalProperties: false,
+                        required: ['destinations'],
+                      },
+                    },
+                    required: ['restricted'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              Destination: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  host: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: 253,
+                  },
+                  port: {
+                    type: 'integer',
+                    format: 'uint16',
+                    minimum: 1,
+                    maximum: 65535,
+                  },
+                },
+                required: ['host', 'port'],
+                description:
+                  'Destination authority, independent of the upstream proxy used to reach it.\nA domain grant does not authorize its subdomains or other ports.',
+              },
+              PermissionCommand: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  command: {
+                    type: 'string',
+                  },
+                  cwd: {
+                    type: 'string',
+                  },
+                },
+                required: ['command', 'cwd'],
+              },
+            },
           },
           resources: {},
         },

@@ -167,6 +167,7 @@ enum Failure {
 impl From<ToolError> for Failure {
     fn from(error: ToolError) -> Self {
         match error {
+            ToolError::PermissionDenied(denial) => Self::Failed(denial.message),
             ToolError::Failed(message) => Self::Failed(message),
             ToolError::Native(error) => Self::Native(error),
             ToolError::OutcomeUnknown(message) | ToolError::OperationUnknown { message, .. } => {
@@ -572,7 +573,13 @@ impl Process {
 
 fn authorization_cleanup(result: Result<(), ToolError>) -> Option<ToolError> {
     match result {
-        Ok(()) | Err(ToolError::Failed(_) | ToolError::Native(_) | ToolError::Io { .. }) => None,
+        Ok(())
+        | Err(
+            ToolError::Failed(_)
+            | ToolError::PermissionDenied(_)
+            | ToolError::Native(_)
+            | ToolError::Io { .. },
+        ) => None,
         Err(error) => {
             let message = format!("Browser authorization cleanup was not confirmed: {error}");
             Some(match error {

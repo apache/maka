@@ -58,8 +58,17 @@ pub fn configuration_schema() -> Value {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "WorkspaceProcessResult")]
 pub enum ProcessResult {
-    Completed { value: Value },
-    Failed { message: String },
+    PermissionDenied {
+        #[serde(rename = "executionState")]
+        execution_state: crate::NotStarted,
+        denial: Box<maka_agent_facts::tools::PermissionDenial>,
+    },
+    Completed {
+        value: Value,
+    },
+    Failed {
+        message: String,
+    },
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
