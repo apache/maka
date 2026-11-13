@@ -743,14 +743,6 @@ impl AttemptMetering {
         }
         Ok(())
     }
-
-    fn rank(&self) -> u8 {
-        match self {
-            Self::Unknown => 0,
-            Self::LowerBound { .. } => 1,
-            Self::Complete { .. } => 2,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -893,30 +885,184 @@ impl V2AttemptRecord {
     pub fn into_parts(self) -> V2AttemptParts {
         self.0
     }
+}
+
+enum MeteringAccumulator {
+    Unknown,
+    LowerBound(NormalizedUsage),
+    Complete {
+        usage: NormalizedUsage,
+        model: Option<String>,
+    },
+    /// Absorbing conflict state: once two observations disagree or violate monotonicity,
+    /// subsequent evidence can only widen the counter envelope and cannot re-upgrade to Complete.
+    ConflictedLowerBound(NormalizedUsage),
+}
+
+impl MeteringAccumulator {
+    fn observe(self, next: &AttemptMetering) -> Self {
+        match (self, next) {
+            (acc, AttemptMetering::Unknown) => acc,
+            (Self::Unknown, AttemptMetering::LowerBound { usage }) => {
+                Self::LowerBound(usage.clone())
+            }
+            (Self::Unknown, AttemptMetering::Complete { usage, model }) => Self::Complete {
+                usage: usage.clone(),
+                model: model.clone(),
+            },
+            (
+                Self::ConflictedLowerBound(prev),
+                AttemptMetering::LowerBound { usage } | AttemptMetering::Complete { usage, .. },
+            ) => Self::ConflictedLowerBound(prev.max_by_counter(usage)),
+            (Self::LowerBound(prev), AttemptMetering::LowerBound { usage }) => {
+                Self::LowerBound(prev.max_by_counter(usage))
+            }
+            (Self::LowerBound(lb), AttemptMetering::Complete { usage, model }) => {
+                if usage.dominates(&lb) {
+                    Self::Complete {
+                        usage: usage.clone(),
+                        model: model.clone(),
+                    }
+                } else {
+                    Self::ConflictedLowerBound(lb.max_by_counter(usage))
+                }
+            }
+            (Self::Complete { usage, model }, AttemptMetering::LowerBound { usage: lb }) => {
+                if usage.dominates(lb) {
+                    Self::Complete { usage, model }
+                } else {
+                    Self::ConflictedLowerBound(usage.max_by_counter(lb))
+                }
+            }
+            (
+                Self::Complete {
+                    usage: u1,
+                    model: m1,
+                },
+                AttemptMetering::Complete {
+                    usage: u2,
+                    model: m2,
+                },
+            ) => {
+                if u1 != *u2 {
+                    return Self::ConflictedLowerBound(u1.max_by_counter(u2));
+                }
+                match (m1, m2) {
+                    (None, None) => Self::Complete {
+                        usage: u1,
+                        model: None,
+                    },
+                    (Some(m), None) => Self::Complete {
+                        usage: u1,
+                        model: Some(m),
+                    },
+                    (None, Some(m)) => Self::Complete {
+                        usage: u1,
+                        model: Some(m.clone()),
+                    },
+                    (Some(a), Some(b)) if a == *b => Self::Complete {
+                        usage: u1,
+                        model: Some(a),
+                    },
+                    (Some(_), Some(_)) => Self::ConflictedLowerBound(u1),
+                }
+            }
+        }
+    }
+
+    fn finish(self) -> AttemptMetering {
+        match self {
+            Self::Unknown => AttemptMetering::Unknown,
+            Self::LowerBound(usage) | Self::ConflictedLowerBound(usage) => {
+                AttemptMetering::LowerBound { usage }
+            }
+            Self::Complete { usage, model } => AttemptMetering::Complete { usage, model },
+        }
+    }
+}
+
+/// Authoritative `v2` adjudication unit pairing an immutable `V2AttemptRecord`
+/// with its appended `PostHocRecovery` evidence log.
+#[derive(Debug, Clone, PartialEq)]
+pub struct V2CellAttempt {
+    record: V2AttemptRecord,
+    recoveries: Vec<PostHocRecovery>,
+}
+
+impl From<V2AttemptRecord> for V2CellAttempt {
+    fn from(record: V2AttemptRecord) -> Self {
+        Self::new(record)
+    }
+}
+
+impl V2CellAttempt {
+    pub fn new(record: V2AttemptRecord) -> Self {
+        Self {
+            record,
+            recoveries: Vec::new(),
+        }
+    }
+
+    pub fn with_recoveries(record: V2AttemptRecord, recoveries: Vec<PostHocRecovery>) -> Self {
+        Self { record, recoveries }
+    }
+
+    pub fn push_recovery(&mut self, recovery: PostHocRecovery) {
+        self.recoveries.push(recovery);
+    }
+
+    pub fn record(&self) -> &V2AttemptRecord {
+        &self.record
+    }
+
+    pub fn recoveries(&self) -> &[PostHocRecovery] {
+        &self.recoveries
+    }
+
+    pub fn sequence(&self) -> NonZeroU32 {
+        self.record.sequence()
+    }
+
+    pub fn effective_cleanup_state(&self) -> &CleanupState {
+        let mut cleanup = self.record.cleanup_state();
+        if matches!(cleanup, CleanupState::Confirmed {}) {
+            return cleanup;
+        }
+        for recovery in &self.recoveries {
+            if let Some(next) = recovery.cleanup_state() {
+                cleanup = next;
+                if matches!(cleanup, CleanupState::Confirmed {}) {
+                    return cleanup;
+                }
+            }
+        }
+        cleanup
+    }
+
+    pub fn effective_metering(&self) -> AttemptMetering {
+        let mut acc = MeteringAccumulator::Unknown.observe(self.record.metering());
+        for next in self.recoveries.iter().filter_map(PostHocRecovery::metering) {
+            acc = acc.observe(next);
+        }
+        acc.finish()
+    }
 
     pub fn disposition(&self) -> V2Disposition {
-        self.disposition_with_recovery(&[])
+        let effective_cleanup = self.effective_cleanup_state();
+        let effective_metering = self.effective_metering();
+        adjudicate(&self.record, effective_cleanup, &effective_metering)
     }
 
-    pub fn disposition_with_recovery(&self, recoveries: &[PostHocRecovery]) -> V2Disposition {
-        let (effective_cleanup, effective_metering) = self.effective_evidence(recoveries);
-        self.adjudicate(effective_cleanup, effective_metering)
-    }
-
-    /// Projects this `maka.eval.v2` record into a strict `maka.eval.v1` `V1CellAttempt`.
+    /// Projects this `maka.eval.v2` attempt plus its appended post-hoc recovery entries
+    /// into a strict `maka.eval.v1` `V1CellAttempt` without mutating the underlying record.
     pub fn project_v1(&self) -> V1CellAttempt {
-        self.project_v1_with_recovery(&[])
-    }
+        let effective_cleanup = self.effective_cleanup_state();
+        let effective_metering = self.effective_metering();
+        let disposition = adjudicate(&self.record, effective_cleanup, &effective_metering);
 
-    /// Projects this `maka.eval.v2` record plus appended post-hoc recovery entries
-    /// into a strict `maka.eval.v1` `V1CellAttempt` without mutating the record.
-    pub fn project_v1_with_recovery(&self, recoveries: &[PostHocRecovery]) -> V1CellAttempt {
-        let (effective_cleanup, effective_metering) = self.effective_evidence(recoveries);
-        let disposition = self.adjudicate(effective_cleanup, effective_metering);
-
-        let mut artifacts = self.0.artifacts.clone();
+        let mut artifacts = self.record.0.artifacts.clone();
         if matches!(
-            self.0.trial_outcome,
+            self.record.0.trial_outcome,
             TrialOutcome::Evaluated {
                 cancelled_after_verification: true,
                 ..
@@ -924,10 +1070,10 @@ impl V2AttemptRecord {
         ) {
             push_artifact_marker(&mut artifacts, "cancelled-after-verification");
         }
-        if !recoveries.is_empty() {
+        if !self.recoveries.is_empty() {
             push_artifact_marker(&mut artifacts, "post-hoc-evidence-recovery");
         }
-        append_egress_audit_artifact(&mut artifacts, &self.0.audit_state);
+        append_egress_audit_artifact(&mut artifacts, &self.record.0.audit_state);
 
         let (status, score, failure_reason) = match disposition {
             V2Disposition::Selected {
@@ -949,203 +1095,180 @@ impl V2AttemptRecord {
         };
 
         V1CellAttempt {
-            cell_id: self.0.cell_id.clone(),
-            sequence: self.0.sequence,
-            started_at: self.0.started_at,
-            completed_at: self.0.completed_at,
+            cell_id: self.record.0.cell_id.clone(),
+            sequence: self.record.0.sequence,
+            started_at: self.record.0.started_at,
+            completed_at: self.record.0.completed_at,
             result: EvalResult {
                 score,
                 usage: effective_metering.usage().cloned(),
                 cost_usd: effective_metering.cost_usd(),
-                duration_ms: self.0.durations.subject_ms,
+                duration_ms: self.record.0.durations.subject_ms,
                 status,
                 failure_reason,
                 artifacts,
             },
         }
     }
+}
 
-    fn effective_evidence<'a>(
-        &'a self,
-        recoveries: &'a [PostHocRecovery],
-    ) -> (&'a CleanupState, &'a AttemptMetering) {
-        let mut cleanup = &self.0.cleanup_state;
-        let mut metering = &self.0.metering;
-        for recovery in recoveries {
-            if let Some(next_cleanup) = recovery.cleanup_state()
-                && matches!(cleanup, CleanupState::Unconfirmed { .. })
-                && matches!(next_cleanup, CleanupState::Confirmed {})
-            {
-                cleanup = next_cleanup;
-            }
-            if let Some(next_metering) = recovery.metering()
-                && next_metering.rank() > metering.rank()
-            {
-                metering = next_metering;
-            }
-        }
-        (cleanup, metering)
+fn adjudicate(
+    record: &V2AttemptRecord,
+    effective_cleanup: &CleanupState,
+    effective_metering: &AttemptMetering,
+) -> V2Disposition {
+    // Gate 1: Epistemic certainty — unresolved cleanup, pre-verification cancellation,
+    // indeterminate execution, or unknown metering on an evaluated trial block retry.
+    if let CleanupState::Unconfirmed { reason } = effective_cleanup {
+        return V2Disposition::BlockedIndeterminate {
+            failure_reason: reason.clone(),
+        };
     }
-
-    fn adjudicate(
-        &self,
-        effective_cleanup: &CleanupState,
-        effective_metering: &AttemptMetering,
-    ) -> V2Disposition {
-        // Gate 1: Epistemic certainty — unresolved cleanup, pre-verification cancellation,
-        // indeterminate execution, or unknown metering on an evaluated trial block retry.
-        if let CleanupState::Unconfirmed { reason } = effective_cleanup {
+    match &record.0.trial_outcome {
+        TrialOutcome::CancelledBeforeVerification { reason } => {
+            return V2Disposition::BlockedIndeterminate {
+                failure_reason: reason
+                    .clone()
+                    .unwrap_or_else(|| "executor cancelled before verification completed".into()),
+            };
+        }
+        TrialOutcome::Indeterminate { reason } => {
             return V2Disposition::BlockedIndeterminate {
                 failure_reason: reason.clone(),
             };
         }
-        match &self.0.trial_outcome {
-            TrialOutcome::CancelledBeforeVerification { reason } => {
-                return V2Disposition::BlockedIndeterminate {
-                    failure_reason: reason.clone().unwrap_or_else(|| {
-                        "executor cancelled before verification completed".into()
-                    }),
-                };
-            }
-            TrialOutcome::Indeterminate { reason } => {
-                return V2Disposition::BlockedIndeterminate {
-                    failure_reason: reason.clone(),
-                };
-            }
-            TrialOutcome::Evaluated { .. }
-                if matches!(effective_metering, AttemptMetering::Unknown) =>
-            {
-                return V2Disposition::BlockedIndeterminate {
-                    failure_reason: "metering state unknown".into(),
-                };
-            }
-            TrialOutcome::InfraFailed { .. } | TrialOutcome::Evaluated { .. } => {}
-        }
-
-        // Gate 2: Infrastructure & evidence integrity — preserve root infra failures before
-        // checking downstream artifacts/audit, and reject LowerBound metering on Completed runs.
-        match &self.0.trial_outcome {
-            TrialOutcome::InfraFailed { reason } => {
-                return V2Disposition::RetryableInfra {
-                    failure_reason: reason.clone(),
-                };
-            }
-            TrialOutcome::Evaluated {
-                verifier:
-                    VerifierOutcome::InfraFailed { reason } | VerifierOutcome::MissingReward { reason },
-                ..
-            } => {
-                return V2Disposition::RetryableInfra {
-                    failure_reason: reason.clone(),
-                };
-            }
-            TrialOutcome::Evaluated { .. } => {}
-            TrialOutcome::Indeterminate { .. }
-            | TrialOutcome::CancelledBeforeVerification { .. } => {
-                unreachable!("handled in Gate 1");
-            }
-        }
-        if let CriticalArtifactsState::Missing { paths } = &self.0.critical_artifacts_state {
-            return V2Disposition::RetryableInfra {
-                failure_reason: format!("critical artifacts missing: {}", paths.join(", ")),
-            };
-        }
-        match &self.0.audit_state {
-            EgressAuditState::Missing {} => {
-                return V2Disposition::RetryableInfra {
-                    failure_reason: "egress audit log missing".into(),
-                };
-            }
-            EgressAuditState::Unreadable { reason } => {
-                return V2Disposition::RetryableInfra {
-                    failure_reason: reason.clone(),
-                };
-            }
-            EgressAuditState::NotRequired {} | EgressAuditState::Recorded { .. } => {}
-        }
-        if matches!(
-            self.0.trial_outcome,
-            TrialOutcome::Evaluated {
-                subject: SubjectOutcome::Completed {},
-                ..
-            }
-        ) && matches!(effective_metering, AttemptMetering::LowerBound { .. })
+        TrialOutcome::Evaluated { .. }
+            if matches!(effective_metering, AttemptMetering::Unknown) =>
         {
-            return V2Disposition::RetryableInfra {
-                failure_reason: "incomplete lower-bound metering on completed subject".into(),
+            return V2Disposition::BlockedIndeterminate {
+                failure_reason: "metering state unknown".into(),
             };
         }
+        TrialOutcome::InfraFailed { .. } | TrialOutcome::Evaluated { .. } => {}
+    }
 
-        // Gate 3: Capability settlement — permanent selection, never resampled.
-        let TrialOutcome::Evaluated {
-            subject, verifier, ..
-        } = &self.0.trial_outcome
-        else {
-            unreachable!("non-evaluated outcomes handled in Gates 1 and 2");
+    // Gate 2: Infrastructure & evidence integrity — preserve root infra failures before
+    // checking downstream artifacts/audit, and reject LowerBound metering on Completed runs.
+    match &record.0.trial_outcome {
+        TrialOutcome::InfraFailed { reason } => {
+            return V2Disposition::RetryableInfra {
+                failure_reason: reason.clone(),
+            };
+        }
+        TrialOutcome::Evaluated {
+            verifier:
+                VerifierOutcome::InfraFailed { reason } | VerifierOutcome::MissingReward { reason },
+            ..
+        } => {
+            return V2Disposition::RetryableInfra {
+                failure_reason: reason.clone(),
+            };
+        }
+        TrialOutcome::Evaluated { .. } => {}
+        TrialOutcome::Indeterminate { .. } | TrialOutcome::CancelledBeforeVerification { .. } => {
+            unreachable!("handled in Gate 1");
+        }
+    }
+    if let CriticalArtifactsState::Missing { paths } = &record.0.critical_artifacts_state {
+        return V2Disposition::RetryableInfra {
+            failure_reason: format!("critical artifacts missing: {}", paths.join(", ")),
         };
-        match (subject, verifier) {
-            (SubjectOutcome::Completed {}, VerifierOutcome::Verified { score }) => {
-                V2Disposition::Selected {
-                    status: SelectedStatus::Completed,
-                    score: Some(*score),
-                    failure_reason: None,
-                }
+    }
+    match &record.0.audit_state {
+        EgressAuditState::Missing {} => {
+            return V2Disposition::RetryableInfra {
+                failure_reason: "egress audit log missing".into(),
+            };
+        }
+        EgressAuditState::Unreadable { reason } => {
+            return V2Disposition::RetryableInfra {
+                failure_reason: reason.clone(),
+            };
+        }
+        EgressAuditState::NotRequired {} | EgressAuditState::Recorded { .. } => {}
+    }
+    if matches!(
+        record.0.trial_outcome,
+        TrialOutcome::Evaluated {
+            subject: SubjectOutcome::Completed {},
+            ..
+        }
+    ) && matches!(effective_metering, AttemptMetering::LowerBound { .. })
+    {
+        return V2Disposition::RetryableInfra {
+            failure_reason: "incomplete lower-bound metering on completed subject".into(),
+        };
+    }
+
+    // Gate 3: Capability settlement — permanent selection, never resampled.
+    let TrialOutcome::Evaluated {
+        subject, verifier, ..
+    } = &record.0.trial_outcome
+    else {
+        unreachable!("non-evaluated outcomes handled in Gates 1 and 2");
+    };
+    match (subject, verifier) {
+        (SubjectOutcome::Completed {}, VerifierOutcome::Verified { score }) => {
+            V2Disposition::Selected {
+                status: SelectedStatus::Completed,
+                score: Some(*score),
+                failure_reason: None,
             }
-            (SubjectOutcome::Completed {}, VerifierOutcome::SubjectFailed { score, reason }) => {
-                V2Disposition::Selected {
-                    status: SelectedStatus::SubjectFailed,
-                    score: *score,
-                    failure_reason: reason.clone(),
-                }
-            }
-            (SubjectOutcome::Timeout { reason }, VerifierOutcome::Verified { score }) => {
-                V2Disposition::Selected {
-                    status: SelectedStatus::SubjectFailed,
-                    score: Some(*score),
-                    failure_reason: Some(
-                        reason
-                            .clone()
-                            .unwrap_or_else(|| "subject exceeded the framework timeout".into()),
-                    ),
-                }
-            }
-            (
-                SubjectOutcome::Timeout { reason },
-                VerifierOutcome::SubjectFailed {
-                    score,
-                    reason: v_reason,
-                },
-            ) => V2Disposition::Selected {
+        }
+        (SubjectOutcome::Completed {}, VerifierOutcome::SubjectFailed { score, reason }) => {
+            V2Disposition::Selected {
                 status: SelectedStatus::SubjectFailed,
                 score: *score,
+                failure_reason: reason.clone(),
+            }
+        }
+        (SubjectOutcome::Timeout { reason }, VerifierOutcome::Verified { score }) => {
+            V2Disposition::Selected {
+                status: SelectedStatus::SubjectFailed,
+                score: Some(*score),
                 failure_reason: Some(
                     reason
                         .clone()
-                        .or_else(|| v_reason.clone())
                         .unwrap_or_else(|| "subject exceeded the framework timeout".into()),
                 ),
-            },
-            (SubjectOutcome::Failed { reason }, VerifierOutcome::Verified { score }) => {
-                V2Disposition::Selected {
-                    status: SelectedStatus::SubjectFailed,
-                    score: Some(*score),
-                    failure_reason: reason.clone(),
-                }
             }
-            (
-                SubjectOutcome::Failed { reason },
-                VerifierOutcome::SubjectFailed {
-                    score,
-                    reason: v_reason,
-                },
-            ) => V2Disposition::Selected {
+        }
+        (
+            SubjectOutcome::Timeout { reason },
+            VerifierOutcome::SubjectFailed {
+                score,
+                reason: v_reason,
+            },
+        ) => V2Disposition::Selected {
+            status: SelectedStatus::SubjectFailed,
+            score: *score,
+            failure_reason: Some(
+                reason
+                    .clone()
+                    .or_else(|| v_reason.clone())
+                    .unwrap_or_else(|| "subject exceeded the framework timeout".into()),
+            ),
+        },
+        (SubjectOutcome::Failed { reason }, VerifierOutcome::Verified { score }) => {
+            V2Disposition::Selected {
                 status: SelectedStatus::SubjectFailed,
-                score: *score,
-                failure_reason: reason.clone().or_else(|| v_reason.clone()),
-            },
-            (_, VerifierOutcome::MissingReward { .. } | VerifierOutcome::InfraFailed { .. }) => {
-                unreachable!("handled in Gate 2")
+                score: Some(*score),
+                failure_reason: reason.clone(),
             }
+        }
+        (
+            SubjectOutcome::Failed { reason },
+            VerifierOutcome::SubjectFailed {
+                score,
+                reason: v_reason,
+            },
+        ) => V2Disposition::Selected {
+            status: SelectedStatus::SubjectFailed,
+            score: *score,
+            failure_reason: reason.clone().or_else(|| v_reason.clone()),
+        },
+        (_, VerifierOutcome::MissingReward { .. } | VerifierOutcome::InfraFailed { .. }) => {
+            unreachable!("handled in Gate 2")
         }
     }
 }
@@ -1291,17 +1414,18 @@ pub enum V2Disposition {
 }
 
 /// Authoritative `v2` cell result selector: picks the earliest attempt by sequence
-/// whose `V2Disposition` is `Selected`.
-pub fn select_v2_cell_result(attempts: &[V2AttemptRecord]) -> Option<&V2AttemptRecord> {
+/// whose recovery-aware `V2Disposition` is `Selected`.
+pub fn select_v2_cell_result(attempts: &[V2CellAttempt]) -> Option<&V2CellAttempt> {
     attempts
         .iter()
         .filter(|a| matches!(a.disposition(), V2Disposition::Selected { .. }))
         .min_by_key(|a| a.sequence())
 }
 
-/// Authoritative `v2` retry admission check: returns `false` if any attempt is already
-/// `Selected` or `BlockedIndeterminate`, or if `attempts.len() > max_infra_retries as usize`.
-pub fn can_admit_v2_attempt(attempts: &[V2AttemptRecord], max_infra_retries: u32) -> bool {
+/// Authoritative `v2` retry admission check: returns `false` if any attempt's recovery-aware
+/// `V2Disposition` is already `Selected` or `BlockedIndeterminate`, or if
+/// `attempts.len() > max_infra_retries as usize`.
+pub fn can_admit_v2_attempt(attempts: &[V2CellAttempt], max_infra_retries: u32) -> bool {
     !attempts.iter().any(|a| {
         matches!(
             a.disposition(),

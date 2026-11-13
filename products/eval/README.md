@@ -25,7 +25,7 @@ Measurement and control plane contracts for multi-arm benchmark experiments (`ma
 
 ## Architecture
 
-- [`contract`](src/contract.rs): Strict `maka.eval.v1` spec validation and cell expansion, immutable `V2AttemptRecord` with 3-gate causal adjudication (`BlockedIndeterminate` -> `RetryableInfra` -> `Selected`), leaf `v2 -> v1` projection, and spec-only `SpecFingerprint`.
+- [`contract`](src/contract.rs): Strict `maka.eval.v1` spec validation and cell expansion, immutable `V2AttemptRecord` paired with `PostHocRecovery` logs in `V2CellAttempt` for 3-gate causal adjudication (`BlockedIndeterminate` -> `RetryableInfra` -> `Selected`), leaf `v2 -> v1` projection, and spec-only `SpecFingerprint`.
 - [`measurement`](src/measurement.rs): Exact 6-counter token accounting (`inputTokens` normalized inclusive of cache reads/writes; `totalTokens` preserved without summation) and `PricingRates` (`DEEPSEEK_V4_FLASH_COST`) as the sole USD pricing authority.
 
 ## Adjudicated `v2 -> v1` Rules
@@ -36,6 +36,6 @@ Measurement and control plane contracts for multi-arm benchmark experiments (`ma
 | Audit truncated / policy error | `Selected(Completed)` | `completed` with `egress-audit` metadata (`bytes`, `sha256`, `malformedLineCount`) |
 | Missing audit / critical artifacts | `RetryableInfra` (unless Gate 1 indeterminate) | `infra_failed`, `score: null` (stricter than legacy TS when score existed) |
 | Late cancellation | Before verify: `BlockedIndeterminate`; After: `Selected` | `indeterminate` (`score: null`) vs preserved score + marker |
-| Post-hoc evidence recovery | `PostHocRecovery` appended monotonically | Derived view updates status/usage/cost without mutating the base attempt |
+| Post-hoc evidence recovery | `V2CellAttempt` folds `PostHocRecovery` monotonically | Conflicting or regressing claims downgrade to `LowerBound`; recovered disposition drives selection and retry admission without mutating the base attempt |
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

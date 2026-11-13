@@ -111,6 +111,28 @@ impl NormalizedUsage {
         self.reasoning_tokens = self.reasoning_tokens.saturating_add(other.reasoning_tokens);
         self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
     }
+
+    /// Returns `true` iff every counter in `self` is greater than or equal to `other`.
+    pub fn dominates(&self, other: &Self) -> bool {
+        self.input_tokens >= other.input_tokens
+            && self.output_tokens >= other.output_tokens
+            && self.cache_read_tokens >= other.cache_read_tokens
+            && self.cache_write_tokens >= other.cache_write_tokens
+            && self.reasoning_tokens >= other.reasoning_tokens
+            && self.total_tokens >= other.total_tokens
+    }
+
+    /// Combines two usage observations counter-by-counter using each field's maximum.
+    pub fn max_by_counter(&self, other: &Self) -> Self {
+        Self {
+            input_tokens: self.input_tokens.max(other.input_tokens),
+            output_tokens: self.output_tokens.max(other.output_tokens),
+            cache_read_tokens: self.cache_read_tokens.max(other.cache_read_tokens),
+            cache_write_tokens: self.cache_write_tokens.max(other.cache_write_tokens),
+            reasoning_tokens: self.reasoning_tokens.max(other.reasoning_tokens),
+            total_tokens: self.total_tokens.max(other.total_tokens),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

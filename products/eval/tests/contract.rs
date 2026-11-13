@@ -21,8 +21,8 @@ use maka_eval::contract::{
     AttemptMetering, CleanupState, CriticalArtifactsState, EGRESS_AUDIT_ARTIFACT_PATH,
     EgressAuditState, EvalResultStatus, ExperimentSpec, PhaseDurationsMs, PostHocRecovery,
     SelectedStatus, SpecFingerprint, SubjectOutcome, TrialOutcome, V1CellAttempt, V2AttemptParts,
-    V2AttemptRecord, V2Disposition, VerifierOutcome, can_admit_v2_attempt, expand_experiment,
-    select_cell_result, select_v2_cell_result,
+    V2AttemptRecord, V2CellAttempt, V2Disposition, VerifierOutcome, can_admit_v2_attempt,
+    expand_experiment, select_cell_result, select_v2_cell_result,
 };
 use maka_eval::measurement::{NormalizedUsage, PricingRates, costs_match_within_tolerance};
 use serde_json::{Map, Value, json};
@@ -417,6 +417,21 @@ fn strict_boundary_decoding_rejects_unknown_fields_and_illegal_states() {
     assert!(serde_json::from_value::<V1CellAttempt>(saturated_ts).is_err());
 }
 
+fn cell_attempt(parts: V2AttemptParts) -> V2CellAttempt {
+    V2CellAttempt::new(V2AttemptRecord::try_new(parts).unwrap())
+}
+
+fn usage_with_input(input_tokens: u64) -> NormalizedUsage {
+    NormalizedUsage {
+        input_tokens,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: input_tokens,
+    }
+}
+
 #[test]
 fn three_gate_v2_funnel_selection_and_v1_projections() {
     // Gate 1 dominance: Indeterminate overrides missing critical artifacts and missing audit.
@@ -429,18 +444,18 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
         paths: vec!["transcript.json".into()],
     };
     indet_parts.audit_state = EgressAuditState::Missing {};
-    let indet_rec = V2AttemptRecord::try_new(indet_parts).unwrap();
+    let indet_attempt = cell_attempt(indet_parts);
     assert_eq!(
-        indet_rec.disposition(),
+        indet_attempt.disposition(),
         V2Disposition::BlockedIndeterminate {
             failure_reason: "relay disconnected".into(),
         }
     );
     assert_eq!(
-        indet_rec.project_v1().result.status,
+        indet_attempt.project_v1().result.status,
         EvalResultStatus::Indeterminate
     );
-    assert!(!can_admit_v2_attempt(&[indet_rec], 3));
+    assert!(!can_admit_v2_attempt(&[indet_attempt], 3));
 
     // Gate 2 root-cause preservation: pre-verification InfraFailed keeps its own reason
     // even with Unknown metering and missing artifacts, and admits retries within budget.
@@ -452,22 +467,28 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
     infra_parts.critical_artifacts_state = CriticalArtifactsState::Missing {
         paths: vec!["transcript.json".into()],
     };
-    let infra_rec = V2AttemptRecord::try_new(infra_parts).unwrap();
+    let infra_attempt = cell_attempt(infra_parts);
     assert_eq!(
-        infra_rec.disposition(),
+        infra_attempt.disposition(),
         V2Disposition::RetryableInfra {
             failure_reason: "docker pull failed".into(),
         }
     );
-    assert!(!can_admit_v2_attempt(std::slice::from_ref(&infra_rec), 0));
-    assert!(can_admit_v2_attempt(std::slice::from_ref(&infra_rec), 1));
+    assert!(!can_admit_v2_attempt(
+        std::slice::from_ref(&infra_attempt),
+        0
+    ));
+    assert!(can_admit_v2_attempt(
+        std::slice::from_ref(&infra_attempt),
+        1
+    ));
 
     // Metering gates on Completed: Unknown -> BlockedIndeterminate; LowerBound -> RetryableInfra.
     let mut completed_unknown = base_v2_parts();
     completed_unknown.metering = AttemptMetering::Unknown;
-    let completed_unknown_rec = V2AttemptRecord::try_new(completed_unknown).unwrap();
+    let completed_unknown_attempt = cell_attempt(completed_unknown);
     assert!(matches!(
-        completed_unknown_rec.disposition(),
+        completed_unknown_attempt.disposition(),
         V2Disposition::BlockedIndeterminate { .. }
     ));
 
@@ -475,9 +496,9 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
     completed_lb.metering = AttemptMetering::LowerBound {
         usage: sample_usage(),
     };
-    let completed_lb_rec = V2AttemptRecord::try_new(completed_lb).unwrap();
+    let completed_lb_attempt = cell_attempt(completed_lb);
     assert!(matches!(
-        completed_lb_rec.disposition(),
+        completed_lb_attempt.disposition(),
         V2Disposition::RetryableInfra { .. }
     ));
 
@@ -494,9 +515,9 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
     timeout_lb_parts.metering = AttemptMetering::LowerBound {
         usage: sample_usage(),
     };
-    let timeout_lb_rec = V2AttemptRecord::try_new(timeout_lb_parts.clone()).unwrap();
+    let timeout_lb_attempt = cell_attempt(timeout_lb_parts.clone());
     assert_eq!(
-        timeout_lb_rec.disposition(),
+        timeout_lb_attempt.disposition(),
         V2Disposition::Selected {
             status: SelectedStatus::SubjectFailed,
             score: Some(0.75),
@@ -504,10 +525,10 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
         }
     );
     assert!(!can_admit_v2_attempt(
-        std::slice::from_ref(&timeout_lb_rec),
+        std::slice::from_ref(&timeout_lb_attempt),
         3
     ));
-    let timeout_lb_v1 = timeout_lb_rec.project_v1();
+    let timeout_lb_v1 = timeout_lb_attempt.project_v1();
     assert_eq!(timeout_lb_v1.result.status, EvalResultStatus::SubjectFailed);
     assert_eq!(timeout_lb_v1.result.score, Some(0.75));
     assert_eq!(timeout_lb_v1.result.usage, Some(sample_usage()));
@@ -517,9 +538,7 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
         usage: sample_usage(),
         model: Some("deepseek-v4-flash".into()),
     };
-    let timeout_complete_v1 = V2AttemptRecord::try_new(timeout_lb_parts)
-        .unwrap()
-        .project_v1();
+    let timeout_complete_v1 = cell_attempt(timeout_lb_parts).project_v1();
     assert!(costs_match_within_tolerance(
         timeout_complete_v1.result.cost_usd,
         Some(0.0000352)
@@ -535,9 +554,7 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
         policy_error_count: 2,
         malformed_line_count: 1,
     };
-    let audit_v1 = V2AttemptRecord::try_new(audit_parts.clone())
-        .unwrap()
-        .project_v1();
+    let audit_v1 = cell_attempt(audit_parts.clone()).project_v1();
     assert_eq!(audit_v1.result.status, EvalResultStatus::Completed);
     assert_eq!(audit_v1.result.score, Some(1.0));
     let audit_art = audit_v1
@@ -569,7 +586,7 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
     );
 
     audit_parts.audit_state = EgressAuditState::Missing {};
-    let missing_audit_v1 = V2AttemptRecord::try_new(audit_parts).unwrap().project_v1();
+    let missing_audit_v1 = cell_attempt(audit_parts).project_v1();
     assert_eq!(
         missing_audit_v1.result.status,
         EvalResultStatus::InfraFailed
@@ -585,9 +602,7 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
     missing_art_parts.critical_artifacts_state = CriticalArtifactsState::Missing {
         paths: vec!["transcript.json".into()],
     };
-    let missing_art_v1 = V2AttemptRecord::try_new(missing_art_parts)
-        .unwrap()
-        .project_v1();
+    let missing_art_v1 = cell_attempt(missing_art_parts).project_v1();
     assert_eq!(missing_art_v1.result.status, EvalResultStatus::InfraFailed);
     assert_eq!(missing_art_v1.result.score, None);
 
@@ -595,9 +610,7 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
     // Evaluated { cancelled_after_verification: true } -> Selected(Completed) + marker.
     let mut cancel_before_parts = base_v2_parts();
     cancel_before_parts.trial_outcome = TrialOutcome::CancelledBeforeVerification { reason: None };
-    let cancel_before_v1 = V2AttemptRecord::try_new(cancel_before_parts)
-        .unwrap()
-        .project_v1();
+    let cancel_before_v1 = cell_attempt(cancel_before_parts).project_v1();
     assert_eq!(
         cancel_before_v1.result.status,
         EvalResultStatus::Indeterminate
@@ -610,9 +623,7 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
         verifier: VerifierOutcome::Verified { score: 1.0 },
         cancelled_after_verification: true,
     };
-    let cancel_after_v1 = V2AttemptRecord::try_new(cancel_after_parts)
-        .unwrap()
-        .project_v1();
+    let cancel_after_v1 = cell_attempt(cancel_after_parts).project_v1();
     assert_eq!(cancel_after_v1.result.status, EvalResultStatus::Completed);
     assert_eq!(cancel_after_v1.result.score, Some(1.0));
     assert!(
@@ -623,7 +634,7 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
             .any(|a| a.get("kind").and_then(Value::as_str) == Some("cancelled-after-verification"))
     );
 
-    // Scenario 5: PostHocRecovery upgrades immutable record monotonically via projection;
+    // Scenario 5: PostHocRecovery upgrades immutable record monotonically via V2CellAttempt;
     // MissingReward -> RetryableInfra (score: None); genuine 0.0 is terminal and earliest-selected.
     let mut unrecovered_parts = base_v2_parts();
     unrecovered_parts.sequence = nz(2);
@@ -631,9 +642,9 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
         reason: "cleanup pending".into(),
     };
     unrecovered_parts.metering = AttemptMetering::Unknown;
-    let unrecovered_rec = V2AttemptRecord::try_new(unrecovered_parts).unwrap();
+    let mut recovered_attempt = cell_attempt(unrecovered_parts);
     assert!(matches!(
-        unrecovered_rec.disposition(),
+        recovered_attempt.disposition(),
         V2Disposition::BlockedIndeterminate { .. }
     ));
 
@@ -646,16 +657,16 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
         Some(CleanupState::Confirmed {}),
     )
     .unwrap();
-    let recovered_disp = unrecovered_rec.disposition_with_recovery(std::slice::from_ref(&recovery));
+    recovered_attempt.push_recovery(recovery);
     assert_eq!(
-        recovered_disp,
+        recovered_attempt.disposition(),
         V2Disposition::Selected {
             status: SelectedStatus::Completed,
             score: Some(1.0),
             failure_reason: None,
         }
     );
-    let recovered_v1 = unrecovered_rec.project_v1_with_recovery(&[recovery]);
+    let recovered_v1 = recovered_attempt.project_v1();
     assert_eq!(recovered_v1.sequence, nz(2));
     assert_eq!(recovered_v1.result.status, EvalResultStatus::Completed);
     assert_eq!(recovered_v1.result.usage, Some(sample_usage()));
@@ -672,7 +683,7 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
     );
     // Original record stays immutable.
     assert!(matches!(
-        unrecovered_rec.cleanup_state(),
+        recovered_attempt.record().cleanup_state(),
         CleanupState::Unconfirmed { .. }
     ));
 
@@ -684,9 +695,7 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
         },
         cancelled_after_verification: false,
     };
-    let missing_reward_v1 = V2AttemptRecord::try_new(missing_reward_parts)
-        .unwrap()
-        .project_v1();
+    let missing_reward_v1 = cell_attempt(missing_reward_parts).project_v1();
     assert_eq!(
         missing_reward_v1.result.status,
         EvalResultStatus::InfraFailed
@@ -702,13 +711,13 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
         verifier: VerifierOutcome::Verified { score: 0.0 },
         cancelled_after_verification: false,
     };
-    let zero_seq2 = V2AttemptRecord::try_new(zero_seq2_parts).unwrap();
+    let zero_seq2 = cell_attempt(zero_seq2_parts);
 
     let mut win_seq3_parts = base_v2_parts();
     win_seq3_parts.sequence = nz(3);
-    let win_seq3 = V2AttemptRecord::try_new(win_seq3_parts).unwrap();
+    let win_seq3 = cell_attempt(win_seq3_parts);
 
-    let v2_attempts = [win_seq3.clone(), infra_rec.clone(), zero_seq2.clone()];
+    let v2_attempts = [win_seq3.clone(), infra_attempt.clone(), zero_seq2.clone()];
     let selected_v2 = select_v2_cell_result(&v2_attempts).unwrap();
     assert_eq!(selected_v2.sequence(), nz(2));
     assert_eq!(
@@ -722,10 +731,368 @@ fn three_gate_v2_funnel_selection_and_v1_projections() {
 
     let v1_attempts = [
         win_seq3.project_v1(),
-        infra_rec.project_v1(),
+        infra_attempt.project_v1(),
         zero_seq2.project_v1(),
     ];
     let selected_v1 = select_cell_result(&v1_attempts).unwrap();
     assert_eq!(selected_v1.sequence, nz(2));
     assert_eq!(selected_v1.result.score, Some(0.0));
+}
+
+#[test]
+fn post_hoc_recovery_drives_monotonic_metering_selection_and_retry_admission() {
+    // 1. Same-rank LowerBound updates accumulate monotonically per counter without summing total_tokens.
+    let mut lb_parts = base_v2_parts();
+    lb_parts.trial_outcome = TrialOutcome::Evaluated {
+        subject: SubjectOutcome::Timeout { reason: None },
+        verifier: VerifierOutcome::Verified { score: 0.0 },
+        cancelled_after_verification: false,
+    };
+    lb_parts.metering = AttemptMetering::LowerBound {
+        usage: usage_with_input(100),
+    };
+    let mut lb_attempt = cell_attempt(lb_parts);
+    lb_attempt.push_recovery(
+        PostHocRecovery::try_new(
+            30,
+            Some(AttemptMetering::LowerBound {
+                usage: usage_with_input(200),
+            }),
+            None,
+        )
+        .unwrap(),
+    );
+    lb_attempt.push_recovery(
+        PostHocRecovery::try_new(
+            40,
+            Some(AttemptMetering::LowerBound {
+                usage: NormalizedUsage {
+                    input_tokens: 150,
+                    output_tokens: 30,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    reasoning_tokens: 10,
+                    total_tokens: 180,
+                },
+            }),
+            None,
+        )
+        .unwrap(),
+    );
+    let merged_lb = lb_attempt.effective_metering();
+    assert_eq!(
+        merged_lb,
+        AttemptMetering::LowerBound {
+            usage: NormalizedUsage {
+                input_tokens: 200,
+                output_tokens: 30,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 10,
+                total_tokens: 200,
+            },
+        }
+    );
+    let lb_v1 = lb_attempt.project_v1();
+    assert_eq!(lb_v1.result.usage, merged_lb.usage().cloned());
+    assert_eq!(lb_v1.result.cost_usd, None);
+
+    // 2. Complete(usage, None) + Complete(usage, Some(model)) enables pricing and preserves it across subsequent Complete(usage, None).
+    let mut model_parts = base_v2_parts();
+    model_parts.metering = AttemptMetering::Complete {
+        usage: sample_usage(),
+        model: None,
+    };
+    let mut model_attempt = cell_attempt(model_parts);
+    assert_eq!(model_attempt.project_v1().result.cost_usd, None);
+    model_attempt.push_recovery(
+        PostHocRecovery::try_new(
+            30,
+            Some(AttemptMetering::Complete {
+                usage: sample_usage(),
+                model: Some("deepseek-v4-flash".into()),
+            }),
+            None,
+        )
+        .unwrap(),
+    );
+    model_attempt.push_recovery(
+        PostHocRecovery::try_new(
+            40,
+            Some(AttemptMetering::Complete {
+                usage: sample_usage(),
+                model: None,
+            }),
+            None,
+        )
+        .unwrap(),
+    );
+    assert!(costs_match_within_tolerance(
+        model_attempt.effective_metering().cost_usd(),
+        Some(0.0000352)
+    ));
+    assert!(costs_match_within_tolerance(
+        model_attempt.project_v1().result.cost_usd,
+        Some(0.0000352)
+    ));
+
+    // 3. LowerBound(100) followed by Complete(50) contradicts the established lower bound:
+    // stays untrusted LowerBound(>=100), cost_usd stays None, and conflict is absorbing.
+    let mut regress_parts = base_v2_parts();
+    regress_parts.metering = AttemptMetering::LowerBound {
+        usage: usage_with_input(100),
+    };
+    let mut regress_attempt = cell_attempt(regress_parts);
+    regress_attempt.push_recovery(
+        PostHocRecovery::try_new(
+            30,
+            Some(AttemptMetering::Complete {
+                usage: usage_with_input(50),
+                model: Some("deepseek-v4-flash".into()),
+            }),
+            None,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        regress_attempt.effective_metering(),
+        AttemptMetering::LowerBound {
+            usage: usage_with_input(100),
+        }
+    );
+    assert!(matches!(
+        regress_attempt.disposition(),
+        V2Disposition::RetryableInfra { .. }
+    ));
+    let regress_v1 = regress_attempt.project_v1();
+    assert_eq!(regress_v1.result.status, EvalResultStatus::InfraFailed);
+    assert_eq!(regress_v1.result.score, None);
+    assert_eq!(regress_v1.result.usage.unwrap().input_tokens, 100);
+    assert_eq!(regress_v1.result.cost_usd, None);
+
+    // Absorbing conflict: another Complete(200) later cannot restore a trusted Complete bill.
+    regress_attempt.push_recovery(
+        PostHocRecovery::try_new(
+            40,
+            Some(AttemptMetering::Complete {
+                usage: usage_with_input(200),
+                model: Some("deepseek-v4-flash".into()),
+            }),
+            None,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        regress_attempt.effective_metering(),
+        AttemptMetering::LowerBound {
+            usage: usage_with_input(200),
+        }
+    );
+    assert_eq!(regress_attempt.project_v1().result.cost_usd, None);
+
+    // 4. Other conflict modes also downgrade to LowerBound without pricing:
+    //    (a) single-counter regression even when input_tokens grows,
+    //    (b) conflicting Complete usage totals,
+    //    (c) conflicting Complete models,
+    //    (d) Complete exceeded by a subsequent LowerBound.
+    let mut partial_regress_parts = base_v2_parts();
+    partial_regress_parts.metering = AttemptMetering::LowerBound {
+        usage: NormalizedUsage {
+            input_tokens: 100,
+            output_tokens: 0,
+            cache_read_tokens: 40,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            total_tokens: 100,
+        },
+    };
+    let mut partial_regress = cell_attempt(partial_regress_parts);
+    partial_regress.push_recovery(
+        PostHocRecovery::try_new(
+            30,
+            Some(AttemptMetering::Complete {
+                usage: NormalizedUsage {
+                    input_tokens: 120,
+                    output_tokens: 0,
+                    cache_read_tokens: 30,
+                    cache_write_tokens: 0,
+                    reasoning_tokens: 0,
+                    total_tokens: 120,
+                },
+                model: Some("deepseek-v4-flash".into()),
+            }),
+            None,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        partial_regress.effective_metering(),
+        AttemptMetering::LowerBound {
+            usage: NormalizedUsage {
+                input_tokens: 120,
+                output_tokens: 0,
+                cache_read_tokens: 40,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+                total_tokens: 120,
+            },
+        }
+    );
+    assert_eq!(partial_regress.effective_metering().cost_usd(), None);
+
+    let mut conflict_complete = cell_attempt(base_v2_parts());
+    conflict_complete.push_recovery(
+        PostHocRecovery::try_new(
+            30,
+            Some(AttemptMetering::Complete {
+                usage: usage_with_input(200),
+                model: Some("deepseek-v4-flash".into()),
+            }),
+            None,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        conflict_complete.effective_metering(),
+        AttemptMetering::LowerBound {
+            usage: NormalizedUsage {
+                input_tokens: 200,
+                output_tokens: 20,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+                total_tokens: 200,
+            },
+        }
+    );
+    assert_eq!(conflict_complete.effective_metering().cost_usd(), None);
+
+    let mut conflict_model = cell_attempt(base_v2_parts());
+    conflict_model.push_recovery(
+        PostHocRecovery::try_new(
+            30,
+            Some(AttemptMetering::Complete {
+                usage: sample_usage(),
+                model: Some("other-model".into()),
+            }),
+            None,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        conflict_model.effective_metering(),
+        AttemptMetering::LowerBound {
+            usage: sample_usage(),
+        }
+    );
+    assert_eq!(conflict_model.effective_metering().cost_usd(), None);
+
+    let mut complete_exceeded = cell_attempt(base_v2_parts());
+    complete_exceeded.push_recovery(
+        PostHocRecovery::try_new(
+            30,
+            Some(AttemptMetering::LowerBound {
+                usage: usage_with_input(150),
+            }),
+            None,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        complete_exceeded.effective_metering(),
+        AttemptMetering::LowerBound {
+            usage: NormalizedUsage {
+                input_tokens: 150,
+                output_tokens: 20,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+                total_tokens: 150,
+            },
+        }
+    );
+    assert_eq!(complete_exceeded.effective_metering().cost_usd(), None);
+
+    // 5. Post-hoc cleanup confirmation unblocks authoritative retry admission.
+    let mut unconfirmed_infra_parts = base_v2_parts();
+    unconfirmed_infra_parts.trial_outcome = TrialOutcome::InfraFailed {
+        reason: "provider disconnected".into(),
+    };
+    unconfirmed_infra_parts.cleanup_state = CleanupState::Unconfirmed {
+        reason: "cleanup pending".into(),
+    };
+    let mut infra_retry_attempt = cell_attempt(unconfirmed_infra_parts);
+    assert!(!can_admit_v2_attempt(
+        std::slice::from_ref(&infra_retry_attempt),
+        1
+    ));
+
+    infra_retry_attempt.push_recovery(
+        PostHocRecovery::try_new(30, None, Some(CleanupState::Confirmed {})).unwrap(),
+    );
+    assert!(matches!(
+        infra_retry_attempt.disposition(),
+        V2Disposition::RetryableInfra { .. }
+    ));
+    assert!(!can_admit_v2_attempt(
+        std::slice::from_ref(&infra_retry_attempt),
+        0
+    ));
+    assert!(can_admit_v2_attempt(
+        std::slice::from_ref(&infra_retry_attempt),
+        1
+    ));
+    assert!(matches!(
+        infra_retry_attempt.record().cleanup_state(),
+        CleanupState::Unconfirmed { .. }
+    ));
+
+    // 6. Post-hoc recovery of blocked earliest attempt feeds authoritative v2 selection & stops further retries.
+    let mut blocked_seq1_parts = base_v2_parts();
+    blocked_seq1_parts.sequence = nz(1);
+    blocked_seq1_parts.trial_outcome = TrialOutcome::Evaluated {
+        subject: SubjectOutcome::Completed {},
+        verifier: VerifierOutcome::Verified { score: 0.0 },
+        cancelled_after_verification: false,
+    };
+    blocked_seq1_parts.metering = AttemptMetering::Unknown;
+    blocked_seq1_parts.cleanup_state = CleanupState::Unconfirmed {
+        reason: "cleanup pending".into(),
+    };
+    let mut recovered_seq1 = cell_attempt(blocked_seq1_parts);
+
+    let mut fallback_seq2_parts = base_v2_parts();
+    fallback_seq2_parts.sequence = nz(2);
+    let fallback_seq2 = cell_attempt(fallback_seq2_parts);
+
+    assert!(select_v2_cell_result(std::slice::from_ref(&recovered_seq1)).is_none());
+    assert!(!can_admit_v2_attempt(
+        std::slice::from_ref(&recovered_seq1),
+        3
+    ));
+
+    recovered_seq1.push_recovery(
+        PostHocRecovery::try_new(
+            30,
+            Some(AttemptMetering::Complete {
+                usage: sample_usage(),
+                model: Some("deepseek-v4-flash".into()),
+            }),
+            Some(CleanupState::Confirmed {}),
+        )
+        .unwrap(),
+    );
+    let attempts = [fallback_seq2, recovered_seq1];
+    let selected = select_v2_cell_result(&attempts).unwrap();
+    assert_eq!(selected.sequence(), nz(1));
+    assert_eq!(
+        selected.disposition(),
+        V2Disposition::Selected {
+            status: SelectedStatus::Completed,
+            score: Some(0.0),
+            failure_reason: None,
+        }
+    );
+    assert!(selected.effective_metering().cost_usd().is_some());
+    assert!(!can_admit_v2_attempt(&attempts, 3));
 }
