@@ -22,6 +22,9 @@
 #[path = "support/host.rs"]
 mod host;
 
+#[path = "support/browser_stack.rs"]
+mod browser_stack;
+
 use futures_util::FutureExt;
 use host::{Host, Result, Sandbox};
 use http_body_util::{BodyExt, Full};

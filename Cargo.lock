@@ -6648,6 +6648,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "image",
  "jiff",
  "libc",
  "log",
