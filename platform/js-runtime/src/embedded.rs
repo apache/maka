@@ -17,7 +17,6 @@
  * under the License.
  */
 
-use super::{Result, failed};
 use deno_core::{Extension, ExtensionFileSource};
 use std::collections::BTreeSet;
 
@@ -31,12 +30,12 @@ struct EmbeddedExtensionSources {
 
 include!(concat!(env!("OUT_DIR"), "/plugin_extension_sources.rs"));
 
-pub(super) fn embed(extensions: &mut [Extension]) -> Result<()> {
+pub(crate) fn embed(extensions: &mut [Extension]) -> Result<(), String> {
     for extension in extensions {
         let embedded = EXTENSIONS
             .iter()
             .find(|embedded| embedded.name == extension.name)
-            .ok_or_else(|| failed(format!("missing embedded extension: {}", extension.name)))?;
+            .ok_or_else(|| format!("missing embedded extension: {}", extension.name))?;
         let mut specifiers = BTreeSet::new();
         for (files, embedded_files) in [
             (&mut extension.js_files, embedded.js_files),
@@ -51,20 +50,20 @@ pub(super) fn embed(extensions: &mut [Extension]) -> Result<()> {
             ),
         ] {
             if files.len() != embedded_files.len() {
-                return Err(failed(format!(
+                return Err(format!(
                     "embedded source count changed for extension {}",
                     extension.name
-                )));
+                ));
             }
             for (source, embedded_source) in files.to_mut().iter_mut().zip(embedded_files) {
                 if source.specifier != embedded_source.specifier
                     || !specifiers.insert(source.specifier)
                     || !embedded_source.is_runtime_loadable()
                 {
-                    return Err(failed(format!(
+                    return Err(format!(
                         "missing, reordered or duplicate embedded source: {}",
                         source.specifier
-                    )));
+                    ));
                 }
                 source.code = embedded_source.code.clone();
             }

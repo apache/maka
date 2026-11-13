@@ -211,6 +211,29 @@ impl Model {
                 "application/json",
             ));
         }
+        if request.uri().path() == "/v1/condition.ts" {
+            return Ok(response(
+                "export const ready = true;".into(),
+                "application/typescript",
+            ));
+        }
+        if request.uri().path() == "/v1/condition" {
+            let is_post = request.method() == hyper::Method::POST;
+            let has_header = request
+                .headers()
+                .get("x-condition")
+                .is_some_and(|value| value == "ready");
+            let body = request
+                .into_body()
+                .collect()
+                .await
+                .map_err(|error| error.to_string())?
+                .to_bytes();
+            return Ok(response(
+                (is_post && has_header && body.as_ref() == b"check").to_string(),
+                "application/json",
+            ));
+        }
         if request.method() != hyper::Method::POST
             || !request.uri().path().ends_with("/chat/completions")
         {
@@ -780,8 +803,10 @@ async fn body(
         "boundaryRevision":session_dto["boundaryRevision"],"binding":session_dto["binding"]});
     let approval = json!({"target":target,"model":{"connectionId":connection,"modelId":"gpt-4.1"},"thinkingLevel":null});
     if matches!(producer, Producer::Automation) {
-        return automation_delivery(client, &parent, target, connection, sandbox, model, events)
-            .await;
+        return automation_delivery(
+            client, &parent, target, connection, sandbox, model, events, base,
+        )
+        .await;
     }
     if matches!(producer, Producer::GoalBudget) {
         let created = mutate(
@@ -1412,6 +1437,10 @@ async fn scheduler_delivers_script_as_steering_and_timer_as_followup() {
     acceptance(Producer::Automation, false).await;
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The fixture keeps its independent resources borrowed"
+)]
 async fn automation_delivery(
     client: &Client,
     session: &str,
@@ -1420,6 +1449,7 @@ async fn automation_delivery(
     sandbox: &Sandbox,
     model: &Model,
     events: &mut mpsc::UnboundedReceiver<&'static str>,
+    base: &str,
 ) -> Result<()> {
     fn now_ms() -> u64 {
         std::time::SystemTime::now()
@@ -1431,6 +1461,13 @@ async fn automation_delivery(
     tokio::fs::write(&condition, "waiting")
         .await
         .map_err(|e| e.to_string())?;
+    tokio::fs::write(
+        sandbox.workspace.join("readiness.ts"),
+        r#"import { readFile } from "node:fs/promises";
+           export async function ready(): Promise<boolean> { return (await readFile("status.txt", "utf8")).trim() === "ready"; }"#,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let sent = mutate(
         client,
         "agent",
@@ -1489,12 +1526,21 @@ async fn automation_delivery(
         Some(expiry_start + 2_500),
     )
     .await?;
+    let blocked = create(
+        "AUTOMATION-BLOCKED-IMPORT",
+        "steering",
+        json!({"kind":"script","everySeconds":1,"startAt":now_ms()+100,
+            "source":format!("import {{ ready }} from \"{base}/condition.ts\"; console.log(ready);")
+        }),
+        None,
+    )
+    .await?;
     let steering = create(
         "AUTOMATION-STEERING",
         "steering",
         json!({"kind":"script","everySeconds":1,
             "startAt":now_ms()+100,
-            "source":"return (await tools.Read({ path: 'status.txt' })).content.trim() === 'ready';"
+            "source":"import { ready } from './readiness.ts'; console.log(await ready());"
         }),
         None,
     )
@@ -1515,12 +1561,16 @@ async fn automation_delivery(
     };
     phase("follow-up waits and false script does not fire", async {
         loop {
+            let denied = schedule(client, &blocked).await?;
+            assert_eq!(denied["task"]["fireCount"], 0, "{denied}");
             let queued = schedule(client, &followup).await?;
             let checked = schedule(client, &steering).await?;
             assert!(checked["task"]["lastError"].is_null(), "{checked}");
             if queued["pendingFire"].is_string()
                 && checked["task"]["nextFireAt"].as_i64().unwrap() > next_check
+                && let Some(error) = denied["task"]["lastError"].as_str()
             {
+                assert!(error.contains("/condition.ts"), "{error}");
                 assert_eq!(queued["task"]["fireCount"], 0);
                 assert_eq!(checked["task"]["fireCount"], 0);
                 assert_eq!(model.producer_requests.load(Ordering::SeqCst), 1);
@@ -1595,5 +1645,40 @@ async fn automation_delivery(
         hex::encode(Sha256::digest(latest["id"].as_str().unwrap().as_bytes()))
     );
     work(client, session, &message, Some("completed"), Some(model)).await?;
+    let observed = query(client, "observe", json!({"sessionId":session})).await?;
+    let changed = mutate(
+        client,
+        "agent",
+        "metadata",
+        json!({"sessionId":session,"expectedRevision":observed["session"]["revision"],
+            "title":observed["session"]["title"],"labels":[],
+            "permissions":{"settings":{"access":"danger_full_access","requestPermissions":true},"revokeGrants":false}}),
+        Attachments::new(),
+    )
+    .await?;
+    assert_eq!(changed["kind"], "committed", "{changed}");
+    let session = &changed["session"];
+    let posted = mutate(
+        client,
+        "agent",
+        "schedule",
+        json!({"kind":"create","input":{"timezone":"UTC","misfire":"skip","task":{
+            "title":"POST check","intentBody":"AUTOMATION-FOLLOWUP-POST","maxFires":1,
+            "schedule":{"kind":"script","everySeconds":1,"startAt":now_ms()+100,
+                "source":format!("const response = await fetch(\"{base}/condition\", {{ method: 'POST', headers: {{ 'x-condition': 'ready' }}, body: 'check' }}); console.log(await response.json());")},
+            "effect":{"kind":"session","delivery":"followup","model":{"connectionId":connection,"modelId":"gpt-4.1"},
+                "target":{"sessionId":session["id"],"workspace":session["workspace"],"permissions":session["permissions"],
+                    "boundaryRevision":session["boundaryRevision"],"binding":session["binding"]}}
+        }}}),
+        Attachments::new(),
+    )
+    .await?;
+    assert_eq!(posted["kind"], "committed", "{posted}");
+    let posted = wait(posted["taskId"].as_str().unwrap().to_owned(), 1).await?;
+    assert_eq!(posted["task"]["status"], "completed", "{posted}");
+    assert_eq!(
+        posted["task"]["runs"][0]["message"], "Message admitted",
+        "{posted}"
+    );
     Ok(())
 }

@@ -47,9 +47,9 @@ export const automationMessages = {
   'Wait for the next turn': ['Wait for next turn', '等待下一轮', '等到下一回合'],
   'Start a new conversation': ['New conversation', '新建会话', '新增對話'],
   'Script check guidance': [
-    'Return true to trigger once. Return false to rearm. Use await tools.Read({ path }) or tools.Fetch({ url }).',
-    '返回 true 触发一次，返回 false 后可再次触发。可用 await tools.Read({ path }) 或 tools.Fetch({ url })。',
-    '回傳 true 觸發一次，回傳 false 後可再次觸發。可用 await tools.Read({ path }) 或 tools.Fetch({ url })。',
+    'Run JavaScript or TypeScript with Maka’s embedded Deno runtime. Print true or false on the last line. Triggers when the result changes to true.',
+    '使用 Maka 内嵌的 Deno 运行 JavaScript 或 TypeScript。最后一行输出 true 或 false，结果变为 true 时触发。',
+    '使用 Maka 內嵌的 Deno 執行 JavaScript 或 TypeScript。最後一行輸出 true 或 false，結果變為 true 時觸發。',
   ],
   'Choose a conversation with a model': [
     'Choose a conversation with a model.',
