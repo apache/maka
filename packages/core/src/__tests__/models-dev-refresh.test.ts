@@ -96,6 +96,56 @@ test('a zero token limit projects as an absent limit', async () => {
   assert.equal(metadata.anthropic?.['claude-kept']?.contextWindow, 2_000);
 });
 
+// models.dev declares a provider-owned family on most models (e.g. `kimi-k3`
+// for the K3 ids, `kimi-k2` for kimi-for-coding). Wire builders read it to
+// pick the thinking mode, so the projection must carry it instead of dropping
+// it between the upstream response and the runtime.
+test('a models.dev family projects into the metadata', async () => {
+  const upstream = catalog();
+  (upstream.vercel as { models: Record<string, unknown> }).models['family-model'] = {
+    name: 'Family Model',
+    reasoning: false,
+    tool_call: true,
+    limit: { context: 2_000, output: 100 },
+    family: 'kimi-k3',
+  };
+  (upstream.vercel as { models: Record<string, unknown> }).models['familyless-model'] = {
+    name: 'Familyless Model',
+    reasoning: false,
+    tool_call: true,
+    limit: { context: 2_000, output: 100 },
+  };
+
+  const metadata = await fetchModelsDevProjection({
+    fetch: respondWith(JSON.stringify(upstream)),
+    previous: {},
+    onRemovals: () => {},
+  });
+
+  assert.equal(metadata.vercel?.['family-model']?.family, 'kimi-k3');
+  assert.equal(metadata.vercel?.['familyless-model']?.family, undefined);
+});
+
+test('a non-string family refuses the refresh like any other unsupported shape', async () => {
+  const upstream = catalog();
+  (upstream.vercel as { models: Record<string, unknown> }).models['bad-family'] = {
+    name: 'Bad Family',
+    reasoning: false,
+    tool_call: true,
+    limit: { context: 2_000, output: 100 },
+    family: 42,
+  };
+
+  await assert.rejects(
+    fetchModelsDevProjection({
+      fetch: respondWith(JSON.stringify(upstream)),
+      previous: {},
+      onRemovals: () => {},
+    }),
+    /vercel\/bad-family has an unsupported shape/u,
+  );
+});
+
 test('a token limit outside the wire domain refuses the whole refresh', async () => {
   const upstream = catalog();
   (upstream.vercel as { models: Record<string, unknown> }).models['half-window'] = {

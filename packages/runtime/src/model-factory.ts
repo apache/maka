@@ -38,6 +38,7 @@ import {
   type ProviderRuntimeAdapter,
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
+import { lookupModelMetadata } from '@maka/core/model-metadata';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   modelOverride,
@@ -463,6 +464,48 @@ export function buildProviderOptions(
   );
 }
 
+// Kimi documents exactly these two K3.1 ids as effort-capable on the
+// Anthropic-compatible endpoint (kimi.com/code/docs/en/kimi-code/models.html),
+// so they keep the K3 adaptive wire even when a refresh arrives without the
+// models.dev family fact. Every other family-less id sends nothing: declared
+// efforts identify a knob, not the thinking wire.
+const KIMI_DOCUMENTED_K31_EFFORT_IDS: ReadonlySet<string> = new Set([
+  'k3.1-pro',
+  'k3.1-pro-highspeed',
+]);
+
+/**
+ * The anthropic-messages wire for a kimi-coding-plan id the id-specific
+ * branches above do not name. The provider-owned models.dev family decides —
+ * kimi-k3 takes adaptive thinking, kimi-k2 needs enabled thinking plus the
+ * compatibility budget (the wire kimi-for-coding requires). A catalog entry
+ * without the family fact keeps the adaptive wire only for the two documented
+ * K3.1 ids; anything else sends nothing rather than guessing a mode.
+ */
+function kimiFamilyThinkingWire(
+  modelId: string,
+  family: string | undefined,
+  level: ThinkingLevel,
+  thinkingOptions: ThinkingOptions | undefined,
+) {
+  if (!thinkingOptions?.efforts?.length) {
+    // No declared effort knob: send nothing rather than inventing a wire
+    // (mirrors main's prior behavior).
+    return {};
+  }
+  if (family === 'kimi-k2') {
+    // A K2-family alias speaks the kimi-for-coding wire: enabled thinking,
+    // plus the budget the Anthropic AI SDK otherwise injects with a warning.
+    return { thinking: { type: 'enabled' as const, budgetTokens: 1_024 }, effort: level };
+  }
+  if (family === 'kimi-k3' || KIMI_DOCUMENTED_K31_EFFORT_IDS.has(modelId)) {
+    return { thinking: { type: 'adaptive' as const }, effort: level };
+  }
+  // Known knob, unknown wire: efforts do not identify the thinking mode, so
+  // send nothing rather than guessing one.
+  return {};
+}
+
 function buildThinkingProviderOptions(
   connection: RuntimeExecutionConnection,
   modelId: string,
@@ -521,11 +564,12 @@ function buildThinkingProviderOptions(
                   thinking: { type: 'enabled' as const, budgetTokens: 1_024 },
                   effort: level,
                 }
-              : {
-                  // kimi-for-coding-highspeed has no declared effort and no
-                  // known thinking requirements; send nothing rather than
-                  // inventing a wire (mirrors main's prior behavior).
-                },
+              : kimiFamilyThinkingWire(
+                  modelId,
+                  lookupModelMetadata(connection.providerType, modelId).family,
+                  level,
+                  thinkingOptions,
+                ),
       };
     }
     // Anthropic-protocol: effort enum models send `effort`; toggle/budget
