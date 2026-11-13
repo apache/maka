@@ -689,6 +689,11 @@ export const conversationMessages = {
     '編輯佇列訊息 {number}',
   ],
   'Empty recorded text.': ['Empty recorded text.', '记录的文本为空。', '記錄的文字為空。'],
+  '… {count} more characters': [
+    '… {count} more characters',
+    '…还有 {count} 个字符',
+    '…還有 {count} 個字元',
+  ],
   'Enter a complete URI, including its scheme.': [
     'Enter a complete URI, including its scheme.',
     '请输入完整 URI，包括协议。',
