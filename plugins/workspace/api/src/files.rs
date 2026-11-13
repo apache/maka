@@ -42,8 +42,6 @@ pub fn method(name: &str) -> Option<(&'static str, bool)> {
     use maka_fs_tools::*;
     Some(match name {
         "readText" | "readImage" => (READ_NAME, false),
-        "glob" => (GLOB_NAME, false),
-        "grep" => (GREP_NAME, false),
         "write" => (WRITE_NAME, true),
         "edit" => (EDIT_NAME, true),
         "applyPatch" => (PATCH_NAME, true),
@@ -54,8 +52,6 @@ pub fn contract() -> Contract {
     let mut methods: BTreeMap<String, Method> = [
         ("readText", maka_fs_tools::read_schema()),
         ("readImage", maka_fs_tools::read_schema()),
-        ("glob", maka_fs_tools::glob_schema()),
-        ("grep", maka_fs_tools::grep_schema()),
         ("write", maka_fs_tools::write_schema()),
         ("edit", maka_fs_tools::edit_schema()),
         ("applyPatch", maka_fs_tools::patch_schema()),

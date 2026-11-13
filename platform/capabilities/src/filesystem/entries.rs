@@ -61,14 +61,6 @@ impl Operation {
     pub fn is_read(&self) -> bool {
         matches!(self, Self::Read(_) | Self::List(_) | Self::Stat { .. })
     }
-    pub fn required_tool(&self) -> &'static str {
-        match self {
-            Self::Read(_) | Self::Stat { .. } => "Read",
-            Self::List(_) => "Glob",
-            Self::Write(_) | Self::CreateDirectory { .. } => "Write",
-            Self::Remove { .. } | Self::Rename { .. } | Self::Sync { .. } => "apply_patch",
-        }
-    }
     pub fn name(&self) -> &'static str {
         match self {
             Self::Read(_) => "files.read_bytes",

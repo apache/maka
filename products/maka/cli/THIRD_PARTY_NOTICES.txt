@@ -1878,9 +1878,6 @@ byteorder-lite@0.1.0 (Unlicense OR MIT)
 byteorder@1.5.0 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
 encoding_rs_io@0.1.8 (MIT OR Apache-2.0); authors declared by package: Andrew Gallant <jamslam@gmail.com>
 globset@0.4.20 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
-grep-matcher@0.1.9 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
-grep-regex@0.1.14 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
-grep-searcher@0.1.17 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
 ignore@0.4.33 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
 jiff-core@0.1.1 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
 jiff-static@0.2.38 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
@@ -1896,9 +1893,6 @@ https://crates.io/api/v1/crates/byteorder-lite/0.1.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/byteorder/1.5.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/encoding_rs_io/0.1.8/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/globset/0.4.20/download :: LICENSE-MIT
-https://crates.io/api/v1/crates/grep-matcher/0.1.9/download :: LICENSE-MIT
-https://crates.io/api/v1/crates/grep-regex/0.1.14/download :: LICENSE-MIT
-https://crates.io/api/v1/crates/grep-searcher/0.1.17/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/ignore/0.4.33/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/jiff-core/0.1.1/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/jiff-static/0.2.38/download :: LICENSE-MIT
@@ -1937,9 +1931,6 @@ aho-corasick@1.1.5 (Unlicense OR MIT); authors declared by package: Andrew Galla
 byteorder-lite@0.1.0 (Unlicense OR MIT)
 byteorder@1.5.0 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
 globset@0.4.20 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
-grep-matcher@0.1.9 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
-grep-regex@0.1.14 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
-grep-searcher@0.1.17 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
 ignore@0.4.33 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
 jiff-core@0.1.1 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
 jiff-static@0.2.38 (Unlicense OR MIT); authors declared by package: Andrew Gallant <jamslam@gmail.com>
@@ -1957,9 +1948,6 @@ https://crates.io/api/v1/crates/aho-corasick/1.1.5/download :: UNLICENSE
 https://crates.io/api/v1/crates/byteorder-lite/0.1.0/download :: UNLICENSE
 https://crates.io/api/v1/crates/byteorder/1.5.0/download :: UNLICENSE
 https://crates.io/api/v1/crates/globset/0.4.20/download :: UNLICENSE
-https://crates.io/api/v1/crates/grep-matcher/0.1.9/download :: UNLICENSE
-https://crates.io/api/v1/crates/grep-regex/0.1.14/download :: UNLICENSE
-https://crates.io/api/v1/crates/grep-searcher/0.1.17/download :: UNLICENSE
 https://crates.io/api/v1/crates/ignore/0.4.33/download :: UNLICENSE
 https://crates.io/api/v1/crates/jiff-core/0.1.1/download :: UNLICENSE
 https://crates.io/api/v1/crates/jiff-static/0.2.38/download :: UNLICENSE

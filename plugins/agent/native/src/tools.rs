@@ -410,8 +410,6 @@ fn catalog_inner(
                     "write" => Some(title::Kind::Write),
                     "edit" => Some(title::Kind::Edit),
                     "applyPatch" => Some(title::Kind::Patch),
-                    "glob" => Some(title::Kind::Glob),
-                    "grep" => Some(title::Kind::Grep),
                     _ => None,
                 }
             } else if binding.contract() == &web_contract {
