@@ -43,11 +43,9 @@ export type ConversationGroup<Project> = {
   nested: ReadonlySet<string>;
 };
 
-/**
- * The browser's groups: pinned conversations first, then each workspace in
- * the order of its latest loaded conversation, then, when `withEmpty`, the
- * active projects with none loaded.
- */
+const PROJECT_SESSION_LIMIT = 6;
+
+/** Pinned conversations, registered projects in catalog order, then other workspaces. */
 export function groupConversations<Project extends Listable>(
   sessions: readonly Groupable[],
   projects: readonly Project[],
@@ -85,24 +83,43 @@ export function groupConversations<Project extends Listable>(
     for (const project of byProject.values())
       if (!project.archived && !groups.has(`project:${project.reference.id}`))
         add(`project:${project.reference.id}`, false, project, null);
-  return [...groups.values()].map(({ members, ...group }) => {
+  const ordered = [];
+  const pinned = groups.get('pinned');
+  if (pinned) ordered.push(pinned);
+  for (const project of byProject.values()) {
+    const group = groups.get(`project:${project.reference.id}`);
+    if (group) ordered.push(group);
+  }
+  for (const group of groups.values()) {
+    if (!group.pinned && !group.project) ordered.push(group);
+  }
+  return ordered.map(({ members, ...group }) => {
     const { order, nested } = nestCreated(members);
     return { ...group, sessions: order, nested };
   });
 }
 
+export function projectSessionLimit(group: ConversationGroup<unknown>): number {
+  return group.key.startsWith('project:') ? PROJECT_SESSION_LIMIT : group.sessions.length;
+}
+
 /**
- * The conversations in the order the browser lists them: a collapsed group's
- * are left out, except `current`, so stepping from it still has neighbors.
+ * Step through the visible conversations, keeping a hidden current row as a starting point.
  */
 export function browserOrder(
   groups: readonly ConversationGroup<unknown>[],
   collapsed: ReadonlySet<string>,
   current: string | null,
+  expandedProjects?: ReadonlySet<string>,
 ): string[] {
-  return groups.flatMap((group) =>
-    collapsed.has(group.key) ? group.sessions.filter((id) => id === current) : group.sessions,
-  );
+  return groups.flatMap((group) => {
+    const limit = collapsed.has(group.key)
+      ? 0
+      : expandedProjects && !expandedProjects.has(group.key)
+        ? projectSessionLimit(group)
+        : group.sessions.length;
+    return group.sessions.filter((id, index) => index < limit || id === current);
+  });
 }
 
 /** Resolve creation through an owned workspace, never a display path. */

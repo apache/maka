@@ -44,6 +44,7 @@ export type Browsing = {
   sessions(): BrowserSession[];
   needsYouCount(): number;
   projects(): BrowserProject[];
+  hasMore(): boolean;
   loading(): boolean;
   error(): string;
   projectError(): string;
@@ -82,6 +83,7 @@ export function createBrowsing(host: Host): Browsing {
   const sessions = signal<BrowserSession[]>([]);
   const needsYouCount = signal(0);
   const projects = signal<BrowserProject[]>([]);
+  const hasMore = signal(false);
   const loading = signal(true);
   const error = createText();
   const projectError = createText();
@@ -150,6 +152,7 @@ export function createBrowsing(host: Host): Browsing {
       error.set('');
       if (clear) {
         sessions.set([]);
+        hasMore.set(false);
         needsYouCount.set(0);
       }
     });
@@ -218,6 +221,7 @@ export function createBrowsing(host: Host): Browsing {
             read.extend = false;
             batch(() => {
               sessions.set(snapshot);
+              hasMore.set(tail.after !== null);
               needsYouCount.set(next.needsYouCount);
               loading.set(false);
               error.set('');
@@ -279,7 +283,10 @@ export function createBrowsing(host: Host): Browsing {
       page = next;
       read.extent = snapshot.at(-1)?.id ?? null;
       read.extend = false;
-      sessions.set(snapshot);
+      batch(() => {
+        sessions.set(snapshot);
+        hasMore.set(next.after !== null);
+      });
       return 'advanced';
     } catch (reason) {
       if (!owns(read) || continuation !== original) return 'waiting';
@@ -371,6 +378,7 @@ export function createBrowsing(host: Host): Browsing {
     sessions,
     needsYouCount,
     projects,
+    hasMore,
     loading,
     error,
     projectError,
