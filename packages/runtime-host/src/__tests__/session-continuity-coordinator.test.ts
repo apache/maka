@@ -1557,6 +1557,99 @@ test('a steering message cannot overtake the prefix a subscriber is still being 
   coordinator.close();
 });
 
+test('a completion paid from an unpaid prefix cannot overtake an already-deferred event', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  let streamed = '';
+  for (let index = 0; index < 20; index += 1) {
+    const text = `${index}:${'x'.repeat(8 * 1024)}`;
+    streamed += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
+  }
+  const sink = new GatedSink();
+  const connection = attachTestConnection(coordinator, 'connection-deferred-completion', sink);
+  const opened = await open(coordinator, 'connection-deferred-completion');
+  connection.activate(opened.subscriptionId);
+
+  // The steering event reaches the Host before the stream completes, while the
+  // prefix payout is still mid-flight, so it defers behind the backlog.
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'steering_message',
+    id: 'steering-event-1',
+    turnId: 'turn-1',
+    ts: 7,
+    messageId: 'steering-message-1',
+    content: { text: 'redirect' },
+  });
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', streamed),
+  );
+  sink.release();
+  await waitFor(() => completionOrder(sink).length === 1);
+
+  const order = sink.frames.flatMap((frame) =>
+    frame.kind === 'subscription.session_delta' && frame.delta.complete
+      ? [`complete:${frame.delta.messageId}`]
+      : frame.kind === 'subscription.session_event'
+        ? [frame.event.type]
+        : [],
+  );
+  assert.deepEqual(order, ['steering_message', 'complete:message-1']);
+  coordinator.close();
+});
+
+test('a replacement completion that empties the backlog still drains the deferred channel', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  let streamed = '';
+  for (let index = 0; index < 20; index += 1) {
+    const text = `${index}:${'x'.repeat(8 * 1024)}`;
+    streamed += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
+  }
+  const sink = new GatedSink();
+  const connection = attachTestConnection(coordinator, 'connection-deferred-drain', sink);
+  const opened = await open(coordinator, 'connection-deferred-drain');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'steering_message',
+    id: 'steering-event-1',
+    turnId: 'turn-1',
+    ts: 7,
+    messageId: 'steering-message-1',
+    content: { text: 'redirect' },
+  });
+  // A replacement final text does not extend the held prefix, so the backlog
+  // entry is dropped instead of finished; the deferred steering event must
+  // still drain behind the completion instead of freezing.
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', 'REPLACED'),
+  );
+  sink.release();
+  await waitFor(() => completionOrder(sink).length === 1);
+
+  const order = sink.frames.flatMap((frame) =>
+    frame.kind === 'subscription.session_delta' && frame.delta.complete
+      ? [`complete:${frame.delta.messageId}`]
+      : frame.kind === 'subscription.session_event'
+        ? [frame.event.type]
+        : [],
+  );
+  assert.deepEqual(order, ['steering_message', 'complete:message-1']);
+  coordinator.close();
+});
+
 test('events held behind an unpaid prefix spend the slow-consumer budget', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
