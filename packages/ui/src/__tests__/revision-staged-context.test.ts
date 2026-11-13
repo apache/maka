@@ -337,6 +337,54 @@ describe('revision lifecycle (#5109)', () => {
     );
   });
 
+  it('keeps the draft for a retry when the host does not acknowledge the abandon (#6317)', async () => {
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'explain this', { quotes: [quotedQuote] })],
+      staged,
+    });
+    // The real failure shape: abandonSessionCopy rejects, and the lifecycle
+    // turns that into an unacknowledged abandonment.
+    let abandonRejects = true;
+    h.env.abandonSessionCopy = async () => {
+      if (abandonRejects) throw new Error('persistence_failed');
+    };
+    const completed: string[] = [];
+    h.env.completeCopyAttempt = (_key, copyId) => {
+      completed.push(copyId);
+    };
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    assert.equal(await actions.prepareRevisionSend('edited text'), true);
+    const prepared = h.revisionDraftRef.current;
+    assert.ok(prepared, 'the prepared edit is active');
+
+    await actions.cancelRevisionDraft();
+
+    assert.ok(h.revisionDraftRef.current, 'an unacknowledged abandon keeps the draft');
+    assert.equal(h.revisionDraftRef.current?.copyId, prepared.copyId);
+    assert.equal(
+      h.revisionDraftRef.current?.copyPhase,
+      'abandoning',
+      'the draft waits in the abandoning phase for a retry',
+    );
+    assert.deepEqual(completed, [], 'the attempt stays incomplete while the abandon is unacknowledged');
+    assert.equal(
+      h.env.composerRef.current?.getText(),
+      'edited text',
+      'the edit stays intact for the retry',
+    );
+
+    abandonRejects = false;
+    await actions.cancelRevisionDraft();
+
+    assert.equal(h.revisionDraftRef.current, null, 'the retried cancel clears the draft');
+    assert.deepEqual(completed, [prepared.copyId], 'the attempt completes on the acknowledged retry');
+    assert.equal(staged.quotes.length, 0, 'the retried cancel empties the plates');
+    assert.ok(staged.cleared.includes('session-2'), 'the retried cancel clears the branch-child key');
+  });
+
   it('keeps a quote added on the branch child when a prepared edit is cancelled', async () => {
     const staged = emptyStagedLog();
     const h = createEnv({
