@@ -248,7 +248,9 @@ export function createBrowsing(host: Host): Browsing {
         page = null;
         continuation = null;
         batch(() => {
-          error.set(errorText(reason));
+          error.set(
+            errorText(reason, 'Conversation list is temporarily unavailable. Try reconnecting.'),
+          );
           loading.set(false);
         });
       })
@@ -285,7 +287,7 @@ export function createBrowsing(host: Host): Browsing {
         waitForCatalog = true;
         return 'waiting';
       }
-      error.set(errorText(reason));
+      error.set(errorText(reason, 'Could not update the conversation.'));
       return 'complete';
     } finally {
       if (owns(read) && continuation === original) {
@@ -327,7 +329,8 @@ export function createBrowsing(host: Host): Browsing {
       }
       throw new UiError('Projects changed while reading. Refresh to try again.');
     } catch (reason) {
-      if (alive && projectRead === reading) projectError.set(errorText(reason));
+      if (alive && projectRead === reading)
+        projectError.set(errorText(reason, 'Projects are unavailable.'));
     }
   };
 

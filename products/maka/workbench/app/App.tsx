@@ -44,7 +44,6 @@ import { Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workb
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
 import { currentLocale, tr } from './locale';
-import { errorText, renderText } from './text';
 import { bodyTextStyle, C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
 
 type Configuration = {
@@ -110,7 +109,6 @@ function App(
   const launcherOpened = signal(false);
   const assistant = signal<SidePane | null>(null);
   const preview = signal<ConversationPreviewHandle | null>(null);
-  const notice = signal<unknown | null>(null);
   let alive = true;
   let navigationGeneration = 0;
   cleanup(() => {
@@ -119,9 +117,6 @@ function App(
   });
   effect(() => currentLocale.set(runtime.locale()));
   const mainWindow = currentWindow();
-  const report = (reason: unknown) => {
-    if (alive) notice.set(reason);
-  };
   const plugins = createWorkbenchPlugins(runtime, {
     sessionId: selected,
     showPanel() {
@@ -156,7 +151,7 @@ function App(
         const owner = pane.handle();
         if (owner && !(await owner.leave())) return false;
       } catch (reason) {
-        report(reason);
+        console.warn('Could not close the quick launcher conversation:', reason);
         return false;
       }
     }
@@ -190,7 +185,7 @@ function App(
       });
       return true;
     } catch (reason) {
-      report(reason);
+      console.warn('Could not switch the side conversation:', reason);
       return false;
     }
   };
@@ -213,13 +208,12 @@ function App(
       )
         return false;
       batch(() => {
-        notice.set(null);
         settingsOpened.set(false);
         selected.set(id);
       });
       return true;
     } catch (reason) {
-      report(reason);
+      console.warn('Could not switch the conversation:', reason);
       return false;
     }
   };
@@ -375,7 +369,6 @@ function App(
           conversation={() => assistant()!.render()}
           close={closeLauncher}
           closed={launcherClosed}
-          report={report}
         />
       </If>
       <Workbench
@@ -416,7 +409,7 @@ function App(
           },
         })}
       </Workbench>
-      <If when={runtime.updateError() !== null || notice() !== null}>
+      <If when={runtime.updateError() !== null}>
         <View
           style={{
             flexDirection: 'row',
@@ -428,35 +421,29 @@ function App(
           }}
         >
           <Text style={[{ ...bodyTextStyle, flex: 1, color: C.warning }, { userSelect: 'text' }]}>
-            {runtime.updateError() !== null
-              ? tr('Connection interrupted. Reconnect to continue; your draft is kept.')
-              : renderText(errorText(notice()))}
-            {connectionDetails() && runtime.updateError() !== null
-              ? `\n${connectionDiagnostic()}`
-              : ''}
+            {tr('Connection interrupted. Reconnect to continue; your draft is kept.')}
+            {connectionDetails() ? `\n${connectionDiagnostic()}` : ''}
           </Text>
-          <If when={runtime.updateError() !== null}>
-            <Button
-              accessibilityLabel={tr('Details')}
-              onPress={() => connectionDetails.set(!connectionDetails())}
-              style={controlStyle}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-              activeStyle={{ backgroundColor: C.line }}
-            >
-              <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Details')}</Text>
-            </Button>
-            <Button
-              accessibilityLabel={tr('Retry')}
-              onPress={runtime.retryUpdates}
-              style={controlStyle}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-              activeStyle={{ backgroundColor: C.line }}
-            >
-              <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
-            </Button>
-          </If>
+          <Button
+            accessibilityLabel={tr('Details')}
+            onPress={() => connectionDetails.set(!connectionDetails())}
+            style={controlStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+            activeStyle={{ backgroundColor: C.line }}
+          >
+            <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Details')}</Text>
+          </Button>
+          <Button
+            accessibilityLabel={tr('Retry')}
+            onPress={runtime.retryUpdates}
+            style={controlStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+            activeStyle={{ backgroundColor: C.line }}
+          >
+            <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+          </Button>
         </View>
       </If>
 
@@ -483,7 +470,6 @@ function App(
             navigationGeneration++;
             settingsOpened.set(false);
           },
-          changed: () => notice.set(null),
           get model() {
             return settingsModel();
           },

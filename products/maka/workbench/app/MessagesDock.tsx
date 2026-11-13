@@ -113,7 +113,7 @@ export function createMessagesDock(
   const entry = (messageId: string) => items().find((row) => row.messageId === messageId);
   const revision = () => queue.snapshot()?.revision ?? -1;
   const report = (reason: unknown) => {
-    if (alive) error.set(errorText(reason));
+    if (alive) error.set(errorText(reason, 'Could not update the message queue.'));
   };
   const changedMessage = () =>
     editing()

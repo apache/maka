@@ -179,7 +179,6 @@ function overlay(text: string): Record<string, unknown> | null {
 
 export function createModelSettings(
   host: Host,
-  changed: () => void,
   operations: SettingsOperations,
   active: () => boolean,
   initialModel?: ModelSelection,
@@ -640,7 +639,6 @@ export function createModelSettings(
     captured: number,
     key: 'unchanged' | 'committed' | 'refresh' = 'refresh',
   ) => {
-    changed();
     let detail: Detail;
     try {
       detail = await readDetail(target, key === 'committed');
@@ -749,7 +747,6 @@ export function createModelSettings(
         // Read the actual new basis; never guess a revision or reuse the old one.
         if (!(await adopt(basis(detail), form.instance, 'committed'))) return;
         notice.set(message('Connection and API key saved.'));
-        changed();
       } else if (alive && !result) notice.set(message('No connection changes.'));
       await loadConnections();
       if (refreshModels) await discoverSavedConnection(form.instance);
@@ -860,17 +857,18 @@ export function createModelSettings(
     discovery.set('fetching');
     try {
       const result = await mutate('setup', 'discoverModels', form.baseline.target);
-      if (result.kind === 'failed')
-        throw new UiError(
-          'Could not fetch models. Check the provider credential, endpoint and network, or add a model manually.',
-        );
+      if (result.kind === 'failed') {
+        if (alive && editor()?.instance === form.instance) discovery.set('failed');
+        return false;
+      }
       if (result.kind !== 'ready') throw rejection(result);
       await adopt(result.connection, form.instance);
-      if (!alive || editor()?.instance !== form.instance) return;
+      if (!alive || editor()?.instance !== form.instance) return false;
       discovery.set('ready');
       await loadConnections();
+      return true;
     } catch (reason) {
-      if (alive && editor()?.instance === form.instance) discovery.set('failed');
+      if (alive && editor()?.instance === form.instance) discovery.set('idle');
       throw reason;
     }
   };
@@ -894,8 +892,8 @@ export function createModelSettings(
         throw new UiError('Save the connection changes before fetching models.');
       if (!form.provider.descriptor.anonymous && !credential()?.configured)
         throw new UiError('Add an API key or finish provider sign-in before fetching models.');
-      await fetchModels({ ...form, baseline: form.baseline });
-      if (alive) notice.set(message('Models fetched and enabled.'));
+      if ((await fetchModels({ ...form, baseline: form.baseline })) && alive)
+        notice.set(message('Models fetched and enabled.'));
     });
   };
   const editModel = (request: ConnectionAction & { id: string | null }) => {
@@ -1136,7 +1134,6 @@ export function createModelSettings(
       });
       if (result.kind !== 'committed') throw rejection(result);
       await loadConnections();
-      changed();
     });
   };
   const confirm = (request: RemovalAction) => {
@@ -1211,7 +1208,6 @@ export function createModelSettings(
         }
       }
       await loadConnections();
-      changed();
     });
   };
   const leaveConnection = () => {

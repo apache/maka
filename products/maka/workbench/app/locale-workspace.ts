@@ -36,6 +36,37 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const workspaceMessages = {
+  'Checking terminal command status…': [
+    'Checking terminal command status…',
+    '正在确认终端命令状态…',
+    '正在確認終端機命令狀態…',
+  ],
+  'Checking whether workspace locations were saved…': [
+    'Checking whether workspace locations were saved…',
+    '正在确认工作区位置是否已保存…',
+    '正在確認工作區位置是否已儲存…',
+  ],
+  'Could not complete the terminal command.': [
+    'Could not complete the terminal command.',
+    '无法完成终端命令。',
+    '無法完成終端機命令。',
+  ],
+  'Could not control the terminal.': [
+    'Could not control the terminal.',
+    '无法控制终端。',
+    '無法控制終端機。',
+  ],
+  'Could not read file changes.': [
+    'Could not read file changes.',
+    '无法读取文件更改。',
+    '無法讀取檔案變更。',
+  ],
+  'Could not read the file.': ['Could not read the file.', '无法读取文件。', '無法讀取檔案。'],
+  'Could not load project MCP servers.': [
+    'Could not load project MCP servers.',
+    '无法加载项目 MCP 服务器。',
+    '無法載入專案 MCP 伺服器。',
+  ],
   'Use folder {path}': ['Use folder {path}', '使用文件夹 {path}', '使用資料夾 {path}'],
   'Choose another folder…': ['Choose another folder…', '选择其他文件夹…', '選擇其他資料夾…'],
   'Pin conversation': ['Pin conversation', '置顶对话', '置頂對話'],
@@ -403,6 +434,21 @@ export const workspaceMessages = {
     'The Host closed output without an end marker.',
     'Host 关闭了输出，但未提供结束标记。',
     'Host 關閉了輸出，但未提供結束標記。',
+  ],
+  'Could not load terminals. Refresh to try again.': [
+    'Could not load terminals. Refresh to try again.',
+    '无法加载终端列表。请刷新后重试。',
+    '無法載入終端機清單。請重新整理後再試。',
+  ],
+  'Could not read terminal output. Try reconnecting.': [
+    'Could not read terminal output. Try reconnecting.',
+    '无法读取终端输出。请重新连接。',
+    '無法讀取終端機輸出。請重新連線。',
+  ],
+  'Enter an absolute folder path before saving.': [
+    'Enter an absolute folder path before saving.',
+    '请填写文件夹的绝对路径，再保存。',
+    '請填寫資料夾的絕對路徑，再儲存。',
   ],
   'The Host closed the terminal list.': [
     'The Host closed the terminal list.',

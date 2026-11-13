@@ -47,7 +47,8 @@ export function computerPermissionClient(
       const originals = (await host.pendingControls()).filter(matches);
       for (const original of originals) await host.recoverControl(original.id);
       if ((await host.systemPermissionStatus(sessionId, requestId)).outcome) return;
-      if ((await host.pendingControls()).some(matches)) throw new UiError('Syncing changes…');
+      if ((await host.pendingControls()).some(matches))
+        throw new UiError('Maka could not confirm whether the request was cancelled.');
       const result = settingsValue(
         (
           await host.control('respond', {
@@ -57,7 +58,8 @@ export function computerPermissionClient(
           })
         ).reply,
       ) as AgentInteractionResult;
-      if (result.kind !== 'recorded') throw new UiError('This action could not be completed.');
+      if (result.kind !== 'recorded')
+        throw new Error(`Cancel computer permission request: ${result.kind}`);
     },
   };
 }

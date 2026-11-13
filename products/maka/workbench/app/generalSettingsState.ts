@@ -323,7 +323,7 @@ export function createGeneralSettings(
       editor.set({ ...form, document: { ...document, conflict: true } });
       throw new UiError(
         'The original action completed, but the source could not be read. Your draft is preserved. Reload before saving again. ({reason})',
-        { reason: errorText(reason) },
+        { reason: errorText(reason, 'Source unavailable. Reload to try again.') },
       );
     } finally {
       if (owns()) loading.set(false);

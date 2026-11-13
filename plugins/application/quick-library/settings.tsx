@@ -155,29 +155,37 @@ export function LibrarySettings(props: { library: Library }) {
   };
   return (
     <SettingsBody
-      footerShown={draft() !== null}
+      footerShown={draft() !== null || library.failure() !== null}
       footer={
         <>
-          <If when={problem() !== null}>
-            <Text style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 18, color: C.warning }}>
-              {tr(problem()!)}
+          <If when={library.failure() !== null || problem() !== null}>
+            <Text
+              style={{
+                flex: 1,
+                minWidth: 0,
+                fontSize: 12,
+                lineHeight: 18,
+                color: C.warning,
+                userSelect: 'text',
+              }}
+            >
+              {library.failure() !== null
+                ? renderText(errorText(library.failure(), 'Could not load or save shortcuts.'))
+                : tr(problem()!)}
             </Text>
           </If>
-          <SettingsButton label={tr('Cancel')} tone="quiet" onPress={() => draft.set(null)} />
-          <SettingsButton
-            label={tr('Save')}
-            tone="primary"
-            disabled={problem() !== null}
-            onPress={save}
-          />
+          <If when={draft() !== null}>
+            <SettingsButton label={tr('Cancel')} tone="quiet" onPress={() => draft.set(null)} />
+            <SettingsButton
+              label={tr('Save')}
+              tone="primary"
+              disabled={problem() !== null}
+              onPress={save}
+            />
+          </If>
         </>
       }
     >
-      <If when={library.failure() !== null}>
-        <Text style={{ fontSize: 12, lineHeight: 18, color: C.warning, userSelect: 'text' }}>
-          {renderText(errorText(library.failure()))}
-        </Text>
-      </If>
       <Each of={sections} key={(section: (typeof sections)[number]) => section.kind}>
         {(section) => <Section section={section()} library={library} draft={draft} />}
       </Each>

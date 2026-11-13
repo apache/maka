@@ -92,7 +92,7 @@ export function MarkdownImageView(props: {
         await close(request);
       }
     })().catch((reason) => {
-      if (owns() && reading === request) error.set(errorText(reason));
+      if (owns() && reading === request) error.set(errorText(reason, 'Image unavailable'));
     });
   };
   cleanup(() => {

@@ -257,6 +257,11 @@ export type ConversationHandle = Omit<
   projectMcp: ReturnType<typeof createProjectMcp>;
   compact(prompt?: string): Promise<void>;
   interactions(): AgentPendingInteractions;
+  executionFeedback(): string;
+  reconnecting(): boolean;
+  reconnect(): void;
+  attachmentMetadataFailed(): boolean;
+  retryAttachmentMetadata(): void;
   activeTurn(): string | null;
   activityTurn(): string | null;
   flushDraft(): Promise<boolean>;
@@ -1114,7 +1119,7 @@ export function Conversation(props: ConversationProps) {
   });
 
   const report = (reason: unknown) => {
-    if (alive) error.set(errorText(reason));
+    if (alive) error.set(errorText(reason, 'Could not load conversation history.'));
   };
   const publishHistory = (
     chunks: AgentHistoryChunk[],
@@ -2084,7 +2089,7 @@ export function Conversation(props: ConversationProps) {
         if (current())
           modelProjection.set({
             route,
-            details: { kind: 'unavailable', message: errorText(reason) },
+            details: { kind: 'unavailable', message: errorText(reason, 'Could not load models.') },
           });
       } finally {
         if (modelRead?.generation === generation) modelRead = null;
@@ -2362,7 +2367,10 @@ export function Conversation(props: ConversationProps) {
     return operations;
   };
   const sendError = (id: string, reason: unknown) => {
-    if (alive) sendErrors.set(new Map(sendErrors()).set(id, errorText(reason)));
+    if (alive)
+      sendErrors.set(
+        new Map(sendErrors()).set(id, errorText(reason, 'Could not send the message.')),
+      );
   };
   const confirmFrozen = async (id: string, frozen: FrozenSend) => {
     activeSends.set(new Map(activeSends()).set(id, frozen));
@@ -2423,7 +2431,12 @@ export function Conversation(props: ConversationProps) {
       freezeState.set({ kind: 'idle' });
       void confirmFrozen(operation, frozen);
     } catch (reason) {
-      if (ownsReservation()) freezeState.set({ kind: 'failed', frozen, error: errorText(reason) });
+      if (ownsReservation())
+        freezeState.set({
+          kind: 'failed',
+          frozen,
+          error: errorText(reason, 'Could not send the message.'),
+        });
     }
   };
   const send = async (
@@ -2807,12 +2820,44 @@ export function Conversation(props: ConversationProps) {
       return props.control('editQueue', { sessionId, expectedRevision, edit });
     },
   };
+  const failureLabels: Record<
+    NonNullable<Extract<AgentExecution['state'], { kind: 'failed' }>['reason']>['kind'],
+    MessageKey
+  > = {
+    current_authority_unavailable: 'Current authority unavailable',
+    external_effect_unknown: 'External operation outcome unknown',
+    operation_unknown: 'Operation outcome unknown',
+    provider_effect_unknown: 'Provider tool outcome unknown',
+    original_admission_unknown: 'Operation outcome unknown',
+    code_cell_recovery_unavailable: 'Code cell recovery unavailable',
+    unsupported_protocol: 'Maka could not resume this run.',
+    cleanup_unconfirmed: 'Resource cleanup unconfirmed',
+    tool_cleanup_unconfirmed: 'Tool cleanup unconfirmed',
+    model_cleanup_unconfirmed: 'Model cleanup unconfirmed',
+    resources_unavailable: 'Resources unavailable',
+    external_task_unobservable: 'External task cannot be observed',
+    external_publication_item: 'External output needs reconciliation',
+    external_publication_unavailable: 'External output publication unavailable',
+  };
+  const executionFeedback = computed(() => {
+    if (!connected()) return '';
+    const state = execution()?.state;
+    if (state?.kind === 'failed' && state.reason) return tr(failureLabels[state.reason.kind]);
+    if (state?.kind === 'waiting' && state.authorityUnavailable && !interactions().entries.length)
+      return tr('Waiting for access to be restored');
+    return '';
+  });
   const ownHandle: ConversationHandle = {
     sessionId,
     prediction,
     title: () => title() || tr('Untitled conversation'),
     queue: queueSession,
     interactions,
+    executionFeedback,
+    reconnecting: () => transcriptStatus() === 'failed' && !props.connectionLost(),
+    reconnect: () => retryTranscript(sessionId),
+    attachmentMetadataFailed,
+    retryAttachmentMetadata: () => retryAttachmentMetadata(sessionId),
     computerAccess: {
       snapshot: computerApps,
       async stop(operationId) {
@@ -3238,53 +3283,6 @@ export function Conversation(props: ConversationProps) {
     }),
   );
 
-  const recoveryFailure = computed(() => {
-    const state = execution()?.state;
-    return state?.kind === 'failed' ? state.reason : null;
-  });
-  const failureLabels: Record<NonNullable<ReturnType<typeof recoveryFailure>>['kind'], MessageKey> =
-    {
-      current_authority_unavailable: 'Current authority unavailable',
-      external_effect_unknown: 'External operation outcome unknown',
-      operation_unknown: 'Operation outcome unknown',
-      provider_effect_unknown: 'Provider tool outcome unknown',
-      original_admission_unknown: 'Operation outcome unknown',
-      code_cell_recovery_unavailable: 'Code cell recovery unavailable',
-      unsupported_protocol: 'Maka could not resume this run.',
-      cleanup_unconfirmed: 'Resource cleanup unconfirmed',
-      tool_cleanup_unconfirmed: 'Tool cleanup unconfirmed',
-      model_cleanup_unconfirmed: 'Model cleanup unconfirmed',
-      resources_unavailable: 'Resources unavailable',
-      external_task_unobservable: 'External task cannot be observed',
-      external_publication_item: 'External output needs reconciliation',
-      external_publication_unavailable: 'External output publication unavailable',
-    };
-  const authorityUnavailable = () => {
-    const state = execution()?.state;
-    return state?.kind === 'waiting' && state.authorityUnavailable;
-  };
-  const waitingExecution = computed(() => {
-    const source = execution();
-    return source?.state.kind === 'waiting'
-      ? [...new Set(source.state.waits.map((wait) => wait.kind))].filter(
-          (kind) => kind !== 'blocker',
-        )
-      : [];
-  });
-  const waitLabels: Record<
-    Extract<AgentExecution['state'], { kind: 'waiting' }>['waits'][number]['kind'],
-    MessageKey
-  > = {
-    cell: 'Waiting for a code cell',
-    external: 'Waiting for the external task',
-    provider_backoff: 'Waiting to retry the provider',
-    model: 'Waiting for the model',
-    approval: 'Waiting for approval',
-    retry: 'Waiting to retry',
-    operation: 'Waiting for the original operation',
-    child: 'Waiting for a child run',
-    blocker: 'Waiting for access to be restored',
-  };
   let botReadThrough = 0;
   effect(() => {
     const latest = bot.latest();
@@ -3695,30 +3693,9 @@ export function Conversation(props: ConversationProps) {
         backgroundColor: C.panel,
       }}
     >
-      <If when={attachmentMetadataFailed()}>
-        <Button
-          onPress={inputAction(retryAttachmentMetadata, sessionId)}
-          style={{ ...controlStyle, alignSelf: 'flex-start' }}
-          hoverStyle={{ backgroundColor: C.card }}
-          focusStyle={{ backgroundColor: C.raised }}
-        >
-          <Text style={{ ...captionTextStyle, color: C.accent }}>
-            {tr('Retry attachment metadata')}
-          </Text>
-        </Button>
-      </If>
       <Header
         title={title() || tr('Untitled conversation')}
         workspace={workspace()}
-        status={
-          stopping()
-            ? 'stopping'
-            : run() === 'loading'
-              ? 'loading'
-              : run() === 'failed'
-                ? 'failed'
-                : undefined
-        }
         commands={props.commands}
         browser={props.browser()}
         files={props.files}
@@ -3745,85 +3722,6 @@ export function Conversation(props: ConversationProps) {
           )
         }
       />
-      <If when={recoveryFailure()}>
-        {(reason) => (
-          <View style={{ ...readingColumn, paddingVertical: 8 }}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
-              {tr(failureLabels[reason().kind])}
-            </Text>
-          </View>
-        )}
-      </If>
-      <If when={authorityUnavailable()}>
-        <View style={{ ...readingColumn, paddingVertical: 8 }}>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>
-            {tr('Waiting for access to be restored')}
-          </Text>
-        </View>
-      </If>
-      <Each of={waitingExecution()} key={(kind) => kind}>
-        {(kind) => (
-          <View style={{ ...readingColumn, paddingVertical: 8 }}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>{tr(waitLabels[kind()])}</Text>
-          </View>
-        )}
-      </Each>
-      <If when={continuation()}>
-        {(candidate) => (
-          <If when={!draft().trim() && attachments.files().length === 0}>
-            <View style={{ ...readingColumn, paddingVertical: 8 }}>
-              <Button
-                disabled={
-                  confirmingContinuation() ||
-                  !!sendBlockedReason() ||
-                  modelDetails().kind !== 'ready'
-                }
-                onPress={inputAction(
-                  (input: { source: AgentExecution; backend: BackendIdentity }) =>
-                    continueRun(input.source, input.backend),
-                  {
-                    source: candidate().source,
-                    backend: backend(),
-                  },
-                )}
-                style={{ ...controlStyle, alignSelf: 'flex-start' }}
-                hoverStyle={{ backgroundColor: C.surface }}
-                focusStyle={{ backgroundColor: C.raised }}
-              >
-                <Text style={{ ...captionTextStyle, color: C.accent }}>
-                  {confirmingContinuation()
-                    ? tr('Confirming continuation…')
-                    : tr('Continue in a new run')}
-                </Text>
-              </Button>
-            </View>
-          </If>
-        )}
-      </If>
-      <If when={transcriptStatus() === 'failed' && !props.connectionLost()}>
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 8,
-            paddingHorizontal: 16,
-            paddingVertical: 8,
-            borderBottomWidth: 1,
-            borderBottomColor: C.line,
-          }}
-        >
-          <Text style={{ ...captionTextStyle, color: C.muted, flex: 1 }}>
-            {tr('Reconnecting updates… Your draft is kept.')}
-          </Text>
-          <Button
-            accessibilityLabel={tr('Reconnect updates')}
-            onPress={inputAction(retryTranscript, sessionId)}
-            style={controlStyle}
-          >
-            <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
-          </Button>
-        </View>
-      </If>
       <View
         style={{
           // The desktop's header holds these views.

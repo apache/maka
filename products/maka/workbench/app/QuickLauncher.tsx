@@ -135,21 +135,31 @@ function watchUnread(fail: (reason: unknown) => void) {
   return unread;
 }
 
-type UsageStore = { current(): Usage; record(key: string): void };
+type UsageStore = {
+  current(): Usage;
+  record(key: string): void;
+  failure(): ReturnType<typeof errorText> | null;
+};
 
-function createUsageStore(report: (reason: unknown) => void): UsageStore {
+function createUsageStore(): UsageStore {
   const usage = signal<Usage>({});
+  const failure = signal<ReturnType<typeof errorText> | null>(null);
+  const report = (reason: unknown) =>
+    failure.set(errorText(reason, 'Could not load or save launcher history.'));
   Storage.getItem(USAGE_KEY)
     .then((stored) => usage.set(parseUsage(stored)))
     .catch(report);
   let saving: Promise<void> = Promise.resolve();
   return {
     current: usage,
+    failure,
     record(key) {
       const next = recordUse(usage(), key, Date.now());
       usage.set(next);
       const value = JSON.stringify(next);
-      saving = saving.then(() => Storage.setItem(USAGE_KEY, value)).catch(report);
+      saving = saving
+        .then(() => Storage.setItem(USAGE_KEY, value))
+        .then(() => failure.set(null), report);
     },
   };
 }
@@ -334,7 +344,10 @@ function Launcher(
   // A window that does not activate leaves the keyboard with the app in use until focused.
   currentWindow().focus();
   const { query, failure } = props;
-  const unread = watchUnread((reason) => failure.set(errorText(reason)));
+  const problem = () => failure() ?? props.usage.failure();
+  const unread = watchUnread((reason) =>
+    failure.set(errorText(reason, 'Could not check Maka Bot messages.')),
+  );
   const { quick } = props;
   const candidates = computed(() =>
     quick
@@ -538,7 +551,7 @@ function Launcher(
       if (query().startsWith(submitted)) query.set(query().slice(submitted.length));
       props.open(sessionId);
     } catch (reason) {
-      failure.set(errorText(reason));
+      failure.set(errorText(reason, 'Maka Bot could not be opened'));
     } finally {
       running = false;
     }
@@ -712,14 +725,14 @@ function Launcher(
             <ResultPreview value={preview()} />
           </If>
         </View>
-        <If when={failure() !== null}>
+        <If when={problem() !== null}>
           <Text
             style={[
               { ...bodyTextStyle, paddingVertical: 8, paddingLeft: 42, paddingRight: 12 },
               { color: C.warning, userSelect: 'text' },
             ]}
           >
-            {renderText(failure()!)}
+            {renderText(problem()!)}
           </Text>
         </If>
         <If
@@ -761,15 +774,11 @@ export function QuickLauncher(
     close(): Promise<boolean>;
     closed(): void;
     quick: QuickTools;
-    report(reason: unknown): void;
   },
 ) {
   const { quick } = props;
   const { commands, handles } = quick;
-  const usage = createUsageStore(props.report);
-  effect(() => {
-    if (commands.failure() !== null) props.report(commands.failure());
-  });
+  const usage = createUsageStore();
   const page = signal<UiContributionRef | null>(null);
   const query = signal('');
   const failure = signal<ReturnType<typeof errorText> | null>(null);
@@ -794,7 +803,8 @@ export function QuickLauncher(
         return entered.tool.key === tool.key ? `${entered.entry.keywords[0]} ${query()}` : '';
       },
       close: () => void props.close(),
-      report: (reason) => failure.set(errorText(reason)),
+      report: (reason) =>
+        failure.set(errorText(reason, 'Could not run {tool}.', { tool: quick.title(tool) })),
       attach: (handle) => handles.set(new Map(handles()).set(tool.key, handle)),
     });
   };
@@ -816,6 +826,22 @@ export function QuickLauncher(
     if (found.entry.run) found.entry.run();
     else show(found);
   };
+  const register = (shortcut: string, onPress: () => void) => {
+    let active = true;
+    cleanup(() => {
+      active = false;
+      GlobalShortcut.unregister(shortcut);
+    });
+    void (async () => {
+      try {
+        const registered = await GlobalShortcut.register(shortcut, onPress);
+        if (active) commands.registered(shortcut, registered ? null : 'Taken by another app');
+      } catch (reason) {
+        console.warn('Quick tools shortcut registration failed:', reason);
+        if (active) commands.registered(shortcut, 'Could not register shortcut');
+      }
+    })();
+  };
   // Only a change of the shortcuts themselves registers them again.
   const bound = computed(() =>
     (quick.enabled() ? quick.entries() : [])
@@ -830,14 +856,7 @@ export function QuickLauncher(
       .split('\n')
       .filter(Boolean)
       .map((line) => line.split('\t') as [string, string]);
-    untracked(() => {
-      for (const [shortcut, key] of list)
-        void GlobalShortcut.register(shortcut, () => launch(key)).then(
-          (taken) => commands.registered(shortcut, taken),
-          props.report,
-        );
-    });
-    cleanup(() => list.forEach(([shortcut]) => GlobalShortcut.unregister(shortcut)));
+    for (const [shortcut, key] of list) register(shortcut, () => launch(key));
   });
   // The whole launcher is off until the user turns it on: no shortcut, no popup.
   effect(() => {
@@ -845,17 +864,7 @@ export function QuickLauncher(
       if (untracked(props.opened)) void props.close();
       return;
     }
-    const shortcut = commands.launcher();
-    void GlobalShortcut.register(shortcut, toggle).then((registered) => {
-      commands.registered(shortcut, registered);
-      if (!registered)
-        props.report(
-          new Error(
-            tr('The {shortcut} shortcut is unavailable', { shortcut: keymap.label(shortcut) }),
-          ),
-        );
-    }, props.report);
-    cleanup(() => GlobalShortcut.unregister(shortcut));
+    register(commands.launcher(), toggle);
   });
   return (
     <>

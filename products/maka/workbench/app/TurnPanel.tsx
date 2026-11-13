@@ -374,7 +374,7 @@ function ActivityLog(props: {
         }
       })
       .catch((reason) => {
-        if (alive) error.set(errorText(reason));
+        if (alive) error.set(errorText(reason, 'Could not load the execution timeline.'));
       });
   return (
     <View style={{ height: bodyHeight() }}>

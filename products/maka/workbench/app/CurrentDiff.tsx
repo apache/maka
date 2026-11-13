@@ -124,7 +124,8 @@ export function createCurrentDiff(host: Host, target: CurrentDiffTarget): Curren
             : result,
       );
     } catch (reason) {
-      if (alive && reading === generation) state.set({ kind: 'error', message: errorText(reason) });
+      if (alive && reading === generation)
+        state.set({ kind: 'error', message: errorText(reason, 'Could not read file changes.') });
     }
   };
   const model: CurrentDiffModel = {

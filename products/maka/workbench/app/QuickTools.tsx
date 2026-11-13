@@ -200,11 +200,6 @@ export function QuickToolSettings(props: {
   const page = () => quick.page(props.tool);
   return (
     <View style={{ flex: 1, minHeight: 0 }}>
-      <If when={quick.commands.failure() !== null}>
-        <View style={{ paddingHorizontal: settingsGutter, paddingBottom: 12 }}>
-          <SettingsProblem message={renderText(errorText(quick.commands.failure()))} />
-        </View>
-      </If>
       <If when={entries().length > 0}>
         <View style={{ paddingHorizontal: settingsGutter, paddingBottom: 24 }}>
           <CommandSettings
@@ -212,6 +207,15 @@ export function QuickToolSettings(props: {
             all={quick.entries()}
             commands={quick.commands}
             recording={props.recording}
+          />
+        </View>
+      </If>
+      <If when={quick.commands.failure() !== null}>
+        <View style={{ paddingHorizontal: settingsGutter, paddingBottom: 12 }}>
+          <SettingsProblem
+            message={renderText(
+              errorText(quick.commands.failure(), 'Could not load or save quick tool settings.'),
+            )}
           />
         </View>
       </If>
@@ -311,9 +315,6 @@ export function QuickToolsSettings(props: {
       }
     >
       <SettingsBody>
-        <If when={quick.failure() !== null}>
-          <SettingsProblem message={renderText(errorText(quick.failure()))} />
-        </If>
         <SettingsSection>
           <SettingsSwitch
             label={tr('Turn on quick tools')}
@@ -332,6 +333,16 @@ export function QuickToolsSettings(props: {
             />
           </If>
         </SettingsSection>
+        <If when={quick.failure() !== null || quick.commands.failure() !== null}>
+          <SettingsProblem
+            message={renderText(
+              errorText(
+                quick.failure() ?? quick.commands.failure(),
+                'Could not load or save quick tool settings.',
+              ),
+            )}
+          />
+        </If>
         <If when={quick.enabled()}>
           <SettingsSection
             note={tr(

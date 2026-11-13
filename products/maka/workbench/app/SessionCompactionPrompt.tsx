@@ -107,7 +107,7 @@ export function SessionCompactionPrompt(props: {
       });
     } catch (reason) {
       if (!current()) return;
-      error.set(errorText(reason));
+      error.set(errorText(reason, 'Could not load compaction instructions.'));
       state.set(draft ? previous : { kind: 'failed' });
     }
   };
@@ -142,7 +142,7 @@ export function SessionCompactionPrompt(props: {
       if (current()) props.close();
     } catch (reason) {
       if (!current()) return;
-      error.set(errorText(reason));
+      error.set(errorText(reason, 'Could not save compaction instructions.'));
       state.set({
         kind: reason instanceof SessionRevisionConflict ? 'conflict' : 'editing',
         form: value.form,

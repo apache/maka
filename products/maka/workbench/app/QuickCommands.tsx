@@ -56,6 +56,8 @@ export type ToolEntry = { key: string; tool: UiContributionRef; entry: QuickEntr
 export const entryKey = (tool: UiContributionRef, entry: QuickEntry) =>
   `${tool.instance.path.join('/')}/${tool.id}/${entry.id}`;
 
+type ShortcutProblem = 'Taken by another app' | 'Could not register shortcut';
+
 export type Commands = {
   /** Why the choices could not be read or saved. */
   failure(): unknown;
@@ -65,16 +67,15 @@ export type Commands = {
   /** The shortcut that opens the launcher, which no command may take. */
   launcher(): string;
   setLauncher(shortcut: string): void;
-  /** Shortcuts the system refused, taken by another app. */
-  refused(): ReadonlySet<string>;
-  registered(shortcut: string, taken: boolean): void;
+  shortcutProblem(shortcut: string | undefined): string | undefined;
+  registered(shortcut: string, problem: ShortcutProblem | null): void;
 };
 
 export function createCommands(disabledCommand: (key: string) => boolean): Commands {
   const failure = signal<unknown>(null);
   const report = (reason: unknown) => failure.set(reason);
   const choices = signal<CommandChoices>({});
-  const refused = signal<ReadonlySet<string>>(new Set());
+  const shortcutProblems = signal<ReadonlyMap<string, ShortcutProblem>>(new Map());
   const launcher = signal(DEFAULT_LAUNCHER_SHORTCUT);
   // A choice made before the stored ones arrive wins over them.
   let chosen = false;
@@ -113,14 +114,17 @@ export function createCommands(disabledCommand: (key: string) => boolean): Comma
       launcher.set(shortcut);
       saving = saving.then(() => Storage.setItem(LAUNCHER_KEY, shortcut)).catch(report);
     },
-    refused,
-    registered(shortcut, taken) {
-      if (taken === refused().has(shortcut)) {
-        const next = new Set(refused());
-        if (taken) next.delete(shortcut);
-        else next.add(shortcut);
-        refused.set(next);
-      }
+    shortcutProblem(shortcut) {
+      const problem = shortcut === undefined ? undefined : shortcutProblems().get(shortcut);
+      return problem === undefined ? undefined : tr(problem);
+    },
+    registered(shortcut, problem) {
+      const current = shortcutProblems();
+      if ((current.get(shortcut) ?? null) === problem) return;
+      const next = new Map(current);
+      if (problem === null) next.delete(shortcut);
+      else next.set(shortcut, problem);
+      shortcutProblems.set(next);
     },
   };
 }
@@ -231,12 +235,7 @@ function CommandRow(props: {
   return (
     <SettingsRow
       label={item.entry.title}
-      status={
-        problem() ??
-        (shortcut() !== undefined && commands.refused().has(shortcut()!)
-          ? tr('Taken by another app')
-          : undefined)
-      }
+      status={problem() ?? commands.shortcutProblem(shortcut())}
       trailing={
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, width: 300 }}>
           <SettingsInlineInput
@@ -309,10 +308,7 @@ export function LauncherShortcutRow(props: {
   return (
     <SettingsRow
       label={tr('Shortcut to open the quick launcher')}
-      status={
-        problem() ??
-        (commands.refused().has(commands.launcher()) ? tr('Taken by another app') : undefined)
-      }
+      status={problem() ?? commands.shortcutProblem(commands.launcher())}
       trailing={
         <ShortcutRecorder
           shortcut={commands.launcher()}
