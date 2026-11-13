@@ -26,6 +26,9 @@ import {
 } from '../../scripts/desktop-nightly.mjs';
 import { workspaceReleaseManifest } from '../../scripts/release-cli-file-policy.mjs';
 import { resolveProductManifestIdentity } from '../../scripts/product-release-identity.mjs';
+// afterPack runs before signing, so the rewritten LC_UUIDs (#6026) are covered
+// by the code signature and notarization sees a self-consistent bundle.
+import { rewritePackagedMacosUuids as afterPack } from '../../scripts/macos-lc-uuid.mjs';
 
 function readManifest(relativePath) {
   return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), 'utf8'));
@@ -73,6 +76,7 @@ const baseDesktopBuilderConfig = {
   artifactName: 'Maka-${version}-mac-${arch}.${ext}',
   asar: true,
   beforePack: stageReleaseManifests,
+  afterPack,
   extraMetadata: { runtimeHostSetupPackage, makaUpdateChannel: 'release' },
   directories: {
     output: 'release',
