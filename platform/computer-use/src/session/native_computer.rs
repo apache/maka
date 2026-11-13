@@ -279,7 +279,7 @@ impl Session {
         #[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
         let windows = self
             .windows(
-                _invocation.session(),
+                None,
                 cancellation,
                 language,
                 #[cfg(target_os = "windows")]

@@ -43,8 +43,8 @@ import type { ComputerStageController, ComputerTarget } from './computerStageCon
 import { computerText } from './computerText';
 
 type Size = { width: number; height: number };
-const OFFSET_X = 28;
-const OFFSET_Y = 22;
+const OFFSET_X = 18;
+const OFFSET_Y = 14;
 
 /** The stage has no Computer input capability; clicks only select a presentation. */
 export function ComputerStage(props: {
@@ -52,8 +52,7 @@ export function ComputerStage(props: {
   frameSize(targetId: string): Size | undefined;
   frameError(targetId: string): string | undefined;
   frameReady(targetId: string): boolean;
-  maxSize?: Size;
-  contentSize?(size: Size): void;
+  viewport: Size;
   renderFrame(target: () => ComputerTarget, selected: () => boolean): JSX.Element;
 }) {
   const stage = props.controller;
@@ -80,11 +79,13 @@ export function ComputerStage(props: {
   });
   const layout = computed(() => {
     const count = ordered().length;
-    const space = props.maxSize ?? { width: 544, height: 600 };
+    const space = props.viewport;
+    const layers = Math.max(0, count - 1);
     const limit = Math.min(
-      400,
-      Math.max(1, space.width - 32 - OFFSET_X * (count - 1)),
-      Math.max(1, space.height - 72 - OFFSET_Y * (count - 1)),
+      480,
+      Math.max(240, Math.min(space.width * 0.42, space.height * 0.6)),
+      Math.max(1, space.width - 48 - OFFSET_X * layers),
+      Math.max(1, space.height - 88 - OFFSET_Y * layers),
     );
     const items = new Map<string, Size & { depth: number }>();
     let width = 0;
@@ -112,14 +113,32 @@ export function ComputerStage(props: {
       ? { width: 0, height: 0 }
       : {
           width: Math.max(stage.hidden() ? 0 : layout().width, error() ? 320 : 128) + 32,
-          height: (stage.hidden() ? 0 : layout().height) + 72 + (error() ? 52 : 0),
+          height:
+            (stage.hidden() ? 0 : layout().height) +
+            32 +
+            (error() ? 80 : candidates().length === 0 ? 40 : 0),
         },
   );
-  effect(() => {
-    const size = content();
-    untracked(() => props.contentSize?.(size));
+  const offsetX = createAnimatedValue(0);
+  const offsetY = createAnimatedValue(0);
+  const returnHome = () => {
+    if (reduceMotion()) {
+      offsetX.set(0);
+      offsetY.set(0);
+    } else {
+      void offsetX.spring(0, { mass: 1, stiffness: 185, damping: 18 });
+      void offsetY.spring(0, { mass: 1, stiffness: 185, damping: 18 });
+    }
+  };
+  cleanup(() => {
+    void offsetX.stop();
+    void offsetY.stop();
   });
   const controls = () => hovered() || focused() || stage.pinned();
+  const toolbarMaxWidth = computed(() => {
+    const frame = layout().items.get(presented() ?? '');
+    return !stage.hidden() && !error() && frame ? Math.max(0, frame.width - 16) : undefined;
+  });
   const iconButton: ViewStyle = {
     width: 28,
     height: 28,
@@ -130,7 +149,15 @@ export function ComputerStage(props: {
   };
   return (
     <View
+      accessibilityLabel={label('Computer')}
+      pan={{ x: offsetX, y: offsetY }}
+      onPanEnd={returnHome}
       style={{
+        position: 'absolute',
+        top: 8,
+        right: 8,
+        zIndex: 10,
+        translate: [offsetX, offsetY],
         width: content().width,
         height: content().height,
         padding: present() ? 16 : 0,
@@ -206,6 +233,7 @@ export function ComputerStage(props: {
                           padding: 0,
                           alignItems: 'stretch',
                           backgroundColor: C.background,
+                          borderRadius: 16,
                           boxShadow: `0 6px 20px ${C.shadow}`,
                           transitionProperty: 'opacity',
                           transitionDuration: reduceMotion() ? 0 : 200,
@@ -217,6 +245,8 @@ export function ComputerStage(props: {
                         <View
                           style={{
                             flexGrow: 1,
+                            borderRadius: 16,
+                            overflow: 'hidden',
                             filter: visible() || reduceMotion() ? 'blur(0px)' : 'blur(18px)',
                             transitionProperty: 'filter',
                             transitionDuration: reduceMotion() ? 0 : 280,
@@ -233,14 +263,24 @@ export function ComputerStage(props: {
             </View>
           </If>
           <View
-            desktop={{ windowDrag: true }}
             style={{
               flexDirection: 'row',
               alignItems: 'center',
-              gap: 6,
-              paddingTop: 8,
+              gap: 2,
+              flexWrap: 'wrap',
+              position: 'absolute',
+              top: error() || candidates().length === 0 ? layout().height + 8 : 8,
+              right: 8,
+              maxWidth: toolbarMaxWidth(),
+              zIndex: 6,
+              padding: 4,
+              borderRadius: 10,
+              backgroundColor: C.raised,
+              opacity: error() || ready().length === 0 || controls() ? 1 : 0,
+              transitionProperty: 'opacity',
+              transitionDuration: reduceMotion() ? 0 : 150,
               justifyContent: 'flex-end',
-              pointerEvents: 'auto',
+              pointerEvents: error() || ready().length === 0 || controls() ? 'auto' : 'none',
             }}
           >
             <If when={stage.hidden() || ready().length === 0 || error()}>
@@ -280,59 +320,49 @@ export function ComputerStage(props: {
                 <Icon name="refresh" size={14} color={C.secondary} />
               </Button>
             </If>
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 2,
-                opacity: stage.hidden() || ordered().length === 0 || controls() ? 1 : 0,
-                transitionProperty: 'opacity',
-                transitionDuration: reduceMotion() ? 0 : 150,
-              }}
-            >
-              <If when={!stage.hidden() && presented() !== null}>
-                <Text
-                  style={{
-                    fontSize: 10,
-                    color: C.secondary,
-                    maxWidth: 180,
-                    numberOfLines: 1,
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {stage.targets().find((target) => target.id === presented())?.title}
-                </Text>
-                <Button
-                  accessibilityLabel={label(stage.pinned() ? 'Unpin target' : 'Pin target')}
-                  onPress={inputAction(stage.togglePin, null)}
-                  style={iconButton}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
-                >
-                  <Icon name="pin" size={14} color={stage.pinned() ? C.accent : C.secondary} />
-                </Button>
-                <If when={stage.pinned() || stage.selected() !== stage.snapshot()?.activeTargetId}>
-                  <Button
-                    accessibilityLabel={label('Follow agent')}
-                    onPress={inputAction(stage.follow, null)}
-                    style={iconButton}
-                    hoverStyle={controlHoverStyle()}
-                    focusStyle={controlFocusStyle()}
-                  >
-                    <Icon name="play" size={14} color={C.secondary} />
-                  </Button>
-                </If>
-              </If>
+            <If when={!stage.hidden() && presented() !== null}>
+              <Text
+                style={{
+                  fontSize: 10,
+                  color: C.secondary,
+                  maxWidth: 120,
+                  flexShrink: 1,
+                  numberOfLines: 1,
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {stage.targets().find((target) => target.id === presented())?.title}
+              </Text>
               <Button
-                accessibilityLabel={label(stage.hidden() ? 'Show live view' : 'Hide live view')}
-                onPress={inputAction(() => stage.hidden.set(!stage.hidden()), null)}
+                accessibilityLabel={label(stage.pinned() ? 'Unpin target' : 'Pin target')}
+                onPress={inputAction(stage.togglePin, null)}
                 style={iconButton}
                 hoverStyle={controlHoverStyle()}
                 focusStyle={controlFocusStyle()}
               >
-                <Icon name={stage.hidden() ? 'expand' : 'close'} size={14} color={C.secondary} />
+                <Icon name="pin" size={14} color={stage.pinned() ? C.accent : C.secondary} />
               </Button>
-            </View>
+              <If when={stage.pinned() || stage.selected() !== stage.snapshot()?.activeTargetId}>
+                <Button
+                  accessibilityLabel={label('Follow agent')}
+                  onPress={inputAction(stage.follow, null)}
+                  style={iconButton}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                >
+                  <Icon name="play" size={14} color={C.secondary} />
+                </Button>
+              </If>
+            </If>
+            <Button
+              accessibilityLabel={label(stage.hidden() ? 'Show live view' : 'Hide live view')}
+              onPress={inputAction(() => stage.hidden.set(!stage.hidden()), null)}
+              style={iconButton}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+            >
+              <Icon name={stage.hidden() ? 'expand' : 'close'} size={14} color={C.secondary} />
+            </Button>
           </View>
         </View>
       </If>

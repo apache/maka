@@ -91,6 +91,7 @@ type Command =
   | { kind: 'decode'; targetId: string; value: boolean }
   | { kind: 'select'; targetId: string }
   | { kind: 'measure' }
+  | { kind: 'pane'; left: number; top: number; width: number; height: number }
   | { kind: 'failure'; method: 'watchStage' | 'watchFrames'; reason: string }
   | { kind: 'end'; method: 'watchStage' | 'watchFrames' }
   | { kind: 'unavailable'; index: number; reason: string }
@@ -108,7 +109,7 @@ mount(() => {
   const changed = () => untracked(() => tick.set(tick() + 1));
   const decoded = signal<ReadonlyMap<string, string>>(new Map());
   const measured = signal('none');
-  const contentSize = signal('0x0');
+  const pane = signal({ left: 140, top: 80, width: 700, height: 600 });
   const refs = new Map<string, ViewRef>();
   const lifetimes = new Map<string, { mounted: number; disposed: number }>();
   let decode: (id: string, value: boolean) => void;
@@ -236,6 +237,14 @@ mount(() => {
       case 'unavailable':
         reads[command.index]!.resolve({ kind: 'unavailable', message: command.reason });
         break;
+      case 'pane':
+        pane.set({
+          left: command.left,
+          top: command.top,
+          width: command.width,
+          height: command.height,
+        });
+        break;
       case 'measure':
         measured.set('pending');
         void Promise.all(
@@ -338,7 +347,7 @@ mount(() => {
           frameReady={(id) =>
             cachedReady() || (decoded().has(id) && decoded().get(id) === identity(id))
           }
-          contentSize={(size) => contentSize.set(`${size.width}x${size.height}`)}
+          viewport={pane()}
           renderFrame={(target, presented) => {
             const id = target().id;
             const counts = lifetimes.get(id) ?? { mounted: 0, disposed: 0 };
@@ -374,7 +383,6 @@ mount(() => {
       <Text>{calls()}</Text>
       <Text>{`Fault ${fault()}`}</Text>
       <Text>{`Bounds ${measured()}`}</Text>
-      <Text>{`Content ${contentSize()}`}</Text>
       <Text>
         {(() => {
           tick();
@@ -382,7 +390,9 @@ mount(() => {
         })()}
       </Text>
       <If when={mounted()}>
-        <StageOwner />
+        <View testID="session-pane" style={{ position: 'absolute', ...pane() }}>
+          <StageOwner />
+        </View>
       </If>
       <If when={!mounted()}>
         <Text>Unmounted</Text>

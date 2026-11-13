@@ -1695,7 +1695,6 @@ pub(super) fn retained_image() {
         pump(&|| pixel.get() == [0, 0, 0, 255]);
         phase.set(2);
         assets.release(2);
-        // A subsequent completed load is the barrier for earlier queued callbacks.
         key(&surface, "f3");
         assets.release(3);
         pump(&|| pixel.get() == [0, 0, 255, 255]);
@@ -1707,6 +1706,15 @@ pub(super) fn retained_image() {
         key(&surface, "f7");
         pump(&|| *assets.requested.lock().unwrap() == 7);
         key(&surface, "f6");
+        // Black predates removal; fence the input before releasing the decode.
+        let removed = Rc::new(Cell::new(false));
+        let done = removed.clone();
+        surface.pause_input(Box::new(move |result| {
+            result.expect("remove input fence");
+            done.set(true);
+        }));
+        pump(&|| removed.get());
+        surface.resume_input();
         pump(&|| pixel.get() == [0, 0, 0, 255]);
         phase.set(3);
         assets.release(7);

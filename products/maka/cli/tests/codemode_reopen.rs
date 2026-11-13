@@ -1051,6 +1051,39 @@ async fn case(
     base: &str,
     language: CodeLanguage,
 ) -> Result<()> {
+    // Seed before admission, while this fixture is the only configuration writer.
+    let connection = {
+        let root = sandbox.root.clone();
+        let owner = tokio::task::spawn_blocking(move || {
+            maka_event_log::root::RootOwner::create(
+                &root,
+                &maka_event_log::root::RootNamespaces::for_current_account().unwrap(),
+            )
+            .unwrap()
+        })
+        .await
+        .unwrap();
+        let store = maka_config::ConfigurationStore::for_root(Arc::new(owner))
+            .await
+            .unwrap();
+        let created = store.create_connection(serde_json::from_value(json!({
+        "expectedCatalogRevision":0,"connection":{
+            "slug":"codemode","name":"CodeMode loopback","provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"},
+            "configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":["gpt-4.1"],
+            "modelOverrides":{"gpt-4.1":{"codeMode":true,"codeModeLanguage":language,"apiProtocol":"openai-chat-completions"}}
+        }
+    })).unwrap()).await;
+        store.shutdown().await.map_err(|error| error.to_string())?;
+        let created = created.map_err(|error| error.to_string())?;
+        let maka_agent_facts::configuration::CatalogMutationResult::Committed {
+            connection: Some(connection),
+            ..
+        } = created
+        else {
+            panic!("fixture connection was not committed: {created:?}");
+        };
+        json!(connection.connection_id)
+    };
     hosts.push(Host::spawn(sandbox)?);
     let (first, _) = phase("first default Host ready", hosts[0].ready()).await?;
     let epoch = first.epoch();
@@ -1062,21 +1095,6 @@ async fn case(
         phase("external client Journal", Journal::open(&sandbox.journal)).await?,
         "receipts".into(),
     )?);
-    let catalog = phase(
-        "connection catalog",
-        clients[0].query("settings", "connections", json!({"kind":"start"})),
-    )
-    .await?;
-    assert_eq!(catalog["kind"], "ready");
-    let connection = mutate(&clients[0], "settings", "create", json!({
-        "expectedCatalogRevision":catalog["revision"],"connection":{
-            "slug":"codemode","name":"CodeMode loopback","provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"},
-            "configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":["gpt-4.1"],
-            "modelOverrides":{"gpt-4.1":{"codeMode":true,"codeModeLanguage":language,"apiProtocol":"openai-chat-completions"}}
-        }
-    }), Attachments::new()).await?;
-    assert_eq!(connection["kind"], "committed");
-    let connection = connection["connection"]["connectionId"].clone();
     let detail = phase(
         "credential target",
         clients[0].query("settings", "connection", json!({"connectionId":connection})),

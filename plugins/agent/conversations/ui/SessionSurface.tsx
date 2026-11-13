@@ -1727,6 +1727,7 @@ export function createConversationUi(
   };
   let sideKeys: ViewRef | undefined;
   let paneRoot: ViewRef | undefined;
+  const computerViewport = signal({ width: 0, height: 0 });
   if (!side) {
     bindKeys();
     windowTitle(() => handle()?.title() ?? null);
@@ -2228,18 +2229,7 @@ export function createConversationUi(
           },
         },
       );
-      if (input.surface !== 'overlays') return workspaceView;
-      return (
-        <>
-          <ComputerStageView
-            controller={computer}
-            source={computerSource}
-            visible={computerVisible}
-            report={(reason) => console.warn('Computer Stage:', reason)}
-          />
-          {workspaceView}
-        </>
-      );
+      return workspaceView;
     },
     session(input: ConversationSessionInput) {
       if (input.firstMessage !== undefined)
@@ -2469,14 +2459,28 @@ export function createConversationUi(
                 ),
               );
             }}
+            onLayout={({ bounds }) => computerViewport.set(bounds.size)}
             onFileDrop={(event) => {
               fileDragging.set(false);
               dropFiles?.(event);
             }}
             onFileDragEnter={() => fileDragging.set(true)}
             onFileDragLeave={() => fileDragging.set(false)}
-            style={input.compact ? { flexShrink: 1, minHeight: 0 } : { flex: 1, minHeight: 0 }}
+            style={
+              input.compact
+                ? { flexShrink: 1, minHeight: 0 }
+                : { flex: 1, minHeight: 0, position: 'relative' }
+            }
           >
+            <If when={input.compact === undefined}>
+              <ComputerStageView
+                controller={computer}
+                source={computerSource}
+                visible={computerVisible}
+                viewport={computerViewport()}
+                report={(reason) => console.warn('Computer Stage:', reason)}
+              />
+            </If>
             <If
               when={
                 computer.hidden() &&

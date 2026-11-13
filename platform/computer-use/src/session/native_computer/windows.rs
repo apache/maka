@@ -59,7 +59,7 @@ impl Session {
             }
             ListWindows | GetWindow => {
                 let windows = self
-                    .windows(invocation.session(), cancellation, language, invocation)
+                    .windows(None, cancellation, language, invocation)
                     .await?;
                 if matches!(operation, ListWindows) {
                     return Ok(json!(

@@ -131,7 +131,7 @@ pub enum Command {
         options: InventoryOptions,
     },
     ListWindows {
-        options: InventoryOptions,
+        options: WindowInventoryOptions,
     },
     GetApp {
         target: AppReference,
@@ -349,6 +349,12 @@ pub struct AudioOptions {
 pub struct InventoryOptions {
     pub emit: Option<bool>,
     pub browser: Option<String>,
+}
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowInventoryOptions {
+    pub emit: Option<bool>,
+    pub pid: Option<u32>,
 }
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]

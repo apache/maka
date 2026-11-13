@@ -286,6 +286,13 @@ mod tests {
         }
 
         fn start_with_reduce_motion(reduce_motion: bool) -> nsh_testing::Headless {
+            start_with_clock(reduce_motion, nsh_core::time::Clock::default())
+        }
+
+        fn start_with_clock(
+            reduce_motion: bool,
+            clock: nsh_core::time::Clock,
+        ) -> nsh_testing::Headless {
             let mut registry = crate::bindings::ui_registry();
             registry.value("host", || Instance::new(CompletionHost));
             let sets = vec![nsh_base::registry(), registry];
@@ -313,6 +320,7 @@ mod tests {
                     ..Environment::default()
                 },
                 ui_sets: sets,
+                clock,
                 ..nsh_engine::EngineConfig::new(bundle)
             })
             .unwrap();
@@ -735,6 +743,303 @@ mod tests {
         }
 
         #[test]
+        fn stage_tracks_the_session_content_corner_when_the_pane_moves_and_resizes() {
+            for (source_width, source_height) in [(1200, 800), (800, 1200)] {
+                for count in [1, 5] {
+                    let mut app = start();
+                    app.set_viewport(Size::new(px(1600.), px(1200.))).unwrap();
+                    let ids = ["a", "b", "c", "d", "e"];
+                    stage(
+                        &mut app,
+                        "session-1",
+                        "binding",
+                        1,
+                        &ids[..count],
+                        Some("a"),
+                        1,
+                    );
+                    streams(&mut app, 1, 1);
+                    for (index, id) in ids[..count].iter().enumerate() {
+                        load(&mut app, id, index, source_width, source_height);
+                        decode(&mut app, id, true);
+                    }
+                    if count == 5 {
+                        app.hover("label:Target a").unwrap();
+                        app.press("label:Pin target").unwrap();
+                    }
+                    for (left, top, width, height, long_edge) in [
+                        (240., 120., 550., 500., 240.),
+                        (100., 40., 780., 650., 327.6),
+                        (80., 20., 1480., 1000., 480.),
+                        (140., 80., 700., 420., 252.),
+                        (240., 120., 550., 500., 240.),
+                        (240., 120., 550., 280., if count == 5 { 136. } else { 192. }),
+                    ] {
+                        send(
+                            &mut app,
+                            json!({"kind":"pane", "left":left, "top":top, "width":width, "height":height}),
+                        );
+                        let cards = measured(&mut app);
+                        assert_eq!(cards.len(), count);
+                        let front = cards.iter().find(|card| card.0 == "a").unwrap();
+                        assert!(
+                            (front.1 + front.3 - (left + width - 24.)).abs() < 0.6,
+                            "{front:?}"
+                        );
+                        assert!((front.2 - (top + 24.)).abs() < 0.6, "{front:?}");
+                        assert!(
+                            (front.3.max(front.4) - long_edge).abs() < 0.6,
+                            "resize must change the card: {front:?}, expected {long_edge}"
+                        );
+                        for card in &cards {
+                            assert!(
+                                (card.3 / card.4 - source_width as f64 / source_height as f64)
+                                    .abs()
+                                    < 0.01
+                            );
+                            assert!(
+                                card.1 >= left
+                                    && card.2 >= top
+                                    && card.1 + card.3 <= left + width
+                                    && card.2 + card.4 <= top + height,
+                                "card escaped its pane: {card:?}"
+                            );
+                        }
+                        app.wait_for("text:Frame a presented true image-a").unwrap();
+                        app.wait_for(&format!("text:Selected a pinned {}", count == 5))
+                            .unwrap();
+                        app.wait_for("text:Streams 1/1 closed 0").unwrap();
+                        let lifetimes = ids[..count]
+                            .iter()
+                            .map(|id| format!("{id}:1/0"))
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        app.wait_for(&format!("text:Lifetimes {lifetimes}"))
+                            .unwrap();
+                    }
+                    assert!(
+                        !app.screen().commands().iter().any(|(_, command)| matches!(command, nsh_core::Command::Desktop(value) if matches!(value.as_ref(), nsh_core::desktop::DesktopCommand::OpenWindow(_))))
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn stage_drag_holds_its_offset_until_release_then_returns_home_without_selecting() {
+            use nsh_core::{MountItem, animation::Animator, geometry::point};
+            use std::sync::{Arc, Mutex};
+            for (reduced, pinned) in [(false, false), (true, false), (false, true)] {
+                let mut app = start_with_clock(
+                    reduced,
+                    nsh_core::time::Clock::manual(std::time::SystemTime::UNIX_EPOCH),
+                );
+                send(&mut app, json!({"kind":"mounted", "value":false}));
+                let samples = Arc::new(Mutex::new(Vec::<MountItem>::new()));
+                let observed = samples.clone();
+                app.observe(move |_, batch| {
+                    observed.lock().unwrap().extend(batch.items.iter().cloned())
+                });
+                send(&mut app, json!({"kind":"mounted", "value":true}));
+                stage(
+                    &mut app,
+                    "session-1",
+                    "binding",
+                    1,
+                    &["a", "b"],
+                    Some("a"),
+                    1,
+                );
+                streams(&mut app, 1, 1);
+                load(&mut app, "a", 0, 800, 600);
+                decode(&mut app, "a", true);
+                app.wait_for("text:Frame a presented true image-a").unwrap();
+                load(&mut app, "b", 1, 800, 600);
+                decode(&mut app, "b", true);
+                app.wait_for("text:Frame b presented false image-b")
+                    .unwrap();
+                if pinned {
+                    app.hover("label:Target a").unwrap();
+                    app.press("label:Pin target").unwrap();
+                }
+                app.wait_for(&format!("text:Selected a pinned {pinned}"))
+                    .unwrap();
+                let node = app.screen().id("label:Computer").unwrap();
+                let mut native = Animator::default();
+                let mut consumed = 0;
+                let apply = |native: &mut Animator, consumed: &mut usize| {
+                    let items = samples.lock().unwrap();
+                    for item in &items[*consumed..] {
+                        native.apply(item);
+                    }
+                    *consumed = items.len();
+                };
+                apply(&mut native, &mut consumed);
+                native.tick(0.);
+                // The renderer drives the same native pan bindings as the headless pointer.
+                native.pan_began(node);
+                native.pan_moved(node, point(px(-120.), px(60.)));
+                app.drag_and_hold("label:Target b", point(px(-120.), px(60.)))
+                    .unwrap();
+                apply(&mut native, &mut consumed);
+                native.tick(1.);
+                assert_eq!(native.pan_values(node), (Some(-120.), Some(60.)));
+                app.run_for(std::time::Duration::from_millis(500)).unwrap();
+                apply(&mut native, &mut consumed);
+                native.tick(2.);
+                assert_eq!(native.pan_values(node), (Some(-120.), Some(60.)));
+                app.drop_held().unwrap();
+                apply(&mut native, &mut consumed);
+                native.tick(2.);
+                if !reduced {
+                    native.tick(2.1);
+                    let (x, y) = native.pan_values(node);
+                    assert!(x.unwrap() > -120. && x.unwrap() < 0.);
+                    assert!(y.unwrap() > 0. && y.unwrap() < 60.);
+                    native.tick(4.);
+                }
+                let (x, y) = native.pan_values(node);
+                assert!(x.unwrap().abs() < 0.01 && y.unwrap().abs() < 0.01);
+                app.wait_for(&format!("text:Selected a pinned {pinned}"))
+                    .unwrap();
+                app.press("label:Target b").unwrap();
+                app.wait_for(&format!("text:Selected b pinned {pinned}"))
+                    .unwrap();
+                app.wait_for("text:Fault none").unwrap();
+            }
+        }
+
+        #[test]
+        fn stage_long_title_toolbar_stays_inside_the_front_card_when_hovered_and_pinned() {
+            for (width, height) in [(1200, 800), (800, 1200)] {
+                let mut app = start();
+                app.set_viewport(Size::new(px(1600.), px(1200.))).unwrap();
+                let ids = ["a", "b", "c", "d", "e"];
+                let title = |id: &str| {
+                    format!(
+                        "http://127.0.0.1:51128/fixture#owned=stage-long-title-3adaef0fdfce4beeb2bce62e0d43801a&target={id}"
+                    )
+                };
+                let targets: Vec<_> = ids
+                    .iter()
+                    .map(|id| {
+                        json!({
+                            "id": id, "title": title(id), "kind": "browser", "revision": 1,
+                        })
+                    })
+                    .collect();
+                send(
+                    &mut app,
+                    json!({"kind":"stage", "value": {
+                        "sessionId":"session-1", "bindingId":"binding", "revision":1,
+                        "targets":targets, "activeTargetId":"a",
+                    }}),
+                );
+                streams(&mut app, 1, 1);
+                for (index, id) in ids.iter().enumerate() {
+                    load(&mut app, id, index, width, height);
+                    decode(&mut app, id, true);
+                }
+                app.wait_for("text:Frame a presented true image-a").unwrap();
+                app.hover(&format!("label:{}", title("a"))).unwrap();
+
+                let check = |app: &mut nsh_testing::Headless, pinned: bool| {
+                    let front = measured(app)
+                        .into_iter()
+                        .find(|card| card.0 == "a")
+                        .unwrap();
+                    let screen = app.screen();
+                    let nodes = screen.layout_nodes();
+                    let pin = screen
+                        .id(if pinned {
+                            "label:Unpin target"
+                        } else {
+                            "label:Pin target"
+                        })
+                        .unwrap();
+                    let hide = screen.id("label:Hide live view").unwrap();
+                    let pin_node = nodes.iter().find(|node| node.id == pin).unwrap();
+                    let toolbar = nodes
+                        .iter()
+                        .find(|node| node.id == pin_node.parent)
+                        .unwrap();
+                    let title_node = nodes
+                        .iter()
+                        .find(|node| {
+                            node.parent == toolbar.id
+                                && node
+                                    .text
+                                    .as_ref()
+                                    .is_some_and(|text| text.text.text == title("a"))
+                        })
+                        .unwrap();
+                    if front.3 >= 240. {
+                        let title_width = title_node.text.as_ref().unwrap().content.size.width.0;
+                        assert!(
+                            title_width > 40.,
+                            "wide cards must leave readable title space: {title_node:?}, toolbar={toolbar:?}"
+                        );
+                    }
+                    let mut visible = vec![toolbar.id, title_node.id, pin, hide];
+                    if pinned {
+                        visible.push(screen.id("label:Follow agent").unwrap());
+                    }
+                    for id in visible {
+                        let node = nodes.iter().find(|node| node.id == id).unwrap();
+                        let left = f64::from(node.bounds.origin.x.0);
+                        let right = left + f64::from(node.bounds.size.width.0);
+                        let top = f64::from(node.bounds.origin.y.0);
+                        let bottom = top + f64::from(node.bounds.size.height.0);
+                        if id != toolbar.id {
+                            let bar_left = f64::from(toolbar.bounds.origin.x.0);
+                            let bar_top = f64::from(toolbar.bounds.origin.y.0);
+                            assert!(
+                                left >= bar_left - 0.6
+                                    && right
+                                        <= bar_left + f64::from(toolbar.bounds.size.width.0) + 0.6
+                                    && top >= bar_top - 0.6
+                                    && bottom
+                                        <= bar_top + f64::from(toolbar.bounds.size.height.0) + 0.6,
+                                "control escaped toolbar background: {node:?}, toolbar={toolbar:?}"
+                            );
+                        }
+                        assert!(
+                            left >= front.1 - 0.6
+                                && right <= front.1 + front.3 + 0.6
+                                && top >= front.2 - 0.6
+                                && bottom <= front.2 + front.4 + 0.6,
+                            "toolbar and its controls must fit the front card: {node:?}, front={front:?}, toolbar={toolbar:?}"
+                        );
+                    }
+                    let toolbar_right =
+                        f64::from(toolbar.bounds.origin.x.0 + toolbar.bounds.size.width.0);
+                    assert!((toolbar_right - (front.1 + front.3 - 8.)).abs() < 0.6);
+                };
+                for (width, height) in [(550, 500), (1150, 900), (700, 600), (550, 280)] {
+                    send(
+                        &mut app,
+                        json!({"kind":"pane", "left":140, "top":80, "width":width, "height":height}),
+                    );
+                    app.hover(&format!("label:{}", title("a"))).unwrap();
+                    check(&mut app, false);
+                }
+                app.press("label:Pin target").unwrap();
+                app.wait_for("label:Unpin target").unwrap();
+                app.wait_for("label:Follow agent").unwrap();
+                for (width, height) in [(550, 500), (1150, 900), (700, 600), (550, 280)] {
+                    send(
+                        &mut app,
+                        json!({"kind":"pane", "left":140, "top":80, "width":width, "height":height}),
+                    );
+                    check(&mut app, true);
+                }
+                app.press("label:Follow agent").unwrap();
+                app.wait_for("text:Selected a pinned false").unwrap();
+                app.press("label:Hide live view").unwrap();
+                streams(&mut app, 1, 0);
+            }
+        }
+
+        #[test]
         fn stage_portrait_landscape_and_two_to_five_cards_use_real_proportional_bounds() {
             for (width, height) in [(1200, 800), (800, 1200)] {
                 let mut app = start();
@@ -760,7 +1065,7 @@ mod tests {
                         let card = cards.iter().find(|card| card.0 == *id).unwrap();
                         let long = card.3.max(card.4);
                         assert!(
-                            (399.0..=400.5).contains(&long),
+                            (293.5..=294.5).contains(&long),
                             "{id} became a thumbnail: {card:?}"
                         );
                         assert!(
@@ -772,11 +1077,11 @@ mod tests {
                             "back cards must not shrink: {cards:?}"
                         );
                         assert!(
-                            (card.1 - front.1 + depth as f64 * 28.0).abs() < 0.6,
+                            (card.1 - front.1 + depth as f64 * 18.0).abs() < 0.6,
                             "wrong horizontal stack offset: {cards:?}"
                         );
                         assert!(
-                            (card.2 - front.2 - depth as f64 * 22.0).abs() < 0.6,
+                            (card.2 - front.2 - depth as f64 * 14.0).abs() < 0.6,
                             "wrong vertical stack offset: {cards:?}"
                         );
                     }
@@ -788,10 +1093,10 @@ mod tests {
         fn stage_faults_expose_reason_and_explicit_retry_but_empty_and_normal_close_are_not_errors()
         {
             let mut app = start();
-            app.wait_for("text:Content 0x0").unwrap();
+            assert_eq!(app.screen().count("label:Computer").unwrap(), 0);
             assert!(!app.shows("Live view unavailable"));
             stage(&mut app, "session-1", "binding", 1, &[], None, 1);
-            app.wait_for("text:Content 0x0").unwrap();
+            assert_eq!(app.screen().count("label:Computer").unwrap(), 0);
             send(&mut app, json!({"kind":"end", "method":"watchStage"}));
             streams(&mut app, 0, 0);
             app.wait_for("text:Fault none").unwrap();
@@ -833,7 +1138,7 @@ mod tests {
             assert!(!app.shows("Live view unavailable"));
             send(&mut app, json!({"kind":"end", "method":"watchStage"}));
             streams(&mut app, 0, 0);
-            app.wait_for("text:Content 0x0").unwrap();
+            assert_eq!(app.screen().count("label:Computer").unwrap(), 0);
             assert!(!app.shows("Live view unavailable"));
         }
     }

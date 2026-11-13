@@ -554,6 +554,27 @@ impl Transport {
         };
         #[cfg(not(target_os = "macos"))]
         let maximum_response = MAX_MESSAGE;
+        let request_name = match &request {
+            Request::Update { .. } => "cursor update",
+            Request::State { .. } => "cursor state",
+            Request::Remove { .. } => "cursor removal",
+            #[cfg(target_os = "macos")]
+            Request::Geometry { .. } => "window geometry",
+            #[cfg(target_os = "macos")]
+            Request::MacMetadata { query } => match query {
+                crate::macos::page_scroll::metadata::Query::WindowOrder => "window order",
+                crate::macos::page_scroll::metadata::Query::KeyboardLayout => "keyboard layout",
+                crate::macos::page_scroll::metadata::Query::Process { .. } => "process metadata",
+                crate::macos::page_scroll::metadata::Query::GlobalWindow { .. } => {
+                    "global window metadata"
+                }
+                crate::macos::page_scroll::metadata::Query::FirstBundleProcess { .. } => {
+                    "bundle process metadata"
+                }
+            },
+        };
+        let renderer_pid = process.child.id();
+        let mut phase = "sending request";
         let result =
             tokio::time::timeout(Duration::from_secs(if starting { 10 } else { 3 }), async {
                 let mut bytes = serde_json::to_vec(&request).map_err(failed)?;
@@ -569,6 +590,7 @@ impl Transport {
                     .write_all(&bytes)
                     .await
                     .map_err(failed)?;
+                phase = "waiting for response";
                 let mut line = String::new();
                 (&mut process.output)
                     .take(maximum_response.saturating_add(1))
@@ -603,7 +625,14 @@ impl Transport {
                 Ok(value)
             })
             .await
-            .unwrap_or_else(|_| Err(failed("cursor renderer did not respond")));
+            .unwrap_or_else(|_| {
+                let renderer_pid = renderer_pid
+                    .map(|pid| pid.to_string())
+                    .unwrap_or_else(|| "unknown".into());
+                Err(failed(format!(
+                    "cursor renderer did not respond to {request_name} while {phase} (renderer pid {renderer_pid})"
+                )))
+            });
         match result {
             Ok(value) => Ok(value),
             Err(error) => {

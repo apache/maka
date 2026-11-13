@@ -543,10 +543,10 @@ impl Session {
                 )
                 .await
             }
-            Command::ListWindows { .. } => {
+            Command::ListWindows { options } => {
                 let windows = self
                     .windows(
-                        session,
+                        options.pid,
                         cancellation,
                         language,
                         #[cfg(target_os = "windows")]
@@ -635,9 +635,16 @@ impl Session {
                     }
                     (target, None) => target,
                 };
+                #[cfg(target_os = "macos")]
+                let pid = expected
+                    .as_ref()
+                    .and_then(|target| target.binding.as_ref())
+                    .map(|binding| binding.pid);
+                #[cfg(not(target_os = "macos"))]
+                let pid = None;
                 let windows = self
                     .windows(
-                        session,
+                        pid,
                         cancellation,
                         language,
                         #[cfg(target_os = "windows")]
@@ -746,7 +753,7 @@ impl Session {
                                 .await?;
                             let pid=launched.structured_content.as_ref().and_then(|value| value["pid"].as_u64()).ok_or_else(|| ToolError::OutcomeUnknown(match language { Language::En => "launch requested but process identity unavailable; inspect inventory before retrying", Language::ZhCn => "已请求启动但无法获取进程标识；重试前请检查清单", Language::ZhTw => "已請求啟動但無法取得程序識別；重試前請檢查清單" }.into()))?;
                             self.windows(
-                                session,
+                                Some(u32::try_from(pid).map_err(failed)?),
                                 cancellation,
                                 language,
                                 #[cfg(target_os = "windows")]
@@ -1038,7 +1045,7 @@ impl Session {
     }
     async fn windows(
         &mut self,
-        _session: &str,
+        pid: Option<u32>,
         cancellation: &CancellationToken,
         language: Language,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
@@ -1046,7 +1053,7 @@ impl Session {
         let output: ListWindowsOutput = decode(
             self.invoke_native(
                 "list_windows",
-                json!({}),
+                pid.map_or_else(|| json!({}), |pid| json!({"pid": pid})),
                 cancellation,
                 language,
                 #[cfg(target_os = "windows")]
@@ -1058,7 +1065,7 @@ impl Session {
     }
     async fn apps(
         &mut self,
-        session: &str,
+        _session: &str,
         cancellation: &CancellationToken,
         language: Language,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
@@ -1076,7 +1083,7 @@ impl Session {
         )?;
         let windows = self
             .windows(
-                session,
+                None,
                 cancellation,
                 language,
                 #[cfg(target_os = "windows")]
@@ -1135,7 +1142,7 @@ impl Session {
     async fn verify(
         &mut self,
         handle: &str,
-        session: &str,
+        _session: &str,
         cancellation: &CancellationToken,
         language: Language,
         #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
@@ -1174,7 +1181,7 @@ impl Session {
         let macos = target.macos.clone();
         let windows = self
             .windows(
-                session,
+                Some(pid),
                 cancellation,
                 language,
                 #[cfg(target_os = "windows")]
@@ -1198,6 +1205,16 @@ impl Session {
             match verified {
                 Ok(bounds) => WindowInfo { bounds, ..window },
                 Err(error) => {
+                    let stale = match &error {
+                        ToolError::Failed(message) => message.starts_with("stale_target:"),
+                        ToolError::Native(error) => {
+                            error.code == platform_macos::ax::bindings::kAXErrorInvalidUIElement
+                        }
+                        _ => false,
+                    };
+                    if stale {
+                        return Err(self.retire_failed_target(handle, error).await);
+                    }
                     // AX timeouts do not prove that the window was replaced.
                     // Keep its retained identity, but require a fresh observation
                     // before any indexed or coordinate input can resume.
@@ -2644,8 +2661,6 @@ async fn window_rows(
         return Ok(Vec::new());
     }
     tokio::task::spawn_blocking(move || {
-        #[cfg(target_os = "macos")]
-        let inventory = platform_macos::apps::list_all_apps();
         #[cfg(not(target_os = "macos"))]
         let _ = language;
         let mut owners = HashMap::new();
@@ -2659,7 +2674,6 @@ async fn window_rows(
                         #[cfg(target_os = "macos")]
                         return crate::macos::permission_subject::window_owner(
                             i32::try_from(pid).map_err(failed)?,
-                            &inventory,
                             language,
                         );
                         #[cfg(not(target_os = "macos"))]

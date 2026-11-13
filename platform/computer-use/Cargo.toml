@@ -110,7 +110,7 @@ screencapturekit = { version = "8.0.1", features = ["macos_15_0"], optional = tr
 core-foundation = { version = "0.10.1", optional = true }
 objc2 = { version = "0.6.5" }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSBundle", "NSData", "NSString", "NSURL"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem"], optional = true }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSRunningApplication"], optional = true }
 
 [[example]]
 name = "cursor-preview"
