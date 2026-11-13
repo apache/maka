@@ -545,6 +545,7 @@ export function SettingsSearch(props: {
 export function SettingsInput(props: {
   label: string;
   description?: string;
+  stacked?: boolean;
   value: string;
   change(value: string): void;
   placeholder?: string;
@@ -555,15 +556,26 @@ export function SettingsInput(props: {
   error?: string;
 }) {
   return (
-    <View style={{ ...rowStyle, alignItems: props.error ? 'flex-start' : 'center' }}>
+    <View
+      style={{
+        ...rowStyle,
+        flexDirection: props.stacked ? 'column' : 'row',
+        alignItems: props.stacked ? 'stretch' : props.error ? 'flex-start' : 'center',
+      }}
+    >
       <RowLine />
-      <View style={[{ width: '36%', minWidth: 0, gap: textGap }, { pointerEvents: 'none' }]}>
+      <View
+        style={[
+          { width: props.stacked ? '100%' : '36%', minWidth: 0, gap: textGap },
+          { pointerEvents: 'none' },
+        ]}
+      >
         <Text style={{ ...labelStyle, color: C.text }}>{props.label}</Text>
         <If when={props.description}>
           <Text style={{ ...captionTextStyle, color: C.muted }}>{props.description}</Text>
         </If>
       </View>
-      <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+      <View style={{ flex: props.stacked ? undefined : 1, minWidth: 0, gap: 4 }}>
         <Input
           accessibilityLabel={props.label}
           autoFocus={props.autoFocus}
