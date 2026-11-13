@@ -41,6 +41,21 @@ const WORKSPACE_CONTEXT = {
 };
 
 describe('PermissionProfile factories', () => {
+  test('an explicit root read policy permits POSIX reads without permitting writes', () => {
+    const profile: PermissionProfileManaged = {
+      ...createReadOnlyPermissionProfile(),
+      fileSystem: {
+        kind: 'restricted',
+        entries: [{ kind: 'special', access: 'read', special: ':root' }],
+      },
+    };
+
+    assert.equal(canReadPath(profile, '/'), true);
+    assert.equal(canReadPath(profile, '/tmp/file.txt'), true);
+    assert.equal(canWritePath(profile, '/tmp/file.txt'), false);
+    assert.equal(canReadPath(profile, '/tmp/../etc/passwd'), false);
+  });
+
   test('read-only profile allows workspace reads and blocks writes', () => {
     const profile = createReadOnlyPermissionProfile();
 
