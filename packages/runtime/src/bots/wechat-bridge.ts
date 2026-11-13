@@ -561,6 +561,28 @@ export function mapWechatBridgeMessage(raw: unknown): BotIncomingMessage | null 
   };
 }
 
+/**
+ * Stable fallback key for iLink frames that carry no id field at all.
+ * A redelivered frame repeats the same sender, timestamp and item
+ * list, so hashing those maps the retransmission onto the same
+ * `sourceMessageId` — what the `botSourceEventKey` dedupe contract
+ * needs. (A `randomUUID()` fallback here handed every redelivery a
+ * fresh key and produced duplicate turns.) Distinct frames collide
+ * only when one user sends a byte-identical item list within the
+ * same timestamp tick; a SHA-256 digest of the tuple keeps the
+ * probability negligible beyond that.
+ */
+function ilinkContentMessageKey(
+  userId: string,
+  timestamp: number | undefined,
+  itemList: unknown[],
+): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([userId, timestamp ?? null, itemList]))
+    .digest('hex');
+  return `ilink:${digest}`;
+}
+
 export function mapWechatIlinkMessage(raw: unknown): BotIncomingMessage | null {
   if (!raw || typeof raw !== 'object') return null;
   const message = raw as Record<string, unknown>;
@@ -587,14 +609,15 @@ export function mapWechatIlinkMessage(raw: unknown): BotIncomingMessage | null {
   if (!text && !hasMedia) return null;
   const userId = firstStringField(message, ['from_user_id', 'fromUserId', 'fromWxid']);
   if (!userId) return null;
-  const messageId =
-    firstStringField(message, ['msg_id', 'message_id', 'client_id', 'id']) ?? randomUUID();
   const timestamp = firstNumberField(message, [
     'create_time_ms',
     'create_time',
     'timestamp',
     'createdAt',
   ]);
+  const messageId =
+    firstStringField(message, ['msg_id', 'message_id', 'client_id', 'id']) ??
+    ilinkContentMessageKey(userId, timestamp, itemList);
   return {
     platform: 'wechat',
     userId,
