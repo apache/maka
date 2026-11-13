@@ -42,7 +42,6 @@ export function createExternalAgentSettings(
   host: Host,
   operations: SettingsOperations,
   active: () => boolean,
-  changed: () => void,
 ) {
   const basis = signal<Basis | null>(null);
   const catalog = signal<AgentExternalAgents | null>(null);
@@ -185,7 +184,6 @@ export function createExternalAgentSettings(
       }
       invalidate();
       await host.refresh();
-      changed();
       await load();
     });
   };

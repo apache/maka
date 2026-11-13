@@ -57,9 +57,11 @@ impl Args {
             _ = stop.cancelled() => return Ok(ExitCode::SUCCESS),
         };
         let result = Self::launch(&root, &client, &stop).await;
-        // Detach, as the terminal does: the Host finishes the work it accepted
-        // and then stops once no client is left.
-        let mut cleanup = client.close().await;
+        let mut cleanup = if matches!(&result, Ok(0)) {
+            client.quit_ephemeral().await
+        } else {
+            client.close().await
+        };
         // A Host that stopped while the window was open (the window then
         // moved to the Root's next Host) has no client left to detach.
         if cleanup.is_err() && !runs(&root, client.epoch()).await {

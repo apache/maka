@@ -36,6 +36,7 @@ pub(super) const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) struct Observation {
     pub binding: Arc<dyn TaskBinding>,
     pub retired: CancellationToken,
+    owner_stop: CancellationToken,
     raw: CancellationToken,
     closed: CancellationToken,
     turn_active: Arc<std::sync::atomic::AtomicBool>,
@@ -45,6 +46,7 @@ impl Observation {
     pub fn new(binding: Arc<dyn TaskBinding>, raw: CancellationToken) -> Self {
         let retired = binding.observation_retired().child_token();
         Self {
+            owner_stop: binding.owner_stop(),
             binding,
             retired,
             raw,
@@ -989,20 +991,8 @@ async fn pipe_owned<P: PipeProtocol>(
         let cancellation = cancellation.clone();
         tokio::spawn(async move {
             let mut child = process.child;
-            let bounded =
-                original_child_wait(&mut child, &observation, &cancellation, &settled).await;
-            // The observation may end; the same original child and group remain owned.
-            let physical = match bounded {
-                Ok(()) => Ok(()),
-                Err(error) => {
-                    tracing::error!(%error, "Original child settlement continues after observer return");
-                    child
-                        .wait()
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
-                }
-            };
+            let physical =
+                settle_original_child(&mut child, &observation, &cancellation, &settled).await;
             if physical.is_ok()
                 && let Err(error) = observation
                     .binding
@@ -1188,7 +1178,31 @@ fn child_error(
     }
 }
 
-pub(super) async fn original_child_wait(
+pub(super) async fn settle_original_child(
+    child: &mut maka_process::pipe::Child,
+    observation: &Observation,
+    stop: &CancellationToken,
+    settled: &CancellationToken,
+) -> Result<(), String> {
+    tokio::select! {
+        biased;
+        result = async {
+            match original_child_wait(child, observation, stop, settled).await {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    tracing::debug!(%error, "Original child still owned after observation ended");
+                    child.wait().await.map(|_| ()).map_err(|error| error.to_string())
+                }
+            }
+        } => result,
+        () = observation.owner_stop.cancelled() => {
+            child.terminate().await.map_err(|error| error.to_string())?;
+            child.wait().await.map(|_| ()).map_err(|error| error.to_string())
+        }
+    }
+}
+
+async fn original_child_wait(
     child: &mut maka_process::pipe::Child,
     observation: &Observation,
     stop: &CancellationToken,

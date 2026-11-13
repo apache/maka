@@ -139,7 +139,10 @@ fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     let Some(window) = event.window(surface.mtm) else {
         return false;
     };
-    if crate::window::root_in(surface, &window).is_none() || editing(surface, &window).is_none() {
+    let Some(root) = crate::window::root_in(surface, &window) else {
+        return false;
+    };
+    if editing(&root, &window).is_none() {
         return false;
     }
     crate::text_input::hold_nsevent(surface, event) || fires_now(surface, event)
@@ -172,15 +175,15 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
     };
     // Before a binding acts: the focus it moves shows (`focus-visible:`).
     surface.control(|c| c.set_input_modality(nsh_core::platform::InputModality::Keyboard));
+    let Some(editing) = editing(&root, &window) else {
+        return false;
+    };
     let own = root.ns() != surface.root.ns();
     let window_root = root.id();
     if crate::window::blocked(surface, own.then_some(&root)) {
         return false;
     }
     crate::input::enter(surface, own.then_some(root));
-    let Some(editing) = editing(surface, &window) else {
-        return false;
-    };
     if composing(&window) {
         return false;
     }
@@ -259,7 +262,7 @@ fn composing(window: &NSWindow) -> bool {
 /// Where the keyboard focus is: `Some(true)` in a text input or hosted
 /// view of the surface (an AppKit view of its own), `Some(false)` on one
 /// of nsh's views or nowhere, `None` in another surface's views.
-fn editing(surface: &Surface, window: &NSWindow) -> Option<bool> {
+fn editing(root: &crate::view::NshView, window: &NSWindow) -> Option<bool> {
     let Some(responder) = window.firstResponder() else {
         return Some(false);
     };
@@ -267,9 +270,7 @@ fn editing(surface: &Surface, window: &NSWindow) -> Option<bool> {
     let Some(view) = responder.downcast_ref::<NSView>() else {
         return Some(false);
     };
-    let root = crate::input::event_root(surface);
-    let root = root.ns();
-    if !view.isDescendantOf(root) {
+    if !view.isDescendantOf(root.ns()) {
         return None;
     }
     Some(!crate::view::is_ours(view))

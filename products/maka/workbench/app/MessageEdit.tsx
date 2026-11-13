@@ -182,7 +182,7 @@ export function MessageEdit(
       if (opened === false && owns(original))
         notice.set(uiMessage('Fork created. Open it in Sessions.'));
     } catch (reason) {
-      if (owns(original)) notice.set(errorText(reason));
+      if (owns(original)) notice.set(errorText(reason, 'Could not fork the conversation.'));
     } finally {
       if (alive) pending.set(false);
     }
@@ -245,7 +245,11 @@ export function MessageEditor(props: EditProps & { state: Signal<InlineEdit | nu
       if (text === '') throw new UiError('This message has no text to edit.');
       props.state.set({ ...current, text });
     } catch (reason) {
-      if (props.state() === current) props.state.set({ ...current, notice: errorText(reason) });
+      if (props.state() === current)
+        props.state.set({
+          ...current,
+          notice: errorText(reason, 'Could not load conversation history.'),
+        });
     }
   };
   effect(() => {
@@ -294,7 +298,11 @@ export function MessageEditor(props: EditProps & { state: Signal<InlineEdit | nu
         });
     } catch (reason) {
       if (props.state() === sending)
-        props.state.set({ ...sending, sending: false, notice: errorText(reason) });
+        props.state.set({
+          ...sending,
+          sending: false,
+          notice: errorText(reason, 'Could not send the message.'),
+        });
     } finally {
       if (props.state() === sending) props.state.set({ ...sending, sending: false });
     }
@@ -468,7 +476,7 @@ export function TurnRetry(props: {
       }
       await props.send(text);
     } catch (reason) {
-      if (owns(original)) notice.set(errorText(reason));
+      if (owns(original)) notice.set(errorText(reason, 'Could not send the message.'));
     } finally {
       if (alive) pending.set(false);
     }

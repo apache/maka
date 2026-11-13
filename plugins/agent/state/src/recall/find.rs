@@ -237,7 +237,7 @@ pub(crate) fn landmarks_selected_index(
     if !(1..=64).contains(&limit) {
         return Err(invalid("landmark limit must be 1..=64"));
     }
-    let sql = "WITH grouped AS(SELECT turn,MIN(sequence) AS first,MAX(sequence) AS last FROM agent_recall_messages d WHERE owner=?1 AND session=?2 AND sequence<=?3 AND d.internal=0 AND EXISTS(SELECT 1 FROM agent_session_history h WHERE h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence AND h.admission_sequence>?5) GROUP BY turn), ranked AS(SELECT *,row_number() OVER(ORDER BY first,turn)-1 AS ordinal,count(*) OVER() AS total FROM grouped),sampled AS(SELECT * FROM ranked WHERE (?6 IS NULL AND (total<=?4 OR ordinal=0 OR ordinal=total-1 OR (ordinal*(?4-1)/(total-1))<>((ordinal-1)*(?4-1)/(total-1)))) OR ordinal IN(SELECT value FROM json_each(?6)) ORDER BY first,turn LIMIT ?4) SELECT turn,first,last FROM sampled";
+    let sql = "WITH grouped AS(SELECT turn,MIN(CASE WHEN d.role='\"user\"' AND d.origin_json IS NULL THEN sequence END) AS first,MAX(sequence) AS last FROM agent_recall_messages d WHERE owner=?1 AND session=?2 AND sequence<=?3 AND d.internal=0 AND EXISTS(SELECT 1 FROM agent_session_history h WHERE h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence AND h.admission_sequence>?5) GROUP BY turn HAVING first IS NOT NULL), ranked AS(SELECT *,row_number() OVER(ORDER BY first,turn)-1 AS ordinal,count(*) OVER() AS total FROM grouped),sampled AS(SELECT * FROM ranked WHERE (?6 IS NULL AND (total<=?4 OR ordinal=0 OR ordinal=total-1 OR (ordinal*(?4-1)/(total-1))<>((ordinal-1)*(?4-1)/(total-1)))) OR ordinal IN(SELECT value FROM json_each(?6)) ORDER BY first,turn LIMIT ?4) SELECT turn,first,last FROM sampled";
     let mut statement = c.prepare_cached(sql)?;
     let mut rows = statement.query(params![
         owner_key,
@@ -253,7 +253,7 @@ pub(crate) fn landmarks_selected_index(
         let turn: String = row.get(0)?;
         let first: i64 = row.get(1)?;
         let last: i64 = row.get(2)?;
-        let (ordinal,body,origin):(i64,String,Option<String>)=c.query_row("SELECT ordinal,substr(body,1,96),origin_json FROM agent_recall_messages WHERE owner=? AND session=? AND turn=? AND sequence=? AND internal=0 ORDER BY ordinal LIMIT 1",params![owner_key,cut.session,turn,first],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        let (ordinal,body,origin):(i64,String,Option<String>)=c.query_row("SELECT ordinal,substr(body,1,96),origin_json FROM agent_recall_messages WHERE owner=? AND session=? AND turn=? AND sequence=? AND internal=0 AND role='\"user\"' AND origin_json IS NULL ORDER BY ordinal LIMIT 1",params![owner_key,cut.session,turn,first],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
         let last_ordinal:i64=c.query_row("SELECT MAX(ordinal) FROM agent_recall_messages WHERE owner=? AND session=? AND turn=? AND sequence=? AND internal=0",params![owner_key,cut.session,turn,last],|r|r.get(0))?;
         let end = body.floor_char_boundary(body.len().min(96));
         let label = body[..end]
@@ -352,7 +352,7 @@ pub(crate) fn landmarks_count_index(
     cut: &HistoryCut,
     min_admission: u64,
 ) -> Result<u64, StoreError> {
-    let count:i64=c.query_row("SELECT COUNT(*) FROM(SELECT d.turn FROM agent_recall_messages d JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence WHERE d.owner=? AND d.session=? AND d.sequence<=? AND h.admission_sequence>? AND d.internal=0 GROUP BY d.turn)",params![owner_key,cut.session,number(cut.through_sequence)?,number(min_admission)?],|r|r.get(0))?;
+    let count:i64=c.query_row("SELECT COUNT(*) FROM(SELECT d.turn FROM agent_recall_messages d JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence WHERE d.owner=? AND d.session=? AND d.sequence<=? AND h.admission_sequence>? AND d.internal=0 AND d.role='\"user\"' AND d.origin_json IS NULL GROUP BY d.turn)",params![owner_key,cut.session,number(cut.through_sequence)?,number(min_admission)?],|r|r.get(0))?;
     unsigned(count)
 }
 pub(crate) fn landmark_ranks(total: u64, limit: u32) -> Vec<u64> {

@@ -1125,12 +1125,14 @@ fn request(surface: &Rc<Surface>, id: NodeId, request: &WindowRequest) {
             if let Some(w) = surface.windows.borrow().get(&id) {
                 w.showing.set(Showing::Done);
             }
+            crate::input::window_hidden(surface, id);
             window.orderOut(None);
             lost_key(surface, &window);
         }
         WindowRequest::Focus => show(surface, id, &window, true),
         WindowRequest::Close => close_request(surface, id, &window),
         WindowRequest::Minimize => {
+            crate::input::window_hidden(surface, id);
             window.miniaturize(None);
             lost_key(surface, &window);
         }
@@ -1808,7 +1810,7 @@ fn background_key() -> Option<Retained<NSWindow>> {
 
 /// The app's window that has the keyboard: AppKit's key window, or the one
 /// that would be in a background app.
-fn app_key_window(mtm: MainThreadMarker) -> Option<Retained<NSWindow>> {
+pub(crate) fn app_key_window(mtm: MainThreadMarker) -> Option<Retained<NSWindow>> {
     NSApplication::sharedApplication(mtm)
         .keyWindow()
         .or_else(|| in_background(mtm).then(background_key).flatten())
@@ -2010,6 +2012,7 @@ fn dismiss(surface: &Surface, id: NodeId, cause: WindowCloseCause) {
     if let Some(w) = surface.windows.borrow().get(&id) {
         w.showing.set(Showing::Done);
     }
+    crate::input::window_hidden(surface, id);
     window.orderOut(None);
     lost_key(surface, &window);
     for child in children(surface, id) {
@@ -2086,6 +2089,7 @@ pub(crate) fn removed(surface: &Surface, view: &NshView) -> bool {
     for child in children(surface, id) {
         dismiss(surface, child, WindowCloseCause::ParentClose);
     }
+    crate::input::window_hidden(surface, id);
     dock::set(surface.key(), id, None);
     let window = w.window.clone();
     close(w);

@@ -53,9 +53,9 @@ import {
   View,
   List,
 } from 'nsh';
-import type { ListRef, ScrollRef, ViewRef } from 'nsh';
+import type { ListRef, ReadonlyListSource, ScrollRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
-import { keymap, platform, Scroll } from 'nsh';
+import { keymap, platform, reduceMotion, Scroll } from 'nsh';
 import { AnimatedValue } from 'nsh';
 import {
   useHost,
@@ -87,15 +87,18 @@ import {
   sameHistoryRow,
   compareHistoryOrder,
   historyTurnKey,
+  historyRowKey,
   readHistoryTail,
   rootEventSequence,
   historyFollowPosition,
-  mergeChunks,
+  compareRows,
+  HistoryRows,
+  mergeHistoryPage,
   openingUserMessage,
   replayStartCursor,
   senderSession,
   stableRowId,
-  updateHistoryMetadata,
+  replaceHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
 import type { Row, Subscription } from '../../../../products/maka/workbench/app/history';
 import {
@@ -161,7 +164,6 @@ import {
 import { BotRestart } from '../../../../products/maka/workbench/app/BotRestart';
 import {
   MessageRow,
-  originLabel,
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
@@ -198,6 +200,7 @@ import {
 import type {
   ProcessActivity,
   ProcessEntry,
+  ProcessProjection,
   ProcessGroup,
   ProcessRow,
   TurnPresentation,
@@ -257,6 +260,11 @@ export type ConversationHandle = Omit<
   projectMcp: ReturnType<typeof createProjectMcp>;
   compact(prompt?: string): Promise<void>;
   interactions(): AgentPendingInteractions;
+  executionWaitMessage(): string;
+  reconnecting(): boolean;
+  reconnect(): void;
+  attachmentMetadataFailed(): boolean;
+  retryAttachmentMetadata(): void;
   activeTurn(): string | null;
   activityTurn(): string | null;
   flushDraft(): Promise<boolean>;
@@ -368,9 +376,20 @@ export function Conversation(props: ConversationProps) {
   });
   const client = props.client;
   const sessionId = client.sessionId;
-  const rows = signal<Row[]>([]);
-  const loadedOpening = (turnId: string | undefined) =>
-    openingUserMessage(rows(), turnId, historyWindow()?.before);
+  const historyRows = signal(new HistoryRows(), { equals: false });
+  const rows = () => historyRows().ordered;
+  const loadedOpening = (turnId: string | undefined) => {
+    if (turnId === undefined) return null;
+    const current = historyRows();
+    const turn = current.byTurn.get(turnId);
+    if (!turn) return null;
+    const start = current.index(turn[0]);
+    for (let index = start - 1; index >= 0; index--) {
+      if (historyTurnKey(current.ordered[index]) !== undefined)
+        return openingUserMessage(turn, turnId, null);
+    }
+    return openingUserMessage(turn, turnId, historyWindow()?.before);
+  };
   const opensTurn = (row: Row) => {
     const first = loadedOpening(historyTurnKey(row));
     return (
@@ -445,7 +464,8 @@ export function Conversation(props: ConversationProps) {
     items: [],
   });
   const historyFollowPaused = signal(false);
-  const visibleTurn = signal<string | null>(null);
+  const visibleTurns = signal<ReadonlySet<string>>(new Set());
+  const visibleTurn = () => visibleTurns().values().next().value ?? null;
   const navigation = signal<HistoryNavigation | null>(null);
   const navigatingTurn = computed(() => {
     const target = navigation();
@@ -511,6 +531,9 @@ export function Conversation(props: ConversationProps) {
   let historyOffset = 0;
   let historyMaxOffset = 0;
   let historyScrollInput: 'idle' | 'pending' | 'dragging' = 'idle';
+  const highlightedAnchor = signal<string | null>(null);
+  let anchorHighlight: ReturnType<typeof setTimeout> | undefined;
+  cleanup(() => clearTimeout(anchorHighlight));
   const innerReader = signal<string | null>(null);
   // The process group whose activity list last reported its end.
   const readerAtEnd = signal<string | null>(null);
@@ -558,10 +581,9 @@ export function Conversation(props: ConversationProps) {
     }
     return state;
   };
-  const canonicalRows = computed(() => indexRows(rows()));
   const liveRows = computed(() => indexRows(live()));
   const currentRow = (id: string) =>
-    canonicalRows().byId.get(id) ??
+    historyRows().byId.get(id) ??
     liveRows().byId.get(id) ??
     pendingMessages().find((row) => stableRowId(row) === id);
   const processLive = computed<readonly ProcessRow[]>(() => (atHistoryTail() ? live() : []), {
@@ -581,7 +603,7 @@ export function Conversation(props: ConversationProps) {
       for (const part of parts()) {
         if (part.runId !== runId()) continue;
         const message = `${part.messageId}/${part.field}`;
-        const row = liveRows().byMessage.get(message) ?? canonicalRows().byMessage.get(message);
+        const row = liveRows().byMessage.get(message) ?? historyRows().byMessage.get(message);
         if (!row || row.closedAt != null) continue;
         const sequence = Math.max(part.startSequence, row.sequence ?? 0);
         if (!latest || sequence > latest.sequence) latest = { part, row, sequence };
@@ -617,29 +639,200 @@ export function Conversation(props: ConversationProps) {
     if (runId() === null) return lastCompletedTurn();
     return run() === 'running' ? runTurn() : null;
   });
-  let previousGroups: ProcessEntry[] = [];
-  const projection = computed(() => {
-    // Current model previews have their own attempt/part order; only durable
-    // history and executor streams have a source sequence.
-    const ordered = orderProcessRows([...rows(), ...processLive()]);
-    const next = projectProcessGroups({
-      rows: [...ordered, ...(atHistoryTail() ? pendingMessages() : [])],
-      toolActivity: processActivity(),
-      activeTurnId: runId() === null ? null : runTurn(),
-      answerTurnId: answerTurn(),
-      previous: previousGroups,
-    });
-    previousGroups = next.entries;
-    return next;
+  type Section = { turns: readonly string[]; rows: readonly Row[] };
+  const durableSections = computed((previous: Map<string, Section> | undefined) => {
+    const canonical = historyRows();
+    const ordered = canonical.ordered;
+    const sections = new Map<string, Section>();
+    for (let start = 0; start < ordered.length; ) {
+      const first = ordered[start];
+      const turnKey = historyTurnKey(first);
+      const turn = turnKey === undefined ? undefined : canonical.byTurn.get(turnKey);
+      if (turnKey !== undefined && turn && ordered[start + turn.length - 1] === turn.at(-1)) {
+        const old = previous?.get(turnKey);
+        sections.set(turnKey, old?.rows === turn ? old : { turns: [turnKey], rows: turn });
+        start += turn.length;
+        continue;
+      }
+      const turns = new Set<string>();
+      let end = start + 1;
+      for (let index = start; index < end; ) {
+        const row = ordered[index];
+        const key = historyTurnKey(row);
+        if (key === undefined) {
+          // Consecutive failures without a turn still share a presentation boundary.
+          if (
+            index + 1 === end &&
+            end < ordered.length &&
+            historyTurnKey(ordered[end]) === undefined
+          )
+            end++;
+          index++;
+          continue;
+        }
+        const turn = canonical.byTurn.get(key)!;
+        if (!turns.has(key)) {
+          turns.add(key);
+          end = Math.max(end, canonical.index(turn.at(-1)!) + 1);
+        }
+        index +=
+          ordered[index + turn.length - 1] === turn.at(-1) && row === turn[0] ? turn.length : 1;
+      }
+      const key = historyTurnKey(first) ?? first.key;
+      const old = previous?.get(key);
+      const rows = ordered.slice(start, end);
+      sections.set(
+        key,
+        old?.rows.length === rows.length && old.rows.every((row, index) => row === rows[index])
+          ? old
+          : { turns: [...turns], rows },
+      );
+      start = end;
+    }
+    return sections;
   });
+  const settledSections = new WeakMap<
+    Section,
+    { followed: boolean; projection: ProcessProjection }
+  >();
+  let priorByTurn = new Map<string, ProcessProjection>();
+  let lastLive:
+    | {
+        sections: Section[];
+        live: readonly ProcessRow[];
+        activity: readonly ProcessActivity[];
+        pending: readonly Row[];
+        active: string | null;
+        answer: string | null;
+        projection: ProcessProjection;
+      }
+    | undefined;
+  let projectedWindow: HistoryRows | undefined;
+  const projectionSections = computed(() => {
+    const canonical = historyRows();
+    if (projectedWindow !== canonical) {
+      projectedWindow = canonical;
+      lastLive = undefined;
+      priorByTurn.clear();
+    }
+    const sections = [...durableSections().values()];
+    const live = processLive();
+    const activity = processActivity();
+    const pending = atHistoryTail() ? pendingMessages() : undefined;
+    const active = runId() === null ? null : runTurn();
+    const answer = answerTurn();
+    // A live preview, including a late one, belongs to the same ordered
+    // suffix as its first durable fact.
+    let liveStart = sections.length;
+    if (active !== null || answer !== null || live.length || activity.length) {
+      const liveTurns = new Set([
+        active,
+        answer,
+        ...live.map(historyTurnKey),
+        ...activity.map((row) => row.turnId),
+      ]);
+      const first = sections.findIndex((section) =>
+        section.turns.some((key) => liveTurns.has(key)),
+      );
+      if (first >= 0) liveStart = first;
+    }
+    const output: ProcessProjection[] = [];
+    for (let index = 0; index < liveStart; index++) {
+      const section = sections[index];
+      const followed =
+        index + 1 < sections.length ||
+        live.length > 0 ||
+        activity.length > 0 ||
+        Boolean(pending?.length);
+      const cached = settledSections.get(section);
+      if (cached?.followed === followed) {
+        output.push(cached.projection);
+        continue;
+      }
+      const prior = section.turns.map((key) => priorByTurn.get(key)).find((part) => part);
+      const projected = projectProcessGroups({
+        rows: orderProcessRows(section.rows),
+        toolActivity: [],
+        activeTurnId: null,
+        previous: prior?.entries,
+        followed,
+      });
+      settledSections.set(section, { followed, projection: projected });
+      output.push(projected);
+    }
+    if (
+      liveStart < sections.length ||
+      live.length ||
+      activity.length ||
+      pending?.length ||
+      active !== null
+    ) {
+      const suffix = sections.slice(liveStart);
+      const queued = pending ?? [];
+      const prior = lastLive;
+      if (
+        prior &&
+        prior.live === live &&
+        prior.activity === activity &&
+        (prior.pending === pending || (!prior.pending.length && !queued.length)) &&
+        prior.active === active &&
+        prior.answer === answer &&
+        prior.sections.length === suffix.length &&
+        prior.sections.every((section, index) => section === suffix[index])
+      ) {
+        output.push(prior.projection);
+      } else {
+        const projected = projectProcessGroups({
+          rows: [
+            ...orderProcessRows([...suffix.flatMap((section) => section.rows), ...live]),
+            ...queued,
+          ],
+          toolActivity: activity,
+          activeTurnId: active,
+          answerTurnId: answer,
+          previous:
+            prior?.projection.entries ??
+            (suffix[0]?.turns[0] ? priorByTurn.get(suffix[0].turns[0])?.entries : undefined),
+        });
+        lastLive = {
+          sections: suffix,
+          live,
+          activity,
+          pending: queued,
+          active,
+          answer,
+          projection: projected,
+        };
+        output.push(projected);
+      }
+    } else lastLive = undefined;
+    priorByTurn = new Map();
+    for (const part of output) for (const key of part.turns.keys()) priorByTurn.set(key, part);
+    return output;
+  });
+  const sectionsByTurn = computed(() => {
+    const byTurn = new Map<string, ProcessProjection>();
+    for (const section of projectionSections())
+      for (const key of section.turns.keys()) byTurn.set(key, section);
+    return byTurn;
+  });
+  const projection = (): ProcessProjection => {
+    const entries: ProcessEntry[] = [];
+    const turns = new Map<string, TurnPresentation>();
+    const rowsById = new Map<string, ProcessRow>();
+    for (const section of projectionSections()) {
+      entries.push(...section.entries);
+      for (const [key, turn] of section.turns) turns.set(key, turn);
+      for (const [id, row] of section.rowsById) rowsById.set(id, row);
+    }
+    return { entries, turns, rowsById };
+  };
+  const projectedSection = (key: string) => sectionsByTurn().get(key);
+  const projectedTurn = (key: string) => projectedSection(key)?.turns.get(key);
   // Origins belong to durable inputs and the queue, not token-driven previews.
   const senderIds = computed(
     () => {
-      const ids = new Set<string>();
-      for (const row of rows()) {
-        const id = senderSession(row.origin);
-        if (id !== null) ids.add(id);
-      }
+      const ids = new Set(historyRows().senderIds);
       for (const entry of queued()?.entries ?? []) {
         const id = senderSession(entry.origin);
         if (id !== null) ids.add(id);
@@ -680,7 +873,9 @@ export function Conversation(props: ConversationProps) {
       }),
     failed: (reason) => report(reason),
   });
-  const trajectory = computed(() => projectTrajectory(projection(), trajectoryRequests()));
+  const trajectory = computed(() =>
+    reading() === 'trajectory' ? projectTrajectory(projection(), trajectoryRequests()) : [],
+  );
   const trajectoryByKey = computed(() => new Map(trajectory().map((entry) => [entry.key, entry])));
   const trajectoryOverview = computed(() => trajectoryTimeline(trajectory()));
   const trajectoryTurns = computed(() =>
@@ -724,12 +919,32 @@ export function Conversation(props: ConversationProps) {
     | TrajectoryEntry
     | { kind: 'summary'; key: string; turnKey: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
-    | { kind: 'row'; key: string; rowId: string; repeats?: number }
+    | { kind: 'row'; key: string; rowId: string; turnKey?: string; repeats?: number }
     | { kind: 'bot'; key: string; turnId: string; worker?: string }
     | { kind: 'botNote'; key: string; turnId: string }
     | { kind: 'botWorking'; key: string }
     | { kind: 'botWaiting'; key: string; workers: readonly ActiveWorker[] };
-  const display = computed<DisplayEntry[]>(() => {
+  const chatSections = new WeakMap<
+    ProcessProjection,
+    {
+      entries: DisplayEntry[];
+      turns: [TurnPresentation, boolean][];
+    }
+  >();
+  const chatDisplaySections = computed(() =>
+    projectionSections().map((section) => {
+      const cache = chatSections.get(section);
+      if (cache && cache.turns.every(([turn, open]) => turnExpanded(turn) === open))
+        return cache.entries;
+      const entries = chatEntries(section, false);
+      chatSections.set(section, {
+        entries,
+        turns: [...section.turns.values()].map((turn) => [turn, turnExpanded(turn)]),
+      });
+      return entries;
+    }),
+  );
+  const otherDisplay = computed<DisplayEntry[]>(() => {
     if (reading() === 'trajectory') {
       const query = trajectoryQuery().trim().toLocaleLowerCase();
       const range = trajectoryRange();
@@ -763,12 +978,16 @@ export function Conversation(props: ConversationProps) {
           : undefined,
       );
     }
+    return botView() !== 'ordinary' ? chatEntries(projection(), true) : [];
+  });
+  const ordinaryChat = () => reading() === 'chat' && botView() === 'ordinary';
+  const display = () => (ordinaryChat() ? chatDisplaySections().flat() : otherDisplay());
+  function chatEntries(section: ProcessProjection, botChat: boolean): DisplayEntry[] {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
     // Until the Host has said whether this is the Bot, assume it is: showing the model's
     // own text on the Bot's Chat would publish internal output, while a short blank on an
     // ordinary conversation only delays it. Reading a Bot never becomes visible by failing.
-    const botChat = botView() !== 'ordinary';
     // The Bot's reply to a Turn is what it sent with SendUser during that Turn,
     // shown after the Turn's own entries.
     let openTurn: string | undefined;
@@ -796,7 +1015,7 @@ export function Conversation(props: ConversationProps) {
         const sent = bot.forTurn(openTurn).length > 0;
         // A Turn the Bot started because a worker finished carries that worker as the
         // origin of its opening message; the reply can then link to the worker's record.
-        const worker = sent ? reportedWorker(projection().rowsById.values(), openTurn) : undefined;
+        const worker = sent ? reportedWorker(section.rowsById.values(), openTurn) : undefined;
         if (sent)
           result.push({
             kind: 'bot',
@@ -806,10 +1025,10 @@ export function Conversation(props: ConversationProps) {
           });
         // Silence is valid and gets no marker; a Turn that neither sent nor slept would
         // look the same, so say so.
-        const turn = projection().turns.get(openTurn);
+        const turn = section.turns.get(openTurn);
         const finished = turn !== undefined && !turn.active && openTurn !== runTurn();
         const turnId = openTurn;
-        const slept = [...projection().rowsById.values()].some(
+        const slept = [...section.rowsById.values()].some(
           (row) =>
             (row.position === undefined || row.position.kind === 'live') &&
             row.turnId === turnId &&
@@ -832,15 +1051,15 @@ export function Conversation(props: ConversationProps) {
       }
       openTurn = undefined;
     };
-    for (const entry of projection().entries) {
-      const row = entry.kind === 'message' ? projection().rowsById.get(entry.rowId) : undefined;
+    for (const entry of section.entries) {
+      const row = entry.kind === 'message' ? section.rowsById.get(entry.rowId) : undefined;
       const turnId =
         entry.kind === 'process'
           ? entry.turnKey
           : row === undefined
             ? undefined
             : historyTurnKey(row);
-      const turn = turnId ? projection().turns.get(turnId) : undefined;
+      const turn = turnId ? section.turns.get(turnId) : undefined;
       if (botChat && turnId !== openTurn) {
         speak();
         openTurn = turnId;
@@ -889,6 +1108,7 @@ export function Conversation(props: ConversationProps) {
           kind: 'row',
           key: entry.key,
           rowId: entry.rowId,
+          turnKey: turnId,
           repeats: entry.repeats,
         });
       }
@@ -909,37 +1129,122 @@ export function Conversation(props: ConversationProps) {
         });
     }
     return result;
-  });
-  let previouslyVisible = new Set<string>();
+  }
+  const expandedByTurn = new Map<string, boolean>();
   effect(() => {
-    const visible = new Set<string>();
-    for (const turn of projection().turns.values()) {
-      if (turnExpanded(turn)) visible.add(turn.turnKey);
-      else if (previouslyVisible.has(turn.turnKey)) {
-        for (const entry of projection().entries) {
-          if (entry.kind === 'process' && entry.turnKey === turn.turnKey)
-            groupStates.get(entry.key)?.open.set(false);
+    for (const section of projectionSections()) {
+      for (const turn of section.turns.values()) {
+        const expanded = turnExpanded(turn);
+        if (!expanded && expandedByTurn.get(turn.turnKey)) {
+          for (const entry of section.entries)
+            if (entry.kind === 'process' && entry.turnKey === turn.turnKey)
+              groupStates.get(entry.key)?.open.set(false);
         }
+        expandedByTurn.set(turn.turnKey, expanded);
       }
     }
-    previouslyVisible = visible;
   });
-  const displayByKey = computed(() => new Map(display().map((item) => [item.key, item])));
+  const displaySections = computed(() =>
+    ordinaryChat() ? chatDisplaySections() : [otherDisplay()],
+  );
+  const entriesByKey = new Map<string, DisplayEntry>();
+  const indexedSections = computed((previous: Set<DisplayEntry[]> | undefined) => {
+    const current = new Set(displaySections());
+    for (const entries of previous ?? []) {
+      if (current.has(entries)) continue;
+      for (const entry of entries) entriesByKey.delete(entry.key);
+    }
+    for (const entries of current) {
+      if (previous?.has(entries)) continue;
+      for (const entry of entries) entriesByKey.set(entry.key, entry);
+    }
+    return current;
+  });
+  const displayEntry = (key: string) => {
+    indexedSections();
+    return entriesByKey.get(key);
+  };
   effect(() => {
     const reader = innerReader();
-    if (reader !== null && !displayByKey().has(reader)) innerReader.set(null);
+    if (reader !== null && !displayEntry(reader)) innerReader.set(null);
   });
-  const displayKeys = computed(() => display().map((item) => item.key));
-  const latestQuestion = computed(() =>
-    display().findLastIndex(
-      (item) => item.kind === 'row' && currentRow(item.rowId)?.role === 'user',
-    ),
+  const keysBySection = new WeakMap<DisplayEntry[], string[]>();
+  const keySections = computed(() =>
+    displaySections().flatMap((entries) => {
+      if (!entries.length) return [];
+      let keys = keysBySection.get(entries);
+      if (!keys) {
+        keys = entries.map((entry) => entry.key);
+        keysBySection.set(entries, keys);
+      }
+      return [keys];
+    }),
   );
-  const latestQuestionKey = computed(() => displayKeys()[latestQuestion()] ?? null);
+  type HistoryList = ReadonlyListSource<string> & { sections: string[][]; ends: number[] };
+  const historyList = computed<HistoryList>(() => {
+    const sections = keySections();
+    let length = 0;
+    const ends = sections.map((keys) => (length += keys.length));
+    return {
+      sections,
+      ends,
+      length,
+      at(index) {
+        let lo = 0;
+        let hi = ends.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (ends[mid] <= index) lo = mid + 1;
+          else hi = mid;
+        }
+        return sections[lo][index - (ends[lo - 1] ?? 0)];
+      },
+      spliceFrom(previous) {
+        if (!('sections' in previous)) return undefined;
+        const old = previous as HistoryList;
+        let first = 0;
+        let last = sections.length;
+        let oldLast = old.sections.length;
+        while (first < last && first < oldLast && sections[first] === old.sections[first]) first++;
+        while (
+          last > first &&
+          oldLast > first &&
+          sections[last - 1] === old.sections[oldLast - 1]
+        ) {
+          last--;
+          oldLast--;
+        }
+        let start = ends[first - 1] ?? 0;
+        let end = ends[last - 1] ?? 0;
+        let oldEnd = old.ends[oldLast - 1] ?? 0;
+        // Preserve unchanged keys inside the changed turn too. A tool result
+        // can update its call in place without removing its measured row.
+        while (start < end && start < oldEnd && this.at(start) === old.at(start)) start++;
+        while (end > start && oldEnd > start && this.at(end - 1) === old.at(oldEnd - 1)) {
+          end--;
+          oldEnd--;
+        }
+        return [start, oldEnd - start, end - start];
+      },
+    };
+  });
+  const lastDisplayKey = () => {
+    const list = historyList();
+    return list.length ? list.at(list.length - 1) : undefined;
+  };
+  const displayKeys = () => keySections().flat();
+  const latestQuestion = computed(() =>
+    props.compact
+      ? display().findLastIndex(
+          (item) => item.kind === 'row' && currentRow(item.rowId)?.role === 'user',
+        )
+      : -1,
+  );
+  const latestQuestionKey = () => displayKeys()[latestQuestion()] ?? null;
   // Set by the first follow-up, so the exchanges of this popup stay above the newest one.
   const compactStart = signal<string | null>(null);
   const shownKeys = computed(() => {
-    if (!props.compact) return displayKeys();
+    if (!props.compact) return [];
     const start = compactStart();
     const anchored = start === null ? -1 : displayKeys().indexOf(start);
     const first = anchored >= 0 ? anchored : latestQuestion();
@@ -954,7 +1259,7 @@ export function Conversation(props: ConversationProps) {
       items.set(turnKey, {
         turnKey,
         order: item.order,
-        label: originLabel(item.origin) ?? item.label,
+        label: item.label,
         anchor: {
           kind: 'landmark',
           through: landmarks().through,
@@ -963,35 +1268,40 @@ export function Conversation(props: ConversationProps) {
         },
       });
     }
-    for (const row of rows()) {
+    for (const row of historyRows().userRows.values()) {
       const turnKey = historyTurnKey(row);
-      if (turnKey === undefined || !row.position || !row.order || row.role === 'compaction')
+      if (
+        turnKey === undefined ||
+        !row.position ||
+        !row.order ||
+        row.role !== 'user' ||
+        row.origin ||
+        row.field !== 'body' ||
+        (row.fragments && row.fragments[0]?.offset !== 0)
+      )
         continue;
       const previous = items.get(turnKey);
-      const label =
-        row.role === 'user'
-          ? (originLabel(row.origin) ??
-            Array.from(row.text.replace(/\s+/g, ' ').trim()).slice(0, 96).join(''))
-          : '';
-      if (!previous)
+      const label = (/\S[\s\S]{0,239}/u.exec(row.text)?.[0] ?? '').replace(/\s+/g, ' ').trim();
+      if (
+        !previous ||
+        (previous.anchor.kind === 'loaded' && compareHistoryOrder(row.order, previous.order) < 0)
+      )
         items.set(turnKey, {
           turnKey,
           order: row.order,
           label,
           anchor: { kind: 'loaded', position: row.position },
         });
-      else if (!previous.label && label) items.set(turnKey, { ...previous, label });
+      else if (sameHistoryRow(previous.anchor.position, row.position) && label)
+        items.set(turnKey, { ...previous, label });
     }
     return [...items.values()].sort((left, right) => compareHistoryOrder(left.order, right.order));
   });
   const entryTurn = (key: string) => {
-    const entry = displayByKey().get(key);
-    if (entry?.kind === 'summary') return entry.turnKey;
+    const entry = displayEntry(key);
     if (entry?.kind === 'process') return entry.group.turnKey;
-    if (entry && 'turnKey' in entry) return entry.turnKey;
-    return entry?.kind === 'row'
-      ? (historyTurnKey(projection().rowsById.get(entry.rowId)) ?? null)
-      : null;
+    if (entry && 'turnKey' in entry) return entry.turnKey ?? null;
+    return null;
   };
   let list: ListRef | undefined;
   const scrollToTurn = (turnKey: string) => {
@@ -1000,6 +1310,27 @@ export function Conversation(props: ConversationProps) {
         ? displayKeys().indexOf(trajectoryTurnKey(turnKey))
         : displayKeys().findIndex((key) => entryTurn(key) === turnKey);
     if (index >= 0) list?.scrollToIndex({ index, viewPosition: 0, animated: false });
+  };
+  const showAnchor = (key: string, highlight: boolean) => {
+    const index = displayKeys().indexOf(key);
+    if (index < 0 || !list) return false;
+    historyScrollInput = 'idle';
+    batch(() => {
+      historyFollowPaused.set(true);
+      innerReader.set(null);
+      highlightedAnchor.set(highlight ? key : null);
+    });
+    clearTimeout(anchorHighlight);
+    if (highlight) anchorHighlight = setTimeout(() => highlightedAnchor.set(null), 1400);
+    list.scrollToIndex({
+      index,
+      viewPosition: 0,
+      viewOffset: platform.idiom === 'terminal' ? 0 : 12,
+      // A distant row can still have estimated geometry. Resolve its native
+      // reading pin before drawing the destination rather than traversing it.
+      animated: false,
+    });
+    return true;
   };
   let pendingTrajectoryAnchor: string | null = null;
   const selectTrajectory = (key: string) => {
@@ -1026,7 +1357,7 @@ export function Conversation(props: ConversationProps) {
     if (!entry) return;
     batch(() => {
       trajectoryQuery.set('');
-      if (trajectoryRange() !== null && !displayByKey().has(key)) trajectoryRange.set(null);
+      if (trajectoryRange() !== null && !displayEntry(key)) trajectoryRange.set(null);
       if (entry.turnKey !== null && trajectoryCollapsed().has(entry.turnKey))
         toggleTrajectoryTurn(entry.turnKey);
       if (entry.kind === 'trajectory-record' && entry.ancestorToolKeys.length > 0) {
@@ -1044,7 +1375,7 @@ export function Conversation(props: ConversationProps) {
   const jumpTrajectoryTurn = (turnKey: string) => jumpTrajectoryEntry(trajectoryTurnKey(turnKey));
   const inspectToolInTrajectory = (rowId: string) => {
     const key = trajectoryRecordKey(rowId);
-    if (!trajectoryByKey().has(key)) return;
+    if (!currentRow(rowId)) return;
     cancelNavigation();
     batch(() => {
       innerReader.set(null);
@@ -1054,11 +1385,11 @@ export function Conversation(props: ConversationProps) {
     jumpTrajectoryEntry(key);
   };
 
-  const resumeHistoryFollowing = () => {
+  const resumeHistoryFollowing = (animated = false) => {
     historyFollowPaused.set(false);
     innerReader.set(null);
     // Replace the list's reading anchor when manual scrolling reaches the end.
-    list?.scrollToEnd({ animated: false });
+    list?.scrollToEnd({ animated: animated && !reduceMotion() });
   };
   let compactScroll: ScrollRef | undefined;
   let followCompact = false;
@@ -1076,6 +1407,7 @@ export function Conversation(props: ConversationProps) {
   let followTask: Promise<void> | null = null;
   let followAgain = false;
   let historyIdentity: object = {};
+  let measuredHistory: object | null = null;
   let historyScrolled = false;
   let windowTask: Promise<boolean> | null = null;
   let historyDestination: {
@@ -1114,7 +1446,7 @@ export function Conversation(props: ConversationProps) {
   });
 
   const report = (reason: unknown) => {
-    if (alive) error.set(errorText(reason));
+    if (alive) error.set(errorText(reason, 'Could not load conversation history.'));
   };
   const publishHistory = (
     chunks: AgentHistoryChunk[],
@@ -1124,8 +1456,13 @@ export function Conversation(props: ConversationProps) {
     windowStart?: number,
   ) => {
     batch(() => {
-      rows.set(mergeChunks(rows(), chunks, older, through));
-      const canonical = canonicalRows();
+      const current = historyRows();
+      const changed = mergeHistoryPage(chunks, (key) => current.byKey.get(key), older, through);
+      if (changed.length) {
+        current.put(changed);
+        historyRows.set(current);
+      }
+      const canonical = historyRows();
       overlay.history(canonical.byId, atHistoryTail() ? through : null, coveredFrom, windowStart);
       publishOverlay();
       const currentPending = pendingMessages();
@@ -1147,10 +1484,20 @@ export function Conversation(props: ConversationProps) {
     followAgain = true;
   };
   const publishMetadata = (chunks: AgentHistoryChunk[], through: number) => {
-    rows.set(updateHistoryMetadata(rows(), chunks, through));
-    if (!rows().some((row) => row.role === 'user' && row.attachments === undefined))
-      attachmentMetadataFailed.set(false);
-    hydrateAttachmentMetadata();
+    const current = historyRows();
+    const changed = new Map<string, Row>();
+    for (const chunk of chunks) {
+      const key = historyRowKey(chunk.position, chunk.field);
+      const row = changed.get(key) ?? current.byKey.get(key);
+      if (!row) continue;
+      const next = replaceHistoryMetadata(row, chunk, through);
+      if (next !== row) changed.set(key, next);
+    }
+    if (changed.size) {
+      current.put([...changed.values()].sort(compareRows));
+      historyRows.set(current);
+    }
+    if (!current.missingAttachments.size) attachmentMetadataFailed.set(false);
   };
   const history = async (through: number, position: HistoryPosition) => {
     const page = await host.query('agent', 'history', {
@@ -1221,7 +1568,7 @@ export function Conversation(props: ConversationProps) {
         page = { ...tail, through };
       }
       batch(() => {
-        rows.set([]);
+        historyRows.set(new HistoryRows());
         historyWindow.set({
           identity,
           through: page.through,
@@ -1257,14 +1604,9 @@ export function Conversation(props: ConversationProps) {
     return task;
   };
   const hydrateAttachmentMetadata = () => {
-    for (const row of rows()) {
-      if (
-        row.role !== 'user' ||
-        row.field !== 'body' ||
-        !row.position ||
-        row.attachments !== undefined
-      )
-        continue;
+    for (const rowKey of historyRows().missingAttachments) {
+      const row = historyRows().byKey.get(rowKey)!;
+      if (!row.position) continue;
       const through = row.metadataThrough!;
       const key = `${row.key}/${through}`;
       if (attachmentMetadataReads.has(key)) continue;
@@ -1275,7 +1617,7 @@ export function Conversation(props: ConversationProps) {
       void history(through, { kind: 'row', position, field: 'body' })
         .then((page) => {
           if (!alive) return;
-          const current = rows().find((candidate) => candidate.key === row.key);
+          const current = historyRows().byKey.get(row.key);
           if (
             !current ||
             current.messageId !== row.messageId ||
@@ -1295,15 +1637,13 @@ export function Conversation(props: ConversationProps) {
           publishMetadata([first], through);
         })
         .catch((reason) => {
+          const current = historyRows().byKey.get(row.key);
           if (
             alive &&
-            rows().some(
-              (current) =>
-                current.key === row.key &&
-                current.messageId === row.messageId &&
-                current.metadataThrough === through &&
-                current.attachments === undefined,
-            )
+            current &&
+            current.messageId === row.messageId &&
+            current.metadataThrough === through &&
+            current.attachments === undefined
           ) {
             attachmentMetadataFailed.set(true);
             report(reason);
@@ -1411,7 +1751,7 @@ export function Conversation(props: ConversationProps) {
         if (currentWindow?.after === null) {
           const tail = rows().at(-1);
           const changedRows = [...executorTextChanges].flatMap((id) => {
-            const row = canonicalRows().byMessage.get(id);
+            const row = historyRows().byMessage.get(id);
             return row && row !== tail && row.position?.kind === 'live' ? [row] : [];
           });
           executorTextChanges.clear();
@@ -1587,7 +1927,7 @@ export function Conversation(props: ConversationProps) {
           break;
         case 'executor_text_changed': {
           const id = `${fact.messageId}/${fact.thinking ? 'thinking' : 'body'}`;
-          if (atHistoryTail() || canonicalRows().byMessage.has(id)) executorTextChanges.add(id);
+          if (atHistoryTail() || historyRows().byMessage.has(id)) executorTextChanges.add(id);
           changed = true;
           break;
         }
@@ -1735,9 +2075,11 @@ export function Conversation(props: ConversationProps) {
         const page = await history(owner.through, position);
         if (!ownsWindow(owner.identity)) return false;
         const current = historyWindow()!;
-        historyWindow.set({ ...current, [direction]: page[direction] });
         if (page.chunks.length || page[direction] === null) {
-          publishHistory(page.chunks, page.through, direction === 'before');
+          batch(() => {
+            historyWindow.set({ ...current, [direction]: page[direction] });
+            publishHistory(page.chunks, page.through, direction === 'before');
+          });
           if (historyWindow()?.after === null && latestKnown > page.through)
             void follow().catch(report);
           return true;
@@ -1759,10 +2101,10 @@ export function Conversation(props: ConversationProps) {
   };
   const loadOlder = () => extendHistory('before');
   const loadNewer = () => extendHistory('after');
-  const olderHistoryOwner = () => {
+  const pagingOwner = (edge: 'before' | 'after') => {
     const owner = historyWindow();
-    return historyScrolled &&
-      owner?.before &&
+    return (edge === 'before' || historyScrolled) &&
+      owner?.[edge] &&
       ownsWindow(owner.identity) &&
       props.visible() &&
       navigation() === null
@@ -1772,11 +2114,19 @@ export function Conversation(props: ConversationProps) {
   const nearHistoryStart = () =>
     historyOffset <= readingSize().height * HISTORY_LOOKAHEAD_VIEWPORTS;
   const olderHistory = createHistoryPrefetch({
-    owner: olderHistoryOwner,
-    nearStart: nearHistoryStart,
-    loadOlder,
+    owner: () => pagingOwner('before'),
+    nearEdge: nearHistoryStart,
+    loadPage: loadOlder,
   });
   const prefetchOlder = () => void olderHistory().catch(report);
+  const nearHistoryEnd = () =>
+    historyMaxOffset - historyOffset <= readingSize().height * HISTORY_LOOKAHEAD_VIEWPORTS;
+  const newerHistory = createHistoryPrefetch({
+    owner: () => pagingOwner('after'),
+    nearEdge: nearHistoryEnd,
+    loadPage: loadNewer,
+  });
+  const prefetchNewer = () => void newerHistory().catch(report);
   const cancelNavigation = (turnId = navigatingTurn()) => {
     if (!alive || turnId !== navigatingTurn()) return;
     navigation.set(null);
@@ -1824,7 +2174,7 @@ export function Conversation(props: ConversationProps) {
     reading.set('chat');
     const rowTurn = historyTurnKey(row);
     if (rowTurn !== undefined) {
-      const turn = projection().turns.get(rowTurn);
+      const turn = projectedTurn(rowTurn);
       if (turn) unfoldTurn(turn);
     }
     const id = stableRowId(row);
@@ -1922,22 +2272,40 @@ export function Conversation(props: ConversationProps) {
       if (navigation() === target) navigation.set(null);
     }
   };
-  const navigateTurn = async (item: TurnNavigationItem) => {
+  const loadedAnchorKey = (item: TurnNavigationItem) => {
+    if (reading() === 'trajectory')
+      return trajectoryByKey().has(trajectoryTurnKey(item.turnKey))
+        ? trajectoryTurnKey(item.turnKey)
+        : null;
+    const row = historyRows().userRows.get(historyRowKey(item.anchor.position));
+    if (!row) return null;
+    const id = stableRowId(row);
+    const entry = displayEntry(id);
+    return entry?.kind === 'row' ? entry.key : null;
+  };
+  const navigateTurn = async (item: TurnNavigationItem, mode: 'select' | 'scrub' = 'select') => {
     if (!alive) return;
+    const key = loadedAnchorKey(item);
+    if (mode === 'scrub' && (reading() !== 'chat' || key === null)) return;
+    cancelNavigation();
+    if (key !== null) {
+      if (reading() === 'trajectory') jumpTrajectoryTurn(item.turnKey);
+      else showAnchor(key, mode === 'select');
+      return;
+    }
     const target: HistoryNavigation = { kind: 'turn', item };
+    const position = { kind: 'row', position: item.anchor.position, field: 'body' } as const;
     historyDestination = {
-      position: { kind: 'row', position: item.anchor.position, field: 'body' },
+      position,
       explicit: true,
       failed: false,
     };
     navigation.set(target);
     try {
-      const observed = await observe();
-      if (!alive || navigation() !== target) return;
       if (
         !(await resetHistory(
-          { kind: 'row', position: item.anchor.position, field: 'body' },
-          observed.through,
+          position,
+          latestKnown,
           (page) => {
             if (!page.chunks.some((chunk) => historyTurnKey(chunk) === item.turnKey))
               throw new UiError('This turn is no longer available.');
@@ -1947,14 +2315,33 @@ export function Conversation(props: ConversationProps) {
       )
         return;
       if (navigation() !== target) return;
-      const row = rows().find((candidate) => historyTurnKey(candidate) === item.turnKey);
-      if (!row) throw new UiError('This turn is no longer available.');
       if (reading() === 'trajectory') jumpTrajectoryTurn(item.turnKey);
-      else revealRow(row);
+      else {
+        const key = loadedAnchorKey(item);
+        if (key !== null) showAnchor(key, true);
+        else scrollToTurn(item.turnKey);
+      }
     } finally {
       if (navigation() === target) navigation.set(null);
     }
   };
+  const navigateAdjacentTurn = (direction: -1 | 1) => {
+    const items = navigationItems();
+    const selected = navigatingTurn() ?? visibleTurn();
+    const active = items.findIndex((item) => item.turnKey === selected);
+    const current = active < 0 ? (direction < 0 ? items.length : -1) : active;
+    const index = current + direction;
+    const item = items[index];
+    if (item) void navigateTurn(item).catch(report);
+  };
+  effect(() => {
+    const node = root();
+    if (!node || props.compact || !props.visible() || !ready()) return;
+    return keymap.bind(
+      { 'alt+up': () => navigateAdjacentTurn(-1), 'alt+down': () => navigateAdjacentTurn(1) },
+      { within: node, when: 'notEditing' },
+    );
+  });
 
   // A slow disk retains one in-flight snapshot and one replaceable latest
   // edit, rather than one complete draft and Promise closure per keystroke.
@@ -2084,7 +2471,7 @@ export function Conversation(props: ConversationProps) {
         if (current())
           modelProjection.set({
             route,
-            details: { kind: 'unavailable', message: errorText(reason) },
+            details: { kind: 'unavailable', message: errorText(reason, 'Could not load models.') },
           });
       } finally {
         if (modelRead?.generation === generation) modelRead = null;
@@ -2266,7 +2653,7 @@ export function Conversation(props: ConversationProps) {
     if (
       accepted.kind === 'started' &&
       text !== undefined &&
-      !canonicalRows().byMessage.has(`${accepted.messageId}/body`)
+      !historyRows().byMessage.has(`${accepted.messageId}/body`)
     ) {
       pendingMessages.set([
         ...pendingMessages().filter((row) => row.messageId !== accepted.messageId),
@@ -2362,7 +2749,10 @@ export function Conversation(props: ConversationProps) {
     return operations;
   };
   const sendError = (id: string, reason: unknown) => {
-    if (alive) sendErrors.set(new Map(sendErrors()).set(id, errorText(reason)));
+    if (alive)
+      sendErrors.set(
+        new Map(sendErrors()).set(id, errorText(reason, 'Could not send the message.')),
+      );
   };
   const confirmFrozen = async (id: string, frozen: FrozenSend) => {
     activeSends.set(new Map(activeSends()).set(id, frozen));
@@ -2423,7 +2813,12 @@ export function Conversation(props: ConversationProps) {
       freezeState.set({ kind: 'idle' });
       void confirmFrozen(operation, frozen);
     } catch (reason) {
-      if (ownsReservation()) freezeState.set({ kind: 'failed', frozen, error: errorText(reason) });
+      if (ownsReservation())
+        freezeState.set({
+          kind: 'failed',
+          frozen,
+          error: errorText(reason, 'Could not send the message.'),
+        });
     }
   };
   const send = async (
@@ -2807,12 +3202,24 @@ export function Conversation(props: ConversationProps) {
       return props.control('editQueue', { sessionId, expectedRevision, edit });
     },
   };
+  const executionWaitMessage = computed(() => {
+    if (!connected()) return '';
+    const state = execution()?.state;
+    if (state?.kind === 'waiting' && state.authorityUnavailable && !interactions().entries.length)
+      return tr('Waiting for access to be restored');
+    return '';
+  });
   const ownHandle: ConversationHandle = {
     sessionId,
     prediction,
     title: () => title() || tr('Untitled conversation'),
     queue: queueSession,
     interactions,
+    executionWaitMessage,
+    reconnecting: () => transcriptStatus() === 'failed' && !props.connectionLost(),
+    reconnect: () => retryTranscript(sessionId),
+    attachmentMetadataFailed,
+    retryAttachmentMetadata: () => retryAttachmentMetadata(sessionId),
     computerAccess: {
       snapshot: computerApps,
       async stop(operationId) {
@@ -2917,9 +3324,7 @@ export function Conversation(props: ConversationProps) {
       );
       if (group?.kind !== 'process') {
         const index = display().findLastIndex(
-          (entry) =>
-            entry.kind === 'row' &&
-            historyTurnKey(projection().rowsById.get(entry.rowId)) === turnId,
+          (entry) => entry.kind === 'row' && historyTurnKey(currentRow(entry.rowId)) === turnId,
         );
         if (index >= 0) {
           list?.scrollToIndex({ index, viewPosition: 0 });
@@ -2927,7 +3332,7 @@ export function Conversation(props: ConversationProps) {
         }
         return;
       }
-      const turn = projection().turns.get(group.turnKey);
+      const turn = projectedTurn(group.turnKey);
       if (!turn) return;
       unfoldTurn(turn);
       const state = groupState(group.key);
@@ -2947,7 +3352,7 @@ export function Conversation(props: ConversationProps) {
     },
     jumpLatest(turnId, reload = false) {
       if (!alive) return;
-      const showLatest = () => {
+      const showLatest = (animated = false) => {
         if (reading() === 'trajectory' && trajectoryRange() !== null) selectTrajectoryRange(null);
         const group =
           reading() === 'chat'
@@ -2961,13 +3366,13 @@ export function Conversation(props: ConversationProps) {
           if (state.list) state.list.scrollToEnd({ animated: false });
           else state.opening = 'bottom';
         }
-        resumeHistoryFollowing();
+        resumeHistoryFollowing(animated);
       };
       // The loaded window already reaches the latest row and follows new ones:
       // scroll it in place, keeping the rows above, without waiting on the Host.
       if (!reload && atHistoryTail() && navigation() === null) {
         props.focusComposer();
-        showLatest();
+        showLatest(true);
         return;
       }
       const target: HistoryNavigation = { kind: 'tail' };
@@ -3238,53 +3643,6 @@ export function Conversation(props: ConversationProps) {
     }),
   );
 
-  const recoveryFailure = computed(() => {
-    const state = execution()?.state;
-    return state?.kind === 'failed' ? state.reason : null;
-  });
-  const failureLabels: Record<NonNullable<ReturnType<typeof recoveryFailure>>['kind'], MessageKey> =
-    {
-      current_authority_unavailable: 'Current authority unavailable',
-      external_effect_unknown: 'External operation outcome unknown',
-      operation_unknown: 'Operation outcome unknown',
-      provider_effect_unknown: 'Provider tool outcome unknown',
-      original_admission_unknown: 'Operation outcome unknown',
-      code_cell_recovery_unavailable: 'Code cell recovery unavailable',
-      unsupported_protocol: 'Maka could not resume this run.',
-      cleanup_unconfirmed: 'Resource cleanup unconfirmed',
-      tool_cleanup_unconfirmed: 'Tool cleanup unconfirmed',
-      model_cleanup_unconfirmed: 'Model cleanup unconfirmed',
-      resources_unavailable: 'Resources unavailable',
-      external_task_unobservable: 'External task cannot be observed',
-      external_publication_item: 'External output needs reconciliation',
-      external_publication_unavailable: 'External output publication unavailable',
-    };
-  const authorityUnavailable = () => {
-    const state = execution()?.state;
-    return state?.kind === 'waiting' && state.authorityUnavailable;
-  };
-  const waitingExecution = computed(() => {
-    const source = execution();
-    return source?.state.kind === 'waiting'
-      ? [...new Set(source.state.waits.map((wait) => wait.kind))].filter(
-          (kind) => kind !== 'blocker',
-        )
-      : [];
-  });
-  const waitLabels: Record<
-    Extract<AgentExecution['state'], { kind: 'waiting' }>['waits'][number]['kind'],
-    MessageKey
-  > = {
-    cell: 'Waiting for a code cell',
-    external: 'Waiting for the external task',
-    provider_backoff: 'Waiting to retry the provider',
-    model: 'Waiting for the model',
-    approval: 'Waiting for approval',
-    retry: 'Waiting to retry',
-    operation: 'Waiting for the original operation',
-    child: 'Waiting for a child run',
-    blocker: 'Waiting for access to be restored',
-  };
   let botReadThrough = 0;
   effect(() => {
     const latest = bot.latest();
@@ -3307,16 +3665,35 @@ export function Conversation(props: ConversationProps) {
     })().catch(report);
   });
 
-  const railShown = () => ready() && navigationItems().length > 1;
+  const historyWidth = signal(0);
+  const hasRailRoom = () => historyWidth() >= 400;
+  const railShown = () =>
+    ready() &&
+    (platform.idiom === 'terminal'
+      ? navigationItems().length > 1
+      : navigationItems().length >= 4 && hasRailRoom());
   // The desktop rail's width, kept on both sides so the reading column stays centered.
-  const railInset = () => (platform.idiom !== 'terminal' && railShown() ? railWidth() + 8 : 0);
+  const railInset = () => (platform.idiom !== 'terminal' && hasRailRoom() ? railWidth() + 8 : 0);
   const rail = () => (
     <TurnNavigation
       items={navigationItems}
       active={visibleTurn}
+      visible={visibleTurns}
       busy={navigatingTurn}
-      navigate={(item) => {
-        void navigateTurn(item).catch(report);
+      preview={async (item) => {
+        const position = item.anchor.position;
+        const row = historyRows().userRows.get(historyRowKey(position));
+        if (row) return row.text;
+        if (item.anchor.kind !== 'landmark') return item.label;
+        const prompt = await host.query('agent', 'historyPrompt', {
+          sessionId,
+          through: item.anchor.through,
+          position,
+        });
+        return prompt?.text ?? item.label;
+      }}
+      navigate={(item, mode) => {
+        void navigateTurn(item, mode).catch(report);
       }}
       cancel={inputAction(cancelNavigation, navigatingTurn())}
     />
@@ -3325,19 +3702,19 @@ export function Conversation(props: ConversationProps) {
     <View style={readingColumn}>
       <Each of={[key()]} key={(id: string) => id}>
         {(ownedKey) => {
-          const initial = displayByKey().get(ownedKey());
+          const initial = displayEntry(ownedKey());
           if (!initial) return <View />;
-          const entry = () => displayByKey().get(ownedKey()) ?? initial;
+          const entry = () => displayEntry(ownedKey()) ?? initial;
           const reveal = () =>
             list?.scrollToIndex({
-              index: shownKeys().indexOf(ownedKey()),
+              index: (props.compact ? shownKeys() : displayKeys()).indexOf(ownedKey()),
               viewPosition: 0,
               animated: false,
             });
           if (initial.kind === 'trajectory-turn') {
             return (
               <TrajectoryTurn
-                turn={() => projection().turns.get(initial.turnKey) ?? initial.turn}
+                turn={() => projectedTurn(initial.turnKey) ?? initial.turn}
                 opening={() => currentRow(initial.rowId)}
                 collapsed={() =>
                   !trajectoryFiltering() && trajectoryCollapsed().has(initial.turnKey)
@@ -3384,14 +3761,17 @@ export function Conversation(props: ConversationProps) {
             );
           }
           if (initial.kind === 'summary') {
-            const first = projection().turns.get(initial.turnKey);
+            const first = projectedTurn(initial.turnKey);
             if (!first) return <View />;
-            const turn = () => projection().turns.get(initial.turnKey) ?? first;
+            const turn = () => projectedTurn(initial.turnKey) ?? first;
             const images = computed(() =>
-              turnImages(projection().rowsById.values(), initial.turnKey),
+              turnImages(
+                projectedSection(initial.turnKey)?.rowsById.values() ?? [],
+                initial.turnKey,
+              ),
             );
             const groups = computed(() =>
-              projection().entries.filter(
+              (projectedSection(initial.turnKey)?.entries ?? []).filter(
                 (item): item is ProcessGroup =>
                   item.kind === 'process' && item.turnKey === initial.turnKey,
               ),
@@ -3411,6 +3791,11 @@ export function Conversation(props: ConversationProps) {
                   preview: props.previewImage,
                 }}
                 toggle={(open) => {
+                  if (open) {
+                    historyFollowPaused.set(true);
+                    // Replace the source reading anchor before the folded rows return.
+                    list?.scrollToOffset({ offset: historyOffset, animated: false });
+                  }
                   turnState(initial.turnKey).expanded.set(open);
                 }}
               />
@@ -3421,9 +3806,9 @@ export function Conversation(props: ConversationProps) {
               const latest = entry();
               return latest.kind === 'process' ? latest.group : initial.group;
             };
-            const first = projection().turns.get(initial.group.turnKey);
+            const first = projectedTurn(initial.group.turnKey);
             if (!first) return <View />;
-            const turn = () => projection().turns.get(initial.group.turnKey) ?? first;
+            const turn = () => projectedTurn(initial.group.turnKey) ?? first;
             const tool = () =>
               latestToolActivity(
                 toolActivity().filter((item) => group().toolIds.includes(item.toolUseId)),
@@ -3530,8 +3915,9 @@ export function Conversation(props: ConversationProps) {
           return (
             <MessageRow
               item={row}
+              highlighted={() => highlightedAnchor() === initial.key}
               repeats={() => {
-                const item = displayByKey().get(initial.rowId);
+                const item = displayEntry(initial.rowId);
                 return item?.kind === 'row' ? (item.repeats ?? 1) : 1;
               }}
               toolMaxHeight={() => readingSize().height}
@@ -3550,7 +3936,7 @@ export function Conversation(props: ConversationProps) {
                 if (
                   !alive ||
                   key !== initial.rowId ||
-                  displayByKey().get(key)?.kind !== 'row' ||
+                  displayEntry(key)?.kind !== 'row' ||
                   !rowStates.get(key)?.expanded()
                 )
                   return;
@@ -3584,7 +3970,7 @@ export function Conversation(props: ConversationProps) {
                   ? undefined
                   : (row) => (
                       // Only where the conversation ends in this failure.
-                      <If when={run() !== 'running' && displayKeys().at(-1) === initial.rowId}>
+                      <If when={run() !== 'running' && lastDisplayKey() === initial.rowId}>
                         <TurnRetry
                           row={() => loadedOpening(historyTurnKey(row()))}
                           sessionId={sessionId}
@@ -3690,30 +4076,9 @@ export function Conversation(props: ConversationProps) {
         backgroundColor: C.panel,
       }}
     >
-      <If when={attachmentMetadataFailed()}>
-        <Button
-          onPress={inputAction(retryAttachmentMetadata, sessionId)}
-          style={{ ...controlStyle, alignSelf: 'flex-start' }}
-          hoverStyle={{ backgroundColor: C.card }}
-          focusStyle={{ backgroundColor: C.raised }}
-        >
-          <Text style={{ ...captionTextStyle, color: C.accent }}>
-            {tr('Retry attachment metadata')}
-          </Text>
-        </Button>
-      </If>
       <Header
         title={title() || tr('Untitled conversation')}
         workspace={workspace()}
-        status={
-          stopping()
-            ? 'stopping'
-            : run() === 'loading'
-              ? 'loading'
-              : run() === 'failed'
-                ? 'failed'
-                : undefined
-        }
         commands={props.commands}
         browser={props.browser()}
         files={props.files}
@@ -3740,85 +4105,6 @@ export function Conversation(props: ConversationProps) {
           )
         }
       />
-      <If when={recoveryFailure()}>
-        {(reason) => (
-          <View style={{ ...readingColumn, paddingVertical: 8 }}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
-              {tr(failureLabels[reason().kind])}
-            </Text>
-          </View>
-        )}
-      </If>
-      <If when={authorityUnavailable()}>
-        <View style={{ ...readingColumn, paddingVertical: 8 }}>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>
-            {tr('Waiting for access to be restored')}
-          </Text>
-        </View>
-      </If>
-      <Each of={waitingExecution()} key={(kind) => kind}>
-        {(kind) => (
-          <View style={{ ...readingColumn, paddingVertical: 8 }}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>{tr(waitLabels[kind()])}</Text>
-          </View>
-        )}
-      </Each>
-      <If when={continuation()}>
-        {(candidate) => (
-          <If when={!draft().trim() && attachments.files().length === 0}>
-            <View style={{ ...readingColumn, paddingVertical: 8 }}>
-              <Button
-                disabled={
-                  confirmingContinuation() ||
-                  !!sendBlockedReason() ||
-                  modelDetails().kind !== 'ready'
-                }
-                onPress={inputAction(
-                  (input: { source: AgentExecution; backend: BackendIdentity }) =>
-                    continueRun(input.source, input.backend),
-                  {
-                    source: candidate().source,
-                    backend: backend(),
-                  },
-                )}
-                style={{ ...controlStyle, alignSelf: 'flex-start' }}
-                hoverStyle={{ backgroundColor: C.surface }}
-                focusStyle={{ backgroundColor: C.raised }}
-              >
-                <Text style={{ ...captionTextStyle, color: C.accent }}>
-                  {confirmingContinuation()
-                    ? tr('Confirming continuation…')
-                    : tr('Continue in a new run')}
-                </Text>
-              </Button>
-            </View>
-          </If>
-        )}
-      </If>
-      <If when={transcriptStatus() === 'failed' && !props.connectionLost()}>
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 8,
-            paddingHorizontal: 16,
-            paddingVertical: 8,
-            borderBottomWidth: 1,
-            borderBottomColor: C.line,
-          }}
-        >
-          <Text style={{ ...captionTextStyle, color: C.muted, flex: 1 }}>
-            {tr('Reconnecting updates… Your draft is kept.')}
-          </Text>
-          <Button
-            accessibilityLabel={tr('Reconnect updates')}
-            onPress={inputAction(retryTranscript, sessionId)}
-            style={controlStyle}
-          >
-            <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
-          </Button>
-        </View>
-      </If>
       <View
         style={{
           // The desktop's header holds these views.
@@ -3887,8 +4173,6 @@ export function Conversation(props: ConversationProps) {
           flexDirection: selectedTrajectory() !== null && trajectorySideBySide() ? 'row' : 'column',
           minHeight: 0,
           width: '100%',
-          // Keep the desktop rail clear of the list, whose scroll bar ends beside it.
-          paddingRight: railInset(),
         }}
       >
         <View
@@ -3927,7 +4211,10 @@ export function Conversation(props: ConversationProps) {
               loadOlder={loadOlder}
             />
           </If>
-          <View style={{ flex: 1, minHeight: 0, flexDirection: 'row' }}>
+          <View
+            onLayout={({ bounds }) => historyWidth.set(bounds.size.width)}
+            style={{ flex: 1, minHeight: 0, flexDirection: 'row', paddingRight: railInset() }}
+          >
             <List
               ref={list}
               onLayout={({ bounds: frame }) => {
@@ -3939,10 +4226,11 @@ export function Conversation(props: ConversationProps) {
                 }
                 changedReadExposure();
               }}
-              each={displayKeys()}
+              each={historyList()}
               loadMoreAtStartThreshold={HISTORY_LOOKAHEAD_VIEWPORTS}
               onLoadMoreAtStart={prefetchOlder}
               onScrollDragStart={({ offset }) => {
+                cancelNavigation();
                 historyScrollInput = 'dragging';
                 historyScrolled = true;
                 if (offset.y <= 1) prefetchOlder();
@@ -3960,7 +4248,9 @@ export function Conversation(props: ConversationProps) {
                     if (historyScrollInput !== 'dragging') historyScrollInput = 'pending';
                     historyScrolled = true;
                     if (nearHistoryStart()) prefetchOlder();
+                    if (nearHistoryEnd()) prefetchNewer();
                   } else if (atHistoryTail()) resumeHistoryFollowing();
+                  else ownHandle.jumpLatest(null);
                 }
               }}
               onBlur={() => {
@@ -3969,7 +4259,14 @@ export function Conversation(props: ConversationProps) {
                 if (navigation()?.kind !== 'tail') cancelNavigation();
               }}
               onViewableItemsChange={(event) => {
-                visibleTurn.set(entryTurn(event.viewableItems[0]?.item ?? ''));
+                const turns = new Set<string>();
+                for (const { item } of event.viewableItems) {
+                  const turn = entryTurn(item);
+                  if (turn !== null) turns.add(turn);
+                }
+                if (turns.size > 0) {
+                  visibleTurns.set(turns);
+                }
                 visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
                 changedReadExposure();
               }}
@@ -3999,8 +4296,9 @@ export function Conversation(props: ConversationProps) {
                 const end = Math.max(0, event.contentSize.height - event.size.height);
                 const distance = end - offset;
                 const movement = offset - historyOffset;
-                // Resizing and growing content can also move the native offset.
-                const scrolled = historyScrollInput !== 'idle' || end === historyMaxOffset;
+                // Programmatic jumps and native prepend corrections must not
+                // change whether the reader is following the live tail.
+                const scrolled = historyScrollInput !== 'idle';
                 historyOffset = offset;
                 historyMaxOffset = end;
                 if (movement !== 0 && historyScrollInput === 'pending') historyScrollInput = 'idle';
@@ -4015,12 +4313,20 @@ export function Conversation(props: ConversationProps) {
                   atHistoryTail()
                 )
                   resumeHistoryFollowing();
-                if (movement < 0 && nearHistoryStart()) prefetchOlder();
+                const owner = pagingOwner('before');
+                if (owner !== null) {
+                  // An underfilled initial viewport needs history before the first gesture.
+                  const firstLayout = measuredHistory !== owner;
+                  measuredHistory = owner;
+                  if ((firstLayout || (scrolled && movement < 0)) && nearHistoryStart())
+                    prefetchOlder();
+                }
+                if (scrolled && movement > 0 && nearHistoryEnd()) prefetchNewer();
                 const reader = innerReader();
-                const row = reader === null ? undefined : projection().rowsById.get(reader);
+                const row = reader === null ? undefined : currentRow(reader);
                 const toolReader =
                   reader !== null &&
-                  displayByKey().get(reader)?.kind === 'row' &&
+                  displayEntry(reader)?.kind === 'row' &&
                   (row?.tool != null || row?.role === 'tool_call' || row?.role === 'tool_result') &&
                   rowStates.get(reader)?.expanded() === true;
                 if (
@@ -4030,7 +4336,6 @@ export function Conversation(props: ConversationProps) {
                   distance <= historyEndTolerance
                 )
                   innerReader.set(null);
-                if (distance <= 32) void loadNewer();
                 changedReadExposure();
               }}
               empty={
@@ -4054,7 +4359,18 @@ export function Conversation(props: ConversationProps) {
             >
               {entryRow}
             </List>
-            <If when={platform.idiom === 'terminal' && railShown()}>{rail()}</If>
+            <If when={railShown()}>
+              <View
+                style={[
+                  platform.idiom === 'terminal'
+                    ? { width: railWidth() }
+                    : { position: 'absolute', top: 0, bottom: 0, right: 8 },
+                  { pointerEvents: 'box-none', flexDirection: 'row' },
+                ]}
+              >
+                {rail()}
+              </View>
+            </If>
             <View
               style={[
                 {
@@ -4062,7 +4378,7 @@ export function Conversation(props: ConversationProps) {
                   top: 0,
                   bottom: 0,
                   left: railInset(),
-                  right: 0,
+                  right: railInset(),
                 },
                 { pointerEvents: 'box-none' },
               ]}
@@ -4135,19 +4451,6 @@ export function Conversation(props: ConversationProps) {
             );
           }}
         </Each>
-        <If when={platform.idiom !== 'terminal' && railShown()}>
-          <View
-            style={{
-              position: 'absolute',
-              top: 0,
-              bottom: 0,
-              right: 8,
-              flexDirection: 'row',
-            }}
-          >
-            {rail()}
-          </View>
-        </If>
       </View>
     </View>
   );

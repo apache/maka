@@ -778,10 +778,7 @@ export function SettingsFormFooter(props: {
   );
 }
 
-/**
- * A failed read, where its data would be, with the way back. The reason already
- * shows under the title when the settings dialog reported it.
- */
+/** A failed read, where its data would be, with the way back. */
 export function SettingsProblem(props: { message?: string; retry?: () => void }) {
   return (
     <View

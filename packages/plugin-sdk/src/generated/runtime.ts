@@ -2572,6 +2572,7 @@ export type AgentScheduleResult =
       kind: 'rejected';
       reason: string;
     };
+export type PresetRevision = number;
 /**
  * A complete logical Turn boundary within the source session.
  */
@@ -3249,6 +3250,12 @@ export type AgentCreated =
       reason: AgentRejection;
     };
 export type AgentRejection =
+  | 'preset_not_found'
+  | 'preset_disabled'
+  | 'preset_conflict'
+  | 'preset_model_unavailable'
+  | 'preset_thinking_level_unavailable'
+  | 'preset_backend_conflict'
   | 'permission_change_requires_user'
   | 'title_invalid'
   | 'labels_invalid'
@@ -6993,6 +7000,10 @@ export interface AgentList {
 }
 export interface AgentCreate {
   /**
+   * Apply a preset at creation; mutually exclusive with backend.
+   */
+  presetId?: string | null;
+  /**
    * Initial next-turn preference; admission resolves it again.
    */
   backend?: AgentBackendPreference | null;
@@ -7188,6 +7199,7 @@ export interface AgentRecallPage {
   gaps: string[];
 }
 export interface AgentSession {
+  appliedPreset?: AppliedPreset | null;
   /**
    * Session that initiated creation, independent of fork ancestry and task ownership.
    */
@@ -7213,6 +7225,17 @@ export interface AgentSession {
    */
   tailMessageId: string | null;
   activity: AgentSessionActivity;
+}
+/**
+ * Immutable execution configuration captured when a session is created.
+ */
+export interface AppliedPreset {
+  id: string;
+  revision: PresetRevision;
+  name: string;
+  instruction: string;
+  model: ModelSelection;
+  thinkingLevel?: ThinkingLevel | null;
 }
 /**
  * Frozen conversation ancestry for presentation, not authority over the source.

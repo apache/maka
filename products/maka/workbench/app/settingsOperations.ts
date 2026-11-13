@@ -31,12 +31,15 @@ const record = (value: unknown): value is Record<string, unknown> =>
 export function settingsValue(reply: unknown): unknown {
   const receipt = record(reply) && record(reply.receipt) ? reply.receipt : null;
   const outcome = receipt?.kind === 'recorded' && record(receipt.outcome) ? receipt.outcome : null;
-  if (outcome?.kind !== 'returned') throw new UiError('This action could not be completed.');
+  if (outcome?.kind !== 'returned')
+    throw new Error(
+      `No returned result for settings operation (${outcome?.kind ?? receipt?.kind ?? 'missing receipt'})`,
+    );
   const result = outcome.result;
-  if (!record(result)) throw new UiError('This action could not be completed.');
+  if (!record(result)) throw new Error('Invalid settings operation result');
   if (result.kind === 'failure' && typeof result.diagnostic === 'string')
     throw new Error(result.diagnostic);
-  if (result.kind !== 'success') throw new UiError('This action could not be completed.');
+  if (result.kind !== 'success') throw new Error(`Invalid settings result kind: ${result.kind}`);
   return result.value;
 }
 
@@ -77,7 +80,7 @@ export function createSettingsOperations(host: Host) {
     alive = false;
   });
   const report = (reason: unknown) => {
-    if (alive) error.set(errorText(reason));
+    if (alive) error.set(errorText(reason, 'Could not read or update settings.'));
   };
   const refreshPending = async () => {
     try {

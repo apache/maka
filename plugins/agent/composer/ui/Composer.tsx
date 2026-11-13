@@ -198,7 +198,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     !!props.blocked?.() ||
     !!props.session()?.continuing() ||
     !!blocked() ||
-    !props.session()?.editable();
+    !props.session()?.editable() ||
+    props.session()?.modelDetails().kind !== 'ready';
   const primaryDisabled = () =>
     stopPrimary()
       ? props.session()!.stopping()
@@ -233,10 +234,19 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     platform.idiom !== 'terminal' &&
     (props.session() !== null || pending() !== null) &&
     (draggingOverEditor() || (props.fileDragging?.() ?? false));
+  const controlCClearsDraft =
+    platform.idiom === 'terminal' || keymap.label('mod+c') !== keymap.label('ctrl+c');
   effect(() => {
     const owner = props.session();
     const node = cardRoot();
-    if (node && props.active() && owner?.editable() && owner.run() === null && owner.draft())
+    if (
+      controlCClearsDraft &&
+      node &&
+      props.active() &&
+      owner?.editable() &&
+      owner.run() === null &&
+      owner.draft()
+    )
       return keymap.bind('ctrl+c', completion.clearDraft, {
         when: 'notEditing',
         within: node,
@@ -247,6 +257,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     const owner = props.session();
     const current = predictionEditor();
     if (
+      controlCClearsDraft &&
       owner &&
       current?.owner === owner &&
       props.active() &&

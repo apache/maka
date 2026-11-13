@@ -22,6 +22,7 @@ pub mod acp;
 pub mod contract;
 pub mod executor;
 pub mod external;
+pub mod preset;
 pub mod session;
 pub use contract::{Configuration, ModelSelection, configuration_schema, contract};
 pub const IMPLEMENTATION: &str = "maka.agent.api";

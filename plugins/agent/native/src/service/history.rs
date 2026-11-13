@@ -273,6 +273,7 @@ async fn tree_window(
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<wire::Page, String> {
     use wire::{Position, SourcePosition};
+    const PAGE_CHUNKS: usize = 8;
     let mut reverse = matches!(&position, Position::Tail | Position::Before { .. });
     let anchor = match &position {
         Position::Row { position, field } => Some(wire::Cursor {
@@ -322,14 +323,15 @@ async fn tree_window(
         anchor.as_ref().map(|cursor| cursor.position.clone()),
         reverse,
         include_thinking,
-        16,
+        // One additional source row covers the inclusive boundary cursor.
+        PAGE_CHUNKS + 1,
         &mut cache,
         stop,
     )
     .await?;
     let mut chunks = Vec::new();
     let mut remaining = 32 * 1024;
-    'rows: for selected in rows {
+    'rows: for mut selected in rows {
         if stop.is_cancelled() {
             return Err("agent_observation_cancelled".into());
         }
@@ -351,6 +353,7 @@ async fn tree_window(
             _ if reverse => SourcePosition::Tail,
             _ => SourcePosition::Start,
         };
+        source::pair(tree, &mut selected, &mut cache, stop).await?;
         let (_, offset, total, text) =
             source::display(&selected, view, source_position, remaining, stop).await?;
         if matches!(&position, Position::After { .. }) && anchored.is_some() && offset == total {
@@ -404,7 +407,7 @@ async fn tree_window(
             chunk.offset + (chunk.text.len() as u64) < chunk.total_bytes
         };
         chunks.push(chunk);
-        if remaining == 0 || chunks.len() == 8 || partial {
+        if remaining == 0 || chunks.len() == PAGE_CHUNKS || partial {
             break;
         }
     }

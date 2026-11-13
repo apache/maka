@@ -54,7 +54,8 @@ export function createComputerAppControls(access: ComposerComputerAccess, height
     try {
       await access.stop(operationId);
     } catch (reason) {
-      if (alive && current(operationId)) failure.set({ operationId, message: errorText(reason) });
+      if (alive && current(operationId))
+        failure.set({ operationId, message: errorText(reason, 'Could not stop computer access.') });
     }
   };
   return {

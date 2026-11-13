@@ -284,6 +284,7 @@ pub(crate) struct ServiceTask {
 }
 pub(crate) trait TaskBinding: Send + Sync {
     fn observation_retired(&self) -> CancellationToken;
+    fn owner_stop(&self) -> CancellationToken;
     fn admitted_steering_batches(&self) -> BoxFuture<'_, Result<u64, Error>>;
     fn stop_requested(&self) -> BoxFuture<'_, Result<bool, Error>>;
     fn execution_authority(
@@ -299,6 +300,9 @@ struct NativeBinding(Arc<dyn TaskBinding>);
 impl external::TaskBinding for NativeBinding {
     fn observation_retired(&self) -> CancellationToken {
         self.0.observation_retired()
+    }
+    fn owner_stop(&self) -> CancellationToken {
+        self.0.owner_stop()
     }
     fn admitted_steering_batches(&self) -> BoxFuture<'_, Result<u64, Error>> {
         self.0.admitted_steering_batches()

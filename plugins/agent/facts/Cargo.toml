@@ -42,4 +42,6 @@ tokio-util.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# The maka binary enables this through rolldown; tests must decode the same way.
+serde_json = { workspace = true, features = ["arbitrary_precision"] }
 tokio.workspace = true

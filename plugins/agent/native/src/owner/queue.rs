@@ -604,7 +604,7 @@ impl Owner {
                 RunError::InvalidInput(_) => "invalid_input",
                 RunError::ModelUnavailable => "model_unavailable",
                 RunError::IsolationUnavailable(_) => "isolation_unavailable",
-                RunError::CompactionFailed(_) => "compaction_failed",
+                RunError::CompactionFailed(_) | RunError::CompactionMismatch => "compaction_failed",
                 RunError::Cancelled => "cancelled",
                 RunError::ModelIncomplete => "model_incomplete",
                 RunError::Commit(_) => "commit",
@@ -615,6 +615,7 @@ impl Owner {
                 RunError::Internal(_) => "internal",
                 RunError::Json(_) => "json",
                 RunError::Preparation(_) => "preparation",
+                RunError::InvalidImage(_) => "invalid_image",
                 RunError::PreparationCleanup(_) => "preparation_cleanup",
             };
             let tool_error_variant = match error {

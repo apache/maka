@@ -257,6 +257,7 @@ fn compile_with(
         minify: release,
         development: !release,
         split,
+        fail_on_unresolved_imports: false,
         ui_sets: crate::ui_sets().to_vec(),
         app,
         asset_root_from: None,

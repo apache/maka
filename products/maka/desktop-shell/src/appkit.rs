@@ -73,6 +73,27 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
     let config = shell.attach(first.config.clone());
+    // Keyboard-only navigation also works when the pointer is outside the panel.
+    let events = shell.events.clone();
+    let flags_changed =
+        block2::RcBlock::new(move |event: std::ptr::NonNull<objc2_app_kit::NSEvent>| {
+            // SAFETY: AppKit supplies a live event for the duration of this callback.
+            let flags = unsafe { event.as_ref() }.modifierFlags();
+            if let Some(host) = events.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                let _ = host.send(
+                    "quickLauncher.commandChanged",
+                    JsonValue::Bool(command_only(flags)),
+                );
+            }
+            event.as_ptr()
+        });
+    // SAFETY: the monitor returns each event unchanged and is removed after the event loop.
+    let monitor = unsafe {
+        objc2_app_kit::NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+            objc2_app_kit::NSEventMask::FlagsChanged,
+            &flags_changed,
+        )
+    };
     carry_out(requests, &runtime);
     let windows = permission_requests(&first);
     refuse_reloads(
@@ -101,6 +122,9 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     run_app_with_config(config, options, move |is_active| {
         active.send_replace(is_active);
     });
+    if let Some(monitor) = monitor {
+        unsafe { objc2_app_kit::NSEvent::removeMonitor(&monitor) };
+    }
     permissions::close_all();
     quit.send_replace(true);
     runtime
@@ -235,7 +259,7 @@ async fn follow(
         with_running_view(move |view| view.load_with_config(config));
     }
     if let Some(bindings) = bindings {
-        host::detach(bindings, &endpoint, epoch).await;
+        host::quit(bindings).await;
     }
 }
 
@@ -288,4 +312,10 @@ fn refuse_reloads(
             }
         }
     });
+}
+
+pub(crate) fn command_only(flags: objc2_app_kit::NSEventModifierFlags) -> bool {
+    use objc2_app_kit::NSEventModifierFlags as Flags;
+    flags.contains(Flags::Command)
+        && !flags.intersects(Flags::Shift | Flags::Control | Flags::Option)
 }

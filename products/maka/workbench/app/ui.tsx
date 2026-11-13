@@ -23,7 +23,6 @@ import type { JSX, ViewRef } from 'nsh';
 import { Button, Tooltip } from 'nsh/base';
 import { colorScheme, keymap, platform, windowSize } from 'nsh';
 import { Icon } from './Icon';
-import { sessionStatusCaption } from './sessionStatus';
 import {
   controlsLeft,
   controlsRight,
@@ -450,7 +449,6 @@ export function ViewSegment(props: { label: string; selected: boolean; onPress: 
 export function Header(props: {
   title: string;
   workspace?: string;
-  status?: 'loading' | 'stopping' | 'failed';
   /** The command palette, which the terminal's header opens; the desktop's is in the menu bar. */
   commands(): void;
   browser: BrowserHeader;
@@ -569,21 +567,6 @@ export function Header(props: {
         <View style={{ flex: 1 }} />
       </If>
       {props.actions}
-      <If when={props.status}>
-        <Text
-          style={{
-            ...captionTextStyle,
-            color:
-              props.status === 'failed'
-                ? C.danger
-                : props.status === 'stopping'
-                  ? C.accent
-                  : C.muted,
-          }}
-        >
-          {props.status ? sessionStatusCaption[props.status] : ''}
-        </Text>
-      </If>
       {props.views}
       <If when={props.browser.close}>
         <Button

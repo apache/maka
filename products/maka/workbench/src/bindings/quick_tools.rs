@@ -97,22 +97,32 @@ pub async fn installed_applications() -> Result<Vec<String>, String> {
 
 #[cfg(target_os = "macos")]
 fn application_icon_png(path: &str) -> Result<Vec<u8>, String> {
+    let icon = objc2_app_kit::NSWorkspace::sharedWorkspace()
+        .iconForFile(&objc2_foundation::NSString::from_str(path));
+    thumbnail_png(&icon, APPLICATION_ICON_PIXELS)
+}
+
+#[cfg(target_os = "macos")]
+fn thumbnail_png(icon: &objc2_app_kit::NSImage, max_side: isize) -> Result<Vec<u8>, String> {
     use objc2::AnyThread;
     use objc2_app_kit::{
         NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey,
-        NSDeviceRGBColorSpace, NSGraphicsContext, NSWorkspace,
+        NSDeviceRGBColorSpace, NSGraphicsContext,
     };
-    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
+    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize};
 
     objc2::rc::autoreleasepool(|_| {
-        let icon = NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(path));
+        let size = icon.size();
+        let scale = max_side as f64 / size.width.max(size.height).max(1.0);
+        let width = (size.width * scale).round().clamp(1.0, max_side as f64) as isize;
+        let height = (size.height * scale).round().clamp(1.0, max_side as f64) as isize;
         // SAFETY: null planes ask AppKit to allocate storage for these dimensions.
         let bitmap = unsafe {
             NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
                 NSBitmapImageRep::alloc(),
                 std::ptr::null_mut(),
-                APPLICATION_ICON_PIXELS,
-                APPLICATION_ICON_PIXELS,
+                width,
+                height,
                 8,
                 4,
                 true,
@@ -125,10 +135,12 @@ fn application_icon_png(path: &str) -> Result<Vec<u8>, String> {
         .ok_or("Could not create the application icon bitmap.")?;
         let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&bitmap)
             .ok_or("Could not draw the application icon.")?;
-        let side = APPLICATION_ICON_PIXELS as f64;
         NSGraphicsContext::saveGraphicsState_class();
         NSGraphicsContext::setCurrentContext(Some(&context));
-        icon.drawInRect(NSRect::new(NSPoint::ZERO, NSSize::new(side, side)));
+        icon.drawInRect(NSRect::new(
+            NSPoint::ZERO,
+            NSSize::new(width as f64, height as f64),
+        ));
         NSGraphicsContext::restoreGraphicsState_class();
         let properties =
             NSDictionary::<NSBitmapImageRepPropertyKey, objc2::runtime::AnyObject>::new();
@@ -259,6 +271,264 @@ pub async fn clipboard_text_change(seen: Option<f64>) -> Result<ClipboardChange,
     blocking(move || read_clipboard_change(seen)).await
 }
 
+#[derive(Clone, JsObject)]
+pub struct ClipboardEntry {
+    pub format: String,
+    pub data: String,
+    pub paths: Vec<String>,
+    pub thumbnail: Option<String>,
+    pub preview: Option<String>,
+    pub dimensions: Option<String>,
+}
+
+#[derive(Clone, JsObject)]
+pub struct HistoryChange {
+    pub change: f64,
+    pub entry: Option<ClipboardEntry>,
+}
+
+#[cfg(target_os = "macos")]
+mod pasteboard_history {
+    use super::*;
+    use objc2::runtime::ProtocolObject;
+    use objc2_app_kit::{NSPasteboard, NSPasteboardWriting};
+    use objc2_foundation::{NSArray, NSData, NSString, NSURL};
+
+    const MAX_BINARY: usize = 16 * 1024 * 1024;
+    const FORMATS: &[&str] = &[
+        "com.adobe.pdf",
+        "public.png",
+        "public.jpeg",
+        "com.compuserve.gif",
+        "org.webmproject.webp",
+        "public.heic",
+        "public.heif",
+        "com.microsoft.bmp",
+        "public.tiff",
+    ];
+    const FILES: &str = "public.file-url";
+    const TEXT: &str = "public.utf8-plain-text";
+
+    fn add_preview(entry: &mut ClipboardEntry, image: &objc2_app_kit::NSImage, pdf: bool) {
+        let png = |size| {
+            thumbnail_png(image, size)
+                .ok()
+                .map(|bytes| format!("data:image/png;base64,{}", STANDARD.encode(bytes)))
+        };
+        entry.thumbnail = png(APPLICATION_ICON_PIXELS);
+        entry.preview = png(640);
+        if !pdf
+            && let Some(rep) = image
+                .representations()
+                .iter()
+                .max_by_key(|rep| rep.pixelsWide())
+        {
+            if rep.pixelsWide() > 0 && rep.pixelsHigh() > 0 {
+                entry.dimensions = Some(format!("{} × {}", rep.pixelsWide(), rep.pixelsHigh()));
+            }
+        }
+    }
+
+    fn capture(board: &NSPasteboard) -> Option<ClipboardEntry> {
+        let types: Vec<_> = board.types()?.iter().map(|kind| kind.to_string()).collect();
+        if is_private_clipboard(&types) {
+            return None;
+        }
+        let items = board.pasteboardItems()?;
+        for item in items.iter() {
+            if item
+                .types()
+                .iter()
+                .any(|t| PRIVATE_CLIPBOARD_TYPES.contains(&t.to_string().as_str()))
+            {
+                return None;
+            }
+        }
+        let file_type = NSString::from_str(FILES);
+        let paths: Vec<String> = items
+            .iter()
+            .filter_map(|item| {
+                let uri = item.stringForType(&file_type)?;
+                let url = NSURL::URLWithString(&uri)?.filePathURL()?;
+                if !url.isFileURL()
+                    || url.host().is_some_and(|h| {
+                        !h.to_string().is_empty()
+                            && !h.to_string().eq_ignore_ascii_case("localhost")
+                    })
+                {
+                    return None;
+                }
+                Some(url.path()?.to_string())
+            })
+            .collect();
+        if !paths.is_empty() {
+            let mut entry = ClipboardEntry {
+                format: FILES.into(),
+                data: String::new(),
+                paths,
+                thumbnail: None,
+                preview: None,
+                dimensions: None,
+            };
+            if let [path] = entry.paths.as_slice() {
+                use objc2::AnyThread;
+                let ext = Path::new(path)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if matches!(
+                    ext.as_str(),
+                    "pdf"
+                        | "png"
+                        | "jpeg"
+                        | "jpg"
+                        | "gif"
+                        | "webp"
+                        | "heic"
+                        | "heif"
+                        | "bmp"
+                        | "tif"
+                        | "tiff"
+                ) && std::fs::metadata(path)
+                    .is_ok_and(|m| m.is_file() && m.len() <= MAX_BINARY as u64)
+                    && let Some(image) = objc2_app_kit::NSImage::initWithContentsOfFile(
+                        objc2_app_kit::NSImage::alloc(),
+                        &NSString::from_str(path),
+                    )
+                {
+                    add_preview(&mut entry, &image, ext == "pdf");
+                }
+            }
+            return Some(entry);
+        }
+        for &format in FORMATS {
+            if !types.iter().any(|t| t == format) {
+                continue;
+            }
+            let Some(bytes) = board.dataForType(&NSString::from_str(format)) else {
+                continue;
+            };
+            if bytes.length() == 0 || bytes.length() > MAX_BINARY {
+                continue;
+            }
+            use objc2::AnyThread;
+            use objc2_app_kit::NSImage;
+            let mut entry = ClipboardEntry {
+                format: format.into(),
+                data: STANDARD.encode(bytes.to_vec()),
+                paths: vec![],
+                thumbnail: None,
+                preview: None,
+                dimensions: None,
+            };
+            if let Some(image) = NSImage::initWithData(NSImage::alloc(), &bytes) {
+                add_preview(&mut entry, &image, format == "com.adobe.pdf");
+            }
+            return Some(entry);
+        }
+        let data = board.stringForType(&NSString::from_str(TEXT))?.to_string();
+        (!data.trim().is_empty() && data.len() <= MAX_CLIPBOARD_TEXT).then(|| ClipboardEntry {
+            thumbnail: None,
+            preview: None,
+            dimensions: None,
+            format: TEXT.into(),
+            data,
+            paths: vec![],
+        })
+    }
+
+    pub(super) fn read(board: &NSPasteboard, seen: Option<f64>) -> HistoryChange {
+        let change = board.changeCount() as f64;
+        let entry = seen
+            .filter(|previous| *previous != change)
+            .and_then(|_| capture(board))
+            .filter(|_| board.changeCount() as f64 == change);
+        HistoryChange { change, entry }
+    }
+
+    pub(super) fn write(board: &NSPasteboard, entry: ClipboardEntry) -> Result<(), String> {
+        let kind = NSString::from_str(&entry.format);
+        let written = match entry.format.as_str() {
+            FILES => {
+                if entry.paths.is_empty()
+                    || entry
+                        .paths
+                        .iter()
+                        .any(|p| !Path::new(p).is_absolute() || !Path::new(p).exists())
+                {
+                    return Err("A copied file is no longer available.".into());
+                }
+                let urls: Vec<_> = entry
+                    .paths
+                    .iter()
+                    .map(|p| {
+                        ProtocolObject::<dyn NSPasteboardWriting>::from_retained(
+                            NSURL::fileURLWithPath(&NSString::from_str(p)),
+                        )
+                    })
+                    .collect();
+                let objects = NSArray::from_retained_slice(&urls);
+                board.clearContents();
+                board.writeObjects(&objects)
+            }
+            TEXT => {
+                board.clearContents();
+                board.setString_forType(&NSString::from_str(&entry.data), &kind)
+            }
+            format if FORMATS.contains(&format) => {
+                if entry.data.len() > MAX_BINARY.div_ceil(3) * 4 {
+                    return Err("Clipboard item is too large.".into());
+                }
+                let bytes = STANDARD.decode(entry.data).map_err(|e| e.to_string())?;
+                let data = NSData::with_bytes(&bytes);
+                board.clearContents();
+                board.setData_forType(Some(&data), &kind)
+            }
+            _ => return Err("Unsupported clipboard format.".into()),
+        };
+        if written {
+            Ok(())
+        } else {
+            Err("Could not restore the clipboard item.".into())
+        }
+    }
+}
+
+pub async fn clipboard_history_change(seen: Option<f64>) -> Result<HistoryChange, String> {
+    #[cfg(target_os = "macos")]
+    {
+        blocking(move || {
+            objc2::rc::autoreleasepool(|_| {
+                pasteboard_history::read(&objc2_app_kit::NSPasteboard::generalPasteboard(), seen)
+            })
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = seen;
+        Err("Clipboard history requires macOS.".into())
+    }
+}
+
+pub async fn restore_clipboard_entry(entry: ClipboardEntry) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        blocking(move || {
+            objc2::rc::autoreleasepool(|_| {
+                pasteboard_history::write(&objc2_app_kit::NSPasteboard::generalPasteboard(), entry)
+            })
+        })
+        .await?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = entry;
+        Err("Clipboard history requires macOS.".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +541,75 @@ mod tests {
             document_paths(output, home),
             ["/Users/me/Documents/a.txt", "/Users/me/b.txt"]
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clipboard_history_round_trips_files_images_and_pdf_on_a_private_board() {
+        use objc2_app_kit::NSPasteboard;
+        use objc2_foundation::{NSData, NSString};
+        objc2::rc::autoreleasepool(|_| {
+            let board = NSPasteboard::pasteboardWithUniqueName();
+            let folder = tempfile::tempdir().unwrap();
+            let paths: Vec<_> = ["文 件.pdf", "image.png"]
+                .iter()
+                .map(|name| {
+                    let path = folder.path().join(name);
+                    std::fs::write(&path, []).unwrap();
+                    path.to_str().unwrap().to_owned()
+                })
+                .collect();
+            let files = ClipboardEntry {
+                format: "public.file-url".into(),
+                data: String::new(),
+                paths: paths.clone(),
+                thumbnail: None,
+                preview: None,
+                dimensions: None,
+            };
+            pasteboard_history::write(&board, files).unwrap();
+            assert!(pasteboard_history::read(&board, None).entry.is_none());
+            let copied = pasteboard_history::read(&board, Some(-1.0));
+            assert_eq!(copied.entry.unwrap().paths, paths);
+            assert!(
+                pasteboard_history::read(&board, Some(copied.change))
+                    .entry
+                    .is_none()
+            );
+            let png = include_bytes!("../../../../../assets/logo.png");
+            for (kind, bytes) in [
+                ("public.png", &png[..]),
+                ("com.adobe.pdf", &b"%PDF-1.4"[..]),
+            ] {
+                board.clearContents();
+                let uti = NSString::from_str(kind);
+                board.setData_forType(Some(&NSData::with_bytes(bytes)), &uti);
+                let entry = pasteboard_history::read(&board, Some(-1.0)).entry.unwrap();
+                assert_eq!(entry.format, kind);
+                if kind == "public.png" {
+                    let (width, height) = image::ImageReader::new(std::io::Cursor::new(bytes))
+                        .with_guessed_format()
+                        .unwrap()
+                        .into_dimensions()
+                        .unwrap();
+                    assert_eq!(entry.dimensions, Some(format!("{width} × {height}")));
+                    assert!(entry.thumbnail.is_some());
+                    assert!(entry.preview.is_some());
+                } else {
+                    assert!(entry.dimensions.is_none());
+                }
+                board.clearContents();
+                pasteboard_history::write(&board, entry).unwrap();
+                assert_eq!(board.dataForType(&uti).unwrap().to_vec(), bytes);
+            }
+            board.setString_forType(
+                &NSString::from_str(""),
+                &NSString::from_str("org.nspasteboard.ConcealedType"),
+            );
+            assert!(pasteboard_history::read(&board, Some(-1.0)).entry.is_none());
+            // SAFETY: this test owns the unique board and never uses it again.
+            let _: () = unsafe { objc2::msg_send![&board, releaseGlobally] };
+        });
     }
 
     #[test]

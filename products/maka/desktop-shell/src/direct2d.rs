@@ -50,10 +50,7 @@ pub(crate) fn start(target: crate::Target) -> Result<(), String> {
 
 fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
     let Connection {
-        bindings,
-        config,
-        endpoint,
-        epoch,
+        bindings, config, ..
     } = first;
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
@@ -77,7 +74,7 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
             active.send_replace(is_active);
         },
     );
-    runtime.block_on(host::detach(bindings, &endpoint, epoch));
+    runtime.block_on(host::quit(bindings));
     runtime.shutdown_background();
     if result == std::process::ExitCode::SUCCESS {
         Ok(())

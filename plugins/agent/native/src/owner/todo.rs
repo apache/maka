@@ -241,7 +241,8 @@ impl Todo {
                     job.await
                         .map_err(|error| ToolError::OutcomeUnknown(error.to_string()))?
                 })
-            });
+            })
+            .presented(format!("maka.agent.Builtin@1/{name}"));
             Ok(PreparedTool {
                 effect,
                 local: todo.map(super::driver::LocalCompletion::Todo),

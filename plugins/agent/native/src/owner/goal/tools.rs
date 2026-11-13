@@ -115,7 +115,21 @@ impl ToolPreparer for Goals {
                 .await
                 .map_err(invalid)?;
             let identity = observed.as_ref().map(|saved| saved.goal.id);
-            Ok(PreparedEffect::new(move |cancellation| {
+            let title = match &input {
+                Input::Create(input) => maka_agent_facts::display::Text::single_line(
+                    &input.objective,
+                )
+                .map(|objective| {
+                    let objective = objective.fallback;
+                    maka_agent_facts::display::Text::localized(
+                        &format!("Create goal · {objective}"),
+                        &format!("创建目标 · {objective}"),
+                        &format!("建立目標 · {objective}"),
+                    )
+                }),
+                _ => None,
+            };
+            let effect = PreparedEffect::new(move |cancellation| {
                 Box::pin(async move {
                     if cancellation.is_cancelled() {
                         return Err(failed("Goal call cancelled"));
@@ -272,7 +286,13 @@ impl ToolPreparer for Goals {
                     job.await
                         .map_err(|error| ToolError::OutcomeUnknown(error.to_string()))?
                 })
-            }))
+            })
+            .presented(format!("maka.agent.Builtin@1/{name}"));
+            Ok(if let Some(title) = title {
+                effect.titled(title)
+            } else {
+                effect
+            })
         })
     }
 }

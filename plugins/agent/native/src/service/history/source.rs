@@ -62,6 +62,7 @@ pub(super) fn snapshot_id(
 async fn unpaired(
     tree: &SourceTree,
     address: &wire::HistoryRowAddress,
+    order: Option<wire::HistoryOrder>,
     cache: &mut Cache,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<Selected, String> {
@@ -77,13 +78,17 @@ async fn unpaired(
         .item(address)
         .await
         .map_err(|error| error.to_string())?;
-    let qualified = tree
-        .positions(Some(address.clone()), false, true, 1)
-        .await
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .find(|row| row.address == *address)
-        .ok_or("agent_history_source_missing")?;
+    let order = if let Some(order) = order {
+        order
+    } else {
+        tree.positions(Some(address.clone()), false, true, 1)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|row| row.address == *address)
+            .ok_or("agent_history_source_missing")?
+            .order
+    };
     let mut row = match &item {
         SourceItem::Canonical(item) => {
             let key = (snapshot_id(address), item.recorded.run);
@@ -148,7 +153,7 @@ async fn unpaired(
                 *message_ordinal,
                 *part_ordinal,
                 address.clone(),
-                qualified.order.clone(),
+                order.clone(),
                 stop,
             )
             .await?
@@ -163,7 +168,7 @@ async fn unpaired(
     {
         media::describe_imported(snapshot, *message_ordinal, &mut row, stop).await?;
     }
-    row.chunk.order = qualified.order;
+    row.chunk.order = order;
     Ok(Selected { data, item, row })
 }
 /// A Turn is one Run: it starts at admission and ends at termination.
@@ -248,12 +253,12 @@ pub(super) async fn search_anchor(
         }
         SourceItem::Imported { .. } => return Ok(Some((address.clone(), order))),
     }
-    let row = unpaired(tree, address, cache, stop).await?.row;
+    let row = unpaired(tree, address, Some(order), cache, stop).await?.row;
     if row.visible {
         return Ok(Some((row.chunk.position, row.chunk.order)));
     }
     if let Some(position) = row.continuation {
-        let first = unpaired(tree, &position, cache, stop).await?.row;
+        let first = unpaired(tree, &position, None, cache, stop).await?.row;
         return Ok(Some((first.chunk.position, first.chunk.order)));
     }
     Ok(None)
@@ -264,7 +269,7 @@ pub(super) async fn selected(
     cache: &mut Cache,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<Selected, String> {
-    let mut row = unpaired(tree, address, cache, stop).await?;
+    let mut row = unpaired(tree, address, None, cache, stop).await?;
     pair(tree, &mut row, cache, stop).await?;
     Ok(row)
 }
@@ -293,7 +298,8 @@ pub(super) async fn window(
             if exclude_anchor && Some(&qualified.address) == bound.as_ref() {
                 continue;
             }
-            let row = selected(tree, &qualified.address, cache, stop).await?;
+            let row =
+                unpaired(tree, &qualified.address, Some(qualified.order), cache, stop).await?;
             if !row.row.visible
                 || (!include_thinking && row.row.chunk.field == wire::HistoryField::Thinking)
             {
@@ -311,7 +317,7 @@ pub(super) async fn window(
         exclude_anchor = true;
     }
 }
-async fn pair(
+pub(super) async fn pair(
     tree: &SourceTree,
     row: &mut Selected,
     cache: &mut Cache,
@@ -356,7 +362,8 @@ async fn pair(
             {
                 continue;
             }
-            let selected = unpaired(tree, &position.address, cache, stop).await?;
+            let selected =
+                unpaired(tree, &position.address, Some(position.order), cache, stop).await?;
             if !selected.row.visible {
                 continue;
             }

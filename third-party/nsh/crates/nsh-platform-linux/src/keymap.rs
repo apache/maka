@@ -40,16 +40,17 @@ pub(crate) struct KeymapState {
     triggers: RefCell<Vec<(gtk::ShortcutTrigger, KeyBinding)>>,
     /// Fallback bindings' triggers, newest first, for [`unhandled`].
     fallbacks: RefCell<Vec<(gtk::ShortcutTrigger, KeyBinding)>>,
-    /// The binding whose key is held down (GDK does not mark auto-repeats):
-    /// it does not fire again until a key is released.
-    held: Rc<Cell<Option<u32>>>,
-    /// The windows' key controllers that see releases, and their windows.
-    releases: RefCell<Vec<(glib::WeakRef<gtk::Window>, gtk::EventControllerKey)>>,
+    /// Binding and press time, retained across a repeat's paired release.
+    held: Rc<Cell<Option<(u32, u32)>>>,
+    press_time: Rc<Cell<u32>>,
+    /// The windows' key controllers that track presses and releases.
+    key_events: RefCell<Vec<(glib::WeakRef<gtk::Window>, gtk::EventControllerKey)>>,
 }
 
 /// `MountItem::Keymap`: replaces the surface's shortcuts.
 pub(crate) fn set(surface: &Rc<Surface>, keymap: Arc<Keymap>) {
-    clear(surface);
+    // A render can change bindings while a key is down. Keep tracking its release.
+    clear_bindings(surface);
     if keymap.is_empty() {
         return;
     }
@@ -137,7 +138,7 @@ pub(crate) fn attach(surface: &Rc<Surface>, root: &NshView) {
                         glib::Propagation::Stop
                     }
                     Some(surface) if fires_binding(&surface, root, &binding) => {
-                        fire(&surface, root, &binding);
+                        fire(&surface, &binding, surface.keymap.press_time.get());
                         if binding.pass_through {
                             glib::Propagation::Proceed
                         } else {
@@ -151,33 +152,38 @@ pub(crate) fn attach(surface: &Rc<Surface>, root: &NshView) {
     }
     root.add_controller(controller.clone());
     controllers.push((root.downgrade(), controller));
+    if let Some(window) = root.root().and_downcast::<gtk::Window>() {
+        watch_keys(surface, &window);
+    }
 }
 
 /// Removes the surface's shortcuts (the app stopped).
 pub(crate) fn clear(surface: &Surface) {
-    for (root, controller) in surface.keymap.controllers.borrow_mut().drain(..) {
-        if let Some(root) = root.upgrade() {
-            root.remove_controller(&controller);
-        }
-    }
-    for (window, keys) in surface.keymap.releases.borrow_mut().drain(..) {
+    clear_bindings(surface);
+    for (window, keys) in surface.keymap.key_events.borrow_mut().drain(..) {
         if let Some(window) = window.upgrade() {
             window.remove_controller(&keys);
         }
     }
     surface.keymap.held.set(None);
+    surface.keymap.press_time.set(0);
+}
+
+fn clear_bindings(surface: &Surface) {
+    for (root, controller) in surface.keymap.controllers.borrow_mut().drain(..) {
+        if let Some(root) = root.upgrade() {
+            root.remove_controller(&controller);
+        }
+    }
     surface.keymap.triggers.borrow_mut().clear();
     surface.keymap.fallbacks.borrow_mut().clear();
     surface.keymap.keymap.borrow_mut().take();
 }
 
-fn fire(surface: &Rc<Surface>, root: &NshView, binding: &KeyBinding) {
-    if let Some(window) = root.root().and_downcast::<gtk::Window>() {
-        watch_releases(surface, &window);
-    }
+fn fire(surface: &Rc<Surface>, binding: &KeyBinding, time: u32) {
     let held = &surface.keymap.held;
-    if binding.repeat || held.get() != Some(binding.id) {
-        held.set(Some(binding.id));
+    if binding.repeat || held.get().is_none_or(|(id, _)| id != binding.id) {
+        held.set(Some((binding.id, time)));
         surface.event(
             ROOT_ID,
             EventKind::KeyCommand,
@@ -222,7 +228,7 @@ pub(crate) fn press_gdk(surface: &Rc<Surface>, event: &gtk::gdk::Event) -> bool 
         })
         .map(|(_, binding)| *binding);
     if let Some(binding) = matched {
-        fire(surface, &root, &binding);
+        fire(surface, &binding, event.time());
         return !binding.pass_through;
     }
     false
@@ -252,7 +258,7 @@ pub(crate) fn unhandled(
         })
         .map(|(_, binding)| *binding);
     if let Some(binding) = matched {
-        fire(surface, root, &binding);
+        fire(surface, &binding, event.time());
         return !binding.pass_through;
     }
     false
@@ -336,12 +342,11 @@ pub(crate) fn claims(surface: &Surface, event: &gtk::gdk::Event) -> bool {
         })
 }
 
-/// Listens to the releases of `window` (once per window), so that a held
-/// key's binding fires again after it is released.
-fn watch_releases(surface: &Surface, window: &gtk::Window) {
-    let mut releases = surface.keymap.releases.borrow_mut();
-    releases.retain(|(w, _)| w.upgrade().is_some());
-    if releases
+/// Tracks native key events before GTK dispatches global shortcut actions.
+fn watch_keys(surface: &Surface, window: &gtk::Window) {
+    let mut events = surface.keymap.key_events.borrow_mut();
+    events.retain(|(w, _)| w.upgrade().is_some());
+    if events
         .iter()
         .any(|(w, _)| w.upgrade().as_ref() == Some(window))
     {
@@ -349,10 +354,21 @@ fn watch_releases(surface: &Surface, window: &gtk::Window) {
     }
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let press_time = surface.keymap.press_time.clone();
+    keys.connect_key_pressed(move |keys, _, _, _| {
+        press_time.set(keys.current_event_time());
+        glib::Propagation::Proceed
+    });
     let held = surface.keymap.held.clone();
-    keys.connect_key_released(move |_, _, _, _| held.set(None));
+    keys.connect_key_released(move |keys, _, _, _| {
+        // A synthetic release paired with a repeat carries the original press time.
+        let time = keys.current_event_time();
+        if time == 0 || held.get().is_some_and(|(_, press)| time != press) {
+            held.set(None);
+        }
+    });
     window.add_controller(keys.clone());
-    releases.push((window.downgrade(), keys));
+    events.push((window.downgrade(), keys));
 }
 
 fn focus_context(surface: &Surface, root: &NshView) -> Option<(bool, bool, Vec<NodeId>)> {

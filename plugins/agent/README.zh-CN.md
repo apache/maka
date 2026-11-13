@@ -31,3 +31,11 @@
 - [acp-executor](acp-executor/native/README.zh-CN.md)通过显式进程与回调服务连接外部 ACP Agent。
 
 终端和桌面 shell 运行的[工作台](../../products/maka/workbench/README.zh-CN.md)消费这些公共 Host 契约。产品组装位于 [products/maka](../../products/maka/README.zh-CN.md)；工作台管理自己的草稿编辑器与交互生命周期。
+
+## 子 Agent 预设管理
+
+Agent 服务提供 `presets`、`preset`、`createPreset`、`updatePreset` 和 `deletePreset`，字段见[协议](api/src/preset.rs)。预设初始为空，持久化在业务 Host 的 Agent 作用域内。列表不加载 instruction，详情保留完整正文；模型引用不保存凭据。
+
+修改和删除必须提供 `expectedRevision`。修改时省略字段表示保留；`instruction: ""` 清空指令，`thinkingLevel: {"kind":"default"}` 恢复模型默认，`{"kind":"set","value":"high"}` 设置思考强度。修改模型或思考强度时校验原生模型；连接失效后仍可修改其他字段或删除。名称去除首尾空白，并在作用域内保证唯一。
+
+持久化变更与返回结果通过 Host 操作日志原子提交。丢失响应时恢复原操作引用，不重新提交变更。默认产品通过 `SubagentPresetList/Read/Create/Update/Delete` 暴露这些方法。`SessionCreate` 按 ID 应用预设，`SessionSend` 提供本次任务。

@@ -47,7 +47,7 @@ pub(crate) struct Catalog {
     pub _parent: Option<Arc<Catalog>>,
     // Retains an original published layer's physical owner, not another lookup parent.
     pub _layer_owner: Option<Arc<Catalog>>,
-    pub tools: maka_tools::ToolCatalog,
+    pub tools: crate::tools::Declarations,
     pub definitions: Arc<Vec<ToolDefinition>>,
     pub bindings: Arc<BTreeMap<String, Option<String>>>,
     pub(crate) live_bindings: Vec<super::LiveBinding>,
@@ -70,12 +70,7 @@ impl Catalog {
         let tools = parent
             .tools
             .excluding(&suppressed)
-            .with_additional(
-                live_bindings
-                    .iter()
-                    .map(|binding| binding.registration(None))
-                    .collect::<Vec<_>>(),
-            )
+            .with_additional(live_bindings.iter().map(super::LiveBinding::declaration))
             .map_err(|_| "agent_mcp_catalog_invalid")?;
         let mut definitions: Vec<_> = parent
             .definitions
@@ -134,7 +129,7 @@ impl Catalog {
         let registrations: Vec<_> = bindings
             .values()
             .filter(|binding| self.tools.contains(binding.name()))
-            .map(|binding| binding.registration(Some(access.clone())))
+            .map(|binding| binding.for_run(access.clone()))
             .collect();
         let names: Vec<_> = registrations
             .iter()

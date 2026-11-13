@@ -78,6 +78,8 @@ pub enum RunError {
     IsolationUnavailable(String),
     #[error("context compaction failed: {0}")]
     CompactionFailed(String),
+    #[error("pending input no longer matches the original compaction prefix or route")]
+    CompactionMismatch,
     #[error("execution cancelled")]
     Cancelled,
     #[error("model output was incomplete; local tools from this response were not executed")]
@@ -100,6 +102,8 @@ pub enum RunError {
     Json(#[source] serde_json::Error),
     #[error("model input preparation failed: {0}")]
     Preparation(#[from] std::io::Error),
+    #[error("invalid image in model input: {0}")]
+    InvalidImage(String),
     #[error("model input cleanup was not confirmed: {0}")]
     PreparationCleanup(#[source] std::io::Error),
 }
