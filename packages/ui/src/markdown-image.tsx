@@ -28,6 +28,7 @@ import { getSharedUiCopy } from './shared-ui-copy.js';
 import { useUiLocale } from './locale-context.js';
 import { createMarkdownImageSourceResolver } from './markdown-image-source.js';
 import { redactSecrets } from './redact.js';
+import { restoreTransportTokens } from './markdown-math.js';
 
 type PlacedImage = MarkdownExtensionNode<'maka-images', 'image', { src: string; alt: string; inline: boolean; redacted: boolean }>;
 // Markdown structure determines inline/block placement; decoded images supply
@@ -44,8 +45,9 @@ export function createMarkdownImagePlugins(
         if (node.type === 'image') {
           const source = canonical(node.url);
           const redacted = source.includes('<redacted>') || source !== redactSecrets(source);
+          const alt = restoreTransportTokens(node.alt);
           if (display === 'link') {
-            const text = { type: 'text' as const, value: node.alt || redactSecrets(source) };
+            const text = { type: 'text' as const, value: alt || redactSecrets(source) };
             const link = insideLink || redacted ? text
               : { type: 'link' as const, url: source, children: [text] };
             return phrasing ? link : { type: 'paragraph', children: [link] };
@@ -53,7 +55,7 @@ export function createMarkdownImagePlugins(
           return {
             type: 'extension', plugin: 'maka-images', name: 'image',
             display: phrasing ? 'inline' : 'block',
-            data: { src: source, alt: node.alt, inline, redacted },
+            data: { src: source, alt, inline, redacted },
           } satisfies PlacedImage;
         }
         if (!('children' in node)) return node;
@@ -80,7 +82,8 @@ function isSingleImage(nodes: readonly MarkdownAstNode[]): boolean {
 }
 /** Presentation only: Host resolves local addresses and archives; UI receives artifact identities. */
 export function MarkdownImage(props: { src: string; alt: string; inline?: boolean; redacted?: boolean }) {
-  return <ImageResource key={props.src} {...props} redacted={props.redacted === true} />;
+  const alt = restoreTransportTokens(props.alt);
+  return <ImageResource key={props.src} {...props} alt={alt} redacted={props.redacted === true} />;
 }
 function ImageResource(props: { src: string; redacted: boolean; alt: string; inline?: boolean }) {
   const copy = getSharedUiCopy(useUiLocale()).markdown;
