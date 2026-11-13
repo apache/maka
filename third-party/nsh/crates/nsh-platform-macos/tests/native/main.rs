@@ -42,7 +42,9 @@ fn main() {
     } else {
         #[cfg(target_os = "macos")]
         {
-            if mount::bench_only() {
+            if std::env::var_os("NSH_WINDOW_FOCUS_CHECK_ONLY").is_some() {
+                window_focus::run();
+            } else if mount::bench_only() {
                 mount::bench_alone();
             } else if std::env::var_os("NSH_MENU_LABELS_CHECK_ONLY").is_some() {
                 window_press::run();

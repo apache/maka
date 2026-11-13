@@ -88,6 +88,8 @@ pub(super) fn run() {
         .setActivationPolicy(NSApplicationActivationPolicy::Prohibited);
     check(false);
     check(true);
+    #[cfg(feature = "js")]
+    pointer_and_keyboard_ownership();
     println!("window focus: a popup focused before its first frame has the keyboard");
 }
 
@@ -136,4 +138,147 @@ fn check(by_ref: bool) {
     );
     surface.stop();
     window.close();
+}
+
+#[cfg(feature = "js")]
+fn pointer_and_keyboard_ownership() {
+    use nsh_engine::{App, Bundle, EngineConfig, Policy};
+    use platform::{
+        objc2::rc::Retained,
+        objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSView},
+        objc2_foundation::NSRunLoop,
+    };
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    const SOURCE: &str = r#"
+        import { View, host, keymap, mount, signal } from "nsh";
+        import { Input } from "nsh/base";
+        import { Window } from "nsh/desktop";
+        function App() {
+            let popup;
+            const shifted = signal(false);
+            const report = name => host.post("report", [name, keymap.focusedWithin(popup)]);
+            const launcher = Window.open(() => <View ref={v => popup = v} style={{flex: 1}}
+                onMouseEnter={() => {
+                    shifted.set(true);
+                    report("popup enter");
+                }}
+                onMouseLeave={() => report("popup leave")}>
+                <Input autoFocus style={{marginTop: shifted() ? 1 : 0}} />
+            </View>, {
+                id: "pointer-probe", title: "NSH pointer probe", kind: "popup", activate: false,
+                defaultSize: {width: 300, height: 200}
+            });
+            launcher.focus();
+            return <View style={{flex: 1}}>
+                <View onMouseEnter={() => report("main enter")}
+                    onMouseMove={() => report("main move")}
+                    style={{position: "absolute", left: 30, top: 20, width: 150, height: 100}} />
+            </View>;
+        }
+        mount(App);
+    "#;
+
+    fn tracked_root(view: &NSView) -> Option<Retained<NSView>> {
+        if !view.trackingAreas().is_empty() {
+            return Some(Retained::from(view));
+        }
+        view.subviews()
+            .iter()
+            .find_map(|child| tracked_root(&child))
+    }
+
+    fn pump() {
+        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.01));
+    }
+
+    let mtm = MainThreadMarker::new().unwrap();
+    let app = NSApplication::sharedApplication(mtm);
+    // SAFETY: the test runs on the main thread and retains the window until it closes.
+    let main = unsafe {
+        let window = NSWindow::initWithContentRect_styleMask_backing_defer(
+            NSWindow::alloc(mtm),
+            NSRect::new(NSPoint::new(50.0, 300.0), NSSize::new(400.0, 240.0)),
+            NSWindowStyleMask::Titled,
+            NSBackingStoreType::Buffered,
+            false,
+        );
+        window.setReleasedWhenClosed(false);
+        window
+    };
+    let view = platform::AppView::new(mtm, platform::AppOptions::default());
+    main.setContentView(Some(&view.view()));
+    let reports = Arc::new(Mutex::new(Vec::new()));
+    let observed = reports.clone();
+    let host = view.host();
+    host.handle("report", move |mut call| {
+        observed.lock().unwrap().push(call.take_data());
+    });
+    let mut capabilities = nsh_engine::Capabilities::all();
+    capabilities.host = vec!["report".into()];
+    let policy = Policy {
+        declared: Some(capabilities),
+        ..Policy::development()
+    };
+    let code = nsh_bundler::compile_module("PointerOwnership.tsx", SOURCE, &[]).unwrap();
+    let mut config = EngineConfig::new(App::Js(Bundle::source(code).with_policy(policy)));
+    config.host = host;
+    config.ui_sets = vec![nsh_base::registry()];
+    view.load_with_config(config);
+    main.orderFrontRegardless();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let popup = loop {
+        pump();
+        if let Some(popup) = app
+            .windows()
+            .iter()
+            .find(|w| w.title().to_string() == "NSH pointer probe" && w.isVisible())
+        {
+            break popup;
+        }
+        assert!(Instant::now() < deadline, "the popup never opened");
+    };
+    let main_root = tracked_root(&view.view()).unwrap();
+    let popup_root = tracked_root(&popup.contentView().unwrap()).unwrap();
+    let move_at = |window: &NSWindow, at: NSPoint| {
+        NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            NSEventType::MouseMoved, at, NSEventModifierFlags::empty(),
+            0.0, window.windowNumber(), None, 0, 0, 0.0,
+        ).unwrap()
+    };
+    popup_root.mouseMoved(&move_at(&popup, NSPoint::new(75.0, 150.0)));
+    main_root.cursorUpdate(&move_at(&main, NSPoint::new(-10.0, -10.0)));
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < deadline {
+        pump();
+    }
+    assert_eq!(*reports.lock().unwrap(), vec![json!(["popup enter", true])]);
+
+    main_root.mouseMoved(&move_at(&main, NSPoint::new(75.0, 190.0)));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while reports.lock().unwrap().len() < 4 {
+        assert!(
+            Instant::now() < deadline,
+            "missing mouse events: {:?}",
+            reports.lock().unwrap()
+        );
+        pump();
+    }
+    assert_eq!(
+        *reports.lock().unwrap(),
+        vec![
+            json!(["popup enter", true]),
+            json!(["popup leave", true]),
+            json!(["main enter", true]),
+            json!(["main move", true]),
+        ]
+    );
+
+    println!(
+        "window focus: hover follows the pointer window and keyboard focus stays in the popup"
+    );
+    view.stop();
+    main.close();
 }
