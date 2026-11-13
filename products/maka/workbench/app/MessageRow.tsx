@@ -21,7 +21,7 @@ import { tr } from './locale';
 import { CompactionDivider, NoteDivider } from './CompactionDivider';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
-import { platform } from 'nsh';
+import { platform, reduceMotion } from 'nsh';
 import { ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { createMessageMenu, type MessageMenu } from './messageMenu';
 import type { MessageSenders } from './messageSenders';
@@ -135,6 +135,7 @@ type MessageRowToggle = {
 
 export function MessageRow({
   item,
+  highlighted,
   repeats,
   sessionId,
   through,
@@ -155,6 +156,7 @@ export function MessageRow({
   failureActions,
 }: {
   item: () => Row;
+  highlighted?: () => boolean;
   /** How many identical failures this row stands for. */
   repeats?: () => number;
   sessionId: string;
@@ -589,13 +591,18 @@ export function MessageRow({
                 else={
                   <>
                     <View
+                      class={
+                        highlighted && !reduceMotion()
+                          ? 'transition-colors duration-300'
+                          : undefined
+                      }
                       style={{
                         alignSelf: 'flex-end',
                         maxWidth: '78%',
                         paddingHorizontal: 16,
                         paddingVertical: 16,
                         borderRadius: 20,
-                        backgroundColor: C.card,
+                        backgroundColor: highlighted?.() ? C.cardRaised : C.card,
                         gap: 8,
                       }}
                     >

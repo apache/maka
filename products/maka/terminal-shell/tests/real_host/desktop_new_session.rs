@@ -1165,6 +1165,145 @@ async fn desktop_continues_a_failed_run_without_duplicating_the_user_message() {
     fixture.finish().await;
 }
 
+async fn desktop_history_anchors_keep_the_reader_off_live_output_until_latest() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    let body = "A long reply leaves space between prompts to test the reader. ".repeat(12);
+    for turn in 1..=6 {
+        desktop.type_text(&format!("History prompt {turn}")).await;
+        desktop.submit().await;
+        let mut reply = desktop.request(&mut fixture).await;
+        reply
+            .delta(&format!("History reply {turn}\n\n{body}"))
+            .await;
+        desktop
+            .wait("the reply did not finish", reply.finish())
+            .await;
+        desktop
+            .until(
+                "the active response did not finish in the workbench",
+                || desktop.controls("Stop response").is_empty().then_some(()),
+            )
+            .await;
+    }
+    let anchor = desktop.control("Jump to turn: History prompt 2").await;
+    let next = desktop.control("Jump to turn: History prompt 3").await;
+    assert_eq!(next.center().y - anchor.center().y, px(10.));
+    desktop.hover_at(anchor.center());
+    desktop
+        .until("the hovered mark did not expand", || {
+            desktop
+                .pixels(anchor)
+                .is_some_and(|pixels| {
+                    pixels
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .filter(|pixel| pixel[0] > 220)
+                        .count()
+                        >= 40
+                })
+                .then_some(())
+        })
+        .await;
+    desktop.artifact("history-anchor-hover");
+    desktop.press_at(anchor.center());
+    desktop.control("Return to latest").await;
+    let copy = desktop.control("Copy user message").await;
+    let _ = desktop.platform.take_clipboard_write();
+    desktop.hover_at(copy.center());
+    desktop
+        .until("the copy action did not appear on hover", || {
+            desktop.draws_in(copy).then_some(())
+        })
+        .await;
+    desktop.press_at(copy.center());
+    let copied = desktop
+        .until("the selected user message was not copied", || {
+            desktop.platform.take_clipboard_write()
+        })
+        .await;
+    assert_eq!(copied, "History prompt 2");
+    desktop.artifact("history-anchor");
+    desktop.press("Return to latest").await;
+    desktop
+        .until("the latest reply did not come into view", || {
+            (desktop.controls("Return to latest").is_empty()
+                && !desktop.controls("Copy message").is_empty())
+            .then_some(())
+        })
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn history_pages_return_each_prompt_once_from_tail_to_start() {
+    let mut fixture = Fixture::open().await;
+    let client = fixture.client().await;
+    let backend = json!({
+        "kind": "model",
+        "connectionId": fixture.selection["connectionId"],
+        "modelId": fixture.selection["modelId"],
+    });
+    for turn in 1..=12 {
+        mutate(
+            &client,
+            "send",
+            json!({"sessionId": fixture.session, "backend": backend, "message": format!("History prompt {turn}")}),
+        )
+        .await;
+        let mut reply = fixture.next_request().await;
+        reply.delta(&format!("History reply {turn}")).await;
+        reply.finish().await;
+        fixture.idle(&client, &fixture.session).await;
+    }
+    let observed = client
+        .query("agent", "observe", json!({"sessionId": fixture.session}))
+        .await
+        .unwrap();
+    let mut position = json!({"kind": "tail"});
+    let mut prompts = Vec::new();
+    for _ in 0..12 {
+        let page = client
+            .query(
+                "agent",
+                "history",
+                json!({
+                    "sessionId": fixture.session,
+                    "through": observed["through"],
+                    "position": position,
+                    "view": "conversation",
+                }),
+            )
+            .await
+            .unwrap();
+        let chunks = page["chunks"].as_array().unwrap();
+        assert!(!chunks.is_empty());
+        prompts.extend(
+            chunks
+                .iter()
+                .rev()
+                .filter(|chunk| chunk["role"] == "user")
+                .map(|chunk| chunk["text"].as_str().unwrap().to_owned()),
+        );
+        if page["before"].is_null() {
+            break;
+        }
+        let next = json!({"kind": "before", "cursor": page["before"]});
+        assert_ne!(next, position, "the older page did not advance its cursor");
+        position = next;
+    }
+    assert_eq!(
+        prompts,
+        (1..=12)
+            .rev()
+            .map(|turn| format!("History prompt {turn}"))
+            .collect::<Vec<_>>()
+    );
+    fixture.finish().await;
+}
+
 async fn desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu() {
     let mut fixture = Fixture::open().await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;
@@ -3263,6 +3402,8 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_new_draft_completes_commands_skills_and_files_without_creating_a_session",
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
     "desktop_continues_a_failed_run_without_duplicating_the_user_message",
+    "desktop_history_anchors_keep_the_reader_off_live_output_until_latest",
+    "history_pages_return_each_prompt_once_from_tail_to_start",
     "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu",
     "desktop_edits_a_message_in_place_and_forks_only_when_sent",
     "desktop_lists_a_scripts_tool_calls_in_place_of_the_script",
@@ -3311,6 +3452,12 @@ pub(crate) fn run(name: &str) {
             ),
         "desktop_continues_a_failed_run_without_duplicating_the_user_message" => {
             runtime.block_on(desktop_continues_a_failed_run_without_duplicating_the_user_message())
+        }
+        "desktop_history_anchors_keep_the_reader_off_live_output_until_latest" => {
+            runtime.block_on(desktop_history_anchors_keep_the_reader_off_live_output_until_latest())
+        }
+        "history_pages_return_each_prompt_once_from_tail_to_start" => {
+            runtime.block_on(history_pages_return_each_prompt_once_from_tail_to_start())
         }
         "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu" => {
             runtime.block_on(desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu())

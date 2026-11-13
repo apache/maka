@@ -48,6 +48,11 @@ struct RailHost {
 #[class]
 impl RailHost {
     #[getter]
+    pub fn ui_scale_supported(&self) -> bool {
+        true
+    }
+
+    #[getter]
     pub fn system_locale(&self) -> String {
         "en".into()
     }
