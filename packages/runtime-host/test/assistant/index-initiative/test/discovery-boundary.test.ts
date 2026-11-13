@@ -23,6 +23,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, until } from './fixture.js';
+import { output, note } from './notebook-output.js';
 
 async function setup() {
   const f = await fixture({ matters: true });
@@ -189,6 +190,31 @@ test('discovery Session keeps read access to conversation memory (regression gua
     const read = await f.invokeAs(discovery, 'MemoryIndexRead', { indexId: index.index.id });
     assert.equal(read.index.id, index.index.id);
     await f.invokeAs(discovery, 'MatterOverview', {});
+  } finally {
+    await f.close();
+  }
+});
+
+test('judgement catalog omits the same boundary tools as discovery (#6412)', async () => {
+  const f = await fixture({ matters: true });
+  try {
+    await f.remote('assistant.bind', { sessionId: 'owner' });
+    f.setIndexRunner(async () => {});
+    f.setRunner(async ({ prompt }: any) => {
+      if (prompt.includes('Phase: discovery')) await output(prompt, { notes: [note] });
+      else await output(prompt);
+    });
+    await f.invoke('InitiativeEnable', {});
+    await f.invoke('InitiativeControl', { action: 'check' });
+    await until(async () => !!(await f.invoke('InitiativeStatus')).judgementSession);
+    const judgement = (await f.invoke('InitiativeStatus')).judgementSession as string;
+    const visible = f
+      .filterTools(judgement, f.tools.resolve(judgement, []).tools)
+      .map((tool: any) => tool.name);
+    for (const name of ['MatterDelegate', 'MatterAdopt', 'MemoryIndexWrite', 'SendUser'])
+      assert.ok(!visible.includes(name), `judgement catalog still exposes ${name}`);
+    for (const name of ['DiscoveryContext', 'MemoryIndexRead', 'MatterOverview'])
+      assert.ok(visible.includes(name), `judgement catalog lost ${name}`);
   } finally {
     await f.close();
   }
