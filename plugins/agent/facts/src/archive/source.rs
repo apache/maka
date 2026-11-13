@@ -303,3 +303,71 @@ async fn scan_source(
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::prompt_source::source::{Allocate, ChargedBuffer, SourceBytes};
+    use serde_json::json;
+
+    struct Budget;
+
+    impl SourceBudget for Budget {
+        fn allocate(&self, minimum: usize) -> Allocate<'_> {
+            Box::pin(async move { Ok(ChargedBuffer::new(vec![0; minimum], ())) })
+        }
+    }
+
+    #[tokio::test]
+    async fn archived_shell_output_with_nul_can_be_paged() {
+        let stdout = format!("{}\nlast\0line", "前\0后\n".repeat(1_000));
+        let projection = JsonSource::new(SourceBytes::Inline(
+            serde_json::to_vec(&json!({
+                "kind": "json",
+                "value": {
+                    "kind": "terminal",
+                    "status": "completed",
+                    "exitCode": 0,
+                    "output": {
+                        "mode": "pipes",
+                        "stdout": stdout,
+                        "stderr": "",
+                        "stdoutTruncated": false,
+                        "stderrTruncated": false,
+                        "redacted": false
+                    }
+                }
+            }))
+            .unwrap()
+            .into(),
+        ));
+        let budget: Arc<dyn SourceBudget> = Arc::new(Budget);
+        let stop = CancellationToken::new();
+        let first = ArchivedPlaceholder::prepare_source(
+            "original-event".into(),
+            "shell-call".into(),
+            "Shell".into(),
+            projection.clone(),
+            budget.clone(),
+            &stop,
+        )
+        .await
+        .unwrap()
+        .expect("long shell output needs an archive")
+        .page;
+        let next = first.next.expect("long output has a continuation");
+        let second = read::projection_page(
+            projection,
+            "Shell",
+            &next.resolve().unwrap(),
+            MAX_PAGE_CHARS,
+            budget,
+            &stop,
+        )
+        .await
+        .unwrap();
+        assert!(!first.partial_line);
+        assert!(second.next.is_none());
+        assert_eq!(format!("{}\n{}", first.content, second.content), stdout);
+    }
+}
