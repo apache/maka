@@ -20,6 +20,7 @@
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import type { HostEventWaitSources } from './event-wait-sources.js';
 import type { HostEventWaitObserver } from './event-wait-manager.js';
+import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { HostGoalWaitingCoordinator } from './goal-waiting.js';
 import type { ConsumerEventWaitRecord } from '@maka/core/event-wait';
 import { eventWaitResultDigest } from '@maka/storage/event-wait-bridge';
@@ -335,7 +336,18 @@ export class HostGoalCoordinator {
     if (!this.#prepared) throw new Error('Goal recovery was not prepared');
     for (const snapshot of this.#authorityBySession.values()) {
       if (snapshot.record.legacyEventWaitSettlement) {
-        await this.#settleRetiredEventWait(snapshot);
+        // One retired wait that cannot settle — its source Turn's facts may
+        // have left the read model — must not refuse every other Goal its
+        // recovery on this and every future boot. The obligation stays
+        // durable, so the next Host start repeats the calculation.
+        try {
+          await this.#settleRetiredEventWait(snapshot);
+        } catch (error) {
+          console.error(
+            `[runtime-host] Legacy Goal event wait settlement failed for Session ${snapshot.record.goal.sessionId}:`,
+            boundedFailureDiagnostic(error),
+          );
+        }
         continue;
       }
       if (snapshot.record.currentExecution) {

@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import { setImmediate as immediate } from 'node:timers/promises';
 import type { GoalAuthorityRecord } from '@maka/core/goal';
 import type { StoredMessage } from '@maka/core/session';
@@ -1253,6 +1253,217 @@ test('new user evidence replaces the pending continuation in one authority commi
     await host.close();
   } finally {
     await goalStore.close();
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a retired wait that cannot settle does not refuse the other Goals their recovery', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-legacy-settlement-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'root'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
+  let restoreErrorLog: (() => void) | undefined;
+  try {
+    const first = await stores.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const second = await stores.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    // Authority recovery walks Session-id order, so the retired wait has to sit
+    // ahead of the healthy Goal to prove a failure there blocks nothing.
+    const [legacySession, healthySession] = [first, second].sort((a, b) => (a.id < b.id ? -1 : 1));
+
+    // A released legacy Goal wait retired into a paused Goal whose one-time
+    // settlement still owes the source Turn's accounting.
+    const legacyGoalId = 'goal_legacy_wait';
+    const legacyTurnId = 'legacy_source_turn';
+    const legacyRunId = 'legacy_source_run';
+    const legacyLease = { goalId: legacyGoalId, generation: 1 };
+    const legacyCommitted = await goalStore.commit({
+      sessionId: legacySession.id,
+      expectedAuthorityRevision: null,
+      record: {
+        schemaVersion: 1,
+        goal: {
+          id: legacyGoalId,
+          revision: 2,
+          sessionId: legacySession.id,
+          condition: 'Finish the legacy slice.',
+          status: 'paused',
+          setAt: 1,
+          iterations: 1,
+          maxIterations: 50,
+          consecutiveNoProgress: 0,
+          blockCap: 8,
+          tokensAtStart: 0,
+          tokensNow: 0,
+          tokensBaselinePending: true,
+          pausedAt: 5,
+          lastReason:
+            'Legacy Goal event wait retired during upgrade. Resume the Goal and register a new wait.',
+        },
+        controlLease: legacyLease,
+        currentExecution: {
+          execution: { sessionId: legacySession.id, turnId: legacyTurnId, runId: legacyRunId },
+          checkpoint: { goalId: legacyGoalId, revision: 2 },
+          controlLease: legacyLease,
+        },
+        pendingContinuation: null,
+        legacyEventWaitSettlement: {
+          sessionId: legacySession.id,
+          turnId: legacyTurnId,
+          runId: legacyRunId,
+        },
+      },
+    });
+    assert.equal(legacyCommitted.kind, 'committed');
+    // The source Run finished as an event wait, but its Turn's messages have
+    // left the read model (none are seeded), so the settlement cannot read its
+    // token facts.
+    await seedInvocation(stores.runtimeEventStore, {
+      sessionId: legacySession.id,
+      invocationId: legacyRunId,
+      runId: legacyRunId,
+      turnId: legacyTurnId,
+      openedAt: 2,
+      opening: {
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake-model',
+        },
+        configuration: {
+          cwd: capability.canonicalPath,
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: 'direct',
+        },
+        root: { kind: 'goal', goalId: legacyGoalId },
+      },
+    });
+    await stores.runtimeEventStore.appendRuntimeEvent(legacySession.id, legacyRunId, {
+      id: 'legacy_source_terminal',
+      invocationId: legacyRunId,
+      sessionId: legacySession.id,
+      turnId: legacyTurnId,
+      runId: legacyRunId,
+      ts: 3,
+      partial: false,
+      status: 'completed',
+      role: 'model',
+      author: 'agent',
+      content: { kind: 'text', text: 'waited' },
+      actions: { stateDelta: { stopReason: 'event_wait' } },
+    });
+
+    // A second Session carries a Goal with a durable continuation outbox entry.
+    const healthyPrompt = 'Resume the healthy durable successor.';
+    const healthyGoalId = 'goal_healthy';
+    const healthyLease = { goalId: healthyGoalId, generation: 0 };
+    const healthyCommitted = await goalStore.commit({
+      sessionId: healthySession.id,
+      expectedAuthorityRevision: null,
+      record: {
+        schemaVersion: 1,
+        goal: {
+          id: healthyGoalId,
+          revision: 0,
+          sessionId: healthySession.id,
+          condition: 'Finish the healthy slice.',
+          status: 'active',
+          setAt: 1,
+          iterations: 0,
+          maxIterations: 50,
+          consecutiveNoProgress: 0,
+          blockCap: 8,
+          tokensAtStart: 0,
+          tokensNow: 0,
+          tokensBaselinePending: true,
+        },
+        controlLease: healthyLease,
+        currentExecution: null,
+        pendingContinuation: {
+          checkpoint: { goalId: healthyGoalId, revision: 0 },
+          controlLease: healthyLease,
+          prompt: healthyPrompt,
+          triggeringTurnId: 'turn-before-restart',
+        },
+      },
+    });
+    assert.equal(healthyCommitted.kind, 'committed');
+
+    const surfaced: string[] = [];
+    const capture = mock.method(console, 'error', (...parts: unknown[]) => {
+      surfaced.push(parts.map((part) => String(part)).join(' '));
+    });
+    restoreErrorLog = () => capture.mock.restore();
+    const attemptedPrompts: string[] = [];
+    const coordinator = new HostGoalCoordinator({
+      store: goalStore,
+      stores,
+      readSessionContext: async (sessionId) => ({
+        messages: await stores.sessionStore.readMessagesSnapshot(sessionId),
+      }),
+      executions: {
+        reconcile: async () => assert.fail('A retired wait has no execution to reconcile'),
+        subscribe: () => () => undefined,
+      },
+      sessionAdmission: new SessionAdmissionGate(),
+      evaluator: {
+        evaluate: async () =>
+          '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"continue"}',
+        close: async () => {},
+      },
+      admitTurn: (_sessionId, prompt) => {
+        attemptedPrompts.push(prompt);
+        return { kind: 'unavailable', reason: 'Recovery assertion only' };
+      },
+      acquireResidency: () => ({ release() {} }),
+      onProjectionChanged: () => {},
+      requestDrain: () => {},
+    });
+
+    await coordinator.prepareRecovery();
+    await coordinator.recover();
+    await waitFor(() => attemptedPrompts.length === 1);
+    assert.equal(attemptedPrompts[0], healthyPrompt);
+
+    // The unsatisfied settlement keeps its obligation — the next Host start
+    // repeats the calculation — instead of failing every Goal on every boot.
+    const untouched = await goalStore.read(legacySession.id);
+    assert.ok(untouched?.record.legacyEventWaitSettlement);
+    assert.equal(untouched.record.goal.status, 'paused');
+    assert.equal(untouched.record.currentExecution?.execution.turnId, legacyTurnId);
+    assert.ok(
+      surfaced.some((line) => line.includes(legacySession.id)),
+      'the settlement failure must be surfaced, not swallowed',
+    );
+    await coordinator.close();
+  } finally {
+    restoreErrorLog?.();
+    await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
