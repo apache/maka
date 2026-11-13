@@ -20,8 +20,10 @@
 //! Subject adapter trait and implementations for the Rust Maka Host and external CLI harnesses.
 
 pub mod external_cli;
+pub mod maka;
 
 pub use external_cli::ExternalCliSubject;
+pub use maka::RustHostSubject;
 
 use crate::contract::{ContractError, ExecutionOutcome, ExperimentCell, JsonObject, SubjectKind};
 use crate::environment::{BoxFuture, SubjectExecutionContext};

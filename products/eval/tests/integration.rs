@@ -21,14 +21,14 @@ use maka_eval::contract::{
     AttemptPhase, CleanupState, CriticalArtifactsState, DifferenceRegistry, DifferenceScenarioId,
     EgressAuditState, EvalResult, EvalResultStatus, ExecutionOutcome, ExperimentCell,
     RunFingerprint, SchemaVersion, V1CellAttempt, V2AttemptRecord, VerifierOutcome,
-    expand_experiment, parse_experiment_spec, select_cell_result,
+    decode_v1_cell_attempt, expand_experiment, parse_experiment_spec, select_cell_result,
 };
 use maka_eval::environment::{
     ActiveTrialAttempt, BoxFuture, CommandRunner, EgressAuditEvidence, ExecutorPreparationCode,
     ExecutorVerification, HarborExecutorConfig, HarborTrialEnvironment, PreparationCacheLocks,
-    SubjectExecutionContext, SubjectProcessDiagnosticCategory, SubjectProcessOutput,
-    SubjectProcessRequest, SubjectProcessTermination, TrialAttemptOperation, TrialEnvironment,
-    TrialEnvironmentOutcome, describe_egress_audit, read_trial_verification,
+    SubjectExecutionContext, SubjectProcessDiagnostic, SubjectProcessDiagnosticCategory,
+    SubjectProcessOutput, SubjectProcessRequest, SubjectProcessTermination, TrialAttemptOperation,
+    TrialEnvironment, TrialEnvironmentOutcome, describe_egress_audit, read_trial_verification,
 };
 use maka_eval::measurement::{
     AdmissionBoundaryLedger, DEEPSEEK_V4_FLASH_COST, MeteringState, NormalizedUsage,
@@ -36,10 +36,12 @@ use maka_eval::measurement::{
     reconcile_host_and_proxy_usage, recover_external_metering_checkpoint, sign_metering_checkpoint,
 };
 use maka_eval::report::{
-    evaluate_differential_oracle, export_v1_canonical, export_v2_canonical, rebuild_from_journal,
+    build_cohort_summary, evaluate_differential_oracle, export_v1_canonical, export_v2_canonical,
+    rebuild_from_journal,
 };
 use maka_eval::runner::{
-    ConservativeCleanupProbe, RunExperimentInput, recover_unsettled_attempts, run_experiment,
+    ConservativeCleanupProbe, RetryPolicy, RunExperimentInput, recover_unsettled_attempts,
+    run_experiment,
 };
 use maka_eval::store::{
     ExperimentDirectory, capture_maka_runtime_artifacts, verify_critical_artifacts,
@@ -48,6 +50,10 @@ use maka_eval::subject::SubjectAdapter;
 use maka_eval::subject::external_cli::{
     ExternalCliSubject, encode_relay_result_frame, parse_relay_result_frame,
 };
+use maka_eval::subject::maka::{
+    HostedExecutionProjection, MakaHostInitSettingsPayload, MakaSubjectConfig, RustHostSubject,
+    bootstrap_maka_host_root, export_paginated_transcript, resolve_product_route_base_url,
+};
 use serde_json::{Map, Value, json};
 use std::fs;
 use std::sync::Arc;
@@ -55,6 +61,141 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
 use tokio::sync::Barrier;
 use tokio_util::sync::CancellationToken;
+
+#[test]
+fn maka_host_init_settings_stdin_payload_matches_exact_session_contract() {
+    let payload = MakaHostInitSettingsPayload::for_eval_gateway(
+        43120,
+        "gw-secret-credential-99",
+        "deepseek-v4-flash",
+    );
+    let actual = payload.to_json_value();
+    let expected = json!({
+        "connections": [
+            {
+                "slug": "eval-gateway",
+                "name": "Eval Gateway",
+                "provider": "openai-compatible",
+                "configuration": {
+                    "baseUrl": "http://127.0.0.1:43120/v1"
+                },
+                "apiKey": "gw-secret-credential-99",
+                "enabled": true,
+                "enabledModelIds": ["deepseek-v4-flash"]
+            }
+        ],
+        "defaultTarget": {
+            "slug": "eval-gateway",
+            "modelId": "deepseek-v4-flash"
+        }
+    });
+    assert_eq!(actual, expected);
+
+    // Benchmark-only agent overrides must be rejected at the contract boundary.
+    for forbidden in [
+        json!({"toolProfile": "minimal"}),
+        json!({"permissionMode": "bypass"}),
+        json!({"collaborationMode": "agent"}),
+        json!({"orchestrationMode": "default"}),
+    ] {
+        let mut cfg = json!({
+            "makaExecutable": "/opt/maka-agent/maka",
+            "runtimeHostsPath": "/tmp/maka-runtime-hosts",
+            "hostSettlementTimeoutMs": 60000,
+            "baseUrl": "http://127.0.0.1:43120/v1",
+            "model": "deepseek-v4-flash"
+        });
+        for (k, v) in forbidden.as_object().unwrap() {
+            cfg[k] = v.clone();
+        }
+        assert!(
+            MakaSubjectConfig::decode(cfg.as_object().unwrap(), &["DEEPSEEK_API_KEY".into()])
+                .is_err(),
+            "forbidden benchmark-only field must be rejected: {forbidden}"
+        );
+    }
+
+    // Public Maka configuration interfaces are accepted and preserved in hostInitSettings.
+    let public_cfg = json!({
+        "makaExecutable": "/opt/maka-agent/maka",
+        "runtimeHostsPath": "/tmp/maka-runtime-hosts",
+        "hostSettlementTimeoutMs": 60000,
+        "provider": "openai-compatible",
+        "connectionSlug": "team-provider",
+        "connectionName": "Team Provider",
+        "baseUrl": "https://api.example.com/v1",
+        "model": "gpt-4.1",
+        "modelOverride": {
+            "contextWindow": 128000,
+            "thinkingLevels": ["off", "medium"]
+        },
+        "sandboxMode": "read-only",
+        "requestPermissions": false,
+        "thinkingLevel": "medium",
+        "language": "en",
+        "workspaceInstructions": false
+    });
+    let decoded =
+        MakaSubjectConfig::decode(public_cfg.as_object().unwrap(), &["OPENAI_API_KEY".into()])
+            .expect("public Maka subject configuration must decode");
+    let init = decoded
+        .host_init_settings("https://api.example.com/v1", "sk-test")
+        .to_json_value();
+    assert_eq!(init["defaultTarget"]["slug"], json!("team-provider"));
+    assert_eq!(
+        init["connections"][0]["modelOverrides"]["gpt-4.1"]["contextWindow"],
+        json!(128000)
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bootstrap_maka_host_root_pipes_settings_stdin_without_leaking_secret_in_argv() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().unwrap();
+    let fake_maka = temp.path().join("fake-maka.sh");
+    let captured_args = temp.path().join("captured-args.txt");
+    let captured_stdin = temp.path().join("captured-stdin.json");
+    let host_root = temp.path().join("isolated-host-root");
+
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{}\"\ncat > \"{}\"\n",
+        captured_args.display(),
+        captured_stdin.display()
+    );
+    fs::write(&fake_maka, script).unwrap();
+    let mut perms = fs::metadata(&fake_maka).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&fake_maka, perms).unwrap();
+
+    let payload = MakaHostInitSettingsPayload::for_eval_gateway(
+        18080,
+        "super-secret-gateway-token",
+        "deepseek-v4-flash",
+    );
+    bootstrap_maka_host_root(&fake_maka, &host_root, &payload)
+        .await
+        .unwrap();
+
+    let args_text = fs::read_to_string(&captured_args).unwrap();
+    let args_lines: Vec<&str> = args_text.lines().collect();
+    assert_eq!(
+        args_lines,
+        vec![
+            "host",
+            "init",
+            "--settings-stdin",
+            "--root",
+            host_root.to_str().unwrap()
+        ]
+    );
+    assert!(!args_text.contains("super-secret-gateway-token"));
+
+    let stdin_json: Value =
+        serde_json::from_str(&fs::read_to_string(&captured_stdin).unwrap()).unwrap();
+    assert_eq!(stdin_json, payload.to_json_value());
+}
 
 #[test]
 fn experiment_spec_validation_and_cell_expansion_match_v1_contract() {
@@ -651,8 +792,87 @@ async fn shared_preparation_cache_lock_serializes_concurrent_task_preparations()
     assert_eq!(build_count.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn relay_result_frame_boundaries_reject_ambiguous_duplicates() {
+#[tokio::test]
+async fn runner_executes_task_groups_bounds_retries_and_exports_cohort_summary() {
+    let temp = TempDir::new().unwrap();
+    let spec = parse_experiment_spec(&sample_two_arm_spec_json()).unwrap();
+    let dir = ExperimentDirectory::open(temp.path().join("run-out"), &spec).unwrap();
+
+    let maka_calls = Arc::new(AtomicUsize::new(0));
+    let ext_calls = Arc::new(AtomicUsize::new(0));
+
+    let env = Arc::new(FakeTrialEnvironment {
+        maka_calls: maka_calls.clone(),
+        ext_calls: ext_calls.clone(),
+    });
+
+    let subjects: Vec<Arc<dyn SubjectAdapter>> = vec![
+        Arc::new(RustHostSubject::new()),
+        Arc::new(ExternalCliSubject::new()),
+    ];
+
+    let mut run_input = RunExperimentInput::new(&spec, &dir.attempts, env, subjects);
+    // Allow 1 automatic retry for infra_failed so task-alpha::1::maka (which fails on call 1)
+    // automatically retries and succeeds on sequence 2!
+    run_input.retry_policy = RetryPolicy {
+        max_infra_retries: 1,
+        block_automatic_retry_on_indeterminate: true,
+    };
+
+    let results = run_experiment(run_input).await.unwrap();
+    assert_eq!(results.len(), 4);
+
+    // task-alpha::1::maka failed with infra_failed on sequence 1 and succeeded on sequence 2.
+    let alpha_maka = &results["task-alpha::1::maka"];
+    assert_eq!(alpha_maka.sequence, 2);
+    assert_eq!(alpha_maka.result.status, EvalResultStatus::Completed);
+    assert_eq!(alpha_maka.result.score, Some(1.0));
+    assert!(costs_match_within_tolerance(
+        alpha_maka.result.cost_usd,
+        Some(0.0001107)
+    ));
+
+    // Verify all stored v1 files strictly decode under decode_v1_cell_attempt.
+    let v1_export = export_v1_canonical(&spec, &dir.attempts).unwrap();
+    let v2_export = export_v2_canonical(&spec, &dir.attempts).unwrap();
+    assert_eq!(v1_export.len(), 4);
+    assert_eq!(v2_export.len(), 4);
+    for attempt in v1_export.values() {
+        let decoded = decode_v1_cell_attempt(&serde_json::to_value(attempt).unwrap()).unwrap();
+        assert_eq!(&decoded, attempt);
+    }
+
+    let summary = build_cohort_summary(&spec, &v1_export);
+    assert_eq!(summary.total_cells, 4);
+    assert_eq!(summary.settled_cells, 4);
+    assert_eq!(summary.incomplete_cells, 0);
+    assert_eq!(summary.paired_task_groups, 2);
+    assert_eq!(summary.arms["maka"].completed_cells, 2);
+    assert_eq!(summary.arms["external-cli"].completed_cells, 2);
+}
+
+#[tokio::test]
+async fn paginated_transcript_export_and_relay_result_frame_boundaries() {
+    // 1. Paginated transcript export across multiple pages + cycle protection.
+    let pages = vec![
+        (
+            vec![json!({"id": "msg-1"}), json!({"id": "msg-2"})],
+            Some("cursor-2".to_owned()),
+        ),
+        (vec![json!({"id": "msg-3"})], Some("cursor-3".to_owned())),
+        (vec![json!({"id": "msg-4"})], None),
+    ];
+    let idx = Arc::new(AtomicUsize::new(0));
+    let exported = export_paginated_transcript(2, move |_cursor, _limit| {
+        let pages = pages.clone();
+        let i = idx.fetch_add(1, Ordering::SeqCst);
+        async move { Ok(pages[i].clone()) }
+    })
+    .await
+    .unwrap();
+    assert_eq!(exported.len(), 4);
+
+    // 2. Relay result frame encoding and parsing (`MAKA-EVAL-RESULT-V1`).
     let token = "abcdef0123456789abcdef0123456789";
     let payload = json!({
         "schemaVersion": "maka.external_subject_result.v2",
@@ -675,6 +895,7 @@ fn relay_result_frame_boundaries_reject_ambiguous_duplicates() {
     let parsed_val: Value = serde_json::from_str(&extracted).unwrap();
     assert_eq!(parsed_val, payload);
 
+    // Ambiguous (duplicate) frames must be rejected as ResultFrameAmbiguous.
     let duplicate = format!("{frame}{frame}");
     let err = parse_relay_result_frame(&duplicate, token).unwrap_err();
     assert_eq!(
@@ -684,41 +905,106 @@ fn relay_result_frame_boundaries_reject_ambiguous_duplicates() {
 }
 
 struct FakeTrialEnvironment {
+    maka_calls: Arc<AtomicUsize>,
     ext_calls: Arc<AtomicUsize>,
 }
 
 struct FakeActiveTrial {
     cell_id: String,
+    maka_calls: Arc<AtomicUsize>,
     ext_calls: Arc<AtomicUsize>,
 }
 
 impl CommandRunner for FakeActiveTrial {
     fn execute<'a>(
         &'a self,
-        _request: SubjectProcessRequest,
+        request: SubjectProcessRequest,
     ) -> BoxFuture<'a, Result<SubjectProcessOutput, String>> {
         Box::pin(async move {
-            assert!(self.cell_id.ends_with("::external-cli"));
-            self.ext_calls.fetch_add(1, Ordering::SeqCst);
-            let out = json!({
-                "schemaVersion": "maka.external_subject_result.v2",
-                "status": "completed",
-                "failureReason": null,
-                "usage": {
-                    "inputTokens": 400,
-                    "outputTokens": 100,
-                    "cacheReadTokens": 100,
-                    "cacheWriteTokens": 0,
-                    "reasoningTokens": 20,
-                    "totalTokens": 500
-                },
-                "costUsd": 0.0001327,
-                "artifacts": []
-            });
+            if self.cell_id.ends_with("::external-cli") {
+                self.ext_calls.fetch_add(1, Ordering::SeqCst);
+                let out = json!({
+                    "schemaVersion": "maka.external_subject_result.v2",
+                    "status": "completed",
+                    "failureReason": null,
+                    "usage": {
+                        "inputTokens": 400,
+                        "outputTokens": 100,
+                        "cacheReadTokens": 100,
+                        "cacheWriteTokens": 0,
+                        "reasoningTokens": 20,
+                        "totalTokens": 500
+                    },
+                    "costUsd": 0.0001327,
+                    "artifacts": []
+                });
+                return Ok(SubjectProcessOutput {
+                    termination: SubjectProcessTermination::Exited,
+                    exit_code: 0,
+                    stdout: serde_json::to_string(&out).unwrap(),
+                    stderr: String::new(),
+                    diagnostic: None,
+                });
+            }
+
+            assert_eq!(request.command, "/opt/maka-agent/maka-eval");
+            assert_eq!(request.args[0], "host-subject");
+            // Maka subject invocation: decode the base64url envelope to extract executionId
+            let call_num = self.maka_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if self.cell_id == "task-alpha::1::maka" && call_num == 1 {
+                // Simulate an empty stdout crash on the first try so runner retries sequence 2.
+                return Ok(SubjectProcessOutput {
+                    termination: SubjectProcessTermination::Exited,
+                    exit_code: 1,
+                    stdout: String::new(),
+                    stderr: "transient native Host crash".into(),
+                    diagnostic: Some(SubjectProcessDiagnostic {
+                        category: SubjectProcessDiagnosticCategory::None,
+                        bytes: None,
+                        sha256: None,
+                    }),
+                });
+            }
+
+            use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+            let encoded = &request.args[1];
+            let envelope: Value =
+                serde_json::from_slice(&URL_SAFE_NO_PAD.decode(encoded).unwrap()).unwrap();
+            let execution_id = envelope["execution"]["executionId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+
+            // Verify the embedded hostInitSettings matches our exact eval-gateway contract!
+            assert_eq!(
+                envelope["hostInitSettings"]["defaultTarget"]["slug"],
+                json!("eval-gateway")
+            );
+
+            let projection = HostedExecutionProjection::Settled {
+                execution_id,
+                status: "completed".into(),
+                failure_reason: None,
+                usage: Some(NormalizedUsage {
+                    input_tokens: 300,
+                    output_tokens: 100,
+                    cache_read_tokens: 100,
+                    cache_write_tokens: 0,
+                    reasoning_tokens: 10,
+                    total_tokens: 400,
+                }),
+                metering_state: MeteringState::Complete,
+                cost_usd: Some(0.0001107),
+                operation_id: Some("op-settled-1".into()),
+                invocation_id: Some("inv-settled-1".into()),
+                maka_executable_sha256: None,
+                blocked_interaction: None,
+                environment_limitation: None,
+            };
             Ok(SubjectProcessOutput {
                 termination: SubjectProcessTermination::Exited,
                 exit_code: 0,
-                stdout: serde_json::to_string(&out).unwrap(),
+                stdout: serde_json::to_string(&projection).unwrap(),
                 stderr: String::new(),
                 diagnostic: None,
             })
@@ -735,6 +1021,7 @@ impl ActiveTrialAttempt for FakeActiveTrial {
             cancel: CancellationToken::new(),
             runner: Arc::new(Self {
                 cell_id: self.cell_id.clone(),
+                maka_calls: self.maka_calls.clone(),
                 ext_calls: self.ext_calls.clone(),
             }),
         }
@@ -772,6 +1059,7 @@ impl TrialEnvironment for FakeTrialEnvironment {
     ) -> BoxFuture<'a, Result<TrialEnvironmentOutcome<V2AttemptRecord>, String>> {
         let active = FakeActiveTrial {
             cell_id: cell.id.clone(),
+            maka_calls: self.maka_calls.clone(),
             ext_calls: self.ext_calls.clone(),
         };
         Box::pin(async move {
@@ -1084,6 +1372,7 @@ async fn runner_recovers_before_admission_and_blocks_unconfirmed_cleanup_across_
     let id = "task-alpha::1::external-cli";
     let calls = Arc::new(AtomicUsize::new(0));
     let env = Arc::new(FakeTrialEnvironment {
+        maka_calls: Arc::new(AtomicUsize::new(0)),
         ext_calls: calls.clone(),
     });
     let subjects: Vec<Arc<dyn SubjectAdapter>> = vec![Arc::new(ExternalCliSubject::new())];
@@ -1224,4 +1513,545 @@ while True: signal.pause()
         ));
         assert_eq!(fs::read_to_string(&marker).unwrap(), "SIGTERM");
     }
+}
+
+#[tokio::test]
+async fn unknown_model_cost_stays_unknown_in_both_reports() {
+    let temp = TempDir::new().unwrap();
+    let mut json = sample_two_arm_spec_json();
+    json["subjects"][0]["config"]["model"] = json!("unpriced-model");
+    let spec = parse_experiment_spec(&json).unwrap();
+    let store = maka_eval::store::FileAttemptStore::new(temp.path());
+    let env = Arc::new(FakeTrialEnvironment {
+        maka_calls: Arc::new(AtomicUsize::new(0)),
+        ext_calls: Arc::new(AtomicUsize::new(0)),
+    });
+    let mut input =
+        RunExperimentInput::new(&spec, &store, env, vec![Arc::new(RustHostSubject::new())]);
+    input.cell_ids = Some(vec!["task-beta::1::maka".into()]);
+    let results = run_experiment(input).await.unwrap();
+    let result = &results["task-beta::1::maka"].result;
+    assert!(result.usage.is_some());
+    assert_eq!(result.cost_usd, None);
+    assert_eq!(
+        export_v2_canonical(&spec, &store).unwrap()["task-beta::1::maka"]
+            .project_v1()
+            .result
+            .cost_usd,
+        None
+    );
+}
+
+#[cfg(unix)]
+fn stage_real_maka_and_eval_binaries(
+    dir: &std::path::Path,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    use std::os::unix::fs::symlink;
+
+    let profile = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let maka_src = std::env::var_os("CARGO_BIN_EXE_maka")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| profile.join("maka"));
+    assert!(
+        maka_src.is_file(),
+        "build maka-cli first, or supply CARGO_BIN_EXE_maka"
+    );
+    let eval_src = std::env::var_os("CARGO_BIN_EXE_maka-eval")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_BIN_EXE_maka-eval")));
+    assert!(eval_src.is_file(), "maka-eval binary must exist");
+
+    let bin_dir = dir.join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let staged_maka = bin_dir.join("maka");
+    let staged_eval = bin_dir.join("maka-eval");
+    symlink(&maka_src, &staged_maka).unwrap();
+    symlink(&eval_src, &staged_eval).unwrap();
+
+    if let Some(src_dir) = maka_src.parent() {
+        let worker = src_dir.join("maka-python-worker");
+        if worker.is_file() {
+            let _ = symlink(&worker, bin_dir.join("maka-python-worker"));
+        }
+    }
+    let profile_worker = profile.join("maka-python-worker");
+    if profile_worker.is_file() && !bin_dir.join("maka-python-worker").exists() {
+        let _ = symlink(&profile_worker, bin_dir.join("maka-python-worker"));
+    }
+
+    (staged_maka, staged_eval)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_host_executes_with_public_client_and_returns_authenticated_relay_frame() {
+    let temp = TempDir::new().unwrap();
+    let (maka, eval) = stage_real_maka_and_eval_binaries(temp.path());
+    let script = temp.path().join("native_host.py");
+    fs::write(&script, include_str!("support/native_host.py")).unwrap();
+    let output = tokio::process::Command::new("python3")
+        .arg(script)
+        .env("MAKA_TEST_MAKA", maka)
+        .env("MAKA_TEST_EVAL", eval)
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unattended_maka_execution_preserves_interaction_semantics_without_silent_bypass() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct LocalCommandRunner(std::collections::HashMap<String, String>);
+    impl CommandRunner for LocalCommandRunner {
+        fn execute<'a>(
+            &'a self,
+            request: SubjectProcessRequest,
+        ) -> BoxFuture<'a, Result<SubjectProcessOutput, String>> {
+            Box::pin(async move {
+                let mut cmd = tokio::process::Command::new(&request.command);
+                cmd.args(&request.args)
+                    .env_remove("MAKA_EVAL_RESULT_TOKEN")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .kill_on_drop(true);
+                for (k, v) in &request.environment {
+                    cmd.env(k, v);
+                }
+                for (target, source) in &request.credential_environment {
+                    if let Some(val) = self.0.get(source) {
+                        cmd.env(target, val);
+                    }
+                }
+                let out = cmd.output().await.map_err(|e| e.to_string())?;
+                Ok(SubjectProcessOutput {
+                    termination: SubjectProcessTermination::Exited,
+                    exit_code: out.status.code().unwrap_or(1),
+                    stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                    diagnostic: None,
+                })
+            })
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let (maka, _eval) = stage_real_maka_and_eval_binaries(temp.path());
+    let workspace = temp.path().join("workspace");
+    let artifact_root = temp.path().join("artifacts");
+    fs::create_dir_all(&workspace).unwrap();
+
+    // Start a local OpenAI-compatible SSE server that instructs Maka to invoke `AskUserQuestion`.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shutdown = CancellationToken::new();
+    let shutdown_bg = shutdown.clone();
+    let server_task = tokio::spawn(async move {
+        loop {
+            let accepted = tokio::select! {
+                _ = shutdown_bg.cancelled() => break,
+                res = listener.accept() => match res {
+                    Ok(v) => v,
+                    Err(_) => break,
+                }
+            };
+            let (mut stream, _) = accepted;
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 65536];
+                let _ = stream.read(&mut buf).await;
+                let args_str = serde_json::to_string(&json!({
+                    "questions": [
+                        {
+                            "question": "Should we deploy to production?",
+                            "options": [
+                                { "label": "Yes" },
+                                { "label": "No" }
+                            ]
+                        }
+                    ]
+                }))
+                .unwrap();
+                let chunk1 = json!({
+                    "id": "chatcmpl-interact-1",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": "gpt-4.1",
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "tool_calls": [{
+                                "index": 0,
+                                "id": "call_question_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "AskUserQuestion",
+                                    "arguments": args_str
+                                }
+                            }]
+                        },
+                        "finish_reason": null
+                    }]
+                });
+                let chunk2 = json!({
+                    "id": "chatcmpl-interact-1",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": "gpt-4.1",
+                    "choices": [{
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "tool_calls"
+                    }],
+                    "usage": {
+                        "prompt_tokens": 25,
+                        "completion_tokens": 12,
+                        "total_tokens": 37
+                    }
+                });
+                let body = format!("data: {chunk1}\n\ndata: {chunk2}\n\ndata: [DONE]\n\n");
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+
+    let spec = parse_experiment_spec(&json!({
+        "schemaVersion": "maka.eval.v2",
+        "id": "unattended-interaction-test",
+        "benchmark": { "id": "tb", "version": "1.0", "config": {} },
+        "executor": { "kind": "harbor", "config": {} },
+        "subjects": [{
+            "id": "maka",
+            "kind": "maka",
+            "credentials": ["OPENAI_API_KEY"],
+            "config": {
+                "makaExecutable": maka.to_string_lossy(),
+                "runtimeHostsPath": temp.path().join("hosts").to_string_lossy(),
+                "hostSettlementTimeoutMs": 20000,
+                "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+                "model": "gpt-4.1"
+            }
+        }],
+        "tasks": [{ "id": "t1", "input": "Deploy the service.", "config": {} }],
+        "repetitions": 1,
+        "budget": { "maxSteps": 5 },
+        "verifier": {}
+    }))
+    .unwrap();
+    let cell = &expand_experiment(&spec)[0];
+
+    let mut metadata = Map::new();
+    metadata.insert(
+        "artifactRoot".into(),
+        Value::String(artifact_root.to_string_lossy().into_owned()),
+    );
+    let result = RustHostSubject::new()
+        .execute(
+            cell,
+            SubjectExecutionContext {
+                cwd: workspace.to_string_lossy().into_owned(),
+                task_input: cell.task.input.clone(),
+                metadata,
+                cancel: CancellationToken::new(),
+                runner: Arc::new(LocalCommandRunner(std::collections::HashMap::from([(
+                    "OPENAI_API_KEY".into(),
+                    "sk-test-unattended".into(),
+                )]))),
+            },
+        )
+        .await;
+
+    shutdown.cancel();
+    let _ = server_task.await;
+
+    assert_eq!(result.outcome, ExecutionOutcome::SubjectFailed);
+    assert_eq!(
+        result.failure_reason.as_deref(),
+        Some("Unattended execution blocked on required interaction: question")
+    );
+    assert!(
+        result.artifacts.iter().any(|a| {
+            a.get("kind").and_then(Value::as_str) == Some("unattended-interaction-blocked")
+                && a.get("interactionKind").and_then(Value::as_str) == Some("question")
+        }),
+        "expected structured unattended-interaction-blocked artifact, got {:?}",
+        result.artifacts
+    );
+    let recorded_interactions: Value = serde_json::from_slice(
+        &fs::read(artifact_root.join("unattended-interactions.json"))
+            .expect("unattended-interactions.json artifact must be written"),
+    )
+    .unwrap();
+    assert_eq!(
+        recorded_interactions["entries"][0]["kind"],
+        json!("question")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn zenmux_and_cohere_model_route_overrides_preserve_product_routing_under_eval_and_parity() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let zenmux_resolved = resolve_product_route_base_url(
+        "zenmux",
+        "zenmux-main",
+        "https://zenmux.ai/api/v1",
+        "anthropic/claude-3.5-haiku",
+        None,
+        None,
+    )
+    .await
+    .expect("zenmux claude route resolution must succeed");
+    assert_eq!(zenmux_resolved, "https://zenmux.ai/api/anthropic/v1");
+
+    let cohere_resolved = resolve_product_route_base_url(
+        "cohere",
+        "cohere-main",
+        "https://api.cohere.com/v2",
+        "north-mini-code-1-0",
+        None,
+        None,
+    )
+    .await
+    .expect("cohere north-mini-code-1-0 route resolution must succeed");
+    assert_eq!(cohere_resolved, "https://api.cohere.ai/compatibility/v1");
+
+    let temp = TempDir::new().unwrap();
+    let (maka, _eval) = stage_real_maka_and_eval_binaries(temp.path());
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(workspace.join("README.md"), "# Zenmux Route Test\n").unwrap();
+
+    // Offline proxy so RuntimeCatalog inside `maka host serve` never touches external network.
+    let offline_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let offline_addr = offline_listener.local_addr().unwrap();
+    let offline_shutdown = CancellationToken::new();
+    let offline_shutdown_clone = offline_shutdown.clone();
+    let offline_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = offline_shutdown_clone.cancelled() => break,
+                accepted = offline_listener.accept() => {
+                    let Ok((mut s, _)) = accepted else { break; };
+                    tokio::spawn(async move {
+                        let mut b = [0u8; 2048];
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_millis(100),
+                            s.read(&mut b),
+                        ).await;
+                        let _ = s.write_all(
+                            b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        ).await;
+                    });
+                }
+            }
+        }
+    });
+
+    // Local Anthropic SSE probe capturing exact request path and upstream target header.
+    let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let probe_addr = probe_listener.local_addr().unwrap();
+    let observed = Arc::new(tokio::sync::Mutex::new(
+        Vec::<(String, Option<String>)>::new(),
+    ));
+    let observed_clone = observed.clone();
+    let probe_shutdown = CancellationToken::new();
+    let probe_shutdown_clone = probe_shutdown.clone();
+    let probe_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = probe_shutdown_clone.cancelled() => break,
+                accepted = probe_listener.accept() => {
+                    let Ok((mut stream, _)) = accepted else { break; };
+                    let store = observed_clone.clone();
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        let header_end = loop {
+                            let Ok(n) = stream.read(&mut chunk).await else { return; };
+                            if n == 0 { return; }
+                            buf.extend_from_slice(&chunk[..n]);
+                            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break pos + 4;
+                            }
+                        };
+                        let headers_str = String::from_utf8_lossy(&buf[..header_end]).into_owned();
+                        let mut lines = headers_str.lines();
+                        let req_line = lines.next().unwrap_or_default();
+                        let path = req_line.split_whitespace().nth(1).unwrap_or_default().to_owned();
+                        let mut target_hdr = None;
+                        let mut content_len = 0usize;
+                        for line in lines {
+                            if let Some((k, v)) = line.split_once(':') {
+                                if k.eq_ignore_ascii_case(maka_eval::measurement::UPSTREAM_TARGET_HEADER) {
+                                    target_hdr = Some(v.trim().to_owned());
+                                } else if k.eq_ignore_ascii_case("content-length") {
+                                    content_len = v.trim().parse().unwrap_or(0);
+                                }
+                            }
+                        }
+                        while buf.len() < header_end + content_len {
+                            let Ok(n) = stream.read(&mut chunk).await else { break; };
+                            if n == 0 { break; }
+                            buf.extend_from_slice(&chunk[..n]);
+                        }
+                        store.lock().await.push((path, target_hdr));
+                        let sse = concat!(
+                            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_z\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"anthropic/claude-3.5-haiku\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":15,\"output_tokens\":0}}}\n\n",
+                            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"OK\"}}\n\n",
+                            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+                            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":3}}\n\n",
+                            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+                        );
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            sse.len(),
+                            sse
+                        );
+                        let _ = stream.write_all(resp.as_bytes()).await;
+                    });
+                }
+            }
+        }
+    });
+
+    struct EnvLocalRunner(Vec<(String, String)>);
+    impl CommandRunner for EnvLocalRunner {
+        fn execute<'a>(
+            &'a self,
+            request: SubjectProcessRequest,
+        ) -> BoxFuture<'a, Result<SubjectProcessOutput, String>> {
+            Box::pin(async move {
+                let mut cmd = tokio::process::Command::new(&request.command);
+                cmd.args(&request.args)
+                    .env_remove("MAKA_EVAL_RESULT_TOKEN")
+                    .env_remove("REQUEST_METHOD")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .kill_on_drop(true);
+                for (k, v) in &self.0 {
+                    cmd.env(k, v);
+                }
+                for (k, v) in &request.environment {
+                    cmd.env(k, v);
+                }
+                for target in request.credential_environment.keys() {
+                    cmd.env(target, "sk-zenmux-test");
+                }
+                let out = cmd.output().await.map_err(|e| e.to_string())?;
+                Ok(SubjectProcessOutput {
+                    termination: SubjectProcessTermination::Exited,
+                    exit_code: out.status.code().unwrap_or(1),
+                    stdout: if request.capture_stdout {
+                        String::from_utf8_lossy(&out.stdout).into_owned()
+                    } else {
+                        String::new()
+                    },
+                    stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                    diagnostic: None,
+                })
+            })
+        }
+    }
+
+    // 1. Live `RustHostSubject` execution with official Zenmux baseUrl + Claude model.
+    let spec_json = json!({
+        "schemaVersion": "maka.eval.v2",
+        "id": "zenmux-route-exp",
+        "benchmark": { "id": "tb", "version": "1.0", "config": {} },
+        "executor": { "kind": "local", "config": {} },
+        "subjects": [
+            {
+                "id": "maka-zenmux",
+                "kind": "maka",
+                "credentials": ["ZENMUX_API_KEY"],
+                "config": {
+                    "makaExecutable": maka.to_string_lossy(),
+                    "runtimeHostsPath": temp.path().join("hosts-eval").to_string_lossy(),
+                    "hostSettlementTimeoutMs": 30000,
+                    "provider": "zenmux",
+                    "connectionSlug": "zenmux",
+                    "baseUrl": "https://zenmux.ai/api/v1",
+                    "model": "anthropic/claude-3.5-haiku"
+                }
+            }
+        ],
+        "tasks": [
+            { "id": "t1", "input": "Reply with OK.", "config": {} }
+        ],
+        "repetitions": 1,
+        "budget": { "maxSteps": 5 },
+        "verifier": {}
+    });
+    let spec = parse_experiment_spec(&spec_json).unwrap();
+    let cells = expand_experiment(&spec);
+    let artifact_root = temp.path().join("eval-artifacts");
+    let mut metadata = Map::new();
+    metadata.insert(
+        "artifactRoot".into(),
+        Value::String(artifact_root.to_string_lossy().into_owned()),
+    );
+    let offline_url = format!("http://{offline_addr}");
+    let exec_res = RustHostSubject::new()
+        .execute(
+            &cells[0],
+            SubjectExecutionContext {
+                cwd: workspace.to_string_lossy().into_owned(),
+                task_input: cells[0].task.input.clone(),
+                metadata,
+                cancel: CancellationToken::new(),
+                runner: Arc::new(EnvLocalRunner(vec![
+                    (
+                        "MAKA_EVAL_GATEWAY_TRANSPORT_ORIGIN".into(),
+                        format!("http://{probe_addr}"),
+                    ),
+                    ("ALL_PROXY".into(), offline_url.clone()),
+                    ("HTTP_PROXY".into(), offline_url.clone()),
+                    ("HTTPS_PROXY".into(), offline_url.clone()),
+                    ("NO_PROXY".into(), "127.0.0.1,localhost".into()),
+                ])),
+            },
+        )
+        .await;
+
+    probe_shutdown.cancel();
+    offline_shutdown.cancel();
+    let _ = probe_task.await;
+    let _ = offline_task.await;
+
+    assert_eq!(
+        exec_res.outcome,
+        ExecutionOutcome::Completed,
+        "zenmux claude Eval execution failed: {:?}",
+        exec_res.failure_reason
+    );
+    let reqs = observed.lock().await.clone();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].0, "/api/anthropic/v1/messages");
+    assert_eq!(
+        reqs[0].1.as_deref(),
+        Some("https://zenmux.ai/api/anthropic/v1/messages")
+    );
 }

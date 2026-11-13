@@ -151,6 +151,7 @@ test('helper process changes reach integration consumers outside the Cargo depen
   const packages = [
     ['maka-python-runtime', 'platform/python-runtime'],
     ['maka-cli', 'products/maka/cli'],
+    ['maka-eval', 'products/eval'],
     ['maka-agent-native', 'plugins/agent/native'],
     ['maka-computer-native', 'plugins/computer/native'],
   ].map(([name, path]) => ({
