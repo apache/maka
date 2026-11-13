@@ -87,6 +87,11 @@ import type {
   ExternalSessionCatalogItem,
   TurnResumeParkReason,
 } from '@maka/runtime-host/protocol';
+import {
+  TURN_MESSAGE_CONTENT_MAX_BYTES,
+  TURN_MESSAGE_QUOTE_MAX_COUNT,
+  TURN_MESSAGE_TEXT_MAX_BYTES,
+} from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
 import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
@@ -96,8 +101,10 @@ import {
   MakaSessionCatalogIncompleteError,
   type MakaAttachedSessionTurn,
   type MakaPreparedSessionTurn,
+  type MakaRetractedMessages,
   type MakaSessionDriver,
   type MakaSessionListOptions,
+  type MakaSessionRewindResult,
   type MakaSideConversationParentStatus,
   type MakaSessionSwitchResult,
   type SessionResumeAvailability,
@@ -431,7 +438,16 @@ interface TuiRewindCopy {
   readonly doneKeptDraft: string;
   readonly noTargets: string;
   readonly busy: string;
-  readonly unsupportedQuotes: string;
+  readonly quotesRestored: string;
+  readonly quotesRestoredUnknown: string;
+  readonly quotesCleared: string;
+  readonly quotesNone: string;
+  readonly quotesUsage: string;
+  readonly quotesListHeading: string;
+  readonly quotesCountOverflow: string;
+  readonly quotesSizeOverflow: string;
+  readonly sideCloseKeptDraft: string;
+  readonly sideCloseKeptQuotes: string;
   readonly unsupportedAttachments: string;
   readonly unsupportedDirectoryReferences: string;
   readonly pickerHint: string;
@@ -687,6 +703,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         readonly sideSessionId: string;
         parentDraft: string;
         sideDraft: string;
+        // Quotes recovered by a retraction ride the draft they were restored
+        // into: parked here while the other view is active, staged back when
+        // the view returns (#5265 review).
+        parentQuotes: StagedQuoteRefs;
+        sideQuotes: StagedQuoteRefs;
         parentStatus?: MakaSideConversationParentStatus;
         stopParentObserver?: () => Promise<void>;
       }
@@ -729,6 +750,67 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     | { readonly kind: 'external'; readonly turn: MakaAttachedSessionTurn };
   let pendingAttachedTurn: AttachedTurnContext | undefined;
   const resolvedInteractionIds = new Set<string>();
+  // Quotes restored by a rewind (#5109) wait here for the next submit. The
+  // staging is keyed to the session it was restored in, so it only renders
+  // while that session is active, and every session change clears it
+  // outright (applySwitchResult) — a switch must not be able to resurrect
+  // the quotes into a later submit unnoticed; a refused or failed submit
+  // keeps them for the retry.
+  //
+  // Retraction-restored quotes (#5265 review) are the exception: they come
+  // back attached to the retracted message's text, whose only remaining copy
+  // is the editor/draft the restore handed it to, so they follow that text —
+  // into the staging (while it is in the editor) or into the side
+  // conversation's draft slots (when the text is parked there) — instead of
+  // dying on a switch. followDraft marks that lane; the session key still
+  // gates turn-staged quotes exactly as #5109 left it.
+  type StagedQuoteRefs = NonNullable<MakaSessionRewindResult['quotes']>;
+  let stagedRewindQuotes: StagedQuoteRefs = [];
+  let stagedQuotesSessionId: string | null = null;
+  let stagedQuotesFollowDraft = false;
+  let stagedGeneration = 0;
+  const effectiveStagedQuotes = () =>
+    stagedQuotesFollowDraft ||
+    (stagedQuotesSessionId !== null && stagedQuotesSessionId === input.driver.getSessionId())
+      ? stagedRewindQuotes
+      : [];
+  // Every write to the staging pair is a new generation. In-flight submits
+  // capture the generation at dispatch and only restage their quotes when no
+  // write has landed since, so a write that skips this setter would let a
+  // stale failure callback overwrite newer staging (#5109 review).
+  const setStagedQuotes = (
+    quotes: StagedQuoteRefs,
+    sessionId: string | null,
+    followDraft = false,
+  ) => {
+    stagedRewindQuotes = quotes;
+    stagedQuotesSessionId = sessionId;
+    stagedQuotesFollowDraft = followDraft;
+    stagedGeneration += 1;
+  };
+  const clearStagedQuotes = () => setStagedQuotes([], null);
+  // Quotes riding the recovered draft text move with it: taking them clears
+  // the staging (the text is leaving the editor for a draft slot), staging
+  // them back re-arms them for the view that owns the text (#5265 review).
+  const takeDraftQuotes = (): StagedQuoteRefs => {
+    if (!stagedQuotesFollowDraft || stagedRewindQuotes.length === 0) return [];
+    const quotes = stagedRewindQuotes;
+    clearStagedQuotes();
+    return quotes;
+  };
+  const stageDraftQuotes = (quotes: StagedQuoteRefs, sessionId: string) => {
+    if (quotes.length === 0) return;
+    setStagedQuotes(quotes, sessionId, true);
+  };
+  // Some actions supersede a pending restoration without writing the staging
+  // pair, because the staging is already empty: an ordinary submit that
+  // carries no quotes, or an explicit `/quotes clear` that finds nothing.
+  // Both still advance the generation, so an in-flight submit's failure
+  // callback cannot re-arm quotes the conversation has moved past (#5109
+  // review, second round).
+  const supersedePendingRestage = () => {
+    stagedGeneration += 1;
+  };
   let startAttachedTurn: ((attached: AttachedTurnContext) => void) | undefined;
   const startPendingAttachedTurn = () => {
     if (busy || turnRunning) return;
@@ -805,6 +887,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     providerRetry: state.providerRetry,
     uiLocale: locale,
     goal: input.driver.getGoal?.() ?? null,
+    stagedQuoteCount: effectiveStagedQuotes().length,
     ...(sideConversation
       ? {
           sideConversation: {
@@ -1341,8 +1424,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
   // An in-flight retraction serializes navigation: a session switch waits
-  // for it, so the retracted text lands in the session it was asked for
-  // instead of being discarded after the driver re-keyed (#5109 review).
+  // for it, so the retracted text and quotes land in the session they were
+  // asked for instead of being discarded after the driver re-keyed (#5109
+  // review).
   const pendingRetractionTasks = new Set<Promise<void>>();
   const trackRetraction = (task: Promise<void>): void => {
     pendingRetractionTasks.add(task);
@@ -1359,7 +1443,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // retraction asked for there starts after the switch's `settleRetractions`
   // drain yet still addresses the old Session — the Host removes the queued
   // entries while the driver re-keys, and the switched-session fence then
-  // discards the returned text. New retractions are blocked for
+  // discards the returned text and quotes. New retractions are blocked for
   // the entire switch instead (#5265 review).
   let sessionSwitchesInFlight = 0;
   const holdSwitchWindow = async <T>(body: () => Promise<T>): Promise<T> => {
@@ -1392,13 +1476,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       // a mid-turn `/session` landing while enqueues or the Host call are in
       // flight re-keys the driver, and the abandoned retraction must neither
       // retract the new session's queue nor stop its running turn, nor land
-      // its text there (#5109 review).
+      // its text or quotes there (#5109 review).
       const retractionSessionId = input.driver.getSessionId();
       await settlePendingEnqueues();
       if (input.driver.getSessionId() !== retractionSessionId) return;
       const retracted = (await input.driver.retractQueued?.()) ?? {
         text: '',
         messageIds: [],
+        quotes: [],
       };
       if (input.driver.getSessionId() !== retractionSessionId) {
         return;
@@ -1418,7 +1503,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // `busy`, so a prompt typed mid-switch goes back to the editor rather than
   // racing it. Exiting is never held back.
   const submitPrompt = (prompt: string) => {
-    if (!prompt.trim()) {
+    // Staged rewind quotes are the replacement content on their own: an empty
+    // text with quotes present is a meaningful quote-only submission (#5109).
+    if (!prompt.trim() && effectiveStagedQuotes().length === 0) {
       requestRender();
       return;
     }
@@ -1478,9 +1565,111 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (index >= 0) state.entries.splice(index, 1);
   };
 
-  const acceptRetraction = (retracted: { text: string; messageIds: readonly string[] }) => {
+  // Host admission caps one Message at TURN_MESSAGE_QUOTE_MAX_COUNT quotes:
+  // several independently valid queue entries can retract to a combined array
+  // past that cap, and staging it whole would make every resubmit fail with
+  // `Invalid Message quotes` while the queue rows are already gone (#5265
+  // review). Stage what fits; the remainder goes back as quoted text in the
+  // restored draft so every excerpt stays visible and editable.
+  const formatQuoteOverflow = (quotes: MakaRetractedMessages['quotes']): string => {
+    const prefixed = (text: string): string =>
+      text
+        .split('\n')
+        .map((line) => `> ${line}`)
+        .join('\n');
+    return quotes
+      .map((quote) => {
+        const lines = [
+          `${quote.label ? `[${quote.label}] ` : ''}${quote.text}`,
+          ...(quote.comment ? [`comment: ${quote.comment}`] : []),
+        ];
+        // The comment is the user's own model-facing intent for quoting this;
+        // reducing the structured staging to text must not drop it, and every
+        // line of every field keeps the blockquote prefix — the fields are
+        // multi-line-capable, and in the raw text the model receives the
+        // `> ` marks are the only excerpt/comment boundary (#5265 review).
+        return lines.map(prefixed).join('\n');
+      })
+      .join('\n>\n');
+  };
+
+  // Admission also bounds one Message by encoded size: the text alone
+  // (TURN_MESSAGE_TEXT_MAX_BYTES) and the whole content serialized
+  // (TURN_MESSAGE_CONTENT_MAX_BYTES). The driver builds a TUI submit's
+  // content as exactly `{ text, quotes? }` (runtime-host-session-driver
+  // `#submitMessage`), so measuring that shape here measures what admission
+  // will measure (#5265 review).
+  const fitsSingleMessageAdmission = (
+    text: string,
+    quotes: MakaRetractedMessages['quotes'],
+  ): boolean => {
+    if (Buffer.byteLength(text, 'utf8') > TURN_MESSAGE_TEXT_MAX_BYTES) return false;
+    const content = { text, ...(quotes.length > 0 ? { quotes: [...quotes] } : {}) };
+    return Buffer.byteLength(JSON.stringify(content), 'utf8') <= TURN_MESSAGE_CONTENT_MAX_BYTES;
+  };
+
+  const acceptRetraction = (retracted: MakaRetractedMessages) => {
     for (const messageId of retracted.messageIds) removeTransientUserMessage(messageId);
-    refillEditorFromQueues(retracted.text);
+    const countOverflow = retracted.quotes.slice(TURN_MESSAGE_QUOTE_MAX_COUNT);
+    let stageable = retracted.quotes.slice(0, TURN_MESSAGE_QUOTE_MAX_COUNT);
+    let overflow = countOverflow;
+    let restoredDraft =
+      overflow.length > 0
+        ? `${retracted.text}\n\n${formatQuoteOverflow(overflow)}`
+        : retracted.text;
+    // Budget the staging by encoded size too: two ~28 KB large-paste quotes
+    // are each admissible on their own queue entry but fold into one candidate
+    // past the content limit, and an unstagedable staging would make every
+    // retry fail while `/quotes clear` is the only way out (#5265 review).
+    // Demote staged quotes into the draft — newest first, matching the count
+    // cap's prefix preference — until the projected resubmit fits. The bytes
+    // move between the structured and the quoted-text lanes, so an aggregate
+    // that cannot fit one Message at all ends up entirely in the draft: the
+    // failure stays visible and the excerpts editable, instead of a silent
+    // staged trap.
+    // The projection measures the text the editor will actually hold, since
+    // the refill below prepends the recovered text to any current draft — a
+    // parked draft rides the resubmit's text lane too (#5265 review).
+    const parkedDraft = editor.getText();
+    const projectedDraft = (): string => {
+      if (!restoredDraft) return parkedDraft;
+      return parkedDraft ? `${restoredDraft}\n\n${parkedDraft}` : restoredDraft;
+    };
+    let sizeOverflow = false;
+    // Demoting moves quote bytes into the text lane, so it can only answer an
+    // encoded-content overflow: once the projected text alone is past the
+    // text limit no demotion can fit the aggregate, and demoting would only
+    // strip quotes that still ride a resubmit as structured refs once the
+    // user trims the draft text (#5265 review).
+    while (
+      stageable.length > 0 &&
+      Buffer.byteLength(projectedDraft(), 'utf8') <= TURN_MESSAGE_TEXT_MAX_BYTES &&
+      !fitsSingleMessageAdmission(projectedDraft(), stageable)
+    ) {
+      sizeOverflow = true;
+      const demoted = stageable[stageable.length - 1];
+      stageable = stageable.slice(0, -1);
+      if (demoted !== undefined) overflow = [demoted, ...overflow];
+      restoredDraft = `${retracted.text}\n\n${formatQuoteOverflow(overflow)}`;
+    }
+    refillEditorFromQueues(restoredDraft);
+    // The Host returns the full MessageContent with a retraction: quotes that
+    // rode a queued or steered message come back with it and restage here, so
+    // the re-edited retry does not go out without them (#5109 review). They
+    // ride the restored draft text, so they follow it across switches and
+    // draft parking (#5265 review).
+    if (stageable.length > 0) {
+      setStagedQuotes(stageable, input.driver.getSessionId(), true);
+    }
+    if (overflow.length > 0) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: sizeOverflow
+          ? TUI_REWIND_COPY[locale].quotesSizeOverflow
+          : TUI_REWIND_COPY[locale].quotesCountOverflow,
+      });
+    }
   };
 
   /**
@@ -1495,16 +1684,69 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   ) => {
     editor.addToHistory(text);
     const messageId = randomUUID();
-    appendUserPrompt(state, text, messageId, true);
+    // The staged quotes must be read before the live row renders: a
+    // quote-only submit has no text, so the row's quote trace is the only
+    // thing distinguishing it from an empty prompt until the Host echoes the
+    // message back (#5265 review).
+    const staged = effectiveStagedQuotes();
+    appendUserPrompt(state, text, messageId, true, staged.length);
     requestRender();
+    // Quotes staged by a rewind (#5109) ride this message and only this one:
+    // the staging clears as the message dispatches, and a refusal or failure
+    // restages them for the retry.
+    const originSessionId = input.driver.getSessionId();
+    // The lane the quotes were staged in must be read before the dispatch's
+    // own clear: clearStagedQuotes() resets the flag, so a read after it
+    // always records turn-staged and a failed submit's restage would hand the
+    // quotes to the next switch's staging clear (#5265 review).
+    const originFollowDraft = stagedQuotesFollowDraft;
+    if (staged.length > 0) clearStagedQuotes();
+    else supersedePendingRestage();
+    // The generation is read after the dispatch's own clear: the restore
+    // guard compares against the staging state this submit actually left
+    // behind, so an ordinary failure still passes while a Session switch, a
+    // newer rewind, or an explicit clear landing while the admission was in
+    // flight has since bumped it and must not inherit context meant for the
+    // original conversation (#5109 review).
+    const originGeneration = stagedGeneration;
+    const restageForRetry = (): boolean => {
+      if (!staged.length) return false;
+      if (input.driver.getSessionId() !== originSessionId) return false;
+      if (stagedGeneration !== originGeneration) return false;
+      setStagedQuotes(staged, originSessionId, originFollowDraft);
+      return true;
+    };
     const task = input.driver
-      .submitMessage(text, { messageId, placement, ...options })
+      .submitMessage(text, {
+        messageId,
+        placement,
+        ...options,
+        ...(staged.length > 0 ? { quotes: staged } : {}),
+      })
       .then((result) => {
         // Runtime Host resolved the Skills this Message named and refused it.
         // Retire the row it belongs to and report the failure in its place.
         if (result?.disposition === 'blocked') {
           removeTransientUserMessage(messageId);
+          restageForRetry();
           showSkillInvocation(result.skillInvocation);
+          return;
+        }
+        // A resolved-but-receipt-less submit is the real driver's outcome
+        // unknown path (`outcome_unknown`, or an interruption after the
+        // dispatch went out): admission cannot be proven either way. The
+        // dispatch already consumed the staging, so restage it — losing the
+        // user's explicit context to an unproven outcome is worse than a
+        // visible duplicate ride, which the status line surfaces and
+        // `/quotes clear` discards (#5109 review).
+        if (!result) {
+          if (restageForRetry()) {
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: TUI_REWIND_COPY[locale].quotesRestoredUnknown,
+            });
+          }
           return;
         }
         // It admitted them instead. The receipt says what was loaded and what
@@ -1520,6 +1762,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // The Message never became anything, so its row goes with the failure
         // notice that replaces it. The text stays in editor history for a retry.
         removeTransientUserMessage(messageId);
+        restageForRetry();
         reportError(error);
       })
       .finally(() => {
@@ -1532,7 +1775,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // step boundary. The Host alone decides whether it steers or starts a
   // successor Turn if the previous Turn settled during admission.
   const steerRunningTurn = (text: string) => {
-    if (!text.trim()) {
+    if (!text.trim() && effectiveStagedQuotes().length === 0) {
       requestRender();
       return;
     }
@@ -1543,7 +1786,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // reaches this — it stays the editor's completion trigger (key handler gate).
   const queueDraftForNextTurn = () => {
     const text = editor.getExpandedText().trim();
-    if (!text) return;
+    if (!text && effectiveStagedQuotes().length === 0) return;
     editor.setText('');
     submitMessage(text, 'next_turn');
   };
@@ -1561,14 +1804,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const retractionTask = (async () => {
       // Same session fence as the interrupt path: a mid-turn `/session` that
       // lands while enqueues or the retraction are in flight must neither
-      // retract the new session's queue nor inherit the text of the session
-      // we left (#5109 review).
+      // retract the new session's queue nor inherit the quotes or the text
+      // of the session we left (#5109 review).
       const retractionSessionId = input.driver.getSessionId();
       await settlePendingEnqueues();
       if (input.driver.getSessionId() !== retractionSessionId) return;
       const retracted = (await input.driver.retractQueued?.()) ?? {
         text: '',
         messageIds: [],
+        quotes: [],
       };
       if (input.driver.getSessionId() !== retractionSessionId) return;
       acceptRetraction(retracted);
@@ -2017,6 +2261,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   }: MakaSessionSwitchResult): Promise<void> => {
     resetTranscriptViewer();
     closeTodoOverlay();
+    // Every session change invalidates turn-staged rewind quotes outright:
+    // keying the staging to its session only hides it while the user is
+    // elsewhere, and a silent resurrection on return would send context the
+    // user can no longer see (#5109 review). The rewind re-stages its own
+    // quotes after this returns.
+    //
+    // Retraction-restored quotes are the exception (#5265 review): they belong
+    // to the recovered text the editor is still holding across this switch,
+    // and the Host already removed the queue entries they came from — the
+    // staging here is the only copy. They stay live, keyed to wherever that
+    // text lives next (this session's editor, or the draft slot a side
+    // toggle/open parks it in right after this returns).
+    if (!stagedQuotesFollowDraft) clearStagedQuotes();
     adoptSessionMetadata(summary, false);
     replaceTranscript(messages);
     syncInteractionOverlays();
@@ -2036,8 +2293,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // lands on the old one.
   const runSessionSwitch = async (sessionId: string, relocateCwd?: string) => {
     // A session switch waits for an in-flight retraction: the retracted text
-    // must land in the session it was asked for before the driver re-keys
-    // (#5109 review).
+    // and quotes must land in the session they were asked for before the
+    // driver re-keys (#5109 review).
     await settleRetractions();
     resolvedInteractionIds.clear();
     const result = await input.driver.switchSession(
@@ -2212,18 +2469,25 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       else await switchSession(targetSessionId);
       if (sideConversation !== pair) return;
       // Capture after the switch: both switch paths drain a pending
-      // retraction first, and the drain may have restored text into the
-      // editor. Capturing before the wait would write that stale draft back
-      // over the recovery — side editor, parent editor, and Host queue all
-      // empty with no notice (#5265 review).
+      // retraction first, and the drain may have restored text (and its
+      // quotes) into the editor. Capturing before the wait would write that
+      // stale draft back over the recovery — side editor, parent editor, and
+      // Host queue all empty with no notice (#5265 review).
       const currentDraft = editor.getText();
+      const currentQuotes = takeDraftQuotes();
       if (fromSide) {
         pair.sideDraft = currentDraft;
+        pair.sideQuotes = currentQuotes;
         editor.setText(pair.parentDraft);
+        stageDraftQuotes(pair.parentQuotes, pair.parentSessionId);
+        pair.parentQuotes = [];
         await stopSideParentObserver(pair);
       } else {
         pair.parentDraft = currentDraft;
+        pair.parentQuotes = currentQuotes;
         editor.setText(pair.sideDraft);
+        stageDraftQuotes(pair.sideQuotes, pair.sideSessionId);
+        pair.sideQuotes = [];
         await startSideParentObserver(pair);
       }
       requestRender();
@@ -2316,12 +2580,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         parentSessionId: result.parentSessionId,
         sideSessionId: result.sideSessionId,
         parentDraft: editor.getText(),
-        // The drain may have restored the parent's recovered text into the
-        // editor before the re-key; it is captured here, and the editor
-        // switches to the side view's own (empty) draft — pressing Enter here
-        // must not resubmit the parent's message inside the side conversation
-        // (#5265 review).
+        // The drain may have restored the parent's recovered text — and the
+        // quotes riding it — into the editor before the re-key; both are
+        // captured here, and the editor switches to the side view's own
+        // (empty) draft — pressing Enter here must not resubmit the parent's
+        // message inside the side conversation (#5265 review).
+        parentQuotes: takeDraftQuotes(),
         sideDraft: '',
+        sideQuotes: [],
       };
       editor.setText(sideConversation.sideDraft);
       await startSideParentObserver(sideConversation);
@@ -2363,18 +2629,24 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (!pair || !input.driver.closeSideConversation) return;
     // Same drain as the open: a retraction asked while the side Session was
     // active must land while the driver still points at it — past the re-key
-    // onto the parent, the close's session fence discards the text the Host
-    // already removed from the side queue (#5265 review).
+    // onto the parent, the close's session fence discards the text and quotes
+    // the Host already removed from the side queue (#5265 review).
     await settleRetractions();
-    // The close is only admitted from an empty editor: recovered text in the
-    // editor is the only copy left, and closing here would overwrite it with
-    // the parent draft below or clear it on the switch. Aborting keeps it
-    // visible; a later Ctrl+C clears it like any draft (#5265 review).
-    if (editor.getText().length > 0) {
+    // The close is only admitted from an empty editor with nothing staged:
+    // recovered text in the editor (or staged quotes with no text — a
+    // quote-only retraction) is the only copy left, and closing here would
+    // overwrite it with the parent draft below or clear it on the switch.
+    // Aborting keeps it visible; a later Ctrl+C clears it like any draft
+    // (#5265 review).
+    const keptDraft = editor.getText().length > 0;
+    const keptQuotes = effectiveStagedQuotes().length > 0;
+    if (keptDraft || keptQuotes) {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: 'Side conversation kept open — the editor draft was kept.',
+        text: keptDraft
+          ? TUI_REWIND_COPY[locale].sideCloseKeptDraft
+          : TUI_REWIND_COPY[locale].sideCloseKeptQuotes,
       });
       requestRender();
       return;
@@ -2396,6 +2668,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           : liveDraft
         : pair.parentDraft,
     );
+    // The parent view's own quotes come back with its draft, still keyed to
+    // the session their text lives in (#5265 review).
+    stageDraftQuotes(pair.parentQuotes, pair.parentSessionId);
     await stopSideParentObserver(pair);
     sideConversation = undefined;
     if (result.cleanup === 'pending') {
@@ -2457,16 +2732,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           // driver's English fallback.
           const code = (error as { code?: unknown })?.code;
           if (
-            code === 'rewind_unsupported_quotes' ||
             code === 'rewind_unsupported_attachments' ||
             code === 'rewind_unsupported_directory_references'
           ) {
             const localized =
-              code === 'rewind_unsupported_quotes'
-                ? TUI_REWIND_COPY[locale].unsupportedQuotes
-                : code === 'rewind_unsupported_attachments'
-                  ? TUI_REWIND_COPY[locale].unsupportedAttachments
-                  : TUI_REWIND_COPY[locale].unsupportedDirectoryReferences;
+              code === 'rewind_unsupported_attachments'
+                ? TUI_REWIND_COPY[locale].unsupportedAttachments
+                : TUI_REWIND_COPY[locale].unsupportedDirectoryReferences;
             throw new Error(localized);
           }
           throw error;
@@ -2475,6 +2747,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         return rewind;
       });
       await discardCurrentSidePair();
+      // The rewound turn's own quotes replace anything staged — including
+      // draft quotes a drained retraction restored: replacement, not
+      // accumulation (#5109, #5265 review). When the branch carries no quotes
+      // of its own, retraction-restored quotes stay staged and keep riding
+      // the recovered text, which the rewind preserved in the editor (#5265
+      // review).
+      if (result.quotes?.length) {
+        clearStagedQuotes();
+        setStagedQuotes(result.quotes, input.driver.getSessionId());
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: TUI_REWIND_COPY[locale].quotesRestored,
+        });
+      }
       // Record the discarded turn's prompt in the editor history before
       // deciding on the refill: prompts submitted in this TUI process are
       // already there (addToHistory dedupes consecutive duplicates), but a
@@ -5129,6 +5416,66 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           return;
         }
         void runControl(resumeSession);
+      },
+    },
+    quotes: {
+      description: primaryGuidance.commands.quotes,
+      // Composer-side staging only: listing or clearing it never touches the
+      // running Turn, so it routes through mid-turn like other local views.
+      midTurn: 'local',
+      run: (parts: string[]) => {
+        if (parts.length === 2 && parts[1] === 'clear') {
+          // Nothing staged (or the staged quotes already left on an in-flight
+          // submit): say so instead of claiming a discard that did nothing.
+          // The explicit intent still supersedes an in-flight submit's
+          // pending restoration.
+          if (effectiveStagedQuotes().length === 0) {
+            supersedePendingRestage();
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: TUI_REWIND_COPY[locale].quotesNone,
+            });
+            requestRender();
+            return;
+          }
+          clearStagedQuotes();
+          state.entries.push({
+            kind: 'notice',
+            level: 'info',
+            text: TUI_REWIND_COPY[locale].quotesCleared,
+          });
+        } else if (parts.length === 1) {
+          const staged = effectiveStagedQuotes();
+          if (staged.length === 0) {
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: TUI_REWIND_COPY[locale].quotesNone,
+            });
+          } else {
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: TUI_REWIND_COPY[locale].quotesListHeading,
+            });
+            for (const quote of staged) {
+              const preview = quote.label ? `${quote.label}: ${quote.text}` : quote.text;
+              state.entries.push({
+                kind: 'notice',
+                level: 'info',
+                text: `  · ${preview.slice(0, 120)}`,
+              });
+            }
+          }
+        } else {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: TUI_REWIND_COPY[locale].quotesUsage,
+          });
+        }
+        requestRender();
       },
     },
     rewind: {
