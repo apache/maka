@@ -21,6 +21,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import {
+  EventIntake,
+  INTAKE_ROLE,
+  SCREENING_CONTEXT_TOKEN_BUDGET,
+  screeningContextTokens,
+} from './intake.js';
 import { InitiativeStore } from './store.js';
 import { QUICK_DISCOVERY_TASK, quickWakeInput } from './quick-prompt.js';
 import { awaitingUser } from '../execution-outcome.js';
@@ -77,9 +83,55 @@ const reportSchema = z
   })
   .strict();
 
-/** A separate ordinary worker. Stores scheduling/delivery only, never another notebook. */
+const nextSchema = z
+  .object({
+    key: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe('Stable submission key within this wake; reuse on retry.'),
+    nextAt: z
+      .string()
+      .datetime({ offset: true })
+      .nullable()
+      .optional()
+      .describe(
+        'One-shot absolute wake time, including timezone. null restores the configured periodic cadence; omission preserves the current timer. Event screening can wake you earlier.',
+      ),
+    screeningPrompt: z
+      .string()
+      .trim()
+      .min(1)
+      .nullable()
+      .optional()
+      .describe(
+        'Instructions for the tool-free model deciding whether future incoming information should wake you. null restores the default; omission preserves current instructions. This is not MemoryExtract and does not change its requirements.',
+      ),
+    screeningContext: z
+      .string()
+      .trim()
+      .min(1)
+      .refine(
+        (text) => screeningContextTokens(text) <= SCREENING_CONTEXT_TOKEN_BUDGET,
+        `Screening background exceeds ${SCREENING_CONTEXT_TOKEN_BUDGET} conservative estimated input tokens (UTF-8 bytes plus JSON/framing). Rewrite it more briefly and resubmit; nothing is truncated.`,
+      )
+      .nullable()
+      .optional()
+      .describe(
+        'Replace the complete short factual background for future screening, separately from screeningPrompt rules. Keep useful current context, existing owners, known results and what was already communicated, with event dates and uncertainties. Compress or replace outdated context yourself; do not copy logs or a full todo list. Maximum 2000 conservative estimated input tokens (UTF-8 bytes including JSON/framing, not a model tokenizer). null clears it; omission preserves it. Background is not a whitelist: new unrelated opportunities must still be considered.',
+      ),
+  })
+  .strict()
+  .refine(
+    (v) =>
+      v.nextAt !== undefined || v.screeningPrompt !== undefined || v.screeningContext !== undefined,
+    'Provide nextAt, screeningPrompt or screeningContext',
+  );
+
+/** A separate ordinary worker. Stores scheduling, bounded screening background and delivery; not a history notebook. */
 export class QuickDiscoveryController {
   readonly store: InitiativeStore;
+  readonly intake: EventIntake;
   readonly abort = new AbortController();
   owned = false;
   running?: Promise<void>;
@@ -94,12 +146,14 @@ export class QuickDiscoveryController {
     readonly now: () => number = Date.now,
   ) {
     this.store = new InitiativeStore(join(directory, 'quick-discovery'), randomUUID());
+    this.intake = new EventIntake(this);
   }
   start(tickMs: number) {
     const acquire = () => {
       const owned = this.store.lease();
       if (owned && !this.owned)
         this.store.update((s) => {
+          this.intake.upgrade(s);
           if (s?.active) {
             s.pending = s.active;
             s.active = null;
@@ -127,6 +181,8 @@ export class QuickDiscoveryController {
     intervalMinutes?: number;
     idleMinutes?: number;
     quietHours?: QuietHours | null;
+    eventIntake?: boolean;
+    intakeModelKey?: string;
   }) {
     const quietHours =
       input.quietHours === undefined
@@ -151,9 +207,18 @@ export class QuickDiscoveryController {
         input.intervalMinutes === undefined ? s.intervalMs : input.intervalMinutes * 60000;
       const idle = input.idleMinutes === undefined ? s.idleMs : input.idleMinutes * 60000;
       if (idle < interval) throw Error('Idle cadence must be at least the activity cadence');
+      if (input.intervalMinutes !== undefined || input.idleMinutes !== undefined) {
+        s.wakeAt = null;
+        s.wakeControlRevision = (s.wakeControlRevision ?? 0) + 1;
+      }
       s.intervalMs = interval;
       s.idleMs = idle;
       if (quietHours !== undefined) s.quietHours = quietHours;
+      if (input.eventIntake !== undefined) s.intakeEnabled = input.eventIntake;
+      if (input.intakeModelKey !== undefined) {
+        if (!/^[^:]+::.+$/.test(input.intakeModelKey)) throw Error('Use connectionSlug::modelId');
+        s.intakeModelKey = input.intakeModelKey;
+      }
       if (input.action === 'enable') s.enabled = true;
       if (input.action === 'pause') {
         s.enabled = false;
@@ -190,20 +255,25 @@ export class QuickDiscoveryController {
       };
       const unavailable: Record<string, string> = {};
       await Promise.all(
-        this.ctx.sources.list().map(async (source: any) => {
-          try {
-            const token = await this.ctx.sources.activityToken(source.id);
-            if (token === null)
-              unavailable[source.id] =
-                'No lightweight observation; idle fallback applies outside configured quiet hours';
-            else tokens[source.id] = hash([source.scope, token]);
-          } catch (error) {
-            // Cancellation is not an unavailable source observation and must not admit a worker.
-            this.abort.signal.throwIfAborted();
-            this.parent.abort.signal.throwIfAborted();
-            unavailable[source.id] = String(error);
-          }
-        }),
+        this.ctx.sources
+          .list()
+          .filter(
+            (source: any) => !s.intakeEnabled || !source.changes || source.changeRole === 'context',
+          )
+          .map(async (source: any) => {
+            try {
+              const token = await this.ctx.sources.activityToken(source.id);
+              if (token === null)
+                unavailable[source.id] =
+                  'No lightweight observation; idle fallback applies outside configured quiet hours';
+              else tokens[source.id] = hash([source.scope, token]);
+            } catch (error) {
+              // Cancellation is not an unavailable source observation and must not admit a worker.
+              this.abort.signal.throwIfAborted();
+              this.parent.abort.signal.throwIfAborted();
+              unavailable[source.id] = String(error);
+            }
+          }),
       );
       // A failed observation is unknown, not a new/empty source snapshot.
       for (const id of Object.keys(unavailable)) {
@@ -214,6 +284,7 @@ export class QuickDiscoveryController {
     });
   }
   tick(): Promise<void> {
+    void this.intake.tick().catch(() => {});
     if (this.ticking || this.running || !this.owned || this.abort.signal.aborted)
       return this.ticking ?? Promise.resolve();
     this.ticking = this.dispatch()
@@ -241,17 +312,25 @@ export class QuickDiscoveryController {
       (s.retryAt > now && !s.checkRequested)
     )
       return;
-    const last = s.lastFinishedAt ?? s.startedAt;
+    const eventWake = s.intakeEnabled ? await this.intake.next() : undefined;
+    const last = s.lastPeriodicFinishedAt ?? s.startedAt;
     const quiet = inQuietHours(now, s.quietHours);
+    const explicitTimer = typeof s.wakeAt === 'number';
+    const timerDue = explicitTimer && now >= s.wakeAt;
+    if (!eventWake && !s.checkRequested && !s.pending && explicitTimer && !timerDue) return;
     if (
+      !eventWake &&
       !s.checkRequested &&
       !s.pending &&
+      !timerDue &&
       (now < last + s.intervalMs ||
         (now < (s.observation?.at ?? 0) + s.intervalMs && (quiet || now < last + s.idleMs)))
     )
       return;
     // Cheap observations only: no source enumeration, body reads, index writes or model calls.
-    const observation = await this.activity(s);
+    const observation = eventWake
+      ? { tokens: s.checkedTokens ?? {}, unavailable: {} }
+      : await this.activity(s);
     this.ready();
     this.store.update((state) => {
       state.observation = { ...observation, at: now };
@@ -263,8 +342,16 @@ export class QuickDiscoveryController {
     // Only idle discovery is suppressed. Explicit checks, observed new activity and pending
     // retries still run, subject to the retry deadline and admission guards above/below.
     // Never advance the successful-check watermark merely because a wake was skipped.
-    if (!s.checkRequested && !s.pending && !changed && quiet) return;
-    if (!s.checkRequested && !s.pending && !changed && now < last + s.idleMs) return;
+    if (!s.checkRequested && !s.pending && !eventWake && !timerDue && !changed && quiet) return;
+    if (
+      !s.checkRequested &&
+      !s.pending &&
+      !eventWake &&
+      !timerDue &&
+      !changed &&
+      now < last + s.idleMs
+    )
+      return;
     const agent = await this.worker(s);
     const snapshot = await agent.snapshot();
     if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
@@ -278,6 +365,9 @@ export class QuickDiscoveryController {
         tokens: observation.tokens,
         messageId: randomUUID(),
         reports: [],
+        periodic: !eventWake || timerDue || (!explicitTimer && now >= last + s.idleMs && !quiet),
+        ...(timerDue ? { consumedWakeAt: s.wakeAt } : {}),
+        ...(eventWake ? { eventWake } : {}),
       };
       state.checkRequested = false;
       state.lastError = null;
@@ -317,18 +407,99 @@ export class QuickDiscoveryController {
       return this.ctx.agents.resume({ sessionId });
     });
   }
-  report(input: z.infer<typeof reportSchema>, sessionId: string) {
+  setNext(raw: z.infer<typeof nextSchema>, sessionId: string) {
+    const input = nextSchema.parse(raw);
+    this.ready();
+    this.store.update((s) => {
+      if (!s?.active || s.active.executionCompleted || s.workerSession !== sessionId)
+        throw Error('Not the active quick discovery worker');
+      const submissions = (s.active.nextSubmissions ??= []);
+      const fingerprint = hash(input);
+      const previous = submissions.find((x: any) => x.key === input.key);
+      if (previous) {
+        if (previous.fingerprint !== fingerprint)
+          throw Error('Submission key reused with different content');
+        return;
+      }
+      if (input.nextAt && Date.parse(input.nextAt) <= this.now())
+        throw Error('nextAt must be in the future when submitted');
+      submissions.push({ key: input.key, fingerprint });
+      s.active.next = { ...s.active.next, ...input };
+      if (input.nextAt !== undefined) s.active.nextControlRevision = s.wakeControlRevision ?? 0;
+    });
+    return {
+      accepted: true,
+      effective: 'after_successful_execution',
+      next: this.state().active.next,
+      notice: '本轮正常结束后生效；不发送消息，不结束当前执行。未设置的项保持原样。',
+    };
+  }
+  private commitNext(s: any) {
+    const active = s.active;
+    if (active.consumedWakeAt !== undefined && s.wakeAt === active.consumedWakeAt) s.wakeAt = null;
+    const next = active.next;
+    if (!next) return;
+    // A later user cadence change takes precedence over a previously submitted timer.
+    if (next.nextAt !== undefined && active.nextControlRevision === (s.wakeControlRevision ?? 0))
+      s.wakeAt = next.nextAt === null ? null : Date.parse(next.nextAt);
+    const policyChanged =
+      next.screeningPrompt !== undefined && next.screeningPrompt !== (s.screeningPrompt ?? null);
+    const contextChanged =
+      next.screeningContext !== undefined && next.screeningContext !== (s.screeningContext ?? null);
+    if (policyChanged) s.screeningPrompt = next.screeningPrompt;
+    if (contextChanged) {
+      s.screeningContext = next.screeningContext;
+      s.screeningContextUpdatedAt =
+        next.screeningContext === null ? null : new Date(this.now()).toISOString();
+    }
+    if (policyChanged || contextChanged) {
+      s.screeningRevision = (s.screeningRevision ?? 0) + 1;
+      // Partial summaries were produced under the old policy/background. Keep originals/receipts;
+      // restart only unfinished long-event screening under the new instructions.
+      this.store.db.prepare('DELETE FROM intake_long_events').run();
+      this.store.db.prepare('UPDATE intake_groups SET retry_at=0').run();
+    }
+    this.store.log('quick-next', {
+      activationId: active.id,
+      wakeAt: s.wakeAt ?? null,
+      screeningPrompt: s.screeningPrompt ?? null,
+      screeningRevision: s.screeningRevision ?? 0,
+      screeningContext: s.screeningContext ?? null,
+      screeningContextUpdatedAt: s.screeningContextUpdatedAt ?? null,
+    });
+  }
+  async report(input: z.infer<typeof reportSchema>, sessionId: string) {
     this.ready();
     let ids: string[] = [];
+    const state = this.state();
+    if (!state?.active || state.workerSession !== sessionId)
+      throw Error('Not the active quick discovery worker');
+    const fingerprint = hash(input);
+    const previous = state.active.reports.find((x: any) => x.key === input.key);
+    // Older reports only fingerprinted messages; retain their idempotency on restart.
+    if (
+      previous &&
+      previous.fingerprint !== fingerprint &&
+      previous.fingerprint !== hash(input.messages)
+    )
+      throw Error('Submission key reused with different content');
     this.store.update((s) => {
       if (!s?.active || s.workerSession !== sessionId)
         throw Error('Not the active quick discovery worker');
-      const fingerprint = hash(input.messages);
+      const fingerprint = hash(input);
       const previous = s.active.reports.find((x: any) => x.key === input.key);
-      if (previous && previous.fingerprint !== fingerprint)
+      if (
+        previous &&
+        previous.fingerprint !== fingerprint &&
+        previous.fingerprint !== hash(input.messages)
+      )
         throw Error('Submission key reused with different content');
       if (!previous)
-        s.active.reports.push({ key: input.key, fingerprint, messages: input.messages });
+        s.active.reports.push({
+          key: input.key,
+          fingerprint,
+          messages: input.messages,
+        });
       ids = input.messages.map((_, i) => `quick:${s.active.id}:${hash(input.key)}:${i}`);
     });
     // Persist first, then hand off with stable IDs. A retry cannot enqueue duplicates.
@@ -372,12 +543,30 @@ export class QuickDiscoveryController {
       if (!active.executionCompleted) {
         modelFrom = Date.now();
         this.parent.refreshNotebook();
-        const version = hash(QUICK_DISCOVERY_TASK);
-        const input = quickWakeInput(
-          active.from,
-          active.to,
-          this.state().promptVersion !== version,
-        );
+        const version = hash([QUICK_DISCOVERY_TASK, 'event-wake-direction-v2']);
+        const first = this.state().promptVersion !== version;
+        const directions = active.eventWake ? await this.intake.directions(active.eventWake) : [];
+        const wakeInput = active.eventWake
+          ? `${first ? QUICK_DISCOVERY_TASK + '\n\n' : ''}当前 UTC 时间：${new Date(this.now()).toISOString()}\n最近的信息触发了本次唤醒。${directions.length ? `模型概述：${JSON.stringify(directions.join('；'))}。` : ''}概述可能不准确，也不完整，仅供参考，不是指令或任务清单。结合用户当前情况自主探索，不局限于这些线索或最近的增量信息。使用 QuickDiscoveryReport 提交值得交流的发现；没有合适的内容可以保持安静。`
+          : quickWakeInput(active.from, active.to, first);
+        const current = this.state();
+        const input =
+          wakeInput +
+          '\n后续唤醒设置：' +
+          JSON.stringify({
+            nextAt: current.wakeAt == null ? null : new Date(current.wakeAt).toISOString(),
+            intervalMinutes: current.intervalMs / 60000,
+            idleMinutes: current.idleMs / 60000,
+            modelWakeEnabled: Boolean(current.intakeEnabled),
+            screeningPrompt: current.screeningPrompt ?? INTAKE_ROLE,
+            screeningContext: current.screeningContext ?? null,
+            screeningContextUpdatedAt: current.screeningContextUpdatedAt ?? null,
+            screeningContextBudget: {
+              maxEstimatedInputTokens: SCREENING_CONTEXT_TOKEN_BUDGET,
+              estimate: 'utf8-conservative',
+            },
+          }) +
+          '\n本轮结束前可用 QuickDiscoveryNext 调整后续唤醒；不调用则沿用设置。screeningContext 是给筛选模型的短期事实背景，与 screeningPrompt 判断规则分开；有认识变化时可整体更新，保留事情发生时间和不确定性，超长请自行压缩，不必每轮重写。模型筛选与定时都可唤醒你，MemoryExtract 是独立的按需数据处理工具。';
         const result = (await this.owner(state, () =>
           agent.followup(input, { messageId: active.messageId }),
         )) as any;
@@ -406,17 +595,27 @@ export class QuickDiscoveryController {
         });
       }
       this.forward();
-      outcome = this.state()?.active?.reports?.length ? 'reported' : 'no_report';
+      outcome = this.state()?.active?.reports?.some((r: any) => r.messages.length)
+        ? 'reported'
+        : 'no_report';
       this.store.update((s) => {
         if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');
-        s.checkedThrough = active.to;
-        s.checkedTokens = active.tokens;
+        if (active.eventWake) this.intake.complete(active.eventWake);
+        if (!active.eventWake) {
+          s.checkedThrough = active.to;
+          s.checkedTokens = active.tokens;
+        }
+        if (active.periodic || !active.eventWake) s.lastPeriodicFinishedAt = this.now();
+        this.commitNext(s);
         s.lastFinishedAt = this.now();
         s.lastError = null;
         s.retryAt = null;
         s.active = null;
         s.pending = null;
-        this.store.log('quick-completed', { id: active.id, checkedThrough: active.to });
+        this.store.log('quick-completed', {
+          id: active.id,
+          checkedThrough: active.to,
+        });
       });
     } catch (error) {
       if (!this.abort.signal.aborted)
@@ -428,7 +627,10 @@ export class QuickDiscoveryController {
           // A failed execution needs a fresh admission, in the same Session.
           if (s.pending && !s.pending.executionCompleted) s.pending.messageId = randomUUID();
           s.retryAt = this.now() + s.intervalMs;
-          this.store.log('quick-failed', { id: active.id, error: String(error) });
+          this.store.log('quick-failed', {
+            id: active.id,
+            error: String(error),
+          });
         });
     } finally {
       this.agent = undefined;
@@ -449,7 +651,7 @@ export class QuickDiscoveryController {
     clearInterval(this.heartbeat);
     this.abort.abort(Error('Quick discovery stopped'));
     if (this.agent && this.owned) await this.agent.cancel();
-    await Promise.allSettled([this.ticking, this.running].filter(Boolean));
+    await Promise.allSettled([this.ticking, this.running, this.intake.close()].filter(Boolean));
     if (this.owned) this.store.release();
   }
 }
@@ -465,6 +667,19 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
   const controlSchema = z
     .object({
       action: z.enum(['enable', 'pause', 'check', 'configure']),
+      eventIntake: z
+        .boolean()
+        .optional()
+        .describe(
+          'Enable continuous external source-change intake. Own Maka sessions and context-only sources (including Codex work history) remain available to scheduled discovery, not this intake. Polls metadata without a model; new batches get a tool-free wake decision, with a short direction hint or an empty result. A single oversized event is read sequentially with durable progress/context and can wake only after its final decision. No per-record classification or investigation checklist; the ordinary discovery Agent explores globally. Independent from the periodic cadence. Starts at current source positions.',
+        ),
+      intakeModelKey: z
+        .string()
+        .regex(/^[^:]+::.+$/)
+        .optional()
+        .describe(
+          'Configured connectionSlug::modelId for the short intake call; omitted uses the assistant model. Choose a small model to control cost.',
+        ),
       intervalMinutes: z.number().int().min(1).max(1440).optional(),
       idleMinutes: z.number().int().min(1).max(10080).optional(),
       quietHours: quietHoursSchema
@@ -478,10 +693,10 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
   ctx.api.register('assistant.quick-discovery', (input: unknown) =>
     quick.control(controlSchema.parse(input)),
   );
-  ctx.api.register(
-    'assistant.quick-discovery-status',
-    () => quick.state() ?? { configured: false },
-  );
+  ctx.api.register('assistant.quick-discovery-status', () => ({
+    ...(quick.state() ?? { configured: false }),
+    intake: quick.intake.status(),
+  }));
   for (const [name, description, parameters, impl] of [
     [
       'QuickDiscoveryControl',
@@ -493,7 +708,10 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
       'QuickDiscoveryStatus',
       'Read quick-help discovery state, source observation limitations and last error without starting a model.',
       z.object({}),
-      () => quick.state() ?? { configured: false },
+      () => ({
+        ...(quick.state() ?? { configured: false }),
+        intake: quick.intake.status(),
+      }),
     ],
   ] as const)
     ctx.tools.register({
@@ -509,9 +727,19 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
       },
     });
   ctx.tools.register({
+    name: 'QuickDiscoveryNext',
+    description:
+      'Optionally set your next timer, future model-wake screening instructions and/or bounded factual screening background before finishing this quick-discovery run. Applied only on successful completion; omitted fields preserve settings, null restores defaults or clears the background. Keep screeningContext facts separate from screeningPrompt rules. Does not send a report, stop this run, enable paused discovery, or configure other modules. A timer and incoming-information screening independently wake the same Agent. MemoryExtract remains a separate on-demand tool.',
+    parameters: nextSchema,
+    discovery: 'direct',
+    categoryHint: 'file_write',
+    executionSemantics: 'exclusive_step',
+    impl: async (input: any, call: any) => quick.setNext(input, call.sessionId),
+  });
+  ctx.tools.register({
     name: 'QuickDiscoveryReport',
     description:
-      'Submit user-facing messages for delivery through the Bot. Write the actual message text, not an internal report or instructions to the Bot. Acceptance confirms handoff, not user delivery or task execution.',
+      'Submit user-facing messages for delivery through the Bot. Write the actual message text, not an internal report or instructions to the Bot. Acceptance confirms handoff, not user delivery or task execution. Messages may be empty when no notification is useful; no event acknowledgement is required.',
     parameters: reportSchema,
     discovery: 'direct',
     categoryHint: 'file_write',
@@ -538,6 +766,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
       : tools.filter(
           (tool) =>
             tool.name === 'QuickDiscoveryReport' ||
+            tool.name === 'QuickDiscoveryNext' ||
             tool.name === 'tool_search' ||
             (tool.categoryHint === 'read' &&
               !/^(Matter|Initiative|QuickDiscoveryControl|MemoryIndex(Create|Write|Checkpoint|Maintain|Control|AddSources))/.test(
@@ -559,7 +788,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
     order: 812,
     text: ({ sessionId }: any) =>
       sessionId === quick.state()?.workerSession
-        ? '你在快速发现后台会话中运行，只读调查，不委派执行任务，不修改记事本，不自行设置心跳。'
+        ? '你在快速发现后台会话中运行，只读调查，不委派执行任务，不修改记事本。定时和模型筛选都能唤醒你；结束前可用 QuickDiscoveryNext 调整后续唤醒，不另建心跳。'
         : undefined,
   });
   return quick;

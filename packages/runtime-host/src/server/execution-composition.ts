@@ -2174,10 +2174,14 @@ export async function createExecutionRuntimeHostComposition(
       readSessionHeader: (sessionId) => stores.sessionStore.readHeaderSnapshot(sessionId),
     });
     pluginLlm.bindRuntime({
+      budget: (input, invocation) =>
+        pluginModel.budget({ sessionId: invocation.sessionId, ...input }),
       generate: (input, invocation) =>
         pluginModel.generate({
           sessionId: invocation.sessionId,
           prompt: input.prompt,
+          boundedInput: input.boundedInput,
+          ...(input.modelKey ? { modelKey: input.modelKey } : {}),
           ...(input.system ? { system: input.system } : {}),
           ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
           abortSignal: input.signal ?? invocation.abortSignal,
