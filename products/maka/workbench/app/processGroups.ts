@@ -249,6 +249,8 @@ export function projectProcessGroups(input: {
   activeTurnId: string | null;
   answerTurnId?: string | null;
   previous?: readonly ProcessEntry[];
+  /** The slice ends before another source turn. */
+  followed?: boolean;
   /** Only caller-known missing coverage, not gaps between raw event numbers. */
   gapsBefore?: ReadonlySet<string>;
 }): ProcessProjection {
@@ -472,6 +474,6 @@ export function projectProcessGroups(input: {
     const activity = activities[nextActivity];
     append(activity.turnId, { kind: 'activity', toolUseId: activity.toolUseId });
   }
-  flush(false);
+  flush(input.followed ?? false);
   return { entries, turns, rowsById };
 }
