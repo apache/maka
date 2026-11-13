@@ -261,7 +261,7 @@ export type ConversationHandle = Omit<
   projectMcp: ReturnType<typeof createProjectMcp>;
   compact(prompt?: string): Promise<void>;
   interactions(): AgentPendingInteractions;
-  executionFeedback(): string;
+  executionWaitMessage(): string;
   reconnecting(): boolean;
   reconnect(): void;
   attachmentMetadataFailed(): boolean;
@@ -3204,29 +3204,9 @@ export function Conversation(props: ConversationProps) {
       return props.control('editQueue', { sessionId, expectedRevision, edit });
     },
   };
-  const failureLabels: Record<
-    NonNullable<Extract<AgentExecution['state'], { kind: 'failed' }>['reason']>['kind'],
-    MessageKey
-  > = {
-    current_authority_unavailable: 'Current authority unavailable',
-    external_effect_unknown: 'External operation outcome unknown',
-    operation_unknown: 'Operation outcome unknown',
-    provider_effect_unknown: 'Provider tool outcome unknown',
-    original_admission_unknown: 'Operation outcome unknown',
-    code_cell_recovery_unavailable: 'Code cell recovery unavailable',
-    unsupported_protocol: 'Maka could not resume this run.',
-    cleanup_unconfirmed: 'Resource cleanup unconfirmed',
-    tool_cleanup_unconfirmed: 'Tool cleanup unconfirmed',
-    model_cleanup_unconfirmed: 'Model cleanup unconfirmed',
-    resources_unavailable: 'Resources unavailable',
-    external_task_unobservable: 'External task cannot be observed',
-    external_publication_item: 'External output needs reconciliation',
-    external_publication_unavailable: 'External output publication unavailable',
-  };
-  const executionFeedback = computed(() => {
+  const executionWaitMessage = computed(() => {
     if (!connected()) return '';
     const state = execution()?.state;
-    if (state?.kind === 'failed' && state.reason) return tr(failureLabels[state.reason.kind]);
     if (state?.kind === 'waiting' && state.authorityUnavailable && !interactions().entries.length)
       return tr('Waiting for access to be restored');
     return '';
@@ -3237,7 +3217,7 @@ export function Conversation(props: ConversationProps) {
     title: () => title() || tr('Untitled conversation'),
     queue: queueSession,
     interactions,
-    executionFeedback,
+    executionWaitMessage,
     reconnecting: () => transcriptStatus() === 'failed' && !props.connectionLost(),
     reconnect: () => retryTranscript(sessionId),
     attachmentMetadataFailed,

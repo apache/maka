@@ -2297,7 +2297,7 @@ export function createConversationUi(
           <If
             when={
               handle()?.reconnecting() ||
-              handle()?.executionFeedback() ||
+              handle()?.executionWaitMessage() ||
               handle()?.attachmentMetadataFailed()
             }
           >
@@ -2311,11 +2311,11 @@ export function createConversationUi(
                 paddingVertical: 4,
               }}
             >
-              <If when={handle()?.reconnecting() || handle()?.executionFeedback()}>
+              <If when={handle()?.reconnecting() || handle()?.executionWaitMessage()}>
                 <Text style={{ ...bodyTextStyle, flex: 1, color: C.muted }}>
                   {handle()?.reconnecting()
                     ? tr('Reconnecting updates… Your draft is kept.')
-                    : handle()?.executionFeedback()}
+                    : handle()?.executionWaitMessage()}
                 </Text>
               </If>
               <If when={handle()?.reconnecting()}>
