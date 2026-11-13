@@ -1938,6 +1938,7 @@ export function createConversationUi(
   // Kept here so the browser's collapsed workspaces outlive its unmounting
   // and stepping between conversations skips them as the browser does.
   const collapsedGroups = signal<ReadonlySet<string>>(new Set());
+  const expandedProjects = signal<ReadonlySet<string>>(new Set());
   const stepSession = (step: 1 | -1) => {
     const current = overlay();
     if (switching() || busy() || (current && current.kind !== 'sessions')) return;
@@ -1950,6 +1951,7 @@ export function createConversationUi(
       ),
       collapsedGroups(),
       selected(),
+      platform.idiom === 'terminal' ? undefined : expandedProjects(),
     );
     const index = rows.indexOf(selected() ?? '');
     const next = rows[index === -1 ? 0 : index + step];
@@ -2009,6 +2011,7 @@ export function createConversationUi(
     beside: () => shell()?.besideSessionIds?.() ?? [],
     openBeside: (sessionId) => shell()?.openBeside?.(sessionId),
     collapsedGroups,
+    expandedProjects,
   };
   let wasDocked = shell()?.sidebarDocked();
   let previousWidth = windowSize().width;

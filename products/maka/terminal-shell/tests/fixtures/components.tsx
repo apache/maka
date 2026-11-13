@@ -400,6 +400,7 @@ function WorkspacePages(props: { busy: boolean }) {
     filter: () => 'all',
     needsYouCount: () => 0,
     sessions,
+    hasMore: () => page < 3,
     loading,
     projects: () =>
       props.busy

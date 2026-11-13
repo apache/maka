@@ -51,7 +51,12 @@ import {
 import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
-import { groupWorkspace, groupConversations, type ConversationGroup } from './conversationGroups';
+import {
+  groupWorkspace,
+  groupConversations,
+  projectSessionLimit,
+  type ConversationGroup,
+} from './conversationGroups';
 import {
   hasForkPrefix,
   sessionActionTarget,
@@ -97,6 +102,7 @@ export type WorkspaceBrowserProps = {
    * next and previous conversation skip them.
    */
   collapsedGroups?: Signal<ReadonlySet<string>>;
+  expandedProjects?: Signal<ReadonlySet<string>>;
 };
 
 type WorkspaceGroup = ConversationGroup<BrowserProject> & { name: string };
@@ -174,10 +180,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const scopesById = computed(() => new Map(scopes().map((scope) => [scope.id, scope])));
   const firstUnpinned = computed(() => visibleSessions().find((session) => !session.pinned)?.id);
   const hasPinned = () => visibleSessions()[0]?.pinned === true;
-  // The desktop lists conversations under their workspaces instead of
-  // choosing a scope: pinned ones first, then each workspace in the order of
-  // its latest loaded conversation, then active projects with none loaded.
   const collapsed = props.collapsedGroups ?? signal<ReadonlySet<string>>(new Set());
+  const expanded = props.expandedProjects ?? signal<ReadonlySet<string>>(new Set());
   const groups = computed(() =>
     groupConversations(visibleSessions(), browser.projects(), browser.filter() === 'all').map(
       (group): WorkspaceGroup => ({
@@ -189,23 +193,32 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     ),
   );
   const nestedRows = computed(() => new Set(groups().flatMap((group) => [...group.nested])));
-  const groupsById = computed(
-    () => new Map(groups().map((group) => [`group:${group.key}`, group])),
-  );
+  const groupsById = computed(() => new Map(groups().map((group) => [group.key, group])));
   const rowIds = computed(() =>
     platform.idiom === 'terminal'
       ? choosingWorkspace()
         ? scopes().map((scope) => scope.id)
         : visibleSessions().map((session) => session.id)
-      : groups().flatMap((group) => [
-          `group:${group.key}`,
-          ...(collapsed().has(group.key) ? [] : group.sessions),
-        ]),
+      : groups().flatMap((group) => {
+          const heading = `group:${group.key}`;
+          if (collapsed().has(group.key)) return [heading];
+          const limit = projectSessionLimit(group);
+          if (group.sessions.length <= limit) return [heading, ...group.sessions];
+          const sessions = expanded().has(group.key)
+            ? group.sessions
+            : group.sessions.slice(0, limit);
+          return [heading, ...sessions, `show-more:${group.key}`];
+        }),
   );
   const toggleGroup = (key: string) => {
     const next = new Set(collapsed());
     if (!next.delete(key)) next.add(key);
     collapsed.set(next);
+  };
+  const toggleProjectSessions = (key: string) => {
+    const next = new Set(expanded());
+    if (!next.delete(key)) next.add(key);
+    expanded.set(next);
   };
   const select = async ({ id, origin }: { id: string; origin: string | null }) => {
     if (!alive || props.selected() !== origin || props.switching()) return;
@@ -278,12 +291,37 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   // Hidden rows can extend a page without making the List emit its end edge again.
   const endRequest = signal<{
     rows: number;
+    loaded: number;
     scope: BrowserScope;
     filter: ReturnType<Browsing['filter']>;
   } | null>(null);
   const loadMore = () => {
     if (!choosingWorkspace())
-      endRequest.set({ rows: rowIds().length, scope: browser.scope(), filter: browser.filter() });
+      endRequest.set({
+        rows: rowIds().length,
+        loaded: browser.sessions().length,
+        scope: browser.scope(),
+        filter: browser.filter(),
+      });
+  };
+  const showOlder = () => {
+    const request = endRequest();
+    return (
+      platform.idiom !== 'terminal' &&
+      !!request &&
+      browser.hasMore() &&
+      !browser.error() &&
+      request.scope === browser.scope() &&
+      request.filter === browser.filter() &&
+      rowIds().length === request.rows &&
+      browser.sessions().length > request.loaded &&
+      groups().some(
+        (group) =>
+          !collapsed().has(group.key) &&
+          !expanded().has(group.key) &&
+          group.sessions.length > projectSessionLimit(group),
+      )
+    );
   };
   effect(() => {
     const rows = rowIds().length;
@@ -301,8 +339,10 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       endRequest.set({ ...requested, rows });
       return;
     }
-    if (choosingWorkspace() || browser.loading() || browser.error()) return;
-    if (requested || rows < Math.ceil(viewportHeight() / rowHeight())) {
+    if (choosingWorkspace() || browser.loading() || browser.error() || showOlder()) return;
+    if (!requested && browser.hasMore() && rows < Math.ceil(viewportHeight() / rowHeight())) {
+      loadMore();
+    } else if (requested) {
       void browser.loadMore().then((result) => {
         if (alive && endRequest() === requested && result === 'complete') endRequest.set(null);
       });
@@ -595,6 +635,18 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         )}
         onLayout={({ bounds: frame }) => viewportHeight.set(frame.size.height)}
         onLoadMore={loadMore}
+        footer={() => (
+          <If when={showOlder()}>
+            <Button
+              onPress={loadMore}
+              style={{ height: rowHeight(), justifyContent: 'center', paddingHorizontal: 8 }}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+            >
+              <Text style={{ fontSize: 14, color: C.muted }}>{tr('Load older conversations')}</Text>
+            </Button>
+          </If>
+        )}
         style={{ flex: 1, minHeight: 32 }}
         accessibilityLabel={choosingWorkspace() ? tr('Workspace scopes') : tr('Conversations')}
       >
@@ -660,9 +712,41 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   </View>
                 );
               }
-              const initialGroup = groupsById().get(key());
+              if (key().startsWith('show-more:')) {
+                const groupKey = key().slice('show-more:'.length);
+                const open = () => expanded().has(groupKey);
+                return (
+                  <Button
+                    accessibilityLabel={tr(
+                      open()
+                        ? 'Show fewer conversations in {name}'
+                        : 'Show more conversations in {name}',
+                      { name: groupsById().get(groupKey)?.name ?? '' },
+                    )}
+                    onPress={inputAction(toggleProjectSessions, groupKey)}
+                    style={{
+                      height: rowHeight(),
+                      justifyContent: 'center',
+                      paddingHorizontal: 8,
+                      borderRadius: 8,
+                    }}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
+                  >
+                    <Text style={{ fontSize: 14, color: C.muted }}>
+                      {tr(
+                        open()
+                          ? 'Show fewer project conversations'
+                          : 'Show more project conversations',
+                      )}
+                    </Text>
+                  </Button>
+                );
+              }
+              const groupKey = key().startsWith('group:') ? key().slice('group:'.length) : '';
+              const initialGroup = groupsById().get(groupKey);
               if (initialGroup) {
-                const group = () => groupsById().get(key()) ?? initialGroup;
+                const group = () => groupsById().get(groupKey) ?? initialGroup;
                 const open = () => !collapsed().has(group().key);
                 const workspace = () => groupWorkspace(group());
                 return (
