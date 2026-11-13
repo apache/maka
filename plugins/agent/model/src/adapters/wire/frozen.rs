@@ -387,131 +387,134 @@ impl Sink<'_> {
         Ok(())
     }
 }
-async fn emit<'a>(
+fn emit<'a>(
     encoding: &WireEncoding,
     source: &dyn MessageSource,
     budget: Arc<dyn SourceBudget>,
     mut sink: Sink<'a>,
     projection: chat_source::Projection,
-) -> Result<Sink<'a>, ModelError> {
-    let mut recipes = source.open(0);
-    let mut metadata = source.open_metadata(0);
-    let anthropic_compiler = match encoding.options.as_ref() {
-        WireOptions::Anthropic(options) => {
-            let compiler = anthropic::Compiler::new(options.clone(), encoding.language);
-            Some(if matches!(&sink, Sink::Count(_)) {
-                compiler.directory()
-            } else {
-                compiler
-            })
-        }
-        _ => None,
-    };
-    let mut chat_compiler = match encoding.options.as_ref() {
-        WireOptions::Chat(options) => Some(match projection {
-            chat_source::Projection::Generated => {
-                chat_source::Compiler::new(options, encoding.language)
+) -> impl Future<Output = Result<Sink<'a>, ModelError>> + Send {
+    // Keep the codec's large async state out of enclosing request futures.
+    Box::pin(async move {
+        let mut recipes = source.open(0);
+        let mut metadata = source.open_metadata(0);
+        let anthropic_compiler = match encoding.options.as_ref() {
+            WireOptions::Anthropic(options) => {
+                let compiler = anthropic::Compiler::new(options.clone(), encoding.language);
+                Some(if matches!(&sink, Sink::Count(_)) {
+                    compiler.directory()
+                } else {
+                    compiler
+                })
             }
-            chat_source::Projection::Captured => {
-                chat_source::Compiler::captured(options, encoding.language)
-            }
-        }),
-        _ => None,
-    };
-    let mut next_recipe = recipes.next().await.map_err(error)?;
-    for message_index in 0..source.len() {
-        tokio::task::yield_now().await;
-        let before = sink.shape();
-        sink.begin();
-        let recipe = next_recipe
-            .take()
-            .ok_or_else(|| ModelError::Adapter("truncated message recipe directory".into()))?;
-        next_recipe = recipes.next().await.map_err(error)?;
-        let last_tool = !matches!(
-            &next_recipe,
-            Some(maka_agent_facts::model::prompt_source::source::MessageRecipe::Tool { .. })
-        );
-        let message_metadata =
-            metadata.next().await.map_err(error)?.ok_or_else(|| {
+            _ => None,
+        };
+        let mut chat_compiler = match encoding.options.as_ref() {
+            WireOptions::Chat(options) => Some(match projection {
+                chat_source::Projection::Generated => {
+                    chat_source::Compiler::new(options, encoding.language)
+                }
+                chat_source::Projection::Captured => {
+                    chat_source::Compiler::captured(options, encoding.language)
+                }
+            }),
+            _ => None,
+        };
+        let mut next_recipe = recipes.next().await.map_err(error)?;
+        for message_index in 0..source.len() {
+            tokio::task::yield_now().await;
+            let before = sink.shape();
+            sink.begin();
+            let recipe = next_recipe
+                .take()
+                .ok_or_else(|| ModelError::Adapter("truncated message recipe directory".into()))?;
+            next_recipe = recipes.next().await.map_err(error)?;
+            let last_tool = !matches!(
+                &next_recipe,
+                Some(maka_agent_facts::model::prompt_source::source::MessageRecipe::Tool { .. })
+            );
+            let message_metadata = metadata.next().await.map_err(error)?.ok_or_else(|| {
                 ModelError::Adapter("truncated message metadata directory".into())
             })?;
-        let role = message_metadata.role;
-        match encoding.options.as_ref() {
-            WireOptions::Chat(_) => {
-                let mut cursor = chat_compiler.as_mut().expect("Chat compiler").open(
-                    recipe,
-                    last_tool,
-                    budget.clone(),
-                );
-                let mut first = true;
-                while let Some(mut item) = cursor.next().await? {
-                    if first {
-                        item.metadata =
-                            Some(wire::WireItemMetadata::Message(message_metadata.clone()));
-                        first = false;
-                    }
-                    sink.item(message_index, item, budget.clone()).await?;
-                }
-                if first {
-                    sink.item(
-                        message_index,
-                        SourceItem {
-                            fragments: Arc::from([]),
-                            metadata: Some(wire::WireItemMetadata::Message(message_metadata)),
-                            citation: None,
-                            owned_bytes: 0,
-                        },
+            let role = message_metadata.role;
+            match encoding.options.as_ref() {
+                WireOptions::Chat(_) => {
+                    let mut cursor = chat_compiler.as_mut().expect("Chat compiler").open(
+                        recipe,
+                        last_tool,
                         budget.clone(),
-                    )
-                    .await?;
-                }
-            }
-            WireOptions::Responses { plaintext, options } => {
-                let mut cursor = responses::open(
-                    recipe,
-                    encoding.language,
-                    *plaintext,
-                    options,
-                    budget.clone(),
-                );
-                let mut first = true;
-                while let Some(mut item) = cursor.next().await? {
-                    if first {
-                        item.metadata =
-                            Some(wire::WireItemMetadata::Message(message_metadata.clone()));
-                        first = false;
+                    );
+                    let mut first = true;
+                    while let Some(mut item) = cursor.next().await? {
+                        if first {
+                            item.metadata =
+                                Some(wire::WireItemMetadata::Message(message_metadata.clone()));
+                            first = false;
+                        }
+                        sink.item(message_index, item, budget.clone()).await?;
                     }
-                    sink.item(message_index, item, budget.clone()).await?;
+                    if first {
+                        sink.item(
+                            message_index,
+                            SourceItem {
+                                fragments: Arc::from([]),
+                                metadata: Some(wire::WireItemMetadata::Message(message_metadata)),
+                                citation: None,
+                                owned_bytes: 0,
+                            },
+                            budget.clone(),
+                        )
+                        .await?;
+                    }
                 }
-                if first {
-                    sink.item(
-                        message_index,
-                        SourceItem {
-                            fragments: Arc::from([]),
-                            metadata: Some(wire::WireItemMetadata::Message(message_metadata)),
-                            citation: None,
-                            owned_bytes: 0,
-                        },
+                WireOptions::Responses { plaintext, options } => {
+                    let mut cursor = responses::open(
+                        recipe,
+                        encoding.language,
+                        *plaintext,
+                        options,
                         budget.clone(),
-                    )
-                    .await?;
+                    );
+                    let mut first = true;
+                    while let Some(mut item) = cursor.next().await? {
+                        if first {
+                            item.metadata =
+                                Some(wire::WireItemMetadata::Message(message_metadata.clone()));
+                            first = false;
+                        }
+                        sink.item(message_index, item, budget.clone()).await?;
+                    }
+                    if first {
+                        sink.item(
+                            message_index,
+                            SourceItem {
+                                fragments: Arc::from([]),
+                                metadata: Some(wire::WireItemMetadata::Message(message_metadata)),
+                                citation: None,
+                                owned_bytes: 0,
+                            },
+                            budget.clone(),
+                        )
+                        .await?;
+                    }
+                }
+                WireOptions::Anthropic(_) => {
+                    let mut cursor = anthropic_compiler
+                        .as_ref()
+                        .expect("Anthropic compiler")
+                        .open(recipe, budget.clone())
+                        .await?;
+                    while let Some(item) = cursor.next().await? {
+                        sink.item(message_index, item, budget.clone()).await?;
+                    }
                 }
             }
-            WireOptions::Anthropic(_) => {
-                let mut cursor = anthropic_compiler
-                    .as_ref()
-                    .expect("Anthropic compiler")
-                    .open(recipe, budget.clone())
-                    .await?;
-                while let Some(item) = cursor.next().await? {
-                    sink.item(message_index, item, budget.clone()).await?;
-                }
-            }
+            sink.end(message_index, role, before).await?;
         }
-        sink.end(message_index, role, before).await?;
-    }
-    Ok(sink)
+        Ok(sink)
+    })
 }
+
 pub struct WirePlan {
     pub(super) encoding: WireEncoding,
     source: Arc<dyn MessageSource>,
