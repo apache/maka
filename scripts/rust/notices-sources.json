@@ -15,10 +15,42 @@
       "source": "https://github.com/denoland/deno_native_certs/blob/af63bfbea7d761ab286fa357bc38350b39ad2df0/Cargo.toml"
     }
   ],
+  "deno_tunnel@0.8.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/denoland/deno_tunnel/blob/c0572b46beac220e105e69317ff9e207babc7f09/Cargo.toml"
+    }
+  ],
+  "derive-io@0.4.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/mmastrac/derive-io/blob/69a023098378b66e8f8852173b65ca5762b201e2/crates/derive-io/Cargo.toml"
+    },
+    "https://www.apache.org/licenses/LICENSE-2.0.txt"
+  ],
+  "derive-io-macros@0.4.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/mmastrac/derive-io/blob/69a023098378b66e8f8852173b65ca5762b201e2/crates/derive-io-macros/Cargo.toml"
+    },
+    "https://www.apache.org/licenses/LICENSE-2.0.txt"
+  ],
+  "fqdn@0.5.2": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/Orange-OpenSource/fqdn/blob/a23fef8570522a3b98a79afc45322d6487166cd9/Cargo.toml"
+    }
+  ],
   "intl_pluralrules@7.0.2": [
     {
       "file": "scripts/rust/licenses/declared-mit.txt",
       "source": "https://github.com/zbraniecki/pluralrules/blob/d0715d5b7cca72e228d6e6c4de154bd30dfdd06a/intl_pluralrules/Cargo.toml"
+    }
+  ],
+  "rustls-tokio-stream@0.8.0": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/denoland/rustls-tokio-stream/blob/c8a9239c987dbfa7b1eaed78d27935fe8272319c/Cargo.toml"
     }
   ],
   "sys_traits_macros@0.1.0": [

@@ -166,6 +166,7 @@ const isUnder =
 const upstreamFiles = new Set(
   [
     'async-io',
+    'deno-tls',
     'gix-index',
     'gix-discover',
     'sqlx-sqlite',

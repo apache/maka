@@ -17,12 +17,23 @@
  * under the License.
  */
 
+#[path = "src/automation/transpile.rs"]
+mod typescript;
+
 use deno_core::ExtensionFileSourceCode;
 use std::{collections::BTreeSet, error::Error, fmt::Write, fs, path::PathBuf, sync::Arc};
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/automation/transpile.rs");
     let extensions = [
+        deno_fetch::deno_fetch::init(Default::default()),
+        deno_fs::deno_fs::init(deno_fs::sync::MaybeArc::new(deno_fs::RealFs)),
+        deno_io::deno_io::init(None),
+        deno_net::deno_net::init(None, None),
+        deno_os::deno_os::init(None),
+        deno_process::deno_process::init(None),
+        deno_telemetry::deno_telemetry::init(),
         deno_webidl::deno_webidl::init(),
         deno_web::deno_web::init(
             Arc::new(deno_web::BlobStore::default()),
@@ -73,6 +84,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                     ExtensionFileSourceCode::Computed(code) => code.to_string(),
                     _ => source.load()?.to_string(),
+                };
+                let path = std::path::Path::new(source.specifier);
+                let text = if path.extension().is_some_and(|extension| extension == "ts") {
+                    typescript::transpile(&text, path)?
+                } else {
+                    text
                 };
                 if !text.is_ascii() {
                     return Err(format!(

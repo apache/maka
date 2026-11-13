@@ -18,10 +18,8 @@
  */
 
 use super::*;
-use maka_agent_facts::tools::{ToolError, ToolExecutor, ToolFuture};
-use maka_code_runtime::CellResult;
-use maka_fs_tools::{ReadExecutor, ReadOutput, ReadScope};
-use maka_sandbox::{Network, Sandbox};
+use maka_process::{ProcessOutcome, ShellExecutor, Termination};
+use maka_sandbox::Sandbox;
 
 pub(super) struct Check {
     pub id: String,
@@ -38,7 +36,7 @@ impl Owner {
         let session = self.session(&approval.target.session_id).await?;
         let config = session.configuration;
         if session.archived
-            || config.permission_basis().binding != approval.target.binding
+            || config.binding != approval.target.binding
             || config.boundary_revision != approval.target.boundary_revision
             || config.workspace != approval.target.workspace
             || config.permissions != approval.target.permissions
@@ -55,164 +53,78 @@ impl Owner {
             )
             .await?;
         let workspace = config.workspace;
-        let (read, network) = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let executor = tokio::task::spawn_blocking(move || {
             let path = std::path::PathBuf::from(workspace.path);
-            match sandbox {
-                Sandbox::Managed {
-                    filesystem,
-                    network,
-                } => {
-                    let directory =
-                        maka_fs_tools::directory::open(&path, &workspace.directory_identity)
-                            .map_err(reason)?;
-                    let policy = Arc::new(filesystem.compile().map_err(reason)?);
-                    let read = ReadExecutor::from_directory(path, directory, Some(policy))
-                        .map_err(reason)?;
-                    Ok((read, network))
-                }
-                Sandbox::Disabled => {
-                    maka_fs_tools::directory::open(&path, &workspace.directory_identity)
-                        .map_err(reason)?;
-                    Ok((
-                        ReadExecutor::new(path, ReadScope::Unrestricted).map_err(reason)?,
-                        Network::Allowed,
-                    ))
-                }
-                Sandbox::External { .. } => Err("Automation requires a local sandbox".into()),
-            }
+            let directory = maka_fs_tools::directory::open(&path, &workspace.directory_identity)
+                .map_err(reason)?;
+            ShellExecutor::from_directory(path, directory.into_std_file(), sandbox).map_err(reason)
         })
         .await
         .map_err(reason)??;
-        let tools = Arc::new(ScriptTools {
-            read,
-            network,
-            config: self.configuration.clone(),
-        });
-        let executor = maka_js_runtime::CodeExecutor::new(Default::default()).map_err(reason)?;
-        let cancellation = self.stop.child_token();
-        let check = executor.execute(source, tools, cancellation.clone());
-        tokio::pin!(check);
-        let result = tokio::select! {
-            result = &mut check => result,
-            () = tokio::time::sleep(executor.limits().timeout) => {
-                cancellation.cancel();
-                check.await.map_err(reason)?;
-                return Err("Script check timed out".into());
-            }
-        }
+        let network = self
+            .configuration
+            .network_configuration()
+            .await
+            .map_err(reason)?;
+        let route =
+            maka_network::Policy::from_host_settings(&network.proxy, network.password.as_deref())
+                .map_err(reason)?;
+        let executor = executor.with_network_route(route);
+        #[cfg(target_os = "linux")]
+        let executor = executor.with_network_helper(self.helper.clone());
+        #[cfg(windows)]
+        let executor =
+            executor.with_backend(Arc::new(maka_host_runtime::sandbox::windows::Backend::new(
+                self.store.owned_root().map_err(reason)?.canonical_path(),
+                &self.helper,
+            )));
+        run_script(
+            executor,
+            self.helper.clone(),
+            source,
+            self.stop.child_token(),
+        )
+        .await
+    }
+}
+
+async fn run_script(
+    executor: ShellExecutor,
+    executable: std::path::PathBuf,
+    source: String,
+    cancellation: CancellationToken,
+) -> Result<bool, String> {
+    let args = [maka_js_runtime::automation::WORKER.to_owned()];
+    let command = executor
+        .command_program(executable, &args, &BTreeMap::new())
         .map_err(reason)?;
-        match result {
-            CellResult::Success {
-                value: Value::Bool(matched),
-                ..
-            } => Ok(matched),
-            CellResult::Success { .. } => Err("Script must return true or false".into()),
-            CellResult::Failure { error, .. } => Err(error.message),
-        }
-    }
-}
-
-struct ScriptTools {
-    read: ReadExecutor,
-    network: Network,
-    config: Arc<ConfigurationStore>,
-}
-
-impl ToolExecutor for ScriptTools {
-    fn names(&self) -> Vec<String> {
-        vec!["Read".into(), "Fetch".into()]
-    }
-
-    fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
-        let read = self.read.clone();
-        let network = self.network.clone();
-        let config = self.config.clone();
-        Box::pin(async move {
-            let failed = |message: String| ToolError::Failed(message);
-            match name.as_str() {
-                "Read" => {
-                    let input: maka_agent_facts::read::ReadInput =
-                        serde_json::from_value(input).map_err(|e| failed(e.to_string()))?;
-                    match read
-                        .read(
-                            input.resolve().map_err(|e| failed(e.to_string()))?,
-                            maka_agent_facts::read::MAX_PAGE_CHARS,
-                            cancellation,
-                        )
-                        .await?
-                    {
-                        ReadOutput::Text(page) => {
-                            serde_json::to_value(page).map_err(|e| failed(e.to_string()))
-                        }
-                        ReadOutput::Image { .. } => {
-                            Err(failed("Automation Read expects a text file".into()))
-                        }
-                    }
-                }
-                "Fetch" => {
-                    #[derive(Deserialize)]
-                    #[serde(deny_unknown_fields)]
-                    struct Input {
-                        url: reqwest::Url,
-                    }
-                    let Input { url } =
-                        serde_json::from_value(input).map_err(|e| failed(e.to_string()))?;
-                    if !matches!(url.scheme(), "http" | "https")
-                        || !url.username().is_empty()
-                        || url.password().is_some()
-                        || url.fragment().is_some()
-                    {
-                        return Err(failed(
-                            "Fetch requires an HTTP(S) URL without credentials or a fragment"
-                                .into(),
-                        ));
-                    }
-                    let destination = maka_sandbox::Destination::new(
-                        url.host_str().expect("HTTP URL has a host"),
-                        url.port_or_known_default().expect("HTTP URL has a port"),
-                    )
-                    .map_err(|e| failed(e.to_string()))?;
-                    if !network.allows(&destination) {
-                        return Err(failed(
-                            "The conversation sandbox blocks this destination".into(),
-                        ));
-                    }
-                    let fetch = async {
-                        let route = config.network_configuration().await.map_err(reason)?;
-                        let policy = maka_network::Policy::from_host_settings(
-                            &route.proxy,
-                            route.password.as_deref(),
-                        )
-                        .map_err(reason)?;
-                        let client = policy.client_builder().build().map_err(reason)?;
-                        let mut response = client
-                            .get(url)
-                            .send()
-                            .await
-                            .map_err(|error| reason(error.without_url()))?;
-                        let status = response.status().as_u16();
-                        let mut body = Vec::new();
-                        while let Some(chunk) = response
-                            .chunk()
-                            .await
-                            .map_err(|error| reason(error.without_url()))?
-                        {
-                            if chunk.len() > 1024 * 1024 - body.len() {
-                                return Err("Fetch response exceeds 1 MiB".into());
-                            }
-                            body.extend_from_slice(&chunk);
-                        }
-                        Ok(
-                            serde_json::json!({ "status": status, "body": String::from_utf8(body).map_err(reason)? }),
-                        )
-                    };
-                    tokio::select! {
-                        () = cancellation.cancelled() => Err(failed("Fetch cancelled".into())),
-                        result = fetch => result.map_err(failed),
-                    }
-                }
-                _ => Err(failed("Unknown automation script tool".into())),
+    let output = command
+        .run_with_input(source.into_bytes(), 30_000, cancellation)
+        .await
+        .map_err(reason)?;
+    match output.outcome {
+        ProcessOutcome::Exited(status) if status.success() => {
+            match output.stdout.lines().last().map(str::trim) {
+                Some("true") => Ok(true),
+                Some("false") => Ok(false),
+                _ => Err("The script must print true or false on its last stdout line".into()),
             }
-        })
+        }
+        ProcessOutcome::Exited(status) => {
+            let stderr = output.stderr.trim();
+            Err(if stderr.is_empty() {
+                format!("Script failed ({status})")
+            } else {
+                format!("Script failed ({status}): {stderr}")
+            })
+        }
+        ProcessOutcome::Interrupted {
+            reason: Termination::Timeout,
+            ..
+        } => Err("Script check timed out".into()),
+        ProcessOutcome::Interrupted {
+            reason: Termination::Cancelled,
+            ..
+        } => Err("Script check cancelled".into()),
     }
 }

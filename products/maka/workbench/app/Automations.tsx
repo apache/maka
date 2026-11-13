@@ -279,7 +279,7 @@ function AutomationEditor(props: {
             change={script.set}
             multiline
             hint={tr('Script check guidance')}
-            placeholder="return (await tools.Read({ path: 'status.txt' })).content.trim() === 'ready';"
+            placeholder="console.log((await Deno.readTextFile('status.txt')).trim() === 'ready');"
           />
         </If>
       </Scroll>

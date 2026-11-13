@@ -253,6 +253,8 @@ gix-discover = { path = "third-party/gix-discover" }
 image-webp = { path = "third-party/image-webp" }
 sqlx-sqlite = { path = "third-party/sqlx-sqlite" }
 async-io = { path = "third-party/async-io" }
+# Deno published this crate before its upstream rustls security update.
+deno_tls = { path = "third-party/deno-tls" }
 
 # Shared terminal image codec.
 icy_sixel = { path = "third-party/nsh/third-party/icy_sixel" }

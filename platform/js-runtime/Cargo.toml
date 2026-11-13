@@ -24,16 +24,33 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-maka-code-runtime.workspace = true
-maka-agent-facts.workspace = true
-maka-plugin-core.workspace = true
 deno_core.workspace = true
 deno_error.workspace = true
-futures-util.workspace = true
-deno_webidl = "=0.260.0"
+deno_fetch = "=0.284.0"
+deno_fs = "=0.170.0"
+deno_io = "=0.170.0"
+deno_net = "=0.252.0"
+deno_os = "=0.77.0"
+deno_permissions = "=0.119.0"
+deno_process = "=0.75.0"
+deno_telemetry = "=0.82.0"
 deno_web = "=0.291.0"
+deno_webidl = "=0.260.0"
+futures-util.workspace = true
+maka-agent-facts.workspace = true
+maka-code-runtime.workspace = true
+maka-plugin-core.workspace = true
+oxc_allocator = "=0.153.0"
+oxc_codegen = "=0.153.0"
+oxc_parser = "=0.153.0"
+oxc_semantic = "=0.153.0"
+oxc_span = "=0.153.0"
+oxc_transformer = "=0.153.0"
+reqwest.workspace = true
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs"] }
 serde.workspace = true
 serde_json.workspace = true
+sys_traits = { version = "0.1", features = ["real"] }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -43,8 +60,21 @@ maka-session-state.workspace = true
 
 [build-dependencies]
 deno_core.workspace = true
-deno_webidl = "=0.260.0"
+deno_fetch = "=0.284.0"
+deno_fs = "=0.170.0"
+deno_io = "=0.170.0"
+deno_net = "=0.252.0"
+deno_os = "=0.77.0"
+deno_process = "=0.75.0"
+deno_telemetry = "=0.82.0"
 deno_web = "=0.291.0"
+deno_webidl = "=0.260.0"
+oxc_allocator = "=0.153.0"
+oxc_codegen = "=0.153.0"
+oxc_parser = "=0.153.0"
+oxc_semantic = "=0.153.0"
+oxc_span = "=0.153.0"
+oxc_transformer = "=0.153.0"
 
 # Deno still uses sha2 0.10. Preserve its hardware backend until it migrates;
 # that version's assembly crate does not support Windows.
