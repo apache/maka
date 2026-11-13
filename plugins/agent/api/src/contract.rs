@@ -1970,10 +1970,6 @@ pub fn contract() -> Contract {
                     method::<ScheduleRead, Schedules>(MethodMode::Subscription),
                 ),
                 (
-                    "scheduleAlerts".into(),
-                    method::<ScheduleAlertsRead, ScheduleAlerts>(MethodMode::Subscription),
-                ),
-                (
                     "schedule".into(),
                     method::<ScheduleChange, ScheduleResult>(MethodMode::Mutation),
                 ),

@@ -28,15 +28,11 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Delivery {
-    Reminder,
     Work(String),
 }
 impl TaskEffect for Delivery {
     fn validate(&self) -> Result<(), Error> {
         Ok(())
-    }
-    fn is_notification(&self) -> bool {
-        matches!(self, Self::Reminder)
     }
 }
 
@@ -46,11 +42,7 @@ fn plan(effect: Delivery) -> TaskPlan<Delivery, u64> {
         "task".into(),
         Create {
             title: "original".into(),
-            intent_body: if matches!(effect, Delivery::Reminder) {
-                String::new()
-            } else {
-                "original input".into()
-            },
+            intent_body: "original input".into(),
             schedule: Schedule::Interval {
                 every_seconds: 1,
                 start_at: 2_000,
@@ -103,9 +95,7 @@ fn pending_delivery_keeps_original_input_and_owner_metadata_after_edit_serializa
         "an admitted delivery does not inherit edited input or authority"
     );
 
-    let mut saved = serde_json::to_value(&edited).unwrap();
-    // This field exists in pending Fire data already persisted by the product.
-    saved["pending"]["deliveryStarted"] = serde_json::Value::Bool(false);
+    let saved = serde_json::to_value(&edited).unwrap();
     let mut reopened: TaskPlan<Delivery, u64> = serde_json::from_value(saved).unwrap();
     reopened.validate().unwrap();
     reopened.recover(8_000).unwrap();
@@ -132,36 +122,6 @@ fn pending_delivery_keeps_original_input_and_owner_metadata_after_edit_serializa
     assert!(
         reopened.claim(9_000).unwrap().is_none(),
         "settling the old delivery cannot dispatch edited work after expiry"
-    );
-}
-
-#[test]
-fn reminder_pause_and_snooze_cancel_only_a_delivery_that_has_not_started() {
-    let mut waiting = plan(Delivery::Reminder);
-    let fire = waiting.claim(2_000).unwrap().unwrap().clone();
-    let paused = waiting.pause(2_010);
-    assert_eq!(paused.task.status, Status::Paused);
-    assert!(paused.pending.is_none());
-    let mut snoozed = waiting.snooze(500, 2_010).unwrap();
-    assert!(snoozed.pending.is_none());
-    assert!(snoozed.claim(2_509).unwrap().is_none());
-    let replacement = snoozed.claim(2_510).unwrap().unwrap();
-    assert_ne!(replacement.id, fire.id);
-    assert_eq!(replacement.scheduled_at, 2_510);
-
-    // Starting delivery is domain state, not evidence of provider completion.
-    waiting.pending.as_mut().unwrap().delivery_started = true;
-    let bytes = serde_json::to_vec(&waiting).unwrap();
-    let restored: TaskPlan<Delivery, u64> = serde_json::from_slice(&bytes).unwrap();
-    assert!(restored.snooze(500, 2_010).is_err());
-    let mut paused = restored.pause(2_010);
-    assert!(paused.pending.as_ref().unwrap().delivery_started);
-    let original_delivery = paused.pending.clone();
-    paused.recover(8_000).unwrap();
-    assert_eq!(
-        paused.claim(8_000).unwrap(),
-        original_delivery.as_ref(),
-        "pause still permits reconciliation of a started original delivery"
     );
 }
 

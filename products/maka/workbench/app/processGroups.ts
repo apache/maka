@@ -18,7 +18,7 @@
  */
 
 import {
-  senderSession,
+  activityMessage,
   historyTurnKey,
   compareHistoryOrder,
   stableRowId,
@@ -419,7 +419,7 @@ export function projectProcessGroups(input: {
     const body = !row.tool && row.role === 'assistant' && row.field === 'body';
     const outside =
       body ||
-      (!row.tool && row.role === 'user' && senderSession(row.origin) === null) ||
+      (!row.tool && row.role === 'user' && !activityMessage(row.origin)) ||
       row.role === 'failure' ||
       row.role === 'compaction';
     if (!rowTurn || outside) {

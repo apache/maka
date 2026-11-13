@@ -234,6 +234,7 @@ impl Owner {
                                 &key,
                                 ["GoalStatus".to_owned()].into(),
                                 maka_agent_state::queue::Placement::Followup,
+                                false,
                             )
                             .await?;
                             return Ok(());

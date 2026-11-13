@@ -51,6 +51,7 @@ import {
 import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
+import { Automations } from './Automations';
 import {
   groupWorkspace,
   groupConversations,
@@ -128,6 +129,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     return bot === null ? sessions : sessions.filter((session) => session.id !== bot);
   });
   const choosingWorkspace = signal(false);
+  const automationsOpen = signal(false);
   const actions = signal<{ session: SessionActionTarget; origin: string | null } | null>(null);
   const actionsAnchor = signal<ViewRef | null>(null);
   const navigationNotice = signal<{ kind: 'draft' | 'action'; message: UiText } | null>(null);
@@ -273,7 +275,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     navigationTarget?.focus();
   };
   const escape = () => {
-    if (actions()) return;
+    if (actions() || automationsOpen()) return;
     if (choosingWorkspace()) {
       choosingWorkspace.set(false);
       navigationTarget?.focus();
@@ -522,6 +524,26 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               {tr('Search titles and messages…')}
             </Text>
           </If>
+        </Button>
+        <Button
+          accessibilityLabel={tr('Automations')}
+          disabled={props.connectionLost()}
+          onPress={() => automationsOpen.set(true)}
+          style={{
+            ...controlStyle,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            paddingHorizontal: 8,
+            height: navigationRowHeight(),
+            borderRadius: 8,
+          }}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
+          disabledStyle={controlDisabledStyle}
+        >
+          <Icon name="activity" color={navIcon()} />
+          <Text style={{ color: navText(), flex: 1, fontSize: 14 }}>{tr('Automations')}</Text>
         </Button>
         <If when={browser.filter() !== 'archived'}>
           <Button
@@ -1199,6 +1221,16 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           </Button>
         </If>
       </View>
+      <If when={automationsOpen()}>
+        <Automations
+          selected={props.selected}
+          close={() => automationsOpen.set(false)}
+          openConversation={(id) => {
+            automationsOpen.set(false);
+            void select({ id, origin: props.selected() });
+          }}
+        />
+      </If>
       <Each of={actions() ? [actions()!] : []} key={(target) => target}>
         {(item) => {
           const target = item();

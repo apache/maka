@@ -2091,11 +2091,6 @@ export interface ServiceMethods {
       input: Runtime.AgentScheduleChange;
       output: Runtime.AgentScheduleResult;
     };
-    scheduleAlerts: {
-      mode: 'subscription';
-      input: {};
-      output: Runtime.AgentScheduleAlerts;
-    };
     schedules: {
       mode: 'query';
       input: Runtime.AgentScheduleRead;

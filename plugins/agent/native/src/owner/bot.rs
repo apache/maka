@@ -970,9 +970,9 @@ type Ability = (
 const ABILITIES: &[Ability] = &[
     (
         &["ScheduledTask"],
-        "ScheduledTask（安排定时唤醒，需用户批准）",
-        "ScheduledTask（安排定時喚醒，需使用者核准）",
-        "ScheduledTask (schedule a wake-up, which the user must approve)",
+        "ScheduledTask（安排定时唤醒）",
+        "ScheduledTask（安排定時喚醒）",
+        "ScheduledTask (schedule a wake-up)",
     ),
     (
         &["CreateGoal", "GetGoal", "GoalStatus"],

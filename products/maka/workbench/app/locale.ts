@@ -35,6 +35,7 @@ import { externalAgentMessages } from './locale-external-agents';
 import { toolActivityMessages } from './locale-tool-activity';
 import { sessionToolMessages } from './locale-tool-sessions';
 import { deploymentToolMessages } from './locale-tool-deployment';
+import { automationMessages } from './locale-automation';
 import { nativeToolMessages } from './locale-tool-native';
 
 const nativeLocale = nativeHost.systemLocale;
@@ -56,6 +57,7 @@ const copy = createCopy({
   ...sessionToolMessages,
   ...deploymentToolMessages,
   ...nativeToolMessages,
+  ...automationMessages,
 });
 export type MessageKey = keyof ReturnType<typeof copy>;
 

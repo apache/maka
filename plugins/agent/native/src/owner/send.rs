@@ -208,6 +208,7 @@ impl Owner {
             tool_discovery: !external && self.settings.tool_discovery,
             allowed_tools,
             background: None,
+            background_sandbox_ceiling: None,
             internal_tools: if external && !host_bridge {
                 Arc::default()
             } else {

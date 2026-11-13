@@ -80,6 +80,7 @@ futures-util.workspace = true
 jiff.workspace = true
 jsonschema.workspace = true
 libc.workspace = true
+reqwest.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

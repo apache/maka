@@ -6448,6 +6448,7 @@ dependencies = [
  "maka-web-api",
  "maka-workspace-api",
  "maka-workspace-support",
+ "reqwest",
  "rmcp",
  "rusqlite",
  "schemars 1.2.3",
