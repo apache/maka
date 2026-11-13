@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 
@@ -33,7 +34,9 @@ const hooks = registerHooks({
     return next(specifier, context);
   },
 });
-const { codePieces, lineColumns, pieceLines } = await import(new URL('codePieces.ts', app));
+const { codePieces, columns, largestTextSize, lineColumns, pieceLines } = await import(
+  new URL('codePieces.ts', app)
+);
 hooks.deregister();
 
 const numbered = (count) => Array.from({ length: count }, (_, index) => `line ${index + 1}`);
@@ -69,16 +72,38 @@ test('an empty line at a piece edge keeps its height', () => {
   assert.equal(pieces[1].text.split('\n')[0], ' ');
 });
 
-test('a line too wide for one layer is cut and says how much is left', () => {
-  const [piece] = codePieces(`${'a'.repeat(lineColumns + 30)}\nshort`);
-  assert.deepEqual(piece.text.split('\n'), [
-    `${'a'.repeat(lineColumns)} … 30 more characters`,
-    'short',
-  ]);
-  assert.equal(codePieces('a'.repeat(lineColumns))[0].text, 'a'.repeat(lineColumns));
+test('the budget covers the largest text size the desktop offers', async () => {
+  const appearance = await readFile(new URL('appearance.ts', app), 'utf8');
+  const sizes = JSON.parse(appearance.match(/textSizes = (\[[^\]]*\])/)[1]);
+  assert.equal(largestTextSize, Math.max(...sizes));
+  // 13 pt code text on 20 pt lines, a monospace column about 0.62 em wide, a 2x display.
+  assert.ok(lineColumns * 13 * largestTextSize * 0.62 * 2 < 16384 * 0.95);
+  assert.ok(pieceLines * 20 * largestTextSize * 2 < 16384 * 0.95);
 });
 
-test('wide characters count two columns when a line is cut', () => {
-  const [piece] = codePieces('字'.repeat(lineColumns));
-  assert.equal(piece.text, `${'字'.repeat(lineColumns / 2)} … ${lineColumns / 2} more characters`);
+test('a line exactly at the limit stays whole', () => {
+  const line = 'a'.repeat(lineColumns);
+  assert.equal(codePieces(line)[0].text, line);
+  const wide = '字'.repeat(lineColumns / 2);
+  assert.equal(codePieces(wide)[0].text, wide);
+});
+
+test('a line too wide for one layer is cut, its note included in the limit', () => {
+  for (const line of [
+    'a'.repeat(lineColumns + 1),
+    'a'.repeat(lineColumns + 30),
+    'a'.repeat(lineColumns * 50),
+    '字'.repeat(lineColumns),
+    `a${'字'.repeat(lineColumns)}`,
+    '✅'.repeat(lineColumns / 2),
+    '👨‍👩‍👧 '.repeat(lineColumns / 4),
+  ]) {
+    const [piece] = codePieces(`${line}\nshort`);
+    const [shown, next] = piece.text.split('\n');
+    assert.equal(next, 'short');
+    assert.ok(columns(shown) <= lineColumns, `${columns(shown)} columns`);
+    const [, kept, count] = shown.match(/^(.*) … (\d+) more characters$/u);
+    assert.ok(line.startsWith(kept));
+    assert.equal([...kept].length + Number(count), [...line].length);
+  }
 });

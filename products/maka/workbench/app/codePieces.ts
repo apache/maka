@@ -21,29 +21,43 @@ import { tr } from './locale';
 
 // macOS draws each text into one Core Animation layer, and a layer taller or
 // wider than the GPU's largest texture (16384 pixels) shows nothing. Code text
-// is laid out in pieces of 200 lines, and a line too wide for one layer is cut.
-// Both stay well under the limit at 2x. Copy buttons still copy the whole text.
+// is laid out in pieces of 200 lines, and a line too wide for one layer is cut,
+// its note on what was cut included. The budget holds for the widest code text
+// the desktop shows: 13 pt at the largest text size on a 2x display, where one
+// monospace column measures about 20.9 pixels. 720 columns are about 15,050
+// pixels wide, and 200 lines are 10,400 pixels tall. Copy buttons still copy
+// the whole text.
+export const largestTextSize = 1.3;
 export const pieceLines = 200;
-export const lineColumns = 800;
+export const lineColumns = 720;
 
 export type CodePiece = { index: number; text: string; gutter?: string | undefined };
 
-// Wide characters (East Asian, emoji) take two columns in a monospace font.
-const width = (char: string) => (char.codePointAt(0)! >= 0x1100 ? 2 : 1);
+// Measured at that size: East Asian characters take up to 1.6 columns, and
+// emoji and symbols such as ✅ take 2.2.
+const pictograph = /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u;
+const width = (char: string) =>
+  pictograph.test(char) ? 3 : char.codePointAt(0)! >= 0x1100 ? 2 : 1;
+export const columns = (text: string) => {
+  let total = 0;
+  for (const char of text) total += width(char);
+  return total;
+};
+const note = (count: number) => ` ${tr('… {count} more characters', { count: String(count) })}`;
 
 function cut(line: string) {
-  // A line of this many code units cannot be wider than the limit.
-  if (line.length <= lineColumns / 2) return line;
+  // Each code unit takes at most three columns.
+  if (line.length * 3 <= lineColumns || columns(line) <= lineColumns) return line;
+  // The note's count has no more digits than the line's length.
+  const room = lineColumns - columns(note(line.length));
   let used = 0;
   let end = 0;
   for (const char of line) {
     used += width(char);
-    if (used > lineColumns) break;
+    if (used > room) break;
     end += char.length;
   }
-  if (end === line.length) return line;
-  const rest = [...line.slice(end)].length;
-  return `${line.slice(0, end)} ${tr('… {count} more characters', { count: String(rest) })}`;
+  return `${line.slice(0, end)}${note([...line.slice(end)].length)}`;
 }
 
 export function codePieces(text: string, gutter?: string): CodePiece[] {
