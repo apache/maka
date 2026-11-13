@@ -122,6 +122,7 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
                   )
                 : undefined
           }
+          noteWarns={!owner.dirty() && owner.discovery() === 'failed'}
           trailing={
             <>
               <If when={form().provider.descriptor.discovery}>
