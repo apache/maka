@@ -14870,8 +14870,11 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              runTerminated: {
+                type: 'boolean',
+              },
             },
-            required: ['requests'],
+            required: ['requests', 'runTerminated'],
             $defs: {
               AgentHistoryRequest: {
                 type: 'object',
@@ -14905,6 +14908,16 @@ export const contracts: {
                     anyOf: [
                       {
                         $ref: '#/$defs/AgentHistoryRequestFinished',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  retry: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentHistoryRequestRetry',
                       },
                       {
                         type: 'null',
@@ -15032,6 +15045,45 @@ export const contracts: {
                     minimum: 0,
                   },
                 },
+              },
+              AgentHistoryRequestRetry: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'scheduled',
+                      },
+                      at: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    required: ['kind', 'at'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'started',
+                      },
+                    },
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cancelled',
+                      },
+                    },
+                    required: ['kind'],
+                  },
+                ],
               },
             },
           },

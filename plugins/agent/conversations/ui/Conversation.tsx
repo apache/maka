@@ -957,7 +957,9 @@ export function Conversation(props: ConversationProps) {
               if (entry.kind === 'trajectory-request') {
                 const { modelId, startedAt, firstTokenAt, finished } = entry.request;
                 return (
-                  (!query || modelId.toLocaleLowerCase().includes(query)) &&
+                  (!query ||
+                    modelId.toLocaleLowerCase().includes(query) ||
+                    (finished?.diagnostic?.toLocaleLowerCase().includes(query) ?? false)) &&
                   (!range ||
                     (startedAt != null &&
                       trajectoryOverlaps(
