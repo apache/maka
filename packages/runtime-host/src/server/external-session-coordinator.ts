@@ -32,6 +32,7 @@ import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { SessionExternalOrigin, SessionHeader, StoredMessage } from '@maka/core/session';
 import type { ExternalSessionImportLookupResult } from '@maka/storage/execution-stores';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
+import { StoredSessionMessageIncompatibleError } from '@maka/storage/execution-stores';
 import {
   ExternalSessionImporter,
   type ExternalSessionImportTarget,
@@ -414,14 +415,32 @@ export class HostExternalSessionCoordinator {
     }
   }
 
+  /**
+   * Prepare one staged import, or account for the failure.
+   *
+   * The staged rows are the import's only copy: once committed they survive
+   * independently of the source, and discarding them is irreversible. So the
+   * two failure shapes are separated by what a retry would do. A staged row
+   * that cannot be decoded fails deterministically — the same bytes reproduce
+   * the same failure, and the Session's history can never be prepared — which
+   * is the only authority for discarding, the way `createImportedSession`
+   * treats an authoritative absence as the only safe cleanup trigger. Any
+   * other failure is the environment (storage busy/IO) failing a conversion of
+   * committed bytes: rethrowing keeps the staged Session for a later recovery
+   * attempt, the deferred outcome `recover()` already documents, instead of
+   * deleting the user's import over a transient error.
+   */
   async #prepareStagedSession(sessionId: string): Promise<boolean> {
     return this.#admission.run(sessionId, async () => {
       try {
         await this.#prepareImportedSessionHistory(sessionId);
         return true;
-      } catch {
-        await this.#discardImportedSession(sessionId);
-        return false;
+      } catch (error) {
+        if (error instanceof StoredSessionMessageIncompatibleError) {
+          await this.#discardImportedSession(sessionId);
+          return false;
+        }
+        throw error;
       }
     });
   }

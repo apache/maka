@@ -41,7 +41,10 @@ import {
 import type { WorkspaceTarget } from '../protocol/index.js';
 import { type SessionHeader } from '@maka/core/session';
 import { headerToSummary } from '@maka/runtime/session-manager';
-import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
+import {
+  StoredSessionMessageIncompatibleError,
+  type SessionCatalogRecord,
+} from '@maka/storage/execution-stores';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
 import {
   decodeResponseFrame,
@@ -1056,10 +1059,12 @@ test('reports an unsupported adapter as invalid_request, not a source-unreadable
   );
 });
 
-test('removes an imported Session when its model history cannot be prepared', async () => {
+test('removes an imported Session when its staged history is unusable', async () => {
+  // An undecodable staged row fails deterministically — a retry reproduces it —
+  // so the staged Session is discarded rather than retained.
   const fixture = coordinatorFixture([adapterFixture()], {
     prepareImportedSessionHistory: async () => {
-      throw new Error('ledger repair failed');
+      throw new StoredSessionMessageIncompatibleError('imported-1', 0);
     },
   });
 
@@ -1080,6 +1085,40 @@ test('removes an imported Session when its model history cannot be prepared', as
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('retains a staged import when its history preparation fails on the environment', async () => {
+  // A storage failure (busy/IO) is not evidence that the staged import is
+  // broken: the staged rows are the import's only copy, so they stay for a
+  // later recovery attempt instead of being discarded.
+  const discardCalls: string[] = [];
+  const fixture = coordinatorFixture([adapterFixture()], {
+    prepareImportedSessionHistory: async () => {
+      throw new Error('database is locked');
+    },
+    discardImportedSession: async (sessionId) => {
+      discardCalls.push(sessionId);
+    },
+  });
+
+  assert.deepEqual(
+    await fixture.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    ),
+    {
+      ok: false,
+      error: {
+        code: 'commit_outcome_unknown',
+        message:
+          'External Session import outcome is unknown; check the Session list before retrying',
+      },
+    },
+  );
+  assert.equal(fixture.hasRecord('imported-1'), true);
+  assert.equal(fixture.readHeader('imported-1')?.transcriptLedgerVersion, 0);
+  assert.deepEqual(discardCalls, []);
+  assert.equal(fixture.drainRequests(), 1);
+});
+
 test('holds Session admission through failed history preparation and cleanup', async () => {
   let markPreparationStarted!: () => void;
   const preparationStarted = new Promise<void>((resolve) => {
@@ -1094,7 +1133,7 @@ test('holds Session admission through failed history preparation and cleanup', a
     prepareImportedSessionHistory: async () => {
       markPreparationStarted();
       await preparationRelease;
-      throw new Error('ledger repair failed');
+      throw new StoredSessionMessageIncompatibleError('imported-1', 0);
     },
     discardImportedSession: async () => {
       discarded = true;
@@ -1134,7 +1173,7 @@ test('recovers or discards staged imported Sessions after restart', async () => 
 
   const discarded = coordinatorFixture([adapterFixture()], {
     prepareImportedSessionHistory: async () => {
-      throw new Error('ledger repair failed');
+      throw new StoredSessionMessageIncompatibleError('imported-1', 0);
     },
   });
   await discarded.seedStagingSession();
@@ -1156,7 +1195,9 @@ test('isolates a staged Session prepare and discard failure during recovery', as
   fixture = coordinatorFixture([adapterFixture()], {
     prepareImportedSessionHistory: async (sessionId) => {
       prepareAttempts.push(sessionId);
-      if (sessionId === 'imported-1') throw new Error('ledger repair failed');
+      if (sessionId === 'imported-1') {
+        throw new StoredSessionMessageIncompatibleError('imported-1', 0);
+      }
       fixture.publishStagingSession(sessionId);
     },
     discardImportedSession: async (sessionId) => {
@@ -1202,6 +1243,47 @@ test('retries a retained staged Session during a later recovery', async (t) => {
   await fixture.coordinator.recover();
 
   assert.equal(fixture.readHeader('imported-1')?.transcriptLedgerVersion, 0);
+
+  await fixture.coordinator.recover();
+
+  assert.deepEqual(prepareAttempts, ['imported-1', 'imported-1']);
+  assert.equal(fixture.readHeader('imported-1')?.transcriptLedgerVersion, 1);
+});
+
+test('defers a staged Session whose recovery fails on the environment and retries it later', async (t) => {
+  // The environment failing a recovery attempt must not cost the staged
+  // Session: it stays untouched (no discard) and is retried on the next
+  // recovery once the environment recovers.
+  const discardCalls: string[] = [];
+  const prepareAttempts: string[] = [];
+  const logs: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    logs.push(args.map(String).join(' '));
+  });
+  let failPreparation = true;
+  let fixture!: ReturnType<typeof coordinatorFixture>;
+  fixture = coordinatorFixture([adapterFixture()], {
+    prepareImportedSessionHistory: async (sessionId) => {
+      prepareAttempts.push(sessionId);
+      if (sessionId === 'imported-1' && failPreparation) {
+        failPreparation = false;
+        throw new Error('database is locked');
+      }
+      fixture.publishStagingSession(sessionId);
+    },
+    discardImportedSession: async (sessionId) => {
+      discardCalls.push(sessionId);
+    },
+  });
+  await fixture.seedStagingSession();
+
+  await fixture.coordinator.recover();
+
+  assert.equal(fixture.readHeader('imported-1')?.transcriptLedgerVersion, 0);
+  assert.deepEqual(discardCalls, []);
+  assert.deepEqual(logs, [
+    '[runtime-host] staged import recovery deferred (imported-1): database is locked',
+  ]);
 
   await fixture.coordinator.recover();
 

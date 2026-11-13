@@ -420,26 +420,15 @@ export interface IdempotentAgentGraphOperatorMetadataResult
   record: SessionMetadataRecord;
 }
 
-export class StoredSessionMessageIncompatibleError extends Error {
-  readonly name = 'StoredSessionMessageIncompatibleError';
-  readonly code = 'stored_session_message_incompatible';
-
-  constructor(
-    readonly sessionId: string,
-    readonly sequence: number,
-    options?: ErrorOptions,
-  ) {
-    super(`Stored Session message ${sequence} for ${sessionId} is incompatible`, options);
-  }
-}
-
 import {
   AgentGraphIntentClaimConflictError,
   AgentGraphScheduleUpdateConflictError,
+  StoredSessionMessageIncompatibleError,
 } from './session-store-contract.js';
 export {
   AgentGraphIntentClaimConflictError,
   AgentGraphScheduleUpdateConflictError,
+  StoredSessionMessageIncompatibleError,
 } from './session-store-contract.js';
 import {
   assertGraphLookupIdentity,
