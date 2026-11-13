@@ -260,7 +260,7 @@ test('StagedComposer keeps the submitted recovery attachment while waiting for S
     prepareRevisionSend: async () => true, enqueueFollowUp: async () => false,
     settleNewTaskImageNoticeOwner() {}, commitRevisionDraft() {}, completeRevisionCopyAttempt() {},
     parseSlashCommand: () => null, mergeWorkspaceReferences: () => [], rebaseWorkspaceFileReferences: () => [],
-    revisionUnavailableCopy: { revisionUnavailableTitle: '', revisionAttachmentsUnsupported: '', revisionCommandUnsupported: '' },
+    revisionUnavailableCopy: { revisionUnavailableTitle: '', revisionAttachmentsUnsupported: '', revisionCommandUnsupported: '', revisionFollowUpUnsupported: '' },
     compactSession: async () => false, resolveNewTaskSessionHandler: () => () => {}, openSideChat() {},
     getActiveOrchestrationMode: () => 'default', setOrchestrationModeActive: async () => false,
     setNewTaskSendPending() {},
@@ -680,7 +680,7 @@ for (const accepted of [true, false]) {
       enqueueFollowUp: async () => false, settleNewTaskImageNoticeOwner() {},
       commitRevisionDraft() {}, completeRevisionCopyAttempt() {}, parseSlashCommand: () => null,
       mergeWorkspaceReferences: () => [], rebaseWorkspaceFileReferences: () => [],
-      revisionUnavailableCopy: { revisionUnavailableTitle: '', revisionAttachmentsUnsupported: '', revisionCommandUnsupported: '' },
+      revisionUnavailableCopy: { revisionUnavailableTitle: '', revisionAttachmentsUnsupported: '', revisionCommandUnsupported: '', revisionFollowUpUnsupported: '' },
       compactSession: async () => false, resolveNewTaskSessionHandler: () => () => {}, openSideChat() {},
       getActiveOrchestrationMode: () => 'default', setOrchestrationModeActive: async () => false,
     };
