@@ -20,5 +20,9 @@
 //! Measurement and control plane for multi-arm Maka evaluation experiments.
 
 pub mod contract;
+pub mod environment;
 pub mod measurement;
+pub mod report;
+pub mod runner;
 pub mod store;
+pub mod subject;
