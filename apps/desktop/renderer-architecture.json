@@ -962,6 +962,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./application/contracts/provider-retirement.js": 1,
+          "./locales/settings-navigation-copy.js": 1,
           "./locales/shell-copy.js": 1,
           "./settings/settings-nav.js": 1,
           "@maka/ui/icons": 1
