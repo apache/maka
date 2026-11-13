@@ -212,6 +212,74 @@ describe('Session revision protocol', () => {
     );
   });
 
+  test('carries the edited turn staged attachments on a committed revision', () => {
+    const attachment = {
+      kind: 'code',
+      name: 'source.txt',
+      mimeType: 'text/plain',
+      bytes: 14,
+      ref: { kind: 'session_file', sessionId: 'revision-target', relativePath: 'artifacts/x' },
+    };
+    assert.deepEqual(
+      decodeHostFrame({
+        requestId: 'request-staged',
+        operation: 'session.revision.create',
+        ok: true,
+        result: {
+          kind: 'committed',
+          session: sessionProjection('target-session'),
+          stagedAttachments: [attachment],
+        },
+      }),
+      {
+        requestId: 'request-staged',
+        operation: 'session.revision.create',
+        ok: true,
+        result: {
+          kind: 'committed',
+          session: sessionProjection('target-session'),
+          stagedAttachments: [attachment],
+        },
+      },
+    );
+    // Optional: a committed revision without staged attachments decodes bare.
+    assert.deepEqual(
+      decodeHostFrame({
+        requestId: 'request-bare',
+        operation: 'session.revision.create',
+        ok: true,
+        result: {
+          kind: 'committed',
+          session: sessionProjection('target-session'),
+        },
+      }),
+      {
+        requestId: 'request-bare',
+        operation: 'session.revision.create',
+        ok: true,
+        result: {
+          kind: 'committed',
+          session: sessionProjection('target-session'),
+        },
+      },
+    );
+    // A malformed attachment shape is rejected, not silently dropped.
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: 'request-bad',
+          operation: 'session.revision.create',
+          ok: true,
+          result: {
+            kind: 'committed',
+            session: sessionProjection('target-session'),
+            stagedAttachments: [{ kind: 'code', name: 'x' }],
+          },
+        }),
+      isInvalidFrame,
+    );
+  });
+
   test('keeps single-target Revision abandonment identity exact', () => {
     const frame = decodeClientFrame({
       requestId: 'request-abandon',
