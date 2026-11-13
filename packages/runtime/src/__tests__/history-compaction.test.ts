@@ -138,6 +138,49 @@ describe('plan context compaction', () => {
     };
   }
 
+  test('summarizes a validated unknown tool result without altering checkpoint coverage', async () => {
+    const events = [
+      user('old', 'old-turn'),
+      call('lost-call', 'lost-id', 'old-turn'),
+      model('later', 'later-turn'),
+      user('anchor', 'turn-1'),
+    ];
+    let summarized: readonly RuntimeEvent[] = [];
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'pre_turn',
+        orderedEvents: events,
+        unknownToolOutcomes: {
+          kind: 'projected',
+          requiresUserAttention: false,
+          outcomes: [
+            {
+              callEventId: 'lost-call',
+              toolCallId: 'lost-id',
+              toolName: 'tool',
+              operationId: 'op',
+            },
+          ],
+        },
+        summarize: ({ coveredRuntimeEvents }) => {
+          summarized = coveredRuntimeEvents;
+          return structuredSummary('The operation outcome is unknown.');
+        },
+      }),
+    );
+    assert.equal(result.decision, 'compacted');
+    if (result.decision !== 'compacted') return;
+    assert.deepEqual(
+      result.coveredRuntimeEvents.map((e) => e.id),
+      ['old', 'lost-call', 'later'],
+    );
+    const synthetic = summarized.find((e) => e.content?.kind === 'function_response');
+    assert.match(JSON.stringify(synthetic?.content), /outcome_unknown/);
+    assert.match(JSON.stringify(synthetic?.content), /Inspect current state/);
+    assert.equal(events.length, 4);
+    assert.equal(matchHistoryCompactCheckpointPrefix(result.checkpoint, events).reason, undefined);
+  });
+
   test('compacts whenever the caller has emitted a compaction command', async () => {
     const result = await planHistoryCompaction(planInput());
     assert.equal(result.decision, 'compacted');

@@ -95,6 +95,8 @@ import {
   collectToolActivityTurnIds,
   compatibleProviderReasoningReplayEventIds,
   type RuntimeEventModelReplayPlan,
+  inspectPriorUnknownToolOutcomes,
+  type PriorUnknownToolOutcomeProjection,
 } from './model-history.js';
 import { toolSchemaCharsForDiagnostics } from './request-shape.js';
 import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-attempt';
@@ -377,8 +379,15 @@ export class AiSdkCompaction {
           ? { historyCompactRoute: this.input.historyCompactRoute }
           : {}),
       });
+      const unknownToolOutcomes = inspectPriorUnknownToolOutcomes(
+        input.runtimeContext,
+        input.runtimeContextInvocations,
+      );
       const plan = await planHistoryCompaction({
         sessionId: this.sessionId,
+        ...(unknownToolOutcomes.kind === 'projected' && !unknownToolOutcomes.requiresUserAttention
+          ? { unknownToolOutcomes }
+          : {}),
         phase: 'standalone',
         orderedEvents: runtimeContext,
         ...(input.runtimeContextInvocations
@@ -799,6 +808,12 @@ export class AiSdkCompaction {
       resolveDeclaredContextWindow(this.input.connection, this.input.modelId) ??
         policy.historyCompact.midTurn.fallbackThresholdTokens,
     );
+    const unknownToolOutcomes = inspectPriorUnknownToolOutcomes(
+      input.runtimeContext ?? [],
+      input.runtimeContextInvocations,
+    );
+    if (unknownToolOutcomes.kind === 'projected' && !unknownToolOutcomes.requiresUserAttention)
+      state.unknownToolOutcomes = unknownToolOutcomes;
     // Seed the turn's FIRST request with the last request the provider
     // actually counted, so step 0 is judged by the same real number as every
     // later step. No anchor means no proactive fold on step 0; the provider
@@ -1075,6 +1090,7 @@ export class AiSdkCompaction {
       orderedEvents,
       headAnchor: { runtimeEventId: state.headAnchor.id, turnId },
       invocations: state.priorInvocations,
+      ...(state.unknownToolOutcomes ? { unknownToolOutcomes: state.unknownToolOutcomes } : {}),
       acceptedRoute: {
         modelId: this.input.modelId,
         ...(this.targetConnectionId !== undefined ? { connectionId: this.targetConnectionId } : {}),
@@ -1390,6 +1406,10 @@ function stableStringifyForSignature(value: unknown): string {
  * cursor state between steps.
  */
 export class MidTurnCapacityCompactState {
+  /** Validated prior unknowns eligible for paired summarization. */
+  unknownToolOutcomes:
+    | Extract<PriorUnknownToolOutcomeProjection, { kind: 'projected' }>
+    | undefined;
   /**
    * The last provider-accepted request's real input tokens plus its real
    * output tokens, as the provider counted them — everything already in the
