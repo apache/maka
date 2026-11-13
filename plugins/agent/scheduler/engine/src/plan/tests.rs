@@ -164,3 +164,51 @@ fn reminder_pause_and_snooze_cancel_only_a_delivery_that_has_not_started() {
         "pause still permits reconciliation of a started original delivery"
     );
 }
+
+#[test]
+fn resume_obeys_misfire_policy_and_preserves_due_now() {
+    for misfire in [super::Misfire::Latest, super::Misfire::Skip] {
+        for resume_at in [2_000, 3_500] {
+            let mut original = plan(Delivery::Work("work".into()));
+            original.task.expires_at = None;
+            original.misfire = misfire;
+            let mut resumed = original.pause(1_500).resume(resume_at).unwrap();
+            resumed.validate().unwrap();
+            if misfire == super::Misfire::Latest || resume_at == 2_000 {
+                let fire = resumed.claim(resume_at).unwrap().unwrap().clone();
+                assert_eq!(fire.scheduled_at, 2_000);
+                resumed.settle(outcome(fire.id, resume_at)).unwrap();
+                assert!(resumed.claim(resume_at).unwrap().is_none());
+            } else {
+                assert_eq!(resumed.task.next_fire_at, Some(4_000));
+                assert!(resumed.claim(resume_at).unwrap().is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn overdue_once_can_resume_with_latest_but_not_skip() {
+    let mut original = plan(Delivery::Work("work".into()));
+    original.task.schedule = Schedule::Once { run_at: 2_000 };
+    let paused = original.pause(1_500);
+    assert!(paused.resume(3_000).is_err());
+    let mut paused = paused;
+    paused.misfire = super::Misfire::Latest;
+    let mut resumed = paused.resume(3_000).unwrap();
+    resumed.validate().unwrap();
+    let fire = resumed.claim(3_000).unwrap().unwrap().clone();
+    assert_eq!(fire.scheduled_at, 2_000);
+    resumed.settle(outcome(fire.id, 3_000)).unwrap();
+    assert_eq!(resumed.task.status, Status::Completed);
+    assert!(resumed.claim(3_001).unwrap().is_none());
+    assert_eq!(paused.resume(4_000).unwrap().task.status, Status::Expired);
+}
+
+#[test]
+fn resume_keeps_the_original_pending_fire_for_reconciliation() {
+    let mut original = plan(Delivery::Work("work".into()));
+    let fire = original.claim(2_000).unwrap().unwrap().clone();
+    let mut resumed = original.pause(2_100).resume(3_500).unwrap();
+    assert_eq!(resumed.claim(3_500).unwrap(), Some(&fire));
+}

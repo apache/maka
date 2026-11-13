@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::TaskPlan;
+use super::{Misfire, TaskPlan};
 use crate::{
     Error,
     command::Update,
@@ -124,7 +124,11 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             next.task.next_fire_at = None;
         } else {
             next.task.status = Status::Active;
-            if next.task.next_fire_at.is_none_or(|at| at <= now) && next.pending.is_none() {
+            if next.pending.is_none()
+                && (next.task.next_fire_at.is_none()
+                    || (next.misfire == Misfire::Skip
+                        && next.task.next_fire_at.is_some_and(|at| at < now)))
+            {
                 next.task.next_fire_at = Some(
                     next.task
                         .schedule

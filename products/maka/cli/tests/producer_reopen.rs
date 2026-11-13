@@ -714,6 +714,7 @@ fn goal_identity(current: &Value) -> Value {
 )]
 async fn body(
     producer: Producer,
+    retry_workspace: bool,
     sandbox: &Sandbox,
     hosts: &mut Vec<Host>,
     clients: &mut Vec<Client>,
@@ -984,6 +985,20 @@ async fn body(
             assert_eq!(proposal["task"]["fireCount"], 0);
             assert_eq!(proposal["task"]["runs"], json!([]));
             assert!(proposal["pendingFire"].is_null());
+            if retry_workspace {
+                let due = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64
+                    + 10_000;
+                mutate(client, "agent", "schedule", json!({"kind":"update", "taskId":id,
+                    "revision":proposal["revision"], "input":{"timezone":"UTC","misfire":"latest",
+                    "task":{"title":"workspace retry", "intentBody":model.marker,
+                        "schedule":{"kind":"interval","everySeconds":1,"startAt":due},
+                        "effect":proposal["task"]["effect"],"maxFires":1,"expiresAt":null}}
+                }), Attachments::new()).await?;
+            }
+            let proposal = schedule(client, &id).await?;
             let approved = mutate(
                 client,
                 "agent",
@@ -993,6 +1008,36 @@ async fn body(
             )
             .await?;
             assert_eq!(approved["kind"], "committed");
+            let retry_fire = if retry_workspace {
+                let held = sandbox.home.join("workspace-unavailable");
+                tokio::fs::rename(&sandbox.workspace, &held)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let pending = phase("claim while workspace is unavailable", async {
+                    loop {
+                        let detail = schedule(client, &id).await?;
+                        if let Some(fire) = detail["pendingFire"].as_str() {
+                            break Ok(fire.to_owned());
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await?;
+                // Deliberate fault duration: keep the workspace absent across the
+                // claim's own notification and the first timed retry. Reads do not wake it.
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let blocked = schedule(client, &id).await?;
+                assert_eq!(blocked["pendingFire"], pending);
+                assert_eq!(blocked["task"]["fireCount"], 0);
+                assert_eq!(model.producer_requests.load(Ordering::SeqCst), 0);
+                // Restore the same directory identity without a Host mutation or wake.
+                tokio::fs::rename(&held, &sandbox.workspace)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Some(pending)
+            } else {
+                None
+            };
             // No triggerNow or clock injection. Wait for actual due and Message-admitted settlement.
             let settled = phase("actual due and one settled Fire", async {
                 loop {
@@ -1012,6 +1057,9 @@ async fn body(
             let fires = task["runs"].as_array().unwrap();
             assert_eq!(fires.len(), 1);
             let fire = &fires[0];
+            if let Some(original) = retry_fire {
+                assert_eq!(fire["id"], original);
+            }
             assert_eq!(fire["outcome"], "ok");
             assert_eq!(fire["message"], "Message admitted");
             let message = format!(
@@ -1219,7 +1267,7 @@ async fn body(
     Ok(())
 }
 
-async fn acceptance(producer: Producer) {
+async fn acceptance(producer: Producer, retry_workspace: bool) {
     let sandbox = Sandbox::new()
         .await
         .expect("owned empty Root/HOME/workspace");
@@ -1251,7 +1299,7 @@ async fn acceptance(producer: Producer) {
     let mut inspectors = Vec::new();
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(150), async {
         tokio::select! {
-            result = body(producer, &sandbox, &mut hosts, &mut clients, &mut inspectors, &model, &mut observations, &base) => result,
+            result = body(producer, retry_workspace, &sandbox, &mut hosts, &mut clients, &mut inspectors, &model, &mut observations, &base) => result,
             result = &mut server => { server_collected = true; Err(format!("model accept task ended: {result:?}")) },
         }
     })).catch_unwind().await;
@@ -1343,15 +1391,128 @@ async fn acceptance(producer: Producer) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn goal_iteration_one_fails_original_run_without_redispatch_after_reopen() {
-    acceptance(Producer::Goal).await;
+    acceptance(Producer::Goal, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scheduler_user_approved_due_fire_fails_original_run_without_redispatch_after_reopen() {
-    acceptance(Producer::Scheduler).await;
+    acceptance(Producer::Scheduler, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn finite_goal_budget_remains_cumulative_across_two_host_reopens() {
-    acceptance(Producer::GoalBudget).await;
+    acceptance(Producer::GoalBudget, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scheduler_resumes_overdue_latest_reminders_through_public_host() {
+    fn wall_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+    let sandbox = Sandbox::new().await.unwrap();
+    let mut host = Host::spawn(&sandbox).unwrap();
+    let mut clients = Vec::new();
+    let result = AssertUnwindSafe(phase("overdue reminder resume", async {
+        let (connection, _) = host.ready().await?;
+        let journal = Journal::open(&sandbox.journal).await?;
+        clients.push(Client::new(connection, journal, "receipts".into())?);
+        let client = &clients[0];
+        let due = wall_now() + 10_000;
+        let mut ids = Vec::new();
+        for recurrence in [
+            json!({"kind":"once","runAt":due}),
+            json!({"kind":"interval","everySeconds":60,"startAt":due}),
+        ] {
+            let created = mutate(
+                client,
+                "agent",
+                "schedule",
+                json!({
+                    "kind":"create", "input": {"timezone":"UTC", "misfire":"latest",
+                        "task":{"title":"issue 6827 catch-up", "intentBody":"local regression",
+                            "schedule":recurrence,"effect":{"kind":"reminder"},
+                            "maxFires":null,"expiresAt":null}}
+                }),
+                Attachments::new(),
+            )
+            .await?;
+            let id = created["taskId"]
+                .as_str()
+                .ok_or("created taskId missing")?
+                .to_owned();
+            let detail = schedule(client, &id).await?;
+            assert!(
+                detail["pendingFire"].is_null(),
+                "pause must precede the deadline"
+            );
+            mutate(
+                client,
+                "agent",
+                "schedule",
+                json!({"kind":"pause", "taskId":id,
+                "revision":detail["revision"]}),
+                Attachments::new(),
+            )
+            .await?;
+            ids.push(id);
+        }
+        // Wait for the actual schedule boundary, not a fixed readiness delay.
+        while wall_now() <= due {
+            tokio::time::sleep(Duration::from_millis(due.saturating_sub(wall_now()) + 1)).await;
+        }
+        for id in ids {
+            let paused = schedule(client, &id).await?;
+            assert_eq!(paused["task"]["status"], "paused");
+            mutate(
+                client,
+                "agent",
+                "schedule",
+                json!({"kind":"resume", "taskId":id,
+                "revision":paused["revision"]}),
+                Attachments::new(),
+            )
+            .await?;
+            let ready = loop {
+                let detail = schedule(client, &id).await?;
+                if detail["pendingFire"].is_string() {
+                    break detail;
+                }
+                tokio::task::yield_now().await;
+            };
+            assert_eq!(ready["task"]["nextFireAt"], due);
+            let fire = ready["pendingFire"].clone();
+            mutate(
+                client,
+                "agent",
+                "schedule",
+                json!({"kind":"acknowledge", "taskId":id,
+                "revision":ready["revision"], "fireId":fire}),
+                Attachments::new(),
+            )
+            .await?;
+            let settled = schedule(client, &id).await?;
+            assert_eq!(settled["task"]["fireCount"], 1);
+            assert_eq!(settled["task"]["runs"][0]["id"], fire);
+            assert!(settled["pendingFire"].is_null());
+        }
+        Ok(())
+    }))
+    .catch_unwind()
+    .await;
+    for client in clients {
+        client.close().await.unwrap();
+    }
+    host.cleanup().await.unwrap();
+    match result {
+        Ok(result) => result.unwrap(),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scheduler_retries_original_fire_when_workspace_returns_without_host_mutation() {
+    acceptance(Producer::Scheduler, true).await;
 }

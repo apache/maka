@@ -204,6 +204,7 @@ impl Owner {
             let mut recover = true;
             let mut previous_error = None;
             let mut planned_wake: Option<i64> = None;
+            let mut retry_delay = Duration::from_secs(1);
             loop {
                 if owner.stop.is_cancelled() {
                     return;
@@ -219,6 +220,7 @@ impl Owner {
                     Ok(result) => { recover = false; result },
                     Err(error) => (None, Some(error)),
                 };
+                let delay = retry_wake(delay, error.is_some(), now() as i64, &mut retry_delay);
                 if let Some(error) = &error
                     && previous_error.as_ref() != Some(error) { eprintln!("Scheduled tasks: {error}"); }
                 previous_error = error;
@@ -243,7 +245,8 @@ impl Owner {
         recover: bool,
     ) -> Result<(Option<i64>, Option<String>), String> {
         let _gate = self.scheduler.gate.lock().await;
-        let mut catalog = self.scheduler.load_ready(now() as i64).await?;
+        let loaded_at = now() as i64;
+        let mut catalog = self.scheduler.load_ready(loaded_at).await?;
         let mut dispatch_error = None;
         for id in catalog.plans.keys().cloned().collect::<Vec<_>>() {
             if self.stop.is_cancelled() {
@@ -284,18 +287,7 @@ impl Owner {
                 }
             }
         }
-        Ok((
-            catalog
-                .ready
-                .due
-                .range((
-                    std::ops::Bound::Excluded(now() as i64),
-                    std::ops::Bound::Unbounded,
-                ))
-                .next()
-                .map(|(at, _)| *at),
-            dispatch_error,
-        ))
+        Ok((catalog.ready.next_after(loaded_at), dispatch_error))
     }
     async fn dispatch_scheduled(
         self: &Arc<Self>,
@@ -489,5 +481,38 @@ fn settlement(
         message: message.to_owned(),
         session_id,
         run_id,
+    }
+}
+
+fn retry_wake(next: Option<i64>, failed: bool, now: i64, backoff: &mut Duration) -> Option<i64> {
+    if failed {
+        let retry_at = now.saturating_add(backoff.as_millis() as i64);
+        *backoff = (*backoff * 2).min(Duration::from_secs(30));
+        Some(next.map_or(retry_at, |due| due.min(retry_at)))
+    } else {
+        *backoff = Duration::from_secs(1);
+        next
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_dispatch_keeps_a_bounded_retry_wake_without_postponing_other_tasks() {
+        let mut backoff = Duration::from_secs(1);
+        let mut at = 0;
+        for wait in [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000] {
+            let wake = retry_wake(None, true, at, &mut backoff).unwrap();
+            assert_eq!(wake - at, wait);
+            at = wake;
+        }
+        assert_eq!(
+            retry_wake(Some(at + 10), true, at, &mut backoff),
+            Some(at + 10)
+        );
+        assert_eq!(retry_wake(None, false, at, &mut backoff), None);
+        assert_eq!(retry_wake(None, true, at, &mut backoff), Some(at + 1_000));
     }
 }
