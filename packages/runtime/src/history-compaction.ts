@@ -21,7 +21,11 @@ import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { finitePositive } from './context-budget-helpers.js';
-import { estimateRuntimeEventsTokens } from './model-history.js';
+import {
+  appendPriorUnknownToolResponses,
+  estimateRuntimeEventsTokens,
+  type PriorUnknownToolOutcomeProjection,
+} from './model-history.js';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import {
   HistoryCompactSummarizerError,
@@ -70,6 +74,8 @@ export interface SafePrefixOptions {
    * capacity measurement from the request that actually goes out.
    */
   isPinned?: (event: RuntimeEvent) => boolean;
+  /** Validated unknown calls whose projected result is adjacent in model history. */
+  projectedUnknownCallIds?: ReadonlySet<string>;
 }
 
 export type SafePrefixBoundary =
@@ -107,7 +113,7 @@ export function selectSafeCompactionPrefix(
     firstPartialIndex === -1 ? events.length : firstPartialIndex,
     firstPinnedIndex === -1 ? events.length : firstPinnedIndex,
   );
-  const pairSpans = toolPairSpans(events);
+  const pairSpans = toolPairSpans(events, options.projectedUnknownCallIds);
   for (let cut = maxCut; cut >= 1; cut -= 1) {
     if (straddlesToolPair(pairSpans, cut)) continue;
     return { ok: true, coveredCount: cut };
@@ -118,15 +124,20 @@ export function selectSafeCompactionPrefix(
 interface ToolPairSpan {
   callIndex?: number;
   responseIndex?: number;
+  projected?: boolean;
 }
 
-function toolPairSpans(events: readonly RuntimeEvent[]): ToolPairSpan[] {
+function toolPairSpans(
+  events: readonly RuntimeEvent[],
+  projectedUnknownCallIds?: ReadonlySet<string>,
+): ToolPairSpan[] {
   const byCallId = new Map<string, ToolPairSpan>();
   events.forEach((event, index) => {
     const content = event.content;
     if (content?.kind === 'function_call') {
       const span = byCallId.get(content.id) ?? {};
       span.callIndex = index;
+      span.projected = projectedUnknownCallIds?.has(event.id) ?? false;
       byCallId.set(content.id, span);
     } else if (content?.kind === 'function_response') {
       const span = byCallId.get(content.id) ?? {};
@@ -141,14 +152,15 @@ function toolPairSpans(events: readonly RuntimeEvent[]): ToolPairSpan[] {
  * A cut at exclusive index `cut` straddles a pair if exactly one side is
  * covered. A call whose response is not in the pool yet is an OPEN span:
  * covering it would orphan the response that arrives later (a result with no
- * call in the projection), so any cut past the call is unsafe. A response
+ * call in the projection), so any cut past the call is unsafe unless a
+ * validated unknown-outcome projection supplies its result. A response
  * without a call is inert — its call lives before the pool, so no cut inside
  * the pool can split that pair.
  */
 function straddlesToolPair(spans: readonly ToolPairSpan[], cut: number): boolean {
   for (const span of spans) {
     if (span.callIndex !== undefined && span.responseIndex === undefined) {
-      if (span.callIndex < cut) return true;
+      if (!span.projected && span.callIndex < cut) return true;
       continue;
     }
     if (span.callIndex === undefined || span.responseIndex === undefined) continue;
@@ -199,6 +211,7 @@ export interface PlanHistoryCompactionInput {
    * head anchor and still prove a mid_turn retreat.
    */
   invocations?: readonly RuntimeInvocationRecord[];
+  unknownToolOutcomes?: Extract<PriorUnknownToolOutcomeProjection, { kind: 'projected' }>;
   acceptedRoute?: { modelId: string; connectionId?: string };
   /** Present only when this automatic Compaction should create a Memory task. */
   memoryExtractionBoundary?: HistoryCompactMemoryExtractionBoundary;
@@ -313,6 +326,9 @@ export async function planHistoryCompaction(
     const boundary = selectSafeCompactionPrefix(input.orderedEvents, {
       reserveTailEvents: input.reserveTailEvents ?? (phase === 'standalone' ? 0 : 1),
       maxCoveredCount,
+      projectedUnknownCallIds: new Set(
+        input.unknownToolOutcomes?.outcomes.map((outcome) => outcome.callEventId),
+      ),
       isPinned: (event) =>
         (phase === 'pre_turn' && event.id === input.headAnchor?.runtimeEventId) ||
         (event.turnId === input.headAnchor?.turnId &&
@@ -405,8 +421,18 @@ export async function planHistoryCompaction(
     try {
       compacted = await Promise.resolve(
         input.summarize({
-          coveredRuntimeEvents: effectiveCoveredRuntimeEvents ?? coveredRuntimeEvents,
-          newlyFoldedRuntimeEvents: effectiveNewlyFoldedRuntimeEvents ?? newlyFoldedRuntimeEvents,
+          coveredRuntimeEvents: input.unknownToolOutcomes
+            ? appendPriorUnknownToolResponses(
+                effectiveCoveredRuntimeEvents ?? coveredRuntimeEvents,
+                input.unknownToolOutcomes,
+              )
+            : (effectiveCoveredRuntimeEvents ?? coveredRuntimeEvents),
+          newlyFoldedRuntimeEvents: input.unknownToolOutcomes
+            ? appendPriorUnknownToolResponses(
+                effectiveNewlyFoldedRuntimeEvents ?? newlyFoldedRuntimeEvents,
+                input.unknownToolOutcomes,
+              )
+            : (effectiveNewlyFoldedRuntimeEvents ?? newlyFoldedRuntimeEvents),
           ...(previousCheckpoint ? { previousCheckpoint } : {}),
         }),
       );

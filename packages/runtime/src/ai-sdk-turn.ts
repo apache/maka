@@ -900,16 +900,16 @@ export class AiSdkTurn {
     }
     if (
       observedPriorUnknownProjection.kind === 'projected' &&
+      observedPriorUnknownProjection.requiresUserAttention &&
       !input.allowPriorUnknownToolOutcomes
     ) {
       throw new Error(
         'Cannot continue an automated turn while a prior tool outcome is unknown; an explicit user message is required',
       );
     }
-    const priorUnknownProjection = input.allowPriorUnknownToolOutcomes
-      ? observedPriorUnknownProjection
-      : { kind: 'none' as const };
-    const preservingUnknownHistory = priorUnknownProjection.kind === 'projected';
+    const priorUnknownProjection = observedPriorUnknownProjection;
+    const preservingUnknownHistory =
+      priorUnknownProjection.kind === 'projected' && priorUnknownProjection.requiresUserAttention;
     const midTurnState = preservingUnknownHistory
       ? undefined
       : this.deps.compaction.buildMidTurnCapacityCompactState(input);
@@ -2852,7 +2852,8 @@ export class AiSdkTurn {
     // the durable projection-transition reducer (#4283). Replay, budgeting and
     // compaction share one input, so no RuntimeEvent replay path can resurrect
     // content a committed transition removed.
-    const preservingUnknownHistory = priorUnknownProjection.kind === 'projected';
+    const preservingUnknownHistory =
+      priorUnknownProjection.kind === 'projected' && priorUnknownProjection.requiresUserAttention;
     let priorRuntimeContext: RuntimeEvent[];
     let runtimeContext: RuntimeEvent[];
     let contextBudget: ContextBudgetPolicy | undefined;
@@ -2871,16 +2872,19 @@ export class AiSdkTurn {
         budgetedEvents.some((event) => event.id === outcome.callEventId),
       );
       // Existing checkpoints and durable result pruning are safe when they
-      // leave every unknown call available to pair with its temporary result.
-      // Otherwise replay the full effective ledger: a summary that erases T1
-      // would make the request-local T2 orphaned or hide the uncertainty.
-      const selectedEvents = preservesUnknownCalls ? budgetedEvents : rawPriorRuntimeContext;
+      // Before a user has acknowledged an unknown, retain its call so that the
+      // projected result cannot be hidden by an older checkpoint. After that
+      // turn, a new checkpoint can summarize the paired projected result.
+      const selectedEvents =
+        preservesUnknownCalls || !priorUnknownProjection.requiresUserAttention
+          ? budgetedEvents
+          : rawPriorRuntimeContext;
       const effectiveEvents = await this.deps.compaction.foldEffectiveModelHistory(
         selectedEvents,
         preparedContextBudget.projectionSnapshot,
       );
       runtimeContext = appendPriorUnknownToolResponses(effectiveEvents, priorUnknownProjection);
-      if (preservesUnknownCalls) {
+      if (preservesUnknownCalls || !priorUnknownProjection.requiresUserAttention) {
         contextBudgetDiagnostic = budgeted?.diagnostic;
         projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
       }

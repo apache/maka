@@ -16962,7 +16962,7 @@ describe('AiSdkBackend steering durability and identity', () => {
     });
 
     // An automated turn (Goal, WorkHub, schedule, activation) runs normally
-    // once the explicit answer retired the unknown.
+    // once the explicit answer acknowledged the unknown.
     const automatedModel = textCompletionModel('automated turn answer');
     const automated = durableTurnHarness('turn-automated', 'workhub wake', {
       runId: 'automated-run',
@@ -16983,8 +16983,70 @@ describe('AiSdkBackend steering durability and identity', () => {
     assert.equal(
       JSON.stringify(automatedModel.doStreamCalls[0]?.prompt).includes('outcome_unknown'),
       true,
-      'the durable unknown tool result must remain visible in later history',
+      'the projected unknown tool result must remain visible in later history',
     );
+
+    // Manual compaction consumes the same projection while retaining raw-ledger
+    // checkpoint coverage. The synthetic response must never be persisted as T2.
+    let compactedInput: readonly RuntimeEvent[] = [];
+    const unknownCheckpoints: HistoryCompactCheckpoint[] = [];
+    const before = JSON.stringify(priorEvents);
+    const unknownCompactBackend = createBackend({
+      header: header(),
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      contextBudget: {
+        name: 'unknown-projection-test',
+        charsPerToken: 1,
+        historyCompact: { enabled: true },
+      },
+      summarizeHistoryCompact: async ({ source }) => {
+        compactedInput = source.foldedRuntimeEvents;
+        return structuredSummary('The tool outcome remains unknown.');
+      },
+      recordHistoryCompactCheckpoint: (checkpoint) => {
+        unknownCheckpoints.push(checkpoint);
+      },
+    });
+    const compactResult = await unknownCompactBackend.compactHistory({
+      turnId: 'compact-turn',
+      runId: 'compact-run',
+      runtimeContext: priorEvents,
+      runtimeContextInvocations: [priorInvocation, explicitAnswer],
+    });
+    assert.equal(compactResult.outcome.kind, 'compacted');
+    assert.match(JSON.stringify(compactedInput), /outcome_unknown/);
+    assert.match(JSON.stringify(compactedInput), /Inspect current state/);
+    assert.equal(JSON.stringify(priorEvents), before);
+    assert.equal(unknownCheckpoints.length, 1);
+    const replayModel = completionModel();
+    const replayBackend = createBackend({
+      header: header(),
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => replayModel,
+      tools: [],
+      contextBudget: {
+        name: 'unknown-projection-test',
+        charsPerToken: 1,
+        historyCompact: { enabled: true },
+      },
+      loadHistoryCompactCheckpoint: () => unknownCheckpoints[0],
+    });
+    await drain(
+      replayBackend.send({
+        turnId: 'after-compact',
+        text: 'continue',
+        context: [],
+        runtimeContext: structuredClone(priorEvents),
+        runtimeContextInvocations: [priorInvocation, explicitAnswer],
+      }),
+    );
+    const replay = JSON.stringify(replayModel.doStreamCalls[0]?.prompt);
+    assert.match(replay, /tool outcome remains unknown/);
+    assert.doesNotMatch(replay, /touch marker.txt/);
 
     // An explicit turn that failed never projected a usable answer, so the
     // unknown still guards every later automated turn.
