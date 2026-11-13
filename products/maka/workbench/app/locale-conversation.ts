@@ -1185,67 +1185,15 @@ export const conversationMessages = {
     'Maka 无法确认这轮是否已停止。请再点一次停止。',
     'Maka 無法確認這輪是否已停止。請再點一次停止。',
   ],
-  'Operation outcome unknown': ['Operation outcome unknown', '操作结果未知', '操作結果未知'],
-  'Provider tool outcome unknown': [
-    'Provider tool outcome unknown',
-    '提供方工具结果未知',
-    '提供者工具結果未知',
-  ],
   'Original admission unknown': [
     'Original admission unknown',
     '原调用接纳状态未知',
     '原呼叫接納狀態未知',
   ],
-  'Code cell recovery unavailable': [
-    'Code cell recovery unavailable',
-    '代码单元无法恢复',
-    '程式碼單元無法復原',
-  ],
-  'Maka could not resume this run.': [
-    'Maka could not resume this run.',
-    'Maka 无法继续这次运行。',
-    'Maka 無法繼續這次執行。',
-  ],
   'A history landmark has no source turn identity.': [
     'A history landmark has no source turn identity.',
     '历史导航位置缺少来源轮次身份。',
     '歷史導覽位置缺少來源回合身分。',
-  ],
-  'Tool cleanup unconfirmed': [
-    'Tool cleanup unconfirmed',
-    '尚未确认工具清理完成',
-    '尚未確認工具清理完成',
-  ],
-  'Model cleanup unconfirmed': [
-    'Model cleanup unconfirmed',
-    '尚未确认模型清理完成',
-    '尚未確認模型清理完成',
-  ],
-  'Resource cleanup unconfirmed': [
-    'Resource cleanup unconfirmed',
-    '尚未确认资源清理完成',
-    '尚未確認資源清理完成',
-  ],
-  'Current authority unavailable': [
-    'Current authority unavailable',
-    '当前授权不可用',
-    '目前授權無法使用',
-  ],
-  'Resources unavailable': ['Resources unavailable', '资源不可用', '資源無法使用'],
-  'External output needs reconciliation': [
-    'External output needs reconciliation',
-    '外部输出需要核对',
-    '外部輸出需要核對',
-  ],
-  'External output publication unavailable': [
-    'External output publication unavailable',
-    '外部输出无法发布',
-    '外部輸出無法發佈',
-  ],
-  'External task cannot be observed': [
-    'External task cannot be observed',
-    '无法观察外部任务状态',
-    '無法觀察外部工作的狀態',
   ],
   'Confirming continuation…': ['Confirming continuation…', '正在确认继续…', '正在確認繼續…'],
   'Maka is shutting down. Continue after it restarts.': [
