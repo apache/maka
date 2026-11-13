@@ -359,7 +359,7 @@ describe('AppUpdateService', () => {
       state: 'error',
       currentVersion: '1.0.0',
       latestVersion: '1.1.0',
-      operation: 'download',
+      operation: 'verify',
       message: 'release provenance did not match',
     });
     assert.equal(updater.quitAndInstallCalls, 0);
@@ -502,6 +502,32 @@ describe('AppUpdateService', () => {
       'Unable to find latest version on GitHub',
     );
     assert.equal(statuses.filter((entry) => entry.state === 'error').length, 1);
+  });
+
+  test('a later check failure replaces the earlier error instead of latching it', async () => {
+    const updater = new FakeUpdater();
+    let failure = 'first failure';
+    updater.checkForUpdates = async () => {
+      updater.checkCalls += 1;
+      throw new Error(failure);
+    };
+    const { clock, service } = createHarness({ updater });
+
+    const first = service.checkForUpdatesNow();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await clock.runNext();
+    await first;
+    const firstStatus = service.getStatus();
+    assert.equal(firstStatus.state === 'error' ? firstStatus.message : undefined, 'first failure');
+
+    failure = 'second failure';
+    const second = service.checkForUpdatesNow();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await clock.runNext();
+    await second;
+    const status = service.getStatus();
+    assert.equal(status.state, 'error');
+    assert.equal(status.state === 'error' ? status.message : undefined, 'second failure');
   });
 
   test('settles an in-flight retry when disposed during its backoff', async () => {
