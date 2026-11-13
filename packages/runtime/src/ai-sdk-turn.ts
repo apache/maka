@@ -1276,6 +1276,7 @@ export class AiSdkTurn {
           this.deps.backend.connection,
           this.deps.backend.header.llmConnectionId,
           this.deps.backend.modelId,
+          this.deps.backend.providerStateIdentity,
         )
           ? checkpoint
           : undefined;

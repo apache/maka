@@ -318,6 +318,7 @@ export class AiSdkCompaction {
             this.input.connection,
             this.targetConnectionId,
             this.input.modelId,
+            this.targetProviderStateIdentity,
           )
         ) {
           previousCheckpoint = loaded;
@@ -714,6 +715,7 @@ export class AiSdkCompaction {
         this.input.connection,
         this.targetConnectionId,
         this.input.modelId,
+        this.targetProviderStateIdentity,
       )
     ) {
       // Raw identity first: a coverage miss keeps the apply-stage path, whose
