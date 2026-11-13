@@ -146,7 +146,7 @@ fn pointer_and_keyboard_ownership() {
     use platform::{
         objc2::rc::Retained,
         objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSView},
-        objc2_foundation::NSRunLoop,
+        objc2_foundation::{NSRunLoop, NSString},
     };
     use serde_json::json;
     use std::sync::{Arc, Mutex};
@@ -165,7 +165,11 @@ fn pointer_and_keyboard_ownership() {
                     report("popup enter");
                 }}
                 onMouseLeave={() => report("popup leave")}>
-                <Input autoFocus style={{marginTop: shifted() ? 1 : 0}} />
+                <Input autoFocus style={{marginTop: shifted() ? 1 : 0}} ref={input => {
+                    keymap.bind("escape", () => report("popup escape"), {when: "always"});
+                    keymap.bind("backspace", () => report("popup backspace"),
+                        {when: "always", within: input, passThrough: true});
+                }} />
             </View>, {
                 id: "pointer-probe", title: "NSH pointer probe", kind: "popup", activate: false,
                 defaultSize: {width: 300, height: 200}
@@ -275,6 +279,30 @@ fn pointer_and_keyboard_ownership() {
             json!(["main move", true]),
         ]
     );
+
+    for (code, characters, expected) in [
+        (53, "\u{1b}", "popup escape"),
+        (51, "\u{7f}", "popup backspace"),
+    ] {
+        // The last mouse event was in the main window. The keyboard is
+        // still in the popup's native field editor.
+        main_root.mouseMoved(&move_at(&main, NSPoint::new(75.0, 190.0)));
+        let characters = NSString::from_str(characters);
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown, NSPoint::new(0.0, 0.0), NSEventModifierFlags::empty(),
+            0.0, popup.windowNumber(), None, &characters, &characters, false, code,
+        ).unwrap();
+        app.sendEvent(&event);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !reports.lock().unwrap().contains(&json!([expected, true])) {
+            assert!(
+                Instant::now() < deadline,
+                "missing {expected}: {:?}",
+                reports.lock().unwrap()
+            );
+            pump();
+        }
+    }
 
     println!(
         "window focus: hover follows the pointer window and keyboard focus stays in the popup"
