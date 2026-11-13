@@ -118,6 +118,43 @@ async fn invalid_ambiguous_and_missing_edits_leave_bytes_intact() {
 }
 
 #[tokio::test]
+async fn overlapping_exact_matches_are_rejected_without_writing() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(temp.path()).unwrap();
+    let executor = executor(&root);
+    let path = root.join("text");
+    for (source, old) in [
+        ("item\nitem\nitem\n", "item\nitem\n"),
+        ("banana", "ana"),
+        ("AAAA", "AAA"),
+        ("你你你", "你你"),
+    ] {
+        fs::write(&path, source).unwrap();
+        let result = edit(
+            &executor,
+            json!({"path":"text","old_string":old,"new_string":"changed"}),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ToolError::Failed(ref message)) if message == "Edit exact match is not unique"),
+            "source={source:?}, result={result:?}"
+        );
+        assert_eq!(fs::read(&path).unwrap(), source.as_bytes());
+    }
+
+    // A self-overlapping pattern is valid when the source contains only one occurrence.
+    fs::write(&path, "前AAA后").unwrap();
+    let result = edit(
+        &executor,
+        json!({"path":"text","old_string":"AAA","new_string":"changed"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["matchedVia"], "exact");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "前changed后");
+}
+
+#[tokio::test]
 async fn exact_edit_large_utf8_source_preserves_bytes_inode_and_mode() {
     let temp = tempfile::tempdir().unwrap();
     let root = dunce::canonicalize(temp.path()).unwrap();
