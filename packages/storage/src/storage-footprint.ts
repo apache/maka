@@ -50,7 +50,7 @@ export interface StorageFootprintTotal {
 
 export interface StorageFootprint {
   readonly totals: readonly StorageFootprintTotal[];
-  /** Free pages in runtime.sqlite that a future VACUUM could return to the OS. */
+  /** Free pages in runtime.sqlite; incremental databases can reclaim them in maintenance. */
   readonly reclaimableBytes: number;
   /** Live Subagent worktrees; counted, never walked, because a checkout can be huge. */
   readonly worktreeCount: number;
