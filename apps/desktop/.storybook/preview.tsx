@@ -19,6 +19,7 @@
 
 import type { Decorator, Preview } from '@storybook/react-vite';
 import '../src/renderer/styles.css';
+import '../src/renderer/platform/desktop/astryx-hover-markers';
 import { Theme } from '@astryxdesign/core/theme';
 import { THEME_PALETTES } from '../../../packages/core/src/settings.js';
 import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
