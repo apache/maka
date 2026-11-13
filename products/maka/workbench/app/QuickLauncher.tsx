@@ -86,6 +86,11 @@ const USAGE_KEY = 'maka.quick-launcher.usage';
 
 type BotOutbox = Output<'agent', 'botOutbox'>;
 
+type ToolScope = {
+  entry: ToolEntry;
+  previous: { query: string; selection: number };
+};
+
 type Navigation = {
   openBot(): Promise<string>;
   /** Takes the conversation out of the panes showing it, which saves their draft. */
@@ -340,10 +345,9 @@ function Launcher(
     /** The tool whose settings show in place of the results. */
     page: Signal<UiContributionRef | null>;
     /** The tool entered by choosing its entry, searched with what is typed. */
-    scope: Signal<ToolEntry | null>;
-    /** Whether the query is inside a tool, entered or typed with its keyword. */
-    inside(): boolean;
-    /** Back from inside a tool to every tool. */
+    scope(): ToolEntry | null;
+    selection: Signal<number>;
+    enter(item: ToolEntry, text: string): void;
     leave(): void;
   },
 ) {
@@ -369,7 +373,7 @@ function Launcher(
   }
   const shortcut = (index: number) =>
     commandHeld() && index < 9 ? keymap.label(`mod+${index + 1}`) : undefined;
-  const { query, failure } = props;
+  const { query, failure, selection } = props;
   const problem = () => failure() ?? props.usage.failure();
   const unread = watchUnread((reason) =>
     failure.set(errorText(reason, 'Could not check Maka Bot messages.')),
@@ -402,19 +406,13 @@ function Launcher(
         }),
       ),
   );
-  let input: InputRef | undefined;
-  const refocus = () => input?.focus();
+  const input = signal<InputRef | undefined>(undefined);
+  const refocus = () => input()?.focus();
   // Entering or leaving a tool redraws the bar around the query, which takes the keyboard away.
   effect(() => {
     props.scope();
     untracked(refocus);
   });
-  const enter = (item: ToolEntry, text: string) =>
-    batch(() => {
-      selection.set(0);
-      query.set(text);
-      props.scope.set(item);
-    });
   const entries = computed(() =>
     quick.entries().map((item) => {
       const { key, tool, entry } = item;
@@ -434,7 +432,7 @@ function Launcher(
           : tr('Command'),
         action: tr('Open'),
         tool,
-        run: entry.run ?? (() => enter(item, '')),
+        run: entry.run ?? (() => props.enter(item, '')),
       };
     }),
   );
@@ -493,9 +491,8 @@ function Launcher(
   const listed = computed(() => sections().flatMap((section) => section.rows));
   // A typed query keeps a way to ask the Bot below the rows that scroll, except inside a tool,
   // whose query is the tool's to search.
-  const pinned = computed(() => (home() || props.inside() ? null : askRow()));
+  const pinned = computed(() => (home() || props.scope() !== null ? null : askRow()));
   const rows = computed(() => [...listed(), ...(pinned() ? [pinned()!] : [])]);
-  const selection = signal(0);
   const selected = computed(() => Math.min(selection(), rows().length - 1));
   const previewer = computed(() => {
     const scope = props.scope();
@@ -534,17 +531,21 @@ function Launcher(
   });
   let removeKeys = () => {};
   cleanup(() => removeKeys());
-  // Escape inside a tool goes back to every tool; outside one the popup closes.
+  // The settings page and native popup handle Escape on their own.
   effect(() => {
-    if (!props.inside()) return;
+    if (props.scope() === null || props.page() !== null) return;
+    cleanup(keymap.bind('escape', props.leave, { when: 'always' }));
+  });
+  effect(() => {
+    const node = input();
+    if (!node || props.scope() === null || props.page() !== null) return;
     cleanup(
       keymap.bind(
-        'escape',
+        'backspace',
         () => {
-          selection.set(0);
-          props.leave();
+          if (query() === '') props.leave();
         },
-        { when: 'always' },
+        { when: 'always', within: node, passThrough: true },
       ),
     );
   });
@@ -635,7 +636,7 @@ function Launcher(
             {() => (
               <Input
                 ref={(node) => {
-                  input = node;
+                  input.set(node);
                   removeKeys();
                   const unbind = [
                     ...Array.from({ length: 9 }, (_, index) =>
@@ -686,7 +687,7 @@ function Launcher(
                           (row) => entryMatch(word, undefined, row.entry.keywords) !== null,
                         );
                       if (row) {
-                        enter(row.item, prefix[2]!);
+                        props.enter(row.item, prefix[2]!);
                         return;
                       }
                     }
@@ -830,16 +831,30 @@ export function QuickLauncher(
   const usage = createUsageStore();
   const page = signal<UiContributionRef | null>(null);
   const query = signal('');
+  const selection = signal(0);
   const failure = signal<ReturnType<typeof errorText> | null>(null);
   // Tools live as long as the app, not the popup, so their commands run from shortcuts too.
   const tools = computed(() => quick.tools().filter(quick.toolEnabled));
-  const scope = signal<ToolEntry | null>(null);
+  const tool = signal<ToolScope | null>(null);
+  const scope = () => tool()?.entry ?? null;
   const editor = signal<QuickTextEditor | null>(null);
-  const inside = () => scope() !== null;
-  const leave = () => {
-    scope.set(null);
-    query.set('');
-  };
+  const enter = (entry: ToolEntry, text: string) =>
+    batch(() => {
+      const previous = tool()?.previous ?? { query: query(), selection: selection() };
+      tool.set({ entry, previous });
+      query.set(text);
+      selection.set(0);
+      failure.set(null);
+    });
+  const leave = () =>
+    batch(() => {
+      const current = tool();
+      if (current === null) return;
+      tool.set(null);
+      query.set(current.previous.query);
+      selection.set(current.previous.selection);
+      failure.set(null);
+    });
   const toolView = (tool: UiContributionRef) => {
     cleanup(() => {
       const remaining = new Map(handles());
@@ -857,11 +872,7 @@ export function QuickLauncher(
         const entry = quick
           .entries()
           .find((row) => row.tool.key === tool.key && row.entry.id === id);
-        if (entry)
-          batch(() => {
-            scope.set(entry);
-            query.set(text);
-          });
+        if (entry) enter(entry, text);
       },
       close: () => void props.close(),
       report: (reason) =>
@@ -869,14 +880,17 @@ export function QuickLauncher(
       attach: (handle) => handles.set(new Map(handles()).set(tool.key, handle)),
     });
   };
-  const show = (entered: ToolEntry | null) => {
-    query.set('');
-    editor.set(null);
-    scope.set(entered);
-    failure.set(null);
-    page.set(null);
-    props.opened.set(true);
-  };
+  const show = (entered: ToolEntry | null) =>
+    batch(() => {
+      query.set('');
+      selection.set(0);
+      tool.set(null);
+      editor.set(null);
+      failure.set(null);
+      page.set(null);
+      if (entered !== null) enter(entered, '');
+      props.opened.set(true);
+    });
   const toggle = () => {
     if (props.opened()) void props.close();
     else show(null);
@@ -945,7 +959,9 @@ export function QuickLauncher(
         sizeToContent="height"
         // Escape stops a running reply, and every way out has to save the draft first. In a tool's
         // settings Escape goes back, and a picker the page opens must not close it.
-        closeOnEscape={!props.conversing() && page() === null && !inside() && editor() === null}
+        closeOnEscape={
+          !props.conversing() && page() === null && scope() === null && editor() === null
+        }
         closeOnBlur={!props.conversing() && page() === null}
         onFocusChange={({ focused }) => {
           // Keep the conversation mounted until its pending draft has been saved.
@@ -958,7 +974,7 @@ export function QuickLauncher(
           if (open) return;
           editor.set(null);
           page.set(null);
-          scope.set(null);
+          tool.set(null);
           props.closed();
         }}
       >
@@ -978,7 +994,8 @@ export function QuickLauncher(
                   failure={failure}
                   page={page}
                   scope={scope}
-                  inside={inside}
+                  selection={selection}
+                  enter={enter}
                   leave={leave}
                 />
               }
