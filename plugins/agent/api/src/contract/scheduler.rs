@@ -125,6 +125,9 @@ pub struct ScheduledSummary {
     pub title: String,
     pub status: maka_scheduler::task::Status,
     pub approved: bool,
+    /// A Bot-created one-time discovery that no longer needs approval.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background_followup: bool,
     pub next_fire_at: Option<i64>,
     pub pending_fire: Option<String>,
     pub reminder: bool,

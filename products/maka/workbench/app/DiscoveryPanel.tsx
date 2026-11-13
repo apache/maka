@@ -78,6 +78,9 @@ export function DiscoveryPanel(props: Props) {
 export function DiscoveryDialog(props: Props & { close(): void }) {
   const tasks = signal<AgentScheduledSummary[]>([]),
     selected = signal<string | null>(null);
+  const showFollowups = signal(false);
+  const visibleTasks = () =>
+    showFollowups() ? tasks() : tasks().filter((task) => !task.backgroundFollowup);
   const detail = signal<AgentScheduledDetail | null>(null),
     basis = signal<DiscoveryApproval | null>(null);
   const loading = signal(true),
@@ -210,7 +213,10 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
           loading.set(false);
           if (initial) {
             initial = false;
-            if (rows[0]) await select(rows[0].id);
+            const plans = visibleTasks();
+            const first =
+              plans.find((task) => !task.approved && task.status === 'paused') ?? plans[0];
+            if (first) await select(first.id);
             else await edit(true);
           } else if (selected()) await readDetail(selected()!);
         }
@@ -327,6 +333,17 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
         : last()?.message === 'No report'
           ? 'Discovery no report'
           : 'Discovery reported';
+  const toggleFollowups = async () => {
+    showFollowups.set(!showFollowups());
+    if (
+      !showFollowups() &&
+      tasks().some((task) => task.id === selected() && task.backgroundFollowup)
+    ) {
+      const first = visibleTasks()[0];
+      if (first) await select(first.id);
+      else await edit(true);
+    }
+  };
   const action = (label: MessageKey, run: () => void, disabled = false) => (
     <Button
       accessibilityLabel={tr(label)}
@@ -384,9 +401,13 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
             <If when={loading()}>
               <Text style={{ color: C.secondary }}>{tr('Loading…')}</Text>
             </If>
-            <If when={tasks().length > 1}>
+            <If
+              when={
+                visibleTasks().length > 1 || visibleTasks().some((task) => task.id !== selected())
+              }
+            >
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                <Each of={tasks()} key={(task) => task.id}>
+                <Each of={visibleTasks()} key={(task) => task.id}>
                   {(task) => (
                     <Button
                       onPress={() => void select(task().id)}
@@ -401,6 +422,12 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
                   )}
                 </Each>
               </View>
+            </If>
+            <If when={tasks().some((task) => task.backgroundFollowup)}>
+              {action(
+                showFollowups() ? 'Hide background follow-ups' : 'View background follow-ups',
+                () => void toggleFollowups(),
+              )}
             </If>
             <Text accessibilityLabel={tr(state())} style={{ ...bodyTextStyle, color: C.text }}>
               {tr(state())}

@@ -128,6 +128,9 @@ impl Owner {
                     approval,
                     recall: self.settings.recall && self.tools.contains("Recall"),
                     session_tools: true,
+                    authority: DiscoveryAuthority::User {
+                        generation: uuid::Uuid::new_v4(),
+                    },
                 }
             } else {
                 Approval::Execution { approval }
@@ -286,6 +289,15 @@ impl Owner {
             }
             let before = serde_json::to_value(&plan).map_err(reason)?;
             let at = now() as i64;
+            if let Some(grant) = plan
+                .authorization
+                .as_ref()
+                .and_then(Approval::followup_grant)
+                && !self.scheduler.followup_is_current(grant).await?
+            {
+                plan = pause_plan(&plan, at);
+                plan.authorization = None;
+            }
             if recover && self.settings.scheduled_tasks {
                 plan.recover(at).map_err(reason)?;
             }

@@ -1094,9 +1094,9 @@ const ABILITIES: &[Ability] = &[
     ),
     (
         &["ScheduledTask"],
-        "ScheduledTask（安排定时唤醒，需用户批准）",
-        "ScheduledTask（安排定時喚醒，需使用者核准）",
-        "ScheduledTask (schedule a wake-up, which the user must approve)",
+        "ScheduledTask（安排定时唤醒或一次性复查）",
+        "ScheduledTask（安排定時喚醒或一次性複查）",
+        "ScheduledTask (schedule a wake-up or one-time follow-up)",
     ),
     (
         &["CreateGoal", "GetGoal", "GoalStatus"],

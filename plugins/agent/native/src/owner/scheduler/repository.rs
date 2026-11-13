@@ -93,7 +93,13 @@ fn schedule_budget(
     record: maka_plugin_core::storage::Record,
     id: &str,
     message_id: &str,
-) -> Result<super::super::capture_budget::ScheduleBudget, String> {
+) -> Result<
+    (
+        super::super::capture_budget::ScheduleBudget,
+        Option<FollowupGrant>,
+    ),
+    String,
+> {
     let plan: Plan = serde_json::from_value(
         record
             .data
@@ -128,17 +134,23 @@ fn schedule_budget(
     if original_message != message_id {
         return Err("scheduler_original_fire_changed".into());
     }
-    Ok(super::super::capture_budget::ScheduleBudget {
-        task_id: id.into(),
-        message_id: message_id.into(),
-        revision: record.revision,
-        fire_id: fire.id.clone(),
-        expires_at: plan
-            .task
-            .expires_at
-            .map(maka_agent_facts::durable::UnixMillis),
-        approval: approval.clone(),
-    })
+    Ok((
+        super::super::capture_budget::ScheduleBudget {
+            task_id: id.into(),
+            message_id: message_id.into(),
+            revision: record.revision,
+            fire_id: fire.id.clone(),
+            expires_at: plan
+                .task
+                .expires_at
+                .map(maka_agent_facts::durable::UnixMillis),
+            approval: approval.clone(),
+        },
+        fire.authorization
+            .as_ref()
+            .and_then(Approval::followup_grant)
+            .cloned(),
+    ))
 }
 impl Scheduler {
     pub(in crate::owner) async fn capture_budget(
@@ -152,7 +164,7 @@ impl Scheduler {
             .await
             .map_err(reason)?
             .ok_or("scheduler_task_missing")?;
-        schedule_budget(record, id, message_id)
+        schedule_budget(record, id, message_id).map(|(budget, _)| budget)
     }
     pub(in crate::owner) fn budget_storage(&self) -> Arc<maka_host_runtime::storage::Storage> {
         #[cfg(not(test))]
@@ -176,8 +188,20 @@ impl Scheduler {
             .ok_or_else(|| {
                 maka_event_log::StoreError::InvalidTransition("scheduler_task_missing".into())
             })?;
-        schedule_budget(record, id, message_id)
-            .map_err(maka_event_log::StoreError::InvalidTransition)
+        let (budget, parent) =
+            schedule_budget(record, id, message_id).map_err(StoreError::InvalidTransition)?;
+        if let Some(parent) = parent {
+            // Admission can race with pausing the parent after the worker was queued.
+            let saved = storage
+                .read_in_transaction(connection, &task_key(&parent.task_id), writer)?
+                .map(|record| decode_saved(record, &parent.task_id))
+                .transpose()?
+                .flatten();
+            if !saved.is_some_and(|saved| parent.is_current(&saved.plan, now() as i64)) {
+                return Err(StoreError::InvalidTransition("discovery_cancelled".into()));
+            }
+        }
+        Ok(budget)
     }
     pub(in crate::owner) async fn load(&self) -> Result<Catalog, String> {
         self.load_selected(None).await
@@ -568,6 +592,11 @@ impl Saved {
             title: self.plan.task.title.clone(),
             status: self.plan.task.status,
             approved: self.plan.authorization.is_some(),
+            background_followup: matches!(self.plan.task.created_by, Creator::Agent { .. })
+                && matches!(self.plan.task.schedule, TaskSchedule::Once { .. })
+                && matches!(self.plan.task.effect, ScheduledEffect::Discovery { .. })
+                && (self.plan.authorization.is_some()
+                    || matches!(self.plan.task.status, Status::Completed | Status::Expired)),
             next_fire_at: self.plan.task.next_fire_at,
             pending_fire: self.plan.pending.as_ref().map(|fire| fire.id.clone()),
             reminder: matches!(self.plan.task.effect, ScheduledEffect::Reminder),

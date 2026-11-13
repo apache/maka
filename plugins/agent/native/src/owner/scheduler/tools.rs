@@ -20,6 +20,10 @@
 use super::*;
 use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::tools::*;
+use maka_agent_facts::{
+    durable::{ContentRef, RunId},
+    input::RunInput,
+};
 use maka_tool_catalog::input::ToolRequest;
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
@@ -68,7 +72,7 @@ impl Scheduler {
     pub fn tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
         let mut tools = vec![ToolRegistration {
             definition: ToolDefinition { provider: None, name: "ScheduledTask".into(),
-                description: "Manage this conversation's scheduled tasks. Create saves a paused proposal requiring user approval of its exact execution in Scheduled tasks; model calls cannot grant background access. Session and agent_run use this conversation's workspace and model. The Bot may propose discovery: a fresh investigation using approved Session permissions, silent unless it reports a finding. Times are Unix milliseconds; timezone is an IANA name. List returns tasks and revisions. Resume requires existing user approval.".into(),
+                description: "Manage this conversation's scheduled tasks. Create normally saves a paused proposal requiring user approval. While handling an approved discovery's report, the Bot can schedule a one-time discovery follow-up under that plan's unchanged approval. Check approved in the result. If a discovery follow-up needs approval, ask the user to approve it in Proactive Discovery. Keep successful background scheduling confirmations internal and share material findings separately. Session and agent_run use this conversation's workspace and model. Discovery runs a fresh investigation using approved Session permissions, silent unless it reports a finding. Times are Unix milliseconds; timezone is an IANA name. List returns tasks and revisions. Resume requires existing user approval.".into(),
                 input_schema: serde_json::to_value(schemars::schema_for!(ToolRequest<Input>)).expect("task tool schema"),
                 output_schema: None, freeform: None },
             nesting: ToolNesting::Nestable, semantics: ToolSemantics::ExclusiveStep,
@@ -171,6 +175,77 @@ impl ToolPreparer for Scheduler {
     }
 }
 impl Owner {
+    async fn followup_approval(
+        &self,
+        catalog: &repository::Catalog,
+        plan: &Plan,
+        run: RunId,
+        input: &ContentRef,
+        at: i64,
+    ) -> Result<Option<Approval>, String> {
+        let (ScheduledEffect::Discovery { .. }, TaskSchedule::Once { run_at }) =
+            (&plan.task.effect, &plan.task.schedule)
+        else {
+            return Ok(None);
+        };
+        let RunInput::Message {
+            source_messages, ..
+        } = self.run_content(run, input).await.map_err(reason)?
+        else {
+            return Ok(None);
+        };
+        let [source] = source_messages.as_slice() else {
+            return Ok(None);
+        };
+        let Some(MessageOrigin::BotWorker { session_id }) = &source.message.origin else {
+            return Ok(None);
+        };
+        for saved in catalog.plans.values() {
+            let parent = &saved.plan;
+            let Some(Approval::Discovery {
+                approval,
+                recall,
+                session_tools,
+                authority: DiscoveryAuthority::User { generation },
+            }) = &parent.authorization
+            else {
+                continue;
+            };
+            if parent.task.effect != plan.task.effect
+                || parent.task.status != Status::Active
+                || parent
+                    .task
+                    .expires_at
+                    .is_some_and(|expiry| at.max(*run_at) >= expiry)
+                || (*recall && !self.settings.recall)
+            {
+                continue;
+            }
+            let Some(fire) = parent.task.runs.iter().find(|fire| {
+                fire.outcome == Outcome::Ok
+                    && fire.session_id.as_ref() == Some(session_id)
+                    && source.message.message_id
+                        == format!("m_{}", super::super::discovery::report_identity(&fire.id))
+            }) else {
+                continue;
+            };
+            if self.scheduler.completed_report_generation(&fire.id).await? == Some(*generation) {
+                return Ok(Some(Approval::Discovery {
+                    approval: approval.clone(),
+                    recall: *recall,
+                    session_tools: *session_tools,
+                    authority: DiscoveryAuthority::Followup {
+                        grant: FollowupGrant {
+                            task_id: parent.task.id.clone(),
+                            generation: *generation,
+                        },
+                    },
+                }));
+            }
+        }
+        Ok(None)
+    }
+
     async fn scheduled_tool(
         &self,
         input: Input,
@@ -289,6 +364,7 @@ impl Owner {
                     }
                 };
                 let id = format!("task-{identity}");
+                let at = now() as i64;
                 let mut plan = Plan::create(
                     id.clone(),
                     maka_scheduler::task::Create {
@@ -303,11 +379,16 @@ impl Owner {
                         session_id: context.execution.session_id,
                     },
                     timezone,
-                    now() as i64,
+                    at,
                 )
                 .map_err(reason)?;
                 plan.misfire = misfire;
-                plan = plan.pause(now() as i64);
+                plan.authorization = self
+                    .followup_approval(&catalog, &plan, view.run, &view.spec.input, at)
+                    .await?;
+                if plan.authorization.is_none() {
+                    plan = plan.pause(at);
+                }
                 (id, Some(plan))
             }
             Input::Pause {
@@ -336,6 +417,11 @@ impl Owner {
                         let Some(approval) = &saved.plan.authorization else {
                             return Err("scheduler_user_approval_required".into());
                         };
+                        if let Some(grant) = approval.followup_grant()
+                            && !self.scheduler.followup_is_current(grant).await?
+                        {
+                            return Err("scheduler_user_approval_required".into());
+                        }
                         if let Approval::Execution { approval }
                         | Approval::Discovery { approval, .. } = approval
                         {

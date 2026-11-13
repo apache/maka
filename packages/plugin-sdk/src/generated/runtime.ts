@@ -7152,6 +7152,10 @@ export interface AgentScheduledSummary {
   title: string;
   status: Status;
   approved: boolean;
+  /**
+   * A Bot-created one-time discovery that no longer needs approval.
+   */
+  backgroundFollowup?: boolean;
   nextFireAt?: number | null;
   pendingFire?: string | null;
   reminder: boolean;

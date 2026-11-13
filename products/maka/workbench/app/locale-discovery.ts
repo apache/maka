@@ -48,6 +48,8 @@ export const discoveryMessages = {
   'Approve and save discovery': ['Approve and save', '批准并保存', '核准並儲存'],
   'New discovery plan': ['New plan', '新建计划', '新增計畫'],
   'Edit discovery plan': ['Edit plan', '编辑计划', '編輯計畫'],
+  'View background follow-ups': ['View background follow-ups', '查看后台复查', '查看背景複查'],
+  'Hide background follow-ups': ['Hide background follow-ups', '收起后台复查', '收合背景複查'],
   'Discovery not enabled': ['Not enabled', '尚未启用', '尚未啟用'],
   'Discovery active': ['Enabled', '已启用', '已啟用'],
   'Discovery paused': ['Paused', '已暂停', '已暫停'],

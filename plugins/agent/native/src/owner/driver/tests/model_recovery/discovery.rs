@@ -1496,7 +1496,7 @@ async fn disabling_scheduling_settles_existing_work_without_reviving_its_checkpo
 async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut f = Fixture::new(&listener).await;
-    let proposal = json!({"request":{"mode":"create","title":"Proposed discovery","intentBody":"Check authorized documents","effect":"discovery","schedule":{"kind":"interval","everySeconds":3600,"startAt":maka_agent_authority::now()+3_600_000},"timezone":"UTC"}});
+    let proposal = json!({"request":{"mode":"create","title":"Proposed discovery","intentBody":"Check authorized documents","effect":"discovery","schedule":{"kind":"once","runAt":maka_agent_authority::now()+3_600_000},"timezone":"UTC"}});
     let created=f.query("create",json!({"title":"Ordinary proposer","automaticTitle":false,"labels":[],"tools":["ScheduledTask","DiscoveryComplete","DiscoveryMemory","DiscoveryContext"],"workspace":{"kind":"directory","path":f.rig.directory.path().join("workspace")}})).await;
     let session = created["session"]["id"].as_str().unwrap();
     f.query("send",json!({"sessionId":session,"message":"Propose a discovery","backend":f.model,"delivery":"queue"})).await;
@@ -1532,6 +1532,7 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     let id = task["id"].as_str().unwrap();
     assert_eq!(task["status"], "paused");
     assert_eq!(task["approved"], false);
+    assert!(task["backgroundFollowup"].is_null());
     tool(
         &mut socket,
         "ScheduledTask",
@@ -1547,6 +1548,10 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     );
     quiet(&f, &listener, &mut socket).await;
     f.change(id, "approve").await;
+    let page = f
+        .query("schedules", json!({"kind":"discovery","sessionId":f.bot}))
+        .await;
+    assert_eq!(page["tasks"][0]["backgroundFollowup"], true);
     f.change(id, "trigger_now").await;
     let (mut worker, _) = next(&listener).await;
     tool(
@@ -1556,6 +1561,112 @@ async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     )
     .await;
     assert_eq!(f.settled(id, 1).await["task"]["runs"][0]["outcome"], "ok");
+    f.close().await;
+}
+
+async fn report_to_bot(f: &Fixture, listener: &TcpListener, task: &str) -> TcpStream {
+    f.change(task, "trigger_now").await;
+    let (mut worker, _) = next(listener).await;
+    tool(
+        &mut worker,
+        "DiscoveryComplete",
+        json!({"kind":"report","text":"Check the release date again after the update."}),
+    )
+    .await;
+    let (bot, _) = next(listener).await;
+    bot
+}
+
+async fn propose_followup(
+    listener: &TcpListener,
+    bot: &mut TcpStream,
+    title: &str,
+    schedule: Value,
+) -> (TcpStream, Value) {
+    tool(
+        bot,
+        "ScheduledTask",
+        json!({"request":{"mode":"create","title":title,"intentBody":"Check the updated release date","effect":"discovery","schedule":schedule,"timezone":"UTC"}}),
+    )
+    .await;
+    let (socket, request) = next(listener).await;
+    (socket, output(&request))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_report_authorizes_one_time_followup_but_not_a_recurring_or_chained_plan() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let parent = f.create("Approved release watch").await;
+    let mut bot = report_to_bot(&f, &listener, &parent).await;
+    let at = maka_agent_authority::now() + 3_600_000;
+    let once = json!({"kind":"once","runAt":at});
+    let (mut bot, recurring) = propose_followup(
+        &listener,
+        &mut bot,
+        "New recurring watch",
+        json!({"kind":"interval","everySeconds":3600,"startAt":at}),
+    )
+    .await;
+    assert_eq!(recurring["approved"], false, "{recurring}");
+    let (mut bot, result) =
+        propose_followup(&listener, &mut bot, "One-time follow-up", once.clone()).await;
+    assert_eq!(result["approved"], true, "{result}");
+    let followup = result["taskId"].as_str().unwrap();
+    let detail = f.detail(followup).await;
+    assert_eq!(detail["task"]["status"], "active");
+    assert_eq!(
+        detail["task"]["effect"],
+        f.detail(&parent).await["task"]["effect"]
+    );
+    let page = f
+        .query("schedules", json!({"kind":"discovery","sessionId":f.bot}))
+        .await;
+    let background = page["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|task| task["backgroundFollowup"] == true)
+        .map(|task| &task["id"])
+        .collect::<Vec<_>>();
+    assert_eq!(background, vec![&result["taskId"]]);
+    quiet(&f, &listener, &mut bot).await;
+
+    let mut bot = report_to_bot(&f, &listener, followup).await;
+    let (mut bot, chained) = propose_followup(&listener, &mut bot, "Chained follow-up", once).await;
+    assert_eq!(chained["approved"], false, "{chained}");
+    quiet(&f, &listener, &mut bot).await;
+    assert_eq!(
+        f.settled(followup, 1).await["task"]["runs"][0]["outcome"],
+        "ok"
+    );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_followup_cannot_use_the_old_approval_after_parent_pause_and_resume() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = Fixture::new(&listener).await;
+    let parent = f.create("Approved release watch").await;
+    let mut bot = report_to_bot(&f, &listener, &parent).await;
+    let once = json!({"kind":"once","runAt":maka_agent_authority::now()+3_600_000});
+    let (mut bot, result) =
+        propose_followup(&listener, &mut bot, "Follow-up before pause", once.clone()).await;
+    assert_eq!(result["approved"], true, "{result}");
+    let followup = result["taskId"].as_str().unwrap();
+
+    f.change(&parent, "pause").await;
+    f.change(&parent, "resume").await;
+    let (mut bot, stale) =
+        propose_followup(&listener, &mut bot, "Follow-up from the old report", once).await;
+    assert_eq!(stale["approved"], false, "{stale}");
+    quiet(&f, &listener, &mut bot).await;
+
+    f.reopen().await;
+    f.change(followup, "trigger_now").await;
+    let detail = f.settled(followup, 1).await;
+    assert_eq!(detail["task"]["runs"][0]["outcome"], "blocked");
+    assert!(detail["task"]["runs"][0]["runId"].is_null());
     f.close().await;
 }
 

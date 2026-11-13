@@ -57,6 +57,8 @@ pub(in crate::owner) enum Approval {
         // Existing approvals covered only the original read-only tool set.
         #[serde(default)]
         session_tools: bool,
+        #[serde(default)]
+        authority: DiscoveryAuthority,
     },
     CancelledDiscovery {
         approval: super::notifications::BackgroundApproval,
@@ -65,8 +67,77 @@ pub(in crate::owner) enum Approval {
         session_tools: bool,
     },
 }
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(in crate::owner) enum DiscoveryAuthority {
+    User { generation: uuid::Uuid },
+    Followup { grant: FollowupGrant },
+}
+
+impl Default for DiscoveryAuthority {
+    fn default() -> Self {
+        // Plans approved before follow-ups were supported keep their approval.
+        Self::User {
+            generation: uuid::Uuid::nil(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::owner) struct FollowupGrant {
+    task_id: String,
+    generation: uuid::Uuid,
+}
+
+impl FollowupGrant {
+    fn is_current(&self, plan: &Plan, at: i64) -> bool {
+        plan.task.status == Status::Active
+            && plan.task.expires_at.is_none_or(|expires| at < expires)
+            && matches!(
+                &plan.authorization,
+                Some(Approval::Discovery {
+                    authority: DiscoveryAuthority::User { generation },
+                    ..
+                }) if *generation == self.generation
+            )
+    }
+}
+
+impl Approval {
+    pub(in crate::owner) fn discovery_generation(&self) -> Option<uuid::Uuid> {
+        match self {
+            Self::Discovery {
+                authority: DiscoveryAuthority::User { generation },
+                ..
+            } => Some(*generation),
+            _ => None,
+        }
+    }
+
+    pub(in crate::owner) fn followup_grant(&self) -> Option<&FollowupGrant> {
+        match self {
+            Self::Discovery {
+                authority: DiscoveryAuthority::Followup { grant },
+                ..
+            } => Some(grant),
+            _ => None,
+        }
+    }
+}
+
 fn pause_plan(plan: &Plan, at: i64) -> Plan {
     let mut paused = plan.pause(at);
+    if plan.task.status == Status::Active
+        && let Some(Approval::Discovery {
+            authority: DiscoveryAuthority::User { generation },
+            ..
+        }) = &mut paused.authorization
+    {
+        // A later resume must not restore any follow-ups from the old approval.
+        *generation = uuid::Uuid::new_v4();
+    }
     if let Some(fire) = &mut paused.pending
         && matches!(fire.effect, ScheduledEffect::Discovery { .. })
     {
@@ -75,6 +146,7 @@ fn pause_plan(plan: &Plan, at: i64) -> Plan {
                 approval,
                 recall,
                 session_tools,
+                ..
             } => Approval::CancelledDiscovery {
                 approval,
                 recall,
@@ -94,6 +166,16 @@ pub(crate) struct Scheduler {
     pub(super) investigation: std::sync::RwLock<Option<String>>,
 }
 impl Scheduler {
+    pub(in crate::owner) async fn followup_is_current(
+        &self,
+        grant: &FollowupGrant,
+    ) -> Result<bool, String> {
+        Ok(self
+            .change_basis(&grant.task_id)
+            .await?
+            .is_some_and(|saved| grant.is_current(&saved.plan, now() as i64)))
+    }
+
     pub(super) fn notify_status_changed(&self) {
         self.changed.send_modify(|_| {});
     }
