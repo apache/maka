@@ -22,11 +22,11 @@ import { executorUsageLabel } from './TurnUsage';
 import { LoadingIndicator } from './Loading';
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
-import { cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
+import { Canvas, cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
 import type { ListRef, Signal, ViewRef } from 'nsh';
 import type { AnimatedValue } from 'nsh';
 import { platform, windowSize } from 'nsh';
-import { senderSession, type Row } from './history';
+import { activityMessage, type Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
@@ -48,6 +48,7 @@ const groupHeaderHeight = Math.max(
 );
 const memberGap = platform.idiom === 'terminal' ? 6 : 0;
 const activityFollowThreshold = captionTextStyle.lineHeight;
+const activityEdgeFadeHeight = 14;
 
 export type LiveActivity = {
   kind: 'working' | 'thinking' | 'response' | 'waiting';
@@ -95,7 +96,7 @@ export function activityCounts(
   const tools = groups.reduce((count, group) => count + group.toolIds.length, 0);
   const messages = ids.filter((id) => {
     const value = row(id);
-    return value?.role === 'user' && senderSession(value.origin) !== null;
+    return value?.role === 'user' && activityMessage(value.origin);
   }).length;
   return [
     thoughts
@@ -242,6 +243,31 @@ function stableActivityTitle(desiredTitle: () => string, active: () => boolean) 
   return stableTitle;
 }
 
+function ActivityEdgeFade(props: { bottom?: boolean }) {
+  return (
+    <Canvas
+      accessibilityElementsHidden
+      style={{
+        position: 'absolute',
+        left: -8,
+        right: 0,
+        top: props.bottom ? undefined : 0,
+        bottom: props.bottom ? 0 : undefined,
+        height: activityEdgeFadeHeight,
+        pointerEvents: 'none',
+      }}
+      draw={(cx, size) => {
+        const fade = cx.createLinearGradient(0, 0, 0, size.height);
+        const clear = `${C.panel}00`;
+        fade.addColorStop(0, props.bottom ? clear : C.panel);
+        fade.addColorStop(1, props.bottom ? C.panel : clear);
+        cx.fillStyle = fade;
+        cx.fillRect(0, 0, size.width, size.height);
+      }}
+    />
+  );
+}
+
 function ActivityLog(props: {
   group: () => ProcessGroup;
   toolProgress(id: string): ToolActivity['phase'] | null;
@@ -265,6 +291,8 @@ function ActivityLog(props: {
   const lease = ++state.lease;
   const initial = signal<{ y: number } | null>(null);
   const measurements = signal(0);
+  const fadeTop = signal(false);
+  const fadeBottom = signal(false);
   const error = createText();
   // Reveal a user-opened source after its native height changes, so the outer
   // List positions the grown group rather than its old one-line body.
@@ -346,7 +374,7 @@ function ActivityLog(props: {
         }
       })
       .catch((reason) => {
-        if (alive) error.set(errorText(reason));
+        if (alive) error.set(errorText(reason, 'Could not load the execution timeline.'));
       });
   return (
     <View style={{ height: bodyHeight() }}>
@@ -374,8 +402,12 @@ function ActivityLog(props: {
           onScroll={(event) => {
             if (!alive || lease !== state.lease) return;
             lastOffset = event.offset.y;
-            const distance =
-              Math.max(0, event.contentSize.height - event.size.height) - event.offset.y;
+            const end = Math.max(0, event.contentSize.height - event.size.height);
+            const distance = end - lastOffset;
+            if (platform.idiom !== 'terminal') {
+              fadeTop.set(end > 1 && lastOffset > 1);
+              fadeBottom.set(end > 1 && distance > 1);
+            }
             nearEnd = distance <= activityFollowThreshold;
             atEnd = distance <= 1;
             props.settled?.(atEnd);
@@ -510,6 +542,12 @@ function ActivityLog(props: {
             </Each>
           )}
         </List>
+        <If when={fadeTop()}>
+          <ActivityEdgeFade />
+        </If>
+        <If when={fadeBottom()}>
+          <ActivityEdgeFade bottom />
+        </If>
       </If>
       <If when={error()}>
         <Text style={{ color: C.danger }}>{error()}</Text>
@@ -554,9 +592,7 @@ export function TurnPanel(props: TurnPanelProps) {
       props.state.open.set(true);
     });
   return (
-    <View
-      style={platform.idiom === 'terminal' ? panelStyle : { ...panelStyle, marginTop: 0, gap: 0 }}
-    >
+    <View style={platform.idiom === 'terminal' ? panelStyle : { ...panelStyle, gap: 0 }}>
       <If when={platform.idiom === 'terminal'}>
         <GroupHeader {...props} />
       </If>
@@ -594,7 +630,7 @@ function GroupHeader(props: TurnPanelProps) {
       return toolActivitySummary(
         tool,
         tool.phase === 'preparing' ? tr('Preparing tool') : tr('Running tool'),
-        tool.title ? displayText(tool.title) : undefined,
+        tool.title ? displayText(tool.title) : tool.source === 'native' ? '' : undefined,
       );
     if (
       activity.kind === 'thinking' &&

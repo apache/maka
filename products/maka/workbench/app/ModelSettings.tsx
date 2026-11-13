@@ -322,12 +322,19 @@ export function ModelSettings(props: {
             <Icon name="close" color={C.secondary} />
           </Button>
         </View>
+        <View style={{ flex: 1, minHeight: 0 }}>
+          <Each of={contributed() ? [contributed()!] : []} key={(item) => item.key}>
+            {(item) => runtime.render(item(), { sessionId: null, input: input(item()) })}
+          </Each>
+        </View>
         <If when={operations.error() || operations.notice() || operations.pending().length > 0}>
           <View
             style={{
               paddingLeft: settingsGutter + settingsInset,
               paddingRight: settingsGutter,
-              paddingBottom: terminal ? 0 : 12,
+              paddingVertical: terminal ? 0 : 8,
+              borderTopWidth: 1,
+              borderTopColor: C.line,
             }}
           >
             <If when={operations.error()}>
@@ -338,18 +345,15 @@ export function ModelSettings(props: {
             <If when={!operations.error() && operations.notice()}>
               <Text style={{ ...captionTextStyle, color: C.muted }}>{operations.notice()}</Text>
             </If>
-            <If when={operations.pending().length > 0}>
+            <If
+              when={!operations.error() && !operations.notice() && operations.pending().length > 0}
+            >
               <Text style={{ ...captionTextStyle, color: C.muted }}>
-                {tr('Checking action status…')}
+                {tr('Checking whether settings changes were applied…')}
               </Text>
             </If>
           </View>
         </If>
-        <View style={{ flex: 1, minHeight: 0 }}>
-          <Each of={contributed() ? [contributed()!] : []} key={(item) => item.key}>
-            {(item) => runtime.render(item(), { sessionId: null, input: input(item()) })}
-          </Each>
-        </View>
       </View>
     </ModalDialog>
   );

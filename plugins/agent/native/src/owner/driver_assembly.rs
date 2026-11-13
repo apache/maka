@@ -158,6 +158,7 @@ impl Owner {
             tool_discovery: view.spec.tool_discovery,
             allowed_tools: view.spec.allowed_tools.clone(),
             background: None,
+            background_sandbox_ceiling: None,
             internal_tools: Arc::new(selection.definitions.clone()),
             internal_bindings: Arc::new(selection.internal_bindings.clone()),
             behavior: system,

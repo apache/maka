@@ -18,6 +18,7 @@
  */
 
 import {
+  effect,
   nativeComponent,
   openUrl,
   type NativeComponentRef,
@@ -37,7 +38,7 @@ import {
   quickToolView,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { tr } from '../../../products/maka/workbench/app/locale';
+import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
 import {
   COLORS,
   createSettings,
@@ -460,7 +461,8 @@ function Screenshot(props: { input: QuickToolInput; settings: ScreenshotSettings
   return null;
 }
 
-export const activate: UiModule<JSX.Element>['activate'] = () => {
+export const activate: UiModule<JSX.Element>['activate'] = (context) => {
+  effect(() => currentLocale.set(context.locale()));
   const settings = createSettings();
   return {
     exports: {

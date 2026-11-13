@@ -18,9 +18,6 @@
  */
 
 mod edit;
-mod glob;
-mod grep;
-mod grep_scope;
 mod patch;
 mod policy;
 mod read;

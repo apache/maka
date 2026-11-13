@@ -21,6 +21,7 @@ use super::*;
 use maka_agent_facts::{
     artifact::{ArtifactKind, ArtifactSource},
     attachment::StorageRef,
+    display::Text,
     read::{MAX_PAGE_CHARS, ReadInput},
 };
 use maka_agent_state::artifacts::{ArtifactStore, CopyArtifact, SessionScope};
@@ -98,6 +99,14 @@ impl Recall {
         if cancellation.is_cancelled() || self.stop.is_cancelled() {
             return Err(ToolRejection::Cancelled);
         }
+        let title = Text::single_line(&expected.artifact.name).map(|filename| {
+            let filename = filename.fallback;
+            Text::localized(
+                &format!("Read historical attachment · {filename}"),
+                &format!("读取历史附件 · {filename}"),
+                &format!("讀取歷史附件 · {filename}"),
+            )
+        });
         let recall = self.clone();
         let effect = PreparedEffect::new(move |cancellation| {
             Box::pin(async move {
@@ -123,9 +132,14 @@ impl Recall {
                     .map_err(ToolError::CleanupUnconfirmed)?;
                 result
             })
-        });
+        })
+        .presented("maka.agent.Builtin@1/RecallMaterial".into());
         Ok(super::super::driver::PreparedTool {
-            effect,
+            effect: if let Some(title) = title {
+                effect.titled(title)
+            } else {
+                effect
+            },
             local: Some(super::super::driver::LocalCompletion::Copy(copy)),
             semantics,
         })

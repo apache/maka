@@ -168,6 +168,7 @@ pub(crate) fn summary_for(data_source: &DataSource, record: Record) -> Result<Se
         parent_session_id: session.configuration.parent_session_id,
         branch,
         backend: session.configuration.backend,
+        applied_preset: session.configuration.applied_preset,
         tools: session.configuration.tools,
         data_source: Box::new(data_source.clone()),
         permissions: session.configuration.permissions,

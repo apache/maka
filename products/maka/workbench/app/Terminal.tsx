@@ -178,7 +178,7 @@ export function Terminal(props: { model: TerminalModel }) {
     } catch (reason) {
       if (mounted) {
         copied.set(false);
-        copyStatus.set(errorText(reason));
+        copyStatus.set(errorText(reason, 'Could not copy to the clipboard.'));
       }
     }
   };
@@ -425,42 +425,6 @@ export function Terminal(props: { model: TerminalModel }) {
             ? tr('viewing')
             : tr('shared · view only')}
       </Text>
-      <If when={model.error()}>
-        <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-          {model.error()}
-        </Text>
-      </If>
-      <If when={model.state() === 'failed' || model.control() === 'refused'}>
-        <Button
-          onPress={inputAction(model.retry, null)}
-          style={{
-            ...controlStyle,
-            alignSelf: 'flex-start',
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 8,
-          }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-        >
-          <Icon name="refresh" color={C.secondary} />
-          <Text style={{ ...captionTextStyle, color: C.secondary }}>
-            {tr('Retry terminal observation')}
-          </Text>
-        </Button>
-      </If>
-      <If when={copied() || copyStatus()}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {copied() ? tr('Visible terminal copied.') : copyStatus()}
-        </Text>
-      </If>
-      <If when={model.state() === 'unavailable'}>
-        <Text style={{ ...bodyTextStyle, color: C.warning }}>
-          {tr(
-            'Live output is no longer retained. Input is released; the final display will appear after the process settles.',
-          )}
-        </Text>
-      </If>
       <View
         ref={(node) => {
           body = node;
@@ -627,6 +591,42 @@ export function Terminal(props: { model: TerminalModel }) {
           />
         </If>
       </View>
+      <If when={model.error()}>
+        <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
+          {model.error()}
+        </Text>
+      </If>
+      <If when={model.state() === 'failed' || model.control() === 'refused'}>
+        <Button
+          onPress={inputAction(model.retry, null)}
+          style={{
+            ...controlStyle,
+            alignSelf: 'flex-start',
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+          }}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
+        >
+          <Icon name="refresh" color={C.secondary} />
+          <Text style={{ ...captionTextStyle, color: C.secondary }}>
+            {tr('Retry terminal observation')}
+          </Text>
+        </Button>
+      </If>
+      <If when={copied() || copyStatus()}>
+        <Text style={{ ...captionTextStyle, color: C.muted }}>
+          {copied() ? tr('Visible terminal copied.') : copyStatus()}
+        </Text>
+      </If>
+      <If when={model.state() === 'unavailable'}>
+        <Text style={{ ...bodyTextStyle, color: C.warning }}>
+          {tr(
+            'Live output is no longer retained. Input is released; the final display will appear after the process settles.',
+          )}
+        </Text>
+      </If>
       <If when={confirmation()}>
         <ModalDialog size="alert" onCancel={() => confirmation.set(false)}>
           <DialogHeader

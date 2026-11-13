@@ -467,3 +467,25 @@ impl Owner {
 
 #[cfg(test)]
 mod tests;
+
+pub(super) struct CreationFence {
+    pub scope: String,
+    pub id: PresetId,
+    pub revision: PresetRevision,
+}
+impl CreationFence {
+    pub(super) fn check(&self, connection: &Connection) -> Result<Option<Rejection>, StoreError> {
+        let current = connection
+            .query_row(
+                "SELECT revision FROM agent_subagent_presets WHERE scope=?1 AND id=?2",
+                params![self.scope, self.id.0.to_string()],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
+        Ok(match current {
+            None => Some(Rejection::PresetNotFound),
+            Some(revision) if revision as u64 != self.revision.0 => Some(Rejection::PresetConflict),
+            Some(_) => None,
+        })
+    }
+}

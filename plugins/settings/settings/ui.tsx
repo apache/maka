@@ -94,13 +94,8 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const route = signal<SettingsRoute | null>(restored?.route ?? defaultRoute);
   const mounted = new Map<string, number>();
   const active = (id: string) => () => (mounted.get(id) ?? 0) > 0;
-  const views = new Set<SettingsViewInput>();
-  const changed = () => {
-    for (const view of views) view.changed();
-  };
   const connections = createModelSettings(
     host,
-    changed,
     operations,
     active('connections'),
     undefined,
@@ -122,12 +117,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     context,
     restored?.plugins,
   );
-  const externalAgents = createExternalAgentSettings(
-    host,
-    operations,
-    active('external-agents'),
-    changed,
-  );
+  const externalAgents = createExternalAgentSettings(host, operations, active('external-agents'));
   const configurationWorkspace = createConfigurationWorkspace(operations);
   const skills = createSkillSettings(host, operations, configurationWorkspace);
   const mcp = createMcpSettings(host, operations, configurationWorkspace);
@@ -175,12 +165,10 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         if (original.method === 'configureBatch') await host.refresh();
         plugins.reset();
         externalAgents.reset();
-        if (original.method === 'configureBatch') changed();
       } else if (original.method === 'updateAssistantPreferences') general.reset();
       else if (original.method === 'updateNetwork') network.reset();
       else {
         connections.reset();
-        changed();
       }
     });
   createPendingRecovery({
@@ -241,8 +229,6 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               }
             });
           });
-          views.add(input);
-          cleanup(() => views.delete(input));
           return (
             <HostProvider value={host}>
               <If when={input.opened()}>

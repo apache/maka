@@ -29,7 +29,7 @@ use maka_agent_state::{
     },
 };
 
-/// User-approved domain policy. This is not a Scope, capability, or recovery grant.
+/// Captured policy for background execution.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct BackgroundApproval {
@@ -38,6 +38,8 @@ pub(super) struct BackgroundApproval {
     pub(super) accepted_model: crate::model::AcceptedModel,
     pub(super) thinking_level: Option<ThinkingLevel>,
     pub(super) language: Language,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) sandbox_ceiling: Option<maka_sandbox::Sandbox>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -209,6 +211,7 @@ impl Owner {
             identity,
             Default::default(),
             placement,
+            false,
         )
         .await
         .map(Some)
@@ -253,7 +256,8 @@ impl Owner {
         basis: &CapturedRun,
         key: &str,
         required_tools: BTreeSet<String>,
-        placement: QueuePlacement,
+        mut placement: QueuePlacement,
+        steer: bool,
     ) -> Result<PreparedRequest, String> {
         let _ordered = self.runs.ordered(session).await;
         let queue = self.durable.queue();
@@ -274,6 +278,10 @@ impl Owner {
                 self.stop.child_token(),
             )
             .map_err(|e| e.to_string())?;
+        let native = match &basis.background_sandbox_ceiling {
+            Some(ceiling) => native.with_sandbox_floor(ceiling)?,
+            None => native,
+        };
         let frozen = self
             .freeze_background_request(session, source, basis, required_tools, key, native.scope())
             .await;
@@ -288,6 +296,33 @@ impl Owner {
                 ));
             }
         };
+        if steer {
+            let control = self.runs.state().await.controls.get(session).cloned();
+            if let Some(control) = control
+                && control.basis.model.is_some()
+                && let Some(view) = self.session_run(session, control.execution.run_id).await?
+                && !view.stopped
+                && view.terminal.is_none()
+                && view.spec.permission_basis == request.spec.permission_basis
+                && view.spec.workspace == request.spec.workspace
+                && request
+                    .spec
+                    .permission_ceiling
+                    .sandbox
+                    .contains(&view.spec.permission_ceiling.sandbox)
+                    .map_err(|error| error.to_string())?
+                && view
+                    .spec
+                    .permission_ceiling
+                    .approval
+                    .is_subset_of(request.spec.permission_ceiling.approval)
+            {
+                placement = QueuePlacement::Steering {
+                    run: view.run,
+                    expected_head: maka_agent_state::Head::from(&view),
+                };
+            }
+        }
         let current = queue
             .read(session.to_owned())
             .await

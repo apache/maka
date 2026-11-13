@@ -111,6 +111,12 @@ impl Shell {
         config
             .host
             .handle("screenshot.chooseFolder", crate::screenshot::choose_folder);
+        #[cfg(target_os = "macos")]
+        config.host.handle("quickLauncher.commandHeld", |call| {
+            call.resolve(JsonValue::Bool(crate::appkit::command_only(
+                objc2_app_kit::NSEvent::modifierFlags_class(),
+            )));
+        });
         let notify = self.notify.clone();
         config.host.handle("notification.show", move |call| {
             if let Err(error) = notify.send(call) {

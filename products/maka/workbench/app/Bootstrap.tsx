@@ -58,7 +58,12 @@ function Bootstrap() {
           <If when={plugins.runtime.updateError() !== null || plugins.runtime.ready()}>
             <Text style={{ fontSize: 14, lineHeight: 20, color: C.secondary }}>
               {plugins.runtime.updateError() !== null
-                ? renderText(errorText(plugins.runtime.updateError()))
+                ? renderText(
+                    errorText(
+                      plugins.runtime.updateError(),
+                      'Could not load the workbench. Retry the connection.',
+                    ),
+                  )
                 : tr('This deployment has no root UI selected.')}
             </Text>
           </If>

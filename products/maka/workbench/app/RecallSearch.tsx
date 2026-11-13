@@ -118,7 +118,7 @@ export function RecallSearch(props: {
   const release = (request: Request) => {
     if (!request.stream) return Promise.resolve();
     return (request.closing ??= request.stream.close().catch((reason) => {
-      if (alive) openError.set(errorText(reason));
+      if (alive) openError.set(errorText(reason, 'Could not search conversations.'));
     }));
   };
   const cancel = () => {
@@ -201,7 +201,11 @@ export function RecallSearch(props: {
         list?.scrollToIndex({ index: 0, animated: false });
     } catch (reason) {
       if (alive && wanted === request)
-        state.set({ kind: 'failed', request, error: errorText(reason) });
+        state.set({
+          kind: 'failed',
+          request,
+          error: errorText(reason, 'Could not search conversations.'),
+        });
     } finally {
       await release(request);
     }
@@ -278,7 +282,7 @@ export function RecallSearch(props: {
       const opened = await props.open(origin, target);
       if (alive && opened !== false) props.close();
     } catch (reason) {
-      if (alive) openError.set(errorText(reason));
+      if (alive) openError.set(errorText(reason, 'Could not open the conversation.'));
     } finally {
       if (alive) opening.set(false);
     }
@@ -402,17 +406,6 @@ export function RecallSearch(props: {
         >
           <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
         </Button>
-      </If>
-      <If when={partial()}>
-        <Text style={{ ...captionTextStyle, color: C.warning }}>
-          {tr('Search is incomplete. Available matches are shown.')}
-        </Text>
-      </If>
-      <If when={openError()}>
-        <Text style={{ ...bodyTextStyle, color: C.danger }}>{openError()}</Text>
-      </If>
-      <If when={opening()}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Opening conversation…')}</Text>
       </If>
       <List
         each={rows()}
@@ -541,6 +534,17 @@ export function RecallSearch(props: {
           </Each>
         )}
       </List>
+      <If when={partial()}>
+        <Text style={{ ...captionTextStyle, color: C.warning }}>
+          {tr('Search is incomplete. Available matches are shown.')}
+        </Text>
+      </If>
+      <If when={openError()}>
+        <Text style={{ ...bodyTextStyle, color: C.danger }}>{openError()}</Text>
+      </If>
+      <If when={opening()}>
+        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Opening conversation…')}</Text>
+      </If>
     </ModalDialog>
   );
 }

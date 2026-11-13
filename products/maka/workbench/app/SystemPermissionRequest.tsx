@@ -85,7 +85,7 @@ export function SystemPermissionRequest(props: {
         </Text>
         <If when={error()}>
           <Text style={{ ...bodyTextStyle, color: C.danger }}>
-            {renderText(errorText(error()))}
+            {renderText(errorText(error(), 'Could not update the computer permission request.'))}
           </Text>
         </If>
         <View class="flex-row flex-wrap justify-end gap-2">

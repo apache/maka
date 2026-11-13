@@ -44,6 +44,7 @@ export type Browsing = {
   sessions(): BrowserSession[];
   needsYouCount(): number;
   projects(): BrowserProject[];
+  hasMore(): boolean;
   loading(): boolean;
   error(): string;
   projectError(): string;
@@ -82,6 +83,7 @@ export function createBrowsing(host: Host): Browsing {
   const sessions = signal<BrowserSession[]>([]);
   const needsYouCount = signal(0);
   const projects = signal<BrowserProject[]>([]);
+  const hasMore = signal(false);
   const loading = signal(true);
   const error = createText();
   const projectError = createText();
@@ -150,6 +152,7 @@ export function createBrowsing(host: Host): Browsing {
       error.set('');
       if (clear) {
         sessions.set([]);
+        hasMore.set(false);
         needsYouCount.set(0);
       }
     });
@@ -218,6 +221,7 @@ export function createBrowsing(host: Host): Browsing {
             read.extend = false;
             batch(() => {
               sessions.set(snapshot);
+              hasMore.set(tail.after !== null);
               needsYouCount.set(next.needsYouCount);
               loading.set(false);
               error.set('');
@@ -248,7 +252,9 @@ export function createBrowsing(host: Host): Browsing {
         page = null;
         continuation = null;
         batch(() => {
-          error.set(errorText(reason));
+          error.set(
+            errorText(reason, 'Conversation list is temporarily unavailable. Try reconnecting.'),
+          );
           loading.set(false);
         });
       })
@@ -277,7 +283,10 @@ export function createBrowsing(host: Host): Browsing {
       page = next;
       read.extent = snapshot.at(-1)?.id ?? null;
       read.extend = false;
-      sessions.set(snapshot);
+      batch(() => {
+        sessions.set(snapshot);
+        hasMore.set(next.after !== null);
+      });
       return 'advanced';
     } catch (reason) {
       if (!owns(read) || continuation !== original) return 'waiting';
@@ -285,7 +294,7 @@ export function createBrowsing(host: Host): Browsing {
         waitForCatalog = true;
         return 'waiting';
       }
-      error.set(errorText(reason));
+      error.set(errorText(reason, 'Could not update the conversation.'));
       return 'complete';
     } finally {
       if (owns(read) && continuation === original) {
@@ -327,7 +336,8 @@ export function createBrowsing(host: Host): Browsing {
       }
       throw new UiError('Projects changed while reading. Refresh to try again.');
     } catch (reason) {
-      if (alive && projectRead === reading) projectError.set(errorText(reason));
+      if (alive && projectRead === reading)
+        projectError.set(errorText(reason, 'Projects are unavailable.'));
     }
   };
 
@@ -368,6 +378,7 @@ export function createBrowsing(host: Host): Browsing {
     sessions,
     needsYouCount,
     projects,
+    hasMore,
     loading,
     error,
     projectError,

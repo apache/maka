@@ -353,6 +353,9 @@ fn catalog_inner(
     let skill_contract = maka_skills_api::contract();
     let agent_contract = maka_agent_api::contract::contract();
     let questions_contract = maka_interactions_api::questions::contract();
+    let process_contract = maka_workspace_api::processes::contract();
+    let deployment_contract =
+        maka_plugin_core::deployment::management::deployment_manager_contract();
     let tool_names = ToolNames::Configured(
         selected
             .iter()
@@ -385,7 +388,7 @@ fn catalog_inner(
             } else {
                 resource_read || (contract == &skill_contract && matches!(selection.method.as_str(), "search" | "load"))
                     || (contract == &questions_contract && selection.method == "ask")
-                    || contract == &maka_plugin_core::deployment::management::deployment_manager_contract()
+                    || contract == &deployment_contract
             };
             if supported && selection.result == ToolResult::Json {
                 host_tools.push(selection.name.clone());
@@ -402,18 +405,24 @@ fn catalog_inner(
             // The actual binding owns the title meaning, never a tool alias.
             let title_kind = if binding.contract() == &file_contract {
                 match selection.method.as_str() {
-                    "readText" | "readImage" => Some(title::Kind::Read),
+                    "readText" => Some(title::Kind::Read),
+                    "readImage" => Some(title::Kind::ReadImage),
                     "write" => Some(title::Kind::Write),
                     "edit" => Some(title::Kind::Edit),
                     "applyPatch" => Some(title::Kind::Patch),
-                    "glob" => Some(title::Kind::Glob),
-                    "grep" => Some(title::Kind::Grep),
                     _ => None,
                 }
             } else if binding.contract() == &web_contract {
                 match selection.method.as_str() {
                     "fetch" => Some(title::Kind::Fetch),
                     "search" => Some(title::Kind::Search),
+                    _ => None,
+                }
+            } else if contract == &agent_contract {
+                match selection.method.as_str() {
+                    "create" => Some(title::Kind::CreateSession),
+                    "fork" => Some(title::Kind::ForkSession),
+                    "send" => Some(title::Kind::SendSession),
                     _ => None,
                 }
             } else {
@@ -495,6 +504,16 @@ fn catalog_inner(
                 binding: binding.execution_basis().into(),
             };
             let handler = if let Some(run) = &run {
+                let presentation = selection.presentation.clone().or_else(|| {
+                    (contract == &agent_contract
+                        || contract == &deployment_contract
+                        || contract == &questions_contract
+                        || contract == &computer_contract
+                        || contract == &skill_contract
+                        || (contract == &file_contract && selection.method == "readImage")
+                        || (contract == &process_contract && selection.method == "health"))
+                        .then(|| format!("{}@{}/{}", contract.name, contract.version, selection.method))
+                });
                 let service = Service {
                     services: selected.services(&services)?,
                     access: run.access.clone(),
@@ -517,6 +536,7 @@ fn catalog_inner(
                     computer: binding.contract().name == computer_contract.name && binding.contract().version == 1,
                     input_projection,
                     title_kind,
+                    presentation,
                     mode: method.mode,
                     web_basis: None,
                     shell: None,
@@ -651,6 +671,7 @@ struct Service {
     computer: bool,
     input_projection: Projection,
     title_kind: Option<title::Kind>,
+    presentation: Option<String>,
     mode: MethodMode,
 }
 impl ToolPreparer for Service {
@@ -697,7 +718,7 @@ impl ToolPreparer for Service {
                     }
                 })
                 .or_else(|| default_title.and_then(|kind| kind.render(&input)));
-            let presentation = selection.presentation.clone();
+            let presentation = service.presentation.clone();
             let approval = if selection.confirmation == ToolConfirmation::Required {
                 let target = access.target_for_context(&context).await.map_err(|error| {
                     ToolRejection::PreparationFailed {

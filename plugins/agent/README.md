@@ -38,4 +38,4 @@ The Agent service exposes `presets`, `preset`, `createPreset`, `updatePreset` an
 
 Updates and deletes require `expectedRevision`. Omitted update fields stay unchanged; `instruction: ""` clears the instruction and `thinkingLevel: {"kind":"default"}` restores the model default. A thinking level is set with `{"kind":"set","value":"high"}`. Model or thinking changes validate the selected native model; other edits and deletion remain available when a connection disappears. Names are trimmed and unique within the scope.
 
-Each mutation and its result commit atomically through the Host operation journal. If a reply is lost, recover the original operation reference instead of issuing another mutation. These service methods do not yet register conversation tools or apply presets to sessions.
+Each mutation and its result commit atomically through the Host operation journal. If a reply is lost, recover the original operation reference instead of issuing another mutation. The default product exposes these methods as `SubagentPresetList/Read/Create/Update/Delete` tools. `SessionCreate` applies a preset by ID; `SessionSend` supplies the task.

@@ -278,7 +278,6 @@ export type AgentCreatePresetOutput_ThinkingLevel =
   | 'xhigh'
   | 'max'
   | 'ultra';
-export type AgentDeletePresetInput_PresetRevision = number;
 export type AgentDeletePresetOutput_PresetRevision = number;
 export type AgentDeletePresetOutput_ThinkingLevel =
   | 'off'
@@ -1484,7 +1483,7 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: {
         id: string;
-        expectedRevision: AgentDeletePresetInput_PresetRevision;
+        expectedRevision: Runtime.PresetRevision;
       };
       output:
         | {
@@ -2091,11 +2090,6 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.AgentScheduleChange;
       output: Runtime.AgentScheduleResult;
-    };
-    scheduleAlerts: {
-      mode: 'subscription';
-      input: {};
-      output: Runtime.AgentScheduleAlerts;
     };
     schedules: {
       mode: 'query';

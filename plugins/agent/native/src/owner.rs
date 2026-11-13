@@ -129,6 +129,7 @@ struct CapturedRun {
     tool_discovery: bool,
     allowed_tools: Option<Vec<String>>,
     background: Option<ScheduledTarget>,
+    background_sandbox_ceiling: Option<maka_sandbox::Sandbox>,
     internal_tools: Arc<Vec<maka_agent_facts::tools::ToolDefinition>>,
     internal_bindings: Arc<BTreeMap<String, Option<String>>>,
     behavior: Option<SystemPrompt>,
@@ -842,12 +843,62 @@ impl Owner {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(creation::PreparedCreation::Rejected(reason));
         }
-        let backend = self.use_bot_model(scope, input.backend).await?;
+        let applied_preset = if let Some(id) = input.preset_id {
+            if input.backend.is_some() {
+                return Ok(creation::PreparedCreation::Rejected(
+                    Rejection::PresetBackendConflict,
+                ));
+            }
+            let Some(detail) = self
+                .preset(maka_agent_api::preset::PresetRead { id })
+                .await?
+            else {
+                return Ok(creation::PreparedCreation::Rejected(
+                    Rejection::PresetNotFound,
+                ));
+            };
+            use maka_agent_api::preset::{AppliedPreset, PresetAvailability};
+            let reason = match detail.availability {
+                PresetAvailability::Available => None,
+                PresetAvailability::Disabled => Some(Rejection::PresetDisabled),
+                PresetAvailability::ModelUnavailable => Some(Rejection::PresetModelUnavailable),
+                PresetAvailability::ThinkingLevelUnavailable => {
+                    Some(Rejection::PresetThinkingLevelUnavailable)
+                }
+            };
+            if let Some(reason) = reason {
+                return Ok(creation::PreparedCreation::Rejected(reason));
+            }
+            let p = detail.preset;
+            Some(AppliedPreset {
+                id: p.id,
+                revision: p.revision,
+                name: p.name,
+                instruction: p.instruction,
+                model: p.model,
+                thinking_level: p.thinking_level,
+            })
+        } else {
+            None
+        };
+        let backend = if let Some(p) = &applied_preset {
+            Some(BackendPreference::Model {
+                connection_id: p.model.connection_id.clone(),
+                model_id: p.model.model_id.clone(),
+                thinking_level: p.thinking_level,
+            })
+        } else {
+            self.use_bot_model(scope, input.backend).await?
+        };
         if let Some(backend) = &backend
             && !self.backend_available(backend).await?
         {
             return Ok(creation::PreparedCreation::Rejected(
-                Rejection::ToolsUnavailable,
+                if applied_preset.is_some() {
+                    Rejection::PresetModelUnavailable
+                } else {
+                    Rejection::ToolsUnavailable
+                },
             ));
         }
         let id = self.operation_id(operation);
@@ -1000,9 +1051,15 @@ impl Owner {
             scope,
             policy.caller,
             purpose,
+            applied_preset.as_ref().map(|p| presets::CreationFence {
+                scope: self.prefix.clone(),
+                id: p.id.clone(),
+                revision: p.revision,
+            }),
             move |binding| StoredSessionConfiguration {
                 parent_session_id,
                 backend,
+                applied_preset,
                 compaction_prompt: None,
                 collaboration_mode: CollaborationMode::Agent,
                 tools,

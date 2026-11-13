@@ -155,6 +155,7 @@ async fn exercise(
         accepted_model: model.source.accepted.clone(),
         thinking_level: None,
         language: Language::En,
+        sandbox_ceiling: None,
     };
     {
         let _gate = owner.goals.gate.lock().await;

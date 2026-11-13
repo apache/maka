@@ -268,6 +268,28 @@ fn context_passes_to_what_is_made_under_its_owner() {
 }
 
 #[test]
+fn a_root_keeps_updating_after_its_parent_slot_is_reused() {
+    let value = signal(0);
+    let (parent, (root, ())) = with_root(Test, || with_root(Test, || ()));
+    dispose_owner(Test, parent);
+
+    let seen = Rc::new(Cell::new(0));
+    let output = seen.clone();
+    let effect = with_owner(Test, root, || render_effect(move || output.set(get(value))));
+    assert_eq!(
+        effect, parent,
+        "the effect must reuse the original parent slot"
+    );
+    // Looking up the root's parent must stop here, before following a cycle
+    // would hang the update below.
+    assert_eq!(graph().parent(root), NONE);
+
+    set(value, 42);
+    assert_eq!(seen.get(), 42);
+    dispose_owner(Test, root);
+}
+
+#[test]
 fn an_effect_that_keeps_writing_what_it_reads_runs_away() {
     let a = signal(0);
     render_effect(move || {

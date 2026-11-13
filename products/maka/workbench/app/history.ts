@@ -175,6 +175,10 @@ export function stableRowId(
   throw new Error('Transcript row has neither a source address nor a live message identity.');
 }
 
+export function activityMessage(origin: MessageOrigin | null | undefined): boolean {
+  return origin?.kind === 'automation' || senderSession(origin) !== null;
+}
+
 export function senderSession(origin: MessageOrigin | null | undefined): string | null {
   if (origin?.kind === 'session') return origin.execution.sessionId;
   // A Bot Turn started because a worker finished names that worker.
@@ -313,53 +317,40 @@ export function historyMetadata(
   };
 }
 
-export function updateHistoryMetadata(
-  rows: Row[],
-  chunks: AgentHistoryChunk[],
+export function replaceHistoryMetadata(
+  row: Row,
+  chunk: AgentHistoryChunk,
   through: number | null,
-): Row[] {
-  if (chunks.length === 0) return rows;
-  const metadata = new Map(
-    chunks.map((chunk) => [historyRowKey(chunk.position, chunk.field), chunk]),
-  );
-  let updated = rows;
-  for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index];
-    const chunk = metadata.get(row.key);
-    if (
-      !chunk ||
-      (through !== null && row.metadataThrough != null && through < row.metadataThrough)
-    )
-      continue;
-    const next = historyMetadata(chunk, through, row);
-    // Metadata is Host JSON. Compare its complete projection so new fields are
-    // not silently ignored by a display-specific list of equality checks.
-    if (
-      row.metadataThrough === through &&
-      JSON.stringify(historyMetadata(row, through, row)) === JSON.stringify(next)
-    )
-      continue;
-    if (updated === rows) updated = rows.slice();
-    updated[index] = { ...row, ...next };
-  }
-  return updated;
+): Row {
+  if (through !== null && row.metadataThrough != null && through < row.metadataThrough) return row;
+  const next = historyMetadata(chunk, through, row);
+  // Metadata is Host JSON. Compare the complete projection so new fields are preserved.
+  return row.metadataThrough === through &&
+    JSON.stringify(historyMetadata(row, through, row)) === JSON.stringify(next)
+    ? row
+    : { ...row, ...next };
 }
 
 // These are the Desktop transcript's position/fragment rules, independent of
 // either renderer. History cursors use byte offsets; JS never derives them
 // from UTF-16 string lengths.
-export function mergeChunks(
-  rows: Row[],
+export function compareRows(a: Row, b: Row): number {
+  return (
+    compareHistoryOrder(a.order!, b.order!) ||
+    Number(a.field === 'body') - Number(b.field === 'body')
+  );
+}
+
+export function mergeHistoryPage(
   chunks: AgentHistoryChunk[],
-  older = false,
-  through: number | null = null,
+  lookup: (key: string) => Row | undefined,
+  older: boolean,
+  through: number | null,
 ): Row[] {
-  if (chunks.length === 0) return rows;
-  const merged = new Map(rows.map((row) => [row.key, row]));
-  let changed = false;
+  const changed = new Map<string, Row>();
   for (const chunk of chunks) {
     const key = historyRowKey(chunk.position, chunk.field);
-    const previous = merged.get(key);
+    const previous = changed.get(key) ?? lookup(key);
     const fresh = { offset: chunk.offset, text: chunk.text };
     const fragments = (
       older && previous
@@ -377,7 +368,15 @@ export function mergeChunks(
       ...(previous?.metadataThrough != null &&
       through !== null &&
       previous.metadataThrough > through
-        ? historyMetadata(previous, previous!.metadataThrough!, previous)
+        ? {
+            ...historyMetadata(previous, previous.metadataThrough, previous),
+            ...(chunk.offset === 0 && previous.attachments === undefined
+              ? { attachments: chunk.attachments ?? [] }
+              : {}),
+            ...(chunk.offset === 0 && previous.hasReferences === undefined
+              ? { hasReferences: chunk.hasReferences ?? false }
+              : {}),
+          }
         : historyMetadata(chunk, through, previous)),
       position: chunk.position,
       field: chunk.field,
@@ -390,15 +389,132 @@ export function mergeChunks(
       JSON.stringify(previous) === JSON.stringify(next)
     )
       continue;
-    merged.set(key, next);
-    changed = true;
+    changed.set(key, next);
   }
-  if (!changed) return rows;
-  return [...merged.values()].sort(
-    (a, b) =>
-      compareHistoryOrder(a.order!, b.order!) ||
-      Number(a.field === 'body') - Number(b.field === 'body'),
-  );
+  return [...changed.values()].sort(compareRows);
+}
+
+/** The window owns its source order and indexes. Insert pages in runs of new
+ * rows so a prepend moves the existing array once and never reindexes it. */
+export class HistoryRows {
+  readonly ordered: Row[] = [];
+  readonly byKey = new Map<string, Row>();
+  readonly byId = new Map<string, Row>();
+  readonly byMessage = new Map<string, Row>();
+  readonly byTurn = new Map<string, Row[]>();
+  readonly missingAttachments = new Set<string>();
+  readonly senderIds = new Set<string>();
+  readonly userRows = new Map<string, Row>();
+  readonly #senderCounts = new Map<string, number>();
+  readonly #byStableId = new Map<string, Row[]>();
+
+  index(row: Row): number {
+    let lo = 0;
+    let hi = this.ordered.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (compareRows(this.ordered[mid], row) < 0) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  put(changed: Row[]) {
+    const ordered = this.ordered;
+    let pending: Row[] = [];
+    let at = -1;
+    const flush = () => {
+      if (!pending.length) return;
+      ordered.splice(at, 0, ...pending);
+      pending = [];
+    };
+    const editedTurns = new Map<string, Row[]>();
+    for (const row of changed) {
+      const previous = this.byKey.get(row.key);
+      let position = this.index(previous ?? row);
+      if (pending.length && (position !== at || previous)) {
+        flush();
+        position = this.index(previous ?? row);
+      }
+      if (previous) ordered[position] = row;
+      else {
+        at = position;
+        pending.push(row);
+      }
+      this.byKey.set(row.key, row);
+      const stableId = stableRowId(row);
+      if (previous && stableRowId(previous) !== stableId)
+        this.indexStable(stableRowId(previous), previous);
+      this.indexStable(stableId, row, row);
+      if (row.messageId !== undefined && row.position?.kind === 'live') {
+        const key = `${row.messageId}/${row.field}`;
+        const first = this.byMessage.get(key);
+        if (!first || first === previous || compareRows(row, first) < 0)
+          this.byMessage.set(key, row);
+      }
+      const turnKey = historyTurnKey(row);
+      if (turnKey !== undefined) {
+        let turn = editedTurns.get(turnKey);
+        if (!turn) {
+          turn = [...(this.byTurn.get(turnKey) ?? [])];
+          editedTurns.set(turnKey, turn);
+        }
+        const old = previous === undefined ? -1 : turn.indexOf(previous);
+        if (old >= 0) turn[old] = row;
+        else {
+          const before = turn.findIndex((item) => compareRows(row, item) < 0);
+          if (before < 0) turn.push(row);
+          else turn.splice(before, 0, row);
+        }
+      }
+      if (row.role === 'user' && row.field === 'body' && row.attachments === undefined)
+        this.missingAttachments.add(row.key);
+      else this.missingAttachments.delete(row.key);
+      if (
+        row.role === 'user' &&
+        row.field === 'body' &&
+        row.position &&
+        row.fragments?.[0]?.offset === 0
+      )
+        this.userRows.set(historyRowKey(row.position), row);
+      const before = senderSession(previous?.origin);
+      const sender = senderSession(row.origin);
+      if (before !== sender) {
+        if (before !== null) {
+          const count = this.#senderCounts.get(before)! - 1;
+          if (count) this.#senderCounts.set(before, count);
+          else {
+            this.#senderCounts.delete(before);
+            this.senderIds.delete(before);
+          }
+        }
+        if (sender !== null) {
+          this.#senderCounts.set(sender, (this.#senderCounts.get(sender) ?? 0) + 1);
+          this.senderIds.add(sender);
+        }
+      }
+    }
+    flush();
+    for (const [key, turn] of editedTurns) this.byTurn.set(key, turn);
+  }
+
+  private indexStable(id: string, changed: Row, next?: Row) {
+    const seats = this.#byStableId.get(id) ?? [];
+    const old = seats.findIndex((seat) => seat.key === changed.key);
+    if (old >= 0) seats.splice(old, 1);
+    if (next) {
+      const after = seats.findIndex((seat) => compareRows(next, seat) < 0);
+      if (after < 0) seats.push(next);
+      else seats.splice(after, 0, next);
+    }
+    if (seats.length === 0) {
+      this.#byStableId.delete(id);
+      this.byId.delete(id);
+      return;
+    }
+    this.#byStableId.set(id, seats);
+    this.byId.set(id, seats.findLast((seat) => !seat.tool?.call || seat.tool.result) ?? seats[0]);
+  }
 }
 
 export function acceptedSend(reply: any, sessionId: string): any | null {

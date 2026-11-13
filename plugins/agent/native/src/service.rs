@@ -444,20 +444,12 @@ impl Handler for Agent {
                     }
                 }
                 "schedules" => encode(owner.schedules(decode(input)?).await?),
-                "watchSchedules" | "scheduleAlerts" => {
+                "watchSchedules" => {
                     let mut changes = owner.schedule_changes();
-                    let query: Option<ScheduleRead> = if method == "watchSchedules" {
-                        Some(decode(input)?)
-                    } else {
-                        None
-                    };
+                    let query: ScheduleRead = decode(input)?;
                     loop {
                         changes.borrow_and_update();
-                        let value = if let Some(query) = &query {
-                            encode(owner.schedules(query.clone()).await?)?
-                        } else {
-                            encode(owner.schedule_alerts().await?)?
-                        };
+                        let value = encode(owner.schedules(query.clone()).await?)?;
                         context.emit(value).await?;
                         tokio::select! {
                             biased;

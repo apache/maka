@@ -96,14 +96,32 @@ export interface QuickEntry {
   run?(): void;
 }
 
+export interface QuickPreview {
+  image?: string | undefined;
+  text?: string | undefined;
+  fields: readonly { label: string; value: string }[];
+}
+
 export interface QuickToolHandle {
+  emptyMessage?(): string;
+  /** Opts the entered tool into a two-column list and detail view. */
+  preview?(itemId: string): QuickPreview | undefined;
   /** Results for the query; for a blank query, whatever could be recommended. */
   items(): readonly QuickItem[];
   entries(): readonly QuickEntry[];
 }
 
 /** A tool living in the quick launcher, which draws what it attaches. */
+export interface QuickTextEditor {
+  title: string;
+  value(): string;
+  change(value: string): void;
+  error(): string | undefined;
+}
+
 export interface QuickToolInput {
+  editText(editor: QuickTextEditor): void;
+  enter(entryId: string, query: string): void;
   query(): string;
   /** Dismisses the launcher once a result has done its work. */
   close(): void;
@@ -168,7 +186,6 @@ export interface SettingsViewInput {
   readonly page?: string;
   opened(): boolean;
   close(): void;
-  changed(): void;
   readonly model?: ModelSelection;
 }
 

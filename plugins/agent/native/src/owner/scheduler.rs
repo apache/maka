@@ -20,6 +20,7 @@
 //! Task timing owns durable plans; Agent remains the only execution owner.
 mod dispatch;
 mod repository;
+mod scripts;
 mod tools;
 use super::*;
 use maka_plugin_core::storage::Data;
@@ -41,7 +42,6 @@ type Plan = TaskPlan<ScheduledEffect, Approval>;
     reason = "Scheduler approval transfers its original record inline without an allocation per observation"
 )]
 pub(in crate::owner) enum Approval {
-    Reminder,
     Execution {
         approval: super::notifications::BackgroundApproval,
     },
@@ -86,28 +86,6 @@ impl Scheduler {
 impl Owner {
     pub fn schedule_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.scheduler.changed.subscribe()
-    }
-    pub async fn schedule_alerts(&self) -> Result<ScheduleAlerts, String> {
-        let _gate = self.scheduler.gate.lock().await;
-        let catalog = self.scheduler.load().await?;
-        let mut reminders = Vec::new();
-        let mut pending = 0;
-        for saved in catalog.plans.values() {
-            if let Some(fire) = &saved.plan.pending
-                && matches!(fire.effect, ScheduledEffect::Reminder)
-            {
-                pending += 1;
-                if reminders.len() < 8 {
-                    reminders.push(ScheduledReminder {
-                        task_id: fire.task_id.clone(),
-                        fire_id: fire.id.clone(),
-                        title: fire.title.clone(),
-                        body: fire.intent.body().chars().take(512).collect(),
-                    });
-                }
-            }
-        }
-        Ok(ScheduleAlerts { pending, reminders })
     }
     pub async fn schedules(&self, input: ScheduleRead) -> Result<Schedules, String> {
         let scheduler = &self.scheduler;
@@ -158,7 +136,7 @@ impl Owner {
         scope: &maka_capabilities::call::Scope,
     ) -> Result<NativeMutation<ScheduleResult>, String> {
         if scope.identity.agent().is_some() {
-            return Err("scheduler_user_approval_required".into());
+            return Err("scheduler_use_tool".into());
         }
         if !self.settings.scheduled_tasks {
             return Err("scheduler_disabled".into());
@@ -174,12 +152,9 @@ impl Owner {
             let id = match &input {
                 ScheduleChange::Create { .. } => format!("task-{}", owner.operation_id(&operation)),
                 ScheduleChange::Update { task_id, .. }
-                | ScheduleChange::Approve { task_id, .. }
                 | ScheduleChange::Pause { task_id, .. }
                 | ScheduleChange::Resume { task_id, .. }
                 | ScheduleChange::TriggerNow { task_id, .. }
-                | ScheduleChange::Snooze { task_id, .. }
-                | ScheduleChange::Acknowledge { task_id, .. }
                 | ScheduleChange::ClearHistory { task_id, .. }
                 | ScheduleChange::Delete { task_id, .. } => task_id.clone(),
             };
@@ -188,7 +163,7 @@ impl Owner {
                 let saved = owner.scheduler.change_basis(&id).await?;
                 match schedule_candidate(&id, &input, saved.as_ref(), now() as i64) {
                     Ok(Some(plan)) => owner
-                        .capture_schedule_approval(&plan, &writer)
+                        .capture_schedule_approval(&plan, saved.as_ref(), &writer)
                         .await
                         .map(Some),
                     Ok(None) => Err("scheduler_approval_missing".into()),
@@ -218,11 +193,14 @@ impl Owner {
     async fn capture_schedule_approval(
         &self,
         plan: &Plan,
+        saved: Option<&Saved>,
         writer: &maka_event_log::root_store::DataWriter,
     ) -> Result<PreparedScheduleApproval, String> {
-        let authorization = self.approve_schedule(plan).await?;
+        let sandbox_ceiling = saved
+            .and_then(|saved| saved.plan.authorization.as_ref())
+            .and_then(|Approval::Execution { approval }| approval.sandbox_ceiling.as_ref());
+        let authorization = self.approve_schedule(plan, sandbox_ceiling).await?;
         let metadata = match &authorization {
-            Approval::Reminder => None,
             Approval::Execution { approval } => {
                 let target = &approval.target;
                 let current = self.mutable_session(&target.session_id).await?;
@@ -261,12 +239,9 @@ fn expected_revision(input: &ScheduleChange) -> Option<u64> {
     match input {
         ScheduleChange::Create { .. } => None,
         ScheduleChange::Update { revision, .. }
-        | ScheduleChange::Approve { revision, .. }
         | ScheduleChange::Pause { revision, .. }
         | ScheduleChange::Resume { revision, .. }
         | ScheduleChange::TriggerNow { revision, .. }
-        | ScheduleChange::Snooze { revision, .. }
-        | ScheduleChange::Acknowledge { revision, .. }
         | ScheduleChange::ClearHistory { revision, .. }
         | ScheduleChange::Delete { revision, .. } => Some(*revision),
     }
@@ -276,7 +251,6 @@ fn needs_approval(input: &ScheduleChange) -> bool {
         input,
         ScheduleChange::Create { .. }
             | ScheduleChange::Update { .. }
-            | ScheduleChange::Approve { .. }
             | ScheduleChange::Resume { .. }
     )
 }
@@ -317,7 +291,9 @@ fn schedule_candidate(
                 maka_scheduler::command::Update {
                     title: Some(input.task.title.clone()),
                     intent_body: Some(input.task.intent_body.clone()),
-                    schedule: Some(input.task.schedule.clone()),
+                    schedule: (current.task.schedule != input.task.schedule
+                        || current.timezone != input.timezone)
+                        .then(|| input.task.schedule.clone()),
                     effect: Some(input.task.effect.clone()),
                     max_fires: input.task.max_fires.map_or(
                         maka_agent_facts::configuration::Patch::Clear,
@@ -332,19 +308,6 @@ fn schedule_candidate(
             )
             .map_err(reason)?
         }
-        ScheduleChange::Approve { .. } => {
-            let mut next = plan()?.clone();
-            if next.pending.is_some() {
-                return Err("scheduler_trigger_pending".into());
-            }
-            if !matches!(next.task.status, Status::Active | Status::Paused) {
-                return Err("scheduler_task_terminal".into());
-            }
-            if next.task.status == Status::Paused {
-                next = next.resume(at).map_err(reason)?;
-            }
-            next
-        }
         ScheduleChange::Pause { .. } => plan()?.pause(at),
         ScheduleChange::Resume { .. } => plan()?.resume(at).map_err(reason)?,
         ScheduleChange::TriggerNow { .. } => {
@@ -353,40 +316,15 @@ fn schedule_candidate(
                 return Err("scheduler_task_not_ready".into());
             }
             if next.authorization.is_none() {
-                return Err("scheduler_user_approval_required".into());
+                return Err("scheduler_execution_unavailable".into());
             }
             next.task.next_fire_at = Some(at);
             next.claim(at).map_err(reason)?;
             next
         }
-        ScheduleChange::Snooze { delay_ms, .. } => plan()?.snooze(*delay_ms, at).map_err(reason)?,
-        ScheduleChange::Acknowledge { fire_id, .. } => {
-            let mut next = plan()?.clone();
-            let pending = next
-                .pending
-                .as_ref()
-                .filter(|fire| {
-                    fire.id == *fire_id && matches!(fire.effect, ScheduledEffect::Reminder)
-                })
-                .ok_or("scheduler_reminder_changed")?;
-            next.settle(Run {
-                id: fire_id.clone(),
-                at: at.max(pending.scheduled_at),
-                outcome: Outcome::Ok,
-                message: "Reminder acknowledged".into(),
-                session_id: None,
-                run_id: None,
-            })
-            .map_err(reason)?;
-            next
-        }
         ScheduleChange::ClearHistory { .. } => plan()?.clear_history(at),
         ScheduleChange::Delete { .. } => {
-            if plan()?
-                .pending
-                .as_ref()
-                .is_some_and(|fire| !matches!(fire.effect, ScheduledEffect::Reminder))
-            {
+            if plan()?.pending.is_some() {
                 return Err("scheduler_trigger_pending".into());
             }
             return Ok(None);

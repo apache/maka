@@ -19,14 +19,14 @@
 
 import { tr } from './locale';
 import { CompactionDivider, NoteDivider } from './CompactionDivider';
-import { computed, inputAction, signal, Text, View } from 'nsh';
+import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
-import { platform } from 'nsh';
+import { platform, reduceMotion } from 'nsh';
 import { ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { createMessageMenu, type MessageMenu } from './messageMenu';
 import type { MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
-import { messageKey, senderSession, type Row } from './history';
+import { hasTextPrefix, messageBytes, messageKey, senderSession, type Row } from './history';
 import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
@@ -36,6 +36,7 @@ import {
   bodyTextStyle,
   captionTextStyle,
   controlDisabledStyle,
+  controlStyle,
   secondaryTextStyle,
   Disclosure,
   disclosureContentInset,
@@ -48,9 +49,12 @@ import {
 import { HistoryAttachments } from './Attachments';
 import type { ToolActivity } from './toolActivity';
 import { ToolCard } from './ToolCard';
-import { MessageCopy } from './MessageCopy';
+import { MessageCopy, readOriginal, type OriginalMessage } from './MessageCopy';
 import type { ImagePreview } from './ImageThumbnail';
 import type { InlineEdit } from './MessageEdit';
+import { LoadingIndicator } from './Loading';
+import { useHost } from './host';
+import { createText, errorText } from './text';
 
 /** What names a message the Host generated in place of its text; null for the user's own. */
 export function originLabel(origin: MessageOrigin | null | undefined): string | null {
@@ -82,6 +86,41 @@ function SenderLink(props: { sessionId(): string; senders?: MessageSenders }) {
   );
 }
 
+function FullAgentMessage(props: { original: OriginalMessage; sourceId: string }) {
+  const host = useHost();
+  const body = signal<string | null>(null);
+  const failure = createText();
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+  });
+  void readOriginal(host, props.original, () => alive).then(
+    (text) => {
+      if (alive) body.set(text);
+    },
+    (reason) => {
+      if (alive) failure.set(errorText(reason, 'Message is unavailable'));
+    },
+  );
+  return (
+    <If
+      when={body() !== null || !!failure()}
+      else={<LoadingIndicator label={tr('Reading details…')} color={C.muted} />}
+    >
+      <Text
+        style={{
+          ...secondaryTextStyle,
+          color: failure() ? C.danger : C.text,
+          userSelect: 'text',
+        }}
+        textSource={failure() ? undefined : { id: props.sourceId, offset: 0 }}
+      >
+        {failure() || body()}
+      </Text>
+    </If>
+  );
+}
+
 export type MessageViewState = {
   expanded: Signal<boolean>;
   sourceMode: Signal<boolean>;
@@ -96,6 +135,7 @@ type MessageRowToggle = {
 
 export function MessageRow({
   item,
+  highlighted,
   repeats,
   sessionId,
   through,
@@ -116,6 +156,7 @@ export function MessageRow({
   failureActions,
 }: {
   item: () => Row;
+  highlighted?: () => boolean;
   /** How many identical failures this row stands for. */
   repeats?: () => number;
   sessionId: string;
@@ -183,14 +224,54 @@ export function MessageRow({
         const actionRow = () => platform.idiom === 'terminal' || row().finalOutput || sourceMode();
         const sourceId = () => `${sessionId}/${rowKey(row())}`;
         const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
-        if (sender())
+        const automation = () => {
+          const origin = row().origin;
+          return row().role === 'user' && origin?.kind === 'automation' ? origin : null;
+        };
+        if (sender() || automation()) {
+          const title = () => {
+            const origin = automation();
+            return origin
+              ? tr('Automation: {title}', { title: origin.title })
+              : senderLabel(sender()!, senders);
+          };
+          const preview = computed(() => {
+            if (expanded()) return '';
+            const value = row();
+            if (value.fragments && value.fragments[0]?.offset !== 0) return '';
+            const start = /\S[\s\S]{0,239}/u.exec(value.text)?.[0];
+            return start
+              ? TextView.plainText(TextView.parse(start, { streaming: true }))
+                  .replace(/\s+/g, ' ')
+                  .trim()
+              : '';
+          });
+          const original = computed<OriginalMessage | null>(() => {
+            if (!expanded()) return null;
+            const value = row();
+            if (
+              value.field !== 'body' ||
+              !value.position ||
+              value.totalBytes === undefined ||
+              (hasTextPrefix(value) && messageBytes(value.text) === value.totalBytes)
+            )
+              return null;
+            return {
+              sessionId,
+              key: rowKey(value),
+              role: 'user',
+              position: value.position,
+              through: value.metadataThrough ?? through(),
+            };
+          });
           return (
-            <View>
+            <View style={{ width: '100%', minWidth: 0 }}>
               <Disclosure
-                label={tr('Agent message')}
-                tooltip={senderLabel(sender()!, senders)}
-                icon="split"
+                label={preview() ? `${title()} · ${preview()}` : title()}
+                tooltip={title()}
+                icon={automation() ? 'activity' : 'split'}
                 open={expanded()}
+                terminalInset={controlStyle.paddingHorizontal}
                 onPress={inputAction(setExpanded, {
                   sessionId,
                   key: rowKey(row()),
@@ -199,7 +280,9 @@ export function MessageRow({
                 trailing={
                   <If when={expanded()}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <SenderLink sessionId={() => sender()!} senders={senders} />
+                      <If when={sender()}>
+                        <SenderLink sessionId={() => sender()!} senders={senders} />
+                      </If>
                       <MessageCopy
                         row={row}
                         ownerKey={() => rowKey(row())}
@@ -210,14 +293,43 @@ export function MessageRow({
                   </If>
                 }
               >
-                <Text
-                  style={[
-                    { ...disclosureTitleStyle, color: C.secondary },
-                    { numberOfLines: 1, textOverflow: 'ellipsis' },
-                  ]}
+                <View
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}
                 >
-                  {senderLabel(sender()!, senders)}
-                </Text>
+                  <Text
+                    style={[
+                      {
+                        ...captionTextStyle,
+                        minWidth: 0,
+                        maxWidth: preview() ? '48%' : undefined,
+                        flexShrink: 1,
+                        color: expanded() ? C.text : C.secondary,
+                      },
+                      { numberOfLines: 1, textOverflow: 'ellipsis' },
+                    ]}
+                  >
+                    {title()}
+                  </Text>
+                  <If when={preview()}>
+                    <Text
+                      style={[
+                        { ...captionTextStyle, minWidth: 0, flexShrink: 1, color: C.muted },
+                        { numberOfLines: 1, textOverflow: 'ellipsis' },
+                      ]}
+                    >
+                      {`·  ${preview()}`}
+                    </Text>
+                  </If>
+                  <If when={platform.idiom !== 'terminal'}>
+                    <Icon name={expanded() ? 'down' : 'right'} size={12} color={C.muted} />
+                  </If>
+                </View>
               </Disclosure>
               <If when={expanded()}>
                 <View
@@ -227,11 +339,16 @@ export function MessageRow({
                     gap: 8,
                   }}
                 >
-                  <Text
-                    style={[{ ...secondaryTextStyle, color: C.secondary }, { userSelect: 'text' }]}
+                  <If
+                    when={original()}
+                    else={
+                      <Text style={{ ...secondaryTextStyle, color: C.text, userSelect: 'text' }}>
+                        <SourceText row={row} sourceId={sourceId()} />
+                      </Text>
+                    }
                   >
-                    <SourceText row={row} sourceId={sourceId()} />
-                  </Text>
+                    <FullAgentMessage original={original()!} sourceId={sourceId()} />
+                  </If>
                   <If when={(row().attachments?.length ?? 0) > 0}>
                     <HistoryAttachments
                       userScroll={userScroll}
@@ -246,6 +363,7 @@ export function MessageRow({
               </If>
             </View>
           );
+        }
         const text = computed(() => row().text);
         const thinking = () => row().field === 'thinking' || row().role === 'thinking';
         const firstLine = computed(() => (thinking() ? /\S[^\r\n]*/.exec(text()) : null));
@@ -469,6 +587,7 @@ export function MessageRow({
                         if (expanded()) onToolReading?.(rowKey(row()));
                       }}
                       previewImage={previewImage}
+                      senders={senders}
                       userScroll={userScroll}
                       expand={setExpanded}
                       showOriginal={setSourceMode}
@@ -483,13 +602,18 @@ export function MessageRow({
                 else={
                   <>
                     <View
+                      class={
+                        highlighted && !reduceMotion()
+                          ? 'transition-colors duration-300'
+                          : undefined
+                      }
                       style={{
                         alignSelf: 'flex-end',
                         maxWidth: '78%',
                         paddingHorizontal: 16,
                         paddingVertical: 16,
                         borderRadius: 20,
-                        backgroundColor: C.card,
+                        backgroundColor: highlighted?.() ? C.cardRaised : C.card,
                         gap: 8,
                       }}
                     >

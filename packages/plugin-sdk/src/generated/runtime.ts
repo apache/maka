@@ -196,7 +196,6 @@ export type RuntimeProtocol =
   | AgentSchedules
   | AgentScheduleChange
   | AgentScheduleResult
-  | AgentScheduleAlerts
   | RecallQuery
   | AgentRecallPage
   | AgentImportsRead
@@ -2476,6 +2475,12 @@ export type Intent = {
 };
 export type Schedule =
   | {
+      kind: 'script';
+      source: string;
+      everySeconds?: number;
+      startAt: number;
+    }
+  | {
       kind: 'once';
       runAt: number;
     }
@@ -2497,10 +2502,8 @@ export type Schedule =
 export type Recurrence = 'daily' | 'weekly' | 'monthly';
 export type AgentScheduledEffect =
   | {
-      kind: 'reminder';
-    }
-  | {
       kind: 'session';
+      delivery?: AutomationDelivery & string;
       target: AgentScheduledTarget;
       model: ModelSelection;
       thinkingLevel?: ThinkingLevel | null;
@@ -2511,6 +2514,7 @@ export type AgentScheduledEffect =
       model: ModelSelection;
       thinkingLevel?: ThinkingLevel | null;
     };
+export type AutomationDelivery = 'steering' | 'followup';
 export type Creator =
   | {
       kind: 'user';
@@ -2536,11 +2540,6 @@ export type AgentScheduleChange =
       input: AgentScheduledInput;
     }
   | {
-      kind: 'approve';
-      taskId: string;
-      revision: number;
-    }
-  | {
       kind: 'pause';
       taskId: string;
       revision: number;
@@ -2554,18 +2553,6 @@ export type AgentScheduleChange =
       kind: 'trigger_now';
       taskId: string;
       revision: number;
-    }
-  | {
-      kind: 'snooze';
-      taskId: string;
-      revision: number;
-      delayMs: number;
-    }
-  | {
-      kind: 'acknowledge';
-      taskId: string;
-      revision: number;
-      fireId: string;
     }
   | {
       kind: 'clear_history';
@@ -2591,6 +2578,7 @@ export type AgentScheduleResult =
       kind: 'rejected';
       reason: string;
     };
+export type PresetRevision = number;
 /**
  * A complete logical Turn boundary within the source session.
  */
@@ -3268,6 +3256,12 @@ export type AgentCreated =
       reason: AgentRejection;
     };
 export type AgentRejection =
+  | 'preset_not_found'
+  | 'preset_disabled'
+  | 'preset_conflict'
+  | 'preset_model_unavailable'
+  | 'preset_thinking_level_unavailable'
+  | 'preset_backend_conflict'
   | 'permission_change_requires_user'
   | 'title_invalid'
   | 'labels_invalid'
@@ -4312,6 +4306,11 @@ export type MessageOrigin =
   | {
       kind: 'session';
       execution: ExecutionIdentity;
+    }
+  | {
+      kind: 'automation';
+      automationId: string;
+      title: string;
     }
   | {
       kind: 'goal';
@@ -7072,6 +7071,10 @@ export interface AgentList {
 }
 export interface AgentCreate {
   /**
+   * Apply a preset at creation; mutually exclusive with backend.
+   */
+  presetId?: string | null;
+  /**
    * Initial next-turn preference; admission resolves it again.
    */
   backend?: AgentBackendPreference | null;
@@ -7183,11 +7186,11 @@ export interface AgentScheduledSummary {
   id: string;
   revision: number;
   title: string;
+  sessionId: string;
+  script: boolean;
   status: Status;
-  approved: boolean;
   nextFireAt?: number | null;
   pendingFire?: string | null;
-  reminder: boolean;
   lastError?: string | null;
 }
 export interface AgentScheduledDetail {
@@ -7195,7 +7198,6 @@ export interface AgentScheduledDetail {
   task: Task;
   timezone: string;
   misfire: Misfire;
-  approved: boolean;
   pendingFire?: string | null;
 }
 export interface Task {
@@ -7237,16 +7239,6 @@ export interface Create {
   maxFires?: number | null;
   expiresAt?: number | null;
 }
-export interface AgentScheduleAlerts {
-  pending: number;
-  reminders: AgentScheduledReminder[];
-}
-export interface AgentScheduledReminder {
-  taskId: string;
-  fireId: string;
-  title: string;
-  body: string;
-}
 export interface RecallQuery {
   /**
    * @minItems 1
@@ -7267,6 +7259,7 @@ export interface AgentRecallPage {
   gaps: string[];
 }
 export interface AgentSession {
+  appliedPreset?: AppliedPreset | null;
   /**
    * Session that initiated creation, independent of fork ancestry and task ownership.
    */
@@ -7292,6 +7285,17 @@ export interface AgentSession {
    */
   tailMessageId: string | null;
   activity: AgentSessionActivity;
+}
+/**
+ * Immutable execution configuration captured when a session is created.
+ */
+export interface AppliedPreset {
+  id: string;
+  revision: PresetRevision;
+  name: string;
+  instruction: string;
+  model: ModelSelection;
+  thinkingLevel?: ThinkingLevel | null;
 }
 /**
  * Frozen conversation ancestry for presentation, not authority over the source.

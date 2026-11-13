@@ -70,14 +70,6 @@ export function Terminals(props: { model: TerminalsModel }) {
           <Icon name="refresh" color={C.secondary} />
         </Button>
       </View>
-      <If when={model.error()}>
-        <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-          {model.error()}
-        </Text>
-      </If>
-      <If when={model.pending().length > 0}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Checking action status…')}</Text>
-      </If>
       <If when={model.loading() && !model.entries().length}>
         <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('Reading terminals…')}</Text>
       </If>
@@ -131,6 +123,16 @@ export function Terminals(props: { model: TerminalsModel }) {
           </Button>
         )}
       </List>
+      <If when={model.error() || (model.known() && model.pending().length > 0)}>
+        <Text
+          style={[
+            { ...captionTextStyle, color: model.error() ? C.danger : C.muted },
+            { userSelect: 'text' },
+          ]}
+        >
+          {model.error() || tr('Checking terminal command status…')}
+        </Text>
+      </If>
     </View>
   );
 }

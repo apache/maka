@@ -168,7 +168,7 @@ fn validate_request(
         }
         Trigger::Schedule { schedule_id } => {
             id(schedule_id)?;
-            source.message.origin.is_none() && request.spec.budget_basis.is_some()
+            request.spec.budget_basis.is_some()
         }
         Trigger::Continuation { .. } | Trigger::ContextCompact | Trigger::HistorySource => false,
     };
@@ -465,10 +465,9 @@ fn project(
                     let source = validate_request(c, session, request)?;
                     if matches!(placement, Placement::Steering { .. })
                         && !is_interactive(request, &source)
+                        && !matches!(&request.spec.trigger, Trigger::Schedule { .. })
                     {
-                        return Err(invalid(
-                            "only interactive queue messages can be steered or edited",
-                        ));
+                        return Err(invalid("message cannot be delivered as steering"));
                     }
                     crate::artifacts::pin_request(c, request, &source)?;
                     let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_queue_items WHERE session=? AND (request=? OR message=?))",params![session,request.id.0,request.message_id],|r|r.get(0))?;

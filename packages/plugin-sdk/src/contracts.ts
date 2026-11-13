@@ -846,6 +846,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -954,6 +964,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -1216,10 +1287,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -1839,6 +1906,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -1947,6 +2024,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -2210,10 +2348,6 @@ export const contracts: {
                   },
                 ],
               },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
               AgentExecutorSelection: {
                 type: 'object',
                 properties: {
@@ -2396,6 +2530,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
@@ -6048,6 +6188,11 @@ export const contracts: {
             title: 'AgentCreate',
             type: 'object',
             properties: {
+              presetId: {
+                description: 'Apply a preset at creation; mutually exclusive with backend.',
+                type: ['string', 'null'],
+                format: 'uuid',
+              },
               backend: {
                 description: 'Initial next-turn preference; admission resolves it again.',
                 anyOf: [
@@ -6314,6 +6459,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -6422,6 +6577,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -6685,10 +6901,6 @@ export const contracts: {
                   },
                 ],
               },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
               AgentExecutorSelection: {
                 type: 'object',
                 properties: {
@@ -6871,6 +7083,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
@@ -10098,6 +10316,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -10206,6 +10434,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -10468,10 +10757,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -10655,6 +10940,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
@@ -10812,6 +11103,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -10920,6 +11221,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -11182,10 +11544,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -12463,6 +12821,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'execution'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
                   },
                   {
                     type: 'object',
@@ -14012,6 +14387,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -14981,6 +15373,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -15089,6 +15491,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -15351,10 +15814,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -16118,6 +16577,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -16226,6 +16695,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -16488,10 +17018,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -18264,6 +18790,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -18372,6 +18908,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -18634,10 +19231,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -20248,6 +20841,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -21309,6 +21919,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'execution'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
                   },
                   {
                     type: 'object',
@@ -22443,6 +23070,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -22551,6 +23188,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -22814,10 +23512,6 @@ export const contracts: {
                   },
                 ],
               },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
               AgentExecutorSelection: {
                 type: 'object',
                 properties: {
@@ -23000,6 +23694,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
@@ -23316,6 +24016,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -23424,6 +24134,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -23687,10 +24458,6 @@ export const contracts: {
                   },
                 ],
               },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
               AgentExecutorSelection: {
                 type: 'object',
                 properties: {
@@ -23873,6 +24640,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
@@ -24506,6 +25279,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -24614,6 +25397,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -24876,10 +25720,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -26763,6 +27603,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -27533,6 +28390,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -27641,6 +28508,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -27903,10 +28831,6 @@ export const contracts: {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentExecutorSelection: {
                 type: 'object',
@@ -30496,25 +31420,6 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
-                    const: 'approve',
-                  },
-                  taskId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'taskId', 'revision'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
                     const: 'pause',
                   },
                   taskId: {
@@ -30566,51 +31471,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['kind', 'taskId', 'revision'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'snooze',
-                  },
-                  taskId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  delayMs: {
-                    type: 'integer',
-                    format: 'int64',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'taskId', 'revision', 'delayMs'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'acknowledge',
-                  },
-                  taskId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  fireId: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'taskId', 'revision', 'fireId'],
               },
               {
                 type: 'object',
@@ -30705,6 +31565,30 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'script',
+                      },
+                      source: {
+                        type: 'string',
+                      },
+                      everySeconds: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                        default: 60,
+                      },
+                      startAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'source', 'startAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'once',
                       },
                       runAt: {
@@ -30784,18 +31668,11 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'reminder',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
                         const: 'session',
+                      },
+                      delivery: {
+                        $ref: '#/$defs/AutomationDelivery',
+                        default: 'steering',
                       },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
@@ -30845,6 +31722,10 @@ export const contracts: {
                     required: ['kind', 'target', 'model'],
                   },
                 ],
+              },
+              AutomationDelivery: {
+                type: 'string',
+                enum: ['steering', 'followup'],
               },
               AgentScheduledTarget: {
                 description:
@@ -31060,57 +31941,6 @@ export const contracts: {
           },
           resources: {},
         },
-        scheduleAlerts: {
-          mode: 'subscription',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentScheduleAlertsRead',
-            type: 'object',
-            additionalProperties: false,
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentScheduleAlerts',
-            type: 'object',
-            properties: {
-              pending: {
-                type: 'integer',
-                format: 'uint32',
-                minimum: 0,
-              },
-              reminders: {
-                type: 'array',
-                items: {
-                  $ref: '#/$defs/AgentScheduledReminder',
-                },
-              },
-            },
-            additionalProperties: false,
-            required: ['pending', 'reminders'],
-            $defs: {
-              AgentScheduledReminder: {
-                type: 'object',
-                properties: {
-                  taskId: {
-                    type: 'string',
-                  },
-                  fireId: {
-                    type: 'string',
-                  },
-                  title: {
-                    type: 'string',
-                  },
-                  body: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['taskId', 'fireId', 'title', 'body'],
-              },
-            },
-          },
-          resources: {},
-        },
         schedules: {
           mode: 'query',
           input: {
@@ -31234,11 +32064,14 @@ export const contracts: {
                   title: {
                     type: 'string',
                   },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  script: {
+                    type: 'boolean',
+                  },
                   status: {
                     $ref: '#/$defs/Status',
-                  },
-                  approved: {
-                    type: 'boolean',
                   },
                   nextFireAt: {
                     type: ['integer', 'null'],
@@ -31247,15 +32080,12 @@ export const contracts: {
                   pendingFire: {
                     type: ['string', 'null'],
                   },
-                  reminder: {
-                    type: 'boolean',
-                  },
                   lastError: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['id', 'revision', 'title', 'status', 'approved', 'reminder'],
+                required: ['id', 'revision', 'title', 'sessionId', 'script', 'status'],
               },
               Status: {
                 type: 'string',
@@ -31278,15 +32108,12 @@ export const contracts: {
                   misfire: {
                     $ref: '#/$defs/Misfire',
                   },
-                  approved: {
-                    type: 'boolean',
-                  },
                   pendingFire: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['revision', 'task', 'timezone', 'misfire', 'approved'],
+                required: ['revision', 'task', 'timezone', 'misfire'],
               },
               Task: {
                 type: 'object',
@@ -31392,6 +32219,30 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'script',
+                      },
+                      source: {
+                        type: 'string',
+                      },
+                      everySeconds: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                        default: 60,
+                      },
+                      startAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'source', 'startAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'once',
                       },
                       runAt: {
@@ -31471,18 +32322,11 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'reminder',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
                         const: 'session',
+                      },
+                      delivery: {
+                        $ref: '#/$defs/AutomationDelivery',
+                        default: 'steering',
                       },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
@@ -31532,6 +32376,10 @@ export const contracts: {
                     required: ['kind', 'target', 'model'],
                   },
                 ],
+              },
+              AutomationDelivery: {
+                type: 'string',
+                enum: ['steering', 'followup'],
               },
               AgentScheduledTarget: {
                 description:
@@ -32338,6 +33186,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -32446,6 +33304,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -32709,10 +33628,6 @@ export const contracts: {
                   },
                 ],
               },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
               AgentExecutorSelection: {
                 type: 'object',
                 properties: {
@@ -32895,6 +33810,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
@@ -34427,6 +35348,16 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  appliedPreset: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AppliedPreset',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   parentSessionId: {
                     description:
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
@@ -34535,6 +35466,67 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AppliedPreset: {
+                description:
+                  'Immutable execution configuration captured when a session is created.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    $ref: '#/$defs/PresetRevision',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  instruction: {
+                    type: 'string',
+                  },
+                  model: {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision', 'name', 'instruction', 'model'],
+              },
+              PresetRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              ModelSelection: {
+                description:
+                  'Stable model identity, resolved from current connection settings at admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                required: ['connectionId', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
               AgentSessionBranch: {
                 description:
@@ -34798,10 +35790,6 @@ export const contracts: {
                   },
                 ],
               },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
               AgentExecutorSelection: {
                 type: 'object',
                 properties: {
@@ -34984,6 +35972,12 @@ export const contracts: {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
                   'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
@@ -35877,6 +36871,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'execution'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
                   },
                   {
                     type: 'object',
@@ -38151,6 +39162,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -39115,11 +40143,14 @@ export const contracts: {
                   title: {
                     type: 'string',
                   },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  script: {
+                    type: 'boolean',
+                  },
                   status: {
                     $ref: '#/$defs/Status',
-                  },
-                  approved: {
-                    type: 'boolean',
                   },
                   nextFireAt: {
                     type: ['integer', 'null'],
@@ -39128,15 +40159,12 @@ export const contracts: {
                   pendingFire: {
                     type: ['string', 'null'],
                   },
-                  reminder: {
-                    type: 'boolean',
-                  },
                   lastError: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['id', 'revision', 'title', 'status', 'approved', 'reminder'],
+                required: ['id', 'revision', 'title', 'sessionId', 'script', 'status'],
               },
               Status: {
                 type: 'string',
@@ -39159,15 +40187,12 @@ export const contracts: {
                   misfire: {
                     $ref: '#/$defs/Misfire',
                   },
-                  approved: {
-                    type: 'boolean',
-                  },
                   pendingFire: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['revision', 'task', 'timezone', 'misfire', 'approved'],
+                required: ['revision', 'task', 'timezone', 'misfire'],
               },
               Task: {
                 type: 'object',
@@ -39273,6 +40298,30 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'script',
+                      },
+                      source: {
+                        type: 'string',
+                      },
+                      everySeconds: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                        default: 60,
+                      },
+                      startAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'source', 'startAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'once',
                       },
                       runAt: {
@@ -39352,18 +40401,11 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'reminder',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
                         const: 'session',
+                      },
+                      delivery: {
+                        $ref: '#/$defs/AutomationDelivery',
+                        default: 'steering',
                       },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
@@ -39413,6 +40455,10 @@ export const contracts: {
                     required: ['kind', 'target', 'model'],
                   },
                 ],
+              },
+              AutomationDelivery: {
+                type: 'string',
+                enum: ['steering', 'followup'],
               },
               AgentScheduledTarget: {
                 description:
@@ -44834,119 +45880,6 @@ export const contracts: {
             },
             required: ['path', 'old_string', 'new_string'],
             title: 'EditInput',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'completed',
-                  },
-                  value: true,
-                },
-                required: ['kind', 'value'],
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'failed',
-                  },
-                  message: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'message'],
-                description:
-                  'A known completed failure. Uncertain external effects use the original receipt.',
-              },
-            ],
-            title: 'WorkspaceFileResult',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          resources: {},
-        },
-        glob: {
-          mode: 'query',
-          input: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              pattern: {
-                type: 'string',
-                minLength: 1,
-              },
-              cwd: {
-                type: 'string',
-                minLength: 1,
-                default: '.',
-              },
-            },
-            required: ['pattern'],
-            title: 'Input',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'completed',
-                  },
-                  value: true,
-                },
-                required: ['kind', 'value'],
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'failed',
-                  },
-                  message: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'message'],
-                description:
-                  'A known completed failure. Uncertain external effects use the original receipt.',
-              },
-            ],
-            title: 'WorkspaceFileResult',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          resources: {},
-        },
-        grep: {
-          mode: 'query',
-          input: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              pattern: {
-                type: 'string',
-              },
-              path: {
-                type: 'string',
-                default: '.',
-              },
-              glob: {
-                type: 'string',
-              },
-            },
-            required: ['pattern'],
-            title: 'Input',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
           },
           output: {

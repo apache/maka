@@ -309,6 +309,8 @@ pub enum SessionPosition {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentCreate")]
 pub struct Create {
+    /// Apply a preset at creation; mutually exclusive with backend.
+    pub preset_id: Option<crate::preset::PresetId>,
     /// Initial next-turn preference; admission resolves it again.
     pub backend: Option<BackendPreference>,
     /// Treat title as a placeholder for one title derived from the first user message.
@@ -625,6 +627,12 @@ pub struct SelectBackend {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentRejection")]
 pub enum Rejection {
+    PresetNotFound,
+    PresetDisabled,
+    PresetConflict,
+    PresetModelUnavailable,
+    PresetThinkingLevelUnavailable,
+    PresetBackendConflict,
     PermissionChangeRequiresUser,
     TitleInvalid,
     LabelsInvalid,
@@ -791,6 +799,8 @@ pub struct DataSource {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSession")]
 pub struct Session {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_preset: Option<crate::preset::AppliedPreset>,
     /// Session that initiated creation, independent of fork ancestry and task ownership.
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
     pub parent_session_id: Option<String>,
@@ -1958,10 +1968,6 @@ pub fn contract() -> Contract {
                 (
                     "watchSchedules".into(),
                     method::<ScheduleRead, Schedules>(MethodMode::Subscription),
-                ),
-                (
-                    "scheduleAlerts".into(),
-                    method::<ScheduleAlertsRead, ScheduleAlerts>(MethodMode::Subscription),
                 ),
                 (
                     "schedule".into(),

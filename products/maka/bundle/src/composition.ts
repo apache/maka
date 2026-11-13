@@ -474,7 +474,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
         const contract =
           tool.target.kind === 'import' &&
           tool.target.name === 'files' &&
-          ['readText', 'glob', 'grep', 'write', 'edit', 'applyPatch'].includes(tool.method)
+          ['readText', 'write', 'edit', 'applyPatch'].includes(tool.method)
             ? 'maka.workspace.Files'
             : tool.target.kind === 'import' &&
                 tool.target.name === 'processes' &&

@@ -30,6 +30,93 @@ import {
 
 /** Shared interface terms have one translation owner across every surface. */
 export const commonMessages = {
+  'Could not change the model.': [
+    'Could not change the model.',
+    '无法切换模型。',
+    '無法切換模型。',
+  ],
+  'Could not copy to the clipboard.': [
+    'Could not copy to the clipboard.',
+    '无法复制到剪贴板。',
+    '無法複製到剪貼簿。',
+  ],
+  'Could not load models.': ['Could not load models.', '无法加载模型。', '無法載入模型。'],
+  'Could not load or save clipboard history settings.': [
+    'Could not load or save clipboard history settings.',
+    '无法读取或保存剪贴板历史设置。',
+    '無法讀取或儲存剪貼簿記錄設定。',
+  ],
+  'Could not load or save file search settings.': [
+    'Could not load or save file search settings.',
+    '无法读取或保存文件搜索设置。',
+    '無法讀取或儲存檔案搜尋設定。',
+  ],
+  'Could not load or save launcher history.': [
+    'Could not load or save launcher history.',
+    '无法读取或保存快捷面板历史。',
+    '無法讀取或儲存快速面板記錄。',
+  ],
+  'Could not load or save quick tool settings.': [
+    'Could not load or save quick tool settings.',
+    '无法读取或保存快捷工具设置。',
+    '無法讀取或儲存快速工具設定。',
+  ],
+  'Could not load or save shortcuts.': [
+    'Could not load or save shortcuts.',
+    '无法读取或保存快捷项。',
+    '無法讀取或儲存快速項目。',
+  ],
+  'Could not load the workbench. Retry the connection.': [
+    'Could not load the workbench. Retry the connection.',
+    '无法加载工作台，请重试连接。',
+    '無法載入工作台，請重試連線。',
+  ],
+  'Could not run {tool}.': ['Could not run {tool}.', '无法运行{tool}。', '無法執行{tool}。'],
+  'Could not update screenshot settings.': [
+    'Could not update screenshot settings.',
+    '无法更新截图设置。',
+    '無法更新截圖設定。',
+  ],
+  'Choose a search folder in Settings.': [
+    'Choose a search folder in Settings.',
+    '请在设置中选择搜索文件夹。',
+    '請在設定中選擇搜尋檔案夾。',
+  ],
+  'Folder unavailable': ['Folder unavailable', '文件夹不可用', '檔案夾無法使用'],
+  'Folder missing or volume disconnected': [
+    'Folder missing or volume disconnected',
+    '目录不存在或磁盘已断开',
+    '目錄不存在或磁碟已斷開',
+  ],
+  'Some subfolders could not be read': [
+    'Some subfolders could not be read',
+    '部分子文件夹无法读取',
+    '部分子檔案夾無法讀取',
+  ],
+  'Folder access required': ['Folder access required', '需要文件夹访问权限', '需要檔案夾存取權限'],
+  'Indexing…': ['Indexing…', '正在索引…', '正在索引…'],
+  Indexed: ['Indexed', '已索引', '已索引'],
+  'Add a search folder': ['Add a search folder', '添加搜索文件夹', '加入搜尋檔案夾'],
+  'Other personal files': [
+    'Other personal files',
+    '主目录中的其他个人文件',
+    '家目錄中的其他個人檔案',
+  ],
+  'Search includes subfolders. Select a mounted volume or add a folder.': [
+    'Search includes subfolders. Select a mounted volume or add a folder.',
+    '包含子文件夹。可以选择已挂载的磁盘，或添加指定文件夹。',
+    '包含子檔案夾。可選擇已掛載的磁碟，或加入指定檔案夾。',
+  ],
+  'Search folders': ['Search folders', '搜索范围', '搜尋範圍'],
+  'Allow Maka to read Downloads in System Settings > Privacy & Security > Files and Folders.': [
+    'Allow Maka to read Downloads in System Settings > Privacy & Security > Files and Folders.',
+    '请在系统设置的「隐私与安全性 → 文件与文件夹」中允许 Maka 读取下载文件夹。',
+    '請在系統設定的「隱私權與安全性 → 檔案與檔案夾」中允許 Maka 讀取下載項目。',
+  ],
+  'Clipboard format': ['Format', '格式', '格式'],
+  'Clipboard text': ['Text', '文本', '文字'],
+  'Pixel dimensions': ['Dimensions', '图片尺寸', '圖片尺寸'],
+  'Copied at': ['Copied at', '复制时间', '複製時間'],
   'Abandon unconfirmed {method}': [
     'Abandon unconfirmed {method}',
     '放弃尚未确认的 {method}',
@@ -62,16 +149,6 @@ export const commonMessages = {
   'Open Maka': ['Open Maka', '打开 Maka', '打開 Maka'],
   'Open in Main Window': ['Open in Main Window', '在主窗口打开', '在主視窗開啟'],
   'Quit Maka': ['Quit Maka', '退出 Maka', '結束 Maka'],
-  'The Alt+Space shortcut is unavailable': [
-    'The Alt+Space shortcut is unavailable',
-    'Alt+Space 快捷键不可用',
-    'Alt+Space 快捷鍵無法使用',
-  ],
-  'The Option+Space shortcut is unavailable': [
-    'The Option+Space shortcut is unavailable',
-    'Option+Space 快捷键不可用',
-    'Option+Space 快捷鍵無法使用',
-  ],
   'The action outcome is unknown. Check the current state before trying again.': [
     'The action outcome is unknown. Check the current state before trying again.',
     '暂时无法确认操作结果，请先检查当前状态再决定是否重试。',
@@ -190,13 +267,23 @@ export const commonMessages = {
   ],
   'Confirm delete': ['Confirm delete', '确认删除', '確認刪除'],
   Content: ['Content', '内容', '內容'],
-  'Enter a URL starting with http:// or https://': [
-    'Enter a URL starting with http:// or https://',
-    '请输入以 http:// 或 https:// 开头的网址',
-    '請輸入以 http:// 或 https:// 開頭的網址',
+  'Enter a valid website address': [
+    'Enter a valid website address',
+    '请输入有效的网址',
+    '請輸入有效的網址',
   ],
   'Enter a name': ['Enter a name', '请输入名称', '請輸入名稱'],
   'Enter some content': ['Enter some content', '请输入内容', '請輸入內容'],
+  'Quick Links': ['Quick Links', '快捷链接', '快速連結'],
+  'Text Snippets': ['Text Snippets', '文本片段', '文字片段'],
+  'Include {query} in the search URL': [
+    'Include {query} in the search URL',
+    '搜索网址需要包含 {query}',
+    '搜尋網址需要包含 {query}',
+  ],
+  'Add search engine': ['Add search engine', '添加搜索引擎', '新增搜尋引擎'],
+  'Search engine': ['Search engine', '搜索引擎', '搜尋引擎'],
+  'Create note': ['Create note', '新建笔记', '新增筆記'],
   Links: ['Links', '链接', '連結'],
   'Nothing here yet': ['Nothing here yet', '暂无内容', '尚無內容'],
   Notes: ['Notes', '笔记', '筆記'],
@@ -238,10 +325,34 @@ export const commonMessages = {
     '没有可设置的快捷工具。',
     '沒有可設定的快速工具。',
   ],
+  'Search {tool}': ['Search {tool}', '搜索{tool}', '搜尋{tool}'],
+  'Turn on quick tools': ['Turn on quick tools', '启用快捷工具', '啟用快速工具'],
+  'Press {shortcut} anywhere to open the quick launcher, with its tools, commands and Maka Bot. Still being refined.':
+    [
+      'Press {shortcut} anywhere to open the quick launcher, with its tools, commands and Maka Bot. Still being refined.',
+      '在任何地方按 {shortcut} 打开快捷面板，使用其中的工具、命令和 Maka Bot。仍在完善中。',
+      '在任何地方按 {shortcut} 開啟快速面板，使用其中的工具、命令和 Maka Bot。仍在完善中。',
+    ],
+  'Quick launcher': ['Quick launcher', '快捷面板', '快速面板'],
+  'Shortcut to open the quick launcher': [
+    'Shortcut to open the quick launcher',
+    '打开快捷面板的快捷键',
+    '開啟快速面板的快速鍵',
+  ],
   'Record shortcut': ['Record shortcut', '录制快捷键', '錄製快速鍵'],
   'Press keys…': ['Press keys…', '请按下快捷键…', '請按下快速鍵…'],
   'Remove shortcut': ['Remove shortcut', '移除快捷键', '移除快速鍵'],
+  'Used by a disabled tool': [
+    'Used by a disabled tool',
+    '已被停用的工具使用',
+    '已被停用的工具使用',
+  ],
   'Used by {title}': ['Used by {title}', '已被“{title}”使用', '已被「{title}」使用'],
+  'Could not register shortcut': [
+    'Could not register shortcut',
+    '无法注册快捷键',
+    '無法註冊快速鍵',
+  ],
   'Taken by another app': ['Taken by another app', '已被其他应用占用', '已被其他 App 佔用'],
   Alias: ['Alias', '别名', '別名'],
   'A shortcut runs the command from any app. Typing the alias finds it; left empty, the built-in alias is used.':

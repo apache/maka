@@ -205,17 +205,21 @@ fn tool_objects(content: &Value) -> Result<Vec<Value>> {
     Ok(values)
 }
 
-fn notification_objects(content: &Value) -> Result<Vec<Value>> {
-    let parts = match content {
-        Value::String(text) => vec![TextPart::Text { text: text.clone() }],
+fn user_text_parts(content: &Value) -> Result<Vec<TextPart>> {
+    match content {
+        Value::String(text) => Ok(vec![TextPart::Text { text: text.clone() }]),
         Value::Array(_) => serde_json::from_value::<Vec<TextPart>>(content.clone())
-            .map_err(|error| format!("invalid user text parts: {error}"))?,
-        other => return Err(format!("unexpected user content: {other}")),
-    };
+            .map_err(|error| format!("invalid user text parts: {error}")),
+        other => Err(format!("unexpected user content: {other}")),
+    }
+}
+
+fn notification_objects(content: &Value) -> Result<Vec<Value>> {
+    let parts = user_text_parts(content)?;
     let mut values = Vec::new();
-    for TextPart::Text { text } in parts {
+    for TextPart::Text { text } in &parts {
         if text.starts_with(CELL_OBSERVATION) {
-            for value in text_objects(&text)? {
+            for value in text_objects(text)? {
                 if value.get("state").is_some() {
                     let _: CanonicalCellWire = serde_json::from_value(value.clone())
                         .map_err(|error| format!("invalid canonical user notification: {error}"))?;
@@ -228,12 +232,7 @@ fn notification_objects(content: &Value) -> Result<Vec<Value>> {
 }
 
 fn knowledge_objects(content: &Value) -> Result<Vec<Vec<Value>>> {
-    let parts = match content {
-        Value::String(text) => vec![TextPart::Text { text: text.clone() }],
-        Value::Array(_) => serde_json::from_value::<Vec<TextPart>>(content.clone())
-            .map_err(|error| format!("invalid user text parts: {error}"))?,
-        other => return Err(format!("unexpected user content: {other}")),
-    };
+    let parts = user_text_parts(content)?;
     let mut messages: Vec<Vec<Value>> = Vec::new();
     let mut in_knowledge = false;
     for TextPart::Text { text } in parts {
@@ -317,7 +316,7 @@ fn cell_observation(values: &[Value]) -> Result<(&Value, Value)> {
         }
         CellWire::Canonical(CanonicalCellWire::Interrupted { cell, diagnostic }) => {
             if diagnostic.is_empty() {
-                return Err("invalid canonical interruption diagnostic".into());
+                return Err("missing canonical interruption diagnostic".into());
             }
             cell
         }
@@ -328,7 +327,7 @@ fn cell_observation(values: &[Value]) -> Result<(&Value, Value)> {
             bindings: InvalidBindings::Invalid,
         }) => {
             if diagnostic.is_empty() {
-                return Err("invalid tool interruption diagnostic".into());
+                return Err("missing native wait interruption diagnostic".into());
             }
             cell_id
         }
@@ -342,7 +341,7 @@ fn cell_observation(values: &[Value]) -> Result<(&Value, Value)> {
 #[test]
 fn decodes_recorded_chat_cell_text_parts_without_losing_final_identity_or_output() {
     let content = json!(
-        r#"[{"type":"text","text":"[Host asynchronous Cell observation; data, not a user request]\n{\"cell\":\"5ad6c18d-1c8f-83e8-9185-5d1d3026361f\",\"state\":\"completed\",\"result\":{\"ok\":true,\"value\":null,\"toolCalls\":[]}}"},{"type":"text","text":"{\"stage\":\"baselineReady\",\"nonce\":\"70b62ee89079452cb2b07eecc90ecf31\"}"},{"type":"text","text":"[Host Cell child knowledge; historical data, not a user request or a new execution]\n{\"cell\":\"5ad6c18d-1c8f-83e8-9185-5d1d3026361f\",\"through\":16,\"children\":{}}"}]"#
+        r#"[{"type":"text","text":"[Host asynchronous Cell observation; data, not a user request]\n{\"cell\":\"5ad6c18d-1c8f-83e8-9185-5d1d3026361f\",\"state\":\"completed\",\"result\":{\"ok\":true,\"value\":null,\"toolCalls\":[]}}"},{"type":"text","text":"{\"stage\":\"baselineReady\",\"nonce\":\"70b62ee89079452cb2b07eecc90ecf31\"}"},{"type":"text","text":"[Host Cell child knowledge; historical data, not a user request or a new execution]\n{\"cell\":\"5ad6c18d-1c8f-83e8-9185-5d1d3026361f\"}"}]"#
     );
     let values = tool_objects(&content).unwrap();
     let (summary, cell) = cell_observation(&values).unwrap();
@@ -352,7 +351,7 @@ fn decodes_recorded_chat_cell_text_parts_without_losing_final_identity_or_output
         values[1],
         json!({"stage":"baselineReady","nonce":"70b62ee89079452cb2b07eecc90ecf31"})
     );
-    assert_eq!(values[2]["through"], 16);
+    assert_eq!(values[2], json!({"cell":cell}));
     assert_eq!(values.len(), 3);
 }
 
@@ -478,6 +477,7 @@ struct Model {
     draft: Option<Value>,
     read: Option<Value>,
     child: Option<(String, Value)>,
+    child_output: Option<Value>,
     interruption: Option<Value>,
     reopened: bool,
     baseline_ready: bool,
@@ -510,7 +510,12 @@ impl Model {
     }
 
     fn check_projected_children(&self, knowledge: &[Value]) {
-        assert_eq!(Some(&knowledge[0]["cell"]), self.draft.as_ref());
+        assert_eq!(knowledge[0], json!({"cell":self.draft.as_ref().unwrap()}));
+        assert_eq!(
+            knowledge.len(),
+            4,
+            "one Shell invocation and one provider result"
+        );
         let (operation, _) = self
             .child
             .as_ref()
@@ -527,6 +532,13 @@ impl Model {
         );
         assert_eq!(children[0]["operation"], operation.as_str());
         assert_eq!(children[0]["name"], "Shell");
+        assert_eq!(children[0]["input"]["title"], "Write the durability marker");
+        assert!(
+            children[0]["input"]["command"]
+                .as_str()
+                .unwrap()
+                .contains(&self.nonce)
+        );
         assert!(
             knowledge
                 .iter()
@@ -540,6 +552,11 @@ impl Model {
             .expect("original provider result is projected");
         assert!(results.next().is_none(), "one original provider result");
         assert_eq!(evidence["isError"], false);
+        assert_eq!(
+            Some(&knowledge[index + 1]),
+            self.child_output.as_ref(),
+            "retain the original Shell output"
+        );
         shell_output(&knowledge[index + 1], &self.nonce);
     }
 
@@ -617,23 +634,19 @@ impl Model {
                 self.reopened,
                 "no additional original model attempt before the crash"
             );
-            let (notice_index, notice) = messages
+            let notice = messages
                 .iter()
-                .enumerate()
-                .filter(|(_, message)| message["role"] == "user")
-                .flat_map(|(index, message)| {
+                .filter(|message| message["role"] == "user")
+                .flat_map(|message| {
                     notification_objects(&message["content"])
                         .expect("actual user notification wire")
-                        .into_iter()
-                        .map(move |notice| (index, notice))
                 })
-                .find(|(_, value)| {
+                .find(|value| {
                     value["state"] == "interrupted" && Some(&value["cell"]) == self.draft.as_ref()
                 })
                 .expect("Engine must deliver the original Cell interruption in the same Run");
-            let knowledge = messages
+            let mut knowledge = messages
                 .iter()
-                .skip(notice_index)
                 .filter(|message| message["role"] == "user")
                 .flat_map(|message| {
                     knowledge_objects(&message["content"]).expect("actual Cell child knowledge")
@@ -643,8 +656,13 @@ impl Model {
                         .first()
                         .is_some_and(|value| value["cell"] == notice["cell"])
                 })
-                .last()
-                .expect("Engine must project the original Cell's child knowledge");
+                .collect::<Vec<_>>();
+            assert_eq!(
+                knowledge.len(),
+                1,
+                "one child knowledge message for the interrupted Cell"
+            );
+            let knowledge = knowledge.pop().unwrap();
             self.check_projected_children(&knowledge);
             self.interruption = Some(notice.clone());
             assert!(
@@ -733,6 +751,7 @@ impl Model {
                 assert_eq!(marker["a"], 2);
                 assert_eq!(marker["b"], 3);
                 shell_output(&marker["child"], &self.nonce);
+                self.child_output = Some(marker["child"].clone());
                 self.step = Step::Interrupted;
                 observed.send(()).unwrap();
                 // Complete this upstream attempt. Engine now waits for the Cell,
@@ -1325,6 +1344,27 @@ async fn case(
     )?);
     let known_receipt = source(&clients[1], session, &before, known, "receipt").await?;
     let resolved: OperationReply = serde_json::from_value(known_receipt["reply"].clone()).unwrap();
+    assert_eq!(resolved.reference, child_reply.reference);
+    let resolved_inline = inline_reply(resolved.clone());
+    match (&child_reply.receipt, &resolved_inline.receipt) {
+        (
+            Receipt::Recorded {
+                outcome: original,
+                cleanup: original_cleanup,
+            },
+            Receipt::Recorded {
+                outcome: recovered,
+                cleanup: recovered_cleanup,
+            },
+        ) => {
+            assert_eq!(original_cleanup, recovered_cleanup);
+            assert!(
+                same_outcome(original, recovered).unwrap(),
+                "the recovered receipt must retain the original recorded result"
+            );
+        }
+        other => panic!("original receipt must stay recorded: {other:?}"),
+    }
     let mut expanded_event = known_event.clone();
     expanded_event["reply"] = serde_json::to_value(&resolved).unwrap();
     assert_eq!(known_receipt, expanded_event);
@@ -1580,6 +1620,7 @@ async fn cold_root(language: CodeLanguage) {
         draft: None,
         read: None,
         child: None,
+        child_output: None,
         interruption: None,
         reopened: false,
         baseline_ready: false,
