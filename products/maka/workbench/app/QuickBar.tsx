@@ -173,7 +173,8 @@ export function QuickFooter(props: {
   settings: boolean;
   onAction?: (() => void) | undefined;
 }) {
-  const hint = { fontSize: 12, lineHeight: 18, color: C.muted } as const;
+  // Read when drawn: the theme can change while the launcher is open.
+  const hint = () => ({ fontSize: 12, lineHeight: 18, color: C.muted });
   return (
     <View
       style={{
@@ -188,15 +189,15 @@ export function QuickFooter(props: {
       }}
     >
       <If when={props.settings}>
-        <Text style={hint}>{`${tr('Settings')} ${keymap.label('mod+,')}`}</Text>
+        <Text style={hint()}>{`${tr('Settings')} ${keymap.label('mod+,')}`}</Text>
       </If>
-      <If when={props.onAction} else={<Text style={hint}>{`${props.action} ↵`}</Text>}>
+      <If when={props.onAction} else={<Text style={hint()}>{`${props.action} ↵`}</Text>}>
         <Button
           accessibilityLabel={props.action}
           onPress={() => props.onAction?.()}
           style={{ paddingHorizontal: 8, height: 26, justifyContent: 'center' }}
         >
-          <Text style={{ ...hint, color: C.accent }}>{`${props.action} ↵`}</Text>
+          <Text style={{ ...hint(), color: C.accent }}>{`${props.action} ↵`}</Text>
         </Button>
       </If>
     </View>

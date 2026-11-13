@@ -129,7 +129,8 @@ function CodeText(props: {
   tone?: 'added' | 'removed' | 'warning';
   prompt?: boolean;
 }) {
-  const color =
+  // Read when drawn: the theme can change after the text is made.
+  const color = () =>
     props.tone === 'removed'
       ? C.danger
       : props.tone === 'added'
@@ -165,7 +166,7 @@ function CodeText(props: {
               ]}
             />
           </If>
-          <Text style={[{ ...codeTextStyle, color }, { userSelect: 'text' }]}>
+          <Text style={[{ ...codeTextStyle, color: color() }, { userSelect: 'text' }]}>
             <If when={props.prompt}>
               <Text style={[{ color: C.muted }, { userSelect: 'none' }]}>$ </Text>
             </If>
