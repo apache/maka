@@ -87,12 +87,12 @@ export function createSessionPermissions(host: Host, sessionId: string, control:
       } catch (reason) {
         throw new UiError('{message} {detail}', {
           message: changed.message,
-          detail: errorText(reason),
+          detail: errorText(reason, 'Could not update permissions.'),
         });
       }
       throw changed;
     } catch (reason) {
-      if (alive) error.set(errorText(reason));
+      if (alive) error.set(errorText(reason, 'Could not update permissions.'));
     } finally {
       if (alive) pending.set(false);
     }

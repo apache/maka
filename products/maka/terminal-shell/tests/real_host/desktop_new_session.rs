@@ -1064,7 +1064,14 @@ async fn desktop_continues_a_failed_run_without_duplicating_the_user_message() {
             json!({"error":{"type":"invalid_request_error","message":"FIXTURE_TURN_FAILED"}}),
         )
         .await;
-    desktop.control("Continue response").await;
+    let resume = desktop.control("Continue response").await;
+    let composer = desktop.control("Focus message composer").await;
+    assert!(
+        resume.center().x > composer.center().x && resume.center().y > composer.center().y,
+        "Continue must sit in the composer's lower right: {resume:?}, {composer:?}"
+    );
+    assert!(desktop.controls("Continue in a new run").is_empty());
+    desktop.artifact("continue-in-composer");
     let sessions = desktop.sessions().await;
     let session = sessions
         .iter()

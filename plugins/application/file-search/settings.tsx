@@ -131,9 +131,6 @@ export function ScopeSettings(props: {
   ];
   return (
     <SettingsBody>
-      <If when={settings.failure() !== null}>
-        <SettingsProblem message={renderText(errorText(settings.failure()))} />
-      </If>
       <SettingsSection
         title={tr('Search folders')}
         note={tr('Search includes subfolders. Select a mounted volume or add a folder.')}
@@ -160,6 +157,13 @@ export function ScopeSettings(props: {
           }
         />
       </SettingsSection>
+      <If when={settings.failure() !== null}>
+        <SettingsProblem
+          message={renderText(
+            errorText(settings.failure(), 'Could not load or save file search settings.'),
+          )}
+        />
+      </If>
     </SettingsBody>
   );
 }

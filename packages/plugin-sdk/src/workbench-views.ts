@@ -177,7 +177,6 @@ export interface SettingsViewInput {
   readonly page?: string;
   opened(): boolean;
   close(): void;
-  changed(): void;
   readonly model?: ModelSelection;
 }
 

@@ -30,6 +30,53 @@ import {
 
 /** Shared interface terms have one translation owner across every surface. */
 export const commonMessages = {
+  'Could not change the model.': [
+    'Could not change the model.',
+    '无法切换模型。',
+    '無法切換模型。',
+  ],
+  'Could not copy to the clipboard.': [
+    'Could not copy to the clipboard.',
+    '无法复制到剪贴板。',
+    '無法複製到剪貼簿。',
+  ],
+  'Could not load models.': ['Could not load models.', '无法加载模型。', '無法載入模型。'],
+  'Could not load or save clipboard history settings.': [
+    'Could not load or save clipboard history settings.',
+    '无法读取或保存剪贴板历史设置。',
+    '無法讀取或儲存剪貼簿記錄設定。',
+  ],
+  'Could not load or save file search settings.': [
+    'Could not load or save file search settings.',
+    '无法读取或保存文件搜索设置。',
+    '無法讀取或儲存檔案搜尋設定。',
+  ],
+  'Could not load or save launcher history.': [
+    'Could not load or save launcher history.',
+    '无法读取或保存快捷面板历史。',
+    '無法讀取或儲存快速面板記錄。',
+  ],
+  'Could not load or save quick tool settings.': [
+    'Could not load or save quick tool settings.',
+    '无法读取或保存快捷工具设置。',
+    '無法讀取或儲存快速工具設定。',
+  ],
+  'Could not load or save shortcuts.': [
+    'Could not load or save shortcuts.',
+    '无法读取或保存快捷项。',
+    '無法讀取或儲存快速項目。',
+  ],
+  'Could not load the workbench. Retry the connection.': [
+    'Could not load the workbench. Retry the connection.',
+    '无法加载工作台，请重试连接。',
+    '無法載入工作台，請重試連線。',
+  ],
+  'Could not run {tool}.': ['Could not run {tool}.', '无法运行{tool}。', '無法執行{tool}。'],
+  'Could not update screenshot settings.': [
+    'Could not update screenshot settings.',
+    '无法更新截图设置。',
+    '無法更新截圖設定。',
+  ],
   'Choose a search folder in Settings.': [
     'Choose a search folder in Settings.',
     '请在设置中选择搜索文件夹。',
@@ -102,16 +149,6 @@ export const commonMessages = {
   'Open Maka': ['Open Maka', '打开 Maka', '打開 Maka'],
   'Open in Main Window': ['Open in Main Window', '在主窗口打开', '在主視窗開啟'],
   'Quit Maka': ['Quit Maka', '退出 Maka', '結束 Maka'],
-  'The Alt+Space shortcut is unavailable': [
-    'The Alt+Space shortcut is unavailable',
-    'Alt+Space 快捷键不可用',
-    'Alt+Space 快捷鍵無法使用',
-  ],
-  'The Option+Space shortcut is unavailable': [
-    'The Option+Space shortcut is unavailable',
-    'Option+Space 快捷键不可用',
-    'Option+Space 快捷鍵無法使用',
-  ],
   'The action outcome is unknown. Check the current state before trying again.': [
     'The action outcome is unknown. Check the current state before trying again.',
     '暂时无法确认操作结果，请先检查当前状态再决定是否重试。',
@@ -292,11 +329,6 @@ export const commonMessages = {
     '打开快捷面板的快捷键',
     '開啟快速面板的快速鍵',
   ],
-  'The {shortcut} shortcut is unavailable': [
-    'The {shortcut} shortcut is unavailable',
-    '快捷键 {shortcut} 不可用',
-    '快速鍵 {shortcut} 無法使用',
-  ],
   'Record shortcut': ['Record shortcut', '录制快捷键', '錄製快速鍵'],
   'Press keys…': ['Press keys…', '请按下快捷键…', '請按下快速鍵…'],
   'Remove shortcut': ['Remove shortcut', '移除快捷键', '移除快速鍵'],
@@ -306,6 +338,11 @@ export const commonMessages = {
     '已被停用的工具使用',
   ],
   'Used by {title}': ['Used by {title}', '已被“{title}”使用', '已被「{title}」使用'],
+  'Could not register shortcut': [
+    'Could not register shortcut',
+    '无法注册快捷键',
+    '無法註冊快速鍵',
+  ],
   'Taken by another app': ['Taken by another app', '已被其他应用占用', '已被其他 App 佔用'],
   Alias: ['Alias', '别名', '別名'],
   'A shortcut runs the command from any app. Typing the alias finds it; left empty, the built-in alias is used.':

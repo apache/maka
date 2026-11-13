@@ -99,7 +99,7 @@ function FullAgentMessage(props: { original: OriginalMessage; sourceId: string }
       if (alive) body.set(text);
     },
     (reason) => {
-      if (alive) failure.set(errorText(reason));
+      if (alive) failure.set(errorText(reason, 'Message is unavailable'));
     },
   );
   return (

@@ -56,7 +56,7 @@ export function createRootUiSettings(
     alive = false;
   });
   const report = (reason: unknown) => {
-    if (alive) error.set(errorText(reason));
+    if (alive) error.set(errorText(reason, 'The interface update could not be completed.'));
   };
   const management = context.services.management[0];
   const refreshPending = async () => {
@@ -122,7 +122,9 @@ export function createRootUiSettings(
   const settled = (reply: OperationReply) => {
     const receipt = reply.receipt;
     if (receipt.kind !== 'recorded' || receipt.outcome.kind !== 'returned')
-      throw new UiError('This action could not be completed.');
+      throw new Error(
+        `Interface update: no returned result (${receipt.kind === 'recorded' ? receipt.outcome.kind : receipt.kind})`,
+      );
     if (receipt.outcome.result.kind === 'failure')
       throw new Error(receipt.outcome.result.diagnostic);
     const result = receipt.outcome.result.value as ManagementResultForDeploymentRef;

@@ -191,7 +191,10 @@ export function WorkspacePicker(props: {
             ? message(
                 'This folder is unavailable or cannot be opened. Choose another location or retry.',
               )
-            : errorText(reason),
+            : errorText(
+                reason,
+                'This folder is unavailable or cannot be opened. Choose another location or retry.',
+              ),
         );
     } finally {
       read.reading = false;
@@ -294,7 +297,13 @@ export function WorkspacePicker(props: {
         if (alive && props.close(props.instance))
           void props.create({ kind: 'directory', path: resolved }, path);
       } catch (reason) {
-        if (alive) error.set(errorText(reason));
+        if (alive)
+          error.set(
+            errorText(
+              reason,
+              'This folder is unavailable or cannot be opened. Choose another location or retry.',
+            ),
+          );
       } finally {
         if (alive) picking.set(false);
       }

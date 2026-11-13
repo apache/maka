@@ -58,6 +58,129 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const conversationMessages = {
+  '{action} did not run. Try again.': [
+    '{action} did not run. Try again.',
+    '「{action}」未执行，请重试。',
+    '「{action}」未執行，請重試。',
+  ],
+  'Could not confirm the result of “{action}”.': [
+    'Could not confirm the result of “{action}”.',
+    '无法确认「{action}」的结果。',
+    '無法確認「{action}」的結果。',
+  ],
+  'Update goal': ['Update goal', '更新目标', '更新目標'],
+  'Mark conversation as read': ['Mark conversation as read', '将会话标为已读', '將對話標為已讀'],
+  'Open Maka Bot': ['Open Maka Bot', '打开 Maka Bot', '開啟 Maka Bot'],
+  'Submit response': ['Submit response', '提交回复', '送出回覆'],
+  'Change model': ['Change model', '切换模型', '切換模型'],
+  'Save compaction instructions': ['Save compaction instructions', '保存压缩指令', '儲存壓縮指令'],
+  'Stop computer access': ['Stop computer access', '停止计算机访问', '停止電腦存取'],
+  'Update project MCP access': [
+    'Update project MCP access',
+    '更新项目 MCP 访问权限',
+    '更新專案 MCP 存取權限',
+  ],
+  'Could not attach the file.': ['Could not attach the file.', '无法添加附件。', '無法加入附件。'],
+  'Could not check Maka Bot messages.': [
+    'Could not check Maka Bot messages.',
+    '无法检查 Maka Bot 消息。',
+    '無法檢查 Maka Bot 訊息。',
+  ],
+  'Could not compact the conversation.': [
+    'Could not compact the conversation.',
+    '无法压缩会话。',
+    '無法壓縮對話。',
+  ],
+  'Could not fork the conversation.': [
+    'Could not fork the conversation.',
+    '无法分叉会话。',
+    '無法分支對話。',
+  ],
+  'Could not load attachments.': [
+    'Could not load attachments.',
+    '无法加载附件。',
+    '無法載入附件。',
+  ],
+  'Could not load compaction instructions.': [
+    'Could not load compaction instructions.',
+    '无法加载压缩指令。',
+    '無法載入壓縮指令。',
+  ],
+  'Could not load conversation history.': [
+    'Could not load conversation history.',
+    '无法加载会话历史。',
+    '無法載入對話記錄。',
+  ],
+  'Could not load related conversations.': [
+    'Could not load related conversations.',
+    '无法加载关联会话。',
+    '無法載入相關對話。',
+  ],
+  'Could not load suggestions.': [
+    'Could not load suggestions.',
+    '无法加载建议。',
+    '無法載入建議。',
+  ],
+  'Could not load the checklist.': [
+    'Could not load the checklist.',
+    '无法加载清单。',
+    '無法載入清單。',
+  ],
+  'Could not load the execution timeline.': [
+    'Could not load the execution timeline.',
+    '无法加载执行过程。',
+    '無法載入執行過程。',
+  ],
+  'Could not open the conversation.': [
+    'Could not open the conversation.',
+    '无法打开会话。',
+    '無法開啟對話。',
+  ],
+  'Could not read request usage.': [
+    'Could not read request usage.',
+    '无法读取请求用量。',
+    '無法讀取請求用量。',
+  ],
+  'Could not read the tool details.': [
+    'Could not read the tool details.',
+    '无法读取工具详情。',
+    '無法讀取工具詳細資料。',
+  ],
+  'Could not restart Maka Bot.': [
+    'Could not restart Maka Bot.',
+    '无法重启 Maka Bot。',
+    '無法重新啟動 Maka Bot。',
+  ],
+  'Could not save compaction instructions.': [
+    'Could not save compaction instructions.',
+    '无法保存压缩指令。',
+    '無法儲存壓縮指令。',
+  ],
+  'Could not send the message.': [
+    'Could not send the message.',
+    '无法发送消息。',
+    '無法傳送訊息。',
+  ],
+  'Could not submit the answer.': [
+    'Could not submit the answer.',
+    '无法提交回答。',
+    '無法送出回答。',
+  ],
+  'Could not update permissions.': [
+    'Could not update permissions.',
+    '无法更新权限。',
+    '無法更新權限。',
+  ],
+  'Could not update the conversation.': [
+    'Could not update the conversation.',
+    '无法更新会话。',
+    '無法更新對話。',
+  ],
+  'Could not update the message queue.': [
+    'Could not update the message queue.',
+    '无法更新消息队列。',
+    '無法更新訊息佇列。',
+  ],
   'Approve child decision': ['Approve child decision', '批准子会话决定', '核准子對話決定'],
   'Deny child decision': ['Deny child decision', '拒绝子会话决定', '拒絕子對話決定'],
   'Proposed child decision': [
@@ -295,11 +418,6 @@ export const conversationMessages = {
     '仅允许以下路径和网络目标，授权范围：',
     '僅允許以下路徑和網路目標，授權範圍：',
   ],
-  'An action is being confirmed. Try again in a moment.': [
-    'An action is being confirmed. Try again in a moment.',
-    '正在确认操作，请稍后重试。',
-    '正在確認操作，請稍後重試。',
-  ],
   'An attempt was not confirmed. Explicitly abandon it below before starting a new send.': [
     'An attempt was not confirmed. Explicitly abandon it below before starting a new send.',
     '之前的尝试尚未确认。请先在下方放弃该尝试，再重新发送。',
@@ -417,11 +535,6 @@ export const conversationMessages = {
     '无法打开 Bot：{reason}',
     '無法開啟 Bot：{reason}',
   ],
-  'Checking earlier actions. Try again in a moment.': [
-    'Checking earlier actions. Try again in a moment.',
-    '正在检查之前的操作，请稍后重试。',
-    '正在檢查先前的操作，請稍後重試。',
-  ],
   'Checklist updates ended. Reopen the conversation.': [
     'Checklist updates ended. Reopen the conversation.',
     '清单更新已结束，请重新打开对话。',
@@ -504,7 +617,6 @@ export const conversationMessages = {
     '确认结果仍未知，请在下方恢复原操作。',
     '確認結果仍未知，請在下方恢復原操作。',
   ],
-  'Confirming action…': ['Confirming action…', '正在确认操作…', '正在確認操作…'],
   'Confirming send… New typing is kept.': [
     'Confirming send… New typing is kept.',
     '正在确认发送…新输入的内容已保留。',
@@ -1047,37 +1159,17 @@ export const conversationMessages = {
   ],
   'Pause response': ['Pause response', '暂停', '暫停'],
   'Continue response': ['Continue response', '继续', '繼續'],
-  'Continue in a new run': ['Continue in a new run', '在新运行中继续', '在新的執行中繼續'],
   'External operation outcome unknown': [
     'External operation outcome unknown',
     '外部操作结果未知',
     '外部操作結果未知',
   ],
-  'Waiting for a code cell': ['Waiting for a code cell', '等待代码单元', '等待程式碼單元'],
-  'Waiting for the external task': [
-    'Waiting for the external task',
-    '等待外部任务',
-    '等待外部工作',
-  ],
-  'Waiting to retry the provider': [
-    'Waiting to retry the provider',
-    '等待重试提供方',
-    '等待重試提供方',
-  ],
-  'Waiting for the model': ['Waiting for the model', '等待模型响应', '等待模型回應'],
   'Wait for this run to finish before continuing.': [
     'Wait for this run to finish before continuing.',
     '当前运行结束后才能继续。',
     '目前的執行結束後才能繼續。',
   ],
   'Waiting for approval': ['Waiting for approval', '等待审批', '等候核准'],
-  'Waiting to retry': ['Waiting to retry', '等待重试', '等候重試'],
-  'Waiting for the original operation': [
-    'Waiting for the original operation',
-    '等待原操作',
-    '等候原操作',
-  ],
-  'Waiting for a child run': ['Waiting for a child run', '等待子运行', '等候子執行'],
   'Waiting for access to be restored': [
     'Waiting for access to be restored',
     '正在等待恢复访问',
@@ -1802,11 +1894,6 @@ export const conversationMessages = {
     '请先完成或恢复待处理操作，再重新加载。',
     '請先完成或恢復待處理操作，再重新載入。',
   ],
-  'The action was not dispatched. Try again.': [
-    'The action was not dispatched. Try again.',
-    '操作未发送，请重试。',
-    '操作未傳送，請重試。',
-  ],
   'This conversation was already created. Finish sending it before changing workspaces.': [
     'This conversation was already created. Finish sending it before changing workspaces.',
     '此会话已创建，请先完成发送再更换工作区。',
@@ -2038,15 +2125,18 @@ export const conversationMessages = {
     '连接已中断，草稿已保留。',
     '連線已中斷，草稿已保留。',
   ],
-  'This action could not be completed.': [
-    'This action could not be completed.',
-    '暂时未能完成此操作。',
-    '暫時未能完成此操作。',
-  ],
   'Checking send status…': ['Checking send status…', '正在确认发送状态…', '正在確認傳送狀態…'],
-  'Checking action status…': ['Checking action status…', '正在确认操作状态…', '正在確認操作狀態…'],
   'Checking upload status…': ['Checking upload status…', '正在确认上传状态…', '正在確認上傳狀態…'],
-  'Syncing changes…': ['Syncing changes…', '正在同步更改…', '正在同步變更…'],
+  'Checking whether your answer was received…': [
+    'Checking whether your answer was received…',
+    '正在确认你的回复是否已收到…',
+    '正在確認是否已收到你的回覆…',
+  ],
+  'Maka could not confirm whether the request was cancelled.': [
+    'Maka could not confirm whether the request was cancelled.',
+    'Maka 无法确认权限请求是否已取消。',
+    'Maka 無法確認權限請求是否已取消。',
+  ],
   'Connecting to terminal…': ['Connecting to terminal…', '正在连接终端…', '正在連線終端…'],
   'Show permission application in Finder': [
     'Show permission application in Finder',

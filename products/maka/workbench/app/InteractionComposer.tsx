@@ -448,7 +448,7 @@ export function InteractionComposer({
       argumentTotal.set(source.totalBytes);
       argumentsText.set(argumentsText() + source.text);
     } catch (reason) {
-      if (alive) argumentError.set(errorText(reason));
+      if (alive) argumentError.set(errorText(reason, 'Could not read the tool details.'));
     } finally {
       if (alive) {
         argumentBusy.set(false);
@@ -520,7 +520,7 @@ export function InteractionComposer({
     } catch (reason) {
       if (alive) {
         uncertain.set(true);
-        error.set(errorText(reason));
+        error.set(errorText(reason, 'Could not submit the answer.'));
       }
     } finally {
       if (alive) phase.set('idle');
@@ -555,7 +555,6 @@ export function InteractionComposer({
         pending.set(false);
       } else {
         uncertain.set(true);
-        error.set(uiMessage('Syncing changes…'));
       }
     } catch (reason) {
       let unresolved = true;
@@ -566,7 +565,7 @@ export function InteractionComposer({
       }
       if (alive) {
         uncertain.set(unresolved);
-        error.set(unresolved ? uiMessage('Syncing changes…') : errorText(reason));
+        if (!unresolved) error.set(errorText(reason, 'Could not submit the answer.'));
       }
     } finally {
       if (alive) phase.set('idle');
@@ -1117,8 +1116,10 @@ export function InteractionComposer({
               {error()}
             </Text>
           </If>
-          <If when={uncertain() && !record()?.outcome}>
-            <Text style={{ ...bodyTextStyle, color: C.warning }}>{tr('Syncing changes…')}</Text>
+          <If when={uncertain() && !record()?.outcome && !error()}>
+            <Text style={{ ...bodyTextStyle, color: C.muted }}>
+              {tr('Checking whether your answer was received…')}
+            </Text>
           </If>
           <If when={request()?.kind === 'question' && !record()?.outcome && !questionReady()}>
             <Text style={{ ...captionTextStyle, color: C.muted }}>

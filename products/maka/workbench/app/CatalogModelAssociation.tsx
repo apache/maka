@@ -131,7 +131,8 @@ function CatalogModelPicker(props: {
       after.set(result.after);
       if (!more && result.models.length) list?.scrollToIndex({ index: 0, animated: false });
     } catch (reason) {
-      if (alive && request === generation) failure.set(renderText(errorText(reason)));
+      if (alive && request === generation)
+        failure.set(renderText(errorText(reason, 'Could not load models.')));
     } finally {
       if (alive && request === generation) loading.set(false);
     }

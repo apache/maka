@@ -79,7 +79,7 @@ export function BotRestart(props: { restart(): Promise<void> }) {
           />
           <If when={error() !== null}>
             <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
-              {renderText(errorText(error()))}
+              {renderText(errorText(error(), 'Could not restart Maka Bot.'))}
             </Text>
           </If>
           <DialogFooter>
