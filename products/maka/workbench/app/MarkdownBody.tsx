@@ -31,6 +31,10 @@ export function MarkdownBody(props: {
   sourceId: string;
   sessionId: string;
   compact?: boolean;
+  /** Compact size in the full text color, for a message another agent sent. */
+  fullColor?: boolean;
+  /** The complete text, read apart from the row, shown in place of the row's own. */
+  text?(): string;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
 }) {
@@ -40,11 +44,11 @@ export function MarkdownBody(props: {
     alive = false;
   });
   const readingStyle = props.compact ? secondaryTextStyle : bodyTextStyle;
-  const color = () => (props.compact ? C.muted : C.text);
+  const color = () => (props.compact && !props.fullColor ? C.muted : C.text);
   return (
     <View selectable>
       <If
-        when={hasTextPrefix(props.row())}
+        when={props.text !== undefined || hasTextPrefix(props.row())}
         else={
           <Text style={[{ ...readingStyle, color: color() }, { userSelect: 'text' }]}>
             <SourceText row={props.row} sourceId={props.sourceId} />
@@ -52,7 +56,7 @@ export function MarkdownBody(props: {
         }
       >
         <TextView
-          markdown={props.row().text}
+          markdown={props.text ? props.text() : props.row().text}
           extensions={mermaidExtensions}
           renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
           sourceId={props.sourceId}
@@ -73,8 +77,8 @@ export function MarkdownBody(props: {
                 props.sourceId === sourceId &&
                 current.messageId === row.messageId &&
                 current.field === row.field &&
-                hasTextPrefix(current) &&
-                current.text.startsWith(row.text)
+                (props.text !== undefined ||
+                  (hasTextPrefix(current) && current.text.startsWith(row.text)))
               );
             };
             if (owns() && target?.isLive())

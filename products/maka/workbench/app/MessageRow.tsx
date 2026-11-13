@@ -86,7 +86,12 @@ function SenderLink(props: { sessionId(): string; senders?: MessageSenders }) {
   );
 }
 
-function FullAgentMessage(props: { original: OriginalMessage; sourceId: string }) {
+function FullAgentMessage(props: {
+  original: OriginalMessage;
+  sourceId: string;
+  /** How the text reads once it is here; plain text when absent. */
+  render?(text: () => string): JSX.Element;
+}) {
   const host = useHost();
   const body = signal<string | null>(null);
   const failure = createText();
@@ -107,16 +112,23 @@ function FullAgentMessage(props: { original: OriginalMessage; sourceId: string }
       when={body() !== null || !!failure()}
       else={<LoadingIndicator label={tr('Reading details…')} color={C.muted} />}
     >
-      <Text
-        style={{
-          ...secondaryTextStyle,
-          color: failure() ? C.danger : C.text,
-          userSelect: 'text',
-        }}
-        textSource={failure() ? undefined : { id: props.sourceId, offset: 0 }}
+      <If
+        when={!failure() && props.render}
+        else={
+          <Text
+            style={{
+              ...secondaryTextStyle,
+              color: failure() ? C.danger : C.text,
+              userSelect: 'text',
+            }}
+            textSource={failure() ? undefined : { id: props.sourceId, offset: 0 }}
+          >
+            {failure() || body()}
+          </Text>
+        }
       >
-        {failure() || body()}
-      </Text>
+        {props.render!(() => body() ?? '')}
+      </If>
     </If>
   );
 }
@@ -264,6 +276,19 @@ export function MessageRow({
               through: value.metadataThrough ?? through(),
             };
           });
+          // An agent writes Markdown; an Automation's prompt is the user's own text.
+          const agentMarkdown = (text?: () => string) => (
+            <MarkdownBody
+              sessionId={sessionId}
+              row={row}
+              sourceId={sourceId()}
+              compact
+              fullColor
+              text={text}
+              openLink={openLink}
+              userScroll={userScroll}
+            />
+          );
           return (
             <View style={{ width: '100%', minWidth: 0 }}>
               <Disclosure
@@ -342,12 +367,25 @@ export function MessageRow({
                   <If
                     when={original()}
                     else={
-                      <Text style={{ ...secondaryTextStyle, color: C.text, userSelect: 'text' }}>
-                        <SourceText row={row} sourceId={sourceId()} />
-                      </Text>
+                      <If
+                        when={sender()}
+                        else={
+                          <Text
+                            style={{ ...secondaryTextStyle, color: C.text, userSelect: 'text' }}
+                          >
+                            <SourceText row={row} sourceId={sourceId()} />
+                          </Text>
+                        }
+                      >
+                        {agentMarkdown()}
+                      </If>
                     }
                   >
-                    <FullAgentMessage original={original()!} sourceId={sourceId()} />
+                    <FullAgentMessage
+                      original={original()!}
+                      sourceId={sourceId()}
+                      render={sender() ? agentMarkdown : undefined}
+                    />
                   </If>
                   <If when={(row().attachments?.length ?? 0) > 0}>
                     <HistoryAttachments
