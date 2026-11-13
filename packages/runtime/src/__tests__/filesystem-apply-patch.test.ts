@@ -22,7 +22,10 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
-import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
+import {
+  createBoundaryFilesystemExecutor,
+  type FilesystemWorkspaceExecutor,
+} from '../filesystem-executor.js';
 import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
 
 test('applies one native update operation through the filesystem authority', async (t) => {
@@ -146,6 +149,65 @@ test('reports missing mutation targets as rejected operations', async (t) => {
   }
 });
 
+test('a failed pinned read fails update with a read error, not a patch rejection', async (t) => {
+  const cwd = await temporaryDirectory(t);
+  await writeFile(join(cwd, 'file.txt'), 'before\n', 'utf8');
+  const filesystem = createBoundaryFilesystemExecutor({
+    workspace: workspaceWithUnreadablePinnedTarget(),
+  });
+
+  // #6401: the pinned read failed (content: null), so the update never saw
+  // any content. The operation must report the read failure — folding null
+  // into '' made the patch look rejected against text that was never read.
+  await assert.rejects(
+    filesystem.applyPatch({
+      cwd,
+      operation: { type: 'update_file', path: 'file.txt', diff: '@@\n-before\n+after\n' },
+    }),
+    /could not read the current file contents/i,
+  );
+  assert.equal(await readFile(join(cwd, 'file.txt'), 'utf8'), 'before\n');
+});
+
+test('a failed pinned read fails Edit with a read error, not old_string-not-found', async (t) => {
+  const cwd = await temporaryDirectory(t);
+  await writeFile(join(cwd, 'file.txt'), 'before\n', 'utf8');
+  const filesystem = createBoundaryFilesystemExecutor({
+    workspace: workspaceWithUnreadablePinnedTarget(),
+  });
+
+  // #6401: with the read folded to '', Edit reported "old_string not found",
+  // inviting the documented-but-wrong recovery of Writing over the whole
+  // unread file. It must fail with the read error instead.
+  await assert.rejects(
+    filesystem.execute({
+      cwd,
+      operation: { kind: 'edit', path: 'file.txt', oldString: 'before', newString: 'after' },
+    }),
+    /could not read the current file contents/i,
+  );
+  assert.equal(await readFile(join(cwd, 'file.txt'), 'utf8'), 'before\n');
+});
+
+test('a failed pinned read fails FormatJson with a read error, not invalid JSON', async (t) => {
+  const cwd = await temporaryDirectory(t);
+  await writeFile(join(cwd, 'data.json'), '{"keep":true}\n', 'utf8');
+  const filesystem = createBoundaryFilesystemExecutor({
+    workspace: workspaceWithUnreadablePinnedTarget(),
+  });
+
+  // #6401: with the read folded to '', FormatJson resolved with
+  // ok:false "invalid JSON" against content it never saw.
+  await assert.rejects(
+    filesystem.execute({
+      cwd,
+      operation: { kind: 'format_json', path: 'data.json', sortKeys: false },
+    }),
+    /could not read the current file contents/i,
+  );
+  assert.equal(await readFile(join(cwd, 'data.json'), 'utf8'), '{"keep":true}\n');
+});
+
 async function temporaryDirectory(t: TestContext): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), 'maka-native-apply-patch-'));
   t.after(() => rm(path, { recursive: true, force: true }));
@@ -154,4 +216,31 @@ async function temporaryDirectory(t: TestContext): Promise<string> {
 
 function localFilesystem() {
   return createBoundaryFilesystemExecutor({ workspace: createLocalWorkspaceExecutor() });
+}
+
+/**
+ * A workspace whose pinned read-modify-write simulates a failed pinned read
+ * (#6401): exactly what the local executor hands its transform when the
+ * descriptor read cannot produce content (e.g. a write-only target whose
+ * `r+` open was retried as `O_WRONLY` — file-stable-write.ts reports the
+ * previous state as 'unknown' and the transform receives content: null).
+ * Nothing may be written from a read that never happened.
+ */
+function workspaceWithUnreadablePinnedTarget(): FilesystemWorkspaceExecutor {
+  const host = createLocalWorkspaceExecutor();
+  const pinned = host.readModifyWrite;
+  if (!pinned) {
+    throw new Error('LocalWorkspaceExecutor must provide readModifyWrite');
+  }
+  return Object.assign(Object.create(host), {
+    readModifyWrite: async (
+      input: Parameters<typeof pinned>[0],
+    ): Promise<Awaited<ReturnType<typeof pinned>>> => {
+      const replacement = input.transform({ content: null, existed: true });
+      if (replacement === null) {
+        return { path: input.path, previous: 'unknown', finalContent: null, written: false };
+      }
+      throw new Error('the pinned read failed; refusing to write unread content');
+    },
+  });
 }
