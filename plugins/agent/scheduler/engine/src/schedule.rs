@@ -107,7 +107,7 @@ impl Schedule {
                 if *anchor_at > after {
                     Some(*anchor_at)
                 } else {
-                    calendar(*recurrence, *anchor_at, after, zone)?
+                    calendar(*recurrence, *anchor_at, after, zone, false)?
                 }
             }
             Self::Cron {
@@ -116,6 +116,35 @@ impl Schedule {
             } => Cron::parse(expression)?.next(after, *start_at, zone)?,
         };
         Ok(next.filter(|next| *next > after && timestamp(*next).is_ok()))
+    }
+
+    /// The latest occurrence at or before the supplied instant.
+    pub(crate) fn latest_at(&self, at: i64, zone: &TimeZone) -> Result<Option<i64>, Error> {
+        self.validate()?;
+        timestamp(at)?;
+        let latest = match self {
+            Self::Once { run_at } => Some(*run_at),
+            Self::Interval {
+                every_seconds,
+                start_at,
+            } if *start_at <= at => {
+                let step = i64::from(*every_seconds) * 1000;
+                Some(at - (at - start_at) % step)
+            }
+            Self::Interval { .. } => None,
+            Self::Calendar {
+                recurrence,
+                anchor_at,
+            } if *anchor_at <= at => {
+                calendar(*recurrence, *anchor_at, at, zone, true)?.filter(|at| *at >= *anchor_at)
+            }
+            Self::Calendar { .. } => None,
+            Self::Cron {
+                expression,
+                start_at,
+            } => Cron::parse(expression)?.latest(at, *start_at, zone)?,
+        };
+        Ok(latest.filter(|latest| *latest <= at && timestamp(*latest).is_ok()))
     }
 }
 pub(crate) fn timestamp(milliseconds: i64) -> Result<Timestamp, Error> {
@@ -129,10 +158,12 @@ fn calendar(
     anchor: i64,
     after: i64,
     zone: &TimeZone,
+    backward: bool,
 ) -> Result<Option<i64>, Error> {
     let anchor = timestamp(anchor)?.to_zoned(zone.clone());
     let current = timestamp(after)?.to_zoned(zone.clone());
     let date = current.date();
+    let direction = if backward { -1 } else { 1 };
     let mut offset = 0;
     loop {
         let candidate = match recurrence {
@@ -141,9 +172,9 @@ fn calendar(
                 Err(_) => return Ok(None),
             },
             Recurrence::Weekly => {
-                let days = (anchor.weekday().to_monday_zero_offset()
-                    - date.weekday().to_monday_zero_offset())
-                .rem_euclid(7);
+                let difference = anchor.weekday().to_monday_zero_offset()
+                    - date.weekday().to_monday_zero_offset();
+                let days = (difference * direction).rem_euclid(7) * direction;
                 match date.checked_add((i64::from(days) + offset * 7).days()) {
                     Ok(date) => date,
                     Err(_) => return Ok(None),
@@ -169,10 +200,10 @@ fn calendar(
             .compatible()?
             .timestamp()
             .as_millisecond();
-        if at > after {
+        if if backward { at <= after } else { at > after } {
             return Ok(Some(at));
         }
-        offset += 1;
+        offset += i64::from(direction);
     }
 }
 
@@ -204,6 +235,12 @@ mod tests {
                 .next_after(ms("2026-03-08T06:59:00Z"), &ny)
                 .unwrap(),
             Some(ms("2026-03-09T06:30:00Z"))
+        );
+        assert_eq!(
+            cron("30 1 * * *")
+                .latest_at(ms("2026-11-01T06:45:00Z"), &ny)
+                .unwrap(),
+            Some(ms("2026-11-01T06:30:00Z"))
         );
         let utc = TimeZone::UTC;
         assert_eq!(
@@ -265,6 +302,10 @@ mod tests {
         assert_eq!(
             monthly.next_after(february, &ny).unwrap(),
             Some(ms("2026-03-31T13:00:00Z"))
+        );
+        assert_eq!(
+            monthly.latest_at(ms("2026-03-30T12:00:00Z"), &ny).unwrap(),
+            Some(february)
         );
         let daily = Schedule::Calendar {
             recurrence: Recurrence::Daily,

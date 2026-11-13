@@ -176,12 +176,24 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         if self.task.expires_at.is_some_and(|expires| now >= expires) {
             self.task.status = Status::Expired;
             self.task.next_fire_at = None;
-        } else if self.misfire == Misfire::Skip && self.task.next_fire_at.is_some_and(|at| at < now)
-        {
-            self.advance(now)?;
+        } else if self.task.next_fire_at.is_some_and(|at| at < now) {
+            match self.misfire {
+                Misfire::Skip => self.advance(now)?,
+                Misfire::Latest => self.catch_up(now)?,
+            }
         }
         if before != (self.task.status, self.task.next_fire_at) {
             self.task.updated_at = self.task.updated_at.max(now);
+        }
+        Ok(())
+    }
+    fn catch_up(&mut self, now: i64) -> Result<(), Error> {
+        if let Some(next) = self.task.next_fire_at.filter(|at| *at < now) {
+            let latest = self
+                .task
+                .schedule
+                .latest_at(now, &TimeZone::get(&self.timezone)?)?;
+            self.task.next_fire_at = Some(latest.map_or(next, |at| at.max(next)));
         }
         Ok(())
     }

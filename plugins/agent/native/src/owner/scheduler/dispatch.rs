@@ -19,6 +19,7 @@
 
 use super::*;
 use maka_agent_state::queue::MessageResolution;
+use tokio::time::Instant;
 impl CapturedRun {
     pub(in crate::owner) fn validate_background_target(
         &self,
@@ -204,7 +205,8 @@ impl Owner {
             let mut recover = true;
             let mut previous_error = None;
             let mut planned_wake: Option<i64> = None;
-            let mut retry_delay = Duration::from_secs(1);
+            let mut retries = BTreeMap::new();
+            let mut storage_retry = None;
             loop {
                 if owner.stop.is_cancelled() {
                     return;
@@ -216,15 +218,28 @@ impl Owner {
                 let Some(producer) = owner.producer().await else {
                     return;
                 };
-                let (delay, error) = match owner.tick_schedules(recover).await {
-                    Ok(result) => { recover = false; result },
-                    Err(error) => (None, Some(error)),
+                if storage_retry.is_none_or(|retry: Retry| retry.ready(Instant::now())) {
+                    let error = match owner.tick_schedules(recover, &mut retries).await {
+                        Ok((next, error)) => {
+                            planned_wake = next;
+                            recover = false;
+                            storage_retry = None;
+                            error
+                        }
+                        Err(error) => {
+                            storage_retry = Some(Retry::after_failure(storage_retry, Instant::now()));
+                            Some(error)
+                        }
+                    };
+                    if let Some(error) = &error
+                        && previous_error.as_ref() != Some(error) { eprintln!("Scheduled tasks: {error}"); }
+                    previous_error = error;
+                }
+                let retry_at = if let Some(retry) = storage_retry {
+                    Some(retry.at)
+                } else {
+                    retries.values().map(|retry| retry.retry.at).min()
                 };
-                let delay = retry_wake(delay, error.is_some(), now() as i64, &mut retry_delay);
-                if let Some(error) = &error
-                    && previous_error.as_ref() != Some(error) { eprintln!("Scheduled tasks: {error}"); }
-                previous_error = error;
-                planned_wake = delay;
                 drop(producer);
                 tokio::select! {
                     () = owner.stop.cancelled() => return,
@@ -232,8 +247,13 @@ impl Owner {
                     changed = changes.changed() => if changed.is_err() { return; },
                     changed = run_changes.changed() => if changed.is_err() { return; },
                     () = async {
-                        if let Some(at) = delay {
+                        if let Some(at) = planned_wake.filter(|_| storage_retry.is_none()) {
                             tokio::time::sleep(Duration::from_millis((at as u64).saturating_sub(now()))).await;
+                        } else { std::future::pending::<()>().await; }
+                    } => {},
+                    () = async {
+                        if let Some(at) = retry_at {
+                            tokio::time::sleep_until(at).await;
                         } else { std::future::pending::<()>().await; }
                     } => {},
                 }
@@ -243,6 +263,7 @@ impl Owner {
     async fn tick_schedules(
         self: &Arc<Self>,
         recover: bool,
+        retries: &mut BTreeMap<String, FireRetry>,
     ) -> Result<(Option<i64>, Option<String>), String> {
         let _gate = self.scheduler.gate.lock().await;
         let loaded_at = now() as i64;
@@ -252,7 +273,15 @@ impl Owner {
             if self.stop.is_cancelled() {
                 break;
             }
-            let mut plan = catalog.plans[&id].plan.clone();
+            let plan = &catalog.plans[&id].plan;
+            let retry = plan
+                .pending
+                .as_ref()
+                .and_then(|fire| retries.get(&id).and_then(|retry| retry.for_fire(&fire.id)));
+            if retry.is_some_and(|retry| !retry.ready(Instant::now())) {
+                continue;
+            }
+            let mut plan = plan.clone();
             let before = serde_json::to_value(&plan).map_err(reason)?;
             let at = now() as i64;
             if recover {
@@ -266,27 +295,37 @@ impl Owner {
                     .commit(&mut catalog, &id, Some(plan.clone()), None)
                     .await?;
             }
-            if let Some(fire) = plan.pending.clone() {
-                // A reminder remains durable until the user acknowledges it.
-                // No paint attempt or socket write is described as delivery.
-                if !matches!(fire.effect, ScheduledEffect::Reminder) {
-                    match self.dispatch_scheduled(&fire).await {
-                        Ok(Some(run)) => {
-                            plan.settle(run).map_err(reason)?;
-                            self.scheduler
-                                .commit(&mut catalog, &id, Some(plan.clone()), None)
-                                .await?;
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            // Keep this original fire for reconciliation without
-                            // preventing independent tasks from making progress.
-                            dispatch_error.get_or_insert(error);
-                        }
-                    }
+            let Some(fire) = plan.pending.as_ref() else {
+                continue;
+            };
+            // A reminder remains durable until the user acknowledges it.
+            if matches!(fire.effect, ScheduledEffect::Reminder) {
+                continue;
+            }
+            match self.dispatch_scheduled(fire).await {
+                Ok(Some(run)) => {
+                    plan.settle(run).map_err(reason)?;
+                    self.scheduler
+                        .commit(&mut catalog, &id, Some(plan), None)
+                        .await?;
+                    retries.remove(&id);
+                }
+                Ok(None) => {
+                    retries.remove(&id);
+                }
+                Err(error) => {
+                    retries.insert(
+                        id,
+                        FireRetry {
+                            fire_id: fire.id.clone(),
+                            retry: Retry::after_failure(retry, Instant::now()),
+                        },
+                    );
+                    dispatch_error.get_or_insert(error);
                 }
             }
         }
+        retries.retain(|id, _| catalog.ready.pending.contains(id));
         Ok((catalog.ready.next_after(loaded_at), dispatch_error))
     }
     async fn dispatch_scheduled(
@@ -484,14 +523,36 @@ fn settlement(
     }
 }
 
-fn retry_wake(next: Option<i64>, failed: bool, now: i64, backoff: &mut Duration) -> Option<i64> {
-    if failed {
-        let retry_at = now.saturating_add(backoff.as_millis() as i64);
-        *backoff = (*backoff * 2).min(Duration::from_secs(30));
-        Some(next.map_or(retry_at, |due| due.min(retry_at)))
-    } else {
-        *backoff = Duration::from_secs(1);
-        next
+struct FireRetry {
+    fire_id: String,
+    retry: Retry,
+}
+
+impl FireRetry {
+    fn for_fire(&self, id: &str) -> Option<Retry> {
+        (self.fire_id == id).then_some(self.retry)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Retry {
+    at: Instant,
+    delay: Duration,
+}
+
+impl Retry {
+    fn ready(self, now: Instant) -> bool {
+        self.at <= now
+    }
+
+    fn after_failure(previous: Option<Self>, now: Instant) -> Self {
+        let delay = previous.map_or(Duration::from_secs(1), |retry| {
+            (retry.delay * 2).min(Duration::from_secs(30))
+        });
+        Self {
+            at: now + delay,
+            delay,
+        }
     }
 }
 
@@ -500,19 +561,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn failed_dispatch_keeps_a_bounded_retry_wake_without_postponing_other_tasks() {
-        let mut backoff = Duration::from_secs(1);
-        let mut at = 0;
-        for wait in [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000] {
-            let wake = retry_wake(None, true, at, &mut backoff).unwrap();
-            assert_eq!(wake - at, wait);
-            at = wake;
+    fn early_wakes_leave_only_the_failed_fire_waiting() {
+        let now = Instant::now();
+        let failure = FireRetry {
+            fire_id: "failed".into(),
+            retry: Retry::after_failure(None, now),
+        };
+        for elapsed in [0, 250, 999, 1_000] {
+            let at = now + Duration::from_millis(elapsed);
+            let may_dispatch = |id| failure.for_fire(id).is_none_or(|retry| retry.ready(at));
+            assert!(may_dispatch("independent"));
+            assert_eq!(may_dispatch("failed"), elapsed == 1_000);
         }
-        assert_eq!(
-            retry_wake(Some(at + 10), true, at, &mut backoff),
-            Some(at + 10)
-        );
-        assert_eq!(retry_wake(None, false, at, &mut backoff), None);
-        assert_eq!(retry_wake(None, true, at, &mut backoff), Some(at + 1_000));
+        let retry = Retry::after_failure(Some(failure.retry), failure.retry.at);
+        assert!(!retry.ready(now + Duration::from_millis(2_999)));
+        assert!(retry.ready(now + Duration::from_secs(3)));
     }
 }

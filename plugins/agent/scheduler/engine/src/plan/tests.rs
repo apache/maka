@@ -176,7 +176,8 @@ fn resume_obeys_misfire_policy_and_preserves_due_now() {
             resumed.validate().unwrap();
             if misfire == super::Misfire::Latest || resume_at == 2_000 {
                 let fire = resumed.claim(resume_at).unwrap().unwrap().clone();
-                assert_eq!(fire.scheduled_at, 2_000);
+                let expected = if resume_at == 2_000 { 2_000 } else { 3_000 };
+                assert_eq!(fire.scheduled_at, expected);
                 resumed.settle(outcome(fire.id, resume_at)).unwrap();
                 assert!(resumed.claim(resume_at).unwrap().is_none());
             } else {
@@ -185,6 +186,15 @@ fn resume_obeys_misfire_policy_and_preserves_due_now() {
             }
         }
     }
+}
+
+#[test]
+fn reopen_catches_up_only_the_latest_missed_occurrence() {
+    let mut plan = plan(Delivery::Work("work".into()));
+    plan.task.expires_at = None;
+    plan.misfire = super::Misfire::Latest;
+    plan.recover(3_500).unwrap();
+    assert_eq!(plan.claim(3_500).unwrap().unwrap().scheduled_at, 3_000);
 }
 
 #[test]

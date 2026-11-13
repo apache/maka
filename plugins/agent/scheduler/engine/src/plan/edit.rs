@@ -136,6 +136,9 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
                         .ok_or_else(|| invalid("schedule has no remaining trigger"))?,
                 );
             }
+            if next.pending.is_none() && next.misfire == Misfire::Latest {
+                next.catch_up(now)?;
+            }
             next.check_expiry()?;
         }
         next.task.updated_at = next.task.updated_at.max(now);
