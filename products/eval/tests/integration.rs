@@ -35,9 +35,13 @@ use maka_eval::measurement::{
     costs_match_within_tolerance, deepseek_cost_usd, derive_metering,
     reconcile_host_and_proxy_usage, recover_external_metering_checkpoint, sign_metering_checkpoint,
 };
+use maka_eval::parity::{
+    ParityCheckInput, check_declared_endpoint_route_parity, compare_parity_snapshots,
+    verify_product_parity,
+};
 use maka_eval::report::{
-    build_cohort_summary, evaluate_differential_oracle, export_v1_canonical, export_v2_canonical,
-    rebuild_from_journal,
+    MilestoneGate, build_cohort_summary, evaluate_differential_oracle, evaluate_milestone_gate,
+    export_v1_canonical, export_v2_canonical, rebuild_from_journal,
 };
 use maka_eval::runner::{
     ConservativeCleanupProbe, RetryPolicy, RunExperimentInput, recover_unsettled_attempts,
@@ -1612,6 +1616,463 @@ async fn native_host_executes_with_public_client_and_returns_authenticated_relay
 
 #[cfg(unix)]
 #[tokio::test]
+async fn real_maka_product_parity_gate_verifies_instructions_tools_and_policies_for_m3_and_m5() {
+    let temp = TempDir::new().unwrap();
+    let (maka, eval) = stage_real_maka_and_eval_binaries(temp.path());
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(
+        workspace.join("AGENTS.md"),
+        "Follow workspace engineering standards.\n",
+    )
+    .unwrap();
+
+    // 1. Default released product composition parity (zero session overrides, full tool catalog).
+    let default_cfg_json = json!({
+        "makaExecutable": maka.to_string_lossy(),
+        "runtimeHostsPath": temp.path().join("hosts-default").to_string_lossy(),
+        "hostSettlementTimeoutMs": 30000,
+        "provider": "openai-compatible",
+        "connectionSlug": "eval-gateway",
+        "baseUrl": "https://api.openai.com/v1",
+        "model": "gpt-4.1"
+    });
+    let default_report = verify_product_parity(&ParityCheckInput {
+        subject_id: "maka".into(),
+        subject_config: default_cfg_json.as_object().unwrap().clone(),
+        subject_credentials: vec!["OPENAI_API_KEY".into()],
+        workspace_source: Some(workspace.clone()),
+        task_input: "Inspect the repository layout and reply Done.".into(),
+        max_steps: 10,
+    })
+    .await
+    .expect("live parity verification against real Maka must succeed");
+    assert!(
+        default_report.passed,
+        "default Maka composition parity failed: {:?}",
+        default_report.mismatches
+    );
+    assert!(default_report.mismatches.is_empty());
+    assert_eq!(
+        default_report.normal_tool_catalog_digest,
+        default_report.eval_tool_catalog_digest
+    );
+    assert!(
+        !default_report.exposed_tool_names.is_empty(),
+        "released Maka composition must expose product tools without pruning"
+    );
+    assert!(
+        default_report
+            .exposed_tool_names
+            .iter()
+            .any(|name| name == "AskUserQuestion"),
+        "interactive product tools must not be pruned: {:?}",
+        default_report.exposed_tool_names
+    );
+
+    // 2. Explicit public user configuration parity (read-only sandbox, disabled permission prompts,
+    //    explicit reasoning level and modelOverride).
+    let configured_spec_json = json!({
+        "schemaVersion": "maka.eval.v2",
+        "id": "parity-gated-exp",
+        "benchmark": { "id": "tb", "version": "1.0", "config": {} },
+        "executor": { "kind": "harbor", "config": {} },
+        "subjects": [
+            {
+                "id": "maka",
+                "kind": "maka",
+                "credentials": ["OPENAI_API_KEY"],
+                "config": {
+                    "makaExecutable": maka.to_string_lossy(),
+                    "runtimeHostsPath": temp.path().join("hosts-configured").to_string_lossy(),
+                    "hostSettlementTimeoutMs": 30000,
+                    "provider": "openai-compatible",
+                    "connectionSlug": "team-openai",
+                    "connectionName": "Team OpenAI",
+                    "baseUrl": "https://api.example.com/v1",
+                    "model": "gpt-4.1",
+                    "modelOverride": {
+                        "contextWindow": 128000,
+                        "thinkingLevels": ["off", "medium"]
+                    },
+                    "sandboxMode": "read-only",
+                    "requestPermissions": false,
+                    "thinkingLevel": "medium",
+                    "language": "en",
+                    "workspaceInstructions": false
+                }
+            }
+        ],
+        "tasks": [
+            { "id": "task-1", "input": "Verify parity.", "config": {} }
+        ],
+        "repetitions": 1,
+        "budget": { "maxSteps": 10 },
+        "verifier": {}
+    });
+    let spec_file = temp.path().join("spec.json");
+    let parity_out = temp.path().join("parity-report.json");
+    fs::write(
+        &spec_file,
+        serde_json::to_vec_pretty(&configured_spec_json).unwrap(),
+    )
+    .unwrap();
+
+    // Exercise the `maka-eval parity` CLI subcommand end-to-end.
+    let cli_out = tokio::process::Command::new(&eval)
+        .args([
+            "parity",
+            spec_file.to_str().unwrap(),
+            "--out",
+            parity_out.to_str().unwrap(),
+        ])
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        cli_out.status.success(),
+        "maka-eval parity CLI failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&cli_out.stdout),
+        String::from_utf8_lossy(&cli_out.stderr)
+    );
+    let reports: Vec<maka_eval::parity::ParityVerificationReport> =
+        serde_json::from_slice(&fs::read(&parity_out).unwrap()).unwrap();
+    assert_eq!(reports.len(), 1);
+    assert!(reports[0].passed);
+
+    // 3. M3 and M5 milestone acceptance gates.
+    let spec = parse_experiment_spec(&configured_spec_json).unwrap();
+    let empty_canonical = std::collections::BTreeMap::new();
+
+    // Without a parity report, RunFingerprint alone MUST NOT pass M3 or M5.
+    let m3_missing =
+        evaluate_milestone_gate(MilestoneGate::M3Acceptance, &spec, &empty_canonical, &[]);
+    assert!(!m3_missing.passed);
+    assert!(
+        m3_missing.violations[0].contains("RunFingerprint documents conditions only"),
+        "unexpected violation: {:?}",
+        m3_missing.violations
+    );
+
+    // Without settled runtime execution evidence, even a valid parity report MUST NOT pass M3.
+    let m3_without_runtime = evaluate_milestone_gate(
+        MilestoneGate::M3Acceptance,
+        &spec,
+        &empty_canonical,
+        &reports,
+    );
+    assert!(!m3_without_runtime.passed);
+    assert!(
+        m3_without_runtime
+            .violations
+            .iter()
+            .any(|v| v.contains("no settled runtime execution evidence")),
+        "expected missing runtime evidence violation, got {:?}",
+        m3_without_runtime.violations
+    );
+
+    let m5_incomplete = evaluate_milestone_gate(
+        MilestoneGate::M5ProductionDelivery,
+        &spec,
+        &empty_canonical,
+        &reports,
+    );
+    assert!(!m5_incomplete.passed);
+    assert!(
+        m5_incomplete
+            .violations
+            .iter()
+            .any(|v| v.contains("incomplete"))
+    );
+
+    // Mutating public subject settings after parity verification invalidates the gate.
+    let mut drifted_spec_json = configured_spec_json.clone();
+    drifted_spec_json["subjects"][0]["config"]["sandboxMode"] = json!("danger-full-access");
+    let drifted_spec = parse_experiment_spec(&drifted_spec_json).unwrap();
+    let m3_drifted = evaluate_milestone_gate(
+        MilestoneGate::M3Acceptance,
+        &drifted_spec,
+        &empty_canonical,
+        &reports,
+    );
+    assert!(!m3_drifted.passed);
+    assert!(
+        m3_drifted
+            .violations
+            .iter()
+            .any(|v| v.contains("does not match declared public configuration"))
+    );
+
+    // With runtime execution evidence confirming binary identity AND parity verified, M3 and M5 pass.
+    let mut settled_canonical = std::collections::BTreeMap::new();
+    settled_canonical.insert(
+        "task-1::1::maka".to_owned(),
+        V1CellAttempt {
+            cell_id: "task-1::1::maka".into(),
+            sequence: 1,
+            started_at: 100,
+            completed_at: 200,
+            result: EvalResult {
+                status: EvalResultStatus::Completed,
+                score: Some(1.0),
+                duration_ms: 100,
+                usage: Some(NormalizedUsage {
+                    input_tokens: 50,
+                    output_tokens: 10,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    reasoning_tokens: 0,
+                    total_tokens: 60,
+                }),
+                cost_usd: None,
+                failure_reason: None,
+                artifacts: vec![
+                    json!({
+                        "kind": "maka-runtime-state",
+                        "makaExecutable": maka.to_string_lossy(),
+                        "makaExecutableSha256": reports[0].maka_executable_sha256,
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ],
+            },
+        },
+    );
+    let m3_passed = evaluate_milestone_gate(
+        MilestoneGate::M3Acceptance,
+        &spec,
+        &settled_canonical,
+        &reports,
+    );
+    assert!(m3_passed.passed, "{:?}", m3_passed.violations);
+    assert_eq!(m3_passed.parity_verified_subjects, vec!["maka".to_owned()]);
+
+    let m5_passed = evaluate_milestone_gate(
+        MilestoneGate::M5ProductionDelivery,
+        &spec,
+        &settled_canonical,
+        &reports,
+    );
+    assert!(m5_passed.passed, "{:?}", m5_passed.violations);
+}
+
+#[test]
+fn parity_gate_detects_instruction_tool_pruning_and_policy_drift() {
+    let baseline = maka_eval::parity::ParitySnapshot {
+        system_prompt_text: "You are Maka.".into(),
+        request_system_prompt: Some("You are Maka.".into()),
+        compaction_prompt: Some("Compact context.".into()),
+        language: json!("auto"),
+        dynamic_context: vec!["AGENTS.md".into()],
+        composition_sources: vec![json!({"plugin": "maka.agent.agent", "version": "1.0.0"})],
+        allowed_tools: None,
+        tool_discovery: true,
+        tool_selection: json!({"mode": "all"}),
+        tool_mode: json!("code_mode"),
+        code_language: json!("python"),
+        editing_tools: json!("replace"),
+        tool_catalog_digest: "digest-full".into(),
+        tools: vec![
+            json!({"name": "AskUserQuestion"}),
+            json!({"name": "WebSearch"}),
+        ],
+        collaboration: json!("agent"),
+        approval_policy: json!("ask"),
+        sandbox_policy: json!({"access": "workspace-write"}),
+        thinking_level: json!(null),
+        provider_options: json!({}),
+        max_output_tokens: json!(16384),
+        context_policy: json!({"contextWindow": 200000}),
+        wire_path: "/v1/chat/completions".into(),
+        upstream_target_url: Some("https://api.openai.com/v1/chat/completions".into()),
+        wire_model: Some("gpt-4.1".into()),
+        wire_messages: json!([
+            {"role": "system", "content": "You are Maka."},
+            {"role": "user", "content": "Fix the bug."}
+        ]),
+        wire_tools: json!([
+            {"type": "function", "function": {"name": "AskUserQuestion"}},
+            {"type": "function", "function": {"name": "WebSearch"}}
+        ]),
+        wire_options: json!({"stream": true}),
+    };
+
+    let ok_report = compare_parity_snapshots(
+        "maka",
+        "0.2.0",
+        "exe-sha",
+        "cfg-sha",
+        &baseline,
+        &baseline,
+        vec![],
+    );
+    assert!(ok_report.passed);
+    assert!(ok_report.checks.iter().all(|c| c.passed));
+    assert!(ok_report.mismatches.is_empty());
+
+    // Injecting benchmark hints into prompts fails effective_instructions.
+    let mut injected = baseline.clone();
+    injected.wire_messages = json!([
+        {"role": "system", "content": "You are Maka. Extra benchmark hint: run pytest first."},
+        {"role": "user", "content": "Fix the bug."}
+    ]);
+    let report = compare_parity_snapshots(
+        "maka",
+        "0.2.0",
+        "exe-sha",
+        "cfg-sha",
+        &baseline,
+        &injected,
+        vec![],
+    );
+    assert!(!report.passed);
+    assert!(
+        report
+            .mismatches
+            .iter()
+            .any(|m| m.dimension == "effective_instructions")
+    );
+
+    // Pruning web or interactive tools fails tool_exposure.
+    let mut pruned = baseline.clone();
+    pruned.allowed_tools = Some(vec!["AskUserQuestion".into()]);
+    pruned.wire_tools = json!([
+        {"type": "function", "function": {"name": "AskUserQuestion"}}
+    ]);
+    let report = compare_parity_snapshots(
+        "maka",
+        "0.2.0",
+        "exe-sha",
+        "cfg-sha",
+        &baseline,
+        &pruned,
+        vec![],
+    );
+    assert!(!report.passed);
+    assert!(
+        report
+            .mismatches
+            .iter()
+            .any(|m| m.dimension == "tool_exposure" && m.field == "evalAllowedToolsUnpruned")
+    );
+    assert!(
+        report
+            .mismatches
+            .iter()
+            .any(|m| m.dimension == "tool_exposure" && m.field == "wireTools")
+    );
+
+    // Silently bypassing approvals or changing sandbox/context policy fails execution_policies.
+    let mut bypassed = baseline.clone();
+    bypassed.approval_policy = json!("never");
+    bypassed.sandbox_policy = json!({"access": "danger-full-access"});
+    let report = compare_parity_snapshots(
+        "maka",
+        "0.2.0",
+        "exe-sha",
+        "cfg-sha",
+        &baseline,
+        &bypassed,
+        vec![],
+    );
+    assert!(!report.passed);
+    assert!(
+        report
+            .mismatches
+            .iter()
+            .any(|m| m.dimension == "execution_policies" && m.field == "approvalPolicy")
+    );
+
+    // Changing bundled plugin composition fails product_composition.
+    let mut custom_bundle = baseline.clone();
+    custom_bundle.composition_sources = vec![json!({"plugin": "eval.custom.agent"})];
+    let report = compare_parity_snapshots(
+        "maka",
+        "0.2.0",
+        "exe-sha",
+        "cfg-sha",
+        &baseline,
+        &custom_bundle,
+        vec![],
+    );
+    assert!(!report.passed);
+    assert!(
+        report
+            .mismatches
+            .iter()
+            .any(|m| m.dimension == "product_composition")
+    );
+
+    // Declared endpoint route parity: DeepSeek host with custom model alias lacking "deepseek"
+    // must declare explicit applyPatch override so loopback metering gateway does not alter EditingTools.
+    let ambiguous_deepseek = MakaSubjectConfig::decode(
+        json!({
+            "makaExecutable": "/opt/maka-agent/maka",
+            "runtimeHostsPath": "/tmp/maka-runtime-hosts",
+            "hostSettlementTimeoutMs": 60000,
+            "baseUrl": "https://api.deepseek.com/v1",
+            "model": "custom-coder-alias"
+        })
+        .as_object()
+        .unwrap(),
+        &["DEEPSEEK_API_KEY".into()],
+    )
+    .unwrap();
+    let route_mismatches = check_declared_endpoint_route_parity(&ambiguous_deepseek);
+    assert_eq!(route_mismatches.len(), 1);
+    assert_eq!(route_mismatches[0].dimension, "tool_exposure");
+
+    let explicit_deepseek = MakaSubjectConfig::decode(
+        json!({
+            "makaExecutable": "/opt/maka-agent/maka",
+            "runtimeHostsPath": "/tmp/maka-runtime-hosts",
+            "hostSettlementTimeoutMs": 60000,
+            "baseUrl": "https://api.deepseek.com/v1",
+            "model": "custom-coder-alias",
+            "modelOverride": { "applyPatch": true }
+        })
+        .as_object()
+        .unwrap(),
+        &["DEEPSEEK_API_KEY".into()],
+    )
+    .unwrap();
+    assert!(check_declared_endpoint_route_parity(&explicit_deepseek).is_empty());
+
+    // Endpoint replacement that alters model-specific upstream routing fails execution_policies.
+    let mut zenmux_normal = baseline.clone();
+    zenmux_normal.wire_path = "/api/anthropic/v1/messages".into();
+    zenmux_normal.upstream_target_url = Some("https://zenmux.ai/api/anthropic/v1/messages".into());
+    let mut zenmux_drifted = zenmux_normal.clone();
+    zenmux_drifted.wire_path = "/api/v1/messages".into();
+    zenmux_drifted.upstream_target_url = Some("https://zenmux.ai/api/v1/messages".into());
+    let route_report = compare_parity_snapshots(
+        "maka",
+        "0.2.0",
+        "exe-sha",
+        "cfg-sha",
+        &zenmux_normal,
+        &zenmux_drifted,
+        vec![],
+    );
+    assert!(!route_report.passed);
+    assert!(
+        route_report
+            .mismatches
+            .iter()
+            .any(|m| m.dimension == "execution_policies" && m.field == "wirePath")
+    );
+    assert!(
+        route_report
+            .mismatches
+            .iter()
+            .any(|m| m.dimension == "execution_policies" && m.field == "upstreamTargetUrl")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn unattended_maka_execution_preserves_interaction_semantics_without_silent_bypass() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -2053,5 +2514,257 @@ async fn zenmux_and_cohere_model_route_overrides_preserve_product_routing_under_
     assert_eq!(
         reqs[0].1.as_deref(),
         Some("https://zenmux.ai/api/anthropic/v1/messages")
+    );
+
+    // 2. End-to-end `verify_product_parity` on the exact reviewer scenario:
+    //    `zenmux` + `anthropic/claude-3.5-haiku` + `https://zenmux.ai/api/v1`.
+    let parity_report = verify_product_parity(&ParityCheckInput {
+        subject_id: "maka-zenmux".into(),
+        subject_config: spec.subjects[0].config.clone(),
+        subject_credentials: spec.subjects[0].credentials.clone(),
+        workspace_source: Some(workspace),
+        task_input: "Reply with OK.".into(),
+        max_steps: 5,
+    })
+    .await
+    .expect("zenmux claude parity verification must succeed");
+    assert!(
+        parity_report.passed,
+        "zenmux claude parity failed: {:?}",
+        parity_report.mismatches
+    );
+    assert!(parity_report.mismatches.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn milestone_m3_cli_enforces_runtime_binary_identity_for_local_and_container_paths() {
+    let temp = TempDir::new().unwrap();
+    let (maka, eval) = stage_real_maka_and_eval_binaries(temp.path());
+
+    let spec_json = json!({
+        "schemaVersion": "maka.eval.v2",
+        "id": "m3-binary-identity-exp",
+        "benchmark": { "id": "tb", "version": "1.0", "config": {} },
+        "executor": { "kind": "harbor", "config": {} },
+        "subjects": [
+            {
+                "id": "maka",
+                "kind": "maka",
+                "credentials": ["OPENAI_API_KEY"],
+                "config": {
+                    "makaExecutable": maka.to_string_lossy(),
+                    "runtimeHostsPath": temp.path().join("hosts").to_string_lossy(),
+                    "hostSettlementTimeoutMs": 30000,
+                    "provider": "openai-compatible",
+                    "connectionSlug": "eval-gateway",
+                    "baseUrl": "https://api.openai.com/v1",
+                    "model": "gpt-4.1"
+                }
+            }
+        ],
+        "tasks": [
+            { "id": "task-1", "input": "Reply with OK.", "config": {} }
+        ],
+        "repetitions": 1,
+        "budget": { "maxSteps": 5 },
+        "verifier": {}
+    });
+
+    let parity_out = temp.path().join("parity.json");
+    let orig_spec_path = temp.path().join("spec-orig.json");
+    fs::write(
+        &orig_spec_path,
+        serde_json::to_vec_pretty(&spec_json).unwrap(),
+    )
+    .unwrap();
+
+    let parity_cli = tokio::process::Command::new(&eval)
+        .args([
+            "parity",
+            orig_spec_path.to_str().unwrap(),
+            "--out",
+            parity_out.to_str().unwrap(),
+        ])
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        parity_cli.status.success(),
+        "parity CLI failed: {}",
+        String::from_utf8_lossy(&parity_cli.stderr)
+    );
+    let parity_reports: Vec<maka_eval::parity::ParityVerificationReport> =
+        serde_json::from_slice(&fs::read(&parity_out).unwrap()).unwrap();
+    let verified_exe_sha = parity_reports[0].maka_executable_sha256.clone();
+
+    // Reviewer reproduction: mutate `makaExecutable` to a nonexistent path and run
+    // `report --milestone m3 --format v1` with no runtime execution evidence -> MUST fail!
+    let mut nonexistent_spec_json = spec_json.clone();
+    nonexistent_spec_json["subjects"][0]["config"]["makaExecutable"] =
+        json!("/opt/isolated-container/maka");
+    let nonexistent_spec_path = temp.path().join("spec-container.json");
+    fs::write(
+        &nonexistent_spec_path,
+        serde_json::to_vec_pretty(&nonexistent_spec_json).unwrap(),
+    )
+    .unwrap();
+
+    let empty_out_dir = temp.path().join("out-empty");
+    let empty_m3 = tokio::process::Command::new(&eval)
+        .args([
+            "report",
+            nonexistent_spec_path.to_str().unwrap(),
+            "--out",
+            empty_out_dir.to_str().unwrap(),
+            "--milestone",
+            "m3",
+            "--format",
+            "v1",
+            "--parity-report",
+            parity_out.to_str().unwrap(),
+        ])
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        !empty_m3.status.success(),
+        "report --milestone m3 --format v1 must fail when runtime binary identity evidence is absent"
+    );
+    assert!(
+        String::from_utf8_lossy(&empty_m3.stderr).contains("no settled runtime execution evidence"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&empty_m3.stderr)
+    );
+
+    // Legitimate isolated container path: `/opt/isolated-container/maka` does not exist on the
+    // reporting host, but settled journal runtime evidence confirms both path and SHA-256 -> PASSES!
+    let container_spec = parse_experiment_spec(&nonexistent_spec_json).unwrap();
+    let valid_container_out = temp.path().join("out-container-valid");
+    let valid_dir = ExperimentDirectory::open(&valid_container_out, &container_spec).unwrap();
+    valid_dir
+        .attempts
+        .append_v1(&V1CellAttempt {
+            cell_id: "task-1::1::maka".into(),
+            sequence: 1,
+            started_at: 10,
+            completed_at: 20,
+            result: EvalResult {
+                status: EvalResultStatus::Completed,
+                score: Some(1.0),
+                duration_ms: 10,
+                usage: None,
+                cost_usd: None,
+                failure_reason: None,
+                artifacts: vec![
+                    json!({
+                        "kind": "maka-runtime-state",
+                        "makaExecutable": "/opt/isolated-container/maka",
+                        "makaExecutableSha256": verified_exe_sha,
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ],
+            },
+        })
+        .unwrap();
+
+    let valid_m3 = tokio::process::Command::new(&eval)
+        .args([
+            "report",
+            nonexistent_spec_path.to_str().unwrap(),
+            "--out",
+            valid_container_out.to_str().unwrap(),
+            "--milestone",
+            "m3",
+            "--format",
+            "v1",
+            "--parity-report",
+            parity_out.to_str().unwrap(),
+        ])
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        valid_m3.status.success(),
+        "isolated container path with matching runtime binary digest must pass M3: {}",
+        String::from_utf8_lossy(&valid_m3.stderr)
+    );
+
+    // Tampering `spec.json`'s `makaExecutable` to a different nonexistent path after trials ran
+    // MUST fail M3 because runtime evidence recorded `/opt/isolated-container/maka`!
+    let mut tampered_path_spec = nonexistent_spec_json.clone();
+    tampered_path_spec["subjects"][0]["config"]["makaExecutable"] =
+        json!("/opt/other-unverified/maka");
+    let tampered_spec_path = temp.path().join("spec-tampered-path.json");
+    fs::write(
+        &tampered_spec_path,
+        serde_json::to_vec_pretty(&tampered_path_spec).unwrap(),
+    )
+    .unwrap();
+    // Note: ExperimentDirectory verifies `experiment.json` matches `spec`, so evaluate against a
+    // store opened for `tampered_path_spec` carrying the runtime receipt from `/opt/isolated-container/maka`
+    // as well as one with a mismatched digest.
+    let mismatch_spec = parse_experiment_spec(&tampered_path_spec).unwrap();
+    let mismatch_out = temp.path().join("out-container-mismatch");
+    let mismatch_dir = ExperimentDirectory::open(&mismatch_out, &mismatch_spec).unwrap();
+    mismatch_dir
+        .attempts
+        .append_v1(&V1CellAttempt {
+            cell_id: "task-1::1::maka".into(),
+            sequence: 1,
+            started_at: 10,
+            completed_at: 20,
+            result: EvalResult {
+                status: EvalResultStatus::Completed,
+                score: Some(1.0),
+                duration_ms: 10,
+                usage: None,
+                cost_usd: None,
+                failure_reason: None,
+                artifacts: vec![
+                    json!({
+                        "kind": "maka-runtime-state",
+                        "makaExecutable": "/opt/other-unverified/maka",
+                        "makaExecutableSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ],
+            },
+        })
+        .unwrap();
+
+    let mismatch_m3 = tokio::process::Command::new(&eval)
+        .args([
+            "report",
+            tampered_spec_path.to_str().unwrap(),
+            "--out",
+            mismatch_out.to_str().unwrap(),
+            "--milestone",
+            "m3",
+            "--format",
+            "v1",
+            "--parity-report",
+            parity_out.to_str().unwrap(),
+        ])
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        !mismatch_m3.status.success(),
+        "mismatched runtime binary digest must fail M3"
+    );
+    assert!(
+        String::from_utf8_lossy(&mismatch_m3.stderr)
+            .contains("differs from parity-verified binary"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&mismatch_m3.stderr)
     );
 }

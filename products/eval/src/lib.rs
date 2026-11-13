@@ -22,6 +22,7 @@
 pub mod contract;
 pub mod environment;
 pub mod measurement;
+pub mod parity;
 pub mod report;
 pub mod runner;
 pub mod store;

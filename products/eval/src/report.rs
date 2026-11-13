@@ -22,14 +22,17 @@
 
 use crate::contract::{
     DifferenceRegistry, DifferenceScenarioId, EvalResultStatus, ExperimentSpec, RunFingerprint,
-    V1CellAttempt, V2AttemptRecord, decode_v1_cell_attempt, expand_experiment, format_cell_id,
-    is_replaceable_attempt, select_cell_result,
+    SubjectKind, V1CellAttempt, V2AttemptRecord, decode_v1_cell_attempt, expand_experiment,
+    format_cell_id, is_replaceable_attempt, select_cell_result, sha256_hex,
 };
 use crate::measurement::{NormalizedUsage, costs_match_within_tolerance};
+use crate::parity::{PARITY_REPORT_SCHEMA_VERSION, ParityVerificationReport};
 use crate::store::{FileAttemptStore, ReconstructedStoreState, StoreError};
+use crate::subject::maka::MakaSubjectConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 /// Reconstructs all `v1` and `v2` attempt records deterministically from the append-only journal.
 pub fn rebuild_from_journal(
@@ -400,4 +403,223 @@ fn attempts_equivalent(
         ok = false;
     }
     ok
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MilestoneGate {
+    M3Acceptance,
+    M5ProductionDelivery,
+}
+
+impl MilestoneGate {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "m3" | "m3_acceptance" => Some(Self::M3Acceptance),
+            "m5" | "m5_production_delivery" => Some(Self::M5ProductionDelivery),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MilestoneGateReport {
+    pub milestone: MilestoneGate,
+    pub passed: bool,
+    pub run_fingerprint: RunFingerprint,
+    pub parity_verified_subjects: Vec<String>,
+    pub violations: Vec<String>,
+}
+
+/// Evaluates whether an experiment satisfies the M3 acceptance or M5 production delivery gate.
+///
+/// Product parity is a mandatory prerequisite for both M3 and M5: every `maka` subject in `spec`
+/// must use valid public product interfaces and carry a passing `ParityVerificationReport` matching
+/// its declared public configuration digest (and binary digest when the executable is present).
+/// `RunFingerprint` documents run conditions only and never substitutes for parity verification.
+pub fn evaluate_milestone_gate(
+    milestone: MilestoneGate,
+    spec: &ExperimentSpec,
+    canonical_v1: &BTreeMap<String, V1CellAttempt>,
+    parity_reports: &[ParityVerificationReport],
+) -> MilestoneGateReport {
+    let mut violations = Vec::new();
+    let mut parity_verified_subjects = Vec::new();
+    let run_fingerprint = RunFingerprint::compute(spec);
+
+    let maka_subjects: Vec<_> = spec
+        .subjects
+        .iter()
+        .filter(|s| s.kind == SubjectKind::Maka)
+        .collect();
+    if maka_subjects.is_empty() {
+        violations.push("experiment contains no Maka subject to evaluate".into());
+    }
+
+    for subject in maka_subjects {
+        let decoded = match MakaSubjectConfig::decode(&subject.config, &subject.credentials) {
+            Ok(cfg) => cfg,
+            Err(err) => {
+                violations.push(format!(
+                    "subject '{}' violates public Maka configuration contract: {err}",
+                    subject.id
+                ));
+                continue;
+            }
+        };
+        let expected_cfg_sha = decoded.parity_config_sha256();
+        let Some(report) = parity_reports.iter().find(|r| r.subject_id == subject.id) else {
+            violations.push(format!(
+                "subject '{}' is missing a Product Parity verification report (RunFingerprint documents conditions only and does not establish parity)",
+                subject.id
+            ));
+            continue;
+        };
+        if report.schema_version != PARITY_REPORT_SCHEMA_VERSION {
+            violations.push(format!(
+                "subject '{}' parity report has unsupported schemaVersion '{}'",
+                subject.id, report.schema_version
+            ));
+            continue;
+        }
+        if !report.passed || !report.mismatches.is_empty() {
+            violations.push(format!(
+                "subject '{}' failed Product Parity verification ({} mismatch(es))",
+                subject.id,
+                report.mismatches.len()
+            ));
+            continue;
+        }
+        if report.declared_config_sha256 != expected_cfg_sha {
+            violations.push(format!(
+                "subject '{}' parity report config digest ({}) does not match declared public configuration ({})",
+                subject.id, report.declared_config_sha256, expected_cfg_sha
+            ));
+            continue;
+        }
+        let subject_cell_ids: Vec<String> = expand_experiment(spec)
+            .into_iter()
+            .filter(|cell| cell.subject.id == subject.id)
+            .map(|cell| cell.id)
+            .collect();
+        let settled_attempts: Vec<(&String, &V1CellAttempt)> = subject_cell_ids
+            .iter()
+            .filter_map(|cell_id| canonical_v1.get(cell_id).map(|att| (cell_id, att)))
+            .collect();
+        if settled_attempts.is_empty() {
+            violations.push(format!(
+                "subject '{}' has no settled runtime execution evidence to confirm Maka binary identity",
+                subject.id
+            ));
+            continue;
+        }
+        let violations_before = violations.len();
+        for (cell_id, attempt) in settled_attempts {
+            let runtime_state =
+                attempt.result.artifacts.iter().find(|art| {
+                    art.get("kind").and_then(Value::as_str) == Some("maka-runtime-state")
+                });
+            let Some(runtime_state) = runtime_state else {
+                violations.push(format!(
+                    "subject '{}' cell '{}' is missing 'maka-runtime-state' runtime binary evidence",
+                    subject.id, cell_id
+                ));
+                continue;
+            };
+            let runtime_exe = runtime_state
+                .get("makaExecutable")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
+            let runtime_sha = runtime_state
+                .get("makaExecutableSha256")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
+            let Some(runtime_sha) = runtime_sha else {
+                violations.push(format!(
+                    "subject '{}' cell '{}' is missing runtime makaExecutableSha256 evidence",
+                    subject.id, cell_id
+                ));
+                continue;
+            };
+            if runtime_exe != Some(decoded.maka_executable.as_str()) {
+                violations.push(format!(
+                    "subject '{}' cell '{}' runtime makaExecutable ({:?}) does not match declared '{}'",
+                    subject.id, cell_id, runtime_exe, decoded.maka_executable
+                ));
+                continue;
+            }
+            if runtime_sha != report.maka_executable_sha256 {
+                violations.push(format!(
+                    "subject '{}' cell '{}' runtime Maka binary digest ({}) differs from parity-verified binary ({})",
+                    subject.id, cell_id, runtime_sha, report.maka_executable_sha256
+                ));
+                continue;
+            }
+        }
+        let exe_path = Path::new(&decoded.maka_executable);
+        match std::fs::symlink_metadata(exe_path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => match std::fs::read(exe_path) {
+                Ok(bytes) => {
+                    let actual_exe_sha = sha256_hex(&bytes);
+                    if actual_exe_sha != report.maka_executable_sha256 {
+                        violations.push(format!(
+                            "subject '{}' Maka executable digest ({}) differs from parity-verified binary ({})",
+                            subject.id, actual_exe_sha, report.maka_executable_sha256
+                        ));
+                    }
+                }
+                Err(err) => {
+                    violations.push(format!(
+                        "subject '{}' Maka executable '{}' could not be read to confirm binary identity: {err}",
+                        subject.id, decoded.maka_executable
+                    ));
+                }
+            },
+            Err(err) => {
+                violations.push(format!(
+                    "subject '{}' Maka executable '{}' metadata check failed: {err}",
+                    subject.id, decoded.maka_executable
+                ));
+            }
+        }
+        if violations.len() == violations_before {
+            parity_verified_subjects.push(subject.id.clone());
+        }
+    }
+
+    if milestone == MilestoneGate::M5ProductionDelivery {
+        let summary = build_cohort_summary(spec, canonical_v1);
+        if summary.incomplete_cells > 0 {
+            violations.push(format!(
+                "M5 production delivery requires all cells settled, but {} of {} cell(s) are incomplete",
+                summary.incomplete_cells, summary.total_cells
+            ));
+        }
+        for (cell_id, attempt) in canonical_v1 {
+            if attempt.result.status == EvalResultStatus::Indeterminate {
+                violations.push(format!(
+                    "M5 production delivery rejects indeterminate cell '{cell_id}'"
+                ));
+            } else if attempt.result.status == EvalResultStatus::InfraFailed {
+                let explicit_env_limit = attempt.result.artifacts.iter().any(|art| {
+                    art.get("kind").and_then(Value::as_str) == Some("environment-limitation")
+                });
+                if !explicit_env_limit {
+                    violations.push(format!(
+                        "M5 production delivery rejects unattributed infra_failed cell '{cell_id}'"
+                    ));
+                }
+            }
+        }
+    }
+
+    MilestoneGateReport {
+        milestone,
+        passed: violations.is_empty(),
+        run_fingerprint,
+        parity_verified_subjects,
+        violations,
+    }
 }

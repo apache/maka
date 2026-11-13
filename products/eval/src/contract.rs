@@ -319,7 +319,7 @@ fn canonicalize_value(value: &Value) -> Value {
 ///
 /// Fingerprints record the declared configuration and parameters of a run; freezing an
 /// eval-only fingerprint does not establish product parity. M3 acceptance and M5 production
-/// delivery require a verified `ParityVerificationReport` alongside the run.
+/// delivery require a verified [`crate::parity::ParityVerificationReport`] alongside the run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunFingerprint {
