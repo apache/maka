@@ -32,7 +32,7 @@ use std::sync::Arc;
 const MODEL_BYTES: usize = maka_plugin_core::terminal::PREVIEW_BYTES;
 const TERMINAL_MARKER: &str = "[terminal snapshot truncated to fit the output limit]";
 const FIELD_MARKER: &str = "[runtime resource field truncated]";
-const RECOVERY: &str = "If the command is safe to re-run, redirect its output to a file (e.g. `cmd > out.txt 2>&1`) then Read or Grep that file for the omitted portion. If re-running could repeat side effects, do not. Otherwise work from the kept output above.";
+const RECOVERY: &str = "If the command is safe to re-run, redirect its output to a file (e.g. `cmd > out.txt 2>&1`) then use Read on that file for the omitted portion. If re-running could repeat side effects, do not. Otherwise work from the kept output above.";
 
 pub fn local_update(record: ShellRun) -> Result<ResourceUpdate, ProjectionError> {
     project(record, true, None)

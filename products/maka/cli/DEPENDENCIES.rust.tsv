@@ -389,9 +389,6 @@ gobject-sys@0.22.9												X
 granit-parser@1.3.0		X										X						
 graphene-rs@0.22.8												X						
 graphene-sys@0.22.9												X						
-grep-matcher@0.1.9												X					X	
-grep-regex@0.1.14												X					X	
-grep-searcher@0.1.17												X					X	
 group@0.14.0		X										X						
 gsk4-sys@0.11.5												X						
 gsk4@0.11.5												X						
