@@ -143,14 +143,17 @@ export class CharacterPack {
       }
     }
     // Upgrade only the exact shipped scaffolding, never a user's customized guide/persona.
-    if (this.readDocument('persona').revision === LEGACY_DEFAULT_PERSONA)
-      this.write('persona.md', '');
+    // An unusable document (oversized, non-regular or unreadable) counts as absent for
+    // this decision, so broken content cannot block assistant construction; prompt()
+    // then degrades to its documented repair notice instead of blocking the Bot.
+    if (this.intactRevision('persona') === LEGACY_DEFAULT_PERSONA) this.write('persona.md', '');
     const shippedGuides = new Set([
       '9b38bb0ae1724116bc019cabac44efbf9441333b148cfd1109dd1272012173d6',
       'c427f0f6a7b8516fd8e5d00a79ec39185a58567e7f836599eb0451c422e273e8',
       'e6b3a6344f872b092404df1bc8aa7eeaceb4d208c171e78a81e4757cf2fd1747',
     ]);
-    if (shippedGuides.has(this.readDocument('guide').revision))
+    const guideRevision = this.intactRevision('guide');
+    if (guideRevision !== undefined && shippedGuides.has(guideRevision))
       this.write('GUIDE.md', CHARACTER_PACK_GUIDE);
   }
   private ensureDirectory(path: string) {
@@ -207,6 +210,16 @@ export class CharacterPack {
       revision: digest(content),
       content,
     };
+  }
+  /** Revision of an intact document, or undefined when its content is unusable. */
+  private intactRevision(document: Document): string | undefined {
+    // Directory guards stay strict outside the catch; only the document read softens.
+    this.ensureDirectory(this.directory);
+    try {
+      return this.readDocument(document).revision;
+    } catch {
+      return undefined;
+    }
   }
   writeDocument(document: Document, content: string, revision: string) {
     this.validateDocument(document, content);

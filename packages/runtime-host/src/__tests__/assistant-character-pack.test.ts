@@ -19,7 +19,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CharacterPack, CHARACTER_PACK_GUIDE } from '../assistant/bot/character-pack.js';
@@ -244,4 +244,26 @@ test('only the exact old default persona and guide are upgraded', (t) => {
   assert.equal(upgraded.readDocument('guide').content, CHARACTER_PACK_GUIDE);
   upgraded.writeDocument('guide', '# 我的指南', upgraded.readDocument('guide').revision);
   assert.equal(new CharacterPack(root).readDocument('guide').content, '# 我的指南');
+});
+
+test('unusable documents cannot block construction; prompt renders the repair notice', (t) => {
+  const root = mkdtempSync(join(tmpdir(), '角色包-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const directory = join(root, 'character-pack');
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const oversized = 'a'.repeat(24 * 1024 + 1);
+  writeFileSync(join(directory, 'persona.md'), oversized);
+  const pack = new CharacterPack(root);
+  assert.equal(
+    readFileSync(join(directory, 'persona.md'), 'utf8'),
+    oversized,
+    'unusable persona is kept for repair, never replaced',
+  );
+  const notice = pack.prompt();
+  assert.match(notice, /暂不可用/);
+  assert.doesNotMatch(notice, /aaaa/);
+  writeFileSync(join(directory, 'GUIDE.md'), 'g'.repeat(24 * 1024 + 1));
+  const restarted = new CharacterPack(root);
+  assert.equal(readFileSync(join(directory, 'GUIDE.md'), 'utf8').length, 24 * 1024 + 1);
+  assert.match(restarted.prompt(), /暂不可用/);
 });
