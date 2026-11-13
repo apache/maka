@@ -81,6 +81,9 @@ const NO_POST_SNAPSHOT = process.env.MAKACU_MOCK_NO_POST_SNAPSHOT === '1';
 // The action closed the thing it acted on, so the post-action observation could
 // not be taken and never will be.
 const POST_WINDOW_GONE = process.env.MAKACU_MOCK_POST_WINDOW_GONE === '1';
+// The action was delivered and the executor answered ok, but reading the frame
+// afterwards failed with this §7.1 code.
+const POST_ERROR_CODE = process.env.MAKACU_MOCK_POST_ERROR_CODE || '';
 // A refusal that carries only 'error', the way the maka.cu/1 executor emitted it.
 const BARE_REFUSAL = process.env.MAKACU_MOCK_BARE_REFUSAL === '1';
 const REFUSAL_PATH = process.env.MAKACU_MOCK_REFUSAL_PATH || 'none';
@@ -231,9 +234,12 @@ function dispatchReply(id, params) {
     effect: UNVERIFIED_EFFECT || OK_OUTCOME !== 'ok' ? 'unverifiable' : 'confirmed',
     verification: { method: 'tree_delta', observedChange: true },
     settle: { waitedMs: 12, quiesced: true, reason: 'quiesced' },
-    snapshot: NO_POST_SNAPSHOT || POST_WINDOW_GONE ? null : snapshot(true),
+    snapshot: NO_POST_SNAPSHOT || POST_WINDOW_GONE || POST_ERROR_CODE ? null : snapshot(true),
     ...(POST_WINDOW_GONE
       ? { postObservationError: { code: 'window_gone', message: 'the target window no longer exists' } }
+      : {}),
+    ...(POST_ERROR_CODE
+      ? { postObservationError: { code: POST_ERROR_CODE, message: 'mock post-observation failure: ' + POST_ERROR_CODE } }
       : {}),
   });
 }
@@ -399,6 +405,8 @@ function makeBackend(
     noPostSnapshot?: boolean;
     unverifiedEffect?: boolean;
     postWindowGone?: boolean;
+    /** §7.1 code the executor reports when reading the post-action frame fails. */
+    postErrorCode?: string;
     bareRefusal?: boolean;
     refusalPath?: string;
     /** Omit `wouldRequirePath`, which is how an application's own refusal looks. */
@@ -439,6 +447,7 @@ function makeBackend(
   process.env.MAKACU_MOCK_NO_POST_SNAPSHOT = opts.noPostSnapshot ? '1' : '';
   process.env.MAKACU_MOCK_UNVERIFIED_EFFECT = opts.unverifiedEffect ? '1' : '';
   process.env.MAKACU_MOCK_POST_WINDOW_GONE = opts.postWindowGone ? '1' : '';
+  process.env.MAKACU_MOCK_POST_ERROR_CODE = opts.postErrorCode ?? '';
   process.env.MAKACU_MOCK_BARE_REFUSAL = opts.bareRefusal ? '1' : '';
   process.env.MAKACU_MOCK_REFUSAL_PATH = opts.refusalPath ?? 'none';
   process.env.MAKACU_MOCK_NO_WOULD_REQUIRE = opts.noWouldRequirePath ? '1' : '';
@@ -1108,6 +1117,29 @@ describe('maka-cu backend', () => {
     assert.equal(result.outcome.evidence?.reason, 'dispatch.element:target_closed');
     // Still honest about what was not checked: nothing read the effect back.
     assert.equal(result.outcome.verified, true);
+  });
+
+  it('does not tell the model a delivered action did nothing when only its post frame failed', async () => {
+    // The dispatch was delivered and the executor answered `outcome: "ok"`;
+    // what failed was the observation taken afterwards. Every refusal sentence
+    // in `DOMAIN_REFUSAL_SENTENCE` is written from the premise that nothing
+    // reached the screen — appending one after a clause that says "reached the
+    // screen" hands the model two opposite facts in one sentence, and the
+    // clause a model acts on is "nothing was done": the exact lie that makes a
+    // mutating call get re-sent. Measured shape, same family as the
+    // second-close and the fourteen identical raises.
+    const { backend } = makeBackend({ postErrorCode: 'capture_failed', unverifiedEffect: true });
+    const observation = await observeFixture(backend);
+    const result = await backend.runSemantic!(
+      { type: 'click_element', observationId: observation.observationId, elementId: 'el_2' },
+      signal(),
+      RUN_CONTEXT,
+    );
+    assert.equal(!result.outcome.ok && result.outcome.error, 'outcome_unknown');
+    const message = (!result.outcome.ok && result.outcome.message) || '';
+    assert.match(message, /reached the screen/);
+    assert.doesNotMatch(message, /nothing was done/);
+    assert.doesNotMatch(message, /nothing happened/);
   });
 
   it('ends cleared sessions without re-notifying them and invalidates known sessions on generation loss', async () => {
