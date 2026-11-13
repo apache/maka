@@ -483,7 +483,16 @@ export function TurnRetry(props: {
   };
   return (
     <If when={target() !== null}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 }}>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          minWidth: 0,
+          // The glyph starts where the failure above it does.
+          marginLeft: -controlStyle.paddingHorizontal,
+        }}
+      >
         <Button
           accessibilityLabel={tr('Retry')}
           disabled={pending()}
