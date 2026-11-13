@@ -25,7 +25,7 @@ Measurement and control plane contracts for multi-arm benchmark experiments (`ma
 
 ## Architecture
 
-- [`contract`](src/contract.rs): Strict `maka.eval.v1` experiment and attempt projection contracts, native `maka.eval.v2` orthogonal attempt dimensions, condition-only `RunFingerprint`, and the semantic difference registry.
-- [`measurement`](src/measurement.rs): Exact 6-counter token accounting (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`, `totalTokens` preserved without summation), `MeteringState` / `TokenBasis` semantics, and standardized `DEEPSEEK_V4_FLASH_COST` pricing.
+- [`contract`](src/contract.rs): Strict `maka.eval.v1` experiment and attempt projection contracts, native `maka.eval.v2` orthogonal attempt dimensions, and condition-only `RunFingerprint`.
+- [`measurement`](src/measurement.rs): Exact 6-counter token accounting (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`, `totalTokens` preserved without summation) and standardized `DEEPSEEK_V4_FLASH_COST` pricing.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

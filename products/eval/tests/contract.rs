@@ -17,21 +17,87 @@
  * under the License.
  */
 
-use crate::support::sample_two_arm_spec_json;
 use maka_eval::contract::{
-    AttemptCancellation, AttemptMetering, AttemptPhase, CleanupState, CriticalArtifactsState,
-    DifferenceRegistry, EgressAuditState, EvalResult, EvalResultStatus, ExecutionOutcome,
-    ExperimentSpec, PricingEvidence, RunFingerprint, SchemaVersion, V1CellAttempt, V2AttemptRecord,
-    VerifierOutcome, decode_v1_cell_attempt, expand_experiment, parse_experiment_spec,
-    select_cell_result,
+    AttemptCancellation, AttemptMetering, CleanupState, CriticalArtifactsState, EgressAuditState,
+    EvalResult, EvalResultStatus, ExecutionOutcome, ExperimentSpec, PricingEvidence,
+    RunFingerprint, SchemaVersion, V1CellAttempt, V2AttemptRecord, VerifierOutcome,
+    expand_experiment, select_cell_result,
 };
-use maka_eval::measurement::{NormalizedUsage, costs_match_within_tolerance, deepseek_cost_usd};
-use serde_json::{Value, json};
+use maka_eval::measurement::{
+    DEEPSEEK_V4_FLASH_COST, NormalizedUsage, costs_match_within_tolerance,
+};
+use serde_json::{Map, Value, json};
+
+fn sample_two_arm_spec_json() -> Value {
+    json!({
+        "schemaVersion": "maka.eval.v1",
+        "id": "tb21-deepseek-v4-flash-two-arm",
+        "benchmark": {
+            "id": "terminal-bench-2.1",
+            "version": "d49e28f1e4ddd13d289e85a5f312a66750951932",
+            "config": {
+                "repository": "https://github.com/harbor-framework/terminal-bench-2-1"
+            }
+        },
+        "executor": {
+            "kind": "harbor",
+            "config": {
+                "frameworkVersion": "0.20.0",
+                "pythonPathEnv": "MAKA_EVAL_HARBOR_PYTHON",
+                "trialsRootEnv": "MAKA_EVAL_TRIALS_DIR",
+                "environment": { "type": "docker", "delete": true }
+            }
+        },
+        "execution": {
+            "maxConcurrentTaskGroups": 2
+        },
+        "subjects": [
+            {
+                "id": "maka",
+                "kind": "maka",
+                "credentials": ["DEEPSEEK_API_KEY"],
+                "config": {
+                    "model": "deepseek-v4-flash",
+                    "sandboxMode": "workspace-write"
+                }
+            },
+            {
+                "id": "external-cli",
+                "kind": "external",
+                "credentials": ["DEEPSEEK_API_KEY"],
+                "config": {
+                    "command": "/opt/maka-node-toolchain/bin/node",
+                    "args": ["harbor-external-subject.js", "{{task.input}}"]
+                }
+            }
+        ],
+        "tasks": [
+            {
+                "id": "task-alpha",
+                "input": "Fix alpha",
+                "config": { "harbor": { "path": "tasks/task-alpha" } }
+            },
+            {
+                "id": "task-beta",
+                "input": "Fix beta",
+                "config": { "harbor": { "path": "tasks/task-beta" } }
+            }
+        ],
+        "repetitions": 1,
+        "budget": {
+            "timeoutMultiplier": 1,
+            "maxSteps": 100
+        },
+        "verifier": {
+            "reward": "reward"
+        }
+    })
+}
 
 #[test]
 fn experiment_spec_validation_and_cell_expansion_match_v1_contract() {
     let spec_json = sample_two_arm_spec_json();
-    let spec = parse_experiment_spec(&spec_json).unwrap();
+    let spec: ExperimentSpec = serde_json::from_value(spec_json.clone()).unwrap();
     let cells = expand_experiment(&spec);
 
     assert_eq!(cells.len(), 4);
@@ -40,45 +106,47 @@ fn experiment_spec_validation_and_cell_expansion_match_v1_contract() {
     assert_eq!(cells[2].id, "task-beta::1::maka");
     assert_eq!(cells[3].id, "task-beta::1::external-cli");
 
-    // Unknown top-level field must be rejected both by parse_experiment_spec and serde Deserialize.
     let mut invalid = spec_json.clone();
     invalid
         .as_object_mut()
         .unwrap()
         .insert("unknownField".into(), json!(123));
-    assert!(parse_experiment_spec(&invalid).is_err());
     assert!(serde_json::from_value::<ExperimentSpec>(invalid).is_err());
 
     // Concurrency changes execution fingerprint but preserves semantic fingerprint.
     let mut higher_concurrency_json = spec_json.clone();
     higher_concurrency_json["execution"]["maxConcurrentTaskGroups"] = json!(16);
-    let higher_spec = parse_experiment_spec(&higher_concurrency_json).unwrap();
+    let higher_spec: ExperimentSpec = serde_json::from_value(higher_concurrency_json).unwrap();
 
     let fp1 = RunFingerprint::compute(&spec);
     let fp2 = RunFingerprint::compute(&higher_spec);
-    assert!(fp1.is_semantically_comparable(&fp2));
+    assert_eq!(fp1.semantic_sha256, fp2.semantic_sha256);
     assert_ne!(fp1.execution_sha256, fp2.execution_sha256);
 
-    // Changing experiment.id or float vs integer representation (1.0 vs 1) preserves semantic fingerprint.
-    let mut renamed_json = spec_json;
-    renamed_json["id"] = json!("tb21-deepseek-v4-flash-rerun");
-    renamed_json["budget"]["timeoutMultiplier"] = json!(1.0);
-    let renamed_spec = serde_json::from_value::<ExperimentSpec>(renamed_json).unwrap();
-    let fp3 = RunFingerprint::compute(&renamed_spec);
-    assert!(fp1.is_semantically_comparable(&fp3));
+    // Changing experiment.id, float/integer equivalence (1.0 vs 1), and nested object
+    // key insertion order all preserve semantic_sha256 even under preserve_order.
+    let mut reordered_json = spec_json;
+    reordered_json["id"] = json!("tb21-deepseek-v4-flash-rerun");
+    let mut reordered_budget = Map::new();
+    reordered_budget.insert("maxSteps".into(), json!(100));
+    reordered_budget.insert("timeoutMultiplier".into(), json!(1.0));
+    reordered_json["budget"] = Value::Object(reordered_budget);
+    let reordered_spec: ExperimentSpec = serde_json::from_value(reordered_json).unwrap();
+    let fp3 = RunFingerprint::compute(&reordered_spec);
+    assert_eq!(fp1.semantic_sha256, fp3.semantic_sha256);
 }
 
 #[test]
 fn six_counter_usage_never_sums_total_tokens_and_deepseek_pricing_matches_within_1e9() {
-    // Provider reports a totalTokens value distinct from the arithmetic sum of the 5 fields.
-    let u1 = NormalizedUsage {
-        input_tokens: 1000,
-        output_tokens: 250,
-        cache_read_tokens: 400,
-        cache_write_tokens: 100,
-        reasoning_tokens: 80,
-        total_tokens: 9999,
-    };
+    let u1: NormalizedUsage = serde_json::from_value(json!({
+        "inputTokens": 1000.0,
+        "outputTokens": 250,
+        "cacheReadTokens": 400,
+        "cacheWriteTokens": 100,
+        "reasoningTokens": 80,
+        "totalTokens": 9999
+    }))
+    .unwrap();
     let u2 = NormalizedUsage {
         input_tokens: 500,
         output_tokens: 150,
@@ -87,6 +155,41 @@ fn six_counter_usage_never_sums_total_tokens_and_deepseek_pricing_matches_within
         reasoning_tokens: 20,
         total_tokens: 7777,
     };
+
+    assert!(
+        serde_json::from_value::<NormalizedUsage>(json!({
+            "inputTokens": 10,
+            "outputTokens": 5,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<NormalizedUsage>(json!({
+            "inputTokens": -1,
+            "outputTokens": 5,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "totalTokens": 4
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<NormalizedUsage>(json!({
+            "inputTokens": 10,
+            "outputTokens": 5,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 0,
+            "totalTokens": 15,
+            "extra": 1
+        }))
+        .is_err()
+    );
+
     let mut combined = u1.clone();
     combined.accumulate_exact(&u2);
     assert_eq!(combined.input_tokens, 1500);
@@ -97,11 +200,9 @@ fn six_counter_usage_never_sums_total_tokens_and_deepseek_pricing_matches_within
     // Must equal 9999 + 7777 = 17776, never the sum of the other 5 counters!
     assert_eq!(combined.total_tokens, 17776);
 
-    // Verify DEEPSEEK_V4_FLASH_COST formula:
     // uncached = 1000 - 400 - 100 = 500
-    // (500 * 0.22 + 400 * 0.007 + 100 * 0.22 + 250 * 0.66) / 1_000_000
-    // = (110 + 2.8 + 22 + 165) / 1_000_000 = 299.8 / 1_000_000 = 0.0002998
-    let cost = deepseek_cost_usd(&u1);
+    // (500 * 0.22 + 400 * 0.007 + 100 * 0.22 + 250 * 0.66) / 1_000_000 = 0.0002998
+    let cost = DEEPSEEK_V4_FLASH_COST.cost_usd(&u1);
     assert!(costs_match_within_tolerance(Some(cost), Some(0.0002998)));
     assert!(!costs_match_within_tolerance(
         Some(cost),
@@ -112,6 +213,21 @@ fn six_counter_usage_never_sums_total_tokens_and_deepseek_pricing_matches_within
 #[test]
 fn canonical_selector_picks_earliest_valid_attempt_and_treats_zero_score_as_terminal() {
     let attempts = vec![
+        V1CellAttempt {
+            cell_id: "t1::1::maka".into(),
+            sequence: 3,
+            started_at: 50,
+            completed_at: 60,
+            result: EvalResult {
+                score: Some(1.0),
+                usage: None,
+                cost_usd: None,
+                duration_ms: 10,
+                status: EvalResultStatus::Completed,
+                failure_reason: None,
+                artifacts: Vec::new(),
+            },
+        },
         V1CellAttempt {
             cell_id: "t1::1::maka".into(),
             sequence: 1,
@@ -142,33 +258,15 @@ fn canonical_selector_picks_earliest_valid_attempt_and_treats_zero_score_as_term
                 artifacts: Vec::new(),
             },
         },
-        V1CellAttempt {
-            cell_id: "t1::1::maka".into(),
-            sequence: 3,
-            started_at: 50,
-            completed_at: 60,
-            result: EvalResult {
-                score: Some(1.0),
-                usage: None,
-                cost_usd: None,
-                duration_ms: 10,
-                status: EvalResultStatus::Completed,
-                failure_reason: None,
-                artifacts: Vec::new(),
-            },
-        },
     ];
 
     let selected = select_cell_result(&attempts).unwrap();
-    // Sequence 2 (Completed with score 0.0) is valid and earlier than sequence 3!
     assert_eq!(selected.sequence, 2);
     assert_eq!(selected.result.score, Some(0.0));
 }
 
 #[test]
 fn contract_deserialization_rejects_illegal_states_and_v1_round_trips_losslessly() {
-    // Frozen v1 accepts subject-reported costUsd with usage=null and completed with failureReason,
-    // while still rejecting sequence == 0 and negative costUsd. Stricter checks belong in v2.
     let valid_v1 = json!({
         "cellId": "t1::1::maka",
         "sequence": 1,
@@ -185,6 +283,13 @@ fn contract_deserialization_rejects_illegal_states_and_v1_round_trips_losslessly
         }
     });
     assert!(serde_json::from_value::<V1CellAttempt>(valid_v1.clone()).is_ok());
+
+    let mut omitted_score = valid_v1.clone();
+    omitted_score["result"]
+        .as_object_mut()
+        .unwrap()
+        .remove("score");
+    assert!(serde_json::from_value::<V1CellAttempt>(omitted_score).is_err());
 
     let mut zero_seq = valid_v1.clone();
     zero_seq["sequence"] = json!(0);
@@ -203,7 +308,7 @@ fn contract_deserialization_rejects_illegal_states_and_v1_round_trips_losslessly
     assert_eq!(parsed_cost_without_usage.result.usage, None);
     let encoded_cost_without_usage = serde_json::to_value(&parsed_cost_without_usage).unwrap();
     assert_eq!(
-        decode_v1_cell_attempt(&encoded_cost_without_usage).unwrap(),
+        serde_json::from_value::<V1CellAttempt>(encoded_cost_without_usage).unwrap(),
         parsed_cost_without_usage
     );
 
@@ -229,12 +334,13 @@ fn contract_deserialization_rejects_illegal_states_and_v1_round_trips_losslessly
     let encoded_completed_with_reason =
         serde_json::to_value(&parsed_completed_with_reason).unwrap();
     assert_eq!(
-        decode_v1_cell_attempt(&encoded_completed_with_reason).unwrap(),
+        serde_json::from_value::<V1CellAttempt>(encoded_completed_with_reason).unwrap(),
         parsed_completed_with_reason
     );
 
     // V2AttemptRecord rejects schemaVersion != maka.eval.v2, illegal metering states,
-    // unknown fields on closed tagged enums, and completed attempts with failureReason.
+    // unknown fields on metering unit variants, completed attempts with failureReason,
+    // and standalone invalid PricingEvidence.
     let v2_base = json!({
         "schemaVersion": "maka.eval.v2",
         "cellId": "t1::1::maka",
@@ -242,7 +348,6 @@ fn contract_deserialization_rejects_illegal_states_and_v1_round_trips_losslessly
         "startedAt": 10,
         "completedAt": 20,
         "durationMs": 10,
-        "phase": "settled",
         "executionOutcome": "completed",
         "verifierOutcome": { "kind": "skipped" },
         "metering": { "state": "unknown" },
@@ -300,17 +405,24 @@ fn contract_deserialization_rejects_illegal_states_and_v1_round_trips_losslessly
     });
     assert!(serde_json::from_value::<V2AttemptRecord>(negative_cost).is_err());
 
-    // Lossless V1 serde -> decode_v1_cell_attempt round-trip when SubjectFailed has failureReason: null.
+    assert!(
+        serde_json::from_value::<PricingEvidence>(json!({
+            "kind": "subject_reported",
+            "costUsd": -0.5
+        }))
+        .is_err()
+    );
+
     let parsed_v1: V1CellAttempt = serde_json::from_value(valid_v1).unwrap();
     let encoded = serde_json::to_value(&parsed_v1).unwrap();
-    assert_eq!(decode_v1_cell_attempt(&encoded).unwrap(), parsed_v1);
+    assert_eq!(
+        serde_json::from_value::<V1CellAttempt>(encoded).unwrap(),
+        parsed_v1
+    );
 }
 
 #[test]
 fn v2_to_v1_projections_cover_all_five_semantic_difference_scenarios() {
-    let registry = DifferenceRegistry::new();
-    assert_eq!(registry.entries().len(), 5);
-
     let usage = NormalizedUsage {
         input_tokens: 100,
         output_tokens: 20,
@@ -329,7 +441,6 @@ fn v2_to_v1_projections_cover_all_five_semantic_difference_scenarios() {
         started_at: 10,
         completed_at: 20,
         duration_ms: 10,
-        phase: AttemptPhase::Settled,
         execution_outcome: ExecutionOutcome::Timeout,
         verifier_outcome: VerifierOutcome::Verified { score: 0.75 },
         metering: AttemptMetering::LowerBound {
@@ -396,13 +507,16 @@ fn v2_to_v1_projections_cover_all_five_semantic_difference_scenarios() {
         execution_outcome: ExecutionOutcome::Completed,
         verifier_outcome: VerifierOutcome::Verified { score: 1.0 },
         metering: AttemptMetering::Complete {
-            usage,
+            usage: usage.clone(),
             pricing: Some(PricingEvidence::Model {
                 model: "deepseek-v4-flash".into(),
                 cost_usd: Some(0.0000352),
             }),
         },
-        audit_state: EgressAuditState::truncated(),
+        audit_state: EgressAuditState::Recorded {
+            truncated: true,
+            policy_error_count: 0,
+        },
         failure_reason: None,
         ..base_v2
     };
@@ -459,7 +573,24 @@ fn v2_to_v1_projections_cover_all_five_semantic_difference_scenarios() {
             .any(|a| a.get("kind").and_then(Value::as_str) == Some("cancelled-after-verification"))
     );
 
-    // 5. Missing verifier reward never defaults to 0.0; genuine 0.0 reward is Completed(0.0).
+    // 5. Post-hoc recovery emits artifact marker while keeping recovered usage/cost and sequence;
+    //    missing verifier reward never defaults to 0.0; genuine 0.0 reward is Completed(0.0).
+    let mut v2_recovered = completed_base.clone();
+    v2_recovered.sequence = 2;
+    v2_recovered.recovered_post_hoc = true;
+    let v1_recovered = v2_recovered.project_v1();
+    assert_eq!(v1_recovered.sequence, 2);
+    assert_eq!(v1_recovered.result.status, EvalResultStatus::Completed);
+    assert_eq!(v1_recovered.result.usage, Some(usage));
+    assert_eq!(v1_recovered.result.cost_usd, Some(0.0000352));
+    assert!(
+        v1_recovered
+            .result
+            .artifacts
+            .iter()
+            .any(|a| a.get("kind").and_then(Value::as_str) == Some("post-hoc-evidence-recovery"))
+    );
+
     let mut v2_missing_reward = completed_base.clone();
     v2_missing_reward.verifier_outcome = VerifierOutcome::MissingReward {
         reason: "reward.json missing".into(),
