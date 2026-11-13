@@ -19,7 +19,7 @@
 
 //! Exact 6-counter token usage preservation and standardized model pricing.
 
-use crate::contract::{ContractError, exact_object, nonnegative_u64};
+use crate::contract::{ContractError, exact_object, safe_u64};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -27,8 +27,9 @@ pub const COST_USD_TOLERANCE: f64 = 1e-9;
 
 /// Exact 6-counter normalized token usage.
 ///
-/// Each counter is preserved as reported by the provider or receipt; `total_tokens`
-/// is never synthesized or overwritten by summing the other five counters.
+/// `input_tokens` is normalized to total input tokens **inclusive** of `cache_read_tokens`
+/// and `cache_write_tokens`; `total_tokens` is preserved as reported and is never
+/// synthesized or overwritten by summing the other five counters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NormalizedUsage {
@@ -68,27 +69,27 @@ pub(crate) fn decode_usage(
         &[],
     )?;
     Ok(NormalizedUsage {
-        input_tokens: nonnegative_u64(
+        input_tokens: safe_u64(
             obj.get("inputTokens").unwrap(),
             &format!("{where_label}.inputTokens"),
         )?,
-        output_tokens: nonnegative_u64(
+        output_tokens: safe_u64(
             obj.get("outputTokens").unwrap(),
             &format!("{where_label}.outputTokens"),
         )?,
-        cache_read_tokens: nonnegative_u64(
+        cache_read_tokens: safe_u64(
             obj.get("cacheReadTokens").unwrap(),
             &format!("{where_label}.cacheReadTokens"),
         )?,
-        cache_write_tokens: nonnegative_u64(
+        cache_write_tokens: safe_u64(
             obj.get("cacheWriteTokens").unwrap(),
             &format!("{where_label}.cacheWriteTokens"),
         )?,
-        reasoning_tokens: nonnegative_u64(
+        reasoning_tokens: safe_u64(
             obj.get("reasoningTokens").unwrap(),
             &format!("{where_label}.reasoningTokens"),
         )?,
-        total_tokens: nonnegative_u64(
+        total_tokens: safe_u64(
             obj.get("totalTokens").unwrap(),
             &format!("{where_label}.totalTokens"),
         )?,
@@ -121,6 +122,13 @@ pub struct PricingRates {
 }
 
 impl PricingRates {
+    pub fn for_model(model: &str) -> Option<Self> {
+        match model {
+            "deepseek-v4-flash" => Some(DEEPSEEK_V4_FLASH_COST),
+            _ => None,
+        }
+    }
+
     pub fn cost_usd(&self, usage: &NormalizedUsage) -> f64 {
         let cached = usage
             .cache_read_tokens

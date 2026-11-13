@@ -17,17 +17,22 @@
  * under the License.
  */
 
-//! Experiment specifications, orthogonal `v2` attempt records, strict `v1`
-//! projections, and run fingerprinting.
+//! Experiment specifications, immutable `v2` attempt records with 3-gate
+//! causal adjudication, strict `v1` leaf projections, and spec fingerprinting.
 
-use crate::measurement::{NormalizedUsage, decode_usage};
+use crate::measurement::{NormalizedUsage, PricingRates, decode_usage};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt;
+use std::num::NonZeroU32;
 
 pub type JsonObject = Map<String, Value>;
+
+pub const EGRESS_AUDIT_ARTIFACT_PATH: &str = "artifacts/egress-hits.jsonl";
+
+const MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractError(String);
@@ -80,16 +85,16 @@ pub struct ExecutorSpec {
     pub config: JsonObject,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutionSpec {
-    pub max_concurrent_task_groups: usize,
+    pub max_concurrent_task_groups: NonZeroU32,
 }
 
 impl Default for ExecutionSpec {
     fn default() -> Self {
         Self {
-            max_concurrent_task_groups: 1,
+            max_concurrent_task_groups: NonZeroU32::MIN,
         }
     }
 }
@@ -122,7 +127,7 @@ pub struct ExperimentSpec {
     pub execution: ExecutionSpec,
     pub subjects: Vec<SubjectSpec>,
     pub tasks: Vec<TaskSpec>,
-    pub repetitions: u32,
+    pub repetitions: NonZeroU32,
     pub budget: JsonObject,
     pub verifier: JsonObject,
 }
@@ -146,19 +151,21 @@ pub struct ExperimentCell {
     pub executor: ExecutorSpec,
     pub subject: SubjectSpec,
     pub task: TaskSpec,
-    pub repetition: u32,
+    pub repetition: NonZeroU32,
     pub budget: JsonObject,
     pub verifier: JsonObject,
 }
 
 pub fn expand_experiment(spec: &ExperimentSpec) -> Vec<ExperimentCell> {
-    let mut cells =
-        Vec::with_capacity(spec.tasks.len() * (spec.repetitions as usize) * spec.subjects.len());
+    let mut cells = Vec::with_capacity(
+        spec.tasks.len() * (spec.repetitions.get() as usize) * spec.subjects.len(),
+    );
     for task in &spec.tasks {
-        for repetition in 1..=spec.repetitions {
+        for r in 1..=spec.repetitions.get() {
+            let repetition = NonZeroU32::new(r).expect("range starts at 1");
             for subject in &spec.subjects {
                 cells.push(ExperimentCell {
-                    id: format!("{}::{repetition}::{}", task.id, subject.id),
+                    id: format!("{}::{r}::{}", task.id, subject.id),
                     experiment_id: spec.id.clone(),
                     benchmark: spec.benchmark.clone(),
                     executor: spec.executor.clone(),
@@ -194,7 +201,6 @@ fn parse_experiment_spec(value: &Value) -> Result<ExperimentSpec, ContractError>
 
     let schema_version = match root.get("schemaVersion").and_then(Value::as_str) {
         Some("maka.eval.v1") => SchemaVersion::V1,
-        Some("maka.eval.v2") => SchemaVersion::V2,
         _ => {
             return Err(ContractError::new("unsupported experiment schema"));
         }
@@ -214,10 +220,10 @@ fn parse_experiment_spec(value: &Value) -> Result<ExperimentSpec, ContractError>
     )?;
 
     let max_concurrent_task_groups = match root.get("execution") {
-        None => 1,
+        None => NonZeroU32::MIN,
         Some(exec_val) => {
             let exec_obj = exact_object(exec_val, "execution", &["maxConcurrentTaskGroups"], &[])?;
-            positive_usize(
+            positive_nonzero_u32(
                 exec_obj.get("maxConcurrentTaskGroups").unwrap(),
                 "execution.maxConcurrentTaskGroups",
             )?
@@ -285,7 +291,7 @@ fn parse_experiment_spec(value: &Value) -> Result<ExperimentSpec, ContractError>
     ensure_unique_ids(subjects.iter().map(|s| s.id.as_str()), "subject")?;
     ensure_unique_ids(tasks.iter().map(|t| t.id.as_str()), "task")?;
 
-    let repetitions = positive_u32(root.get("repetitions").unwrap(), "repetitions")?;
+    let repetitions = positive_nonzero_u32(root.get("repetitions").unwrap(), "repetitions")?;
 
     Ok(ExperimentSpec {
         schema_version,
@@ -333,7 +339,7 @@ fn write_canonical_json(value: &Value, out: &mut Vec<u8>) {
                     out.extend_from_slice(b"0");
                 } else if f.is_finite()
                     && f.fract() == 0.0
-                    && (-9_007_199_254_740_991.0..=9_007_199_254_740_991.0).contains(&f)
+                    && (-MAX_SAFE_INTEGER_F64..=MAX_SAFE_INTEGER_F64).contains(&f)
                 {
                     if f >= 0.0 {
                         serde_json::to_writer(&mut *out, &(f as u64))
@@ -381,23 +387,23 @@ fn write_canonical_json(value: &Value, out: &mut Vec<u8>) {
     }
 }
 
-/// Documents experimental and execution conditions for comparability checks.
+/// Canonical digests of declared `ExperimentSpec` semantic and execution parameters.
 ///
-/// Fingerprints record the declared configuration and parameters of a run; freezing an
-/// eval-only fingerprint does not establish product parity. M3 acceptance and M5 production
-/// delivery require a verified `ParityVerificationReport` alongside the run.
+/// Fingerprints cover only the declared experiment specification; they do not capture
+/// host/runtime binaries, prompt or tool schemas, container image digests, or product parity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RunFingerprint {
-    /// Digest over benchmark, executor kind, subjects, tasks, repetitions, budget, and verifier.
+pub struct SpecFingerprint {
+    /// Digest over schema version, benchmark, executor kind, subjects, tasks, repetitions, budget, and verifier.
     pub semantic_sha256: String,
-    /// Digest over execution-only parameters (e.g. `maxConcurrentTaskGroups`).
+    /// Digest over execution-only spec parameters (e.g. `maxConcurrentTaskGroups`, `executor.config`).
     pub execution_sha256: String,
 }
 
-impl RunFingerprint {
+impl SpecFingerprint {
     pub fn compute(spec: &ExperimentSpec) -> Self {
         let semantic_payload = serde_json::json!({
+            "schemaVersion": spec.schema_version,
             "benchmark": spec.benchmark,
             "executorKind": spec.executor.kind,
             "subjects": spec.subjects,
@@ -458,7 +464,7 @@ impl<'de> Deserialize<'de> for EvalResult {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct V1CellAttempt {
     pub cell_id: String,
-    pub sequence: u32,
+    pub sequence: NonZeroU32,
     pub started_at: u64,
     pub completed_at: u64,
     pub result: EvalResult,
@@ -474,13 +480,12 @@ impl<'de> Deserialize<'de> for V1CellAttempt {
     }
 }
 
-/// Canonical cell result selector: selects the earliest valid attempt by sequence (`sequence >= 1`)
-/// whose status is neither `infra_failed` nor `indeterminate`. A `completed` attempt with score `0.0`
-/// or a `subject_failed` attempt is terminal and never replaced.
+/// Legacy `v1` cell result selector for frozen oracle compatibility: picks the earliest
+/// attempt by sequence whose status is `completed` or `subject_failed`.
 pub fn select_cell_result(attempts: &[V1CellAttempt]) -> Option<&V1CellAttempt> {
     attempts
         .iter()
-        .filter(|a| a.sequence >= 1 && a.result.status.is_selectable())
+        .filter(|a| a.result.status.is_selectable())
         .min_by_key(|a| a.sequence)
 }
 
@@ -528,7 +533,7 @@ fn decode_eval_result(value: &Value, where_label: &str) -> Result<EvalResult, Co
         obj.get("costUsd").unwrap(),
         &format!("{where_label}.costUsd"),
     )?;
-    let duration_ms = nonnegative_u64(
+    let duration_ms = safe_u64(
         obj.get("durationMs").unwrap(),
         &format!("{where_label}.durationMs"),
     )?;
@@ -563,30 +568,37 @@ fn decode_v1_cell_attempt(value: &Value) -> Result<V1CellAttempt, ContractError>
     )?;
     Ok(V1CellAttempt {
         cell_id: nonempty_string(obj.get("cellId").unwrap(), "attempt.cellId")?,
-        sequence: positive_u32(obj.get("sequence").unwrap(), "attempt.sequence")?,
-        started_at: nonnegative_u64(obj.get("startedAt").unwrap(), "attempt.startedAt")?,
-        completed_at: nonnegative_u64(obj.get("completedAt").unwrap(), "attempt.completedAt")?,
+        sequence: positive_nonzero_u32(obj.get("sequence").unwrap(), "attempt.sequence")?,
+        started_at: safe_u64(obj.get("startedAt").unwrap(), "attempt.startedAt")?,
+        completed_at: safe_u64(obj.get("completedAt").unwrap(), "attempt.completedAt")?,
         result: decode_eval_result(obj.get("result").unwrap(), "attempt.result")?,
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExecutionOutcome {
-    Completed,
-    SubjectFailed,
-    Timeout,
-    InfraFailed,
-    Indeterminate,
+/// Monotonic phase durations (in milliseconds) recorded on native `v2` attempts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PhaseDurationsMs {
+    pub queue_wait_ms: u64,
+    pub prepare_ms: u64,
+    pub subject_ms: u64,
+    pub verify_ms: u64,
+    pub cleanup_ms: u64,
+    pub total_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AttemptCancellation {
-    #[default]
-    None,
-    BeforeVerification,
-    AfterVerification,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SubjectOutcome {
+    Completed {},
+    Failed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    Timeout {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -596,121 +608,47 @@ pub enum VerifierOutcome {
         score: f64,
     },
     SubjectFailed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         score: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
     /// Missing reward file or empty verifier payload: never defaults to `0.0`.
     MissingReward {
         reason: String,
     },
-    VerifierInfraFailed {
+    InfraFailed {
         reason: String,
     },
-    Skipped,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CleanupState {
-    Confirmed,
-    Unconfirmed { reason: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum EgressAuditState {
-    NotRequired,
-    Recorded {
-        #[serde(default)]
-        truncated: bool,
-        #[serde(default)]
-        policy_error_count: u64,
-    },
-    Missing,
-    Unreadable {
-        reason: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CriticalArtifactsState {
-    Present,
-    Missing { paths: Vec<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
-    remote = "Self",
-    tag = "kind",
+    tag = "stage",
     rename_all = "snake_case",
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub enum PricingEvidence {
-    Model {
-        model: String,
-        cost_usd: Option<f64>,
+pub enum TrialOutcome {
+    InfraFailed {
+        reason: String,
     },
-    SubjectReported {
-        cost_usd: f64,
+    Indeterminate {
+        reason: String,
+    },
+    CancelledBeforeVerification {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    Evaluated {
+        subject: SubjectOutcome,
+        verifier: VerifierOutcome,
+        #[serde(default)]
+        cancelled_after_verification: bool,
     },
 }
 
-impl Serialize for PricingEvidence {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        Self::serialize(self, serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for PricingEvidence {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = Self::deserialize(deserializer)?;
-        value.validate().map_err(serde::de::Error::custom)?;
-        Ok(value)
-    }
-}
-
-impl PricingEvidence {
-    pub fn cost_usd(&self) -> Option<f64> {
-        match self {
-            Self::Model { cost_usd, .. } => *cost_usd,
-            Self::SubjectReported { cost_usd } => Some(*cost_usd),
-        }
-    }
-
-    pub fn validate(&self) -> Result<(), ContractError> {
-        match self {
-            Self::Model { model, cost_usd } => {
-                if model.is_empty() {
-                    return Err(ContractError::new("pricing.model must not be empty"));
-                }
-                if let Some(c) = cost_usd
-                    && (!c.is_finite() || *c < 0.0)
-                {
-                    return Err(ContractError::new(
-                        "pricing.costUsd must be finite and non-negative",
-                    ));
-                }
-            }
-            Self::SubjectReported { cost_usd } => {
-                if !cost_usd.is_finite() || *cost_usd < 0.0 {
-                    return Err(ContractError::new(
-                        "pricing.costUsd must be finite and non-negative",
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(
     tag = "state",
     rename_all = "snake_case",
@@ -724,8 +662,8 @@ pub enum AttemptMetering {
     },
     Complete {
         usage: NormalizedUsage,
-        #[serde(default)]
-        pricing: Option<PricingEvidence>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
 }
 
@@ -755,18 +693,18 @@ impl<'de> Deserialize<'de> for AttemptMetering {
                 }
             }
             "complete" => {
-                let obj = exact_object(&value, "metering", &["state", "usage"], &["pricing"])
+                let obj = exact_object(&value, "metering", &["state", "usage"], &["model"])
                     .map_err(serde::de::Error::custom)?;
-                let pricing = match obj.get("pricing") {
+                let model = match obj.get("model") {
                     None | Some(Value::Null) => None,
-                    Some(p) => {
-                        Some(serde_json::from_value(p.clone()).map_err(serde::de::Error::custom)?)
-                    }
+                    Some(m) => Some(
+                        nonempty_string(m, "metering.model").map_err(serde::de::Error::custom)?,
+                    ),
                 };
                 Self::Complete {
                     usage: decode_usage(obj.get("usage").unwrap(), "metering.usage")
                         .map_err(serde::de::Error::custom)?,
-                    pricing,
+                    model,
                 }
             }
             _ => return Err(serde::de::Error::custom("metering.state is invalid")),
@@ -784,246 +722,684 @@ impl AttemptMetering {
         }
     }
 
+    /// Standardized USD cost derived strictly from `PricingRates::for_model` on `Complete` metering.
     pub fn cost_usd(&self) -> Option<f64> {
         match self {
             Self::Complete {
-                pricing: Some(pricing),
-                ..
-            } => pricing.cost_usd(),
-            Self::Unknown | Self::LowerBound { .. } | Self::Complete { pricing: None, .. } => None,
+                usage,
+                model: Some(model),
+            } => PricingRates::for_model(model).map(|rates| rates.cost_usd(usage)),
+            Self::Unknown | Self::LowerBound { .. } | Self::Complete { model: None, .. } => None,
         }
     }
 
     pub fn validate(&self) -> Result<(), ContractError> {
         if let Self::Complete {
-            pricing: Some(p), ..
+            model: Some(model), ..
         } = self
+            && model.is_empty()
         {
-            p.validate()?;
+            return Err(ContractError::new("metering.model must not be empty"));
         }
         Ok(())
     }
+
+    fn rank(&self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::LowerBound { .. } => 1,
+            Self::Complete { .. } => 2,
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(remote = "Self", rename_all = "camelCase", deny_unknown_fields)]
-pub struct V2AttemptRecord {
-    pub schema_version: SchemaVersion,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CleanupState {
+    Confirmed {},
+    Unconfirmed { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum EgressAuditState {
+    NotRequired {},
+    Recorded {
+        bytes: u64,
+        sha256: String,
+        #[serde(default)]
+        truncated: bool,
+        #[serde(default)]
+        policy_error_count: u64,
+        #[serde(default)]
+        malformed_line_count: u64,
+    },
+    Missing {},
+    Unreadable {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CriticalArtifactsState {
+    Present {},
+    Missing { paths: Vec<String> },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct V2AttemptParts {
     pub cell_id: String,
-    pub sequence: u32,
+    pub sequence: NonZeroU32,
     pub started_at: u64,
     pub completed_at: u64,
-    pub duration_ms: u64,
-    pub execution_outcome: ExecutionOutcome,
-    pub verifier_outcome: VerifierOutcome,
+    pub durations: PhaseDurationsMs,
+    pub trial_outcome: TrialOutcome,
     pub metering: AttemptMetering,
     pub cleanup_state: CleanupState,
     pub audit_state: EgressAuditState,
     pub critical_artifacts_state: CriticalArtifactsState,
-    #[serde(default)]
-    pub cancellation: AttemptCancellation,
-    pub recovered_post_hoc: bool,
-    pub failure_reason: Option<String>,
     pub artifacts: Vec<JsonObject>,
 }
 
-impl Serialize for V2AttemptRecord {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        Self::serialize(self, serializer)
-    }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct V2AttemptWire {
+    schema_version: SchemaVersion,
+    cell_id: String,
+    sequence: NonZeroU32,
+    started_at: u64,
+    completed_at: u64,
+    durations: PhaseDurationsMs,
+    trial_outcome: TrialOutcome,
+    metering: AttemptMetering,
+    cleanup_state: CleanupState,
+    audit_state: EgressAuditState,
+    critical_artifacts_state: CriticalArtifactsState,
+    artifacts: Vec<JsonObject>,
 }
 
-impl<'de> Deserialize<'de> for V2AttemptRecord {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let record = Self::deserialize(deserializer)?;
-        record.validate().map_err(serde::de::Error::custom)?;
-        Ok(record)
-    }
-}
+/// Immutable, validated `maka.eval.v2` attempt record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct V2AttemptRecord(V2AttemptParts);
 
 impl V2AttemptRecord {
-    pub fn validate(&self) -> Result<(), ContractError> {
-        if self.schema_version != SchemaVersion::V2 {
-            return Err(ContractError::new(
-                "v2 attempt record requires schemaVersion maka.eval.v2",
-            ));
-        }
-        if self.cell_id.is_empty() {
+    pub fn try_new(parts: V2AttemptParts) -> Result<Self, ContractError> {
+        if parts.cell_id.is_empty() {
             return Err(ContractError::new("v2 attempt record cellId is required"));
         }
-        if self.sequence < 1 {
+        if parts.completed_at < parts.started_at {
             return Err(ContractError::new(
-                "v2 attempt record sequence must be positive",
+                "v2 attempt record completedAt must not precede startedAt",
             ));
         }
-        match &self.verifier_outcome {
-            VerifierOutcome::Verified { score } if !score.is_finite() => {
-                return Err(ContractError::new("verifier score must be finite"));
-            }
-            VerifierOutcome::SubjectFailed {
-                score: Some(score), ..
-            } if !score.is_finite() => {
-                return Err(ContractError::new("verifier score must be finite"));
-            }
-            _ => {}
-        }
-        if self.resolve_outcome().0 == EvalResultStatus::Completed && self.failure_reason.is_some()
-        {
-            return Err(ContractError::new(
-                "v2 completed attempt record must not set failureReason",
-            ));
-        }
-        self.metering.validate()?;
-        Ok(())
+        validate_trial_outcome(&parts.trial_outcome)?;
+        parts.metering.validate()?;
+        validate_cleanup_state(&parts.cleanup_state)?;
+        validate_audit_state(&parts.audit_state)?;
+        validate_critical_artifacts_state(&parts.critical_artifacts_state)?;
+        Ok(Self(parts))
     }
 
-    fn resolve_outcome(&self) -> (EvalResultStatus, Option<f64>, Option<String>) {
-        // Unconfirmed cleanup always resolves to `indeterminate` with `score: null`.
-        if let CleanupState::Unconfirmed { reason } = &self.cleanup_state {
-            return (EvalResultStatus::Indeterminate, None, Some(reason.clone()));
-        }
-
-        // Late cancellation before verification completes resolves to `indeterminate`.
-        if self.cancellation == AttemptCancellation::BeforeVerification {
-            return (
-                EvalResultStatus::Indeterminate,
-                None,
-                Some(
-                    self.failure_reason.clone().unwrap_or_else(|| {
-                        "executor cancelled before verification completed".into()
-                    }),
-                ),
-            );
-        }
-
-        if let CriticalArtifactsState::Missing { paths } = &self.critical_artifacts_state {
-            return (
-                EvalResultStatus::InfraFailed,
-                None,
-                Some(format!("critical artifacts missing: {}", paths.join(", "))),
-            );
-        }
-
-        match &self.audit_state {
-            EgressAuditState::Missing => {
-                return (
-                    EvalResultStatus::InfraFailed,
-                    None,
-                    Some("egress audit log missing".into()),
-                );
-            }
-            EgressAuditState::Unreadable { reason } => {
-                return (EvalResultStatus::InfraFailed, None, Some(reason.clone()));
-            }
-            EgressAuditState::NotRequired | EgressAuditState::Recorded { .. } => {}
-        }
-
-        match (&self.execution_outcome, &self.verifier_outcome) {
-            (ExecutionOutcome::InfraFailed, _) => (
-                EvalResultStatus::InfraFailed,
-                None,
-                Some(
-                    self.failure_reason
-                        .clone()
-                        .unwrap_or_else(|| "subject infrastructure failed".into()),
-                ),
-            ),
-            (ExecutionOutcome::Indeterminate, _) => (
-                EvalResultStatus::Indeterminate,
-                None,
-                Some(
-                    self.failure_reason
-                        .clone()
-                        .unwrap_or_else(|| "subject execution indeterminate".into()),
-                ),
-            ),
-            (_, VerifierOutcome::VerifierInfraFailed { reason })
-            | (_, VerifierOutcome::MissingReward { reason }) => {
-                // Missing verifier reward never defaults to 0.0!
-                (EvalResultStatus::InfraFailed, None, Some(reason.clone()))
-            }
-            (ExecutionOutcome::Timeout, VerifierOutcome::Verified { score }) => (
-                EvalResultStatus::SubjectFailed,
-                Some(*score),
-                Some(
-                    self.failure_reason
-                        .clone()
-                        .unwrap_or_else(|| "subject exceeded the framework timeout".into()),
-                ),
-            ),
-            (ExecutionOutcome::SubjectFailed, VerifierOutcome::Verified { score }) => (
-                EvalResultStatus::SubjectFailed,
-                Some(*score),
-                self.failure_reason.clone(),
-            ),
-            (
-                ExecutionOutcome::Completed
-                | ExecutionOutcome::SubjectFailed
-                | ExecutionOutcome::Timeout,
-                VerifierOutcome::SubjectFailed { score, reason },
-            ) => (
-                EvalResultStatus::SubjectFailed,
-                *score,
-                self.failure_reason.clone().or_else(|| reason.clone()),
-            ),
-            (ExecutionOutcome::Completed, VerifierOutcome::Verified { score }) => {
-                (EvalResultStatus::Completed, Some(*score), None)
-            }
-            (ExecutionOutcome::Timeout, VerifierOutcome::Skipped) => (
-                EvalResultStatus::SubjectFailed,
-                None,
-                Some(
-                    self.failure_reason
-                        .clone()
-                        .unwrap_or_else(|| "subject exceeded the framework timeout".into()),
-                ),
-            ),
-            (ExecutionOutcome::SubjectFailed, VerifierOutcome::Skipped) => (
-                EvalResultStatus::SubjectFailed,
-                None,
-                self.failure_reason.clone(),
-            ),
-            (ExecutionOutcome::Completed, VerifierOutcome::Skipped) => {
-                (EvalResultStatus::Completed, None, None)
-            }
-        }
+    pub fn cell_id(&self) -> &str {
+        &self.0.cell_id
     }
 
-    /// Projects a native `maka.eval.v2` record into a strict `maka.eval.v1` `V1CellAttempt`.
+    pub fn sequence(&self) -> NonZeroU32 {
+        self.0.sequence
+    }
+
+    pub fn started_at(&self) -> u64 {
+        self.0.started_at
+    }
+
+    pub fn completed_at(&self) -> u64 {
+        self.0.completed_at
+    }
+
+    pub fn durations(&self) -> &PhaseDurationsMs {
+        &self.0.durations
+    }
+
+    pub fn trial_outcome(&self) -> &TrialOutcome {
+        &self.0.trial_outcome
+    }
+
+    pub fn metering(&self) -> &AttemptMetering {
+        &self.0.metering
+    }
+
+    pub fn cleanup_state(&self) -> &CleanupState {
+        &self.0.cleanup_state
+    }
+
+    pub fn audit_state(&self) -> &EgressAuditState {
+        &self.0.audit_state
+    }
+
+    pub fn critical_artifacts_state(&self) -> &CriticalArtifactsState {
+        &self.0.critical_artifacts_state
+    }
+
+    pub fn artifacts(&self) -> &[JsonObject] {
+        &self.0.artifacts
+    }
+
+    pub fn into_parts(self) -> V2AttemptParts {
+        self.0
+    }
+
+    pub fn disposition(&self) -> V2Disposition {
+        self.disposition_with_recovery(&[])
+    }
+
+    pub fn disposition_with_recovery(&self, recoveries: &[PostHocRecovery]) -> V2Disposition {
+        let (effective_cleanup, effective_metering) = self.effective_evidence(recoveries);
+        self.adjudicate(effective_cleanup, effective_metering)
+    }
+
+    /// Projects this `maka.eval.v2` record into a strict `maka.eval.v1` `V1CellAttempt`.
     pub fn project_v1(&self) -> V1CellAttempt {
-        let mut artifacts = self.artifacts.clone();
-        if self.cancellation == AttemptCancellation::AfterVerification {
+        self.project_v1_with_recovery(&[])
+    }
+
+    /// Projects this `maka.eval.v2` record plus appended post-hoc recovery entries
+    /// into a strict `maka.eval.v1` `V1CellAttempt` without mutating the record.
+    pub fn project_v1_with_recovery(&self, recoveries: &[PostHocRecovery]) -> V1CellAttempt {
+        let (effective_cleanup, effective_metering) = self.effective_evidence(recoveries);
+        let disposition = self.adjudicate(effective_cleanup, effective_metering);
+
+        let mut artifacts = self.0.artifacts.clone();
+        if matches!(
+            self.0.trial_outcome,
+            TrialOutcome::Evaluated {
+                cancelled_after_verification: true,
+                ..
+            }
+        ) {
             push_artifact_marker(&mut artifacts, "cancelled-after-verification");
         }
-        if self.recovered_post_hoc {
+        if !recoveries.is_empty() {
             push_artifact_marker(&mut artifacts, "post-hoc-evidence-recovery");
         }
-        if let EgressAuditState::Recorded {
-            truncated,
-            policy_error_count,
-        } = &self.audit_state
-            && (*truncated || *policy_error_count > 0)
-        {
-            record_audit_artifact(&mut artifacts, *truncated, *policy_error_count);
-        }
+        append_egress_audit_artifact(&mut artifacts, &self.0.audit_state);
 
-        let (status, score, failure_reason) = self.resolve_outcome();
+        let (status, score, failure_reason) = match disposition {
+            V2Disposition::Selected {
+                status: SelectedStatus::Completed,
+                score,
+                failure_reason,
+            } => (EvalResultStatus::Completed, score, failure_reason),
+            V2Disposition::Selected {
+                status: SelectedStatus::SubjectFailed,
+                score,
+                failure_reason,
+            } => (EvalResultStatus::SubjectFailed, score, failure_reason),
+            V2Disposition::RetryableInfra { failure_reason } => {
+                (EvalResultStatus::InfraFailed, None, Some(failure_reason))
+            }
+            V2Disposition::BlockedIndeterminate { failure_reason } => {
+                (EvalResultStatus::Indeterminate, None, Some(failure_reason))
+            }
+        };
+
         V1CellAttempt {
-            cell_id: self.cell_id.clone(),
-            sequence: self.sequence,
-            started_at: self.started_at,
-            completed_at: self.completed_at,
+            cell_id: self.0.cell_id.clone(),
+            sequence: self.0.sequence,
+            started_at: self.0.started_at,
+            completed_at: self.0.completed_at,
             result: EvalResult {
                 score,
-                usage: self.metering.usage().cloned(),
-                cost_usd: self.metering.cost_usd(),
-                duration_ms: self.duration_ms,
+                usage: effective_metering.usage().cloned(),
+                cost_usd: effective_metering.cost_usd(),
+                duration_ms: self.0.durations.subject_ms,
                 status,
                 failure_reason,
                 artifacts,
             },
         }
     }
+
+    fn effective_evidence<'a>(
+        &'a self,
+        recoveries: &'a [PostHocRecovery],
+    ) -> (&'a CleanupState, &'a AttemptMetering) {
+        let mut cleanup = &self.0.cleanup_state;
+        let mut metering = &self.0.metering;
+        for recovery in recoveries {
+            if let Some(next_cleanup) = recovery.cleanup_state()
+                && matches!(cleanup, CleanupState::Unconfirmed { .. })
+                && matches!(next_cleanup, CleanupState::Confirmed {})
+            {
+                cleanup = next_cleanup;
+            }
+            if let Some(next_metering) = recovery.metering()
+                && next_metering.rank() > metering.rank()
+            {
+                metering = next_metering;
+            }
+        }
+        (cleanup, metering)
+    }
+
+    fn adjudicate(
+        &self,
+        effective_cleanup: &CleanupState,
+        effective_metering: &AttemptMetering,
+    ) -> V2Disposition {
+        // Gate 1: Epistemic certainty — unresolved cleanup, pre-verification cancellation,
+        // indeterminate execution, or unknown metering on an evaluated trial block retry.
+        if let CleanupState::Unconfirmed { reason } = effective_cleanup {
+            return V2Disposition::BlockedIndeterminate {
+                failure_reason: reason.clone(),
+            };
+        }
+        match &self.0.trial_outcome {
+            TrialOutcome::CancelledBeforeVerification { reason } => {
+                return V2Disposition::BlockedIndeterminate {
+                    failure_reason: reason.clone().unwrap_or_else(|| {
+                        "executor cancelled before verification completed".into()
+                    }),
+                };
+            }
+            TrialOutcome::Indeterminate { reason } => {
+                return V2Disposition::BlockedIndeterminate {
+                    failure_reason: reason.clone(),
+                };
+            }
+            TrialOutcome::Evaluated { .. }
+                if matches!(effective_metering, AttemptMetering::Unknown) =>
+            {
+                return V2Disposition::BlockedIndeterminate {
+                    failure_reason: "metering state unknown".into(),
+                };
+            }
+            TrialOutcome::InfraFailed { .. } | TrialOutcome::Evaluated { .. } => {}
+        }
+
+        // Gate 2: Infrastructure & evidence integrity — preserve root infra failures before
+        // checking downstream artifacts/audit, and reject LowerBound metering on Completed runs.
+        match &self.0.trial_outcome {
+            TrialOutcome::InfraFailed { reason } => {
+                return V2Disposition::RetryableInfra {
+                    failure_reason: reason.clone(),
+                };
+            }
+            TrialOutcome::Evaluated {
+                verifier:
+                    VerifierOutcome::InfraFailed { reason } | VerifierOutcome::MissingReward { reason },
+                ..
+            } => {
+                return V2Disposition::RetryableInfra {
+                    failure_reason: reason.clone(),
+                };
+            }
+            TrialOutcome::Evaluated { .. } => {}
+            TrialOutcome::Indeterminate { .. }
+            | TrialOutcome::CancelledBeforeVerification { .. } => {
+                unreachable!("handled in Gate 1");
+            }
+        }
+        if let CriticalArtifactsState::Missing { paths } = &self.0.critical_artifacts_state {
+            return V2Disposition::RetryableInfra {
+                failure_reason: format!("critical artifacts missing: {}", paths.join(", ")),
+            };
+        }
+        match &self.0.audit_state {
+            EgressAuditState::Missing {} => {
+                return V2Disposition::RetryableInfra {
+                    failure_reason: "egress audit log missing".into(),
+                };
+            }
+            EgressAuditState::Unreadable { reason } => {
+                return V2Disposition::RetryableInfra {
+                    failure_reason: reason.clone(),
+                };
+            }
+            EgressAuditState::NotRequired {} | EgressAuditState::Recorded { .. } => {}
+        }
+        if matches!(
+            self.0.trial_outcome,
+            TrialOutcome::Evaluated {
+                subject: SubjectOutcome::Completed {},
+                ..
+            }
+        ) && matches!(effective_metering, AttemptMetering::LowerBound { .. })
+        {
+            return V2Disposition::RetryableInfra {
+                failure_reason: "incomplete lower-bound metering on completed subject".into(),
+            };
+        }
+
+        // Gate 3: Capability settlement — permanent selection, never resampled.
+        let TrialOutcome::Evaluated {
+            subject, verifier, ..
+        } = &self.0.trial_outcome
+        else {
+            unreachable!("non-evaluated outcomes handled in Gates 1 and 2");
+        };
+        match (subject, verifier) {
+            (SubjectOutcome::Completed {}, VerifierOutcome::Verified { score }) => {
+                V2Disposition::Selected {
+                    status: SelectedStatus::Completed,
+                    score: Some(*score),
+                    failure_reason: None,
+                }
+            }
+            (SubjectOutcome::Completed {}, VerifierOutcome::SubjectFailed { score, reason }) => {
+                V2Disposition::Selected {
+                    status: SelectedStatus::SubjectFailed,
+                    score: *score,
+                    failure_reason: reason.clone(),
+                }
+            }
+            (SubjectOutcome::Timeout { reason }, VerifierOutcome::Verified { score }) => {
+                V2Disposition::Selected {
+                    status: SelectedStatus::SubjectFailed,
+                    score: Some(*score),
+                    failure_reason: Some(
+                        reason
+                            .clone()
+                            .unwrap_or_else(|| "subject exceeded the framework timeout".into()),
+                    ),
+                }
+            }
+            (
+                SubjectOutcome::Timeout { reason },
+                VerifierOutcome::SubjectFailed {
+                    score,
+                    reason: v_reason,
+                },
+            ) => V2Disposition::Selected {
+                status: SelectedStatus::SubjectFailed,
+                score: *score,
+                failure_reason: Some(
+                    reason
+                        .clone()
+                        .or_else(|| v_reason.clone())
+                        .unwrap_or_else(|| "subject exceeded the framework timeout".into()),
+                ),
+            },
+            (SubjectOutcome::Failed { reason }, VerifierOutcome::Verified { score }) => {
+                V2Disposition::Selected {
+                    status: SelectedStatus::SubjectFailed,
+                    score: Some(*score),
+                    failure_reason: reason.clone(),
+                }
+            }
+            (
+                SubjectOutcome::Failed { reason },
+                VerifierOutcome::SubjectFailed {
+                    score,
+                    reason: v_reason,
+                },
+            ) => V2Disposition::Selected {
+                status: SelectedStatus::SubjectFailed,
+                score: *score,
+                failure_reason: reason.clone().or_else(|| v_reason.clone()),
+            },
+            (_, VerifierOutcome::MissingReward { .. } | VerifierOutcome::InfraFailed { .. }) => {
+                unreachable!("handled in Gate 2")
+            }
+        }
+    }
+}
+
+impl Serialize for V2AttemptRecord {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let wire = V2AttemptWire {
+            schema_version: SchemaVersion::V2,
+            cell_id: self.0.cell_id.clone(),
+            sequence: self.0.sequence,
+            started_at: self.0.started_at,
+            completed_at: self.0.completed_at,
+            durations: self.0.durations,
+            trial_outcome: self.0.trial_outcome.clone(),
+            metering: self.0.metering.clone(),
+            cleanup_state: self.0.cleanup_state.clone(),
+            audit_state: self.0.audit_state.clone(),
+            critical_artifacts_state: self.0.critical_artifacts_state.clone(),
+            artifacts: self.0.artifacts.clone(),
+        };
+        wire.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for V2AttemptRecord {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = V2AttemptWire::deserialize(deserializer)?;
+        if wire.schema_version != SchemaVersion::V2 {
+            return Err(serde::de::Error::custom(
+                "v2 attempt record requires schemaVersion maka.eval.v2",
+            ));
+        }
+        Self::try_new(V2AttemptParts {
+            cell_id: wire.cell_id,
+            sequence: wire.sequence,
+            started_at: wire.started_at,
+            completed_at: wire.completed_at,
+            durations: wire.durations,
+            trial_outcome: wire.trial_outcome,
+            metering: wire.metering,
+            cleanup_state: wire.cleanup_state,
+            audit_state: wire.audit_state,
+            critical_artifacts_state: wire.critical_artifacts_state,
+            artifacts: wire.artifacts,
+        })
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Append-only post-hoc evidence recovery event applied on top of an immutable `V2AttemptRecord`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PostHocRecovery {
+    recovered_at: u64,
+    metering: Option<AttemptMetering>,
+    cleanup_state: Option<CleanupState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PostHocRecoveryWire {
+    recovered_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metering: Option<AttemptMetering>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cleanup_state: Option<CleanupState>,
+}
+
+impl PostHocRecovery {
+    pub fn try_new(
+        recovered_at: u64,
+        metering: Option<AttemptMetering>,
+        cleanup_state: Option<CleanupState>,
+    ) -> Result<Self, ContractError> {
+        if metering.is_none() && cleanup_state.is_none() {
+            return Err(ContractError::new(
+                "post-hoc recovery must provide metering or cleanupState",
+            ));
+        }
+        if let Some(m) = &metering {
+            m.validate()?;
+        }
+        if let Some(c) = &cleanup_state {
+            validate_cleanup_state(c)?;
+        }
+        Ok(Self {
+            recovered_at,
+            metering,
+            cleanup_state,
+        })
+    }
+
+    pub fn recovered_at(&self) -> u64 {
+        self.recovered_at
+    }
+
+    pub fn metering(&self) -> Option<&AttemptMetering> {
+        self.metering.as_ref()
+    }
+
+    pub fn cleanup_state(&self) -> Option<&CleanupState> {
+        self.cleanup_state.as_ref()
+    }
+}
+
+impl Serialize for PostHocRecovery {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        PostHocRecoveryWire {
+            recovered_at: self.recovered_at,
+            metering: self.metering.clone(),
+            cleanup_state: self.cleanup_state.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for PostHocRecovery {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = PostHocRecoveryWire::deserialize(deserializer)?;
+        Self::try_new(wire.recovered_at, wire.metering, wire.cleanup_state)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectedStatus {
+    Completed,
+    SubjectFailed,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum V2Disposition {
+    Selected {
+        status: SelectedStatus,
+        score: Option<f64>,
+        failure_reason: Option<String>,
+    },
+    RetryableInfra {
+        failure_reason: String,
+    },
+    BlockedIndeterminate {
+        failure_reason: String,
+    },
+}
+
+/// Authoritative `v2` cell result selector: picks the earliest attempt by sequence
+/// whose `V2Disposition` is `Selected`.
+pub fn select_v2_cell_result(attempts: &[V2AttemptRecord]) -> Option<&V2AttemptRecord> {
+    attempts
+        .iter()
+        .filter(|a| matches!(a.disposition(), V2Disposition::Selected { .. }))
+        .min_by_key(|a| a.sequence())
+}
+
+/// Authoritative `v2` retry admission check: returns `false` if any attempt is already
+/// `Selected` or `BlockedIndeterminate`, or if `attempts.len() > max_infra_retries as usize`.
+pub fn can_admit_v2_attempt(attempts: &[V2AttemptRecord], max_infra_retries: u32) -> bool {
+    !attempts.iter().any(|a| {
+        matches!(
+            a.disposition(),
+            V2Disposition::Selected { .. } | V2Disposition::BlockedIndeterminate { .. }
+        )
+    }) && attempts.len() <= max_infra_retries as usize
+}
+
+fn validate_trial_outcome(outcome: &TrialOutcome) -> Result<(), ContractError> {
+    match outcome {
+        TrialOutcome::InfraFailed { reason } | TrialOutcome::Indeterminate { reason } => {
+            if reason.is_empty() {
+                return Err(ContractError::new("trialOutcome.reason must not be empty"));
+            }
+        }
+        TrialOutcome::CancelledBeforeVerification { reason: Some(r) } => {
+            if r.is_empty() {
+                return Err(ContractError::new("trialOutcome.reason must not be empty"));
+            }
+        }
+        TrialOutcome::CancelledBeforeVerification { reason: None } => {}
+        TrialOutcome::Evaluated {
+            subject, verifier, ..
+        } => {
+            match subject {
+                SubjectOutcome::Completed {} => {}
+                SubjectOutcome::Failed { reason: Some(r) }
+                | SubjectOutcome::Timeout { reason: Some(r) } => {
+                    if r.is_empty() {
+                        return Err(ContractError::new("subject.reason must not be empty"));
+                    }
+                }
+                SubjectOutcome::Failed { reason: None }
+                | SubjectOutcome::Timeout { reason: None } => {}
+            }
+            match verifier {
+                VerifierOutcome::Verified { score } => {
+                    if !score.is_finite() {
+                        return Err(ContractError::new("verifier score must be finite"));
+                    }
+                }
+                VerifierOutcome::SubjectFailed { score, reason } => {
+                    if score.is_some_and(|s| !s.is_finite()) {
+                        return Err(ContractError::new("verifier score must be finite"));
+                    }
+                    if reason.as_deref().is_some_and(str::is_empty) {
+                        return Err(ContractError::new("verifier.reason must not be empty"));
+                    }
+                }
+                VerifierOutcome::MissingReward { reason }
+                | VerifierOutcome::InfraFailed { reason } => {
+                    if reason.is_empty() {
+                        return Err(ContractError::new("verifier.reason must not be empty"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_cleanup_state(state: &CleanupState) -> Result<(), ContractError> {
+    if let CleanupState::Unconfirmed { reason } = state
+        && reason.is_empty()
+    {
+        return Err(ContractError::new("cleanupState.reason must not be empty"));
+    }
+    Ok(())
+}
+
+fn validate_audit_state(state: &EgressAuditState) -> Result<(), ContractError> {
+    match state {
+        EgressAuditState::NotRequired {} | EgressAuditState::Missing {} => {}
+        EgressAuditState::Recorded { sha256, .. } => {
+            if !is_lower_hex_sha256(sha256) {
+                return Err(ContractError::new(
+                    "auditState.sha256 must be 64 lowercase hex characters",
+                ));
+            }
+        }
+        EgressAuditState::Unreadable { reason } => {
+            if reason.is_empty() {
+                return Err(ContractError::new("auditState.reason must not be empty"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_critical_artifacts_state(state: &CriticalArtifactsState) -> Result<(), ContractError> {
+    if let CriticalArtifactsState::Missing { paths } = state
+        && (paths.is_empty() || paths.iter().any(String::is_empty))
+    {
+        return Err(ContractError::new(
+            "criticalArtifactsState.paths must be non-empty strings",
+        ));
+    }
+    Ok(())
 }
 
 fn push_artifact_marker(artifacts: &mut Vec<JsonObject>, kind: &str) {
@@ -1037,29 +1413,63 @@ fn push_artifact_marker(artifacts: &mut Vec<JsonObject>, kind: &str) {
     }
 }
 
-fn record_audit_artifact(
-    artifacts: &mut Vec<JsonObject>,
-    truncated: bool,
-    policy_error_count: u64,
-) {
-    if let Some(existing) = artifacts
-        .iter_mut()
-        .find(|a| a.get("kind").and_then(Value::as_str) == Some("egress-audit"))
+fn append_egress_audit_artifact(artifacts: &mut Vec<JsonObject>, audit_state: &EgressAuditState) {
+    match audit_state {
+        EgressAuditState::NotRequired {} => {}
+        EgressAuditState::Recorded {
+            bytes,
+            sha256,
+            truncated,
+            policy_error_count,
+            malformed_line_count,
+        } => {
+            if !artifacts
+                .iter()
+                .any(|a| a.get("kind").and_then(Value::as_str) == Some("egress-audit"))
+            {
+                let mut audit_obj = Map::new();
+                audit_obj.insert("kind".into(), Value::String("egress-audit".into()));
+                audit_obj.insert(
+                    "path".into(),
+                    Value::String(EGRESS_AUDIT_ARTIFACT_PATH.into()),
+                );
+                audit_obj.insert("bytes".into(), Value::from(*bytes));
+                audit_obj.insert("sha256".into(), Value::String(format!("sha256:{sha256}")));
+                audit_obj.insert("truncated".into(), Value::Bool(*truncated));
+                audit_obj.insert("policyErrorCount".into(), Value::from(*policy_error_count));
+                audit_obj.insert(
+                    "malformedLineCount".into(),
+                    Value::from(*malformed_line_count),
+                );
+                artifacts.push(audit_obj);
+            }
+        }
+        EgressAuditState::Missing {} => {
+            push_path_artifact(
+                artifacts,
+                "egress-audit-missing",
+                EGRESS_AUDIT_ARTIFACT_PATH,
+            );
+        }
+        EgressAuditState::Unreadable { .. } => {
+            push_path_artifact(
+                artifacts,
+                "egress-audit-unreadable",
+                EGRESS_AUDIT_ARTIFACT_PATH,
+            );
+        }
+    }
+}
+
+fn push_path_artifact(artifacts: &mut Vec<JsonObject>, kind: &str, path: &str) {
+    if !artifacts
+        .iter()
+        .any(|a| a.get("kind").and_then(Value::as_str) == Some(kind))
     {
-        if truncated {
-            existing.insert("truncated".into(), Value::Bool(true));
-        }
-        if policy_error_count > 0 {
-            existing.insert("policyErrorCount".into(), Value::from(policy_error_count));
-        }
-    } else {
-        let mut audit_obj = Map::new();
-        audit_obj.insert("kind".into(), Value::String("egress-audit".into()));
-        audit_obj.insert("truncated".into(), Value::Bool(truncated));
-        if policy_error_count > 0 {
-            audit_obj.insert("policyErrorCount".into(), Value::from(policy_error_count));
-        }
-        artifacts.push(audit_obj);
+        let mut obj = Map::new();
+        obj.insert("kind".into(), Value::String(kind.into()));
+        obj.insert("path".into(), Value::String(path.into()));
+        artifacts.push(obj);
     }
 }
 
@@ -1148,33 +1558,33 @@ fn ensure_unique_ids<'a>(
     Ok(())
 }
 
-fn positive_u32(value: &Value, where_label: &str) -> Result<u32, ContractError> {
-    match value.as_u64() {
-        Some(n) if n >= 1 && n <= u64::from(u32::MAX) => Ok(n as u32),
-        _ => Err(ContractError::new(format!(
-            "{where_label} must be positive"
-        ))),
+fn is_lower_hex_sha256(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub(crate) fn safe_u64(value: &Value, where_label: &str) -> Result<u64, ContractError> {
+    if let Some(n) = value.as_u64() {
+        return Ok(n);
+    }
+    match value.as_f64() {
+        Some(f)
+            if f.is_finite() && (0.0..=MAX_SAFE_INTEGER_F64).contains(&f) && f.fract() == 0.0 =>
+        {
+            Ok(f as u64)
+        }
+        _ => Err(ContractError::new(format!("{where_label} is invalid"))),
     }
 }
 
-fn positive_usize(value: &Value, where_label: &str) -> Result<usize, ContractError> {
-    match value.as_u64() {
-        Some(n) if n >= 1 => usize::try_from(n)
-            .map_err(|_| ContractError::new(format!("{where_label} must be positive"))),
-        _ => Err(ContractError::new(format!(
-            "{where_label} must be positive"
-        ))),
-    }
-}
-
-pub(crate) fn nonnegative_u64(value: &Value, where_label: &str) -> Result<u64, ContractError> {
-    match value.as_u64() {
-        Some(n) => Ok(n),
-        None => match value.as_f64() {
-            Some(f) if f.is_finite() && f >= 0.0 && f.fract() == 0.0 => Ok(f as u64),
-            _ => Err(ContractError::new(format!("{where_label} is invalid"))),
-        },
-    }
+fn positive_nonzero_u32(value: &Value, where_label: &str) -> Result<NonZeroU32, ContractError> {
+    let n = safe_u64(value, where_label)?;
+    let raw = u32::try_from(n)
+        .ok()
+        .and_then(NonZeroU32::new)
+        .ok_or_else(|| ContractError::new(format!("{where_label} must be positive")))?;
+    Ok(raw)
 }
 
 fn nullable_f64(value: &Value, where_label: &str) -> Result<Option<f64>, ContractError> {

@@ -25,7 +25,17 @@ Measurement and control plane contracts for multi-arm benchmark experiments (`ma
 
 ## Architecture
 
-- [`contract`](src/contract.rs): Strict `maka.eval.v1` experiment and attempt projection contracts, native `maka.eval.v2` orthogonal attempt dimensions, and condition-only `RunFingerprint`.
-- [`measurement`](src/measurement.rs): Exact 6-counter token accounting (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`, `totalTokens` preserved without summation) and standardized `DEEPSEEK_V4_FLASH_COST` pricing.
+- [`contract`](src/contract.rs): Strict `maka.eval.v1` spec validation and cell expansion, immutable `V2AttemptRecord` with 3-gate causal adjudication (`BlockedIndeterminate` -> `RetryableInfra` -> `Selected`), leaf `v2 -> v1` projection, and spec-only `SpecFingerprint`.
+- [`measurement`](src/measurement.rs): Exact 6-counter token accounting (`inputTokens` normalized inclusive of cache reads/writes; `totalTokens` preserved without summation) and `PricingRates` (`DEEPSEEK_V4_FLASH_COST`) as the sole USD pricing authority.
+
+## Adjudicated `v2 -> v1` Rules
+
+| Scenario | `v2` Disposition | `v1` Projection & Selection |
+| --- | --- | --- |
+| Timeout + reward + `LowerBound` | `Selected(SubjectFailed)` | `subject_failed`, raw `score`, `costUsd: null`; selected & never resampled |
+| Audit truncated / policy error | `Selected(Completed)` | `completed` with `egress-audit` metadata (`bytes`, `sha256`, `malformedLineCount`) |
+| Missing audit / critical artifacts | `RetryableInfra` (unless Gate 1 indeterminate) | `infra_failed`, `score: null` (stricter than legacy TS when score existed) |
+| Late cancellation | Before verify: `BlockedIndeterminate`; After: `Selected` | `indeterminate` (`score: null`) vs preserved score + marker |
+| Post-hoc evidence recovery | `PostHocRecovery` appended monotonically | Derived view updates status/usage/cost without mutating the base attempt |
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
