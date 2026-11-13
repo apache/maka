@@ -116,7 +116,28 @@ test('a rejected topic with no change is not reopened', (t) => {
   // The only note on the topic predates the user's feedback: nothing has changed.
   assert.throws(
     () => commit(b, 'r', draft({ reopened: [{ topicId: 'tea', reason: '感觉可以再提' }] })),
-    /needs a note on this topic recorded after the user feedback/,
+    /needs a note on this topic recorded after the closure decision/,
+  );
+  assert.equal(b.state('tea').status, 'closed');
+});
+
+test('a note the closure already weighed cannot reopen the closed topic', (t) => {
+  const b = fixture(t);
+  feedback(b, 'f', '不用再推荐茶了');
+  // The routine interleaving: exploration records a note on the feedback's
+  // topic before the judgement interprets the feedback and closes the topic.
+  commit(b, 'probe', draft({ notes: [note('tea', ['tea'], '茶博会即将开幕。')] }), 'exploration');
+  commit(
+    b,
+    'close',
+    draft({ feedbackDecisions: [resolution('f', [closeRule('不用再推荐茶了')])] }),
+  );
+  assert.equal(b.state('tea').status, 'closed');
+  // The closure decision already had that note in hand and still closed the
+  // topic, so the note is not a change; reopening must be rejected.
+  assert.throws(
+    () => commit(b, 'r', draft({ reopened: [{ topicId: 'tea', reason: '感觉可以再提' }] })),
+    /needs a note on this topic recorded after the closure decision/,
   );
   assert.equal(b.state('tea').status, 'closed');
 });
