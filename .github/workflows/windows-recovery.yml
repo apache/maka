@@ -118,6 +118,7 @@ on:
       - 'packages/runtime/src/__tests__/runtime-resume-crash.test.ts'
       - 'packages/runtime/src/__tests__/shell-owner-death.test.ts'
       - 'packages/runtime/src/builtin-tools.ts'
+      - 'packages/runtime/src/file-mutation-guard.ts'
       - 'packages/runtime/src/file-stable-write.ts'
       - 'packages/runtime/src/filesystem-worker/client.ts'
       - 'packages/runtime/src/filesystem-worker/launch-spec.ts'
