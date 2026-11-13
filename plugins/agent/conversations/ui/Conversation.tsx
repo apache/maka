@@ -164,7 +164,6 @@ import {
 import { BotRestart } from '../../../../products/maka/workbench/app/BotRestart';
 import {
   MessageRow,
-  originLabel,
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
@@ -1260,7 +1259,7 @@ export function Conversation(props: ConversationProps) {
       items.set(turnKey, {
         turnKey,
         order: item.order,
-        label: originLabel(item.origin) ?? item.label,
+        label: item.label,
         anchor: {
           kind: 'landmark',
           through: landmarks().through,
@@ -1276,14 +1275,13 @@ export function Conversation(props: ConversationProps) {
         !row.position ||
         !row.order ||
         row.role !== 'user' ||
+        row.origin ||
         row.field !== 'body' ||
         (row.fragments && row.fragments[0]?.offset !== 0)
       )
         continue;
       const previous = items.get(turnKey);
-      const label =
-        originLabel(row.origin) ??
-        (/\S[\s\S]{0,239}/u.exec(row.text)?.[0] ?? '').replace(/\s+/g, ' ').trim();
+      const label = (/\S[\s\S]{0,239}/u.exec(row.text)?.[0] ?? '').replace(/\s+/g, ' ').trim();
       if (
         !previous ||
         (previous.anchor.kind === 'loaded' && compareHistoryOrder(row.order, previous.order) < 0)
@@ -3685,7 +3683,7 @@ export function Conversation(props: ConversationProps) {
       preview={async (item) => {
         const position = item.anchor.position;
         const row = historyRows().userRows.get(historyRowKey(position));
-        if (row) return originLabel(row.origin) ?? row.text;
+        if (row) return row.text;
         if (item.anchor.kind !== 'landmark') return item.label;
         const prompt = await host.query('agent', 'historyPrompt', {
           sessionId,
