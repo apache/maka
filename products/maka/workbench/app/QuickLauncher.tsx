@@ -25,6 +25,7 @@ import {
   effect,
   Image,
   keymap,
+  host as shell,
   platform,
   Scroll,
   signal,
@@ -90,13 +91,14 @@ type Navigation = {
   open(sessionId: string, message?: string): void;
 };
 
-const frameStyle = {
-  backgroundColor: C.surface,
-  borderRadius: 12,
-  borderWidth: 1,
-  borderColor: C.line,
-  overflow: 'hidden',
-} as const;
+const frameStyle = () =>
+  ({
+    backgroundColor: C.panel,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: C.line,
+    overflow: 'hidden',
+  }) as const;
 
 const clock = (at: number) => {
   const date = new Date(at);
@@ -184,6 +186,7 @@ type Section = { key: string; title: string | null; rows: readonly Row[]; start:
 
 function LauncherRow(props: {
   row: Row;
+  shortcut?: string | undefined;
   selected: boolean;
   select?: (() => void) | undefined;
   pressed(): void;
@@ -193,8 +196,8 @@ function LauncherRow(props: {
       label={`${props.row.action} ${props.row.title}`}
       title={props.row.title}
       detail={props.select ? undefined : props.row.detail}
-      trailing={props.select ? undefined : props.row.trailing}
-      badge={props.row.badge}
+      trailing={props.select || props.shortcut ? undefined : props.row.trailing}
+      badge={props.shortcut ?? props.row.badge}
       icon={props.row.icon}
       image={props.row.image?.()}
       unread={props.row.unread === true}
@@ -343,6 +346,26 @@ function Launcher(
 ) {
   // A window that does not activate leaves the keyboard with the app in use until focused.
   currentWindow().focus();
+  const commandHeld = signal(false);
+  if (platform.os === 'macos') {
+    let awaitingInitial = true;
+    const off = shell.on('quickLauncher.commandChanged', (held: boolean) => {
+      awaitingInitial = false;
+      commandHeld.set(held);
+    });
+    void shell
+      .call<boolean>('quickLauncher.commandHeld', {})
+      .then((held) => {
+        if (awaitingInitial) commandHeld.set(held);
+      })
+      .catch(() => {});
+    cleanup(() => {
+      awaitingInitial = false;
+      off();
+    });
+  }
+  const shortcut = (index: number) =>
+    commandHeld() && index < 9 ? keymap.label(`mod+${index + 1}`) : undefined;
   const { query, failure } = props;
   const problem = () => failure() ?? props.usage.failure();
   const unread = watchUnread((reason) =>
@@ -577,7 +600,7 @@ function Launcher(
     props.page.set(tool);
   };
   return (
-    <View style={frameStyle}>
+    <View style={frameStyle()}>
       <If
         when={props.page() === null}
         else={
@@ -701,6 +724,7 @@ function Launcher(
                       {(row, index) => (
                         <LauncherRow
                           row={row()}
+                          shortcut={shortcut(section().start + index())}
                           selected={selected() === section().start + index()}
                           select={
                             previewer() ? () => selection.set(section().start + index()) : undefined
@@ -716,6 +740,7 @@ function Launcher(
             <If when={pinned() !== null}>
               <LauncherRow
                 row={pinned()!}
+                shortcut={shortcut(listed().length)}
                 selected={selected() === listed().length}
                 pressed={refocus}
               />
@@ -917,7 +942,7 @@ export function QuickLauncher(
             />
           }
         >
-          <View style={[frameStyle, { maxHeight: MAX_HEIGHT }]}>{props.conversation()}</View>
+          <View style={[frameStyle(), { maxHeight: MAX_HEIGHT }]}>{props.conversation()}</View>
         </If>
       </Window>
     </>
