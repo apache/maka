@@ -20,6 +20,10 @@
 use super::*;
 use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::tools::*;
+use maka_agent_facts::{
+    durable::{ContentRef, RunId},
+    input::RunInput,
+};
 use maka_tool_catalog::input::ToolRequest;
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
@@ -65,22 +69,32 @@ enum Target {
     #[default]
     Session,
     AgentRun,
+    Discovery,
 }
 impl Scheduler {
     pub fn tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
-        vec![ToolRegistration {
+        let mut tools = vec![ToolRegistration {
             definition: ToolDefinition { provider: None, name: "ScheduledTask".into(),
-                description: "Manage this conversation's automations. Creation activates the rule immediately. When it triggers, intentBody is sent to the agent as the message body. For a model connection, the default is steering; choose followup to wait for the next turn, or agent_run for a new conversation. To wake this conversation later, create an automation with the message you want to receive, then end the current turn. For external agents, the trigger starts a new turn in the same conversation. Use a time schedule or a script schedule. Scripts are ordinary JavaScript or TypeScript programs run by Deno from the conversation workspace, under its process sandbox. Scripts can import npm:, jsr:, and node: modules directly. Print true or false on the last stdout line. A script fires when the result becomes true and rearms when false. The default script interval is 60 seconds. Times are Unix milliseconds; timezone is an IANA name. List returns tasks and revisions.".into(),
+                description: "Manage this conversation's automations. Creation activates the rule immediately. When it triggers, intentBody is sent to the agent as the message body. For a model connection, the default is steering; choose followup to wait for the next turn, or agent_run for a new conversation. To wake this conversation later, create an automation with the message you want to receive, then end the current turn. For external agents, the trigger starts a new turn in the same conversation. Use a time schedule or a script schedule. Scripts are ordinary JavaScript or TypeScript programs run by Deno from the conversation workspace, under its process sandbox. Scripts can import npm:, jsr:, and node: modules directly. Print true or false on the last stdout line. A script fires when the result becomes true and rearms when false. The default script interval is 60 seconds. Discovery is a time-scheduled Bot investigation using approved Session permissions. While handling an approved discovery's report, the Bot can schedule a one-time follow-up under that plan's unchanged approval. Check approved in the result. If approval is needed, ask the user to approve it in Proactive Discovery. Keep successful background scheduling confirmations internal and share material findings separately. Times are Unix milliseconds; timezone is an IANA name. List returns tasks and revisions.".into(),
                 input_schema: serde_json::to_value(schemars::schema_for!(ToolRequest<Input>)).expect("task tool schema"),
                 output_schema: None, freeform: None },
             nesting: ToolNesting::Nestable, semantics: ToolSemantics::ExclusiveStep,
             handler: ToolHandler::Prepared(self.clone()),
-        }]
+        }];
+        tools.push(self.discovery_tool());
+        tools.push(self.discovery_memory_tool());
+        tools.push(self.discovery_context_tool());
+        tools
     }
 }
 impl ToolPreparer for Scheduler {
     fn names(&self) -> Vec<String> {
-        vec!["ScheduledTask".into()]
+        vec![
+            "ScheduledTask".into(),
+            super::super::discovery::COMPLETE.into(),
+            super::super::discovery::MEMORY.into(),
+            super::super::discovery::CONTEXT.into(),
+        ]
     }
     fn prepare(
         &self,
@@ -90,6 +104,15 @@ impl ToolPreparer for Scheduler {
         cancellation: CancellationToken,
     ) -> PreparationFuture {
         let owner = self.link.get().and_then(Weak::upgrade);
+        if name == super::super::discovery::COMPLETE {
+            return self.prepare_discovery(input, context, cancellation);
+        }
+        if name == super::super::discovery::MEMORY {
+            return self.prepare_discovery_memory(input, context, cancellation);
+        }
+        if name == super::super::discovery::CONTEXT {
+            return self.prepare_discovery_context(input, context, cancellation);
+        }
         Box::pin(async move {
             if name != "ScheduledTask" || owner.is_none() {
                 return Err(ToolRejection::Unavailable);
@@ -155,6 +178,77 @@ impl ToolPreparer for Scheduler {
     }
 }
 impl Owner {
+    async fn followup_approval(
+        &self,
+        catalog: &repository::Catalog,
+        plan: &Plan,
+        run: RunId,
+        input: &ContentRef,
+        at: i64,
+    ) -> Result<Option<Approval>, String> {
+        let (ScheduledEffect::Discovery { .. }, TaskSchedule::Once { run_at }) =
+            (&plan.task.effect, &plan.task.schedule)
+        else {
+            return Ok(None);
+        };
+        let RunInput::Message {
+            source_messages, ..
+        } = self.run_content(run, input).await.map_err(reason)?
+        else {
+            return Ok(None);
+        };
+        let [source] = source_messages.as_slice() else {
+            return Ok(None);
+        };
+        let Some(MessageOrigin::BotWorker { session_id }) = &source.message.origin else {
+            return Ok(None);
+        };
+        for saved in catalog.plans.values() {
+            let parent = &saved.plan;
+            let Some(Approval::Discovery {
+                approval,
+                recall,
+                session_tools,
+                authority: DiscoveryAuthority::User { generation },
+            }) = &parent.authorization
+            else {
+                continue;
+            };
+            if parent.task.effect != plan.task.effect
+                || parent.task.status != Status::Active
+                || parent
+                    .task
+                    .expires_at
+                    .is_some_and(|expiry| at.max(*run_at) >= expiry)
+                || (*recall && !self.settings.recall)
+            {
+                continue;
+            }
+            let Some(fire) = parent.task.runs.iter().find(|fire| {
+                fire.outcome == Outcome::Ok
+                    && fire.session_id.as_ref() == Some(session_id)
+                    && source.message.message_id
+                        == format!("m_{}", super::super::discovery::report_identity(&fire.id))
+            }) else {
+                continue;
+            };
+            if self.scheduler.completed_report_generation(&fire.id).await? == Some(*generation) {
+                return Ok(Some(Approval::Discovery {
+                    approval: approval.clone(),
+                    recall: *recall,
+                    session_tools: *session_tools,
+                    authority: DiscoveryAuthority::Followup {
+                        grant: FollowupGrant {
+                            task_id: parent.task.id.clone(),
+                            generation: *generation,
+                        },
+                    },
+                }));
+            }
+        }
+        Ok(None)
+    }
+
     async fn scheduled_tool(
         &self,
         input: Input,
@@ -242,7 +336,7 @@ impl Owner {
                         binding: session.configuration.binding,
                     };
                     let sandbox_ceiling = Some(view.spec.permission_ceiling.sandbox);
-                    let (effect, approval) = match (&basis.model, &basis.executor) {
+                    match (&basis.model, &basis.executor) {
                         (Some(accepted), None) => {
                             let model = ModelSelection {
                                 connection_id: accepted.binding.connection_id.clone(),
@@ -250,6 +344,21 @@ impl Owner {
                             };
                             let thinking_level = accepted.thinking_level;
                             let effect = match effect {
+                                Target::Discovery => {
+                                    if !self.settings.bot
+                                        || !self.bot.is(&context.execution.session_id)
+                                    {
+                                        return Err("discovery_requires_bot".into());
+                                    }
+                                    if matches!(schedule, TaskSchedule::Script { .. }) {
+                                        return Err("discovery_requires_time_schedule".into());
+                                    }
+                                    ScheduledEffect::Discovery {
+                                        target: target.clone(),
+                                        model: model.clone(),
+                                        thinking_level,
+                                    }
+                                }
                                 Target::Session => ScheduledEffect::Session {
                                     delivery,
                                     target: target.clone(),
@@ -262,19 +371,23 @@ impl Owner {
                                     thinking_level,
                                 },
                             };
-                            (
-                                effect,
-                                BackgroundGrant::Model(
-                                    super::super::notifications::BackgroundApproval {
-                                        target,
-                                        model,
-                                        thinking_level,
-                                        accepted_model: accepted.clone(),
-                                        language: view.spec.language,
-                                        sandbox_ceiling,
-                                    },
-                                ),
-                            )
+                            let approval = if matches!(effect, ScheduledEffect::Discovery { .. }) {
+                                None
+                            } else {
+                                Some(Approval::Execution {
+                                    approval: BackgroundGrant::Model(
+                                        super::super::notifications::BackgroundApproval {
+                                            target,
+                                            model,
+                                            thinking_level,
+                                            accepted_model: accepted.clone(),
+                                            language: view.spec.language,
+                                            sandbox_ceiling,
+                                        },
+                                    ),
+                                })
+                            };
+                            (effect, approval)
                         }
                         (None, Some(executor)) if executor.selection.executor == "external" => {
                             if !matches!(effect, Target::Session) {
@@ -289,19 +402,21 @@ impl Owner {
                                     target: target.clone(),
                                     selection: selection.clone(),
                                 },
-                                BackgroundGrant::Executor(ExecutorApproval {
-                                    language: view.spec.language,
-                                    target,
-                                    selection,
-                                    sandbox_ceiling,
+                                Some(Approval::Execution {
+                                    approval: BackgroundGrant::Executor(ExecutorApproval {
+                                        language: view.spec.language,
+                                        target,
+                                        selection,
+                                        sandbox_ceiling,
+                                    }),
                                 }),
                             )
                         }
                         _ => return Err("scheduler_backend_unavailable".into()),
-                    };
-                    (effect, Approval::Execution { approval })
+                    }
                 };
                 let id = format!("task-{identity}");
+                let at = now() as i64;
                 let mut plan = Plan::create(
                     id.clone(),
                     maka_scheduler::task::Create {
@@ -316,11 +431,20 @@ impl Owner {
                         session_id: context.execution.session_id,
                     },
                     timezone,
-                    now() as i64,
+                    at,
                 )
                 .map_err(reason)?;
                 plan.misfire = misfire;
-                plan.authorization = Some(authorization);
+                plan.authorization =
+                    if matches!(plan.task.effect, ScheduledEffect::Discovery { .. }) {
+                        self.followup_approval(&catalog, &plan, view.run, &view.spec.input, at)
+                            .await?
+                    } else {
+                        authorization
+                    };
+                if plan.authorization.is_none() {
+                    plan = plan.pause(at);
+                }
                 (id, Some(plan))
             }
             Input::Pause {
@@ -344,15 +468,37 @@ impl Owner {
                     return Err("scheduler_task_outside_conversation".into());
                 }
                 let plan = match input {
-                    Input::Pause { .. } => Some(saved.plan.pause(now() as i64)),
+                    Input::Pause { .. } => Some(pause_plan(&saved.plan, now() as i64)),
                     Input::Resume { .. } => {
                         let Some(approval) = &saved.plan.authorization else {
+                            if matches!(saved.plan.task.effect, ScheduledEffect::Discovery { .. }) {
+                                return Err("scheduler_user_approval_required".into());
+                            }
                             return Err("scheduler_execution_unavailable".into());
                         };
-                        let Approval::Execution { approval } = approval;
-                        let basis = self
-                            .prepare_scheduled_background(approval, &saved.plan.task.id)
-                            .await?;
+                        if let Some(grant) = approval.followup_grant()
+                            && !self.scheduler.followup_is_current(grant).await?
+                        {
+                            return Err("scheduler_user_approval_required".into());
+                        }
+                        let basis = match approval {
+                            Approval::Execution { approval } => {
+                                self.prepare_scheduled_background(approval, &saved.plan.task.id)
+                                    .await?
+                            }
+                            Approval::Discovery { approval, .. } => {
+                                self.prepare_approved_background(
+                                    approval,
+                                    BackgroundKind::Schedule {
+                                        task_id: saved.plan.task.id.clone(),
+                                    },
+                                )
+                                .await?
+                            }
+                            Approval::CancelledDiscovery { .. } => {
+                                return Err("scheduler_execution_unavailable".into());
+                            }
+                        };
                         self.validate_background(&basis).await?;
                         Some(saved.plan.resume(now() as i64).map_err(reason)?)
                     }
@@ -374,7 +520,11 @@ impl Owner {
         if let Some(plan) = &mut plan {
             plan.edit_revision = revision;
         }
-        let result = serde_json::json!({ "taskId": id, "revision": revision });
+        let result = serde_json::json!({
+            "taskId": id,
+            "revision": revision,
+            "approved": plan.as_ref().is_some_and(|plan| plan.authorization.is_some()),
+        });
         let receipt = Mutation {
             key,
             expected_revision: None,

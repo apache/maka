@@ -17,12 +17,11 @@
  * under the License.
  */
 
-import { View } from 'nsh';
-import { Button, TextView } from 'nsh/base';
+import { Clipboard, signal, Text, View } from 'nsh';
+import { Button, ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { MermaidView, mermaidExtensions } from './MermaidView';
 import type { BotTranscriptMessage } from './botTranscript';
 import { tr } from './locale';
-import { Text } from 'nsh';
 import { Icon } from './Icon';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
 
@@ -31,6 +30,8 @@ export function BotReply(props: {
   messages: () => BotTranscriptMessage[];
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
+  quote?(message: BotTranscriptMessage, text: string): void;
+  openInvestigation?(sessionId: string): void;
   /** The worker whose finished run this reply reports, when the Turn was started by one. */
   worker?: { title: () => string; exists: () => boolean; open(): void };
 }) {
@@ -41,29 +42,78 @@ export function BotReply(props: {
       : tr('View the record of the worker');
   };
   return (
-    <View selectable style={{ width: '100%', paddingVertical: 8, gap: 16 }}>
+    <View style={{ width: '100%', paddingVertical: 8, gap: 16 }}>
       <Each of={props.messages()} key={(message) => String(message.sequence)}>
-        {(message) => (
-          <TextView
-            markdown={message().text}
-            extensions={mermaidExtensions}
-            renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
-            sourceId={`bot/${message().sequence}`}
-            selectable
-            contentStyle={{ rowGap: 16 }}
-            options={{ preserveLineBreaks: true }}
-            labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
-            onScrollIntent={props.userScroll}
-            onLinkPress={(event) => void props.openLink(event.url, () => false)}
-            styles={{
-              root: { ...bodyTextStyle, color: C.text },
-              paragraph: bodyTextStyle,
-              code: { color: C.accentHover, backgroundColor: C.card },
-            }}
-          />
-        )}
+        {(message) => {
+          const selected = signal('');
+          const menuText = signal('');
+          let menuOpen = false;
+          return (
+            <View style={{ gap: 8 }}>
+              <If when={!!message().discovery}>
+                <Text style={{ ...captionTextStyle, color: C.muted }}>
+                  {tr('Proactive discovery')}
+                </Text>
+              </If>
+              <ContextMenu
+                onOpenChange={({ open }) => {
+                  menuOpen = open;
+                  if (open) menuText.set(selected());
+                }}
+                trigger={
+                  <TextView
+                    markdown={message().text}
+                    extensions={mermaidExtensions}
+                    renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
+                    sourceId={`bot/${message().sequence}`}
+                    selectable
+                    onSelectionChange={({ text }) => {
+                      if (!menuOpen) selected.set(text);
+                    }}
+                    contentStyle={{ rowGap: 16 }}
+                    options={{ preserveLineBreaks: true }}
+                    labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
+                    onScrollIntent={props.userScroll}
+                    onLinkPress={(event) => void props.openLink(event.url, () => false)}
+                    styles={{
+                      root: { ...bodyTextStyle, color: C.text },
+                      paragraph: bodyTextStyle,
+                      code: { color: C.accentHover, backgroundColor: C.card },
+                    }}
+                  />
+                }
+              >
+                <MenuItem onSelect={() => void Clipboard.writeText(menuText() || message().text)}>
+                  <Text>{tr('Copy message')}</Text>
+                </MenuItem>
+                <If when={!!props.quote && !!menuText().trim()}>
+                  <MenuItem onSelect={() => props.quote?.(message(), menuText())}>
+                    <Text>{tr('Quote selection')}</Text>
+                  </MenuItem>
+                </If>
+              </ContextMenu>
+              <If when={!!message().discovery && !!props.openInvestigation}>
+                <Button
+                  accessibilityLabel={tr('Open investigation')}
+                  onPress={() => props.openInvestigation?.(message().discovery!.workerSessionId)}
+                  style={{
+                    flexDirection: 'row',
+                    gap: 6,
+                    alignSelf: 'flex-start',
+                    alignItems: 'center',
+                  }}
+                >
+                  <Icon name="split" color={C.accent} />
+                  <Text style={{ ...captionTextStyle, color: C.accent }}>
+                    {tr('Open investigation')}
+                  </Text>
+                </Button>
+              </If>
+            </View>
+          );
+        }}
       </Each>
-      <If when={props.worker?.exists()}>
+      <If when={props.worker?.exists() && !props.messages().some((message) => !!message.discovery)}>
         <Button
           accessibilityLabel={recordLabel()}
           style={{

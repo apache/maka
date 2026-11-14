@@ -28,7 +28,7 @@ impl Owner {
     )]
     pub(super) async fn steer_message(
         self: &Arc<Self>,
-        text: String,
+        mut unprepared: MessageInput,
         attachments: Vec<String>,
         execution: &ExecutionIdentity,
         basis: &CapturedRun,
@@ -57,7 +57,6 @@ impl Owner {
         }
         let mut basis = basis.clone();
         basis.fingerprint = operation.fingerprint.clone();
-        let mut unprepared: MessageInput = text.into();
         unprepared.attachments = self.attachment_refs(session, attachments, parent).await?;
         let (message, required_tools) = match self
             .prepare_skills(

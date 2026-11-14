@@ -88,7 +88,7 @@ async fn cut(history: &SessionHistory, through: Option<u64>) -> Result<HistoryCu
     .map_err(|e| e.to_string())
 }
 
-pub(super) async fn read(
+pub(crate) async fn read(
     owner: &Owner,
     scope: &Scope,
     mut input: ui::History,
@@ -506,6 +506,7 @@ async fn tree_window(
 fn fragment_metadata(chunk: &mut wire::Chunk) {
     if chunk.offset != 0 {
         chunk.attachments.clear();
+        chunk.quotes.clear();
         chunk.has_references = false;
     }
 }

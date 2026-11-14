@@ -32,6 +32,8 @@ import type {
   HistoryPosition,
   HistoryTurnTiming,
   MessageOrigin,
+  HistoryQuote,
+  QuoteRef,
 } from '../../../../packages/plugin-sdk/src/index.js';
 
 export function historyRowKey(position: HistoryRowAddress, field?: string): string {
@@ -139,6 +141,7 @@ export type Row = {
   tool?: HistoryTool | null;
   attachments?: AgentHistoryAttachment[];
   hasReferences?: boolean;
+  quotes?: (HistoryQuote | QuoteRef)[];
   /** The Host's attribution of a message it generated; absent when the user wrote it. */
   origin?: MessageOrigin;
   turnId?: string;
@@ -298,6 +301,10 @@ export function historyMetadata(
       'offset' in chunk && chunk.offset === 0
         ? (chunk.attachments ?? [])
         : (previous?.attachments ?? chunk.attachments),
+    quotes:
+      'offset' in chunk && chunk.offset === 0
+        ? (chunk.quotes ?? [])
+        : (previous?.quotes ?? chunk.quotes),
     hasReferences:
       'offset' in chunk && chunk.offset === 0
         ? (chunk.hasReferences ?? false)

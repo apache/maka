@@ -1502,6 +1502,7 @@ export function createConversationUi(
       text: owner.draft(),
       backend: owner.backend(),
       attachments: owner.attachments.ids(),
+      quotes: owner.quotes(),
       delivery: 'queue',
     });
     owner.focus();
@@ -2518,6 +2519,7 @@ export function createConversationUi(
             <Each of={selected() ? [selected()!] : []} key={(id: string) => id}>
               {(id) => (
                 <Conversation
+                  chooseModel={() => open({ kind: 'models', sessionId: id() })}
                   compact={input.compact !== undefined}
                   client={host.session(id())}
                   connectionLost={connectionLost}
@@ -3022,6 +3024,8 @@ function projectComposerSession(
       dismiss: owner.projectMcp.dismiss,
     },
     draft: owner.draft,
+    quotes: owner.quotes,
+    removeQuote: owner.removeQuote,
     previewImage: owner.previewImage,
     editable: owner.editable,
     loading: owner.loading,

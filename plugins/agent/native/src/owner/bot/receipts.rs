@@ -44,13 +44,22 @@ async fn read_receipts_survive_reopen_and_never_mark_later_messages_read() {
         "one",
         &["first".into(), "second".into()],
         1,
+        None,
     )
     .await
     .unwrap();
     bot.mark_read("first-bot", 2).await.unwrap();
-    bot.append("first-bot", "turn", "two", "two", &["third".into()], 2)
-        .await
-        .unwrap();
+    bot.append(
+        "first-bot",
+        "turn",
+        "two",
+        "two",
+        &["third".into()],
+        2,
+        None,
+    )
+    .await
+    .unwrap();
     bot.mark_read("first-bot", 1).await.unwrap();
     assert_eq!(
         bot.read::<Head>(&read_key("first-bot"))

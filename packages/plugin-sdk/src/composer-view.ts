@@ -38,6 +38,7 @@ import type {
   AgentBackendPreference,
   AgentModelChoice,
   WorkspacePath,
+  QuoteRef,
 } from './generated/runtime.js';
 import type { ServiceMethods } from './generated/methods.js';
 import type { UiSubscription } from './workbench.js';
@@ -65,6 +66,7 @@ export type ComposerModelDetails =
   | { kind: 'ready'; choice: AgentModelChoice };
 
 export interface ComposerSendAction {
+  quotes: QuoteRef[];
   owner: string;
   text: string;
   backend: ComposerBackend;
@@ -74,6 +76,7 @@ export interface ComposerSendAction {
 
 export interface ComposerSendStatus {
   id: string;
+  quotes?: QuoteRef[];
   text: string;
   attachments: ClientDraftAttachment[];
   state: 'sending' | 'accepted' | 'failed' | 'unknown';
@@ -225,6 +228,8 @@ export interface ComposerContinuation {
 
 /** A stable projection of the resident session, without its lifecycle or subscriptions. */
 export interface ComposerSession<Element = unknown> {
+  quotes(): QuoteRef[];
+  removeQuote(index: number): void;
   readonly sessionId: string;
   readonly prediction: ComposerPrediction;
   readonly queue: ComposerQueue;

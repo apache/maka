@@ -84,6 +84,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       owner.draft() !== '' ||
       owner.attachments.restoring() ||
       owner.attachments.files().length > 0 ||
+      !!owner.quotes().length ||
       owner.attachments.rows().length > 0 ||
       completion.composing() ||
       completion.opened() !== null
@@ -181,12 +182,14 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       (!!blocked() ||
         (!props.session()?.draft().trim() &&
           !props.session()?.attachments.files().length &&
+          !props.session()?.quotes().length &&
           !pending()?.draft().trim() &&
           !pending()?.files().length)));
   const hasContent = () =>
     completion.composing() ||
     !!props.session()?.draft().trim() ||
-    !!props.session()?.attachments.files().length;
+    !!props.session()?.attachments.files().length ||
+    !!props.session()?.quotes().length;
   const running = () => props.session()?.connected() === true && props.session()?.run() != null;
   const continuationSource = () => {
     const value = props.session()?.continuation();
@@ -358,6 +361,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   text: props.session()!.draft(),
                   backend: props.session()!.backend(),
                   attachments: props.session()!.attachments.ids(),
+                  quotes: props.session()!.quotes(),
                   delivery: 'steer',
                 })
               : pending()
@@ -641,6 +645,42 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   >
                     <If when={owner !== null}>
                       <DraftAttachments draft={owner!.attachments} preview={owner!.previewImage} />
+                      <Each of={owner?.quotes() ?? []}>
+                        {(quote, index) => (
+                          <View
+                            style={{
+                              flexDirection: 'row',
+                              gap: 8,
+                              padding: 8,
+                              borderLeftWidth: 2,
+                              borderColor: C.line,
+                              backgroundColor: C.card,
+                              borderRadius: 6,
+                            }}
+                          >
+                            <View style={{ flex: 1, gap: 4 }}>
+                              <Text style={{ ...captionTextStyle, color: C.muted }}>
+                                {quote().label ?? quote().source?.sessionName ?? ''}
+                              </Text>
+                              <Text
+                                style={[
+                                  { ...captionTextStyle, color: C.secondary },
+                                  { numberOfLines: 3 },
+                                ]}
+                              >
+                                {quote().text}
+                              </Text>
+                            </View>
+                            <Button
+                              accessibilityLabel={tr('Remove quote')}
+                              disabled={!owner?.editable()}
+                              onPress={() => owner?.removeQuote(index())}
+                            >
+                              <Icon name="close" color={C.muted} />
+                            </Button>
+                          </View>
+                        )}
+                      </Each>
                     </If>
                     <If when={local !== null}>
                       <StagedAttachments
@@ -933,6 +973,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           text: owner().draft(),
                           backend: owner().backend(),
                           attachments: owner().attachments.ids(),
+                          quotes: owner().quotes(),
                           delivery: 'queue' as const,
                         })}
                         style={menuRowStyle()}

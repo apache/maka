@@ -101,7 +101,13 @@ fn schedule_budget(
     record: maka_plugin_core::storage::Record,
     id: &str,
     message_id: &str,
-) -> Result<super::super::capture_budget::ScheduleBudget, String> {
+) -> Result<
+    (
+        super::super::capture_budget::ScheduleBudget,
+        Option<FollowupGrant>,
+    ),
+    String,
+> {
     let plan: Plan = serde_json::from_value(
         record
             .data
@@ -117,28 +123,42 @@ fn schedule_budget(
     {
         return Err("scheduler_authorization_changed".into());
     }
-    let Some(Approval::Execution { approval }) = &plan.authorization else {
-        return Err("scheduler_execution_unavailable".into());
+    let approval = match &plan.authorization {
+        Some(Approval::Execution { approval }) => approval.clone(),
+        Some(Approval::Discovery { approval, .. }) => BackgroundGrant::Model(approval.clone()),
+        _ => return Err("scheduler_execution_unavailable".into()),
     };
     let fire = plan
         .pending
         .as_ref()
         .ok_or("scheduler_original_fire_missing")?;
+    if matches!(
+        fire.authorization,
+        Some(Approval::CancelledDiscovery { .. })
+    ) {
+        return Err("discovery_cancelled".into());
+    }
     let original_message = format!("m_{}", hex::encode(Sha256::digest(fire.id.as_bytes())));
     if original_message != message_id {
         return Err("scheduler_original_fire_changed".into());
     }
-    Ok(super::super::capture_budget::ScheduleBudget {
-        task_id: id.into(),
-        message_id: message_id.into(),
-        revision: record.revision,
-        fire_id: fire.id.clone(),
-        expires_at: plan
-            .task
-            .expires_at
-            .map(maka_agent_facts::durable::UnixMillis),
-        approval: approval.clone(),
-    })
+    Ok((
+        super::super::capture_budget::ScheduleBudget {
+            task_id: id.into(),
+            message_id: message_id.into(),
+            revision: record.revision,
+            fire_id: fire.id.clone(),
+            expires_at: plan
+                .task
+                .expires_at
+                .map(maka_agent_facts::durable::UnixMillis),
+            approval,
+        },
+        fire.authorization
+            .as_ref()
+            .and_then(Approval::followup_grant)
+            .cloned(),
+    ))
 }
 impl Scheduler {
     pub(in crate::owner) async fn capture_budget(
@@ -152,10 +172,17 @@ impl Scheduler {
             .await
             .map_err(reason)?
             .ok_or("scheduler_task_missing")?;
-        schedule_budget(record, id, message_id)
+        schedule_budget(record, id, message_id).map(|(budget, _)| budget)
     }
     pub(in crate::owner) fn budget_storage(&self) -> Arc<maka_host_runtime::storage::Storage> {
-        self.storage.clone()
+        #[cfg(not(test))]
+        {
+            self.storage.clone()
+        }
+        #[cfg(test)]
+        {
+            self.storage.inner()
+        }
     }
     pub(in crate::owner) fn budget_in_transaction(
         storage: &maka_host_runtime::storage::Storage,
@@ -169,8 +196,20 @@ impl Scheduler {
             .ok_or_else(|| {
                 maka_event_log::StoreError::InvalidTransition("scheduler_task_missing".into())
             })?;
-        schedule_budget(record, id, message_id)
-            .map_err(maka_event_log::StoreError::InvalidTransition)
+        let (budget, parent) =
+            schedule_budget(record, id, message_id).map_err(StoreError::InvalidTransition)?;
+        if let Some(parent) = parent {
+            // Admission can race with pausing the parent after the worker was queued.
+            let saved = storage
+                .read_in_transaction(connection, &task_key(&parent.task_id), writer)?
+                .map(|record| decode_saved(record, &parent.task_id))
+                .transpose()?
+                .flatten();
+            if !saved.is_some_and(|saved| parent.is_current(&saved.plan, now() as i64)) {
+                return Err(StoreError::InvalidTransition("discovery_cancelled".into()));
+            }
+        }
+        Ok(budget)
     }
     pub(in crate::owner) async fn load(&self) -> Result<Catalog, String> {
         self.load_selected(None).await
@@ -265,7 +304,7 @@ impl Scheduler {
         }
         Ok(catalog)
     }
-    pub(super) async fn change_basis(&self, id: &str) -> Result<Option<Saved>, String> {
+    pub(in crate::owner) async fn change_basis(&self, id: &str) -> Result<Option<Saved>, String> {
         let record = self.storage.read(task_key(id)).await.map_err(reason)?;
         record
             .map(|record| decode_saved(record, id))
@@ -565,6 +604,12 @@ impl Saved {
             title: self.plan.task.title.clone(),
             session_id: self.plan.task.effect.target().session_id.clone(),
             script: matches!(self.plan.task.schedule, TaskSchedule::Script { .. }),
+            approved: self.plan.authorization.is_some(),
+            background_followup: matches!(self.plan.task.created_by, Creator::Agent { .. })
+                && matches!(self.plan.task.schedule, TaskSchedule::Once { .. })
+                && matches!(self.plan.task.effect, ScheduledEffect::Discovery { .. })
+                && (self.plan.authorization.is_some()
+                    || matches!(self.plan.task.status, Status::Completed | Status::Expired)),
             status: self.plan.task.status,
             next_fire_at: self.plan.task.next_fire_at,
             pending_fire: self.plan.pending.as_ref().map(|fire| fire.id.clone()),
@@ -573,10 +618,12 @@ impl Saved {
     }
     pub fn detail(&self) -> ScheduledDetail {
         ScheduledDetail {
+            investigation: None,
             revision: self.plan.edit_revision,
             task: self.plan.task.clone(),
             timezone: self.plan.timezone.clone(),
             misfire: self.plan.misfire,
+            approved: self.plan.authorization.is_some(),
             pending_fire: self.plan.pending.as_ref().map(|fire| fire.id.clone()),
         }
     }
