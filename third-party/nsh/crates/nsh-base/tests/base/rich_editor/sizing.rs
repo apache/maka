@@ -142,6 +142,46 @@ fn past_its_max_height_an_editor_scrolls() {
     assert!(text_bounds(&app, "one").top() < editor.top());
 }
 
+/// A full editor scrolled to its end, six lines in a box of 60 points. (A
+/// line that wraps there is not covered: the headless text reports one line
+/// for it.)
+fn start_full() -> (Headless, f32, Bounds<Points>) {
+    let mut app = start_sized();
+    let line = height(&app, "auto");
+    add_lines(
+        &mut app,
+        "capped",
+        &["two", "three", "four", "five", "sixty"],
+    );
+    let editor = node(&app, "capped").bounds;
+    (app, line, editor)
+}
+
+#[test]
+fn a_line_broken_off_at_the_end_of_a_full_editor_comes_into_view() {
+    let (mut app, line, editor) = start_full();
+    // No text follows the break: the caret alone is on the new line.
+    keys(&mut app, &["enter"]);
+    app.wait(Duration::from_millis(100)).unwrap();
+    let last = text_bounds(&app, "sixty");
+    assert!(
+        last.bottom() <= editor.bottom() - px(line) + px(0.5),
+        "the empty line is below {last:?} in {editor:?}"
+    );
+}
+
+#[test]
+fn a_line_broken_in_two_at_the_end_of_a_full_editor_shows_its_second_half() {
+    let (mut app, _, editor) = start_full();
+    keys(&mut app, &["left", "left", "enter"]);
+    app.wait(Duration::from_millis(100)).unwrap();
+    let rest = text_bounds(&app, "ty");
+    assert!(
+        rest.bottom() <= editor.bottom() + px(0.5),
+        "{rest:?} in {editor:?}"
+    );
+}
+
 #[test]
 fn an_editor_holds_its_min_height_and_keeps_a_set_height() {
     let mut app = start_sized();
