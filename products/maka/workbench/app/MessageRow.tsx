@@ -58,8 +58,11 @@ import { createText, errorText } from './text';
 
 /** What names a message the Host generated in place of its text; null for the user's own. */
 export function originLabel(origin: MessageOrigin | null | undefined): string | null {
+  // One line: an objective written on several lines reads on as far as there is room.
   return origin?.kind === 'goal'
-    ? tr('Pursuing Goal: {objective}', { objective: origin.objective })
+    ? tr('Pursuing Goal: {objective}', {
+        objective: origin.objective.replace(/\s+/g, ' ').trim(),
+      })
     : null;
 }
 

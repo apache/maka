@@ -20,6 +20,7 @@
 import { cleanup, platform, signal, Text, View } from 'nsh';
 import { TextView } from 'nsh/base';
 import { hasTextPrefix, type Row } from './history';
+import { CodeBlockAction, codeBlockActions, codeBlockStyles } from './codeBlockLook';
 import { MermaidView, mermaidExtensions } from './MermaidView';
 import { MarkdownImageView } from './MarkdownImage';
 import { SourceText } from './SourceText';
@@ -96,15 +97,8 @@ export function MarkdownBody(props: {
               lineHeight={context.lineHeight}
             />
           )}
-          renderCodeBlockAction={(action) => (
-            <Text style={[{ ...secondaryTextStyle, color: C.muted }, { userSelect: 'none' }]}>
-              {action.id === 'wrap' ? tr('Wrap code') : (action.label ?? action.id)}
-            </Text>
-          )}
-          codeBlockActions={[
-            { id: 'wrap', label: tr('Wrap code') },
-            { id: 'copy', label: tr('Copy code block') },
-          ]}
+          renderCodeBlockAction={(action) => <CodeBlockAction action={action} />}
+          codeBlockActions={codeBlockActions()}
           styles={{
             root: { ...readingStyle, color: color() },
             paragraph: readingStyle,
@@ -123,21 +117,7 @@ export function MarkdownBody(props: {
             blockquote: { borderLeftColor: C.line, color: C.secondary },
             link: { color: C.accent },
             code: { color: color(), backgroundColor: C.card, borderRadius: 4 },
-            codeBlock: {
-              backgroundColor: C.card,
-              borderColor: C.line,
-              borderRadius: props.compact ? 8 : 12,
-            },
-            codeBlockCode: { ...codeTextStyle, color: color() },
-            codeBlockHeader:
-              platform.idiom === 'terminal'
-                ? { color: C.muted }
-                : { color: C.muted, paddingHorizontal: 12, paddingTop: 8 },
-            // The desktop starts the language where the code starts.
-            codeBlockLanguage:
-              platform.idiom === 'terminal'
-                ? secondaryTextStyle
-                : { ...secondaryTextStyle, paddingLeft: 4 },
+            ...codeBlockStyles(color(), props.compact ? 8 : 12),
             // The desktop starts a table's text where a code block's starts.
             tableCell: {
               ...readingStyle,
