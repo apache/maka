@@ -32219,6 +32219,28 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'discovery',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  cursor: {
+                    type: ['string', 'null'],
+                  },
+                  expectedRevision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'list',
                   },
                   cursor: {
@@ -40436,6 +40458,28 @@ export const contracts: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             title: 'AgentScheduleRead',
             oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'discovery',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  cursor: {
+                    type: ['string', 'null'],
+                  },
+                  expectedRevision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId'],
+              },
               {
                 type: 'object',
                 properties: {
