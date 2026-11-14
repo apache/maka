@@ -119,7 +119,7 @@ test('new conversations reuse the group workspace, not the currently selected co
   const [empty] = groupConversations([], [registered], true);
   assert.deepEqual(groupWorkspace(empty), {
     kind: 'project',
-    project: registered.reference,
+    projectId: registered.reference.id,
     path: registered.path,
   });
   for (const change of [{ archived: true }, { available: false }, { path: null }]) {

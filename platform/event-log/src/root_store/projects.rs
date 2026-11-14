@@ -125,30 +125,6 @@ impl RootStore {
             .await
     }
 
-    pub async fn select_project(
-        &self,
-        id: &str,
-        available_paths: Vec<String>,
-        now: u64,
-    ) -> Result<(ProjectRecord, String), StoreError> {
-        self.project_writer()
-            .await?
-            .select_project(id, available_paths, now)
-            .await
-    }
-
-    pub async fn select_project_if(
-        &self,
-        expected: ProjectRecord,
-        available_paths: Vec<String>,
-        now: u64,
-    ) -> Result<(ProjectRecord, String), StoreError> {
-        self.project_writer()
-            .await?
-            .select_project_if(expected, available_paths, now)
-            .await
-    }
-
     pub async fn touch_project(
         &self,
         id: &str,
@@ -328,23 +304,21 @@ impl RootStore {
 
     pub fn plan_selected_project(
         &self,
-        expected: ProjectRecord,
-        available_paths: Vec<String>,
+        record: ProjectRecord,
+        path: String,
         now: u64,
         writer: &DataWriter,
     ) -> Result<ProjectWorkspacePlan, StoreError> {
         self.require_open()?;
         self.validate_data_writer(writer)?;
-        let id = uuid::Uuid::parse_str(&expected.id)
+        let id = uuid::Uuid::parse_str(&record.id)
             .map_err(|_| invalid("invalid stored project UUID"))?;
-        let _validated =
-            EventLog::prepare_project_selection(expected.clone(), available_paths.clone(), now)?;
         Ok(ProjectWorkspacePlan {
             id,
             now,
             kind: WorkspaceProject::Select {
-                expected,
-                available_paths,
+                identity: record.identity,
+                path,
             },
             control: Arc::new(writer.scoped()?),
         })
@@ -492,7 +466,7 @@ fn invalid(message: &str) -> StoreError {
 }
 
 /// Immutable Project candidate for the final Root Session transaction. The
-/// candidate id is business data; only its SQL CAS permits attachment to it.
+/// final transaction checks that the candidate is still valid for attachment.
 pub struct ProjectWorkspacePlan {
     id: uuid::Uuid,
     now: u64,
@@ -505,8 +479,8 @@ enum WorkspaceProject {
         expected: Option<ProjectRecord>,
     },
     Select {
-        expected: ProjectRecord,
-        available_paths: Vec<String>,
+        identity: String,
+        path: String,
     },
 }
 impl ProjectWorkspacePlan {
@@ -534,18 +508,9 @@ impl Statement for ProjectWorkspacePlan {
                 self.id,
             )?
             .execute(connection),
-            WorkspaceProject::Select {
-                expected,
-                available_paths,
-            } => {
-                let selected =
-                    EventLog::prepare_project_selection(expected, available_paths, self.now)?
-                        .execute(connection)?;
-                Ok(Prepared {
-                    value: selected.value.map(|(record, _)| record),
-                    changed: selected.changed,
-                    notification: selected.notification,
-                })
+            WorkspaceProject::Select { identity, path } => {
+                EventLog::prepare_project_selection(self.id, identity, path, self.now)?
+                    .execute(connection)
             }
         }
     }
