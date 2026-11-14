@@ -159,8 +159,8 @@ pub(crate) struct Input {
     gestures: RefCell<FxHashMap<NodeId, (objc2::rc::Weak<ViewObj>, GestureValues)>>,
     /// The JS responder blocks native scrolling and pans.
     js_block: Cell<bool>,
-    /// Where the mouse last was (root coordinates), while over the root.
-    last: Cell<Option<(f32, f32)>>,
+    /// Where the mouse last was, in the coordinates of its own window root.
+    last: Cell<Option<PointerPosition>>,
     /// The cursor this surface last set (`None`: another may show, a
     /// hosted view's or another app's) — `NSCursor::currentCursor` is
     /// another object than the one set when the pointer is customized.
@@ -181,6 +181,13 @@ pub(crate) struct Input {
     next_gen: Cell<u64>,
     /// Hears the modifier keys change, once a view hears mouse moves.
     flags: FlagsMonitor,
+}
+
+#[derive(Clone, Copy)]
+struct PointerPosition {
+    root: NodeId,
+    x: f32,
+    y: f32,
 }
 
 /// A local monitor of the modifier keys (`flagsChanged`), which reach only
@@ -293,6 +300,8 @@ pub(crate) fn reset(surface: &Surface) {
     input.hover_tracked.borrow_mut().clear();
     input.hovered.borrow_mut().clear();
     input.link_hovered.borrow_mut().take();
+    input.last.set(None);
+    input.cursor.set(None);
     input.gestures.borrow_mut().clear();
     input.js_block.set(false);
 }
@@ -533,21 +542,17 @@ fn over_link(surface: &Surface, view: &NshView, x: f32, y: f32) -> bool {
 }
 
 /// Sets the cursor for the mouse at `(x, y)` (hosted views set their own).
-fn update_cursor(surface: &Surface, x: f32, y: f32) {
-    set_cursor_at(surface, x, y, true);
-}
-
-/// [`update_cursor`]; unless `always`, only when the app's cursor is
+/// Unless `always`, only sets the cursor when the app's cursor is
 /// another one. `-[NSCursor set]` costs milliseconds even for the cursor
 /// already set (with a customized pointer size or color it renders the
 /// cursor image again: ~3 ms on macOS 26), so only the mouse coming in
 /// (it may bring another app's cursor) and a press's end set it always.
-fn set_cursor_at(surface: &Surface, x: f32, y: f32, always: bool) {
+fn set_cursor_at(surface: &Surface, root: &NshView, x: f32, y: f32, always: bool) {
     if surface.input.pointer.borrow().is_some() {
         // A drag keeps the cursor it began with.
         return;
     }
-    let hit = pick(&event_root(surface), x, y);
+    let hit = pick(root, x, y);
     // The same pick says which link of a text the mouse is over.
     hover_link(
         surface,
@@ -621,26 +626,64 @@ fn hover_link(surface: &Surface, view: Option<&NshView>, x: f32, y: f32) {
     }
 }
 
-/// Where the mouse last was (root coordinates), while it is over the root:
-/// where the pointer events the root got put it, the test agent's too.
+/// Where the event window last saw the mouse, in that root's coordinates.
 pub(crate) fn pointer_location(surface: &Surface) -> Option<(f32, f32)> {
-    surface.input.last.get()
+    let position = surface.input.last.get()?;
+    (position.root == event_root(surface).id()).then_some((position.x, position.y))
 }
 
-/// Sets the cursor again where the mouse is (what is under it changed).
+/// Records the point with the window that delivered it. An enter in a
+/// second window can arrive before the old window's exit.
+fn remember_pointer(surface: &Surface, position: PointerPosition, event: &NSEvent) {
+    if let Some(previous) = surface.input.last.get()
+        && previous.root != position.root
+    {
+        leave_pointer_root(surface, previous.root, Mouse::of(event));
+    }
+    surface.input.last.set(Some(position));
+}
+
+fn leave_pointer_root(surface: &Surface, root: NodeId, mouse: Mouse) {
+    let input = &surface.input;
+    let Some(previous) = input.last.get().filter(|p| p.root == root) else {
+        return;
+    };
+    input.last.set(None);
+    input.cursor.set(None);
+    set_hovered(surface, Vec::new(), previous.x, previous.y, mouse);
+    hover_link(surface, None, previous.x, previous.y);
+}
+
+/// A hidden, minimized or removed window no longer owns the pointer.
+pub(crate) fn window_hidden(surface: &Surface, root: NodeId) {
+    leave_pointer_root(surface, root, Mouse::now());
+}
+
+fn pointer_root(surface: &Surface) -> Option<(PointerPosition, NshView)> {
+    let position = surface.input.last.get()?;
+    let root = crate::window::root_view(surface, position.root)?;
+    // The terminal surface deliberately renders in a hidden window.
+    let window = root.ns().window()?;
+    if !surface.terminal.get() && (!window.isVisible() || window.isMiniaturized()) {
+        return None;
+    }
+    Some((position, root))
+}
+
+/// Sets the cursor again after content changed under the last pointer.
 fn refresh_cursor(surface: &Surface) {
-    if let Some((x, y)) = surface.input.last.get() {
-        set_cursor_at(surface, x, y, false);
+    if let Some((position, root)) = pointer_root(surface) {
+        set_cursor_at(surface, &root, position.x, position.y, false);
     }
 }
 
-/// AppKit asks the view under the mouse for its cursor (`cursorUpdate:`,
-/// after views moved or were added, or the pointer left a window edge's
-/// resize cursor): NSH's, which AppKit's default (the arrow, set again on
-/// every update) would replace. Set always: AppKit may have shown another.
-pub(crate) fn cursor_update(surface: &Surface) {
-    if let Some((x, y)) = surface.input.last.get() {
-        set_cursor_at(surface, x, y, true);
+/// AppKit can ask for a cursor after layout or on a tracking transition.
+/// Only the root that owns the last pointer position may use it.
+pub(crate) fn cursor_update(surface: &Surface, root: &NshView) {
+    if let Some(position) = surface.input.last.get()
+        && position.root == root.id()
+    {
+        set_cursor_at(surface, root, position.x, position.y, true);
     }
 }
 
@@ -655,7 +698,7 @@ const REPICK_MS: f64 = 120.0;
 /// changes (a batch) schedule a pick on the main queue as usual.
 pub(crate) fn content_moved(surface: &Surface, scrolled: Option<&NshView>) {
     let input = &surface.input;
-    let Some((x, y)) = input.last.get() else {
+    let Some(position) = input.last.get() else {
         return;
     };
     if let Some(scroll) = scrolled {
@@ -668,7 +711,7 @@ pub(crate) fn content_moved(surface: &Surface, scrolled: Option<&NshView>) {
             (moved > 0).then(|| hovered[moved..].to_vec())
         };
         if let Some(kept) = kept {
-            set_hovered(surface, kept, x, y, Mouse::now());
+            set_hovered(surface, kept, position.x, position.y, Mouse::now());
         }
     }
     let t = crate::scroll::now();
@@ -707,9 +750,9 @@ fn repick(key: u64) {
         return;
     }
     surface.input.repick.set(false);
-    if let Some((x, y)) = surface.input.last.get() {
-        crate::surface::quiet(|| hover(&surface, x, y, Mouse::now()));
-        set_cursor_at(&surface, x, y, false);
+    if let Some((position, root)) = pointer_root(&surface) {
+        crate::surface::quiet(|| hover(&surface, &root, position.x, position.y, Mouse::now()));
+        set_cursor_at(&surface, &root, position.x, position.y, false);
     }
 }
 
@@ -748,10 +791,16 @@ pub(crate) fn event_root(surface: &Surface) -> NshView {
 pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
     surface.control(|control| control.set_focus_path(focus_path(surface)));
     let ty = event.r#type();
-    let p = event_root(surface)
+    let root = event_root(surface);
+    let p = root
         .ns()
         .convertPoint_fromView(event.locationInWindow(), None);
     let (x, y) = (p.x as f32, p.y as f32);
+    let position = PointerPosition {
+        root: root.id(),
+        x,
+        y,
+    };
     let time = event.timestamp() * 1000.0;
     let input = &surface.input;
     // Every button's press and release puts the mouse there, the secondary
@@ -765,7 +814,7 @@ pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
             | NSEventType::OtherMouseDown
             | NSEventType::OtherMouseUp
     ) {
-        input.last.set(Some((x, y)));
+        remember_pointer(surface, position, event);
     }
     if matches!(
         ty,
@@ -786,7 +835,7 @@ pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
                 .modifierFlags()
                 .contains(NSEventModifierFlags::Control) =>
         {
-            input.last.set(Some((x, y)));
+            remember_pointer(surface, position, event);
             input.control_click.set(true);
             context_menu(surface, x, y, event.modifierFlags());
         }
@@ -804,7 +853,7 @@ pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
             {
                 return;
             }
-            input.last.set(Some((x, y)));
+            remember_pointer(surface, position, event);
             down(
                 surface,
                 x,
@@ -817,16 +866,16 @@ pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
         NSEventType::LeftMouseDragged
         | NSEventType::RightMouseDragged
         | NSEventType::OtherMouseDragged => {
-            input.last.set(Some((x, y)));
+            remember_pointer(surface, position, event);
             // Entered and left before the move, as in the DOM: a view the
             // drag came over hears it move there.
             let mouse = Mouse::of(event);
-            hover(surface, x, y, mouse);
+            hover(surface, &root, x, y, mouse);
             mouse_moved(surface, x, y, mouse);
             motion(surface, x, y, time);
         }
         NSEventType::LeftMouseUp => {
-            input.last.set(Some((x, y)));
+            remember_pointer(surface, position, event);
             let button = if input.control_click.replace(false) {
                 MouseButton::Right
             } else {
@@ -834,7 +883,7 @@ pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
             };
             mouse_up(surface, x, y, Mouse::of(event), button);
             up(surface, x, y, time);
-            update_cursor(surface, x, y);
+            set_cursor_at(surface, &root, x, y, true);
             let control = input.window_control.borrow_mut().take();
             if let Some((view, control)) = control
                 && pick(&event_root(surface), x, y)
@@ -844,35 +893,29 @@ pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
             }
         }
         NSEventType::RightMouseUp => {
-            input.last.set(Some((x, y)));
+            remember_pointer(surface, position, event);
             mouse_up(surface, x, y, Mouse::of(event), MouseButton::Right);
         }
         NSEventType::OtherMouseUp => {
-            input.last.set(Some((x, y)));
+            remember_pointer(surface, position, event);
             if let Some(button) = other_button(event.buttonNumber()) {
                 mouse_up(surface, x, y, Mouse::of(event), button);
             }
         }
         NSEventType::MouseMoved | NSEventType::MouseEntered => {
-            input.last.set(Some((x, y)));
+            remember_pointer(surface, position, event);
             let mouse = Mouse::of(event);
-            hover(surface, x, y, mouse);
+            hover(surface, &root, x, y, mouse);
             mouse_moved(surface, x, y, mouse);
             reveal_indicators(surface, x, y);
             // Set always as the mouse comes in (it may bring another app's
             // cursor); while it moves, only when it changes: setting it
             // on every move kept a customized pointer re-rendering
             // (~95% of the main thread's time over a chat's rows).
-            set_cursor_at(surface, x, y, ty == NSEventType::MouseEntered);
+            set_cursor_at(surface, &root, x, y, ty == NSEventType::MouseEntered);
         }
         NSEventType::MouseExited => {
-            // The views it leaves hear where it was last over them.
-            let (x, y) = input.last.take().unwrap_or((x, y));
-            input.cursor.set(None);
-            if input.pointer.borrow().is_none() {
-                set_hovered(surface, Vec::new(), x, y, Mouse::of(event));
-                hover_link(surface, None, x, y);
-            }
+            leave_pointer_root(surface, root.id(), Mouse::of(event));
         }
         NSEventType::OtherMouseDown if event.buttonNumber() == BACK_BUTTON => {
             crate::navigation::go_back(surface);
@@ -1031,7 +1074,17 @@ pub(crate) fn is_key_control(view: &NshView) -> bool {
 /// Current AppKit keyboard focus, from the responder through its native
 /// ancestors. No mounter borrow: native callbacks may run during a mount.
 pub(crate) fn focus_path(surface: &Surface) -> Vec<NodeId> {
-    let root = event_root(surface);
+    let root = if surface.terminal.get() {
+        // A terminal surface is embedded in a hidden AppKit window.
+        surface.root.clone()
+    } else {
+        let Some(root) = crate::window::app_key_window(surface.mtm)
+            .and_then(|window| crate::window::root_in(surface, &window))
+        else {
+            return Vec::new();
+        };
+        root
+    };
     let root = root.ns();
     let Some(responder) = root.window().and_then(|window| window.firstResponder()) else {
         return Vec::new();
@@ -1319,7 +1372,7 @@ pub(crate) fn us_typing_key(c: char) -> Option<(u16, bool)> {
 
 /// Where keys look for a scroll view: the mouse, or the middle.
 fn input_point(surface: &Surface) -> (f32, f32) {
-    surface.input.last.get().unwrap_or_else(|| {
+    pointer_location(surface).unwrap_or_else(|| {
         let f = event_root(surface).state().frame;
         (f.size.width.0 / 2.0, f.size.height.0 / 2.0)
     })
@@ -1878,7 +1931,15 @@ fn window_press(surface: &Rc<Surface>, event: &NSEvent, x: f32, y: f32, time: f6
             let same_view = pressed
                 .is_some_and(|pressed| pick(&root, x, y).is_some_and(|hit| hit.view == pressed));
             if distance < WINDOW_DRAG_SLOP && same_view && window_drag(surface, x, y) {
-                surface.input.last.set(Some((x, y)));
+                remember_pointer(
+                    surface,
+                    PointerPosition {
+                        root: root.id(),
+                        x,
+                        y,
+                    },
+                    event,
+                );
                 down(surface, x, y, time, 1, event.modifierFlags());
                 up(surface, x, y, next.timestamp() * 1000.0);
             }
@@ -2625,12 +2686,12 @@ fn held_button() -> Option<MouseButton> {
 
 /// The mouse moved to `(x, y)`: updates `HOVERED` and raises
 /// `onMouseEnter` / `onMouseLeave` along the views under it.
-fn hover(surface: &Surface, x: f32, y: f32, mouse: Mouse) {
+fn hover(surface: &Surface, root: &NshView, x: f32, y: f32, mouse: Mouse) {
     let input = &surface.input;
     if input.hover_tracked.borrow().is_empty() && input.hovered.borrow().is_empty() {
         return;
     }
-    let views = match pick(&event_root(surface), x, y) {
+    let views = match pick(root, x, y) {
         Some(hit) => chain(&hit.view).into_iter().filter(hoverable).collect(),
         None => Vec::new(),
     };
@@ -2747,22 +2808,19 @@ fn watch_flags(surface: &Surface) {
 /// they are now (an editor underlines a definition while Command is held),
 /// as they would on the next move.
 fn modifiers_changed(surface: &Surface, event: &NSEvent) {
-    let Some(window) = event_root(surface).ns().window() else {
-        return;
-    };
-    if event.window(surface.mtm).as_deref() != Some(&*window) {
-        return;
-    }
     let input = &surface.input;
     if input.pointer.borrow().is_some() || held_button().is_some() {
         return;
     }
-    if let Some((x, y)) = input.last.get() {
+    if let Some(position) = input.last.get()
+        && let Some(window) = crate::window::window_of(surface, position.root)
+        && event.window(surface.mtm).as_deref() == Some(&*window)
+    {
         let mouse = Mouse {
             modifiers: modifiers(event.modifierFlags()),
             pressed: None,
         };
-        mouse_moved(surface, x, y, mouse);
+        mouse_moved(surface, position.x, position.y, mouse);
     }
 }
 
@@ -3050,7 +3108,6 @@ fn wheel_step(surface: &Rc<Surface>, x: f32, y: f32, dx: f32, dy: f32, time: f64
         return;
     };
     *input.latch.borrow_mut() = Some((view.clone(), horizontal, time));
-    crate::scroll::scroll_intent(surface, &view, "scroll");
     // Without a begin, the scroll module takes it as a mouse wheel: it
     // settles (and snaps) by itself once the steps stop.
     crate::scroll::wheel(surface, &view, dx, dy, time);

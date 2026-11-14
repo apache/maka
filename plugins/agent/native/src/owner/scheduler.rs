@@ -20,6 +20,7 @@
 //! Task timing owns durable plans; Agent remains the only execution owner.
 mod dispatch;
 mod repository;
+mod scripts;
 #[cfg(test)]
 mod storage_fault;
 mod tools;
@@ -47,9 +48,8 @@ type Plan = TaskPlan<ScheduledEffect, Approval>;
     reason = "Scheduler approval transfers its original record inline without an allocation per observation"
 )]
 pub(in crate::owner) enum Approval {
-    Reminder,
     Execution {
-        approval: super::notifications::BackgroundApproval,
+        approval: BackgroundGrant,
     },
     Discovery {
         approval: super::notifications::BackgroundApproval,
@@ -74,6 +74,62 @@ fn pause_plan(plan: &Plan, at: i64) -> Plan {
     }
     paused
 }
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Schedule records store their backend inline"
+)]
+pub(super) enum BackgroundGrant {
+    Model(super::notifications::BackgroundApproval),
+    Executor(ExecutorApproval),
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ExecutorApproval {
+    pub(super) language: Language,
+    pub(super) target: ScheduledTarget,
+    pub(super) selection: maka_agent_facts::executor::Selection,
+    pub(super) sandbox_ceiling: Option<maka_sandbox::Sandbox>,
+}
+
+impl BackgroundGrant {
+    pub(super) fn target(&self) -> &ScheduledTarget {
+        match self {
+            Self::Model(approval) => &approval.target,
+            Self::Executor(approval) => &approval.target,
+        }
+    }
+
+    pub(super) fn language(&self) -> Language {
+        match self {
+            Self::Model(approval) => approval.language,
+            Self::Executor(approval) => approval.language,
+        }
+    }
+
+    pub(super) fn same_route(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Model(left), Self::Model(right)) => {
+                left.model == right.model
+                    && left
+                        .accepted_model
+                        .same_execution_route(&right.accepted_model)
+            }
+            (Self::Executor(left), Self::Executor(right)) => left.selection == right.selection,
+            _ => false,
+        }
+    }
+
+    fn sandbox_ceiling(&self) -> Option<&maka_sandbox::Sandbox> {
+        match self {
+            Self::Model(approval) => approval.sandbox_ceiling.as_ref(),
+            Self::Executor(approval) => approval.sandbox_ceiling.as_ref(),
+        }
+    }
+}
+
 pub(crate) struct Scheduler {
     pub(super) storage: Arc<Storage>,
     pub(in crate::owner) gate: Arc<Mutex<()>>,
@@ -116,28 +172,6 @@ impl Scheduler {
 impl Owner {
     pub fn schedule_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.scheduler.changed.subscribe()
-    }
-    pub async fn schedule_alerts(&self) -> Result<ScheduleAlerts, String> {
-        let _gate = self.scheduler.gate.lock().await;
-        let catalog = self.scheduler.load().await?;
-        let mut reminders = Vec::new();
-        let mut pending = 0;
-        for saved in catalog.plans.values() {
-            if let Some(fire) = &saved.plan.pending
-                && matches!(fire.effect, ScheduledEffect::Reminder)
-            {
-                pending += 1;
-                if reminders.len() < 8 {
-                    reminders.push(ScheduledReminder {
-                        task_id: fire.task_id.clone(),
-                        fire_id: fire.id.clone(),
-                        title: fire.title.clone(),
-                        body: fire.intent.body().chars().take(512).collect(),
-                    });
-                }
-            }
-        }
-        Ok(ScheduleAlerts { pending, reminders })
     }
     pub async fn schedules(&self, input: ScheduleRead) -> Result<Schedules, String> {
         let scheduler = &self.scheduler;
@@ -188,7 +222,7 @@ impl Owner {
         scope: &maka_capabilities::call::Scope,
     ) -> Result<NativeMutation<ScheduleResult>, String> {
         if scope.identity.agent().is_some() {
-            return Err("scheduler_user_approval_required".into());
+            return Err("scheduler_use_tool".into());
         }
         if !self.settings.scheduled_tasks {
             return Err("scheduler_disabled".into());
@@ -208,8 +242,6 @@ impl Owner {
                 | ScheduleChange::Pause { task_id, .. }
                 | ScheduleChange::Resume { task_id, .. }
                 | ScheduleChange::TriggerNow { task_id, .. }
-                | ScheduleChange::Snooze { task_id, .. }
-                | ScheduleChange::Acknowledge { task_id, .. }
                 | ScheduleChange::ClearHistory { task_id, .. }
                 | ScheduleChange::Delete { task_id, .. } => task_id.clone(),
             };
@@ -218,7 +250,7 @@ impl Owner {
                 let saved = owner.scheduler.change_basis(&id).await?;
                 match schedule_candidate(&id, &input, saved.as_ref(), now() as i64) {
                     Ok(Some(plan)) => owner
-                        .capture_schedule_approval(&plan, &writer)
+                        .capture_schedule_approval(&plan, saved.as_ref(), &writer)
                         .await
                         .map(Some),
                     Ok(None) => Err("scheduler_approval_missing".into()),
@@ -248,35 +280,42 @@ impl Owner {
     async fn capture_schedule_approval(
         &self,
         plan: &Plan,
+        saved: Option<&Saved>,
         writer: &maka_event_log::root_store::DataWriter,
-    ) -> Result<PreparedScheduleApproval, String> {
-        let authorization = self.approve_schedule(plan).await?;
-        let metadata = match &authorization {
-            Approval::Reminder => None,
-            Approval::Execution { approval }
-            | Approval::Discovery { approval, .. }
-            | Approval::CancelledDiscovery { approval, .. } => {
-                let target = &approval.target;
-                let current = self.mutable_session(&target.session_id).await?;
-                if current.archived
-                    || current.configuration.workspace != target.workspace
-                    || current.configuration.permissions != target.permissions
-                    || current.configuration.boundary_revision != target.boundary_revision
-                    || current.configuration.binding != target.binding
-                {
-                    return Err("scheduler_authorization_changed".into());
+    ) -> Result<PreparedBackgroundGrant, String> {
+        let sandbox_ceiling = saved
+            .and_then(|saved| saved.plan.authorization.as_ref())
+            .and_then(|approval| match approval {
+                Approval::Execution { approval } => approval.sandbox_ceiling(),
+                Approval::Discovery { approval, .. }
+                | Approval::CancelledDiscovery { approval, .. } => {
+                    approval.sandbox_ceiling.as_ref()
                 }
-                Some(
-                    self.store
-                        .session(&target.session_id)
-                        .await
-                        .map_err(reason)?
-                        .revision_guard(writer, current.revision)
-                        .map_err(reason)?,
-                )
-            }
+            });
+        let authorization = self.approve_schedule(plan, sandbox_ceiling).await?;
+        let target = match &authorization {
+            Approval::Execution { approval } => approval.target(),
+            Approval::Discovery { approval, .. }
+            | Approval::CancelledDiscovery { approval, .. } => &approval.target,
         };
-        Ok(PreparedScheduleApproval {
+        let current = self.mutable_session(&target.session_id).await?;
+        if current.archived
+            || current.configuration.workspace != target.workspace
+            || current.configuration.permissions != target.permissions
+            || current.configuration.boundary_revision != target.boundary_revision
+            || current.configuration.binding != target.binding
+        {
+            return Err("scheduler_authorization_changed".into());
+        }
+        let metadata = Some(
+            self.store
+                .session(&target.session_id)
+                .await
+                .map_err(reason)?
+                .revision_guard(writer, current.revision)
+                .map_err(reason)?,
+        );
+        Ok(PreparedBackgroundGrant {
             authorization,
             metadata,
             effect: plan.task.effect.clone(),
@@ -284,7 +323,7 @@ impl Owner {
     }
 }
 
-struct PreparedScheduleApproval {
+struct PreparedBackgroundGrant {
     authorization: Approval,
     metadata: Option<maka_event_log::root_store::SessionRevisionGuard>,
     effect: ScheduledEffect,
@@ -297,8 +336,6 @@ fn expected_revision(input: &ScheduleChange) -> Option<u64> {
         | ScheduleChange::Pause { revision, .. }
         | ScheduleChange::Resume { revision, .. }
         | ScheduleChange::TriggerNow { revision, .. }
-        | ScheduleChange::Snooze { revision, .. }
-        | ScheduleChange::Acknowledge { revision, .. }
         | ScheduleChange::ClearHistory { revision, .. }
         | ScheduleChange::Delete { revision, .. } => Some(*revision),
     }
@@ -349,7 +386,9 @@ fn schedule_candidate(
                 maka_scheduler::command::Update {
                     title: Some(input.task.title.clone()),
                     intent_body: Some(input.task.intent_body.clone()),
-                    schedule: Some(input.task.schedule.clone()),
+                    schedule: (current.task.schedule != input.task.schedule
+                        || current.timezone != input.timezone)
+                        .then(|| input.task.schedule.clone()),
                     effect: Some(input.task.effect.clone()),
                     max_fires: input.task.max_fires.map_or(
                         maka_agent_facts::configuration::Patch::Clear,
@@ -385,40 +424,15 @@ fn schedule_candidate(
                 return Err("scheduler_task_not_ready".into());
             }
             if next.authorization.is_none() {
-                return Err("scheduler_user_approval_required".into());
+                return Err("scheduler_execution_unavailable".into());
             }
             next.task.next_fire_at = Some(at);
             next.claim(at).map_err(reason)?;
             next
         }
-        ScheduleChange::Snooze { delay_ms, .. } => plan()?.snooze(*delay_ms, at).map_err(reason)?,
-        ScheduleChange::Acknowledge { fire_id, .. } => {
-            let mut next = plan()?.clone();
-            let pending = next
-                .pending
-                .as_ref()
-                .filter(|fire| {
-                    fire.id == *fire_id && matches!(fire.effect, ScheduledEffect::Reminder)
-                })
-                .ok_or("scheduler_reminder_changed")?;
-            next.settle(Run {
-                id: fire_id.clone(),
-                at: at.max(pending.scheduled_at),
-                outcome: Outcome::Ok,
-                message: "Reminder acknowledged".into(),
-                session_id: None,
-                run_id: None,
-            })
-            .map_err(reason)?;
-            next
-        }
         ScheduleChange::ClearHistory { .. } => plan()?.clear_history(at),
         ScheduleChange::Delete { .. } => {
-            if plan()?
-                .pending
-                .as_ref()
-                .is_some_and(|fire| !matches!(fire.effect, ScheduledEffect::Reminder))
-            {
+            if plan()?.pending.is_some() {
                 return Err("scheduler_trigger_pending".into());
             }
             return Ok(None);

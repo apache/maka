@@ -24,27 +24,82 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-maka-code-runtime.workspace = true
-maka-agent-facts.workspace = true
-maka-plugin-core.workspace = true
+async-trait = "0.1"
+deno_cache_dir = { version = "=0.52.0", features = ["sync"] }
+deno_config = "=0.110.0"
 deno_core.workspace = true
+deno_crypto = "=0.274.0"
 deno_error.workspace = true
-futures-util.workspace = true
-deno_webidl = "=0.260.0"
+deno_fetch = "=0.284.0"
+deno_fs = "=0.170.0"
+deno_graph = { version = "=0.111.1", default-features = false, features = ["swc"] }
+deno_http = "=0.258.0"
+deno_io = "=0.170.0"
+deno_media_type = { version = "=0.4.0", features = ["module_specifier"] }
+deno_napi = "=0.191.0"
+deno_net = "=0.252.0"
+deno_node = { version = "=0.198.0", features = ["sync_fs"] }
+deno_node_crypto = "=0.30.0"
+deno_node_sqlite = "=0.30.0"
+deno_npm_cache = "=0.79.0"
+deno_npm_installer = "=0.55.0"
+deno_npmrc = "=0.21.0"
+deno_os = "=0.77.0"
+deno_permissions = "=0.119.0"
+deno_process = "=0.75.0"
+deno_resolver = { version = "=0.91.0", features = ["deno_ast", "graph", "sync"] }
+deno_semver = "=0.10.1"
+deno_telemetry = "=0.82.0"
 deno_web = "=0.291.0"
+deno_webidl = "=0.260.0"
+deno_websocket = "=0.265.0"
+futures-util.workspace = true
+maka-agent-facts.workspace = true
+maka-code-runtime.workspace = true
+maka-plugin-core.workspace = true
+node_resolver = { version = "=0.98.0", features = ["sync", "graph"] }
+reqwest.workspace = true
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs"] }
 serde.workspace = true
 serde_json.workspace = true
+sys_traits = { version = "0.1", features = ["real", "getrandom", "filetime", "libc", "serde_json", "strip_unc", "winapi"] }
 thiserror.workspace = true
-tokio.workspace = true
 tokio-util.workspace = true
+tokio.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 maka-session-state.workspace = true
 
 [build-dependencies]
+sys_traits = { version = "0.1", features = ["real", "getrandom", "filetime", "libc", "serde_json", "strip_unc", "winapi"] }
+deno_crypto = "=0.274.0"
+deno_websocket = "=0.265.0"
+deno_http = "=0.258.0"
+deno_node = { version = "=0.198.0", features = ["sync_fs"] }
+deno_node_crypto = "=0.30.0"
+deno_resolver = { version = "=0.91.0", features = ["deno_ast", "graph", "sync"] }
 deno_core.workspace = true
-deno_webidl = "=0.260.0"
+deno_fetch = "=0.284.0"
+deno_fs = "=0.170.0"
+deno_io = "=0.170.0"
+deno_net = "=0.252.0"
+deno_os = "=0.77.0"
+deno_process = "=0.75.0"
+deno_telemetry = "=0.82.0"
 deno_web = "=0.291.0"
+deno_webidl = "=0.260.0"
+oxc_allocator = "=0.153.0"
+oxc_codegen = "=0.153.0"
+oxc_parser = "=0.153.0"
+oxc_semantic = "=0.153.0"
+oxc_span = "=0.153.0"
+oxc_transformer = "=0.153.0"
 
 # Deno still uses sha2 0.10. Preserve its hardware backend until it migrates;
 # that version's assembly crate does not support Windows.

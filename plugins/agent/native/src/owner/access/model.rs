@@ -74,22 +74,7 @@ impl RunAccess {
             .await?;
         let (mcp, mode) = self.current_model_tools(&current.workspace)?;
         let catalog = owner.run_catalog(self.clone(), &mcp, &selection)?;
-        let excluded: Vec<_> = catalog
-            .definitions()
-            .filter(|tool| {
-                current
-                    .tools
-                    .as_ref()
-                    .is_some_and(|allowed| !allowed.contains(&tool.name))
-            })
-            .map(|tool| tool.name.as_str())
-            .collect();
-        let catalog = catalog.excluding(&excluded);
-        let catalog = if view.spec.tool_discovery {
-            catalog.with_discovery()
-        } else {
-            catalog
-        };
+        let catalog = Self::select_live_tools(&catalog, &current, view.spec.tool_discovery);
         let availability = maka_tools::availability::Availability::new(
             catalog.clone(),
             maka_tools::availability::LoadedTools::new(owner.durable.cells().reader(

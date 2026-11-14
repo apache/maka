@@ -1275,7 +1275,7 @@ impl Engine {
                             .extend(compaction.and_then(|commit| commit.candidate));
                         return Ok(());
                     }
-                    Err(error @ RunError::CompactionMismatch) => {
+                    Err(error @ (RunError::CompactionMismatch | RunError::InvalidImage(_))) => {
                         self.publish(
                             Some(claim),
                             &view,

@@ -26,7 +26,7 @@ import { Canvas, cleanup, computed, effect, inputAction, signal, Text, View, Lis
 import type { ListRef, Signal, ViewRef } from 'nsh';
 import type { AnimatedValue } from 'nsh';
 import { platform, windowSize } from 'nsh';
-import { senderSession, type Row } from './history';
+import { activityMessage, type Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
@@ -96,8 +96,16 @@ export function activityCounts(
   const tools = groups.reduce((count, group) => count + group.toolIds.length, 0);
   const messages = ids.filter((id) => {
     const value = row(id);
-    return value?.role === 'user' && senderSession(value.origin) !== null;
+    return value?.role === 'user' && activityMessage(value.origin);
   }).length;
+  return activityCountLabel({ thoughts, tools, messages });
+}
+
+function activityCountLabel({
+  thoughts,
+  tools,
+  messages,
+}: Pick<NonNullable<Row['foldedWork']>, 'thoughts' | 'tools' | 'messages'>) {
   return [
     thoughts
       ? tr(thoughts === 1 ? '{count} thought' : '{count} thoughts', { count: thoughts })
@@ -126,6 +134,7 @@ export function TurnSummary(props: {
     sessionId: string;
     through: () => number;
     refs: () => ToolImageRef[];
+    total?: () => number | undefined;
     preview(image: ImagePreview): void;
   };
 }) {
@@ -165,7 +174,9 @@ export function TurnSummary(props: {
             : '';
     const counts =
       platform.idiom !== 'terminal' && props.canFold()
-        ? activityCounts(props.groups(), props.row)
+        ? turn.foldedWork
+          ? activityCountLabel(turn.foldedWork)
+          : activityCounts(props.groups(), props.row)
         : '';
     const usage = turn.finalOutputIds.length === 0 ? turn.timing?.executorUsage : null;
     return (
@@ -194,6 +205,7 @@ export function TurnSummary(props: {
                 sessionId={props.images!.sessionId}
                 through={props.images!.through}
                 images={props.images!.refs}
+                total={props.images!.total}
                 preview={props.images!.preview}
               />
             </If>
@@ -283,8 +295,10 @@ function ActivityLog(props: {
   inspectTool?(key: string): void;
   userScroll(): void;
   reading(away: boolean): void;
+  resumed(): void;
   /** Whether the activity list is scrolled to its end, following or not. */
   settled?(atEnd: boolean): void;
+  nearActivityEnd?(): void;
   reveal(): void;
 }) {
   const state = props.state;
@@ -308,7 +322,7 @@ function ActivityLog(props: {
   const opening = state.opening;
   state.opening = undefined;
   let ownList: ListRef | undefined;
-  let activityScrollIntent = false;
+  let scrollInput: 'idle' | 'pending' | 'dragging' = 'idle';
   let nearEnd = false;
   let atEnd = false;
   let lastOffset = 0;
@@ -317,11 +331,10 @@ function ActivityLog(props: {
     const resuming = !state.following();
     state.following.set(true);
     props.reading(false);
-    // Returning from a reading pause must replace the native reading pin that
-    // was captured while end-following was disabled.
     if (resuming) {
-      if (atEnd) ownList?.scrollToEnd({ animated: false });
-      else ownList?.scrollToOffset({ offset: lastOffset, animated: false });
+      // Replace the native reading pin captured while following was paused.
+      ownList?.scrollToEnd({ animated: false });
+      props.resumed();
     }
   };
   cleanup(() => {
@@ -358,7 +371,7 @@ function ActivityLog(props: {
     return Math.min(bodyMaxHeight(), Math.max(16, measured));
   };
   // Read before binding: the new List's first layout writes its scroll gauge.
-  if (opening) initial.set({ y: 0 });
+  if (opening || state.following()) initial.set({ y: 0 });
   else
     void state.offset
       .getValue()
@@ -374,7 +387,7 @@ function ActivityLog(props: {
         }
       })
       .catch((reason) => {
-        if (alive) error.set(errorText(reason));
+        if (alive) error.set(errorText(reason, 'Could not load the execution timeline.'));
       });
   return (
     <View style={{ height: bodyHeight() }}>
@@ -393,14 +406,24 @@ function ActivityLog(props: {
             state.following() ? { autoscrollToBottomThreshold: activityFollowThreshold } : {}
           }
           scrollbar={true}
-          onScrollIntent={() => {
+          onScrollDragStart={() => {
             if (!alive || lease !== state.lease) return;
-            activityScrollIntent = true;
+            scrollInput = 'dragging';
             props.userScroll();
-            if (nearEnd) resumeFollowing();
+          }}
+          onScrollEnd={({ offset }) => {
+            if (alive && lease === state.lease && scrollInput !== 'idle')
+              scrollInput = offset.y === lastOffset ? 'idle' : 'pending';
+          }}
+          onScrollIntent={({ intent, delta }) => {
+            if (!alive || lease !== state.lease) return;
+            if (scrollInput !== 'dragging') scrollInput = 'pending';
+            props.userScroll();
+            if (intent === 'end' || (nearEnd && (delta ?? 0) > 0)) resumeFollowing();
           }}
           onScroll={(event) => {
             if (!alive || lease !== state.lease) return;
+            const movement = event.offset.y - lastOffset;
             lastOffset = event.offset.y;
             const end = Math.max(0, event.contentSize.height - event.size.height);
             const distance = end - lastOffset;
@@ -411,23 +434,12 @@ function ActivityLog(props: {
             nearEnd = distance <= activityFollowThreshold;
             atEnd = distance <= 1;
             props.settled?.(atEnd);
-            // Layout scroll reports must not release a tool-reading pause;
-            // user input on the activity list does, even with the tool still open.
-            if (
-              nearEnd &&
-              !activityScrollIntent &&
-              !state.following() &&
-              props.group().rowIds.some((id) => {
-                const row = props.row(id);
-                return (
-                  (row?.tool != null || row?.role === 'tool_call' || row?.role === 'tool_result') &&
-                  props.rowState(id).expanded() === true
-                );
-              })
-            )
-              return;
-            if (nearEnd) resumeFollowing();
-            else {
+            if (distance < event.size.height) props.nearActivityEnd?.();
+            // Reflow and restoring a saved offset also report scroll geometry.
+            if (movement === 0 || scrollInput === 'idle') return;
+            if (scrollInput === 'pending') scrollInput = 'idle';
+            if (movement > 0 && nearEnd) resumeFollowing();
+            else if (movement < 0 && !nearEnd) {
               state.following.set(false);
               props.reading(true);
             }
@@ -440,7 +452,8 @@ function ActivityLog(props: {
               const index = props.group().rowIds.indexOf(state.revealRow);
               if (index >= 0) node.scrollToIndex({ index, viewPosition: 0, animated: false });
               state.revealRow = undefined;
-            } else if (opening === 'bottom') node.scrollToEnd({ animated: false });
+            } else if (opening === 'bottom' || (opening === undefined && state.following()))
+              node.scrollToEnd({ animated: false });
             else if (opening === 'top') node.scrollToOffset({ offset: 0, animated: false });
             if (state.requestFocus) {
               state.requestFocus = false;
@@ -511,7 +524,7 @@ function ActivityLog(props: {
                           !props.rowState(key).expanded()
                         )
                           return;
-                        activityScrollIntent = false;
+                        scrollInput = 'idle';
                         state.following.set(false);
                         props.reading(true);
                       }}
@@ -523,7 +536,7 @@ function ActivityLog(props: {
                       userScroll={props.userScroll}
                       onExpand={(key) => {
                         if (!alive || !ownList) return;
-                        activityScrollIntent = false;
+                        scrollInput = 'idle';
                         state.following.set(false);
                         props.reading(true);
                         const index = props.group().rowIds.indexOf(key);
@@ -577,7 +590,9 @@ type TurnPanelProps = {
   inspectTool?(key: string): void;
   userScroll(): void;
   reading(away: boolean): void;
+  resumed(): void;
   settled?(atEnd: boolean): void;
+  nearActivityEnd?(): void;
 };
 
 export function TurnPanel(props: TurnPanelProps) {

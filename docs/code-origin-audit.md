@@ -48,6 +48,8 @@ The upstream MIT license is preserved in the root `LICENSE`. No upstream tests a
 
 ### Source archive non-text inventory
 
+- `third-party/deno-tls/testdata/*.der`: Unmodified self-signed TLS certificates and keys used by the vendored crate’s tests. Their hashes and MIT license are recorded alongside the crate.
+
 - `assets/logo.png`: Product artwork reproduced by `scripts/generate-logo.py` from its vector geometry; Apache-2.0.
 - `products/maka/desktop-shell/maka.ico`: Windows multi-resolution icon derived from `assets/logo.png` in [#6446](https://github.com/apache/maka/pull/6446); seven PNG images at 16–256 pixels, embedded by `windows.rc`; Apache-2.0.
 - `products/maka/workbench/app/assets/maka.png`: Byte-identical copy of `assets/logo.png`, bundled with the workbench application's composer; Apache-2.0.

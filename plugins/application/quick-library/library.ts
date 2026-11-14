@@ -19,7 +19,13 @@
 
 export type LibraryKind = 'snippet' | 'note' | 'link';
 export type LibraryItem = { id: string; kind: LibraryKind; name: string; value: string };
-export type LibraryDraft = { id: string | null; kind: LibraryKind; name: string; value: string };
+export type LibraryDraft = {
+  searchEngine?: boolean;
+  id: string | null;
+  kind: LibraryKind;
+  name: string;
+  value: string;
+};
 
 const MAX_NAME = 160;
 const MAX_CONTENT = 100_000;
@@ -35,11 +41,27 @@ export function parseLibrary(stored: string | null): LibraryItem[] {
 }
 
 export type DraftProblem =
+  | 'Include {query} in the search URL'
   | 'Enter a name'
   | 'The name is too long'
   | 'Enter some content'
   | 'The content is too long'
-  | 'Enter a URL starting with http:// or https://';
+  | 'Enter a valid website address';
+
+export function websiteUrl(value: string): string | null {
+  const text = value.trim();
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(text) && !/^https?:\/\//i.test(text)) return null;
+  const address = /^https?:\/\//i.test(text) ? text : 'https://' + text;
+  if (address.length > MAX_URL || /\s|\\/.test(text) || !/^https?:\/\/[^/?#]/i.test(address))
+    return null;
+  try {
+    new URL(address);
+    // Keep the template verbatim so {query} can be expanded at launch.
+    return address;
+  } catch {
+    return null;
+  }
+}
 
 export function draftProblem(draft: LibraryDraft): DraftProblem | null {
   const name = draft.name.trim();
@@ -47,12 +69,20 @@ export function draftProblem(draft: LibraryDraft): DraftProblem | null {
   if (name.length > MAX_NAME) return 'The name is too long';
   if (draft.kind === 'link') {
     const url = draft.value.trim();
-    return /^https?:\/\/\S+$/i.test(url) && url.length <= MAX_URL
-      ? null
-      : 'Enter a URL starting with http:// or https://';
+    if (draft.searchEngine && !url.includes(PLACEHOLDER))
+      return 'Include {query} in the search URL';
+    return websiteUrl(url) ? null : 'Enter a valid website address';
   }
   if (draft.value.trim() === '') return 'Enter some content';
   return draft.value.length > MAX_CONTENT ? 'The content is too long' : null;
+}
+
+export function librarySearchTerms(item: LibraryItem, scoped: boolean): string[] {
+  if (item.kind === 'link') {
+    const address = item.value.replace(/^https?:\/\/(?:www\.)?/i, '');
+    return [item.name, address, item.value];
+  }
+  return item.kind === 'note' && scoped ? [item.name, item.value] : [item.name];
 }
 
 export const isTemplate = (item: LibraryItem) => item.value.includes(PLACEHOLDER);

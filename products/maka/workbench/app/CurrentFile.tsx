@@ -115,7 +115,7 @@ export function createCurrentFile(host: Host, target: WorkspaceFileTarget): Curr
     stale.set(true);
     state.set({
       kind: 'error',
-      message: errorText(reason),
+      message: errorText(reason, 'Could not read the file.'),
       previous: captured(state()),
     });
   };
@@ -162,7 +162,7 @@ export function createCurrentFile(host: Host, target: WorkspaceFileTarget): Curr
         if (ownsRead(request, watch))
           state.set({
             kind: 'error',
-            message: errorText(reason),
+            message: errorText(reason, 'Could not read the file.'),
             previous: captured(state()),
           });
       })
@@ -299,7 +299,7 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
             version: original.version,
             digest: original.digest,
             failed: true,
-            message: errorText(reason),
+            message: errorText(reason, 'Could not copy to the clipboard.'),
           });
       } finally {
         if (mounted) copying.set(false);

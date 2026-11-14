@@ -560,12 +560,26 @@ export function executor(
             ],
             { env: { ...suiteEnv(id), NSH_MENU_LABELS_CHECK_ONLY: '1' } },
           );
-        else
+        else {
+          const metadata = JSON.parse(
+            await cargo(
+              [
+                'metadata',
+                '--locked',
+                '--no-deps',
+                '--format-version=1',
+                '--manifest-path',
+                manifests.nsh,
+              ],
+              { capture: true },
+            ),
+          );
           await run(
-            join(target, 'debug/nsh'),
+            join(metadata.target_directory, 'debug/nsh'),
             ['test', 'crates/nsh-platform-macos/tests/host/Undo.test.tsx', '--target', 'macos'],
             { cwd: join(root, 'third-party/nsh'), env: suiteEnv(id) },
           );
+        }
       });
     } else if (
       [

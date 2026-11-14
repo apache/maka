@@ -66,24 +66,38 @@ pub(crate) struct RustData {
     boundaries: rustc_hash::FxHashMap<Owner, Signal<Option<super::ComponentError>>>,
 }
 
-/// Makes the current owner an error boundary: what fails under it sets
-/// `failed`, for as long as it lives.
-pub(crate) fn register_boundary(failed: Signal<Option<super::ComponentError>>) {
+/// The binding that owns a boundary, inherited by its content.
+#[derive(Clone, Copy)]
+pub(super) struct BoundaryScope(Owner);
+
+/// Makes the current binding catch its own failures and those of its content.
+pub(super) fn register_boundary(failed: Signal<Option<super::ComponentError>>) -> BoundaryScope {
     let owner = Owner::current();
     with_data(|d| d.boundaries.insert(owner, failed));
     cleanup(move || {
         with_data(|d| d.boundaries.remove(&owner));
     });
+    BoundaryScope(owner)
 }
 
 /// The nearest error boundary at or above `owner`.
 pub(crate) fn boundary_of(owner: Owner) -> Option<Signal<Option<super::ComponentError>>> {
-    let mut at = Some(owner);
-    while let Some(owner) = at.filter(Owner::is_live) {
-        if let Some(signal) = with_data(|d| d.boundaries.get(&owner).copied()) {
-            return Some(signal);
+    let handle = owner.0.filter(|_| owner.is_live())?;
+    let graph = graph();
+    let boundaries = &graph.data.boundaries;
+    if let Some(&failed) = boundaries.get(&owner) {
+        return Some(failed);
+    }
+    // Placed children can outlive one run of the boundary's content.
+    // Their context still names the binding that catches their failures.
+    let mut frame = graph.context_of(handle.id);
+    while let Some(context) = frame {
+        if let Some(scope) = context.data.1.downcast_ref::<BoundaryScope>()
+            && let Some(&failed) = boundaries.get(&scope.0)
+        {
+            return Some(failed);
         }
-        at = owner.parent();
+        frame = context.parent.clone();
     }
     None
 }

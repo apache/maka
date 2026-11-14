@@ -891,6 +891,10 @@ impl Owner {
         })
         .await
     }
+    pub(crate) async fn has_bot_history(&self, session: &str) -> Result<bool, String> {
+        self.bot.is_or_was(session).await
+    }
+
     pub async fn bot_outbox(&self, input: &BotOutboxRead) -> Result<BotOutbox, String> {
         self.bot.load().await.map_err(|error| error.to_string())?;
         let session_id = self.bot.session();
@@ -970,9 +974,9 @@ type Ability = (
 const ABILITIES: &[Ability] = &[
     (
         &["ScheduledTask"],
-        "ScheduledTask（安排定时唤醒，需用户批准）",
-        "ScheduledTask（安排定時喚醒，需使用者核准）",
-        "ScheduledTask (schedule a wake-up, which the user must approve)",
+        "ScheduledTask（安排定时唤醒）",
+        "ScheduledTask（安排定時喚醒）",
+        "ScheduledTask (schedule a wake-up)",
     ),
     (
         &["CreateGoal", "GetGoal", "GoalStatus"],

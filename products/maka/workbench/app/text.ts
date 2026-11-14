@@ -73,6 +73,9 @@ export class UiError extends Error {
   }
 }
 
+/** The original action is still being checked by its owner. */
+export class ActionPending extends Error {}
+
 export const errorMessage = (reason: unknown): string =>
   reason instanceof Error ? reason.message : String(reason);
 
@@ -81,7 +84,8 @@ export function isObservationCancelled(reason: unknown): boolean {
   return detail === 'client subscription cancelled' || detail.endsWith('_observation_cancelled');
 }
 
-export function errorText(reason: unknown): UiText {
+export function errorText(reason: unknown, fallback: MessageKey, values?: UiTextValues): UiText {
+  if (reason instanceof ActionPending) return '';
   if (reason instanceof UiError) return reason.text;
   const detail = errorMessage(reason);
   if (!detail) return '';
@@ -104,7 +108,9 @@ export function errorText(reason: unknown): UiText {
     case 'database connection closed before accepting the operation':
       return message('Connection interrupted. Reconnect to continue; your draft is kept.');
     default:
-      console.warn('Maka request failed:', detail);
-      return message('This action could not be completed.');
+      // The fallback names the action and the detail says why, so a model
+      // refusal and a lost connection do not read the same.
+      console.warn(fallback, detail);
+      return message('{message} {detail}', { message: message(fallback, values), detail });
   }
 }

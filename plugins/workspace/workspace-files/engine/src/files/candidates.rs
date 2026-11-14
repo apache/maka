@@ -167,7 +167,7 @@ fn disappeared(error: &io::Error) -> bool {
 }
 
 fn excluded(rules: &[[Gitignore; 4]], path: &Path, directory: bool) -> bool {
-    // Keep the same rule priority as Grep while allowing a nested negation to win.
+    // Let a nested negation override its parent rule.
     for priority in 0..4 {
         for layer in rules.iter().rev() {
             let matched = layer[priority].matched_path_or_any_parents(path, directory);

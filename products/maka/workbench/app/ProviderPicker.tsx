@@ -229,7 +229,15 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
         }}
         empty={
           <If when={!owner.loading() && !owner.error()}>
-            <Text style={{ ...captionTextStyle, color: C.muted, paddingVertical: 16 }}>
+            <Text
+              style={{
+                ...captionTextStyle,
+                color: C.muted,
+                paddingVertical: 16,
+                // In line with the list's headings and rows.
+                paddingHorizontal: settingsInset,
+              }}
+            >
               {owner.providerQuery().trim()
                 ? tr('No matching providers.')
                 : tr('No providers available.')}

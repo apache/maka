@@ -52,7 +52,7 @@ async fn edits_preserve_endpoint_ownership_and_removal_durably_cleans_only_its_c
         "connection": {"slug":"relay", "name":"Relay", "provider":{"packageId":"external","entryId":"api","scope":"profile","name":"api"},
             "configuration":{"baseUrl":"http://127.0.0.1:18080/v1"}, "enabled":true,
             "enabledModelIds":["first", "second"],
-            "modelOverrides":{"first":{"vision":true,"contextWindow":8192,"inputLimit":16384}, "second":{"contextWindow":8192}}}
+            "modelOverrides":{"first":{"vision":true,"contextWindow":8192,"inputLimit":4096}, "second":{"contextWindow":8192}}}
     }))
     .unwrap();
     let mut basis = committed_basis(store.create_connection(create.clone()).await.unwrap());

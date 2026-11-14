@@ -96,6 +96,8 @@ pub enum ExternalEffectEvent {
     Returned {
         key: ExternalEffectKey,
         output: ContentRef,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        finish_turn: bool,
     },
     CleanupObserved {
         key: ExternalEffectKey,
@@ -142,6 +144,8 @@ pub enum ExternalReturn {
         is_error: bool,
         projection: crate::tool_output::DurableToolProjection,
         output: crate::tool_output::ToolOutput,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        artifacts: Vec<crate::artifact::PublishedArtifact>,
     },
     Failure {
         settlement: crate::tool_call::ToolSettlement,

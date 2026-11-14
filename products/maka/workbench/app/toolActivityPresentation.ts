@@ -20,6 +20,7 @@
 import type { DisplayText } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Icon } from './Icon';
 import { displayText, tr } from './locale';
+import { scriptReply } from './scriptReply';
 import { cardFamily, record, type ToolProjection, type ToolSection } from './toolCards';
 import { sessionToolPresentations } from './toolSessionActivity';
 import { deploymentToolPresentations } from './toolDeploymentActivity';
@@ -97,6 +98,9 @@ export function activityIcon(key: string | null | undefined): ToolIcon {
 }
 
 export function activityFailure(original: unknown): ToolProjection | null {
+  // A script's failure is inside its reply; the reply itself is not the reason.
+  const script = scriptReply(original);
+  if (script?.failed && script.diagnostic) return { kind: 'failure', message: script.diagnostic };
   const value = record(original);
   const receipt = record(value?.receipt);
   const outcome = receipt?.kind === 'recorded' ? record(receipt.outcome) : undefined;

@@ -217,7 +217,16 @@ impl Owner {
         let catalog = self.selected_tools(
             session_id,
             basis,
-            basis.model.as_ref().and_then(|model| model.editing_tools),
+            basis
+                .model
+                .as_ref()
+                .and_then(|model| model.editing_tools)
+                .or_else(|| {
+                    basis
+                        .executor
+                        .as_ref()
+                        .and_then(crate::executor::Accepted::editing_tools)
+                }),
         )?;
         let selection = crate::tools::SelectionSnapshot {
             definitions: catalog.definitions().cloned().collect(),

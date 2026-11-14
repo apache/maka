@@ -159,9 +159,6 @@ export function ScreenshotSettingsPage(props: { settings: ScreenshotSettings }):
   };
   return (
     <SettingsBody>
-      <If when={settings.failure() !== null || problem() !== null}>
-        <SettingsProblem message={renderText(errorText(problem() ?? settings.failure()))} />
-      </If>
       <SettingsSection title={tr('Saving')}>
         <SettingsRow
           label={tr('Save to')}
@@ -211,6 +208,13 @@ export function ScreenshotSettingsPage(props: { settings: ScreenshotSettings }):
           onPress={() => settings.change({ pictureBoxes: !settings.current().pictureBoxes })}
         />
       </SettingsSection>
+      <If when={settings.failure() !== null || problem() !== null}>
+        <SettingsProblem
+          message={renderText(
+            errorText(problem() ?? settings.failure(), 'Could not update screenshot settings.'),
+          )}
+        />
+      </If>
     </SettingsBody>
   );
 }

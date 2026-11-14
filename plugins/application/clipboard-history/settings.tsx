@@ -43,9 +43,6 @@ export function HistorySettings(props: { history: History }): JSX.Element {
   const armed = signal(false);
   return (
     <SettingsBody>
-      <If when={history.failure() !== null}>
-        <SettingsProblem message={renderText(errorText(history.failure()))} />
-      </If>
       <SettingsSection
         note={tr(
           'Kept in memory only and gone when Maka quits. Copies from password managers are skipped.',
@@ -74,6 +71,13 @@ export function HistorySettings(props: { history: History }): JSX.Element {
           }
         />
       </SettingsSection>
+      <If when={history.failure() !== null}>
+        <SettingsProblem
+          message={renderText(
+            errorText(history.failure(), 'Could not load or save clipboard history settings.'),
+          )}
+        />
+      </If>
     </SettingsBody>
   );
 }

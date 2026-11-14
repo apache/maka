@@ -48,7 +48,8 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
     <SettingsRow
       label={tr('Interface')}
       description={
-        owner.notice() || (owner.pending().length > 0 ? tr('Checking action status…') : undefined)
+        owner.notice() ||
+        (owner.pending().length > 0 ? tr('Checking whether the interface changed…') : undefined)
       }
       status={owner.error() || undefined}
       trailing={
