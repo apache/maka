@@ -1238,6 +1238,99 @@ async fn desktop_history_anchors_keep_the_reader_off_live_output_until_latest() 
     fixture.finish().await;
 }
 
+#[cfg(target_os = "macos")]
+async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
+    let mut fixture = Fixture::configured(Options {
+        responses: true,
+        ..Options::default()
+    })
+    .await;
+    let client = fixture.client().await;
+    mutate(
+        &client,
+        "send",
+        json!({"sessionId": fixture.session, "backend": {
+            "kind": "model", "connectionId": fixture.selection["connectionId"],
+            "modelId": fixture.selection["modelId"],
+        }, "message": "Follow the activity"}),
+    )
+    .await;
+    let mut reply = fixture.next_request().await;
+    for index in 0..35 {
+        reply
+            .packet(json!({"type":"response.output_item.done","item":{
+                "type":"reasoning","id":format!("reasoning-{index}"),
+                "summary":[{"type":"summary_text","text":format!("Activity line {index}")}]
+            }}))
+            .await;
+    }
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let thumb = desktop.control("Thinking · Activity line 34").await;
+    assert!(desktop.controls("Return to latest").is_empty());
+    let at = point(thumb.right() - px(5.), thumb.center().y);
+    desktop.hover_at(at);
+    let scroll = |from, to| {
+        for input in [
+            PlatformInput::MouseMove(native!(MouseMoveEvent { position: from })),
+            PlatformInput::MouseDown(native!(MouseDownEvent {
+                button: MouseButton::Left,
+                position: from,
+                click_count: 1,
+            })),
+            PlatformInput::MouseMove(native!(MouseMoveEvent {
+                position: to,
+                pressed_button: Some(MouseButton::Left),
+            })),
+            PlatformInput::MouseUp(native!(MouseUpEvent {
+                button: MouseButton::Left,
+                position: to,
+                click_count: 1,
+            })),
+        ] {
+            desktop.platform.dispatch_input(input).unwrap();
+            desktop.pump();
+        }
+    };
+    desktop
+        .retry(
+            "scroll up to pause activity following",
+            || !desktop.controls("Return to latest").is_empty(),
+            || scroll(at, point(at.x, at.y - px(80.))),
+        )
+        .await;
+    let outer = point(at.x + px(16.), at.y);
+    scroll(outer, point(outer.x, outer.y - px(120.)));
+    desktop.control("Copy user message").await;
+    assert!(desktop.controls("Thinking · Activity line 34").is_empty());
+    desktop
+        .retry(
+            "scroll down to resume without clicking Latest",
+            || {
+                desktop.controls("Return to latest").is_empty()
+                    && desktop.controls("Resume following").is_empty()
+            },
+            || {
+                scroll(
+                    point(outer.x, outer.y - px(32.)),
+                    point(outer.x, outer.y + px(36.)),
+                )
+            },
+        )
+        .await;
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"reasoning","id":"follow-up",
+            "summary":[{"type":"summary_text","text":"New activity after scrolling"}]
+        }}))
+        .await;
+    desktop
+        .control("Thinking · New activity after scrolling")
+        .await;
+    reply.finish_stream().await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn history_pages_return_each_prompt_once_from_tail_to_start() {
     let mut fixture = Fixture::open().await;
     let client = fixture.client().await;
@@ -3582,6 +3675,8 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
     "desktop_continues_a_failed_run_without_duplicating_the_user_message",
     "desktop_history_anchors_keep_the_reader_off_live_output_until_latest",
+    #[cfg(target_os = "macos")]
+    "desktop_resumes_live_activity_when_scrolling_back_to_latest",
     "history_pages_return_each_prompt_once_from_tail_to_start",
     "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu",
     "desktop_edits_a_message_in_place_and_forks_only_when_sent",
@@ -3657,6 +3752,10 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_folds_the_conversations_a_conversation_created" => {
             runtime.block_on(desktop_folds_the_conversations_a_conversation_created())
+        }
+        #[cfg(target_os = "macos")]
+        "desktop_resumes_live_activity_when_scrolling_back_to_latest" => {
+            runtime.block_on(desktop_resumes_live_activity_when_scrolling_back_to_latest())
         }
         "desktop_folds_work_when_responses_starts_the_final_answer" => {
             runtime.block_on(desktop_folds_work_when_responses_starts_the_final_answer())

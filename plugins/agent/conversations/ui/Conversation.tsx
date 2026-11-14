@@ -1417,16 +1417,30 @@ export function Conversation(props: ConversationProps) {
     // Replace the list's reading anchor when manual scrolling reaches the end.
     list?.scrollToEnd({ animated: animated && !reduceMotion() });
   };
+  const latestActivity = (turnId = runTurn()) =>
+    reading() === 'chat'
+      ? projection().entries.findLast(
+          (entry) => entry.kind === 'process' && entry.turnKey === turnId,
+        )
+      : undefined;
+  const followLatestActivity = (turnId = runTurn()) => {
+    const entry = latestActivity(turnId);
+    if (entry?.kind !== 'process') return;
+    const state = groupState(entry.key);
+    state.following.set(true);
+    if (state.list) state.list.scrollToEnd({ animated: false });
+    else state.opening = 'bottom';
+  };
   const resumeHistoryAtEnd = (offset: number) => {
     if (
       historyMaxOffset - offset > historyFollowThreshold ||
-      !historyFollowPaused() ||
+      (!historyFollowPaused() && innerReader() === null) ||
       (reading() === 'trajectory' && trajectoryRange() !== null) ||
       !atHistoryTail()
     )
       return;
-    if (innerReader() === null) resumeHistoryFollowing();
-    else historyFollowPaused.set(false);
+    if (innerReader() !== null) followLatestActivity();
+    resumeHistoryFollowing();
   };
   let compactScroll: ScrollRef | undefined;
   let followCompact = false;
@@ -3394,18 +3408,7 @@ export function Conversation(props: ConversationProps) {
       if (!alive) return;
       const showLatest = (animated = false) => {
         if (reading() === 'trajectory' && trajectoryRange() !== null) selectTrajectoryRange(null);
-        const group =
-          reading() === 'chat'
-            ? projection().entries.findLast(
-                (entry) => entry.kind === 'process' && entry.turnKey === (turnId ?? runTurn()),
-              )
-            : undefined;
-        if (group?.kind === 'process') {
-          const state = groupState(group.key);
-          state.following.set(true);
-          if (state.list) state.list.scrollToEnd({ animated: false });
-          else state.opening = 'bottom';
-        }
+        followLatestActivity(turnId ?? runTurn());
         resumeHistoryFollowing(animated);
       };
       // The loaded window already reaches the latest row and follows new ones:
@@ -3890,6 +3893,10 @@ export function Conversation(props: ConversationProps) {
                   if (away) innerReader.set(initial.group.key);
                   else if (innerReader() === initial.group.key) innerReader.set(null);
                 }}
+                resumed={() => {
+                  if (historyFollowPaused() && latestActivity()?.key === initial.group.key)
+                    resumeHistoryAtEnd(historyOffset);
+                }}
                 settled={(atEnd) => {
                   if (atEnd) readerAtEnd.set(initial.group.key);
                   else if (readerAtEnd() === initial.group.key) readerAtEnd.set(null);
@@ -4293,8 +4300,10 @@ export function Conversation(props: ConversationProps) {
                     if (nearHistoryEnd()) prefetchNewer();
                     // At the edge, further downward input may leave the offset unchanged.
                     if ((event.delta ?? 0) > 0) resumeHistoryAtEnd(historyOffset);
-                  } else if (atHistoryTail()) resumeHistoryFollowing();
-                  else ownHandle.jumpLatest(null);
+                  } else if (atHistoryTail()) {
+                    followLatestActivity();
+                    resumeHistoryFollowing();
+                  } else ownHandle.jumpLatest(null);
                 }
               }}
               onBlur={() => {
