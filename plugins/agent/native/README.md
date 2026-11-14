@@ -68,7 +68,7 @@ The `maka.agent.external` session checkpoint is keyed by Maka conversation, runt
 
 The `external_jobs` CLI tests cover the original workspace, native continuation, exact Stop and cold recovery using a controllable app-server. Run them with `cargo test -p maka-cli --test external_jobs` on macOS.
 
-The Host MCP bridge exposes the conversation’s selected tools under the `maka_` prefix. Code Mode uses `maka_exec` and `maka_wait`; nested calls keep their usual `tools.<name>` names. Images and audio are returned as standard MCP content blocks. Calls use the same conversation permissions, approvals, and operation receipts.
+The Host MCP bridge exposes the conversation’s selected tools under the `maka` server with their original names. Code Mode uses `exec` and `wait`; nested calls keep their usual `tools.<name>` names. Images and audio are returned as standard MCP content blocks. Calls use the same conversation permissions, approvals, and operation receipts.
 
 Automations can deliver a follow-up to an existing external-agent conversation. The Host owns the trigger and queues the message if the conversation is busy. When it can run, the adapter resumes the original native conversation.
 

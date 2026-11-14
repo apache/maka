@@ -426,7 +426,7 @@ impl Turn {
                 // The Host bridge already emits the canonical Maka tool card.
                 if update["name"]
                     .as_str()
-                    .is_some_and(|name| name.starts_with("mcp_maka_maka_"))
+                    .is_some_and(|name| name.starts_with("mcp_maka_"))
                 {
                     self.host_calls.insert(id.into());
                 }
@@ -621,7 +621,7 @@ mod tests {
                 json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"checking"}}),
             ),
             update(
-                json!({"sessionUpdate":"tool_call","toolCallId":"host","name":"mcp_maka_maka_ModelList",
+                json!({"sessionUpdate":"tool_call","toolCallId":"host","name":"mcp_maka_ModelList",
                 "status":"in_progress","title":"Run ModelList"}),
             ),
             update(

@@ -157,7 +157,7 @@ async function callTool(name, args) {
   return result;
 }
 async function codeResult(code) {
-  let result = await callTool('maka_exec', { code: '// @exec: {"yield_time_ms": 1}\n' + code });
+  let result = await callTool('exec', { code: '// @exec: {"yield_time_ms": 1}\n' + code });
   const emitted = [];
   for (;;) {
     const output = result.content.filter((part) => part.type === 'text');
@@ -170,8 +170,30 @@ async function codeResult(code) {
       return JSON.parse(emitted.join('\n'));
     }
     if (summary.state !== 'running') throw Error(JSON.stringify(summary));
-    result = await callTool('maka_wait', { cell_id: summary.cell_id });
+    result = await callTool('wait', { cell_id: summary.cell_id });
   }
+}
+async function readArchivedResult() {
+  const tail = 'end of archived output';
+  const result = await callTool('exec', {
+    code: `text('x'.repeat(10000) + ${JSON.stringify(tail)});`,
+    yield_time_ms: 10000,
+  });
+  const archived = JSON.parse(result.content[0].text);
+  if (archived.kind !== 'maka.archived_tool_result' || !archived.page.next)
+    throw Error('Expected a continuation for the large tool result');
+  const suffix = await codeResult(`
+    let request = ${JSON.stringify(archived.page.next)};
+    let content = '';
+    while (request) {
+      const page = await tools.Read(request);
+      if (page.kind !== 'completed') throw Error(page.message);
+      content += page.value.content;
+      request = page.value.next;
+    }
+    text({ suffix: content.slice(-${tail.length}) });
+  `);
+  if (suffix.suffix !== tail) throw Error('Archive continuation did not reach the original output');
 }
 async function hostEffect() {
   await rpc(
@@ -187,16 +209,14 @@ async function hostEffect() {
   const tools = await rpc('tools/list', {}, 102);
   const names = tools.tools.map((tool) => tool.name);
   if (
-    !names.includes('maka_exec') ||
-    !names.includes('maka_wait') ||
-    !names.includes('maka_cua_repl') ||
-    names.includes('maka_Shell') ||
-    names.includes('maka_SendUser') ||
-    names.includes('maka_sleep')
+    !names.includes('exec') ||
+    !names.includes('wait') ||
+    !names.includes('cua_repl') ||
+    names.includes('Shell') ||
+    names.includes('SendUser') ||
+    names.includes('sleep')
   )
     throw Error('Authorized Maka tools unavailable');
-  if (names.some((name) => !name.startsWith('maka_')))
-    throw Error('Maka tool is missing its namespace');
   if (antigravity) return;
   const path = 'host-patch-' + job.label;
   await codeResult(
@@ -308,6 +328,7 @@ async function acp(id, method, params) {
       await record('scheduled', { thread, taskId: task.taskId, promptId: id });
       return;
     }
+    if (job.label === 'ACP-followup') await readArchivedResult();
     if (job.label === 'ACP-followup' || job.label === 'ACP-wake')
       return reply(id, { stopReason: 'end_turn' });
     return;
