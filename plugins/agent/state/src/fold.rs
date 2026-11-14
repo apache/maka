@@ -2126,8 +2126,15 @@ impl RunView {
                         }),
                         "successful completion requires actual model cleanup acknowledgements",
                     )?;
+                    // FinishTurn closes model admission, so there is no step to receive Cell notifications.
                     require(
-                        self.cells.values().all(|cell| !cell.pending()),
+                        self.cells.values().all(|cell| {
+                            if self.finish_requested() {
+                                !cell.settlement_pending()
+                            } else {
+                                !cell.pending()
+                            }
+                        }),
                         "run has pending Cell obligations",
                     )?;
                     require(
