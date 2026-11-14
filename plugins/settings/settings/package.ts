@@ -39,6 +39,7 @@ export default {
         setup: one(sdk.contracts.settingsSetup),
         agent: one(sdk.contracts.agent),
         skills: { contract: sdk.contracts.skillLibrary, cardinality: { kind: 'optional' } },
+        web: { contract: sdk.contracts.workspaceWeb, cardinality: { kind: 'optional' } },
         management: one(sdk.contracts.deploymentManager),
         receipts: one(sdk.contracts.receiptReader),
       },
@@ -78,6 +79,13 @@ export default {
           title: {
             fallback: 'External agents',
             translations: { 'zh-CN': '外部 Agent', 'zh-TW': '外部 Agent' },
+          },
+        },
+        'web-search': {
+          kind: 'settings',
+          title: {
+            fallback: 'Web search',
+            translations: { 'zh-CN': '网页搜索', 'zh-TW': '網頁搜尋' },
           },
         },
         network: {

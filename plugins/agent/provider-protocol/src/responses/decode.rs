@@ -663,23 +663,21 @@ impl Decoder {
             self.pending_effects.insert(id.into());
         }
         let mut replay = BTreeMap::new();
-        if self.reasoning == ReasoningMode::Encrypted {
-            let finalized = value["type"] == "response.output_item.done";
-            let values: Vec<&Value> = if finalized {
-                vec![&value["item"]]
-            } else {
-                value["response"]["output"]
-                    .as_array()
-                    .map(|items| items.iter().collect())
-                    .unwrap_or_default()
-            };
-            for item in values {
-                if let Some(id) = item["id"].as_str()
-                    && !self.done.contains(id)
-                    && let Some(template) = super::replay::capture(item)
-                {
-                    replay.insert(id.to_owned(), template);
-                }
+        let items = if value["type"] == "response.output_item.done" {
+            std::slice::from_ref(&value["item"])
+        } else {
+            value["response"]["output"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+        };
+        for item in items {
+            if (self.reasoning == ReasoningMode::Encrypted || item["type"] == "web_search_call")
+                && let Some(id) = item["id"].as_str()
+                && !self.done.contains(id)
+                && let Some(template) = super::replay::capture(item)
+            {
+                replay.insert(id.to_owned(), template);
             }
         }
         let event: Event = serde_json::from_value(value)
@@ -857,6 +855,85 @@ impl Decoder {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn deepseek_search_results_and_citations_survive_plaintext_responses() {
+        use super::super::request::{Input, Request, SearchKind, Tool};
+
+        let reasoning = ReasoningMode::PlaintextContent;
+        for (model, kind, wire_type, action, citation) in [
+            (
+                "deepseek-v4-pro",
+                SearchKind::Search,
+                "web_search",
+                json!({"type":"search","queries":["official Python site","ws_call_id=fixture"]}),
+                None,
+            ),
+            (
+                "deepseek-flash",
+                SearchKind::Deepseek,
+                "deepseek_web_search",
+                json!({"type":"search","sources":[{"url":"https://www.python.org/","title":"Python"}]}),
+                Some(
+                    json!({"type":"url_citation","url":"https://www.python.org/","title":"Python","start_index":0,"end_index":6}),
+                ),
+            ),
+        ] {
+            let mut decoder = Decoder::new(reasoning, Some("WebSearch".into()));
+            let mut item = json!({
+                "type":"web_search_call","id":"ws_fixture","status":"completed","action":action
+            });
+            if kind == SearchKind::Deepseek {
+                item["kind"] = json!("search");
+            }
+            decoder
+                .push(json!({
+                    "type":"response.output_item.added",
+                    "item":{"type":"web_search_call","id":"ws_fixture","status":"in_progress"}
+                }))
+                .unwrap();
+            let events = decoder
+                .push(json!({"type":"response.output_item.done","item":item}))
+                .unwrap();
+            let [
+                OutputEvent::ToolResult {
+                    action, metadata, ..
+                },
+            ] = events.as_slice()
+            else {
+                panic!("expected a settled search call, got {events:?}");
+            };
+            let request = Request {
+                model,
+                input: &[Input::ProviderResult {
+                    replay: metadata.replay.clone(),
+                    action: action.clone(),
+                }],
+                tools: &[Tool::WebSearch {
+                    kind,
+                    args: json!({}),
+                }],
+                tool_choice: Default::default(),
+                options: &json!({"openResponses":{}}),
+                max_output_tokens: None,
+                reasoning,
+            }
+            .encode()
+            .unwrap();
+            assert_eq!(request["tools"], json!([{"type":wire_type}]));
+            assert_eq!(request["input"], json!([item]));
+            if let Some(annotation) = citation {
+                let events = decoder
+                    .push(json!({
+                        "type":"response.output_text.annotation.added",
+                        "item_id":"msg_fixture","annotation_index":0,"annotation":annotation
+                    }))
+                    .unwrap();
+                assert!(matches!(events.as_slice(), [OutputEvent::Citation(c)]
+                    if c.url == "https://www.python.org/" && c.title.as_deref() == Some("Python")));
+            }
+        }
+    }
 
     #[test]
     fn summary_deltas_retain_item_boundaries_without_rewriting_replay_text() {

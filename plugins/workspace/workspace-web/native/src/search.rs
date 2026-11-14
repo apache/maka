@@ -19,12 +19,19 @@
 
 use maka_capabilities::call;
 use maka_capabilities::http;
-use maka_plugin_core::http::Method;
-use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
 use url::Url;
 
-use maka_web_api::search::{Query, Results, Row};
+use maka_web_api::{
+    search::{Query, Results, Row},
+    settings::ResultsMapping,
+};
+
+mod endpoint;
+#[cfg(test)]
+mod tests;
+pub(crate) use endpoint::{SearchEndpoint, presets};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -51,7 +58,7 @@ pub enum Error {
 }
 
 #[derive(Clone)]
-pub struct Search {
+pub(crate) struct Search {
     http: Arc<dyn http::Client>,
 }
 impl Search {
@@ -62,21 +69,19 @@ impl Search {
     pub async fn query(
         &self,
         parent: &call::Scope,
-        key: &str,
+        endpoint: &SearchEndpoint,
+        key: Option<&str>,
         input: &Query,
     ) -> Result<Results, Error> {
         if !input.is_valid() {
             return Err(Error::Input);
-        }
-        if key.trim().is_empty() {
-            return Err(Error::NotConfigured);
         }
         let owned = call::Owned::new(parent.child()?);
         let scope = owned.scope();
         let result = tokio::select! {
             biased;
             _ = scope.cancellation.cancelled() => Err(Error::Cancelled),
-            result = self.request(&scope, key, input) => result,
+            result = self.request(&scope, endpoint, key, input) => result,
         };
         owned.finish().await?;
         result
@@ -85,34 +90,13 @@ impl Search {
     async fn request(
         &self,
         scope: &call::Scope,
-        key: &str,
+        endpoint: &SearchEndpoint,
+        key: Option<&str>,
         input: &Query,
     ) -> Result<Results, Error> {
-        #[derive(Serialize)]
-        struct Request<'a> {
-            api_key: &'a str,
-            query: &'a str,
-            max_results: usize,
-            search_depth: &'static str,
-        }
         let response = self
             .http
-            .request(
-                scope.clone(),
-                http::Request {
-                    url: "https://api.tavily.com/search".into(),
-                    method: Method::Post,
-                    headers: vec![("Content-Type".into(), "application/json".into())],
-                    body: serde_json::to_vec(&Request {
-                        api_key: key,
-                        query: &input.query,
-                        max_results: input.limit,
-                        search_depth: "basic",
-                    })
-                    .map_err(|_| Error::Input)?
-                    .into(),
-                },
-            )
+            .request(scope.clone(), endpoint.request(key, input)?)
             .await
             .map_err(network_error)?;
         let result = async {
@@ -126,7 +110,7 @@ impl Search {
             while let Some(chunk) = response.body.next().await.map_err(network_error)? {
                 bytes.extend_from_slice(&chunk);
             }
-            decode(&bytes, input)
+            decode(&bytes, input, &endpoint.config.results)
         }
         .await;
         // Never follow redirects with a search credential.
@@ -146,42 +130,38 @@ fn network_error(error: http::Error) -> Error {
     }
 }
 
-fn decode(bytes: &[u8], input: &Query) -> Result<Results, Error> {
-    #[derive(Deserialize)]
-    struct Response {
-        results: Vec<serde_json::Value>,
-    }
-    #[derive(Deserialize)]
-    struct Entry {
-        title: String,
-        url: String,
-        #[serde(default)]
-        content: String,
-    }
-    let response: Response = serde_json::from_slice(bytes).map_err(|_| Error::Response)?;
-    let total = response.results.len();
-    let rows = response
-        .results
-        .into_iter()
+fn decode(bytes: &[u8], input: &Query, mapping: &ResultsMapping) -> Result<Results, Error> {
+    let response: Value = serde_json::from_slice(bytes).map_err(|_| Error::Response)?;
+    let entries = response.pointer(&mapping.list).ok_or(Error::Response)?;
+    let entries = if entries.is_null() {
+        &[][..]
+    } else {
+        entries.as_array().ok_or(Error::Response)?.as_slice()
+    };
+    let rows = entries
+        .iter()
         .filter_map(|entry| {
-            let entry: Entry = serde_json::from_value(entry).ok()?;
-            let url = Url::parse(&entry.url).ok()?;
+            let url = Url::parse(entry.pointer(&mapping.url)?.as_str()?).ok()?;
             if !matches!(url.scheme(), "http" | "https")
                 || !url.username().is_empty()
                 || url.password().is_some()
             {
                 return None;
             }
-            let title = entry.title;
-            let snippet = entry.content;
+            let field = |path: &Option<String>| {
+                path.as_deref()
+                    .and_then(|path| entry.pointer(path))
+                    .and_then(Value::as_str)
+            };
             Some(Row {
-                title,
-                snippet,
-                url: url.to_string(),
+                title: field(&mapping.title).unwrap_or(url.as_str()).into(),
+                snippet: field(&mapping.snippet).unwrap_or_default().into(),
+                url: url.into(),
             })
         })
         .take(input.limit)
         .collect::<Vec<_>>();
+    let total = entries.len();
     let omitted_results = total - rows.len();
     Ok(Results {
         query: input.query.clone(),
@@ -191,7 +171,7 @@ fn decode(bytes: &[u8], input: &Query) -> Result<Results, Error> {
     })
 }
 
-pub fn native(
+fn native(
     model: &maka_agent_facts::tools::ModelToolContext,
 ) -> Option<maka_agent_facts::tools::ProviderTool> {
     use maka_agent_facts::tools::ProviderTool;
@@ -205,9 +185,39 @@ pub fn native(
             id: "openai.web_search".into(),
             args: serde_json::json!({"searchContextSize":"medium"}),
         },
+        ProviderToolProtocol::DeepseekResponses => ProviderTool {
+            id: match model.model.as_str() {
+                "deepseek-v4-pro" => "deepseek.web_search",
+                "deepseek-flash" | "deepseek-v4-flash" => "deepseek.deepseek_web_search",
+                _ => return None,
+            }
+            .into(),
+            args: serde_json::json!({}),
+        },
         ProviderToolProtocol::AnthropicMessages => ProviderTool {
             id: "anthropic.web_search_20250305".into(),
             args: serde_json::json!({"maxUses":8}),
         },
     })
+}
+
+pub enum Selection {
+    Provider(maka_agent_facts::tools::ProviderTool),
+    Custom,
+}
+
+pub fn select(
+    capture: &maka_web_api::contract::Capture,
+    model: Option<&maka_agent_facts::tools::ModelToolContext>,
+) -> Option<Selection> {
+    if !capture.available {
+        return None;
+    }
+    if capture.source == maka_web_api::settings::Source::Custom && capture.custom_available {
+        return Some(Selection::Custom);
+    }
+    model
+        .and_then(native)
+        .map(Selection::Provider)
+        .or_else(|| capture.custom_available.then_some(Selection::Custom))
 }

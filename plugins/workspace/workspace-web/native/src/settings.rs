@@ -17,8 +17,10 @@
  * under the License.
  */
 
+use crate::search::{SearchEndpoint, presets};
 use maka_capabilities::credentials;
 use maka_plugin_core::storage;
+use maka_web_api::contract::Basis;
 use std::sync::Arc;
 
 const SETTINGS: &str = "settings";
@@ -41,14 +43,56 @@ impl Repository {
         };
         Ok((revision, settings))
     }
-    pub async fn snapshot(&self) -> Result<Snapshot, storage::StoreError> {
+    pub(crate) async fn search_settings(&self) -> Result<SearchSettings, storage::StoreError> {
         let (revision, settings) = self.settings().await?;
-        let credential = self.credentials.read(KEY.into()).await?;
-        let key_revision = credential.as_ref().map(|record| record.revision);
-        let configured = credential
-            .as_ref()
-            .and_then(|record| record.secret.as_ref())
-            .is_some_and(|secret| !secret.trim().is_empty());
+        let endpoint = SearchEndpoint::resolve(&settings.backend)
+            .map_err(|error| storage::StoreError::Unavailable(error.into()))?;
+        let key = endpoint.credential_key(&settings.backend);
+        let credential = match &key {
+            Some(key) => self.credentials.read(key.clone()).await?,
+            None => None,
+        };
+        Ok(SearchSettings {
+            revision,
+            settings,
+            endpoint,
+            key,
+            credential,
+        })
+    }
+
+    pub(crate) async fn search_is_current(
+        &self,
+        basis: &Basis,
+        key: Option<&str>,
+    ) -> Result<bool, storage::StoreError> {
+        let revision = self
+            .store
+            .read(SETTINGS.into())
+            .await?
+            .map(|record| record.revision);
+        if revision != basis.revision {
+            return Ok(false);
+        }
+        match key {
+            Some(key) => Ok(self
+                .credentials
+                .read(key.to_owned())
+                .await?
+                .is_some_and(|record| {
+                    Some(record.revision) == basis.credential_revision
+                        && record
+                            .secret
+                            .is_some_and(|secret| !secret.trim().is_empty())
+                })),
+            None => Ok(true),
+        }
+    }
+
+    pub async fn snapshot(&self) -> Result<Snapshot, storage::StoreError> {
+        let current = self.search_settings().await?;
+        let key_revision = current.credential_revision();
+        let configured = current.secret().is_some();
         let check = self
             .store
             .read(CHECK.into())
@@ -57,15 +101,20 @@ impl Repository {
             .map(serde_json::from_value::<Check>)
             .transpose()
             .map_err(encoding)?
-            .filter(|check| configured && Some(check.credential_revision) == key_revision);
+            .filter(|check| {
+                (current.key.is_none() || configured)
+                    && check.settings_revision == current.revision
+                    && check.credential_revision == key_revision
+            });
         Ok(Snapshot {
-            revision,
-            settings,
+            revision: current.revision,
+            settings: current.settings,
             credential: Credential {
                 revision: key_revision,
                 configured,
                 check,
             },
+            presets: presets(),
         })
     }
     pub async fn save(
@@ -83,14 +132,18 @@ impl Repository {
             .pop()
             .ok_or_else(|| storage::StoreError::Unavailable("settings receipt is missing".into()))
     }
-    pub async fn record_check(&self, check: Check) -> Result<(), storage::StoreError> {
+    pub async fn record_check(
+        &self,
+        check: Check,
+        key: Option<&str>,
+    ) -> Result<bool, storage::StoreError> {
         let previous = self.store.read(CHECK.into()).await?;
-        if let Some(value) = previous.as_ref().and_then(|record| record.data.value()) {
-            let previous: Check = serde_json::from_value(value.clone()).map_err(encoding)?;
-            // A slow check for an old key cannot replace a newer key's status.
-            if previous.credential_revision > check.credential_revision {
-                return Ok(());
-            }
+        let basis = Basis {
+            revision: check.settings_revision,
+            credential_revision: check.credential_revision,
+        };
+        if !self.search_is_current(&basis, key).await? {
+            return Ok(false);
         }
         match self
             .store
@@ -101,11 +154,39 @@ impl Repository {
             }])
             .await
         {
-            Ok(_) | Err(storage::StoreError::Conflict { .. }) => Ok(()),
+            Ok(_) | Err(storage::StoreError::Conflict { .. }) => Ok(true),
             Err(error) => Err(error),
         }
     }
 }
+pub(crate) struct SearchSettings {
+    pub revision: Option<u64>,
+    pub settings: Settings,
+    pub endpoint: SearchEndpoint,
+    pub key: Option<String>,
+    credential: Option<credentials::Record>,
+}
+impl SearchSettings {
+    pub fn credential_revision(&self) -> Option<u64> {
+        self.credential.as_ref().map(|value| value.revision)
+    }
+    pub fn secret(&self) -> Option<&str> {
+        self.credential
+            .as_ref()?
+            .secret
+            .as_deref()
+            .filter(|secret| !secret.trim().is_empty())
+    }
+    pub fn available(&self) -> bool {
+        self.settings.enabled && (self.key.is_none() || self.secret().is_some())
+    }
+    pub fn matches(&self, basis: &Basis) -> bool {
+        self.available()
+            && self.revision == basis.revision
+            && self.credential_revision() == basis.credential_revision
+    }
+}
+
 fn encoding(error: serde_json::Error) -> storage::StoreError {
     storage::StoreError::Unavailable(error.to_string())
 }

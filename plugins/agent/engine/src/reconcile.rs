@@ -669,6 +669,12 @@ pub(crate) fn model_settlement_action(
     }
 }
 
+fn has_local_tool_calls(view: &RunView, attempt: ModelAttemptId) -> bool {
+    view.tools
+        .values()
+        .any(|tool| tool.key.attempt == attempt && !tool.call.provider_executed)
+}
+
 fn final_reply(view: &RunView, request: &RequestSpec, now: UnixMillis) -> bool {
     if view.stopped
         || view.cancelled_by_risk
@@ -693,12 +699,15 @@ fn final_reply(view: &RunView, request: &RequestSpec, now: UnixMillis) -> bool {
     {
         return false;
     }
-    let Some(attempt) = view.current_attempt.and_then(|id| view.attempts.get(&id)) else {
+    let Some(id) = view.current_attempt else {
+        return false;
+    };
+    let Some(attempt) = view.attempts.get(&id) else {
         return false;
     };
     attempt.step == request.step
         && attempt.admission.is_some()
-        && !attempt.has_tools
+        && !has_local_tool_calls(view, id)
         && attempt.closed.as_ref().is_some_and(|closed| {
             closed.outcome == maka_agent_facts::accounting::Outcome::Success
                 && closed.diagnostic.is_none()
@@ -1459,15 +1468,18 @@ fn next_action(
         {
             return Action::Prepare(Preparation::Notifications { attempt: id });
         }
+        let needs_continuation = protocol.finish_reason
+            == maka_agent_facts::model::ModelFinishReason::ToolCalls
+            || (attempt.has_tools && has_local_tool_calls(view, id));
         if let Some(cell) = view
             .cells
             .values()
             .find(|cell| matches!(cell.status, CellStatus::Running))
-            && !attempt.has_tools
+            && !needs_continuation
         {
             return wait(view, WaitReason::Cell { cell: cell.id }, None, now);
         }
-        return if attempt.has_tools {
+        return if needs_continuation {
             Action::Prepare(Preparation::ToolContinuation { attempt: id })
         } else {
             Action::Terminate(Terminal::Completed)

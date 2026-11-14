@@ -249,7 +249,7 @@ fn project(
                         output,
                         ..
                     } => {
-                        if plaintext.is_none() && options[namespace]["store"] == false {
+                        if plaintext.is_some() || options[namespace]["store"] == false {
                             let replay = replay(provider_options)?;
                             let action = match output {
                                 ToolOutput::Json(value) | ToolOutput::ErrorJson(value) => {
@@ -293,22 +293,23 @@ fn project(
     }
     Ok(input)
 }
+pub(super) fn search_kind(id: &str) -> Option<SearchKind> {
+    match id {
+        "openai.web_search" | "deepseek.web_search" => Some(SearchKind::Search),
+        "openai.web_search_preview" => Some(SearchKind::Preview),
+        "deepseek.deepseek_web_search" => Some(SearchKind::Deepseek),
+        _ => None,
+    }
+}
+
 fn tool(tool: &ToolDefinition, plaintext: bool) -> Result<Tool> {
     if let Some(provider) = &tool.provider {
-        let kind = match provider.id.as_str() {
-            "openai.web_search" => SearchKind::Search,
-            "openai.web_search_preview" => SearchKind::Preview,
-            id if !id.starts_with("openai.") => {
-                return Err(Error::Invalid(
-                    "Responses provider tool belongs to another protocol".into(),
-                ));
-            }
-            id => {
-                return Err(Error::Invalid(format!(
-                    "Unsupported provider-executed tool: {id}"
-                )));
-            }
-        };
+        let kind = search_kind(&provider.id).ok_or_else(|| {
+            Error::Invalid(format!(
+                "Unsupported provider-executed tool: {}",
+                provider.id
+            ))
+        })?;
         Ok(Tool::WebSearch {
             kind,
             args: provider.args.clone(),

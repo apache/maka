@@ -67,7 +67,12 @@ export function installation(
   add('processes', 'writeStdin', 'ProcessInput', 'Send input to a previously started command.');
   add('processes', 'stop', 'ProcessStop', 'Stop a previously started command.');
   add('web', 'fetch', 'WebFetch', 'Read a web page. Network destinations require permission.');
-  add('web', 'search', 'WebSearch', 'Search using the selected model or Tavily.');
+  add(
+    'web',
+    'search',
+    'WebSearch',
+    'Search using the selected model or a configured search service.',
+  );
   add(
     'computer',
     'evaluate',
