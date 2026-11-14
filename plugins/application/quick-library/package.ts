@@ -41,13 +41,26 @@ export default {
       configuration: empty,
       imports: {},
       contributions: {
-        tool: { kind: 'view', contract: 'maka.quick-launcher.tool' },
-        library: {
+        links: { kind: 'view', contract: 'maka.quick-launcher.tool' },
+        linksSettings: {
           kind: 'settings',
           title: {
-            fallback: 'Quick Library',
-            translations: { 'zh-CN': '快捷资料', 'zh-TW': '快速資料' },
+            fallback: 'Quick Links',
+            translations: { 'zh-CN': '快捷链接', 'zh-TW': '快速連結' },
           },
+        },
+        snippets: { kind: 'view', contract: 'maka.quick-launcher.tool' },
+        snippetsSettings: {
+          kind: 'settings',
+          title: {
+            fallback: 'Text Snippets',
+            translations: { 'zh-CN': '文本片段', 'zh-TW': '文字片段' },
+          },
+        },
+        notes: { kind: 'view', contract: 'maka.quick-launcher.tool' },
+        notesSettings: {
+          kind: 'settings',
+          title: { fallback: 'Notes', translations: { 'zh-CN': '笔记', 'zh-TW': '筆記' } },
         },
       },
     },

@@ -62,7 +62,7 @@ export function createProjectMcp(host: Host, sessionId: string, control: Control
         notice.set(message('Project MCP configuration trusted. Send your draft when ready.'));
       }
     } catch (reason) {
-      if (alive) error.set(errorText(reason));
+      if (alive) error.set(errorText(reason, 'Could not load project MCP servers.'));
     } finally {
       if (alive) pending.set(false);
     }

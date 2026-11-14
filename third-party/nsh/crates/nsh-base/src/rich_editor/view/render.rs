@@ -1668,6 +1668,7 @@ impl Rv {
     fn set_lines(&self, id: u64, lines: Vec<nsh_core::TextLine>) {
         if let Some(text) = self.geo.borrow_mut().texts.get_mut(&id) {
             text.lines = lines;
+            text.laid_len = Some(text.map.len);
         }
         self.layout_rev.update(|r| *r += 1);
     }

@@ -2273,6 +2273,7 @@
 	]);
 	function createLists(invoke, values, reactive, dom, live, wake) {
 		const lists = /* @__PURE__ */ new Map(), rt = dom.rt;
+		const itemAt = (source, index) => Array.isArray(source) ? source[index] : source.at(index);
 		const slot = (value) => typeof value === "function" && !values.signals.has(value) && !values.memos.has(value) ? reactive.untracked(() => value({})) : value;
 		const remove = (parent, entry) => {
 			invoke(306, [parent, entry.node]);
@@ -2309,22 +2310,36 @@
 			state.items = reactive.computed((previous) => {
 				const next = props.each ?? [], old = previous ?? [];
 				if (old.length && old !== next) {
-					let start = 0, end = old.length, nextEnd = next.length;
-					while (start < end && start < nextEnd && old[start] === next[start]) start++;
-					while (end > start && nextEnd > start && old[end - 1] === next[nextEnd - 1]) {
-						end--;
-						nextEnd--;
+					let start, removed, inserted;
+					if (Array.isArray(old) && Array.isArray(next)) {
+						let end = old.length, nextEnd = next.length;
+						start = 0;
+						while (start < end && start < nextEnd && old[start] === next[start]) start++;
+						while (end > start && nextEnd > start && old[end - 1] === next[nextEnd - 1]) {
+							end--;
+							nextEnd--;
+						}
+						removed = end - start;
+						inserted = nextEnd - start;
+					} else {
+						const span = next.spliceFrom?.(old) ?? [
+							0,
+							old.length,
+							next.length
+						];
+						if (!Array.isArray(span) || span.length !== 3 || !span.every((n) => Number.isInteger(n) && n >= 0 && n <= 4294967295) || span[0] + span[1] > old.length || old.length - span[1] + span[2] !== next.length) throw new RangeError("Invalid indexed list splice");
+						[start, removed, inserted] = span;
 					}
-					if (end !== start || nextEnd !== start) {
+					if (removed || inserted) {
 						splices.push([
 							start,
-							end - start,
-							nextEnd - start
+							removed,
+							inserted
 						]);
 						reactive.untracked(() => {
 							for (const cell of state.cells.values()) {
 								const i = cell.index();
-								if (i >= end) cell.index.set(i + nextEnd - end);
+								if (i >= start + removed) cell.index.set(i + inserted - removed);
 							}
 						});
 					}
@@ -2398,7 +2413,7 @@
 					state.reported = state.latest;
 					const each = props.each ?? [], viewableItems = [], changed = [];
 					const token = (index, isViewable) => {
-						const item = each[index];
+						const item = itemAt(each, index);
 						return {
 							item,
 							key: typeof props.keyExtractor === "function" ? props.keyExtractor(item, index) : String(item?.key ?? item?.id ?? index),
@@ -2461,7 +2476,7 @@
 								let previous;
 								const item = reactive.computed(() => {
 									const i = index(), items = state.items();
-									if (i < items.length) previous = items[i];
+									if (i < items.length) previous = itemAt(items, i);
 									return previous;
 								});
 								const cell = rt.element("cell");

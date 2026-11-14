@@ -18,7 +18,7 @@
  */
 
 import { createPendingRecovery } from './pendingRecovery';
-import { errorText, isObservationCancelled, renderText, UiError } from './text';
+import { ActionPending, errorText, isObservationCancelled, renderText, UiError } from './text';
 import { cleanup, effect, signal, untracked, type Signal } from 'nsh';
 import { TerminalGrid } from 'maka/host';
 import { terminalMutation, pendingTerminals, recoverTerminal, abandonTerminal } from './host';
@@ -109,7 +109,7 @@ export function createTerminals(
       method !== 'release' &&
       (!owns(owner.sessionId) || scope !== owner || !known() || pending().length)
     )
-      throw new UiError('Checking action status…');
+      throw new ActionPending();
     try {
       return await terminalMutation(owner, method, input);
     } catch (reason) {
@@ -212,7 +212,8 @@ export function createTerminals(
         }
       } catch (reason) {
         if (current()) {
-          error.set(reason);
+          console.warn('Could not load conversation terminals:', reason);
+          error.set(new UiError('Could not load terminals. Refresh to try again.'));
           loading.set(false);
         }
       } finally {
@@ -321,7 +322,9 @@ export function createTerminals(
       else {
         const reply: OperationReply = await recoverTerminal(owner, target.id);
         if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
-          throw new UiError('This action could not be completed.');
+          throw new Error(
+            `Terminal recovery: no returned result (${reply.receipt.kind === 'recorded' ? reply.receipt.outcome.kind : reply.receipt.kind})`,
+          );
         if (reply.receipt.outcome.result.kind === 'failure')
           throw new Error(reply.receipt.outcome.result.diagnostic);
       }
@@ -356,7 +359,7 @@ export function createTerminals(
   });
   return {
     entries,
-    error: () => renderText(errorText(error())),
+    error: () => renderText(errorText(error(), 'Could not complete the terminal command.')),
     loading,
     starting,
     pending,
@@ -461,7 +464,10 @@ function createTerminal(
         version.set(version() + 1);
         state.set('closed');
       } catch (reason) {
-        if (!run.closed && alive && active) fail(reason);
+        if (!run.closed && alive && active) {
+          console.warn('Could not read terminal output:', reason);
+          fail(new UiError('Could not read terminal output. Try reconnecting.'));
+        }
       } finally {
         stop(run);
         if (retained === run) {
@@ -490,7 +496,10 @@ function createTerminal(
           if (state() === 'unavailable' && !running(entry())) snapshot();
         }
       } catch (reason) {
-        if (!run.closed && alive && active) fail(reason);
+        if (!run.closed && alive && active) {
+          console.warn('Could not read terminal output:', reason);
+          fail(new UiError('Could not read terminal output. Try reconnecting.'));
+        }
       } finally {
         stop(run);
         if (observing === run) observing = null;
@@ -543,7 +552,10 @@ function createTerminal(
           }
         }
       } catch (reason) {
-        if (!run.closed && alive && active) fail(reason);
+        if (!run.closed && alive && active) {
+          console.warn('Could not read terminal output:', reason);
+          fail(new UiError('Could not read terminal output. Try reconnecting.'));
+        }
       } finally {
         stop(run);
         if (reading === run) reading = null;
@@ -678,7 +690,7 @@ function createTerminal(
     version,
     grid,
     state,
-    error: () => renderText(errorText(error())),
+    error: () => renderText(errorText(error(), 'Could not control the terminal.')),
     control,
     stopping,
     running: () => running(entry()),

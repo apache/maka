@@ -457,15 +457,19 @@ fn fact_scope(c: &Connection, record: &RecordedFact) -> Result<HistoryScope, Sto
                 CellEvent::Started { owner, .. } => owner.clone(),
                 _ => crate::cells::read_cell(c, record.run, event.cell())?.owner,
             };
-            let CellOwner::Agent { link, .. } = owner else {
-                return Err(invalid("standalone Cell cannot claim Agent Run history"));
-            };
-            if link.run != record.run {
+            if owner.run() != Some(record.run) {
                 return Err(invalid("Cell history belongs to another Run"));
             }
-            return Ok(HistoryScope {
-                step: Some(link.step),
-                attempt: Some(link.attempt),
+            return Ok(match owner {
+                CellOwner::Agent { link, .. } => HistoryScope {
+                    step: Some(link.step),
+                    attempt: Some(link.attempt),
+                },
+                CellOwner::External { .. } => HistoryScope {
+                    step: None,
+                    attempt: None,
+                },
+                CellOwner::Standalone { .. } => unreachable!("standalone Cell has no Run"),
             });
         }
         Fact::StepPrepared { step, .. } => {
@@ -592,7 +596,7 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
         false
     };
     c.execute(
-        "INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,step,attempt,kind,prefix_digest,tool_use_id,tool_start,opening_message,fact_id,result_source,tool_name,historical) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,step,attempt,kind,prefix_digest,tool_use_id,tool_start,opening_message,fact_id,result_source,historical) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         params![
             owner,
             session,
@@ -608,18 +612,6 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
             false,
             record.id.to_string(),
             result_source(&record.fact),
-            match &record.fact {
-                Fact::ModelObserved {
-                    part: maka_agent_facts::model::ModelPart::ToolCall { call },
-                    ..
-                } => Some(call.name.as_str()),
-                Fact::Cell {
-                    event: maka_agent_facts::cells::CellEvent::ChildPrepared { name, .. },
-                } | Fact::ExternalTaskObserved {
-                    output: maka_agent_facts::executor::Output::ToolStart { name, .. }, ..
-                } => Some(name.as_str()),
-                _ => None,
-            },
             historical,
         ],
     )?;
@@ -1690,15 +1682,47 @@ pub(super) fn resolve_tool_result(
     }
     let (use_id, _) = tool_locator(c, &item.recorded)?
         .ok_or_else(|| invalid("tool result has no original tool identity"))?;
-    let names:Vec<String>=c.prepare_cached("SELECT tool_name FROM agent_session_history WHERE owner=? AND session=? AND run=? AND attempt IS ? AND tool_use_id=? AND tool_start=1 AND sequence<=? AND tool_name IS NOT NULL LIMIT 2")?.query_map(params![owner,scope.namespace.session,item.recorded.run.to_string(),item.scope.attempt.map(|id|id.to_string()),use_id,bind_u64(cut.through_sequence)?],|r|r.get(0))?.collect::<Result<_,_>>()?;
-    match names.as_slice() {
-        [name] => Ok(Some(ToolResultSource {
-            item,
-            tool_name: name.clone(),
-        })),
-        [] => Err(invalid(
-            "original tool name source index missing; explicit history rebuild required",
-        )),
-        _ => Err(invalid("conflicting original tool name sources")),
-    }
+    let starts: Vec<u64> = c
+        .prepare_cached(
+            "SELECT sequence FROM agent_session_history
+             WHERE owner=? AND session=? AND run=? AND attempt IS ? AND tool_use_id=?
+               AND tool_start=1 AND sequence<? ORDER BY sequence LIMIT 2",
+        )?
+        .query_map(
+            params![
+                owner,
+                scope.namespace.session,
+                item.recorded.run.to_string(),
+                item.scope.attempt.map(|id| id.to_string()),
+                use_id,
+                bind_u64(item.sequence)?,
+            ],
+            |row| read_u64(row, 0),
+        )?
+        .collect::<Result<_, _>>()?;
+    let start = match starts.as_slice() {
+        [start] => *start,
+        [] => return Err(invalid("original archived tool call missing")),
+        _ => return Err(invalid("conflicting original archived tool calls")),
+    };
+    let original = self::item(c, &scope.namespace, cut, start)?
+        .ok_or_else(|| invalid("original archived tool call missing"))?;
+    let tool_name = match original.recorded.fact {
+        Fact::ModelObserved {
+            part: maka_agent_facts::model::ModelPart::ToolCall { call },
+            ..
+        } => call.name,
+        Fact::Cell {
+            event: maka_agent_facts::cells::CellEvent::ChildPrepared { name, .. },
+        } => name,
+        Fact::ExternalEffect {
+            event:
+                maka_agent_facts::external_effects::ExternalEffectEvent::Prepared { key, descriptor },
+        } => {
+            crate::external_effects::read_descriptor(c, original.recorded.run, &key, &descriptor)?
+                .name
+        }
+        _ => return Err(invalid("archive source is not an original tool call")),
+    };
+    Ok(Some(ToolResultSource { item, tool_name }))
 }

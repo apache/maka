@@ -53,7 +53,7 @@ export function CompactDialog(props: {
       state.set('ready');
     } catch (reason) {
       if (!alive) return;
-      error.set(errorText(reason));
+      error.set(errorText(reason, 'Could not load compaction instructions.'));
       state.set('failed');
     }
   };
@@ -70,7 +70,7 @@ export function CompactDialog(props: {
       if (alive) props.close();
     } catch (reason) {
       if (!alive) return;
-      error.set(errorText(reason));
+      error.set(errorText(reason, 'Could not compact the conversation.'));
       state.set('ready');
     }
   };

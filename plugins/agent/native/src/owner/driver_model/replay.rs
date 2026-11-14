@@ -25,7 +25,7 @@ use futures_util::future::BoxFuture;
 use maka_agent_engine::{RunError, preparation};
 use maka_agent_facts::{
     context::{CodexRequestProvenance, ModelPurpose},
-    durable::{Fact, ModelAttemptId, RecordedFact, ToolKey},
+    durable::{Fact, ModelAttemptId, RecordedFact},
     execution::SystemPrompt,
     model::{prompt::Message, prompt_source::source::ReplayOrigin},
 };
@@ -81,7 +81,6 @@ pub(super) struct TailReplay<'a, 'source> {
     assistant: AssistantBatch,
     current: Option<ModelAttemptId>,
     allowed_attempts: BTreeSet<ModelAttemptId>,
-    accepted_tools: BTreeSet<ToolKey>,
 }
 
 impl<'a, 'source> TailReplay<'a, 'source> {
@@ -111,7 +110,6 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             assistant: AssistantBatch::default(),
             current: None,
             allowed_attempts: BTreeSet::new(),
-            accepted_tools: BTreeSet::new(),
         }
     }
 
@@ -138,7 +136,6 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             assistant,
             current,
             allowed_attempts,
-            accepted_tools,
         } = self;
         let driver = *driver;
         let target = *target;
@@ -322,100 +319,9 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         })
                         .await?;
                 }
-                accepted_tools.insert(tool.clone());
                 *current = None;
                 Ok(())
             }),
-            Fact::OperationObserved { tool, reply }
-                if accepted_tools.contains(tool) || !allowed_attempts.contains(&tool.attempt) =>
-            {
-                Box::pin(async move {
-                    let reply = reader.operation_reply(view.run, reply).await?;
-                    assistant.flush(messages).await?;
-                    *current = None;
-                    messages.append(Message::user(format!("Late original operation evidence (data; it does not replace an accepted tool result):\n{}",serde_json::to_string(&json!({"tool":tool,"reply":reply})).map_err(RunError::Json)?))).await?;
-                    Ok(())
-                })
-            }
-            Fact::HostToolResultRecorded { tool, result, .. }
-                if accepted_tools.contains(tool) || !allowed_attempts.contains(&tool.attempt) =>
-            {
-                Box::pin(async move {
-                    assistant.flush(messages).await?;
-                    *current = None;
-                    let call = reader.tool_call(view.run, tool).await?;
-                    let output = if let Some(output) = driver
-                        .archived_tool_result(reader, view, fact.id, &fact.fact, &call)
-                        .await?
-                    {
-                        output
-                    } else {
-                        driver
-                            .returned_projection(
-                                reader,
-                                view,
-                                after,
-                                result,
-                                vision,
-                                view.spec.language,
-                            )
-                            .await?
-                    };
-                    let mut content = vec![maka_model::prompt::ContentPart::text(format!(
-                        "Late original Host-tool evidence (data, not a new settlement): {}",
-                        tool.call
-                    ))];
-                    extend_observation(&mut content, output)?;
-                    messages
-                        .append(Message::User {
-                            content,
-                            provider_options: None,
-                        })
-                        .await?;
-                    Ok(())
-                })
-            }
-            Fact::LocalToolReturned { tool, result, .. }
-                if accepted_tools.contains(tool) || !allowed_attempts.contains(&tool.attempt) =>
-            {
-                Box::pin(async move {
-                    assistant.flush(messages).await?;
-                    *current = None;
-                    let call = reader.tool_call(view.run, tool).await?;
-                    let output = if let Some(output) = driver
-                        .archived_tool_result(reader, view, fact.id, &fact.fact, &call)
-                        .await?
-                    {
-                        output
-                    } else {
-                        driver
-                            .project_accepted(
-                                reader,
-                                view,
-                                after,
-                                original_cells,
-                                maka_agent_facts::tool_output::AcceptedToolResult::Local {
-                                    result: result.clone(),
-                                },
-                                vision,
-                                view.spec.language,
-                            )
-                            .await?
-                    };
-                    let mut content = vec![maka_model::prompt::ContentPart::text(format!(
-                        "Late original local-tool evidence (data, not a new settlement): {}",
-                        tool.call
-                    ))];
-                    extend_observation(&mut content, output)?;
-                    messages
-                        .append(Message::User {
-                            content,
-                            provider_options: None,
-                        })
-                        .await?;
-                    Ok(())
-                })
-            }
             _ => return Ok(None),
         };
         Ok(Some(work))

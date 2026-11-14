@@ -52,6 +52,24 @@ pub(crate) struct Accepted {
     member: usize,
     basis: String,
 }
+
+impl Accepted {
+    pub(crate) fn editing_tools(&self) -> Option<maka_agent_facts::execution::EditingTools> {
+        let settings = &self.selection.settings;
+        let model = settings.model.as_deref().unwrap_or_default();
+        if self.selection.executor != "external" {
+            return None;
+        }
+        let override_default =
+            (settings.runtime.as_deref() == Some("codex") && model.is_empty()).then_some(true);
+        Some(maka_agent_facts::execution::EditingTools::for_model(
+            model,
+            "",
+            override_default,
+        ))
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Backend {
     pub accepted: Accepted,

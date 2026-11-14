@@ -577,6 +577,7 @@ impl Owner {
                 }
                 basis.model = Some(job.approval.accepted_model.clone());
                 basis.background = Some(job.approval.target.clone());
+                basis.background_sandbox_ceiling = job.approval.sandbox_ceiling.clone();
                 basis.background_kind = BackgroundKind::Schedule {
                     task_id: job.task_id.clone(),
                 };
@@ -599,6 +600,7 @@ impl Owner {
                     &job.request,
                     Default::default(),
                     maka_agent_state::queue::Placement::Followup,
+                    false,
                 )
                 .await?;
                 return Ok(None);

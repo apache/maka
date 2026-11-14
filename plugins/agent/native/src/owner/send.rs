@@ -146,7 +146,7 @@ impl Owner {
             .capture_sandbox(&session.configuration, parent.sandbox_floor())
             .await?;
         let discovery = self.scheduler.investigation.read().unwrap().as_deref() == Some(id);
-        let selected_catalog = if external || discovery {
+        let selected_catalog = if discovery || (external && !host_bridge) {
             self.mcp_projects.base.clone()
         } else {
             match self
@@ -169,7 +169,7 @@ impl Owner {
             return Err("agent_executor_cannot_use_session_mcp".into());
         }
         let allowed_tools = self.admitted_tools(id, &session.configuration.tools);
-        let preset_management = !external
+        let preset_management = (!external || host_bridge)
             && [
                 "SubagentPresetList",
                 "SubagentPresetRead",
@@ -210,9 +210,12 @@ impl Owner {
             )),
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Interactive,
-            tool_discovery: !external && !discovery && self.settings.tool_discovery,
+            tool_discovery: (!external || host_bridge)
+                && !discovery
+                && self.settings.tool_discovery,
             allowed_tools,
             background: None,
+            background_sandbox_ceiling: None,
             internal_tools: if external && !host_bridge {
                 Arc::default()
             } else {

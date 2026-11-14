@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
-import { mergeChunks, readHistoryTail } from '../app/history.ts';
+import { HistoryRows, mergeHistoryPage, readHistoryTail } from '../app/history.ts';
 
 const { createHistoryPrefetch } = await import(
   '../../../../plugins/agent/conversations/ui/historyPrefetch.ts'
@@ -39,8 +39,8 @@ function reader(t) {
   let offset = 600;
   const pager = createHistoryPrefetch({
     owner: () => (window.before === null ? null : window.identity),
-    nearStart: () => offset <= 800,
-    async loadOlder() {
+    nearEdge: () => offset <= 800,
+    async loadPage() {
       const owner = window;
       const reply = Promise.withResolvers();
       reads.push({ before: owner.before, ...reply });
@@ -165,7 +165,9 @@ test('opening a tail publishes the latest turn together after its older pages ar
     reads.push(cursor);
     return reads.length === 1 ? tools.promise : opening.promise;
   }).then((page) => {
-    visible = mergeChunks([], page.chunks).map((row) => row.text);
+    visible = mergeHistoryPage(page.chunks, () => undefined, false, page.through).map(
+      (row) => row.text,
+    );
     return page;
   });
   assert.deepEqual(visible, []);
@@ -211,8 +213,65 @@ test('an opening fragment is completed before display and a revoked read publish
     historyPage([chunk(10, 'user', 'Ques')], null),
   );
   assert.deepEqual(
-    mergeChunks([], page.chunks).map((row) => row.text),
+    mergeHistoryPage(page.chunks, () => undefined, false, page.through).map((row) => row.text),
     ['Question', 'Answer'],
   );
   assert.equal(await readHistoryTail(tail, async () => null), null);
+});
+
+test('prepending a partial row preserves later rows and the original tool seat', () => {
+  const at = (sequence) => ({ kind: 'live', sequence, fact: 'fact', itemIndex: 0 });
+  const chunk = (sequence, turnId, role, text, extra = {}) => ({
+    position: at(sequence),
+    order: { path: [sequence], itemIndex: 0 },
+    field: 'body',
+    messageId: String(sequence),
+    turnId,
+    role,
+    text,
+    totalBytes: text.length,
+    offset: 0,
+    ...extra,
+  });
+  const history = new HistoryRows();
+  const publish = (chunks, older, through) =>
+    history.put(mergeHistoryPage(chunks, (key) => history.byKey.get(key), older, through));
+  const call = { toolUseId: 'read', call: { position: at(3) } };
+  const result = { ...call, result: { position: at(6) } };
+  publish(
+    [
+      chunk(2, 'first', 'user', 'piece', { offset: 6, totalBytes: 11 }),
+      chunk(3, 'first', 'tool_call', '', { tool: call }),
+      chunk(4, 'second', 'user', 'later'),
+      chunk(6, 'first', 'tool_result', '', { tool: result }),
+    ],
+    false,
+    9,
+  );
+  const later = history.byMessage.get('4/body');
+  const tool = [...history.byId.values()].find((row) => row.tool);
+  assert.equal(tool.role, 'tool_result');
+  publish(
+    [
+      chunk(1, 'older', 'user', 'older'),
+      chunk(2, 'first', 'user', 'first ', { totalBytes: 11, attachments: [] }),
+    ],
+    true,
+    8,
+  );
+  assert.deepEqual(
+    history.ordered.map((row) => row.text),
+    ['older', 'first piece', '', 'later', ''],
+  );
+  assert.equal(history.byMessage.get('4/body'), later);
+  assert.deepEqual(
+    history.byTurn.get('first').map((row) => row.role),
+    ['user', 'tool_call', 'tool_result'],
+  );
+  assert.equal(
+    [...history.byId.values()].find((row) => row.tool),
+    tool,
+  );
+  assert.equal(history.byMessage.get('2/body').metadataThrough, 9);
+  assert.equal(history.missingAttachments.size, 0);
 });

@@ -311,7 +311,9 @@ export async function terminalMutation<M extends Method<'terminal', 'mutation'>>
   if (!object(observed) || !object(observed.reply)) throw new Error('Invalid terminal receipt.');
   const reply = observed.reply as unknown as OperationReply;
   if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
-    throw new UiError('This action could not be completed.');
+    throw new Error(
+      `Terminal ${method}: no returned result (${reply.receipt.kind === 'recorded' ? reply.receipt.outcome.kind : reply.receipt.kind})`,
+    );
   if (reply.receipt.outcome.result.kind === 'failure')
     throw new Error(reply.receipt.outcome.result.diagnostic);
   return reply.receipt.outcome.result.value as Output<'terminal', M>;

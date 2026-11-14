@@ -83,7 +83,7 @@ export function WorkspaceChanges(props: {
         state.set({ kind: 'ready', status });
     } catch (reason) {
       if (alive && generation === reading && props.sessionId === sessionId)
-        state.set({ kind: 'error', message: errorText(reason) });
+        state.set({ kind: 'error', message: errorText(reason, 'Could not read file changes.') });
     }
   };
   effect(() => {
@@ -95,6 +95,10 @@ export function WorkspaceChanges(props: {
     return current.kind === 'ready' ? current.status : null;
   };
   const entries = () => status()?.entries ?? [];
+  const failure = () => {
+    const current = state();
+    return current.kind === 'error' ? renderText(current.message) : '';
+  };
   const open = (target: CurrentDiffTarget) => {
     if (
       alive &&
@@ -127,10 +131,29 @@ export function WorkspaceChanges(props: {
       <If when={state().kind === 'loading'}>
         <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('Reading current changes…')}</Text>
       </If>
-      <If when={state().kind === 'error'}>
-        <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-          {renderText((state() as Extract<ChangesState, { kind: 'error' }>).message)}
-        </Text>
+      <If when={failure()}>
+        <View
+          style={{ flex: 1, minHeight: 0, justifyContent: 'center', alignItems: 'center', gap: 8 }}
+        >
+          <Text
+            style={[
+              { ...bodyTextStyle, color: C.secondary, textAlign: 'center' },
+              { userSelect: 'text' },
+            ]}
+          >
+            {failure()}
+          </Text>
+          <Button
+            onPress={inputAction(refresh, props.sessionId)}
+            style={controlStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+          >
+            <Text style={{ ...captionTextStyle, color: C.accent }}>
+              {tr('Retry current changes')}
+            </Text>
+          </Button>
+        </View>
       </If>
       <If when={state().kind === 'ready'}>
         <If

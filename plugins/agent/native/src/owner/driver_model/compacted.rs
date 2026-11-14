@@ -220,13 +220,13 @@ impl DriverModel {
             .accepted
             .same_execution_route(&frozen.accepted)
             || summary_input.route_identity != frozen.route_identity
-            || !same_adapter_revision(&summary_input.adapter, &frozen.adapter)
+            || !same_adapter(&summary_input.adapter, &frozen.adapter)
         {
             return Err(RunError::CompactionMismatch);
         }
         let model = self.source.capture().await?;
         let adapter = self.executor.binding(&model.provider)?;
-        if !same_adapter_revision(adapter.source(), &frozen.adapter)
+        if !same_adapter(adapter.source(), &frozen.adapter)
             || preparation::route_identity(&model.provider)? != frozen.route_identity
         {
             return Err(unsupported("adopted-main-route-changed"));

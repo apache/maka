@@ -29,11 +29,16 @@ pub use maka_scheduler::{plan::Misfire as TaskMisfire, schedule::Schedule as Tas
 )]
 #[schemars(rename = "AgentScheduledEffect")]
 pub enum ScheduledEffect {
-    Reminder,
     Session {
+        #[serde(default)]
+        delivery: AutomationDelivery,
         target: ScheduledTarget,
         model: ModelSelection,
         thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
+    },
+    ExecutorSession {
+        target: ScheduledTarget,
+        selection: maka_agent_facts::executor::Selection,
     },
     AgentRun {
         target: ScheduledTarget,
@@ -47,30 +52,45 @@ pub enum ScheduledEffect {
         thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
     },
 }
-impl maka_scheduler::task::TaskEffect for ScheduledEffect {
-    fn validate(&self) -> Result<(), maka_scheduler::Error> {
+impl ScheduledEffect {
+    pub fn target(&self) -> &ScheduledTarget {
         match self {
-            Self::Reminder => Ok(()),
             Self::Session { target, .. }
+            | Self::ExecutorSession { target, .. }
             | Self::AgentRun { target, .. }
-            | Self::Discovery { target, .. } => {
-                if target.session_id.is_empty()
-                    || target.boundary_revision > maka_agent_facts::interaction::MAX_SAFE_INTEGER
-                    || target.binding.validate().is_err()
-                {
-                    Err(maka_scheduler::Error::Invalid(
-                        "invalid scheduled execution target".into(),
-                    ))
-                } else {
-                    Ok(())
-                }
-            }
+            | Self::Discovery { target, .. } => target,
         }
     }
-    fn is_notification(&self) -> bool {
-        matches!(self, Self::Reminder)
+}
+
+impl maka_scheduler::task::TaskEffect for ScheduledEffect {
+    fn validate(&self) -> Result<(), maka_scheduler::Error> {
+        let target = self.target();
+        if target.session_id.is_empty()
+            || target.boundary_revision > maka_agent_facts::interaction::MAX_SAFE_INTEGER
+            || target.binding.validate().is_err()
+        {
+            return Err(maka_scheduler::Error::Invalid(
+                "invalid scheduled execution target".into(),
+            ));
+        }
+        if let Self::ExecutorSession { selection, .. } = self {
+            selection
+                .settings
+                .validate()
+                .map_err(|error| maka_scheduler::Error::Invalid(error.into()))?;
+        }
+        Ok(())
     }
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationDelivery {
+    #[default]
+    Steering,
+    Followup,
+}
+
 /// Exact observed source boundary. This data is checked against the original
 /// Session; passing it never grants execution by itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -115,11 +135,12 @@ pub struct ScheduledSummary {
     pub id: String,
     pub revision: u64,
     pub title: String,
-    pub status: maka_scheduler::task::Status,
+    pub session_id: String,
+    pub script: bool,
     pub approved: bool,
+    pub status: maka_scheduler::task::Status,
     pub next_fire_at: Option<i64>,
     pub pending_fire: Option<String>,
-    pub reminder: bool,
     pub last_error: Option<String>,
 }
 #[derive(Serialize, JsonSchema)]
@@ -187,16 +208,6 @@ pub enum ScheduleChange {
         task_id: String,
         revision: u64,
     },
-    Snooze {
-        task_id: String,
-        revision: u64,
-        delay_ms: i64,
-    },
-    Acknowledge {
-        task_id: String,
-        revision: u64,
-        fire_id: String,
-    },
     ClearHistory {
         task_id: String,
         revision: u64,
@@ -219,25 +230,3 @@ pub enum ScheduleResult {
     Conflict { actual: Option<u64> },
     Rejected { reason: String },
 }
-
-#[derive(Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentScheduledReminder")]
-pub struct ScheduledReminder {
-    pub task_id: String,
-    pub fire_id: String,
-    pub title: String,
-    pub body: String,
-}
-#[derive(Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentScheduleAlerts")]
-pub struct ScheduleAlerts {
-    pub pending: u32,
-    pub reminders: Vec<ScheduledReminder>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(rename = "AgentScheduleAlertsRead")]
-pub struct ScheduleAlertsRead {}

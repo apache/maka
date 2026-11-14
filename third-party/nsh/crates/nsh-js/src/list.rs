@@ -470,6 +470,58 @@ fn set(cx: *mut JsContext, node: JsValue, name: &str, value: JsValue) -> Result<
     r
 }
 
+/// An indexed source can name the changed span relative to the previous source.
+fn indexed_splice(
+    cx: *mut JsContext,
+    old: JsValue,
+    next: JsValue,
+    old_len: i64,
+    next_len: i64,
+) -> Result<(i64, i64, i64), JsValue> {
+    // SAFETY: inputs are borrowed from the items memo; owned results have guards.
+    unsafe {
+        let diff = Guard(cx, get(cx, next, "spliceFrom"));
+        if qjs::JS_IsException(diff.1) {
+            return Err(diff.1);
+        }
+        if qjs::JS_IsFunction(cx, diff.1) {
+            let mut args = [old];
+            let result = Guard(cx, qjs::JS_Call(cx, diff.1, next, 1, args.as_mut_ptr()));
+            if qjs::JS_IsException(result.1) {
+                return Err(result.1);
+            }
+            if !qjs::JS_IsUndefined(result.1) {
+                let number = |index| {
+                    let value = Guard(cx, qjs::JS_GetPropertyUint32(cx, result.1, index));
+                    if qjs::JS_IsException(value.1) {
+                        return Err(value.1);
+                    }
+                    let mut raw = 0.0;
+                    let valid = qjs::JS_IsNumber(value.1)
+                        && qjs::JS_ToFloat64(cx, &mut raw, value.1) == 0
+                        && (0.0..=f64::from(u32::MAX)).contains(&raw)
+                        && raw.fract() == 0.0;
+                    Ok(valid.then_some(raw as i64))
+                };
+                if qjs::JS_IsArray(result.1)
+                    && length(cx, result.1) == 3
+                    && let (Some(at), Some(removed), Some(inserted)) =
+                        (number(0)?, number(1)?, number(2)?)
+                    && at + removed <= old_len
+                    && old_len - removed + inserted == next_len
+                {
+                    return Ok((at, removed, inserted));
+                }
+                return Err(qjs::JS_ThrowRangeError(
+                    cx,
+                    c"Invalid indexed list splice".as_ptr(),
+                ));
+            }
+        }
+        Ok((0, old_len, next_len))
+    }
+}
+
 /// A run of the items memo: the items, once the cells moved with theirs
 /// (as the core moves them, and Rust lists' `move_rows`): otherwise each
 /// shows the item now at its old index until it is bound again.
@@ -544,9 +596,13 @@ unsafe extern "C" fn items_run(
                 qjs::JS_FreeValue(cx, key_of);
                 (start, old_len - start - end, next_len - start - end)
             } else {
-                // An indexed snapshot is immutable. Its replacement is a new
-                // source, not an invitation to read every row to compare keys.
-                (0, old_len, next_len)
+                match indexed_splice(cx, old, next, old_len, next_len) {
+                    Ok(span) => span,
+                    Err(error) => {
+                        qjs::JS_FreeValue(cx, next);
+                        return error;
+                    }
+                }
             };
             if removed > 0 || inserted > 0 {
                 let mut id = 0f64;
@@ -1420,6 +1476,8 @@ export type ListSlot = (() => JSX.Element) | JSX.Element;
 export interface ReadonlyListSource<T> {
   readonly length: number;
   at(index: number): T;
+  /** The changed span in a prior snapshot, or undefined to replace that snapshot. */
+  spliceFrom?(previous: readonly T[] | ReadonlyListSource<T>): readonly [at: number, removed: number, inserted: number] | undefined;
 }
 
 /** An item that became viewable or stopped being viewable. */
@@ -1624,6 +1682,61 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn indexed_prepend_preserves_the_bound_item() {
+        let host = Host::with_options(HostOptions::default()).unwrap();
+        host.eval_source(
+            r#"
+            import { List, mount, signal } from "nsh";
+            import { text } from "nsh:rt";
+            const first = { length: 3, at(i) { return ["B", "C", "D"][i]; } };
+            const rows = signal(first);
+            globalThis.prepend = () => rows.set({
+                length: 4,
+                at(i) { return ["A", "B", "C", "D"][i]; },
+                spliceFrom(old) { if (old === first) return [0, 0, 1]; }
+            });
+            mount(() => List({
+                get each() { return rows(); },
+                children: row => () => text(row()),
+            }));
+            "#,
+        )
+        .unwrap();
+        let mut ops = Vec::new();
+        host.take_ops(&mut ops);
+        let list = ops
+            .iter()
+            .find_map(|op| match op {
+                nsh_core::Op::Create {
+                    id,
+                    tag: nsh_core::Tag::List,
+                } => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        host.bind_list(list, &[(0, 1)]);
+        ops.clear();
+        host.take_ops(&mut ops);
+        assert!(ops.iter().any(|op| matches!(op,
+            nsh_core::Op::CreateText { text, .. } if text == "C"
+        )));
+        ops.clear();
+        assert!(host.eval_script("prepend", "prepend(); true").unwrap());
+        host.take_ops(&mut ops);
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            nsh_core::Op::SetProp {
+                prop: nsh_core::Prop::Splice(0, 0, 1),
+                ..
+            }
+        )));
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, nsh_core::Op::SetText { .. }))
+        );
     }
 
     #[test]

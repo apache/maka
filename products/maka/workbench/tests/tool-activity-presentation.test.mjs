@@ -172,3 +172,76 @@ test('a partially applied patch shows the failed file and files already changed'
     ],
   );
 });
+
+const execKey = 'maka.agent.Builtin@1/exec';
+const cell = '"cell_id":"55d41969-e90e-822b-8622-935a84e39f04"';
+const scriptResult = (original) =>
+  activityProjection(activityPresentation(execKey), 'result', original, { returned: true });
+
+test("a script's result shows what it printed, not the line of JSON before it", () => {
+  const reply = `{"state":"completed",${cell},"result":{"ok":true,"value":null,"toolCalls":[]}}\nline 0\nline 1`;
+  assert.deepEqual(scriptResult(reply), {
+    kind: 'sections',
+    sections: [{ label: 'Output', text: 'line 0\nline 1', style: 'code' }],
+  });
+});
+
+test('a script that printed nothing shows the value it returned', () => {
+  const text = `{"state":"completed",${cell},"result":{"ok":true,"value":"done","toolCalls":[]}}`;
+  assert.deepEqual(scriptResult(text).sections, [{ label: 'Output', text: 'done', style: 'code' }]);
+  const value = `{"state":"completed",${cell},"result":{"ok":true,"value":{"count":2},"toolCalls":[]}}`;
+  assert.equal(scriptResult(value).sections[0].text, '{\n  "count": 2\n}');
+  const none = `{"state":"completed",${cell},"result":{"ok":true,"value":null,"toolCalls":[]}}`;
+  assert.deepEqual(scriptResult(none).sections, [
+    { label: 'Output', text: 'Script finished without text output' },
+  ]);
+});
+
+test("an interrupted script's failure is its reason, read out of the nested JSON", () => {
+  const diagnostic = JSON.stringify(
+    JSON.stringify({
+      ok: false,
+      error: { kind: 'execution_error', message: 'TypeError: tools.ModelList is not a function' },
+      toolCalls: [],
+    }),
+  );
+  const reply = `{"state":"interrupted",${cell},"diagnostic":${diagnostic},"heap":"expired","bindings":"invalid"}`;
+  assert.deepEqual(activityFailure(reply), {
+    kind: 'failure',
+    message: 'TypeError: tools.ModelList is not a function',
+  });
+  // Cut short by the Host: the line no longer parses, the reason is still found.
+  const cut = `${reply.slice(0, reply.indexOf('"heap"'))}\n[output truncated; full observation is archived]`;
+  assert.equal(activityFailure(cut).message, 'TypeError: tools.ModelList is not a function');
+  assert.deepEqual(scriptResult(reply).sections, [
+    {
+      label: 'Script source',
+      text: 'Script interrupted\nTypeError: tools.ModelList is not a function',
+      tone: 'warning',
+    },
+  ]);
+});
+
+test('the typed observation of a script reads the same way', () => {
+  assert.deepEqual(
+    scriptResult({
+      observation: { state: 'completed', content: [{ text: 'printed' }], result: { ok: true } },
+    }).sections,
+    [{ label: 'Output', text: 'printed', style: 'code' }],
+  );
+  assert.deepEqual(
+    scriptResult({
+      observation: {
+        state: 'completed',
+        content: [],
+        result: { ok: false, error: { message: 'boom' } },
+      },
+    }).sections,
+    [{ label: 'Script source', text: 'Script reported an error\nboom', tone: 'warning' }],
+  );
+});
+
+test('text that is not a script reply is left to other views', () => {
+  assert.equal(scriptResult('{"state":"completed"}'), null);
+  assert.equal(scriptResult('plain text'), null);
+});

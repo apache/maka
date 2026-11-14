@@ -102,45 +102,38 @@ function connectionEditor() {
   };
   const operations = createSettingsOperations(api);
   operations.pendingKnown.set(true);
-  const owner = createModelSettings(
-    api,
-    () => {},
-    operations,
-    () => true,
-    undefined,
-    {
-      page: 'connection',
-      connections: [],
-      providers: [],
-      connectionQuery: '',
-      providerQuery: '',
-      modelQuery: '',
-      revision: 1,
-      defaultTarget: null,
-      next: null,
-      providerNext: null,
-      editor: {
-        instance: 1,
-        baseline: original,
-        provider: {
-          identity: provider,
-          descriptor,
-        },
-        name: original.name,
-        slug: 'chatgpt',
-        baseUrl: original.target.configuration.baseUrl,
-        enabled: true,
-        serverSideCompaction: false,
-        overlay: 'null',
-        apiKey: '',
+  const owner = createModelSettings(api, operations, () => true, undefined, {
+    page: 'connection',
+    connections: [],
+    providers: [],
+    connectionQuery: '',
+    providerQuery: '',
+    modelQuery: '',
+    revision: 1,
+    defaultTarget: null,
+    next: null,
+    providerNext: null,
+    editor: {
+      instance: 1,
+      baseline: original,
+      provider: {
+        identity: provider,
+        descriptor,
       },
-      model: null,
-      credential: status(),
-      discovery: 'idle',
-      confirmation: null,
-      initialModel: null,
+      name: original.name,
+      slug: 'chatgpt',
+      baseUrl: original.target.configuration.baseUrl,
+      enabled: true,
+      serverSideCompaction: false,
+      overlay: 'null',
+      apiKey: '',
     },
-  );
+    model: null,
+    credential: status(),
+    discovery: 'idle',
+    confirmation: null,
+    initialModel: null,
+  });
 
   return { owner };
 }

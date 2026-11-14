@@ -59,7 +59,9 @@ export type Attached = { tool: UiContributionRef; handle: QuickToolHandle };
 const ENABLED_KEY = 'maka.quick-launcher.tools-enabled';
 
 const DISABLED_KEY = 'maka.quick-launcher.disabled-plugins';
-const pluginKey = (tool: UiContributionRef) => JSON.stringify(tool.instance.path);
+const libraryTool = (tool: UiContributionRef) => tool.instance.package.id === 'maka.quick-library';
+const pluginKey = (tool: UiContributionRef) =>
+  JSON.stringify(libraryTool(tool) ? [...tool.instance.path, tool.id] : tool.instance.path);
 const builtInNames: Partial<Record<string, Parameters<typeof tr>[0]>> = {
   'maka.calculator': 'Calculator',
   'maka.symbols': 'Symbols',
@@ -114,7 +116,10 @@ export function createQuickTools(runtime: UiRuntime<JSX.Element>): QuickTools {
     })
     .catch((reason) => failure.set(reason))
     .finally(() => ready.set(true));
-  const toolEnabled = (tool: UiContributionRef) => ready() && !disabled().has(pluginKey(tool));
+  const toolEnabled = (tool: UiContributionRef) =>
+    ready() &&
+    !disabled().has(pluginKey(tool)) &&
+    !(libraryTool(tool) && disabled().has(JSON.stringify(tool.instance.path)));
   const handles = signal<ReadonlyMap<string, QuickToolHandle>>(new Map());
   const tools = () =>
     runtime
@@ -135,7 +140,13 @@ export function createQuickTools(runtime: UiRuntime<JSX.Element>): QuickTools {
       handle.entries().map((entry) => ({ key: entryKey(tool, entry), tool, entry })),
     );
   const page = (tool: UiContributionRef) =>
-    runtime.settings().find((item) => sameValue(item.instance.instance, tool.instance.instance));
+    runtime
+      .settings()
+      .find(
+        (item) =>
+          sameValue(item.instance.instance, tool.instance.instance) &&
+          (!libraryTool(tool) || item.id === `${tool.id}Settings`),
+      );
   const ownEntries = (tool: UiContributionRef) =>
     entries().filter((item) => item.tool.key === tool.key);
   return {
@@ -157,6 +168,12 @@ export function createQuickTools(runtime: UiRuntime<JSX.Element>): QuickTools {
       if (!ready()) return;
       const key = pluginKey(tool);
       const next = new Set(disabled());
+      if (libraryTool(tool) && next.delete(JSON.stringify(tool.instance.path))) {
+        for (const sibling of tools().filter((other) =>
+          sameValue(other.instance.instance, tool.instance.instance),
+        ))
+          next.add(pluginKey(sibling));
+      }
       if (next.has(key)) next.delete(key);
       else next.add(key);
       disabled.set(next);
@@ -171,7 +188,10 @@ export function createQuickTools(runtime: UiRuntime<JSX.Element>): QuickTools {
     commands: createCommands((key) =>
       tools().some(
         (tool) =>
-          !toolEnabled(tool) && key.startsWith(`${tool.instance.path.join('/')}/${tool.id}/`),
+          !toolEnabled(tool) &&
+          (libraryTool(tool)
+            ? key === `${tool.instance.path.join('/')}/tool/${tool.id}`
+            : key.startsWith(`${tool.instance.path.join('/')}/${tool.id}/`)),
       ),
     ),
     page,
@@ -200,11 +220,6 @@ export function QuickToolSettings(props: {
   const page = () => quick.page(props.tool);
   return (
     <View style={{ flex: 1, minHeight: 0 }}>
-      <If when={quick.commands.failure() !== null}>
-        <View style={{ paddingHorizontal: settingsGutter, paddingBottom: 12 }}>
-          <SettingsProblem message={renderText(errorText(quick.commands.failure()))} />
-        </View>
-      </If>
       <If when={entries().length > 0}>
         <View style={{ paddingHorizontal: settingsGutter, paddingBottom: 24 }}>
           <CommandSettings
@@ -212,6 +227,15 @@ export function QuickToolSettings(props: {
             all={quick.entries()}
             commands={quick.commands}
             recording={props.recording}
+          />
+        </View>
+      </If>
+      <If when={quick.commands.failure() !== null}>
+        <View style={{ paddingHorizontal: settingsGutter, paddingBottom: 12 }}>
+          <SettingsProblem
+            message={renderText(
+              errorText(quick.commands.failure(), 'Could not load or save quick tool settings.'),
+            )}
           />
         </View>
       </If>
@@ -311,9 +335,6 @@ export function QuickToolsSettings(props: {
       }
     >
       <SettingsBody>
-        <If when={quick.failure() !== null}>
-          <SettingsProblem message={renderText(errorText(quick.failure()))} />
-        </If>
         <SettingsSection>
           <SettingsSwitch
             label={tr('Turn on quick tools')}
@@ -332,6 +353,16 @@ export function QuickToolsSettings(props: {
             />
           </If>
         </SettingsSection>
+        <If when={quick.failure() !== null || quick.commands.failure() !== null}>
+          <SettingsProblem
+            message={renderText(
+              errorText(
+                quick.failure() ?? quick.commands.failure(),
+                'Could not load or save quick tool settings.',
+              ),
+            )}
+          />
+        </If>
         <If when={quick.enabled()}>
           <SettingsSection
             note={tr(

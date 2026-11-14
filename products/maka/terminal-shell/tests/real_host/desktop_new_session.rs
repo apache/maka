@@ -1064,7 +1064,14 @@ async fn desktop_continues_a_failed_run_without_duplicating_the_user_message() {
             json!({"error":{"type":"invalid_request_error","message":"FIXTURE_TURN_FAILED"}}),
         )
         .await;
-    desktop.control("Continue response").await;
+    let resume = desktop.control("Continue response").await;
+    let composer = desktop.control("Focus message composer").await;
+    assert!(
+        resume.center().x > composer.center().x && resume.center().y > composer.center().y,
+        "Continue must sit in the composer's lower right: {resume:?}, {composer:?}"
+    );
+    assert!(desktop.controls("Continue in a new run").is_empty());
+    desktop.artifact("continue-in-composer");
     let sessions = desktop.sessions().await;
     let session = sessions
         .iter()
@@ -1155,6 +1162,238 @@ async fn desktop_continues_a_failed_run_without_duplicating_the_user_message() {
     fixture.idle(&desktop.client, session).await;
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
     desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_history_anchors_keep_the_reader_off_live_output_until_latest() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    let body = "A long reply leaves space between prompts to test the reader. ".repeat(12);
+    for turn in 1..=6 {
+        desktop.type_text(&format!("History prompt {turn}")).await;
+        desktop.submit().await;
+        let mut reply = desktop.request(&mut fixture).await;
+        reply
+            .delta(&format!("History reply {turn}\n\n{body}"))
+            .await;
+        desktop
+            .wait("the reply did not finish", reply.finish())
+            .await;
+        desktop
+            .until(
+                "the active response did not finish in the workbench",
+                || desktop.controls("Stop response").is_empty().then_some(()),
+            )
+            .await;
+    }
+    let anchor = desktop.control("Jump to turn: History prompt 2").await;
+    let next = desktop.control("Jump to turn: History prompt 3").await;
+    assert_eq!(next.center().y - anchor.center().y, px(10.));
+    desktop.hover_at(anchor.center());
+    desktop
+        .until("the hovered mark did not expand", || {
+            desktop
+                .pixels(anchor)
+                .is_some_and(|pixels| {
+                    pixels
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .filter(|pixel| pixel[0] > 220)
+                        .count()
+                        >= 40
+                })
+                .then_some(())
+        })
+        .await;
+    desktop.artifact("history-anchor-hover");
+    desktop.press_at(anchor.center());
+    desktop.control("Return to latest").await;
+    let copy = desktop.control("Copy user message").await;
+    let _ = desktop.platform.take_clipboard_write();
+    desktop.hover_at(copy.center());
+    desktop
+        .until("the copy action did not appear on hover", || {
+            desktop.draws_in(copy).then_some(())
+        })
+        .await;
+    desktop.press_at(copy.center());
+    let copied = desktop
+        .until("the selected user message was not copied", || {
+            desktop.platform.take_clipboard_write()
+        })
+        .await;
+    assert_eq!(copied, "History prompt 2");
+    desktop.artifact("history-anchor");
+    desktop.press("Return to latest").await;
+    desktop
+        .until("the latest reply did not come into view", || {
+            (desktop.controls("Return to latest").is_empty()
+                && !desktop.controls("Copy message").is_empty())
+            .then_some(())
+        })
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[cfg(target_os = "macos")]
+async fn desktop_resumes_live_activity_when_scrolling_back_to_latest() {
+    let mut fixture = Fixture::configured(Options {
+        responses: true,
+        ..Options::default()
+    })
+    .await;
+    let client = fixture.client().await;
+    mutate(
+        &client,
+        "send",
+        json!({"sessionId": fixture.session, "backend": {
+            "kind": "model", "connectionId": fixture.selection["connectionId"],
+            "modelId": fixture.selection["modelId"],
+        }, "message": "Follow the activity"}),
+    )
+    .await;
+    let mut reply = fixture.next_request().await;
+    for index in 0..35 {
+        reply
+            .packet(json!({"type":"response.output_item.done","item":{
+                "type":"reasoning","id":format!("reasoning-{index}"),
+                "summary":[{"type":"summary_text","text":format!("Activity line {index}")}]
+            }}))
+            .await;
+    }
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let thumb = desktop.control("Thinking · Activity line 34").await;
+    assert!(desktop.controls("Return to latest").is_empty());
+    let at = point(thumb.right() - px(5.), thumb.center().y);
+    desktop.hover_at(at);
+    let scroll = |from, to| {
+        for input in [
+            PlatformInput::MouseMove(native!(MouseMoveEvent { position: from })),
+            PlatformInput::MouseDown(native!(MouseDownEvent {
+                button: MouseButton::Left,
+                position: from,
+                click_count: 1,
+            })),
+            PlatformInput::MouseMove(native!(MouseMoveEvent {
+                position: to,
+                pressed_button: Some(MouseButton::Left),
+            })),
+            PlatformInput::MouseUp(native!(MouseUpEvent {
+                button: MouseButton::Left,
+                position: to,
+                click_count: 1,
+            })),
+        ] {
+            desktop.platform.dispatch_input(input).unwrap();
+            desktop.pump();
+        }
+    };
+    desktop
+        .retry(
+            "scroll up to pause activity following",
+            || !desktop.controls("Return to latest").is_empty(),
+            || scroll(at, point(at.x, at.y - px(80.))),
+        )
+        .await;
+    let outer = point(at.x + px(16.), at.y);
+    scroll(outer, point(outer.x, outer.y - px(120.)));
+    desktop.control("Copy user message").await;
+    assert!(desktop.controls("Thinking · Activity line 34").is_empty());
+    desktop
+        .retry(
+            "scroll down to resume without clicking Latest",
+            || {
+                desktop.controls("Return to latest").is_empty()
+                    && desktop.controls("Resume following").is_empty()
+            },
+            || {
+                scroll(
+                    point(outer.x, outer.y - px(32.)),
+                    point(outer.x, outer.y + px(36.)),
+                )
+            },
+        )
+        .await;
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"reasoning","id":"follow-up",
+            "summary":[{"type":"summary_text","text":"New activity after scrolling"}]
+        }}))
+        .await;
+    desktop
+        .control("Thinking · New activity after scrolling")
+        .await;
+    reply.finish_stream().await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn history_pages_return_each_prompt_once_from_tail_to_start() {
+    let mut fixture = Fixture::open().await;
+    let client = fixture.client().await;
+    let backend = json!({
+        "kind": "model",
+        "connectionId": fixture.selection["connectionId"],
+        "modelId": fixture.selection["modelId"],
+    });
+    for turn in 1..=12 {
+        mutate(
+            &client,
+            "send",
+            json!({"sessionId": fixture.session, "backend": backend, "message": format!("History prompt {turn}")}),
+        )
+        .await;
+        let mut reply = fixture.next_request().await;
+        reply.delta(&format!("History reply {turn}")).await;
+        reply.finish().await;
+        fixture.idle(&client, &fixture.session).await;
+    }
+    let observed = client
+        .query("agent", "observe", json!({"sessionId": fixture.session}))
+        .await
+        .unwrap();
+    let mut position = json!({"kind": "tail"});
+    let mut prompts = Vec::new();
+    for _ in 0..12 {
+        let page = client
+            .query(
+                "agent",
+                "history",
+                json!({
+                    "sessionId": fixture.session,
+                    "through": observed["through"],
+                    "position": position,
+                    "view": "conversation",
+                }),
+            )
+            .await
+            .unwrap();
+        let chunks = page["chunks"].as_array().unwrap();
+        assert!(!chunks.is_empty());
+        prompts.extend(
+            chunks
+                .iter()
+                .rev()
+                .filter(|chunk| chunk["role"] == "user")
+                .map(|chunk| chunk["text"].as_str().unwrap().to_owned()),
+        );
+        if page["before"].is_null() {
+            break;
+        }
+        let next = json!({"kind": "before", "cursor": page["before"]});
+        assert_ne!(next, position, "the older page did not advance its cursor");
+        position = next;
+    }
+    assert_eq!(
+        prompts,
+        (1..=12)
+            .rev()
+            .map(|turn| format!("History prompt {turn}"))
+            .collect::<Vec<_>>()
+    );
     fixture.finish().await;
 }
 
@@ -1491,19 +1730,28 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     desktop.control("Inspect User input").await;
     desktop.control("Inspect Run script").await;
     desktop.control("Inspect Assistant output").await;
-    let parent = desktop.control("Inspect Run script").await;
-    let child = desktop.control("Inspect Read goal").await;
-    assert!(parent.bottom() <= child.top());
-    let requests = desktop
+    let (requests, parent, child) = desktop
         .until(
             "both model requests must be visible, including the tool-only request",
             || {
                 let rows = desktop.controls("Inspect model request fixture-model");
-                (rows.len() == 2).then_some(rows)
+                let parents = desktop.controls("Inspect Run script");
+                let children = desktop.controls("Inspect Read goal");
+                match (rows.len(), parents.as_slice(), children.as_slice()) {
+                    (2, [parent], [child]) => Some((rows, *parent, *child)),
+                    _ => None,
+                }
             },
         )
         .await;
-    assert!(requests[0].bottom() <= parent.top());
+    assert!(
+        parent.bottom() <= child.top(),
+        "parent={parent:?}; child={child:?}"
+    );
+    assert!(
+        requests[0].bottom() <= parent.top(),
+        "requests={requests:?}; parent={parent:?}; child={child:?}"
+    );
     desktop.artifact("trajectory-ledger");
     desktop.press_at(requests[0].center());
     desktop.control("Close record details").await;
@@ -1715,6 +1963,35 @@ async fn desktop_previews_an_incoming_session_message() {
             }),
         )
         .await;
+    // Delivery changes sidebar recency; admit both ends before locating the row.
+    let first = desktop.request(&mut fixture).await;
+    let second = desktop.request(&mut fixture).await;
+    let mut roles = Vec::new();
+    for request in [&first, &second] {
+        let message = request.body["messages"].as_array().unwrap().last().unwrap();
+        let role = message["role"].as_str().unwrap();
+        roles.push(role);
+        let content = message["content"].as_str().unwrap();
+        match role {
+            "tool" => {
+                let receipt: Value = serde_json::from_str(content).unwrap();
+                assert_eq!(receipt["kind"], "queued", "{receipt}");
+                assert_eq!(receipt["sessionId"], recipient["session"]["id"]);
+                assert!(receipt["messageId"].is_string(), "{receipt}");
+            }
+            "user" => {
+                assert!(content.contains(&fixture.session), "{content}");
+                assert!(
+                    content
+                        .ends_with("**The build passed.**\nPlease review the compiler warnings."),
+                    "{content}"
+                );
+            }
+            _ => panic!("unexpected preview request: {}", request.body),
+        }
+    }
+    roles.sort_unstable();
+    assert_eq!(roles, ["tool", "user"]);
     desktop.press("Open conversation Build review").await;
     let summary = "From NSH real Agent · The build passed. Please review the compiler warnings.";
     desktop.control(summary).await;
@@ -1726,8 +2003,82 @@ async fn desktop_previews_an_incoming_session_message() {
         .press("Open source conversation beside this one")
         .await;
     desktop.control("Close side pane").await;
-    desktop.request(&mut fixture).await.finish().await;
-    desktop.request(&mut fixture).await.finish().await;
+    first.finish().await;
+    second.finish().await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_folds_the_conversations_a_conversation_created() {
+    let mut fixture = Fixture::open_with_configuration(
+        Options {
+            session_tools: true,
+            ..Options::default()
+        },
+        |configuration, _| configuration["agent"]["toolDiscovery"] = json!(false),
+    )
+    .await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1440),
+            nsh_terminal::DevicePixels(800),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    let backend = json!({
+        "kind": "model",
+        "connectionId": fixture.selection["connectionId"],
+        "modelId": fixture.selection["modelId"],
+    });
+    mutate(
+        &desktop.client,
+        "send",
+        json!({"sessionId": fixture.session, "backend": backend, "message": "Split the work."}),
+    )
+    .await;
+    for title in [
+        "Triage CI failure",
+        "Review the browser dispatch",
+        "Measure Stage blur",
+        "Check Windows build",
+    ] {
+        desktop
+            .request(&mut fixture)
+            .await
+            .tool_call(
+                "SessionCreate",
+                json!({
+                    "title": title,
+                    "labels": [],
+                    "workspace": {"kind": "session", "sessionId": fixture.session}
+                }),
+            )
+            .await;
+    }
+    let last = desktop.request(&mut fixture).await;
+    assert!(
+        !last.body.to_string().contains("invalid tool input"),
+        "{}",
+        last.body
+    );
+    // Four created conversations list under their creator and fold behind one row.
+    let child = "Open conversation Check Windows build";
+    let unfold = "Show the conversations NSH real Agent created";
+    let fold = "Fold the conversations NSH real Agent created";
+    let row = desktop.control(fold).await;
+    assert!(row.bottom() <= desktop.control(child).await.top());
+    desktop.artifact("created-conversations-open");
+    desktop.press(fold).await;
+    desktop.control(unfold).await;
+    assert!(desktop.controls(child).is_empty());
+    desktop.artifact("created-conversations-folded");
+    desktop.press(unfold).await;
+    desktop.control(fold).await;
+    desktop.control(child).await;
+    last.finish().await;
     desktop.close().await;
     fixture.finish().await;
 }
@@ -1791,7 +2142,47 @@ async fn desktop_folds_work_when_responses_starts_the_final_answer() {
     assert!(desktop.controls(thought).is_empty());
     desktop.press("Turn work details").await;
     desktop.control(thought).await;
+
+    // Reopen to exercise cold Chat history. Live previews already knew the
+    // thought, so expanding before reconnect alone cannot verify lazy paging.
+    let session = desktop
+        .sessions()
+        .await
+        .into_iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     desktop.close().await;
+    let client = fixture.client().await;
+    let page = client
+        .query(
+            "agent",
+            "history",
+            json!({
+                "sessionId": session,
+                "position": {"kind": "tail"},
+                "includeThinking": true,
+                "view": "chat",
+            }),
+        )
+        .await
+        .unwrap();
+    let rows = page["chunks"].as_array().unwrap();
+    assert!(rows.iter().any(|row| row["foldedWork"]["thoughts"] == 1));
+    assert!(!rows.iter().any(|row| row["field"] == "thinking"));
+    assert!(rows.iter().any(|row| row["text"] == "The log is clean."));
+    let original = std::mem::replace(&mut fixture.session, session);
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.control("Copy message").await;
+    assert!(desktop.controls(thought).is_empty());
+    desktop.artifact("reopened-history-collapsed");
+    desktop.press("Turn work details").await;
+    desktop.control(thought).await;
+    desktop.artifact("reopened-history-expanded");
+    desktop.close().await;
+    fixture.session = original;
     fixture.finish().await;
 }
 
@@ -2404,6 +2795,73 @@ fn visual_case() -> (
 async fn desktop_connection_failure_has_one_status_below_the_workspace() {
     let (theme, appearance, layout, width, height) = visual_case();
     disconnected_desktop(theme, appearance, layout, width, height).await;
+}
+
+async fn desktop_subagent_settings_preserves_conflict_and_session_snapshot() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../workbench/tests/fixtures/subagent-settings.tsx");
+    let output = fixture.directory.path().join("preset-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(
+            &entry,
+            &output,
+            Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(width),
+            nsh_terminal::DevicePixels(height),
+        ),
+        appearance,
+        Some((source, "en", "New")),
+    )
+    .await;
+    desktop.event("fixture.seed", json!({}));
+    desktop.control("Reviewer").await;
+    desktop.artifact(&format!("subagents-list-{theme}-{layout}"));
+    desktop.press("Reviewer").await;
+    desktop.control("Save subagent").await;
+    desktop.artifact(&format!("subagents-editor-{theme}-{layout}"));
+    desktop.press("Choose model").await;
+    desktop.control("Test model").await;
+    desktop.artifact(&format!("subagents-model-menu-{theme}-{layout}"));
+    desktop.press("Test model").await;
+    desktop.control("Save subagent").await;
+    desktop.event("fixture.conflict", json!({}));
+    desktop
+        .until("conflict did not preserve the draft", || {
+            desktop.outcome.lock().unwrap()["error"]
+                .as_str()
+                .is_some_and(|text| text.contains("changed elsewhere"))
+                .then_some(())
+        })
+        .await;
+    desktop.control("Conflict recorded").await;
+    desktop.artifact(&format!("subagents-conflict-{theme}-{layout}"));
+    desktop.event("fixture.details", json!({}));
+    desktop
+        .until("applied snapshot was lost after deletion", || {
+            (desktop.outcome.lock().unwrap()["details"] == true).then_some(())
+        })
+        .await;
+    desktop.control("Snapshot shown").await;
+    desktop.artifact(&format!("subagents-session-{theme}-{layout}"));
+    desktop.close().await;
+    fixture.finish().await;
 }
 
 async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
@@ -3256,11 +3714,16 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_new_draft_completes_commands_skills_and_files_without_creating_a_session",
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
     "desktop_continues_a_failed_run_without_duplicating_the_user_message",
+    "desktop_history_anchors_keep_the_reader_off_live_output_until_latest",
+    #[cfg(target_os = "macos")]
+    "desktop_resumes_live_activity_when_scrolling_back_to_latest",
+    "history_pages_return_each_prompt_once_from_tail_to_start",
     "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu",
     "desktop_edits_a_message_in_place_and_forks_only_when_sent",
     "desktop_lists_a_scripts_tool_calls_in_place_of_the_script",
     "desktop_presents_session_tools_in_chat_and_trajectory",
     "desktop_previews_an_incoming_session_message",
+    "desktop_folds_the_conversations_a_conversation_created",
     "desktop_folds_work_when_responses_starts_the_final_answer",
     "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
@@ -3268,6 +3731,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image",
     "desktop_connection_failure_has_one_status_below_the_workspace",
     "desktop_model_settings_keeps_successful_sign_in_and_retries_models",
+    "desktop_subagent_settings_preserves_conflict_and_session_snapshot",
     "desktop_provider_picker_searches_real_catalog_and_preserves_selection",
     "desktop_mermaid_renders_markdown_and_toggles_its_source",
     "desktop_goal_commands_create_pause_resume_and_finish_without_losing_the_draft",
@@ -3305,6 +3769,12 @@ pub(crate) fn run(name: &str) {
         "desktop_continues_a_failed_run_without_duplicating_the_user_message" => {
             runtime.block_on(desktop_continues_a_failed_run_without_duplicating_the_user_message())
         }
+        "desktop_history_anchors_keep_the_reader_off_live_output_until_latest" => {
+            runtime.block_on(desktop_history_anchors_keep_the_reader_off_live_output_until_latest())
+        }
+        "history_pages_return_each_prompt_once_from_tail_to_start" => {
+            runtime.block_on(history_pages_return_each_prompt_once_from_tail_to_start())
+        }
         "desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu" => {
             runtime.block_on(desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu())
         }
@@ -3319,6 +3789,13 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_previews_an_incoming_session_message" => {
             runtime.block_on(desktop_previews_an_incoming_session_message())
+        }
+        "desktop_folds_the_conversations_a_conversation_created" => {
+            runtime.block_on(desktop_folds_the_conversations_a_conversation_created())
+        }
+        #[cfg(target_os = "macos")]
+        "desktop_resumes_live_activity_when_scrolling_back_to_latest" => {
+            runtime.block_on(desktop_resumes_live_activity_when_scrolling_back_to_latest())
         }
         "desktop_folds_work_when_responses_starts_the_final_answer" => {
             runtime.block_on(desktop_folds_work_when_responses_starts_the_final_answer())
@@ -3337,6 +3814,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_connection_failure_has_one_status_below_the_workspace" => {
             runtime.block_on(desktop_connection_failure_has_one_status_below_the_workspace())
+        }
+        "desktop_subagent_settings_preserves_conflict_and_session_snapshot" => {
+            runtime.block_on(desktop_subagent_settings_preserves_conflict_and_session_snapshot())
         }
         "desktop_model_settings_keeps_successful_sign_in_and_retries_models" => {
             runtime.block_on(desktop_model_settings_keeps_successful_sign_in_and_retries_models())

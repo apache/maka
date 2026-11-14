@@ -768,10 +768,16 @@ define_class!(
         // The root sets NSH's cursor; other views pass it up to it.
         #[unsafe(method(cursorUpdate:))]
         fn cursor_update(&self, event: &NSEvent) {
-            match self.input_surface() {
-                Some(surface) => crate::input::cursor_update(&surface),
+            let main = self.surface();
+            let own = main.is_none();
+            if let Some(surface) = main.or_else(|| self.ivars().window.borrow().upgrade()) {
+                let root = NshView(self.retain());
+                if !crate::window::is_blocked(&surface, own.then_some(&root)) {
+                    crate::input::cursor_update(&surface, &root);
+                }
+            } else {
                 // SAFETY: NSView's own handling (passes it up).
-                None => unsafe { msg_send![super(self), cursorUpdate: event] },
+                let (): () = unsafe { msg_send![super(self), cursorUpdate: event] };
             }
         }
 

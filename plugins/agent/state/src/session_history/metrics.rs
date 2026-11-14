@@ -57,6 +57,8 @@ use rusqlite::{OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use std::io::Read;
 
+mod request_outcome;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelCalibrationSample {
@@ -97,7 +99,13 @@ pub struct ModelRequestTrace {
     pub started_at: Option<UnixMillis>,
     pub first_token_at: Option<UnixMillis>,
     pub finished: Option<ModelRequestTraceFinished>,
+    pub retry: Option<ModelRequestRetry>,
     pub context: ModelRequestContextTrace,
+}
+
+pub struct ModelRequestTracePage {
+    pub requests: Vec<ModelRequestTrace>,
+    pub run_terminated: bool,
 }
 
 #[derive(Debug)]
@@ -106,6 +114,13 @@ pub struct ModelRequestTraceFinished {
     pub outcome: Outcome,
     pub usage: ModelUsage,
     pub diagnostic: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum ModelRequestRetry {
+    Scheduled { at: UnixMillis },
+    Started,
+    Cancelled,
 }
 
 fn trace_diagnostic(
@@ -123,15 +138,17 @@ fn trace_diagnostic(
     if original != attempt {
         return Err(invalid("request trace closure has another attempt"));
     }
-    Ok(diagnostic.map(|text| {
-        const LIMIT: usize = 512;
-        let mut chars = text.trim().chars();
-        let mut preview: String = chars.by_ref().take(LIMIT).collect();
-        if chars.next().is_some() {
-            preview.push('…');
-        }
-        preview
-    }))
+    Ok(diagnostic.map(|text| diagnostic_preview(&text)))
+}
+
+fn diagnostic_preview(text: &str) -> String {
+    const LIMIT: usize = 512;
+    let mut chars = text.trim().chars();
+    let mut preview: String = chars.by_ref().take(LIMIT).collect();
+    if chars.next().is_some() {
+        preview.push('…');
+    }
+    preview
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -164,7 +181,7 @@ impl HistoryDataSource {
         run: RunId,
         after: u64,
         limit: u32,
-    ) -> Result<Vec<ModelRequestTrace>, StoreError> {
+    ) -> Result<ModelRequestTracePage, StoreError> {
         let query = ReadRequestTraces(self.clone(), run, after, limit);
         match self {
             Self::Live { history, .. } => history.data.query(query).await,
@@ -227,19 +244,21 @@ impl Query for ReadPromptCache {
 
 pub(super) struct ReadRequestTraces(HistoryDataSource, RunId, u64, u32);
 impl Query for ReadRequestTraces {
-    type Output = Vec<ModelRequestTrace>;
+    type Output = ModelRequestTracePage;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         let Self(source, run, after, limit) = self;
         let mut traces = Vec::new();
         let mut contexts = std::collections::BTreeMap::<StepId, ModelRequestContextTrace>::new();
+        let through = match &source {
+            HistoryDataSource::Live { history, cut } => {
+                sql::validate_cut(c, &history.namespace.owner, &history.namespace.session, cut)?;
+                cut.through_sequence
+            }
+            HistoryDataSource::Snapshot(snapshot) => snapshot_bound(c, snapshot)?,
+        };
+        let end = request_outcome::run_end(c, &source, run, through)?;
         match &source {
             HistoryDataSource::Live { history, cut } => {
-                sql::validate_cut(
-                    c,
-                    &history.namespace.owner,
-                    &history.namespace.session,
-                    &cut,
-                )?;
                 let mut statement = c.prepare_cached(
                     "SELECT h.sequence,h.step,h.attempt,u.request,u.model_id,u.purpose
                      FROM agent_session_history h INDEXED BY agent_session_history_run
@@ -285,6 +304,8 @@ impl Query for ReadRequestTraces {
                             })
                         })
                         .transpose()?;
+                    let (finished, retry) =
+                        request_outcome::read(c, &source, run, step, attempt, finished, &end)?;
                     traces.push(ModelRequestTrace {
                         sequence: sql::read_u64(row, 0)?,
                         step,
@@ -302,12 +323,13 @@ impl Query for ReadRequestTraces {
                             "model_first_token_observed",
                         )?,
                         finished,
+                        retry,
                         context: contexts[&step].clone(),
                     });
                 }
             }
             HistoryDataSource::Snapshot(snapshot) => {
-                let bound = snapshot_bound(c, snapshot)?;
+                let bound = through;
                 let mut statement = c.prepare_cached(
                     "SELECT entry_json FROM agent_history_snapshot_entries
                      WHERE snapshot=? AND kind='fact' AND run=?
@@ -380,6 +402,8 @@ impl Query for ReadRequestTraces {
                             })
                         })
                         .transpose()?;
+                    let (finished, retry) =
+                        request_outcome::read(c, &source, run, step, attempt, finished, &end)?;
                     traces.push(ModelRequestTrace {
                         sequence: original.sequence,
                         step,
@@ -389,12 +413,16 @@ impl Query for ReadRequestTraces {
                         started_at,
                         first_token_at,
                         finished,
+                        retry,
                         context: contexts[&step].clone(),
                     });
                 }
             }
         }
-        Ok(traces)
+        Ok(ModelRequestTracePage {
+            requests: traces,
+            run_terminated: end.terminated(),
+        })
     }
 }
 

@@ -70,12 +70,18 @@ import { delayed } from '../../../../products/maka/workbench/app/delayed';
 import {
   createText,
   createTransientText,
+  ActionPending,
   UiError,
   errorText,
   errorMessage,
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
-import { currentLocale, displayText, tr } from '../../../../products/maka/workbench/app/locale';
+import {
+  currentLocale,
+  displayText,
+  tr,
+  type MessageKey,
+} from '../../../../products/maka/workbench/app/locale';
 import { loadDraft, type Host } from '../../../../products/maka/workbench/app/host';
 import { settingsValue } from '../../../../products/maka/workbench/app/settingsOperations';
 import {
@@ -137,6 +143,7 @@ import {
   WorkspaceBrowser,
   type WorkspaceBrowserProps,
 } from '../../../../products/maka/workbench/app/WorkspaceBrowser';
+import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
 import {
   applicationMenu,
   ownTitleBar,
@@ -273,11 +280,8 @@ export function createConversationUi(
   const status = createTransientText();
   const switching = signal(false);
   const busy = signal(false);
-  // The method being confirmed, so the feedback can say what is happening.
-  const busyMethod = signal<string | null>(null);
-  // Shown only when saving a draft or confirming an action takes a while, so a
-  // quick one does not flash the feedback row and move the page.
-  const working = delayed(() => switching() || busy());
+  const creatingFork = signal(false);
+  const working = delayed(() => switching() || creatingFork());
   const controls = signal<any[]>([]);
   const controlsKnown = signal(false);
   const recovering = signal(false);
@@ -451,7 +455,7 @@ export function createConversationUi(
         if (alive && generation === pendingModelGeneration)
           pendingModelDetails.set({
             kind: 'unavailable',
-            message: errorText(reason),
+            message: errorText(reason, 'Could not load models.'),
           });
       }
     },
@@ -482,7 +486,7 @@ export function createConversationUi(
     pendingReveal = null;
   });
   const report = (reason: unknown) => {
-    if (alive) error.set(errorText(reason));
+    if (alive) error.set(errorText(reason, 'Could not update the conversation.'));
   };
   const checkWorkspace = async () => {
     const workspace = pendingWorkspace();
@@ -540,6 +544,7 @@ export function createConversationUi(
     if (next !== observedSession) {
       observedSession = next;
       overlay.set(null);
+      error.set('');
     }
     const visible = shell()?.visible() ?? false;
     const owner = handle();
@@ -630,20 +635,53 @@ export function createConversationUi(
       if (alive) switching.set(false);
     }
   };
-  const returned = (reply: any) => {
+  const controlLabels: Readonly<Partial<Record<string, MessageKey>>> = {
+    changeGoal: 'Update goal',
+    changeSession: 'Update conversation',
+    compact: 'Compact conversation',
+    continueRun: 'Continue response',
+    create: 'New conversation',
+    editQueue: 'Edit queued message',
+    fork: 'Fork conversation',
+    markBotRead: 'Mark conversation as read',
+    markRead: 'Mark conversation as read',
+    metadata: 'Update conversation',
+    openBot: 'Open Maka Bot',
+    respond: 'Submit response',
+    selectBackend: 'Change model',
+    setCompactionPrompt: 'Save compaction instructions',
+    stop: 'Stop response',
+    stopComputerApp: 'Stop computer access',
+    trustProjectMcp: 'Update project MCP access',
+  };
+  const notExecuted = (method: string) => {
+    const label = controlLabels[method];
+    return label
+      ? new UiError('{action} did not run. Try again.', { action: uiMessage(label) })
+      : new Error(`Conversation control ${method} did not run`);
+  };
+  const returned = (method: string, reply: any) => {
     const receipt = reply?.receipt;
-    if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'unknown')
-      throw new UiError('This action could not be completed.');
+    if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'unknown') {
+      console.warn(`Could not confirm conversation control ${method}:`, receipt.outcome.diagnostic);
+      const label = controlLabels[method];
+      if (label)
+        throw new UiError('Could not confirm the result of “{action}”.', {
+          action: uiMessage(label),
+        });
+      throw new Error(`Could not confirm conversation control ${method}`);
+    }
+    if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'not_executed')
+      throw notExecuted(method);
     if (receipt?.kind !== 'recorded' || receipt.outcome?.kind !== 'returned')
-      throw new UiError('Syncing changes…');
+      throw new ActionPending();
     const result = receipt.outcome.result;
     if (result.kind === 'failure') throw new Error(result.diagnostic);
     return result.value;
   };
   const control: Control = async (method, input) => {
     const urgent = method === 'stop' || method === 'stopComputerApp';
-    if (!urgent && !controlsKnown())
-      throw new UiError('Checking earlier actions. Try again in a moment.');
+    if (!urgent && !controlsKnown()) throw new ActionPending();
     const originals: any[] = urgent ? await host.pendingControls() : controls();
     const unresolved = originals.find(
       (original) =>
@@ -660,13 +698,11 @@ export function createConversationUi(
         (method !== 'stopComputerApp' || original.correlation.operationId === input.operationId) &&
         (method !== 'respond' || original.correlation.requestId === input.requestId),
     );
-    if (unresolved) throw new UiError('Syncing changes…');
-    if (!urgent && busy())
-      throw new UiError('An action is being confirmed. Try again in a moment.');
+    if (unresolved || (!urgent && busy())) throw new ActionPending();
     const pendingCreation = method === 'create' && pendingSending() && pendingWorkspace() !== null;
     if (!urgent) {
       busy.set(true);
-      busyMethod.set(method);
+      creatingFork.set(method === 'fork');
     }
     try {
       let result: any;
@@ -677,10 +713,10 @@ export function createConversationUi(
         });
         for (;;) {
           const event = await original.next();
-          if (event === null) throw new UiError('Syncing changes…');
+          if (event === null) throw new ActionPending();
           if (event.kind === 'not_dispatched') {
             updatePending({ target: null });
-            throw new UiError('The action was not dispatched. Try again.');
+            throw notExecuted(method);
           }
           if (event.kind === 'finished') {
             if (
@@ -688,7 +724,7 @@ export function createConversationUi(
               event.reply.receipt.outcome?.kind === 'unknown'
             )
               updatePending({ target: null });
-            result = returned(event.reply);
+            result = returned(method, event.reply);
             updatePending({
               target:
                 result.kind === 'created'
@@ -698,12 +734,9 @@ export function createConversationUi(
             break;
           }
         }
-      } else result = returned((await host.control(method, input)).reply);
-      if (method === 'respond') presentInteraction(input, result);
+      } else result = returned(method, (await host.control(method, input)).reply);
+      if (method === 'respond' && result.kind === 'recorded') presentInteraction(input, result);
       return result;
-    } catch (reason) {
-      if (method === 'respond' && selected() === input.sessionId) report(reason);
-      throw reason;
     } finally {
       await refreshControls().catch((reason) => {
         controlsKnown.set(false);
@@ -711,7 +744,7 @@ export function createConversationUi(
       });
       if (!urgent && alive) {
         busy.set(false);
-        busyMethod.set(null);
+        creatingFork.set(false);
       }
     }
   };
@@ -1190,7 +1223,7 @@ export function createConversationUi(
                   (original) => original.sessionId === id && original.method === 'metadata',
                 )
               )
-                throw new UiError('Syncing changes…');
+                throw new ActionPending();
               const observed = await host.query('agent', 'observe', {
                 sessionId: id,
               });
@@ -1347,6 +1380,11 @@ export function createConversationUi(
   // in the current conversation's workspace, later opens return the same Session.
   // `undefined` until the Host has answered; then the Bot Session or `null` for none.
   const botSession = signal<string | null | undefined>(undefined);
+  const botWorkers = createBotWorkers(
+    host,
+    () => botSession() ?? null,
+    () => platform.idiom !== 'terminal',
+  );
   const refreshBotSession = async () => {
     const head = await host.query('agent', 'botOutbox', { limit: 0 });
     if (alive) botSession.set(head.sessionId ?? null);
@@ -1524,10 +1562,8 @@ export function createConversationUi(
             workspace,
             backend,
           });
-          if (result.kind !== 'created') {
-            console.warn('Goal conversation creation rejected', result);
-            throw new UiError('This action could not be completed.');
-          }
+          if (result.kind !== 'created')
+            throw new Error(`Goal conversation creation rejected: ${result.kind}`);
           id = result.session.id as string;
         }
         requireOwner();
@@ -1548,7 +1584,7 @@ export function createConversationUi(
             permissions: { settings, revokeGrants: false },
           });
           if (changed.kind !== 'committed')
-            throw new UiError('This action could not be completed.');
+            throw new Error(`Goal conversation permission update rejected: ${changed.kind}`);
         }
         requireOwner();
         if (reusingSession) {
@@ -1556,10 +1592,8 @@ export function createConversationUi(
             sessionId: id,
             backend,
           });
-          if (chosen.kind !== 'committed') {
-            console.warn('Goal model selection rejected', chosen);
-            throw new UiError('This action could not be completed.');
-          }
+          if (chosen.kind !== 'committed')
+            throw new Error(`Goal model selection rejected: ${chosen.kind}`);
         }
         const observed = (await host.query('agent', 'observe', { sessionId: id })).session;
         requireOwner();
@@ -1590,7 +1624,7 @@ export function createConversationUi(
           });
           if (created.kind === 'conflict')
             throw new UiError('The Goal changed. Review it and try again.');
-          if (created.kind === 'rejected') throw new UiError(goalRejection(created.reason));
+          if (created.kind === 'rejected') throw goalRejection(created.reason);
         }
         requireOwner();
         const text = /^\s*\/goal(?:\s|$)/u.test(draft) ? '' : draft;
@@ -1608,7 +1642,8 @@ export function createConversationUi(
         return true;
       } catch (reason) {
         console.warn('Goal start failed', reason);
-        if (owns() && currentSubmission(attempt)) pendingGoalError.set(errorText(reason));
+        if (owns() && currentSubmission(attempt))
+          pendingGoalError.set(errorText(reason, 'Could not start the goal.'));
         return false;
       } finally {
         if (alive) {
@@ -1733,8 +1768,6 @@ export function createConversationUi(
   const recoverControls = async () => {
     if (recovering()) return;
     recovering.set(true);
-    error.set('');
-    status.set('');
     let responseConfirmed = false;
     let failed = false;
     try {
@@ -1761,7 +1794,7 @@ export function createConversationUi(
             reply.receipt.outcome?.kind === 'unknown'
           )
             updatePending({ target: null });
-          const result = returned(reply);
+          const result = returned(original.method, reply);
           if (
             original.method === 'respond' &&
             original.sessionId &&
@@ -1816,8 +1849,10 @@ export function createConversationUi(
             errorMessage(reason) === 'client operation ended before dispatch'
           )
             updatePending({ target: null });
-          failed = true;
-          report(reason);
+          if (!(reason instanceof ActionPending)) {
+            failed = true;
+            if ((original.sessionId ?? null) === selected()) report(reason);
+          }
         }
       }
       const owner = handle();
@@ -1909,6 +1944,8 @@ export function createConversationUi(
   // Kept here so the browser's collapsed workspaces outlive its unmounting
   // and stepping between conversations skips them as the browser does.
   const collapsedGroups = signal<ReadonlySet<string>>(new Set());
+  const expandedProjects = signal<ReadonlySet<string>>(new Set());
+  const foldedFamilies = signal<ReadonlySet<string>>(new Set());
   const stepSession = (step: 1 | -1) => {
     const current = overlay();
     if (switching() || busy() || (current && current.kind !== 'sessions')) return;
@@ -1921,6 +1958,8 @@ export function createConversationUi(
       ),
       collapsedGroups(),
       selected(),
+      platform.idiom === 'terminal' ? undefined : expandedProjects(),
+      platform.idiom === 'terminal' || browsing.filter() !== 'all' ? undefined : foldedFamilies(),
     );
     const index = rows.indexOf(selected() ?? '');
     const next = rows[index === -1 ? 0 : index + step];
@@ -1974,12 +2013,15 @@ export function createConversationUi(
     newConversation: (sessionId) => invokeCommand({ id: 'new', sessionId }),
     openBot: (sessionId) => invokeCommand({ id: 'bot', sessionId }),
     botSession,
+    botWorkers: botWorkers.sessions,
     settings: (sessionId) => invokeCommand({ id: 'settings', sessionId }),
     search: (sessionId) => invokeCommand({ id: 'sessions', sessionId }),
     canOpenBeside: () => !!shell()?.openBeside,
     beside: () => shell()?.besideSessionIds?.() ?? [],
     openBeside: (sessionId) => shell()?.openBeside?.(sessionId),
     collapsedGroups,
+    expandedProjects,
+    foldedFamilies,
   };
   let wasDocked = shell()?.sidebarDocked();
   let previousWidth = windowSize().width;
@@ -2265,6 +2307,46 @@ export function createConversationUi(
               );
             }}
           </Each>
+          <If
+            when={
+              handle()?.reconnecting() ||
+              handle()?.executionWaitMessage() ||
+              handle()?.attachmentMetadataFailed()
+            }
+          >
+            <View
+              style={{
+                flexDirection: 'row',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                gap: 8,
+                paddingHorizontal: 12,
+                paddingVertical: 4,
+              }}
+            >
+              <If when={handle()?.reconnecting() || handle()?.executionWaitMessage()}>
+                <Text style={{ ...bodyTextStyle, flex: 1, color: C.muted }}>
+                  {handle()?.reconnecting()
+                    ? tr('Reconnecting updates… Your draft is kept.')
+                    : handle()?.executionWaitMessage()}
+                </Text>
+              </If>
+              <If when={handle()?.reconnecting()}>
+                <Button
+                  accessibilityLabel={tr('Reconnect updates')}
+                  onPress={() => handle()?.reconnect()}
+                  style={controlStyle}
+                >
+                  <Text style={{ color: C.accent }}>{tr('Retry')}</Text>
+                </Button>
+              </If>
+              <If when={handle()?.attachmentMetadataFailed()}>
+                <Button onPress={() => handle()?.retryAttachmentMetadata()} style={controlStyle}>
+                  <Text style={{ color: C.accent }}>{tr('Retry attachment metadata')}</Text>
+                </Button>
+              </If>
+            </View>
+          </If>
           <If when={!connectionLost() && status()}>
             <View
               style={{
@@ -2311,11 +2393,7 @@ export function createConversationUi(
             when={
               !connectionLost() &&
               (handle()?.connected() ?? true) &&
-              (error() ||
-                working() ||
-                !controlsKnown() ||
-                controls().length ||
-                forkNotice()?.id === selected())
+              (error() || working() || forkNotice()?.id === selected())
             }
           >
             <Scroll
@@ -2339,13 +2417,9 @@ export function createConversationUi(
                   {error()}
                 </Text>
               </If>
-              <If when={working()}>
+              <If when={working() && !error()}>
                 <Text style={{ ...bodyTextStyle, color: C.muted }}>
-                  {switching()
-                    ? tr('Saving draft before switching…')
-                    : busyMethod() === 'fork'
-                      ? tr('Creating fork…')
-                      : tr('Confirming action…')}
+                  {switching() ? tr('Saving draft before switching…') : tr('Creating fork…')}
                 </Text>
               </If>
               <If when={forkNotice()?.id === selected()}>
@@ -2382,11 +2456,6 @@ export function createConversationUi(
                     </Text>
                   </Button>
                 </View>
-              </If>
-              <If when={!controlsKnown() || controls().length > 0}>
-                <Text style={{ ...bodyTextStyle, color: C.secondary }}>
-                  {tr('Syncing changes…')}
-                </Text>
               </If>
             </Scroll>
           </If>

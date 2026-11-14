@@ -311,12 +311,7 @@ function Preview() {
     },
   } as unknown as Host;
   const operations = createSettingsOperations(api);
-  const owner = createModelSettings(
-    api,
-    () => {},
-    operations,
-    () => true,
-  );
+  const owner = createModelSettings(api, operations, () => true);
   const instance = ['settings'];
   const contribution = {
     key: 'connections',
@@ -366,7 +361,7 @@ function Preview() {
     <HostProvider value={api}>
       <ModelSettings
         context={context}
-        input={{ opened: () => true, close() {}, changed() {} }}
+        input={{ opened: () => true, close() {} }}
         defaultRoute={{ instance, id: 'connections' }}
         route={signal({ instance, id: 'connections' })}
         operations={operations}

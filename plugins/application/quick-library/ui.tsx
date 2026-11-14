@@ -21,12 +21,20 @@ import { effect, Clipboard, computed, openUrl, signal, Storage, type JSX } from 
 import type { UiEmbeddedViewProps, UiModule } from '../../../packages/plugin-sdk/src/workbench.js';
 import {
   quickToolView,
+  type QuickEntry,
   type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
 import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
-import { afterKeyword, search, type Found } from '../../shared/quick-search';
-import { expandLink, isTemplate, parseLibrary, type LibraryItem } from './library';
+import { afterKeyword, search } from '../../shared/quick-search';
+import {
+  expandLink,
+  librarySearchTerms,
+  isTemplate,
+  parseLibrary,
+  type LibraryItem,
+  type LibraryKind,
+} from './library';
 import { LibrarySettings, type Library } from './settings';
 
 const KEY = 'maka.quick-library.items';
@@ -62,82 +70,132 @@ function createLibrary(): Library {
 }
 
 const preview = (value: string) => value.replace(/\s+/g, ' ').slice(0, 120);
-const name = (item: LibraryItem) => [item.name];
 
-function results(items: readonly LibraryItem[], input: QuickToolInput): QuickItem[] {
-  const query = input.query();
-  const remembered = (item: LibraryItem, match: number) => ({
-    id: item.id,
-    title: item.name,
-    detail: preview(item.value),
-    match,
-    remembered: true,
-  });
-  const copy = ({ item, match }: Found<LibraryItem>): QuickItem => ({
-    ...remembered(item, match),
-    icon: item.kind === 'note' ? 'note' : 'snippet',
-    source: item.kind === 'note' ? tr('Note') : tr('Snippet'),
-    action: tr('Copy and close'),
-    run: () => void Clipboard.writeText(item.value).then(input.close, input.report),
-  });
-  const open = (item: LibraryItem, match: number, url: string, title: string): QuickItem => ({
-    ...remembered(item, match),
-    title,
-    icon: 'link',
-    source: tr('Link'),
-    action: tr('Open'),
-    run: () =>
+function entry(kind: LibraryKind): QuickEntry {
+  switch (kind) {
+    case 'link':
+      return { id: 'links', title: tr('Quick Links'), icon: 'link', keywords: LINK_KEYWORDS };
+    case 'snippet':
+      return {
+        id: 'snippets',
+        title: tr('Text Snippets'),
+        icon: 'snippet',
+        keywords: SNIPPET_KEYWORDS,
+      };
+    case 'note':
+      return { id: 'notes', title: tr('Notes'), icon: 'note', keywords: NOTE_KEYWORDS };
+  }
+}
+
+function LibraryTool(props: { input: QuickToolInput; library: Library; kind: LibraryKind }) {
+  const { input, library, kind } = props;
+  const edit = (item: LibraryItem) => {
+    const current = () => library.items()?.find((other) => other.id === item.id);
+    input.editText({
+      title: item.name,
+      value: () => current()?.value ?? '',
+      change: (value) => {
+        if (current()?.value === value) return;
+        library.save(
+          (library.items() ?? []).map((other) =>
+            other.id === item.id ? { ...other, value } : other,
+          ),
+        );
+      },
+      error: () => (library.failure() ? String(library.failure()) : undefined),
+    });
+  };
+  const items = computed((): QuickItem[] => {
+    const all = library.items();
+    if (!all) return [];
+    const own = all.filter((item) => item.kind === kind);
+    const query = input.query();
+    const command = entry(kind);
+    const scoped = afterKeyword(query, command.keywords);
+    const matches = search(
+      own,
+      query,
+      command.keywords,
+      (item) => librarySearchTerms(item, scoped !== null),
+      true,
+    );
+    const open = (url: string) =>
       void openUrl(url).then(({ opened }) => {
         if (opened) input.close();
         else input.report(new Error(tr('The link could not be opened')));
-      }, input.report),
+      }, input.report);
+    const rows = matches.map(({ item, match }): QuickItem => {
+      const engine = kind === 'link' && isTemplate(item);
+      return {
+        id: item.id,
+        title: item.name,
+        detail: preview(item.value),
+        match,
+        remembered: true,
+        icon: command.icon,
+        source: engine ? tr('Search engine') : command.title,
+        action:
+          kind === 'note'
+            ? tr('Edit')
+            : kind === 'snippet'
+              ? tr('Copy and close')
+              : engine
+                ? tr('Search')
+                : tr('Open'),
+        run: () => {
+          if (kind === 'note') edit(item);
+          else if (kind === 'snippet')
+            void Clipboard.writeText(item.value).then(input.close, input.report);
+          else if (engine) input.enter(command.id, item.name + ' ');
+          else open(item.value);
+        },
+      };
+    });
+    if (kind === 'link') {
+      for (const item of own.filter(isTemplate)) {
+        const text = afterKeyword(scoped ?? query, [item.name]);
+        if (text)
+          rows.unshift({
+            id: item.id,
+            title: item.name + ': ' + text,
+            detail: preview(expandLink(item.value, text)),
+            icon: 'link',
+            source: tr('Search engine'),
+            action: tr('Open'),
+            match: 0,
+            remembered: true,
+            run: () => open(expandLink(item.value, text)),
+          });
+      }
+    }
+    if (kind === 'note' && scoped && !rows.length && scoped.length <= 160) {
+      rows.push({
+        id: 'create:' + scoped,
+        title: tr('Create note') + ' · ' + scoped,
+        icon: 'note',
+        source: command.title,
+        action: tr('Create note'),
+        match: 0,
+        run: () => {
+          const item: LibraryItem = { id: crypto.randomUUID(), kind, name: scoped, value: '' };
+          library.save([...(library.items() ?? []), item]);
+          edit(item);
+        },
+      });
+    }
+    return rows;
   });
-  const kind =
-    afterKeyword(query, NOTE_KEYWORDS) !== null
-      ? 'note'
-      : afterKeyword(query, SNIPPET_KEYWORDS) !== null
-        ? 'snippet'
-        : afterKeyword(query, LINK_KEYWORDS) !== null
-          ? 'link'
-          : null;
-  const ofKind = (wanted: LibraryItem['kind']) =>
-    kind !== null && kind !== wanted ? [] : items.filter((item) => item.kind === wanted);
-  const links = ofKind('link');
-  const notes = ofKind('note');
-  return [
-    ...links.filter(isTemplate).flatMap((item) => {
-      const text = afterKeyword(query, [item.name]);
-      return text ? [open(item, 0, expandLink(item.value, text), `${item.name}: ${text}`)] : [];
-    }),
-    ...search(
-      links.filter((item) => !isTemplate(item)),
-      query,
-      LINK_KEYWORDS,
-      name,
-      true,
-    ).map(({ item, match }) => open(item, match, item.value, item.name)),
-    ...search(ofKind('snippet'), query, SNIPPET_KEYWORDS, name, true).map(copy),
-    ...search(
-      notes,
-      query,
-      NOTE_KEYWORDS,
-      // Note bodies are only searched once the query has asked for notes.
-      afterKeyword(query, NOTE_KEYWORDS) === null ? name : (item) => [item.name, item.value],
-      true,
-    ).map(copy),
-  ];
-}
-
-function LibraryTool(props: { input: QuickToolInput; library: Library }) {
-  const { input, library } = props;
-  const items = computed(() => results(library.items() ?? [], input));
   input.attach({
     items,
-    entries: () => [
-      { id: 'snippets', title: tr('Snippets'), icon: 'snippet', keywords: SNIPPET_KEYWORDS },
-      { id: 'notes', title: tr('Notes'), icon: 'note', keywords: NOTE_KEYWORDS },
-      { id: 'links', title: tr('Links'), icon: 'link', keywords: LINK_KEYWORDS },
-    ],
+    entries: () => [entry(kind)],
+    ...(kind === 'snippet'
+      ? {
+          preview: (id: string) => {
+            const item = library.items()?.find((other) => other.id === id && other.kind === kind);
+            return item ? { text: item.value, fields: [] } : undefined;
+          },
+        }
+      : {}),
   });
   return null;
 }
@@ -145,16 +203,25 @@ function LibraryTool(props: { input: QuickToolInput; library: Library }) {
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   effect(() => currentLocale.set(context.locale()));
   const library = createLibrary();
+  const tool = (kind: LibraryKind) => ({
+    kind: 'view' as const,
+    contract: quickToolView.id,
+    render: ({ input }: UiEmbeddedViewProps<QuickToolInput, JSX.Element>) => (
+      <LibraryTool input={input} library={library} kind={kind} />
+    ),
+  });
+  const settings = (kind: LibraryKind) => ({
+    kind: 'settings' as const,
+    render: () => <LibrarySettings library={library} kind={kind} />,
+  });
   return {
     exports: {
-      tool: {
-        kind: 'view',
-        contract: quickToolView.id,
-        render: ({ input }: UiEmbeddedViewProps<QuickToolInput, JSX.Element>) => (
-          <LibraryTool input={input} library={library} />
-        ),
-      },
-      library: { kind: 'settings', render: () => <LibrarySettings library={library} /> },
+      links: tool('link'),
+      snippets: tool('snippet'),
+      notes: tool('note'),
+      linksSettings: settings('link'),
+      snippetsSettings: settings('snippet'),
+      notesSettings: settings('note'),
     },
   };
 };

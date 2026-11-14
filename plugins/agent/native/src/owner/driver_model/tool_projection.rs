@@ -31,15 +31,10 @@ impl DriverModel {
         fact: &Fact,
         call: &maka_agent_facts::model::ModelToolCall,
     ) -> Result<Option<ToolOutput>, RunError> {
-        let (tool, reference) = match fact {
-            Fact::ToolResultAccepted { tool, result, .. }
-            | Fact::HostToolResultRecorded { tool, result, .. }
-            | Fact::LocalToolReturned { tool, result, .. } => (tool, result),
-            _ => {
-                return Err(RunError::InvalidInput(
-                    "archive source is not an original tool result".into(),
-                ));
-            }
+        let Fact::ToolResultAccepted { tool, result, .. } = fact else {
+            return Err(RunError::InvalidInput(
+                "archive source is not an accepted tool result".into(),
+            ));
         };
         let work = self.resources.acquire_work().await?;
         let budget = work.budget();
@@ -52,7 +47,7 @@ impl DriverModel {
         };
         let selected = reader
             .tool_result_reader(view.run, &self.cancellation)
-            .result(fact, reference, budget.clone())
+            .result(fact, result, budget.clone())
             .await
             .map_err(failed)?;
         let ToolResultSource::Returned(returned) = selected else {

@@ -24,17 +24,13 @@ pub mod directory;
 pub mod files;
 pub mod git;
 pub mod image;
-pub mod path;
-mod search;
-pub mod workspace;
-pub mod worktree;
-pub use search::{GLOB_DESCRIPTION, GLOB_NAME, glob_schema};
-mod grep;
-pub use grep::{GREP_DESCRIPTION, GREP_NAME, grep_schema};
 mod mutation;
 mod patch;
+pub mod path;
 pub mod publication;
 mod scoped;
+pub mod workspace;
+pub mod worktree;
 mod write;
 mod write_target;
 
@@ -177,18 +173,12 @@ impl ReadExecutor {
 
 impl ToolExecutor for ReadExecutor {
     fn names(&self) -> Vec<String> {
-        vec![READ_NAME.into(), GLOB_NAME.into(), GREP_NAME.into()]
+        vec![READ_NAME.into()]
     }
 
     fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
         let executor = self.clone();
         Box::pin(async move {
-            if name == GLOB_NAME {
-                return executor.glob(input, cancellation).await;
-            }
-            if name == GREP_NAME {
-                return executor.grep(input, cancellation).await;
-            }
             if name != READ_NAME {
                 return Err(failed("unsupported tool"));
             }

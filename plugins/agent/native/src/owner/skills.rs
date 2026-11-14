@@ -109,16 +109,14 @@ impl Owner {
         basis: &CapturedRun,
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> Result<Vec<String>, String> {
-        match &basis.executor {
-            Some(executor) if executor.selection.executor == "external" => Ok(self
-                .selected_tools(session, basis, None)?
-                .names()
-                .into_iter()
-                .filter(|name| self.host_tools.contains(name))
-                .collect()),
-            Some(_) => Ok(Vec::new()),
-            None => Ok(self.selected_tools(session, basis, editing)?.names()),
+        if basis
+            .executor
+            .as_ref()
+            .is_some_and(|executor| executor.selection.executor != "external")
+        {
+            return Ok(Vec::new());
         }
+        Ok(self.selected_tools(session, basis, editing)?.names())
     }
     pub(crate) async fn skill_candidates(
         &self,
@@ -138,7 +136,7 @@ impl Owner {
         let Some(library) = &self.skills else {
             return Ok(SkillCandidates::default());
         };
-        let (editing, external) = match input.backend {
+        let editing = match input.backend {
             BackendPreference::Model {
                 connection_id,
                 model_id,
@@ -155,24 +153,17 @@ impl Owner {
                 )
                 .await
                 {
-                    Ok(editing) => (Some(editing), false),
+                    Ok(editing) => Some(editing),
                     Err(_) => return Ok(SkillCandidates::default()),
                 }
             }
             BackendPreference::Executor { selection } if selection.executor == "external" => {
                 match self.executors.select(selection) {
-                    Ok(_) => (None, true),
+                    Ok(backend) => backend.accepted.editing_tools(),
                     Err(_) => return Ok(SkillCandidates::default()),
                 }
             }
             BackendPreference::Executor { .. } => return Ok(SkillCandidates::default()),
-        };
-        let tool_names = |selected: crate::tools::Declarations| {
-            selected
-                .names()
-                .into_iter()
-                .filter(|name| !external || self.host_tools.contains(name))
-                .collect::<Vec<_>>()
         };
         let (method, payload) = match &input.target {
             CompletionTarget::Session { session_id } => {
@@ -183,21 +174,20 @@ impl Owner {
                     &self.managed_worktrees,
                 )
                 .await?;
-                let catalog = if external {
-                    self.mcp_projects.base.clone()
-                } else {
-                    self.mcp_projects
-                        .observed(Some(&session.configuration.workspace))
-                        .await?
-                };
+                let catalog = self
+                    .mcp_projects
+                    .observed(Some(&session.configuration.workspace))
+                    .await?;
                 let catalog = self.mcp_projects.with_client(session_id, catalog)?;
                 let allowed_tools = self.admitted_tools(session_id, &session.configuration.tools);
-                let tools = tool_names(self.select_catalog_tools(
-                    &catalog.tools,
-                    Some(session_id),
-                    allowed_tools.as_deref(),
-                    editing,
-                ));
+                let tools = self
+                    .select_catalog_tools(
+                        &catalog.tools,
+                        Some(session_id),
+                        allowed_tools.as_deref(),
+                        editing,
+                    )
+                    .names();
                 (
                     "search",
                     serde_json::to_value(SkillToolRequest {
@@ -211,19 +201,17 @@ impl Owner {
                 )
             }
             CompletionTarget::Draft { .. } => {
-                let catalog = if external {
-                    self.mcp_projects.base.clone()
-                } else {
-                    self.mcp_projects
-                        .observed(
-                            draft_workspace
-                                .as_ref()
-                                .and_then(|workspace| workspace.workspace()),
-                        )
-                        .await?
-                };
-                let tools =
-                    tool_names(self.select_catalog_tools(&catalog.tools, None, None, editing));
+                let catalog = self
+                    .mcp_projects
+                    .observed(
+                        draft_workspace
+                            .as_ref()
+                            .and_then(|workspace| workspace.workspace()),
+                    )
+                    .await?;
+                let tools = self
+                    .select_catalog_tools(&catalog.tools, None, None, editing)
+                    .names();
                 (
                     "candidates",
                     serde_json::to_value(maka_skills_api::contract::CandidatesRead {

@@ -507,7 +507,7 @@ fn cell_action(view: &RunView, live: &Live, fenced: bool) -> Option<Action> {
                     && (live.work.contains(&WorkKey::Tool(tool.key.clone()))
                         || (tool.accepted.is_none() && tool.local_returned.is_some()))
             }),
-            CellOwner::Standalone { .. } => false,
+            CellOwner::Standalone { .. } | CellOwner::External { .. } => false,
         };
         if !fenced && !synchronous_pending {
             if matches!(
@@ -520,6 +520,7 @@ fn cell_action(view: &RunView, live: &Live, fenced: bool) -> Option<Action> {
                 return Some(Action::AcceptCellFinal(cell.id));
             }
             if interrupted
+                && matches!(cell.owner, CellOwner::Agent { .. })
                 && cell.children.values().all(|child| child.known())
                 && cell.final_notification.is_none()
             {
@@ -847,7 +848,10 @@ fn next_action(
         if tool.accepted.is_some() {
             continue;
         }
-        if let Some(cell) = recovered_cell(view, tool) {
+        // A live callback owns the result, even after its Cell finishes.
+        if let Some(cell) = recovered_cell(view, tool)
+            && !live.work.contains(&WorkKey::Tool(tool.key.clone()))
+        {
             return Action::Accept(tool.key.clone(), AcceptedResult::CellRecovered { cell });
         }
         if let Some(result) = outcome(tool) {

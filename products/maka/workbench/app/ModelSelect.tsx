@@ -327,7 +327,7 @@ function ModelMenu(props: {
       await props.select(request.backend);
       if (active()) props.close(request.instance);
     } catch (reason) {
-      if (active()) error.set(errorText(reason));
+      if (active()) error.set(errorText(reason, 'Could not change the model.'));
     } finally {
       if (alive) pending.set(false);
     }
@@ -428,7 +428,7 @@ function ModelMenu(props: {
         } catch (reason) {
           if (active() && pane() === 'models' && reading === generation) {
             modelsQueued = false;
-            error.set(errorText(reason));
+            error.set(errorText(reason, 'Could not load models.'));
           }
         }
       } while (active() && pane() === 'models' && modelsQueued);

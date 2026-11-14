@@ -29,7 +29,7 @@ use maka_agent_state::{
     },
 };
 
-/// User-approved domain policy. This is not a Scope, capability, or recovery grant.
+/// Captured policy for background execution.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct BackgroundApproval {
@@ -38,12 +38,42 @@ pub(super) struct BackgroundApproval {
     pub(super) accepted_model: crate::model::AcceptedModel,
     pub(super) thinking_level: Option<ThinkingLevel>,
     pub(super) language: Language,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) sandbox_ceiling: Option<maka_sandbox::Sandbox>,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(super) enum NotificationBackend {
+    Model {
+        model: ModelSelection,
+        thinking_level: Option<ThinkingLevel>,
+    },
+    Executor {
+        selection: maka_agent_facts::executor::Selection,
+    },
+}
+impl NotificationBackend {
+    pub(super) fn preference(&self) -> BackendPreference {
+        match self {
+            Self::Model {
+                model,
+                thinking_level,
+            } => BackendPreference::Model {
+                connection_id: model.connection_id.clone(),
+                model_id: model.model_id.clone(),
+                thinking_level: *thinking_level,
+            },
+            Self::Executor { selection } => BackendPreference::Executor {
+                selection: selection.clone(),
+            },
+        }
+    }
+}
+
 pub(crate) struct ReturnRoute {
-    model: crate::model::AcceptedModel,
+    pub(super) backend: NotificationBackend,
+    model: Option<crate::model::AcceptedModel>,
     pub(crate) workspace: Workspace,
     pub(crate) binding: maka_sandbox::workspace::BindingStamp,
 }
@@ -53,17 +83,19 @@ impl ReturnRoute {
         workspace: Workspace,
         binding: maka_sandbox::workspace::BindingStamp,
     ) -> Self {
+        let backend = NotificationBackend::Model {
+            model: ModelSelection {
+                connection_id: model.binding.connection_id.clone(),
+                model_id: model.binding.model.clone(),
+            },
+            thinking_level: model.thinking_level,
+        };
         Self {
-            model,
+            backend,
+            model: Some(model),
             workspace,
             binding,
         }
-    }
-    pub(crate) fn binding_model(&self) -> &maka_agent_facts::execution::ModelBinding {
-        &self.model.binding
-    }
-    pub(crate) fn thinking_level(&self) -> Option<ThinkingLevel> {
-        self.model.thinking_level
     }
 }
 impl Owner {
@@ -96,22 +128,66 @@ impl Owner {
         {
             return Err("notification_source_changed".into());
         }
-        let maka_agent_facts::durable::BackendSpec::Model { descriptor, .. } = &view.spec.backend
-        else {
-            return Err("notification_model_unavailable".into());
-        };
-        let bytes = self
-            .durable
-            .content(source.run_id, descriptor.clone())
-            .await
-            .map_err(|e| e.to_string())?;
-        let model = crate::model::AcceptedModel::from_backend(&view.spec.backend, &bytes)
-            .map_err(public_error)?;
-        Ok(ReturnRoute {
-            model,
-            workspace: session.configuration.workspace,
-            binding: view.spec.permission_basis.binding,
-        })
+        use maka_agent_facts::durable::BackendSpec;
+        let workspace = session.configuration.workspace;
+        let binding = view.spec.permission_basis.binding;
+        match &view.spec.backend {
+            BackendSpec::Model { descriptor, .. } => {
+                let bytes = self
+                    .durable
+                    .content(source.run_id, descriptor.clone())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let model = crate::model::AcceptedModel::from_backend(&view.spec.backend, &bytes)
+                    .map_err(public_error)?;
+                Ok(ReturnRoute::new(model, workspace, binding))
+            }
+            BackendSpec::Executor { selection, .. } if selection.executor == "external" => {
+                Ok(ReturnRoute {
+                    backend: NotificationBackend::Executor {
+                        selection: selection.clone(),
+                    },
+                    model: None,
+                    workspace,
+                    binding,
+                })
+            }
+            _ => Err("notification_backend_unavailable".into()),
+        }
+    }
+
+    pub(super) async fn resolve_notification_route(
+        &self,
+        backend: NotificationBackend,
+        session: &str,
+        workspace: Workspace,
+        binding: maka_sandbox::workspace::BindingStamp,
+    ) -> Result<ReturnRoute, String> {
+        match backend {
+            NotificationBackend::Model {
+                model,
+                thinking_level,
+            } => {
+                let (model, _) = crate::model::Source::select(
+                    self.configuration.clone(),
+                    self.catalog.clone(),
+                    self.credentials.clone(),
+                    model,
+                    thinking_level,
+                    session.to_owned(),
+                    self.revision.clone(),
+                )
+                .await
+                .map_err(public_error)?;
+                Ok(ReturnRoute::new(model.accepted, workspace, binding))
+            }
+            backend @ NotificationBackend::Executor { .. } => Ok(ReturnRoute {
+                backend,
+                model: None,
+                workspace,
+                binding,
+            }),
+        }
     }
 
     pub(crate) async fn prepare_notification(
@@ -181,11 +257,7 @@ impl Owner {
         let capture = self
             .capture_current_run(
                 session_id,
-                Some(BackendPreference::Model {
-                    connection_id: route.model.binding.connection_id.clone(),
-                    model_id: route.model.binding.model.clone(),
-                    thinking_level: route.model.thinking_level,
-                }),
+                Some(route.backend.preference()),
                 identity.to_owned(),
                 native.scope(),
             )
@@ -201,14 +273,16 @@ impl Owner {
                 ));
             }
         };
-        let current = basis
-            .model
-            .as_ref()
-            .ok_or("notification_model_unavailable")?;
-        if !route.model.same_execution_route(current) {
-            return Err("notification_notification_route_changed".into());
+        if let Some(model) = &route.model {
+            let current = basis
+                .model
+                .as_ref()
+                .ok_or("notification_model_unavailable")?;
+            if !model.same_execution_route(current) {
+                return Err("notification_route_changed".into());
+            }
+            basis.model = Some(model.clone());
         }
-        basis.model = Some(route.model.clone());
         let message: MessageInput = render(basis.language).into();
         let source = RootSourceMessage {
             message: DeliveredMessage {
@@ -229,6 +303,7 @@ impl Owner {
             identity,
             Default::default(),
             placement,
+            false,
             boundary,
         )
         .await
@@ -275,6 +350,7 @@ impl Owner {
         key: &str,
         required_tools: BTreeSet<String>,
         placement: QueuePlacement,
+        steer: bool,
     ) -> Result<PreparedRequest, String> {
         self.enqueue_background_checked(
             session,
@@ -283,6 +359,7 @@ impl Owner {
             key,
             required_tools,
             placement,
+            steer,
             None,
         )
         .await
@@ -294,7 +371,8 @@ impl Owner {
         basis: &CapturedRun,
         key: &str,
         required_tools: BTreeSet<String>,
-        placement: QueuePlacement,
+        mut placement: QueuePlacement,
+        steer: bool,
         boundary: Option<&ScheduledTarget>,
     ) -> Result<PreparedRequest, String> {
         let _ordered = self.runs.ordered(session).await;
@@ -319,6 +397,10 @@ impl Owner {
                 self.stop.child_token(),
             )
             .map_err(|e| e.to_string())?;
+        let native = match &basis.background_sandbox_ceiling {
+            Some(ceiling) => native.with_sandbox_floor(ceiling)?,
+            None => native,
+        };
         let frozen = self
             .freeze_background_request(session, source, basis, required_tools, key, native.scope())
             .await;
@@ -333,6 +415,33 @@ impl Owner {
                 ));
             }
         };
+        if steer {
+            let control = self.runs.state().await.controls.get(session).cloned();
+            if let Some(control) = control
+                && control.basis.model.is_some()
+                && let Some(view) = self.session_run(session, control.execution.run_id).await?
+                && !view.stopped
+                && view.terminal.is_none()
+                && view.spec.permission_basis == request.spec.permission_basis
+                && view.spec.workspace == request.spec.workspace
+                && request
+                    .spec
+                    .permission_ceiling
+                    .sandbox
+                    .contains(&view.spec.permission_ceiling.sandbox)
+                    .map_err(|error| error.to_string())?
+                && view
+                    .spec
+                    .permission_ceiling
+                    .approval
+                    .is_subset_of(request.spec.permission_ceiling.approval)
+            {
+                placement = QueuePlacement::Steering {
+                    run: view.run,
+                    expected_head: maka_agent_state::Head::from(&view),
+                };
+            }
+        }
         let current = queue
             .read(session.to_owned())
             .await

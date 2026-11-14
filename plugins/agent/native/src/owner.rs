@@ -130,6 +130,7 @@ struct CapturedRun {
     tool_discovery: bool,
     allowed_tools: Option<Vec<String>>,
     background: Option<ScheduledTarget>,
+    background_sandbox_ceiling: Option<maka_sandbox::Sandbox>,
     internal_tools: Arc<Vec<maka_agent_facts::tools::ToolDefinition>>,
     internal_bindings: Arc<BTreeMap<String, Option<String>>>,
     behavior: Option<SystemPrompt>,
@@ -244,8 +245,6 @@ pub(crate) struct Owner {
     mcp: crate::mcp::Servers,
     mcp_projects: Arc<crate::mcp::Projects>,
     tool_basis: Arc<Vec<crate::tools::SelectedTool>>,
-    host_tools: Vec<String>,
-    resource_reads: Vec<String>,
     discovery_reads: Vec<String>,
     editing_tools: Vec<(String, maka_agent_facts::execution::EditingTools)>,
     skills: Option<skills::Library>,
@@ -356,6 +355,7 @@ impl Owner {
             persistence.source().deployment,
             context.activation().instance(),
         );
+        let root_id = root.root_id().to_owned();
         let managed_worktrees = root.canonical_path().join("subagent-worktrees");
         let workspace_specs = settings.workspace_roots.clone();
         let import_specs = settings.import_roots.clone();
@@ -427,22 +427,19 @@ impl Owner {
             workers: workers.clone(),
             services: context.services(),
         });
-        let recall_tools = if settings.recall {
-            recall.tools()
-        } else {
-            vec![]
-        };
-        let internal_host_tools = recall_tools
-            .iter()
-            .map(|tool| tool.definition.name.clone())
-            .collect::<Vec<_>>();
-        additional.extend(recall_tools);
+        if settings.recall {
+            additional.extend(recall.tools());
+        }
         let scheduler = Arc::new(scheduler::Scheduler::new(
             persistence.store().clone(),
             prefix.clone(),
         ));
         if settings.scheduled_tasks {
             additional.extend(scheduler.tools());
+        }
+        let todo = Arc::new(todo::Todo::new(persistence.store().clone(), prefix.clone()));
+        if settings.todo {
+            additional.extend(todo.tools());
         }
         let goals = Arc::new(goal::Goals::new(
             persistence.store().clone(),
@@ -451,7 +448,6 @@ impl Owner {
         if settings.goals {
             additional.extend(goals.tools());
         }
-        let todo = Arc::new(todo::Todo::new(persistence.store().clone(), prefix.clone()));
         let recap_storage = Arc::new(maka_host_runtime::storage::Storage::new(
             persistence.store().clone(),
             prefix.clone(),
@@ -461,9 +457,6 @@ impl Owner {
             )
             .expect("recap namespace"),
         ));
-        if settings.todo {
-            additional.extend(todo.tools());
-        }
         let bot = Arc::new(bot::Bot::new(persistence.store().clone(), prefix.clone()));
         // Bot identity must be known before activation schedules queued work.
         if let Err(error) = bot.load().await {
@@ -500,8 +493,6 @@ impl Owner {
             tools,
             basis: tool_basis,
             editing: editing_tools,
-            host_tools,
-            resource_reads,
             discovery_reads,
         } = match prepared_tools {
             Ok(tools) => tools,
@@ -599,8 +590,6 @@ impl Owner {
             mcp,
             mcp_projects,
             tool_basis: Arc::new(tool_basis),
-            host_tools: host_tools.into_iter().chain(internal_host_tools).collect(),
-            resource_reads,
             discovery_reads,
             editing_tools,
             skills,
@@ -621,6 +610,25 @@ impl Owner {
         }
         if let Err(error) = owner.restore_discovery().await {
             return Err(initialization::InitializationError::instance(error, owner));
+        }
+        let antigravity = owner
+            .settings
+            .external
+            .as_ref()
+            .is_some_and(|configuration| {
+                configuration
+                    .runtimes
+                    .enabled(maka_agent_api::executor::NativeRuntime::Antigravity)
+            });
+        let installation = format!("{}-{}", root_id, owner.prefix);
+        if let Err(error) = crate::executor::external::agy::sync_host_agent(
+            owner.home.clone(),
+            installation,
+            antigravity,
+        )
+        .await
+        {
+            tracing::warn!(%error, "Could not update the Maka Antigravity agent");
         }
         Ok(owner)
     }
@@ -957,8 +965,8 @@ impl Owner {
                 };
                 (workspace, None)
             }
-            WorkspaceSelection::Project { project, path } => {
-                let Some(prepared) = self.select_project(project, &path).await? else {
+            WorkspaceSelection::Project { project_id, path } => {
+                let Some(prepared) = self.select_project(project_id, &path).await? else {
                     return Ok(creation::PreparedCreation::Rejected(
                         Rejection::WorkspaceUnavailable,
                     ));
@@ -1268,19 +1276,6 @@ impl Owner {
             })
             .collect();
         catalog.excluding(&excluded)
-    }
-    fn external_catalog(&self, selected: maka_tools::ToolCatalog) -> maka_tools::ToolCatalog {
-        let excluded = selected
-            .names()
-            .into_iter()
-            .filter(|name| !self.host_tools.contains(name))
-            .collect::<Vec<_>>();
-        let mut catalog =
-            selected.excluding(&excluded.iter().map(String::as_str).collect::<Vec<_>>());
-        for name in &self.resource_reads {
-            catalog = catalog.with_description(name, "Read only Maka Session attachment:<id> and archive:<event-id> resources. Workspace files and task resources are unavailable. Pass the complete page.next object unchanged to continue. Image resources are unsupported by this external runtime.");
-        }
-        catalog
     }
 }
 fn metadata_rejection(title: &str, labels: &[String]) -> Option<Rejection> {

@@ -28,7 +28,13 @@ import { SettingsField } from '../../../products/maka/workbench/app/SettingsFiel
 import { tr } from '../../../products/maka/workbench/app/locale';
 import { C } from '../../../products/maka/workbench/app/ui';
 import { errorText, renderText } from '../../../products/maka/workbench/app/text';
-import { draftProblem, type LibraryDraft, type LibraryItem, type LibraryKind } from './library';
+import {
+  websiteUrl,
+  draftProblem,
+  type LibraryDraft,
+  type LibraryItem,
+  type LibraryKind,
+} from './library';
 
 export type Library = {
   items: Signal<readonly LibraryItem[] | null>;
@@ -72,14 +78,31 @@ function Section(props: {
           : undefined
       }
       trailing={
-        <SettingsButton
-          icon="plus"
-          iconOnly
-          tone="quiet"
-          label={tr('Add to {section}', { section: section.title() })}
-          disabled={library.items() === null}
-          onPress={() => draft.set({ id: null, kind: section.kind, name: '', value: '' })}
-        />
+        <>
+          <If when={section.kind === 'link'}>
+            <SettingsButton
+              label={tr('Add search engine')}
+              disabled={library.items() === null}
+              onPress={() =>
+                draft.set({
+                  id: null,
+                  kind: 'link',
+                  name: '',
+                  value: '',
+                  searchEngine: true,
+                })
+              }
+            />
+          </If>
+          <SettingsButton
+            icon="plus"
+            iconOnly
+            tone="quiet"
+            label={tr('Add to {section}', { section: section.title() })}
+            disabled={library.items() === null}
+            onPress={() => draft.set({ id: null, kind: section.kind, name: '', value: '' })}
+          />
+        </>
       }
     >
       <If when={items().length === 0 && !editing()}>
@@ -121,7 +144,13 @@ function Section(props: {
         <SettingsField
           label={section.value()}
           multiline={section.kind !== 'link'}
-          placeholder={section.kind === 'link' ? 'https://' : undefined}
+          placeholder={
+            draft()!.searchEngine
+              ? 'example.com/search?q={query}'
+              : section.kind === 'link'
+                ? 'example.com'
+                : undefined
+          }
           value={draft()!.value}
           change={(value) => edit({ value })}
         />
@@ -130,7 +159,7 @@ function Section(props: {
   );
 }
 
-export function LibrarySettings(props: { library: Library }) {
+export function LibrarySettings(props: { library: Library; kind: LibraryKind }) {
   const { library } = props;
   const draft = signal<LibraryDraft | null>(null);
   const problem = computed(() => {
@@ -139,11 +168,13 @@ export function LibrarySettings(props: { library: Library }) {
   });
   const save = () => {
     const current = draft()!;
+    const value = current.kind === 'link' ? websiteUrl(current.value) : current.value;
+    if (value === null) return;
     const item: LibraryItem = {
       id: current.id ?? crypto.randomUUID(),
       kind: current.kind,
       name: current.name.trim(),
-      value: current.kind === 'link' ? current.value.trim() : current.value,
+      value,
     };
     const existing = library.items() ?? [];
     library.save(
@@ -155,30 +186,41 @@ export function LibrarySettings(props: { library: Library }) {
   };
   return (
     <SettingsBody
-      footerShown={draft() !== null}
+      footerShown={draft() !== null || library.failure() !== null}
       footer={
         <>
-          <If when={problem() !== null}>
-            <Text style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 18, color: C.warning }}>
-              {tr(problem()!)}
+          <If when={library.failure() !== null || problem() !== null}>
+            <Text
+              style={{
+                flex: 1,
+                minWidth: 0,
+                fontSize: 12,
+                lineHeight: 18,
+                color: C.warning,
+                userSelect: 'text',
+              }}
+            >
+              {library.failure() !== null
+                ? renderText(errorText(library.failure(), 'Could not load or save shortcuts.'))
+                : tr(problem()!)}
             </Text>
           </If>
-          <SettingsButton label={tr('Cancel')} tone="quiet" onPress={() => draft.set(null)} />
-          <SettingsButton
-            label={tr('Save')}
-            tone="primary"
-            disabled={problem() !== null}
-            onPress={save}
-          />
+          <If when={draft() !== null}>
+            <SettingsButton label={tr('Cancel')} tone="quiet" onPress={() => draft.set(null)} />
+            <SettingsButton
+              label={tr('Save')}
+              tone="primary"
+              disabled={problem() !== null}
+              onPress={save}
+            />
+          </If>
         </>
       }
     >
-      <If when={library.failure() !== null}>
-        <Text style={{ fontSize: 12, lineHeight: 18, color: C.warning, userSelect: 'text' }}>
-          {renderText(errorText(library.failure()))}
-        </Text>
-      </If>
-      <Each of={sections} key={(section: (typeof sections)[number]) => section.kind}>
+      <Each
+        of={sections.filter((section) => section.kind === props.kind)}
+        key={(section: (typeof sections)[number]) => section.kind}
+      >
         {(section) => <Section section={section()} library={library} draft={draft} />}
       </Each>
     </SettingsBody>

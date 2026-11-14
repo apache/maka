@@ -20,6 +20,11 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const recallMessages = {
+  'Could not search conversations.': [
+    'Could not search conversations.',
+    '无法搜索会话。',
+    '無法搜尋對話。',
+  ],
   'Search conversations': ['Search conversations', '搜索会话', '搜尋對話'],
   'Find in conversation': ['Find in conversation', '在对话中查找', '在對話中尋找'],
   'This conversation': ['This conversation', '此对话', '此對話'],

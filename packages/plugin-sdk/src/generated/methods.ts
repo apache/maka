@@ -407,6 +407,20 @@ export type AgentHistoryRequestsOutput_StepId = string;
 export type AgentHistoryRequestsOutput_ModelAttemptId = string;
 export type AgentHistoryRequestsOutput_ModelPurpose = 'main' | 'summary';
 export type AgentHistoryRequestsOutput_UsageOutcome = ('success' | 'error' | 'aborted') | 'unknown';
+export type AgentHistoryRequestsOutput_AgentHistoryRequestRetry =
+  | {
+      kind: 'scheduled';
+      at: number;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'started';
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'cancelled';
+      [k: string]: unknown | undefined;
+    };
 export type AgentLoadHistoryCheckpointOutput_AgentCheckpointLoadState =
   | {
       kind: 'preparing';
@@ -519,7 +533,10 @@ export type AgentLoadedHistoryCheckpointHistoryInput_HistoryField = 'thinking' |
  * Tool output is available through source reads in both views. Conversation
  * windows carry tool metadata only, keeping large results out of chat paging.
  */
-export type AgentLoadedHistoryCheckpointHistoryInput_HistoryView = 'text' | 'conversation';
+export type AgentLoadedHistoryCheckpointHistoryInput_HistoryView =
+  | ('text' | 'conversation')
+  | 'chat'
+  | 'turn';
 /**
  * An original row within the actual read capability supplied by the caller.
  * Marker paths are relative to that capability; none of these fields grants access.
@@ -1180,6 +1197,11 @@ export type SettingsUsageOutput_CellOwner =
       call: string;
     }
   | {
+      kind: 'external';
+      run: SettingsUsageOutput_RunId;
+      key: SettingsUsageOutput_ExternalEffectKey;
+    }
+  | {
       kind: 'standalone';
       session: string;
     };
@@ -1652,6 +1674,7 @@ export interface ServiceMethods {
       output: {
         requests: AgentHistoryRequestsOutput_AgentHistoryRequest[];
         next?: number | null;
+        runTerminated: boolean;
         [k: string]: unknown | undefined;
       };
     };
@@ -2090,11 +2113,6 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.AgentScheduleChange;
       output: Runtime.AgentScheduleResult;
-    };
-    scheduleAlerts: {
-      mode: 'subscription';
-      input: {};
-      output: Runtime.AgentScheduleAlerts;
     };
     schedules: {
       mode: 'query';
@@ -3438,6 +3456,7 @@ export interface AgentHistoryRequestsOutput_AgentHistoryRequest {
   startedAt?: number | null;
   firstTokenAt?: number | null;
   finished?: AgentHistoryRequestsOutput_AgentHistoryRequestFinished | null;
+  retry?: AgentHistoryRequestsOutput_AgentHistoryRequestRetry | null;
   estimatedInputTokens: number;
   contextWindow?: number | null;
   inputLimit?: number | null;
@@ -4118,6 +4137,10 @@ export interface SettingsUsageOutput_ToolCallIdentity {
   tool_call_id: string;
   origin: SettingsUsageOutput_ToolOrigin;
   [k: string]: unknown | undefined;
+}
+export interface SettingsUsageOutput_ExternalEffectKey {
+  task: SettingsUsageOutput_ExternalTaskId;
+  operation: string;
 }
 export interface SettingsUsageOutput_RunOwner {
   deployment: string;

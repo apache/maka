@@ -51,7 +51,17 @@ import {
 import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
-import { groupWorkspace, groupConversations, type ConversationGroup } from './conversationGroups';
+import { Automations } from './Automations';
+import {
+  groupWorkspace,
+  groupConversations,
+  foldableFamilies,
+  projectSessionLimit,
+  unfoldedSessions,
+  type ConversationGroup,
+} from './conversationGroups';
+import { workspaceSessions } from './sessionNesting';
+import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import {
   hasForkPrefix,
   sessionActionTarget,
@@ -84,6 +94,8 @@ export type WorkspaceBrowserProps = {
   openBot?(expectedSessionId: string | null): void;
   /** The Bot Session, listed only through its own entry. */
   botSession?(): string | null | undefined;
+  /** The conversations the Bot created; the running and waiting ones show under its entry. */
+  botWorkers?(): readonly AgentSession[];
   settings(expectedSessionId: string | null): void;
   search(expectedSessionId: string | null): void;
   changeSession(action: SessionAction, expectedSessionId: string | null): Promise<void>;
@@ -97,9 +109,49 @@ export type WorkspaceBrowserProps = {
    * next and previous conversation skip them.
    */
   collapsedGroups?: Signal<ReadonlySet<string>>;
+  expandedProjects?: Signal<ReadonlySet<string>>;
+  /** The conversations whose created ones are folded behind one row, kept by the owner. */
+  foldedFamilies?: Signal<ReadonlySet<string>>;
 };
 
 type WorkspaceGroup = ConversationGroup<BrowserProject> & { name: string };
+
+// Nested rows' guide line, a little inside the parent's title.
+const guideInset = 10;
+const nestInset = 16;
+// The line runs on past a row, or bends into the last one of its family.
+function GuideLine(props: { last(): boolean; height(): number }) {
+  return (
+    <View
+      style={[
+        props.last()
+          ? {
+              position: 'absolute',
+              left: guideInset,
+              top: 0,
+              width: nestInset - guideInset,
+              height: props.height() / 2,
+              borderLeftWidth: 1,
+              borderBottomWidth: 1,
+              borderBottomLeftRadius: 6,
+              borderColor: C.muted,
+            }
+          : {
+              position: 'absolute',
+              left: guideInset,
+              top: 0,
+              bottom: 0,
+              width: 1,
+              backgroundColor: C.muted,
+            },
+        // The row separator's color is lost on the sidebar; quieter text is not.
+        { opacity: 0.45, pointerEvents: 'none' },
+      ]}
+    />
+  );
+}
+// At most this many of the Bot's running or waiting conversations show under it.
+const botWorkerCap = 5;
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const titleBarRow = () => ownTitleBar && props.docked();
@@ -119,9 +171,27 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const visibleSessions = computed(() => {
     const bot = props.botSession?.() ?? null;
     const sessions = browser.sessions();
-    return bot === null ? sessions : sessions.filter((session) => session.id !== bot);
+    return workspaceSessions(sessions, bot, browser.filter(), platform.idiom !== 'terminal');
   });
+  // Running and waiting first-hand work of the Bot, waiting first; the open
+  // one stays while it is open. The rest are on the Bot's page.
+  const activeBotWorkers = computed(() => {
+    if (platform.idiom === 'terminal') return [];
+    const selected = props.selected();
+    return (props.botWorkers?.() ?? [])
+      .filter(
+        (session) => !session.archived && (session.activity !== 'idle' || session.id === selected),
+      )
+      .sort(
+        (a, b) =>
+          Number(b.activity === 'waiting') - Number(a.activity === 'waiting') ||
+          b.updatedAt - a.updatedAt,
+      );
+  });
+  const shownBotWorkers = () => activeBotWorkers().slice(0, botWorkerCap);
+  const moreBotWorkers = () => Math.max(0, activeBotWorkers().length - botWorkerCap);
   const choosingWorkspace = signal(false);
+  const automationsOpen = signal(false);
   const actions = signal<{ session: SessionActionTarget; origin: string | null } | null>(null);
   const actionsAnchor = signal<ViewRef | null>(null);
   const navigationNotice = signal<{ kind: 'draft' | 'action'; message: UiText } | null>(null);
@@ -174,10 +244,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const scopesById = computed(() => new Map(scopes().map((scope) => [scope.id, scope])));
   const firstUnpinned = computed(() => visibleSessions().find((session) => !session.pinned)?.id);
   const hasPinned = () => visibleSessions()[0]?.pinned === true;
-  // The desktop lists conversations under their workspaces instead of
-  // choosing a scope: pinned ones first, then each workspace in the order of
-  // its latest loaded conversation, then active projects with none loaded.
   const collapsed = props.collapsedGroups ?? signal<ReadonlySet<string>>(new Set());
+  const expanded = props.expandedProjects ?? signal<ReadonlySet<string>>(new Set());
   const groups = computed(() =>
     groupConversations(visibleSessions(), browser.projects(), browser.filter() === 'all').map(
       (group): WorkspaceGroup => ({
@@ -189,23 +257,77 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     ),
   );
   const nestedRows = computed(() => new Set(groups().flatMap((group) => [...group.nested])));
-  const groupsById = computed(
-    () => new Map(groups().map((group) => [`group:${group.key}`, group])),
+  // A nested row's guide line ends at the last of its family.
+  const lastNestedRows = computed(() => {
+    const nested = nestedRows();
+    const last = new Set<string>();
+    for (const group of groups())
+      group.sessions.forEach((id, index) => {
+        if (nested.has(id) && !nested.has(group.sessions[index + 1] ?? '')) last.add(id);
+      });
+    return last;
+  });
+  const groupsById = computed(() => new Map(groups().map((group) => [group.key, group])));
+  const foldedFamilies = props.foldedFamilies ?? signal<ReadonlySet<string>>(new Set());
+  // Only the full list folds; the inbox and archive show every match.
+  const families = computed(() =>
+    browser.filter() === 'all'
+      ? new Map(groups().flatMap((group) => [...foldableFamilies(group)]))
+      : new Map<string, string[]>(),
   );
+  const familyOf = computed(() => {
+    const parents = new Map<string, string>();
+    for (const [parent, members] of families()) for (const id of members) parents.set(id, parent);
+    return parents;
+  });
+  const shownSessions = (group: WorkspaceGroup) =>
+    browser.filter() === 'all' ? unfoldedSessions(group, foldedFamilies()) : group.sessions;
+  const toggleFamily = (parent: string) => {
+    const next = new Set(foldedFamilies());
+    if (!next.delete(parent)) next.add(parent);
+    foldedFamilies.set(next);
+  };
+  // Opening a folded conversation, from search or a notice, unfolds its
+  // family once; folding it again afterwards is the user's call.
+  let unfoldedFor: string | null = null;
+  effect(() => {
+    const id = props.selected();
+    const parent = id ? familyOf().get(id) : undefined;
+    if (!id || !parent || id === unfoldedFor) return;
+    unfoldedFor = id;
+    untracked(() => {
+      if (!foldedFamilies().has(parent)) return;
+      const next = new Set(foldedFamilies());
+      next.delete(parent);
+      foldedFamilies.set(next);
+    });
+  });
   const rowIds = computed(() =>
     platform.idiom === 'terminal'
       ? choosingWorkspace()
         ? scopes().map((scope) => scope.id)
         : visibleSessions().map((session) => session.id)
-      : groups().flatMap((group) => [
-          `group:${group.key}`,
-          ...(collapsed().has(group.key) ? [] : group.sessions),
-        ]),
+      : groups().flatMap((group) => {
+          const heading = `group:${group.key}`;
+          if (collapsed().has(group.key)) return [heading];
+          const all = shownSessions(group);
+          const limit = projectSessionLimit(group);
+          const sessions =
+            all.length <= limit || expanded().has(group.key) ? all : all.slice(0, limit);
+          // A folding family's row sits right under its creator, open or not.
+          const rows = sessions.flatMap((id) => (families().has(id) ? [id, `family:${id}`] : [id]));
+          return [heading, ...rows, ...(all.length > limit ? [`show-more:${group.key}`] : [])];
+        }),
   );
   const toggleGroup = (key: string) => {
     const next = new Set(collapsed());
     if (!next.delete(key)) next.add(key);
     collapsed.set(next);
+  };
+  const toggleProjectSessions = (key: string) => {
+    const next = new Set(expanded());
+    if (!next.delete(key)) next.add(key);
+    expanded.set(next);
   };
   const select = async ({ id, origin }: { id: string; origin: string | null }) => {
     if (!alive || props.selected() !== origin || props.switching()) return;
@@ -260,7 +382,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     navigationTarget?.focus();
   };
   const escape = () => {
-    if (actions()) return;
+    if (actions() || automationsOpen()) return;
     if (choosingWorkspace()) {
       choosingWorkspace.set(false);
       navigationTarget?.focus();
@@ -278,12 +400,37 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   // Hidden rows can extend a page without making the List emit its end edge again.
   const endRequest = signal<{
     rows: number;
+    loaded: number;
     scope: BrowserScope;
     filter: ReturnType<Browsing['filter']>;
   } | null>(null);
   const loadMore = () => {
     if (!choosingWorkspace())
-      endRequest.set({ rows: rowIds().length, scope: browser.scope(), filter: browser.filter() });
+      endRequest.set({
+        rows: rowIds().length,
+        loaded: browser.sessions().length,
+        scope: browser.scope(),
+        filter: browser.filter(),
+      });
+  };
+  const showOlder = () => {
+    const request = endRequest();
+    return (
+      platform.idiom !== 'terminal' &&
+      !!request &&
+      browser.hasMore() &&
+      !browser.error() &&
+      request.scope === browser.scope() &&
+      request.filter === browser.filter() &&
+      rowIds().length === request.rows &&
+      browser.sessions().length > request.loaded &&
+      groups().some(
+        (group) =>
+          !collapsed().has(group.key) &&
+          !expanded().has(group.key) &&
+          shownSessions(group).length > projectSessionLimit(group),
+      )
+    );
   };
   effect(() => {
     const rows = rowIds().length;
@@ -301,8 +448,10 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       endRequest.set({ ...requested, rows });
       return;
     }
-    if (choosingWorkspace() || browser.loading() || browser.error()) return;
-    if (requested || rows < Math.ceil(viewportHeight() / rowHeight())) {
+    if (choosingWorkspace() || browser.loading() || browser.error() || showOlder()) return;
+    if (!requested && browser.hasMore() && rows < Math.ceil(viewportHeight() / rowHeight())) {
+      loadMore();
+    } else if (requested) {
       void browser.loadMore().then((result) => {
         if (alive && endRequest() === requested && result === 'complete') endRequest.set(null);
       });
@@ -428,6 +577,80 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             <Icon name="bot" color={navIcon()} />
             <Text style={selectedNavText(botSelected())}>{tr('Maka Bot')}</Text>
           </Button>
+          <Each of={shownBotWorkers()} key={(worker) => worker.id}>
+            {(worker) => (
+              <View style={{ height: navigationRowHeight(), paddingLeft: nestInset }}>
+                <GuideLine
+                  last={() =>
+                    moreBotWorkers() === 0 && shownBotWorkers().at(-1)?.id === worker().id
+                  }
+                  height={navigationRowHeight}
+                />
+                <Button
+                  accessibilityLabel={tr('Open conversation {title}', {
+                    title: worker().title || tr('Untitled conversation'),
+                  })}
+                  disabled={props.switching()}
+                  selected={props.selected() === worker().id}
+                  onPress={inputAction(select, { id: worker().id, origin: props.selected() })}
+                  style={{
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                    paddingHorizontal: 8,
+                    borderRadius: 8,
+                    backgroundColor: props.selected() === worker().id ? C.raised : 'transparent',
+                  }}
+                  hoverStyle={{ backgroundColor: C.raised }}
+                  focusStyle={{ backgroundColor: C.raised }}
+                  disabledStyle={controlDisabledStyle}
+                >
+                  <Text
+                    style={[
+                      { color: navText(), fontSize: 13, flex: 1, minWidth: 0 },
+                      { numberOfLines: 1 },
+                    ]}
+                  >
+                    {worker().title || tr('Untitled conversation')}
+                  </Text>
+                  <Text
+                    style={{
+                      ...captionTextStyle,
+                      color: worker().activity === 'waiting' ? C.accent : C.muted,
+                    }}
+                  >
+                    {worker().activity === 'idle' ? '' : sessionStatusCaption[worker().activity]}
+                  </Text>
+                </Button>
+              </View>
+            )}
+          </Each>
+          <If when={moreBotWorkers() > 0}>
+            <View style={{ height: navigationRowHeight(), paddingLeft: nestInset }}>
+              <GuideLine last={() => true} height={navigationRowHeight} />
+              <Button
+                accessibilityLabel={tr('{count} more in Maka Bot', { count: moreBotWorkers() })}
+                disabled={props.switching()}
+                onPress={inputAction(
+                  (origin: string | null) => props.openBot?.(origin),
+                  props.selected(),
+                )}
+                style={{
+                  flex: 1,
+                  justifyContent: 'center',
+                  paddingHorizontal: 8,
+                  borderRadius: 8,
+                }}
+                hoverStyle={{ backgroundColor: C.raised }}
+                focusStyle={{ backgroundColor: C.raised }}
+              >
+                <Text style={{ ...captionTextStyle, color: C.muted }}>
+                  {tr('{count} more', { count: moreBotWorkers() })}
+                </Text>
+              </Button>
+            </View>
+          </If>
         </If>
         <If when={platform.idiom === 'terminal'}>
           <Button
@@ -482,6 +705,26 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               {tr('Search titles and messages…')}
             </Text>
           </If>
+        </Button>
+        <Button
+          accessibilityLabel={tr('Automations')}
+          disabled={props.connectionLost()}
+          onPress={() => automationsOpen.set(true)}
+          style={{
+            ...controlStyle,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            paddingHorizontal: 8,
+            height: navigationRowHeight(),
+            borderRadius: 8,
+          }}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
+          disabledStyle={controlDisabledStyle}
+        >
+          <Icon name="activity" color={navIcon()} />
+          <Text style={{ color: navText(), flex: 1, fontSize: 14 }}>{tr('Automations')}</Text>
         </Button>
         <If when={browser.filter() !== 'archived'}>
           <Button
@@ -595,6 +838,18 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         )}
         onLayout={({ bounds: frame }) => viewportHeight.set(frame.size.height)}
         onLoadMore={loadMore}
+        footer={() => (
+          <If when={showOlder()}>
+            <Button
+              onPress={loadMore}
+              style={{ height: rowHeight(), justifyContent: 'center', paddingHorizontal: 8 }}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+            >
+              <Text style={{ fontSize: 14, color: C.muted }}>{tr('Load older conversations')}</Text>
+            </Button>
+          </If>
+        )}
         style={{ flex: 1, minHeight: 32 }}
         accessibilityLabel={choosingWorkspace() ? tr('Workspace scopes') : tr('Conversations')}
       >
@@ -645,7 +900,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             ? inputAction(createWorkspace, {
                                 workspace: {
                                   kind: 'project',
-                                  project: project()!.reference,
+                                  projectId: project()!.reference.id,
                                   path: project()!.path!,
                                 },
                                 origin: props.selected(),
@@ -660,9 +915,128 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   </View>
                 );
               }
-              const initialGroup = groupsById().get(key());
+              if (key().startsWith('show-more:')) {
+                const groupKey = key().slice('show-more:'.length);
+                const open = () => expanded().has(groupKey);
+                return (
+                  <Button
+                    accessibilityLabel={tr(
+                      open()
+                        ? 'Show fewer conversations in {name}'
+                        : 'Show more conversations in {name}',
+                      { name: groupsById().get(groupKey)?.name ?? '' },
+                    )}
+                    onPress={inputAction(toggleProjectSessions, groupKey)}
+                    style={{
+                      height: rowHeight(),
+                      justifyContent: 'center',
+                      paddingHorizontal: 8,
+                      borderRadius: 8,
+                    }}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
+                  >
+                    <Text style={{ fontSize: 14, color: C.muted }}>
+                      {tr(
+                        open()
+                          ? 'Show fewer project conversations'
+                          : 'Show more project conversations',
+                      )}
+                    </Text>
+                  </Button>
+                );
+              }
+              if (key().startsWith('family:')) {
+                const parent = key().slice('family:'.length);
+                const members = () =>
+                  (families().get(parent) ?? []).flatMap((id) => sessionsById().get(id) ?? []);
+                const open = () => !foldedFamilies().has(parent);
+                const activityKnown = () => !props.connectionLost() && !browser.error();
+                // While folded the row stands in for its members' activity.
+                const waiting = () =>
+                  !open() &&
+                  activityKnown() &&
+                  members().some((member) => member.activity === 'waiting');
+                const lane = () =>
+                  open()
+                    ? null
+                    : activityKnown() && members().some((member) => member.activity === 'working')
+                      ? 'working'
+                      : members().some((member) => member.hasUnread)
+                        ? 'unread'
+                        : null;
+                const title = () =>
+                  sessionsById().get(parent)?.title || tr('Untitled conversation');
+                return (
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      height: rowHeight(),
+                      paddingVertical: compact() ? 0 : 2,
+                      paddingLeft: nestInset,
+                    }}
+                  >
+                    <GuideLine last={() => !open()} height={rowHeight} />
+                    <Button
+                      accessibilityLabel={tr(
+                        open()
+                          ? 'Fold the conversations {title} created'
+                          : 'Show the conversations {title} created',
+                        { title: title() },
+                      )}
+                      onPress={inputAction(toggleFamily, parent)}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 4,
+                        paddingHorizontal: 8,
+                        borderRadius: 8,
+                      }}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
+                    >
+                      <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
+                        {tr('{count} created conversations', { count: members().length })}
+                      </Text>
+                      <Icon name={open() ? 'down' : 'right'} color={C.muted} />
+                      <Text
+                        style={[
+                          { ...captionTextStyle, color: C.accent, flex: 1, minWidth: 0 },
+                          { numberOfLines: 1 },
+                        ]}
+                      >
+                        {waiting() ? sessionStatusCaption.waiting : ''}
+                      </Text>
+                      <View
+                        style={[
+                          { width: 16, alignItems: 'center', justifyContent: 'center' },
+                          { pointerEvents: 'none' },
+                        ]}
+                      >
+                        <If when={lane() === 'working'}>
+                          <LoadingIndicator size={12} label={sessionStatusCaption.working} />
+                        </If>
+                        <If when={lane() === 'unread'}>
+                          <View
+                            style={{
+                              width: 6,
+                              height: 6,
+                              borderRadius: 3,
+                              backgroundColor: C.accent,
+                            }}
+                          />
+                        </If>
+                      </View>
+                    </Button>
+                  </View>
+                );
+              }
+              const groupKey = key().startsWith('group:') ? key().slice('group:'.length) : '';
+              const initialGroup = groupsById().get(groupKey);
               if (initialGroup) {
-                const group = () => groupsById().get(key()) ?? initialGroup;
+                const group = () => groupsById().get(groupKey) ?? initialGroup;
                 const open = () => !collapsed().has(group().key);
                 const workspace = () => groupWorkspace(group());
                 return (
@@ -828,9 +1202,12 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       paddingVertical: compact() ? 0 : 2,
                       // Under the conversation that created it.
                       paddingLeft:
-                        platform.idiom !== 'terminal' && nestedRows().has(key()) ? 16 : 0,
+                        platform.idiom !== 'terminal' && nestedRows().has(key()) ? nestInset : 0,
                     }}
                   >
+                    <If when={platform.idiom !== 'terminal' && nestedRows().has(key())}>
+                      <GuideLine last={() => lastNestedRows().has(key())} height={rowHeight} />
+                    </If>
                     <View
                       onMouseEnter={() => hovered.set(true)}
                       onMouseLeave={() => hovered.set(false)}
@@ -1115,6 +1492,16 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           </Button>
         </If>
       </View>
+      <If when={automationsOpen()}>
+        <Automations
+          selected={props.selected}
+          close={() => automationsOpen.set(false)}
+          openConversation={(id) => {
+            automationsOpen.set(false);
+            void select({ id, origin: props.selected() });
+          }}
+        />
+      </If>
       <Each of={actions() ? [actions()!] : []} key={(target) => target}>
         {(item) => {
           const target = item();

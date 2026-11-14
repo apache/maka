@@ -53,7 +53,6 @@ pub(crate) struct Authority {
 pub(crate) struct Route {
     pub root: Directory,
     pub relative: PathBuf,
-    pub root_path: PathBuf,
 }
 
 enum CapturedScope {
@@ -87,9 +86,6 @@ impl Authority {
             scope,
         })
     }
-    pub(crate) fn cwd(&self) -> &Path {
-        &self.cwd
-    }
 
     pub(crate) fn publication_route(&self, relative: &Path) -> Result<Option<Route>, ToolError> {
         let root = match &self.scope {
@@ -108,7 +104,6 @@ impl Authority {
                 self.policy.clone(),
             ),
             relative: relative.to_owned(),
-            root_path: root.path.clone(),
         }))
     }
 
@@ -188,7 +183,6 @@ impl Authority {
                             self.policy.clone(),
                         ),
                         relative: relative.to_owned(),
-                        root_path: root.path.clone(),
                     }]);
                 }
             }
@@ -250,7 +244,6 @@ impl Authority {
                         .strip_prefix(root)
                         .map_err(|_| failed("invalid Write path"))?
                         .to_owned(),
-                    root_path: root.to_owned(),
                 }])
             }
             CapturedScope::Restricted(roots) => path::candidates(roots, &absolute)
@@ -263,7 +256,6 @@ impl Authority {
                             self.policy.clone(),
                         ),
                         relative: relative.to_owned(),
-                        root_path: root.path.clone(),
                     })
                 })
                 .collect(),

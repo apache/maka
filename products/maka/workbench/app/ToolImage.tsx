@@ -107,12 +107,13 @@ export function ToolImageStrip(props: {
   sessionId: string;
   through: () => number;
   images: () => ToolImageRef[];
+  total?: () => number | undefined;
   preview(image: ImagePreview): void;
 }) {
   // Terminal cells are too coarse for thumbnails; expanded tools still show each image.
   if (platform.idiom === 'terminal') return <View />;
   const shown = () => props.images().slice(-stripLimit);
-  const hidden = () => props.images().length - shown().length;
+  const hidden = () => (props.total?.() ?? props.images().length) - shown().length;
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
       <If when={hidden() > 0}>

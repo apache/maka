@@ -41,13 +41,10 @@ fn apply(view: &mut RunView, fact: Fact) -> RecordedFact {
     recorded
 }
 
-#[test]
-fn unknown_local_return_keeps_risk_until_new_known_evidence_and_never_rewrites_known_result() {
-    // Pure fold data: content loading, physical cleanup, and Native custody are not exercised.
-    let reference = ContentBlob::new(Vec::new()).reference().clone();
-    let spec = RunSpec {
+fn spec(backend: BackendSpec, reference: &ContentRef) -> RunSpec {
+    RunSpec {
         schema_version: SCHEMA_VERSION,
-        session_id: "local-return-fold".into(),
+        session_id: "run-fold".into(),
         owner: RunOwner {
             deployment: Uuid::new_v4(),
             namespace: InstanceId(vec![Uuid::new_v4()]),
@@ -69,14 +66,7 @@ fn unknown_local_return_keeps_risk_until_new_known_evidence_and_never_rewrites_k
             sandbox: maka_sandbox::Sandbox::Disabled,
             approval: maka_sandbox::Approval::Never,
         },
-        backend: BackendSpec::Model {
-            binding: ModelBinding {
-                connection_id: "policy".into(),
-                connection_slug: "policy".into(),
-                model: "policy".into(),
-            },
-            descriptor: reference.clone(),
-        },
+        backend,
         collaboration: Default::default(),
         language: Default::default(),
         tool_discovery: false,
@@ -92,7 +82,24 @@ fn unknown_local_return_keeps_risk_until_new_known_evidence_and_never_rewrites_k
             deadline: None,
         },
         budget_basis: None,
-    };
+    }
+}
+
+#[test]
+fn unknown_local_return_keeps_risk_until_new_known_evidence_and_never_rewrites_known_result() {
+    // Pure fold data: content loading, physical cleanup, and Native custody are not exercised.
+    let reference = ContentBlob::new(Vec::new()).reference().clone();
+    let spec = spec(
+        BackendSpec::Model {
+            binding: ModelBinding {
+                connection_id: "policy".into(),
+                connection_slug: "policy".into(),
+                model: "policy".into(),
+            },
+            descriptor: reference.clone(),
+        },
+        &reference,
+    );
     let spec_ref = ContentBlob::json(&spec).unwrap().reference().clone();
     let mut view = RunView::admitted(RunId::new(), spec).unwrap();
     apply(&mut view, Fact::RunAdmitted { spec: spec_ref });
@@ -234,4 +241,127 @@ fn unknown_local_return_keeps_risk_until_new_known_evidence_and_never_rewrites_k
     for blocker in [before_unknown, after_unknown] {
         assert_eq!(view.blockers[&blocker].resolved_by, Some(known.id));
     }
+}
+
+#[test]
+fn replay_continues_after_an_external_tool_was_rejected_before_execution() {
+    use maka_agent_facts::{
+        executor::{Output, Selection},
+        external_effects::{ExternalEffectEvent, ExternalEffectKey},
+        tool_call::RejectionKind,
+    };
+
+    let descriptor = ContentBlob::new(b"original descriptor".to_vec())
+        .reference()
+        .clone();
+    let spec = spec(
+        BackendSpec::Executor {
+            selection: Selection {
+                executor: "external".into(),
+                settings: Default::default(),
+            },
+            descriptor: descriptor.clone(),
+        },
+        &descriptor,
+    );
+    let spec_ref = ContentBlob::json(&spec).unwrap().reference().clone();
+    let mut view = RunView::admitted(RunId::new(), spec).unwrap();
+    let task = ExternalTaskId::new();
+    let rejected = ExternalEffectKey {
+        task,
+        operation: Uuid::new_v4(),
+    };
+    let next = ExternalEffectKey {
+        task,
+        operation: Uuid::new_v4(),
+    };
+    let effect = |event| Fact::ExternalEffect { event };
+    for fact in [
+        Fact::RunAdmitted { spec: spec_ref },
+        Fact::ExternalTaskPrepared {
+            task,
+            descriptor: descriptor.clone(),
+            live_workspace: true,
+        },
+        Fact::ExternalTaskAdmitted { task },
+        effect(ExternalEffectEvent::Prepared {
+            key: rejected,
+            descriptor: descriptor.clone(),
+        }),
+        effect(ExternalEffectEvent::Rejected {
+            key: rejected,
+            rejection_kind: RejectionKind::InvalidInput,
+            diagnostic: "invalid tool input".into(),
+        }),
+    ] {
+        apply(&mut view, fact);
+    }
+    view.check_effect_admission().unwrap();
+    for fact in [
+        effect(ExternalEffectEvent::Prepared {
+            key: next,
+            descriptor: descriptor.clone(),
+        }),
+        effect(ExternalEffectEvent::Admitted {
+            key: next,
+            approval: None,
+        }),
+        effect(ExternalEffectEvent::CleanupObserved {
+            key: next,
+            cleanup: OperationCleanup::Failed {
+                diagnostic: "could not join tool worker".into(),
+            },
+        }),
+    ] {
+        apply(&mut view, fact);
+    }
+    assert!(matches!(
+        view.check_effect_admission(),
+        Err(StoreError::InvalidTransition(reason))
+            if reason == "external task has unresolved original effects or cleanup"
+    ));
+    for fact in [
+        effect(ExternalEffectEvent::Prepared {
+            key: ExternalEffectKey {
+                task,
+                operation: Uuid::new_v4(),
+            },
+            descriptor,
+        }),
+        effect(ExternalEffectEvent::CleanupObserved {
+            key: next,
+            cleanup: OperationCleanup::Confirmed,
+        }),
+        effect(ExternalEffectEvent::Returned {
+            key: next,
+            output: ContentBlob::new(b"next tool result".to_vec())
+                .reference()
+                .clone(),
+            finish_turn: false,
+        }),
+        Fact::ExternalTaskObserved {
+            task,
+            index: 0,
+            output: Output::MessageEnd {
+                message_id: "response".into(),
+            },
+        },
+        Fact::ExternalTaskCleanupObserved {
+            task,
+            cleanup: OperationCleanup::Confirmed,
+        },
+        Fact::ExternalTaskClosed {
+            task,
+            outcome: Terminal::Cancelled,
+            diagnostic: None,
+            final_message: None,
+        },
+        Fact::RunTerminated {
+            terminal: Terminal::Cancelled,
+            diagnostic: None,
+        },
+    ] {
+        apply(&mut view, fact);
+    }
+    assert_eq!(view.terminal, Some(Terminal::Cancelled));
 }

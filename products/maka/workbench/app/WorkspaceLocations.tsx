@@ -95,6 +95,8 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
     }
     if (value?.status === 'conflict')
       throw new UiError('Workspace locations changed elsewhere. Reload before saving again.');
+    if (value?.diagnostic === 'published root must be absolute')
+      throw new UiError('Enter an absolute folder path before saving.');
     if (typeof value?.diagnostic === 'string') throw new Error(value.diagnostic);
     throw new UiError('The Host rejected these workspace locations.');
   };
@@ -159,16 +161,8 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
           'Add absolute folder paths on this Host. Removing a location does not delete its files.',
         )}
       </Text>
-      <If when={operations.error()}>
-        <Text style={[{ color: C.danger, fontSize: 13 }, { userSelect: 'text' }]}>
-          {operations.error()}
-        </Text>
-      </If>
       <If when={reading()}>
         <LoadingIndicator label={tr('Loading locations…')} />
-      </If>
-      <If when={operations.pending().length > 0}>
-        <Text style={{ color: C.muted, fontSize: 13 }}>{tr('Checking action status…')}</Text>
       </If>
       <List
         each={roots().map((root, index) => ({ ...root, index }))}
@@ -227,6 +221,16 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
       >
         <Text style={{ color: C.accent, fontSize: 13 }}>{tr('Add location')}</Text>
       </Button>
+      <If when={operations.error() || operations.pending().length > 0}>
+        <Text
+          style={[
+            { color: operations.error() ? C.danger : C.muted, fontSize: 13 },
+            { userSelect: 'text' },
+          ]}
+        >
+          {operations.error() || tr('Checking whether workspace locations were saved…')}
+        </Text>
+      </If>
       <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
         <Button
           {...button}

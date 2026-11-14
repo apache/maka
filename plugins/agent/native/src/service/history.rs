@@ -91,7 +91,7 @@ async fn cut(history: &SessionHistory, through: Option<u64>) -> Result<HistoryCu
 pub(super) async fn read(
     owner: &Owner,
     scope: &Scope,
-    input: ui::History,
+    mut input: ui::History,
 ) -> Result<ui::HistoryPage, String> {
     wire::Read {
         session_id: input.session_id.clone(),
@@ -102,6 +102,9 @@ pub(super) async fn read(
     .validate()
     .map_err(|e| e.to_string())?;
     let history = open(owner, scope, &input.session_id).await?;
+    if input.view == wire::HistoryView::Chat && owner.has_bot_history(&input.session_id).await? {
+        input.view = wire::HistoryView::Conversation;
+    }
     let cut = cut(&history, input.through).await?;
     let page = window(owner, scope, &history, &cut, &input).await?;
     authorize(owner, scope, &input.session_id).await?;
@@ -113,7 +116,10 @@ pub(super) async fn requests(
     scope: &Scope,
     input: ui::HistoryRequestsRead,
 ) -> Result<ui::HistoryRequests, String> {
-    use maka_agent_state::session_history::source_tree::{SourceItem, SourceTree};
+    use maka_agent_state::session_history::{
+        ModelRequestRetry,
+        source_tree::{SourceItem, SourceTree},
+    };
     const LIMIT: u32 = 24;
     let history = open(owner, scope, &input.session_id).await?;
     let cut = cut(&history, Some(input.through)).await?;
@@ -129,6 +135,7 @@ pub(super) async fn requests(
         return Ok(ui::HistoryRequests {
             requests: Vec::new(),
             next: None,
+            run_terminated: false,
         });
     };
     let qualified = tree
@@ -153,10 +160,10 @@ pub(super) async fn requests(
         .ok_or("agent_history_source_missing")?;
     let mut result = Vec::new();
     let mut last = None;
-    let more = traces.len() > LIMIT as usize;
+    let more = traces.requests.len() > LIMIT as usize;
     let millis =
         |value: UnixMillis| u64::try_from(value.0).map_err(|_| "agent_history_timestamp_invalid");
-    for trace in traces.into_iter().take(LIMIT as usize) {
+    for trace in traces.requests.into_iter().take(LIMIT as usize) {
         if scope.cancellation.is_cancelled() {
             return Err("agent_history_cancelled".into());
         }
@@ -194,12 +201,21 @@ pub(super) async fn requests(
                     })
                 })
                 .transpose()?,
+            retry: match trace.retry {
+                Some(ModelRequestRetry::Scheduled { at }) => {
+                    Some(ui::HistoryRequestRetry::Scheduled { at: millis(at)? })
+                }
+                Some(ModelRequestRetry::Started) => Some(ui::HistoryRequestRetry::Started),
+                Some(ModelRequestRetry::Cancelled) => Some(ui::HistoryRequestRetry::Cancelled),
+                None => None,
+            },
         });
     }
     authorize(owner, scope, &input.session_id).await?;
     Ok(ui::HistoryRequests {
         requests: result,
         next: if more { last } else { None },
+        run_terminated: traces.run_terminated,
     })
 }
 
@@ -272,7 +288,9 @@ async fn tree_window(
     view: wire::HistoryView,
     stop: &tokio_util::sync::CancellationToken,
 ) -> Result<wire::Page, String> {
+    use maka_agent_state::session_history::source_tree::RunRows;
     use wire::{Position, SourcePosition};
+    const PAGE_CHUNKS: usize = 8;
     let mut reverse = matches!(&position, Position::Tail | Position::Before { .. });
     let anchor = match &position {
         Position::Row { position, field } => Some(wire::Cursor {
@@ -303,8 +321,22 @@ async fn tree_window(
         _ => None,
     };
     let mut cache = source::Cache::default();
+    cache.chat = view == wire::HistoryView::Chat;
+    let mut turn = None;
+    if view == wire::HistoryView::Turn && anchor.is_none() {
+        return Err("agent_history_turn_requires_anchor".into());
+    }
     if let Some(anchor) = &anchor {
-        let selected = source::selected(tree, &anchor.position, &mut cache, stop).await?;
+        let selected = source::unpaired(tree, &anchor.position, None, &mut cache, stop).await?;
+        if view == wire::HistoryView::Turn {
+            use maka_agent_state::session_history::source_tree::SourceItem;
+            let (wire::HistoryRowAddress::Live { .. }, SourceItem::Canonical(item)) =
+                (&anchor.position, &selected.item)
+            else {
+                return Err("agent_history_turn_requires_live_run".into());
+            };
+            turn = Some((item.recorded.run, item.admission_sequence));
+        }
         if !matches!(&position, Position::Event { .. })
             && (selected.row.chunk.field != anchor.field
                 || (!include_thinking && anchor.field == wire::HistoryField::Thinking))
@@ -317,19 +349,25 @@ async fn tree_window(
             reverse = true;
         }
     }
+    let scoped = turn.map(|(run, _)| RunRows::Only { run, start: None });
     let rows = source::window(
         tree,
         anchor.as_ref().map(|cursor| cursor.position.clone()),
         reverse,
         include_thinking,
-        16,
+        // One additional source row covers the inclusive boundary cursor.
+        PAGE_CHUNKS + 1,
         &mut cache,
+        turn.map(|(run, admission)| RunRows::Only {
+            run,
+            start: matches!(position, Position::Row { .. }).then_some(admission),
+        }),
         stop,
     )
     .await?;
     let mut chunks = Vec::new();
     let mut remaining = 32 * 1024;
-    'rows: for selected in rows {
+    'rows: for mut selected in rows {
         if stop.is_cancelled() {
             return Err("agent_observation_cancelled".into());
         }
@@ -351,6 +389,7 @@ async fn tree_window(
             _ if reverse => SourcePosition::Tail,
             _ => SourcePosition::Start,
         };
+        source::pair(tree, &mut selected, &mut cache, stop).await?;
         let (_, offset, total, text) =
             source::display(&selected, view, source_position, remaining, stop).await?;
         if matches!(&position, Position::After { .. }) && anchored.is_some() && offset == total {
@@ -404,7 +443,7 @@ async fn tree_window(
             chunk.offset + (chunk.text.len() as u64) < chunk.total_bytes
         };
         chunks.push(chunk);
-        if remaining == 0 || chunks.len() == 8 || partial {
+        if remaining == 0 || chunks.len() == PAGE_CHUNKS || partial {
             break;
         }
     }
@@ -430,6 +469,7 @@ async fn tree_window(
             include_thinking,
             2,
             &mut cache,
+            scoped,
             stop,
         )
         .await?
@@ -447,6 +487,7 @@ async fn tree_window(
             include_thinking,
             2,
             &mut cache,
+            scoped,
             stop,
         )
         .await?
