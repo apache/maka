@@ -71,6 +71,16 @@ export const discoveryMessages = {
   'Pause discovery': ['Pause', '暂停', '暫停'],
   'Resume discovery': ['Approve and resume', '批准并恢复', '核准並恢復'],
   'Open investigation': ['View investigation', '查看调查过程', '檢視調查過程'],
+  'Could not load the discovery plan.': [
+    'Could not load the discovery plan.',
+    '无法读取主动发现计划。',
+    '無法讀取主動發現計畫。',
+  ],
+  'Could not update the discovery plan.': [
+    'Could not update the discovery plan.',
+    '无法更新主动发现计划。',
+    '無法更新主動發現計畫。',
+  ],
   'Discovery settings changed': [
     'The workspace or model changed. Review the displayed settings and confirm again.',
     '工作区或模型已变化，请核对更新后的配置并再次确认。',
