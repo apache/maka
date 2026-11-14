@@ -34,15 +34,9 @@ const hooks = registerHooks({
     return next(specifier, context);
   },
 });
-const {
-  codePieces,
-  columns,
-  largestTextSize,
-  lineColumns,
-  narrowColumns,
-  pieceLines,
-  wrappedLineColumns,
-} = await import(new URL('codePieces.ts', app));
+const { codePieces, columns, largestTextSize, lineColumns, pieceLines } = await import(
+  new URL('codePieces.ts', app)
+);
 hooks.deregister();
 
 const numbered = (count) => Array.from({ length: count }, (_, index) => `line ${index + 1}`);
@@ -114,30 +108,32 @@ test('a line too wide for one layer is cut, its note included in the limit', () 
   }
 });
 
-test('wrapped text is split by the rows its lines take at a narrow column', () => {
-  const long = 'w'.repeat(narrowColumns * 10);
-  const lines = [...Array.from({ length: 30 }, () => long), ...numbered(5)];
-  const pieces = codePieces(lines.join('\n'), undefined, true);
-  // Twenty ten-row lines fill a piece; the other ten and the short lines follow.
-  assert.deepEqual(
-    pieces.map((piece) => piece.text.split('\n').length),
-    [20, 15],
-  );
-  assert.deepEqual(
-    pieces.flatMap((piece) => piece.text.split('\n')),
-    lines,
-  );
-  // Unwrapped, the same text is one piece of short rows.
-  assert.equal(codePieces(lines.join('\n')).length, 1);
+test('wrapped text accounts for word breaks at the measured width', () => {
+  const lines = Array(20).fill('abcdefghijklmnop '.repeat(17));
+  const text = lines.join('\n');
+  for (const [width, expected] of [
+    [314, [9, 9, 2]],
+    [180, [5, 5, 5, 5]],
+  ]) {
+    const pieces = codePieces(text, undefined, width);
+    assert.deepEqual(
+      pieces.map(({ text }) => text.split('\n').length),
+      expected,
+    );
+    assert.equal(pieces.map(({ text }) => text).join('\n'), text);
+  }
+  assert.equal(codePieces(text).length, 1);
 });
 
-test('a wrapped line is cut where it would take more than 100 rows', () => {
-  const [piece] = codePieces('w'.repeat(wrappedLineColumns * 2), undefined, true);
-  assert.ok(columns(piece.text) <= wrappedLineColumns);
-  assert.match(piece.text, / … \d+ more characters$/u);
-  const fits = 'w'.repeat(wrappedLineColumns);
-  assert.equal(codePieces(fits, undefined, true)[0].text, fits);
-  // At the largest text size, 200 rows stay under the layer limit even at two
-  // thirds of the narrow column.
-  assert.ok(((pieceLines * 3) / 2) * 20 * largestTextSize * 2 < 16384);
+test('the wrapped line limit follows the measured column, including the note', () => {
+  for (const width of [180, 314, 800]) {
+    const line = 'w'.repeat(10000);
+    const [piece] = codePieces(line, undefined, width);
+    const [, kept, count] = piece.text.match(/^(.*) … (\d+) more characters$/u);
+    assert.ok(line.startsWith(kept));
+    assert.equal(kept.length + Number(count), line.length);
+  }
+  const text = 'w'.repeat(1500);
+  assert.equal(codePieces(text, undefined, 314)[0].text, text);
+  assert.match(codePieces(text, undefined, 100)[0].text, / … \d+ more characters$/u);
 });

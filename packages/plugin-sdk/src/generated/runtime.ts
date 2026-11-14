@@ -190,7 +190,6 @@ export type RuntimeProtocol =
   | AgentSchedules
   | AgentScheduleChange
   | AgentScheduleResult
-  | AgentScheduleAlerts
   | RecallQuery
   | AgentRecallPage
   | AgentImportsRead
@@ -2457,6 +2456,12 @@ export type Intent = {
 };
 export type Schedule =
   | {
+      kind: 'script';
+      source: string;
+      everySeconds?: number;
+      startAt: number;
+    }
+  | {
       kind: 'once';
       runAt: number;
     }
@@ -2478,10 +2483,8 @@ export type Schedule =
 export type Recurrence = 'daily' | 'weekly' | 'monthly';
 export type AgentScheduledEffect =
   | {
-      kind: 'reminder';
-    }
-  | {
       kind: 'session';
+      delivery?: AutomationDelivery & string;
       target: AgentScheduledTarget;
       model: ModelSelection;
       thinkingLevel?: ThinkingLevel | null;
@@ -2492,6 +2495,7 @@ export type AgentScheduledEffect =
       model: ModelSelection;
       thinkingLevel?: ThinkingLevel | null;
     };
+export type AutomationDelivery = 'steering' | 'followup';
 export type Creator =
   | {
       kind: 'user';
@@ -2517,11 +2521,6 @@ export type AgentScheduleChange =
       input: AgentScheduledInput;
     }
   | {
-      kind: 'approve';
-      taskId: string;
-      revision: number;
-    }
-  | {
       kind: 'pause';
       taskId: string;
       revision: number;
@@ -2535,18 +2534,6 @@ export type AgentScheduleChange =
       kind: 'trigger_now';
       taskId: string;
       revision: number;
-    }
-  | {
-      kind: 'snooze';
-      taskId: string;
-      revision: number;
-      delayMs: number;
-    }
-  | {
-      kind: 'acknowledge';
-      taskId: string;
-      revision: number;
-      fireId: string;
     }
   | {
       kind: 'clear_history';
@@ -4300,6 +4287,11 @@ export type MessageOrigin =
   | {
       kind: 'session';
       execution: ExecutionIdentity;
+    }
+  | {
+      kind: 'automation';
+      automationId: string;
+      title: string;
     }
   | {
       kind: 'goal';
@@ -7115,11 +7107,11 @@ export interface AgentScheduledSummary {
   id: string;
   revision: number;
   title: string;
+  sessionId: string;
+  script: boolean;
   status: Status;
-  approved: boolean;
   nextFireAt?: number | null;
   pendingFire?: string | null;
-  reminder: boolean;
   lastError?: string | null;
 }
 export interface AgentScheduledDetail {
@@ -7127,7 +7119,6 @@ export interface AgentScheduledDetail {
   task: Task;
   timezone: string;
   misfire: Misfire;
-  approved: boolean;
   pendingFire?: string | null;
 }
 export interface Task {
@@ -7168,16 +7159,6 @@ export interface Create {
   effect: AgentScheduledEffect;
   maxFires?: number | null;
   expiresAt?: number | null;
-}
-export interface AgentScheduleAlerts {
-  pending: number;
-  reminders: AgentScheduledReminder[];
-}
-export interface AgentScheduledReminder {
-  taskId: string;
-  fireId: string;
-  title: string;
-  body: string;
 }
 export interface RecallQuery {
   /**

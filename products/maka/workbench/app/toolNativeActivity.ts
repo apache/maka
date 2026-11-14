@@ -226,7 +226,7 @@ function scheduleArguments(value: unknown): ToolSection[] | null {
             ]
           : section(tr('Schedule frequency'), recurrence)),
         ...section(tr('Cron expression'), schedule?.expression),
-        { label: tr('Manage scheduled tasks'), text: tr('Approval required to run') },
+        ...section(tr('Script condition'), schedule?.source),
       ];
     }
     default:
@@ -237,7 +237,7 @@ function scheduleArguments(value: unknown): ToolSection[] | null {
 function scheduledResult(value: unknown): ToolSection[] | null {
   const result = record(value);
   if (!result) return null;
-  if (typeof result.taskId === 'string' && typeof result.approved === 'boolean')
+  if (typeof result.taskId === 'string' && typeof result.revision === 'number')
     return [{ label: tr('Manage scheduled tasks'), text: tr('Schedule change saved') }];
   if (!Array.isArray(result.tasks)) return null;
   const tasks: ToolSection[] = [];
@@ -249,11 +249,9 @@ function scheduledResult(value: unknown): ToolSection[] | null {
         ? tr('Completed')
         : task.status === 'expired'
           ? tr('Schedule expired')
-          : task.approved === false
-            ? tr('Waiting for approval')
-            : task.status === 'active'
-              ? tr('Schedule active')
-              : tr('Schedule paused');
+          : task.status === 'active'
+            ? tr('Schedule active')
+            : tr('Schedule paused');
     const next = scheduledTime(task.nextFireAt);
     const note = typeof task.lastError === 'string' ? task.lastError : null;
     tasks.push({

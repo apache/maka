@@ -281,10 +281,17 @@ export function TurnNavigation(props: {
   let pageY = 0;
   const contentHeight = computed(() => props.items().length * markPitch());
   const frameHeight = computed(() => {
-    const available = Math.min(640, height() * 0.7);
+    if (platform.idiom === 'terminal') {
+      const available = Math.min(640, height() * 0.7);
+      return Math.min(contentHeight(), Math.floor(available / markPitch()) * markPitch());
+    }
+    // The reference uses 70vh, measured against the whole window.
+    // Leave room below the rail for its cancel button.
     return Math.min(
       contentHeight(),
-      platform.idiom === 'terminal' ? Math.floor(available / markPitch()) * markPitch() : available,
+      640,
+      windowSize().height * 0.7,
+      Math.max(0, height() - 2 * (markPitch() + 8)),
     );
   });
   const activeIndex = computed(() => {

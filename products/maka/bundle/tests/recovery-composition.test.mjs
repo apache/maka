@@ -119,7 +119,6 @@ test('built installation binds continuation, Goal and Scheduler to the original 
     ['schedule', 'mutation'],
     ['schedules', 'query'],
     ['watchSchedules', 'subscription'],
-    ['scheduleAlerts', 'subscription'],
   ];
   for (const contract of [provider.exports.agent.contract, consumer.contract]) {
     for (const field of ['name', 'version', 'transport'])

@@ -130,7 +130,10 @@ async fn enqueue(
             message_id: message.into(),
             submitted_content_digest: content.content_digest().unwrap(),
             content: content.clone(),
-            origin: None,
+            origin: scheduled.then(|| maka_agent_facts::message::MessageOrigin::Automation {
+                automation_id: "schedule".into(),
+                title: "Scheduled follow-up".into(),
+            }),
         },
         unprepared_content: content,
         submitted_placement: maka_agent_facts::message::Placement::NextTurn,

@@ -358,6 +358,22 @@ https://github.com/smol-rs/async-io at revision
 finite file provenance and the timer wake modification are recorded in
 third-party/async-io/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
 
+Deno TLS dependency alignment (adapted, MIT)
+
+third-party/deno-tls contains deno_tls 0.247.0 from
+https://github.com/denoland/deno at revision
+fe7ed012d92c642fd8e5607ac5a45d517538b5c5. The original MIT license
+and finite file provenance are recorded in third-party/deno-tls/{LICENSE.md,upstream.json}.
+The manifest uses the rustls security update from https://github.com/denoland/deno/pull/37059.
+
+Deno Node SQLite dependency alignment (adapted, MIT)
+
+third-party/deno-node-sqlite contains deno_node_sqlite 0.30.0 from
+https://github.com/denoland/deno at revision
+fe7ed012d92c642fd8e5607ac5a45d517538b5c5. Its manifest uses the workspace
+rusqlite version. The original MIT license and finite file provenance are
+recorded in third-party/deno-node-sqlite/{LICENSE.md,upstream.json}.
+
 SQLx SQLite dependency alignment (adapted, Apache License 2.0 OR MIT)
 
 third-party/sqlx-sqlite contains sqlx-sqlite 0.9.0 from

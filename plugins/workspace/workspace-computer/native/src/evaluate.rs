@@ -863,13 +863,13 @@ fn partial(error: ToolError, context: &CellContext, language: Language) -> ToolE
         suffix += &observations;
     }
     match error {
-        ToolError::Failed(value) => ToolError::Failed(value + &suffix),
-        ToolError::Persistence(value) => ToolError::Persistence(value + &suffix),
-        ToolError::CleanupUnconfirmed(value) => ToolError::CleanupUnconfirmed(value + &suffix),
-        ToolError::OutcomeUnknown(value) => ToolError::OutcomeUnknown(value + &suffix),
+        ToolError::Failed(value) => ToolError::Failed(value + suffix.as_str()),
+        ToolError::Persistence(value) => ToolError::Persistence(value + suffix.as_str()),
+        ToolError::CleanupUnconfirmed(value) => ToolError::CleanupUnconfirmed(value + suffix.as_str()),
+        ToolError::OutcomeUnknown(value) => ToolError::OutcomeUnknown(value + suffix.as_str()),
         ToolError::Io { kind, message } => ToolError::Io {
             kind,
-            message: message + &suffix,
+            message: message + suffix.as_str(),
         },
         error => error,
     }

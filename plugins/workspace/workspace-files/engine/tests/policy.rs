@@ -24,7 +24,7 @@ use serde_json::json;
 use std::{fs, sync::Arc};
 
 #[tokio::test]
-async fn read_search_and_mutations_share_nested_policy_including_missing_targets_and_aliases() {
+async fn read_and_mutations_share_nested_policy_including_missing_targets_and_aliases() {
     let temp = tempfile::tempdir().unwrap();
     let root = dunce::canonicalize(temp.path()).unwrap();
     for dir in ["src", "metadata", "private"] {
@@ -101,25 +101,6 @@ async fn read_search_and_mutations_share_nested_policy_including_missing_targets
         fs::read_to_string(root.join("private/token")).unwrap(),
         "needle secret"
     );
-    fs::remove_file(root.join("src/linked")).unwrap();
-    let matches = read
-        .invoke(
-            "Grep".into(),
-            json!({"pattern":"needle"}),
-            Default::default(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(matches["complete"], true);
-    assert_eq!(matches["matches"].as_array().unwrap().len(), 2);
-    assert!(!matches.to_string().contains("secret"));
-    let paths = read
-        .invoke("Glob".into(), json!({"pattern":"**/*"}), Default::default())
-        .await
-        .unwrap();
-    assert_eq!(paths["complete"], true);
-    assert!(!paths.to_string().contains("private"));
-    assert!(!paths.to_string().contains("secret"));
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink("../private", root.join("src/alias")).unwrap();
@@ -128,15 +109,6 @@ async fn read_search_and_mutations_share_nested_policy_including_missing_targets
             read.invoke(
                 "Read".into(),
                 json!({"path":"src/alias/token"}),
-                Default::default()
-            )
-            .await
-            .is_err()
-        );
-        assert!(
-            read.invoke(
-                "Grep".into(),
-                json!({"path":"src/alias", "pattern":"needle"}),
                 Default::default()
             )
             .await

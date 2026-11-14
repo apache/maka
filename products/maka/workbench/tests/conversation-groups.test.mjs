@@ -29,7 +29,7 @@ const session = (id, path, options = {}) => ({
 });
 const project = (id, archived = false) => ({ reference: { id }, archived });
 
-test('groups list pinned conversations, then workspaces, then empty projects', () => {
+test('groups list pinned conversations, then projects in catalog order, then other workspaces', () => {
   const groups = groupConversations(
     [
       session('pin', '/a', { pinned: true, project: 'p' }),
@@ -44,14 +44,45 @@ test('groups list pinned conversations, then workspaces, then empty projects', (
     groups.map((group) => [group.key, group.sessions]),
     [
       ['pinned', ['pin']],
-      ['path:/b', ['root', 'child']],
       ['project:p', ['inProject']],
       ['project:empty', []],
+      ['path:/b', ['root', 'child']],
     ],
   );
   assert.equal(groups[0].project, null);
-  assert.equal(groups[1].path, '/b');
-  assert.deepEqual([...groups[1].nested], ['child']);
+  assert.equal(groups[3].path, '/b');
+  assert.deepEqual([...groups[3].nested], ['child']);
+});
+
+test('project order is independent of conversation recency and stepping follows the preview', () => {
+  const recent = Array.from({ length: 8 }, (_, index) =>
+    session(`b${index}`, '/b', { project: 'b' }),
+  );
+  const groups = groupConversations(
+    [...recent, session('a', '/a', { project: 'a' })],
+    [project('a'), project('b')],
+    false,
+  );
+  assert.deepEqual(browserOrder(groups, new Set(), null, new Set()), [
+    'a',
+    'b0',
+    'b1',
+    'b2',
+    'b3',
+    'b4',
+    'b5',
+  ]);
+  assert.deepEqual(browserOrder(groups, new Set(), null, new Set(['project:b'])), [
+    'a',
+    'b0',
+    'b1',
+    'b2',
+    'b3',
+    'b4',
+    'b5',
+    'b6',
+    'b7',
+  ]);
 });
 
 test('stepping skips collapsed groups but keeps the open conversation', () => {

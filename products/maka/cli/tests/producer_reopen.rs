@@ -69,6 +69,7 @@ enum Producer {
     Goal,
     GoalBudget,
     Scheduler,
+    Automation,
 }
 
 struct FixtureKey;
@@ -210,6 +211,29 @@ impl Model {
                 "application/json",
             ));
         }
+        if request.uri().path() == "/v1/condition.ts" {
+            return Ok(response(
+                "export const ready = true;".into(),
+                "application/typescript",
+            ));
+        }
+        if request.uri().path() == "/v1/condition" {
+            let is_post = request.method() == hyper::Method::POST;
+            let has_header = request
+                .headers()
+                .get("x-condition")
+                .is_some_and(|value| value == "ready");
+            let body = request
+                .into_body()
+                .collect()
+                .await
+                .map_err(|error| error.to_string())?
+                .to_bytes();
+            return Ok(response(
+                (is_post && has_header && body.as_ref() == b"check").to_string(),
+                "application/json",
+            ));
+        }
         if request.method() != hyper::Method::POST
             || !request.uri().path().ends_with("/chat/completions")
         {
@@ -232,7 +256,21 @@ impl Model {
                 message["role"] == "user" && message["content"].to_string().contains(marker)
             })
         };
-        if has_user(&self.marker) {
+        if matches!(self.producer, Producer::Automation) {
+            let last = messages
+                .iter()
+                .rev()
+                .find(|message| message["role"] == "user")
+                .ok_or("automation fixture received no user message")?;
+            let content = last["content"].to_string();
+            if content.contains("AUTOMATION-FOLLOWUP") || content.contains("AUTOMATION-STEERING") {
+                self.producer_requests.fetch_add(1, Ordering::SeqCst);
+                return Ok(sse(json!({"content":"Automation delivered."}), "stop"));
+            }
+        }
+        if has_user(&self.marker)
+            || (matches!(self.producer, Producer::Automation) && has_user(&self.bootstrap))
+        {
             let iteration = self.producer_requests.fetch_add(1, Ordering::SeqCst) + 1;
             if matches!(self.producer, Producer::GoalBudget) {
                 assert!(
@@ -303,34 +341,24 @@ impl Model {
                     value == json!({"activated":["ScheduledTask"]}),
                     "actual discovery result must activate exactly ScheduledTask"
                 );
+                let start_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64
+                    + 10_000;
                 scheduled_tool(
-                    "proposal",
-                    json!({"mode":"create","title":"Approved one-fire acceptance",
-                    "intentBody":self.marker,"schedule":{"kind":"interval","everySeconds":1,"startAt":0},
+                    "create-schedule",
+                    json!({"mode":"create","title":"Agent-created one-fire acceptance",
+                    "intentBody":self.marker,"schedule":{"kind":"interval","everySeconds":1,"startAt":start_at},
                     "timezone":"UTC","misfire":"latest","effect":"agent_run","maxFires":1,"expiresAt":null}),
                 )
             }
             2 => {
-                let value: Value = serde_json::from_str(tool_text(messages, "proposal")?)
-                    .map_err(|error| format!("direct proposal result JSON: {error}"))?;
-                assert_eq!(value["approved"], false);
+                let value: Value = serde_json::from_str(tool_text(messages, "create-schedule")?)
+                    .map_err(|error| format!("direct create result JSON: {error}"))?;
                 assert!(value["taskId"].is_string());
                 assert!(value["revision"].is_u64());
-                scheduled_tool(
-                    "unapproved-resume",
-                    json!({"mode":"resume","taskId":value["taskId"],"revision":value["revision"]}),
-                )
-            }
-            3 => {
-                assert!(
-                    tool_text(messages, "unapproved-resume")?
-                        .contains("scheduler_user_approval_required"),
-                    "actual unapproved resume must be rejected"
-                );
-                sse(
-                    json!({"content":"Proposal saved; explicit user approval is still required."}),
-                    "stop",
-                )
+                sse(json!({"content":"Scheduled task created."}), "stop")
             }
             _ => return Err("bootstrap must not dispatch again".into()),
         };
@@ -714,6 +742,7 @@ fn goal_identity(current: &Value) -> Value {
 )]
 async fn body(
     producer: Producer,
+    retry_workspace: bool,
     sandbox: &Sandbox,
     hosts: &mut Vec<Host>,
     clients: &mut Vec<Client>,
@@ -760,7 +789,7 @@ async fn body(
     assert_eq!(saved["kind"], "saved");
     let tool = match producer {
         Producer::Goal | Producer::GoalBudget => "GoalStatus",
-        Producer::Scheduler => "ScheduledTask",
+        Producer::Scheduler | Producer::Automation => "ScheduledTask",
     };
     let created = mutate(client, "agent", "create", json!({"title":"Producer crash acceptance","automaticTitle":false,"labels":[],"tools":[tool],
         "workspace":{"kind":"directory","path":sandbox.workspace},
@@ -773,6 +802,12 @@ async fn body(
     let target = json!({"sessionId":session_dto["id"],"workspace":session_dto["workspace"],"permissions":session_dto["permissions"],
         "boundaryRevision":session_dto["boundaryRevision"],"binding":session_dto["binding"]});
     let approval = json!({"target":target,"model":{"connectionId":connection,"modelId":"gpt-4.1"},"thinkingLevel":null});
+    if matches!(producer, Producer::Automation) {
+        return automation_delivery(
+            client, &parent, target, connection, sandbox, model, events, base,
+        )
+        .await;
+    }
     if matches!(producer, Producer::GoalBudget) {
         let created = mutate(
             client,
@@ -948,6 +983,7 @@ async fn body(
             let message = format!("m_goal-{id}-1");
             (id, parent.clone(), message)
         }
+        Producer::Automation => unreachable!(),
         Producer::Scheduler => {
             let sent = mutate(
                 client,
@@ -966,7 +1002,7 @@ async fn body(
                 Some(model.as_ref()),
             )
             .await?;
-            assert_eq!(*model.bootstrap_step.lock().unwrap(), 4);
+            assert_eq!(*model.bootstrap_step.lock().unwrap(), 3);
             assert_eq!(model.producer_requests.load(Ordering::SeqCst), 0);
             let page = query(client, "schedules", json!({"kind":"list"})).await?;
             assert_eq!(page["kind"], "page");
@@ -974,30 +1010,49 @@ async fn body(
             let tasks = page["tasks"].as_array().unwrap();
             assert_eq!(tasks.len(), 1);
             let id = tasks[0]["id"].as_str().unwrap().to_owned();
-            let proposal = schedule(client, &id).await?;
-            assert_eq!(proposal["approved"], false);
+            let created = schedule(client, &id).await?;
             assert_eq!(
-                proposal["task"]["createdBy"],
+                created["task"]["createdBy"],
                 json!({"kind":"agent","sessionId":parent})
             );
-            assert_eq!(proposal["task"]["status"], "paused");
-            assert_eq!(proposal["task"]["fireCount"], 0);
-            assert_eq!(proposal["task"]["runs"], json!([]));
-            assert!(proposal["pendingFire"].is_null());
-            let approved = mutate(
-                client,
-                "agent",
-                "schedule",
-                json!({"kind":"approve","taskId":id,"revision":proposal["revision"]}),
-                Attachments::new(),
-            )
-            .await?;
-            assert_eq!(approved["kind"], "committed");
+            assert_eq!(created["task"]["status"], "active");
+            assert_eq!(created["task"]["fireCount"], 0);
+            assert_eq!(created["task"]["runs"], json!([]));
+            assert!(created["pendingFire"].is_null());
+            let retry_fire = if retry_workspace {
+                let held = sandbox.home.join("workspace-unavailable");
+                tokio::fs::rename(&sandbox.workspace, &held)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let pending = phase("claim while workspace is unavailable", async {
+                    loop {
+                        let detail = schedule(client, &id).await?;
+                        if let Some(fire) = detail["pendingFire"].as_str() {
+                            break Ok(fire.to_owned());
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await?;
+                // Deliberate fault duration: keep the workspace absent across the
+                // claim's own notification and the first timed retry. Reads do not wake it.
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let blocked = schedule(client, &id).await?;
+                assert_eq!(blocked["pendingFire"], pending);
+                assert_eq!(blocked["task"]["fireCount"], 0);
+                assert_eq!(model.producer_requests.load(Ordering::SeqCst), 0);
+                // Restore the same directory identity without a Host mutation or wake.
+                tokio::fs::rename(&held, &sandbox.workspace)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Some(pending)
+            } else {
+                None
+            };
             // No triggerNow or clock injection. Wait for actual due and Message-admitted settlement.
             let settled = phase("actual due and one settled Fire", async {
                 loop {
                     let detail = schedule(client, &id).await?;
-                    assert_eq!(detail["approved"], true);
                     if detail["task"]["status"] == "completed" {
                         break Ok(detail);
                     }
@@ -1012,6 +1067,9 @@ async fn body(
             let fires = task["runs"].as_array().unwrap();
             assert_eq!(fires.len(), 1);
             let fire = &fires[0];
+            if let Some(original) = retry_fire {
+                assert_eq!(fire["id"], original);
+            }
             assert_eq!(fire["outcome"], "ok");
             assert_eq!(fire["message"], "Message admitted");
             let message = format!(
@@ -1057,7 +1115,14 @@ async fn body(
             assert_eq!(goal["current"]["id"], domain_id);
             goal_identity(&goal["current"])
         }
+        Producer::Automation => unreachable!(),
         Producer::Scheduler => {
+            assert_eq!(
+                user["origin"],
+                json!({
+                    "kind":"automation", "automationId":domain_id, "title":"Agent-created one-fire acceptance"
+                })
+            );
             assert_ne!(session, parent);
             let child = query(client, "observe", json!({"sessionId":session})).await?;
             assert_eq!(child["session"]["parentSessionId"], parent);
@@ -1157,8 +1222,8 @@ async fn body(
             let after = query(client, "goal", json!({"sessionId":session})).await?;
             assert_eq!(goal_identity(&after["current"]), domain);
         }
+        Producer::Automation => unreachable!(),
         Producer::Scheduler => {
-            // The public DTO exposes approved, not the private authorization blob.
             assert_eq!(schedule(client, &domain_id).await?, domain);
             let child = query(client, "observe", json!({"sessionId":session})).await?;
             assert_eq!(child["session"]["parentSessionId"], parent);
@@ -1173,7 +1238,8 @@ async fn body(
         model.requests.load(Ordering::SeqCst),
         match producer {
             Producer::Goal => 1,
-            Producer::Scheduler => 5,
+            Producer::Scheduler => 4,
+            Producer::Automation => unreachable!(),
             Producer::GoalBudget => 2,
         }
     );
@@ -1219,7 +1285,7 @@ async fn body(
     Ok(())
 }
 
-async fn acceptance(producer: Producer) {
+async fn acceptance(producer: Producer, retry_workspace: bool) {
     let sandbox = Sandbox::new()
         .await
         .expect("owned empty Root/HOME/workspace");
@@ -1227,7 +1293,7 @@ async fn acceptance(producer: Producer) {
     let model = Arc::new(Model {
         producer,
         marker: format!("producer-{nonce}"),
-        bootstrap: format!("proposal-{nonce}"),
+        bootstrap: format!("schedule-{nonce}"),
         bootstrap_step: Mutex::new(0),
         requests: AtomicUsize::new(0),
         producer_requests: AtomicUsize::new(0),
@@ -1251,7 +1317,7 @@ async fn acceptance(producer: Producer) {
     let mut inspectors = Vec::new();
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(150), async {
         tokio::select! {
-            result = body(producer, &sandbox, &mut hosts, &mut clients, &mut inspectors, &model, &mut observations, &base) => result,
+            result = body(producer, retry_workspace, &sandbox, &mut hosts, &mut clients, &mut inspectors, &model, &mut observations, &base) => result,
             result = &mut server => { server_collected = true; Err(format!("model accept task ended: {result:?}")) },
         }
     })).catch_unwind().await;
@@ -1320,9 +1386,14 @@ async fn acceptance(producer: Producer) {
     match outcome {
         Ok(Ok(Ok(()))) => {
             assert!(cleanup.is_empty(), "{cleanup:?}");
+            if matches!(producer, Producer::Automation) {
+                assert_eq!(model.producer_requests.load(Ordering::SeqCst), 4);
+                return;
+            }
             let (requests, producer_requests, eof) = match producer {
                 Producer::Goal => (1, 1, 1),
-                Producer::Scheduler => (5, 1, 1),
+                Producer::Scheduler => (4, 1, 1),
+                Producer::Automation => unreachable!(),
                 Producer::GoalBudget => (2, 2, 0),
             };
             assert_eq!(model.requests.load(Ordering::SeqCst), requests);
@@ -1343,15 +1414,271 @@ async fn acceptance(producer: Producer) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn goal_iteration_one_fails_original_run_without_redispatch_after_reopen() {
-    acceptance(Producer::Goal).await;
+    acceptance(Producer::Goal, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn scheduler_user_approved_due_fire_fails_original_run_without_redispatch_after_reopen() {
-    acceptance(Producer::Scheduler).await;
+async fn scheduler_agent_created_due_fire_fails_original_run_without_redispatch_after_reopen() {
+    acceptance(Producer::Scheduler, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn finite_goal_budget_remains_cumulative_across_two_host_reopens() {
-    acceptance(Producer::GoalBudget).await;
+    acceptance(Producer::GoalBudget, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scheduler_retries_original_fire_when_workspace_returns_without_host_mutation() {
+    acceptance(Producer::Scheduler, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scheduler_delivers_script_as_steering_and_timer_as_followup() {
+    acceptance(Producer::Automation, false).await;
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The fixture keeps its independent resources borrowed"
+)]
+async fn automation_delivery(
+    client: &Client,
+    session: &str,
+    target: Value,
+    connection: Value,
+    sandbox: &Sandbox,
+    model: &Model,
+    events: &mut mpsc::UnboundedReceiver<&'static str>,
+    base: &str,
+) -> Result<()> {
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+    let condition = sandbox.workspace.join("status.txt");
+    tokio::fs::write(&condition, "waiting")
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::fs::write(
+        sandbox.workspace.join("readiness.ts"),
+        r#"import { readFile } from "node:fs/promises";
+           export async function ready(): Promise<boolean> { return (await readFile("status.txt", "utf8")).trim() === "ready"; }"#,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let sent = mutate(
+        client,
+        "agent",
+        "send",
+        json!({"sessionId":session,"message":model.bootstrap,"delivery":"queue"}),
+        Attachments::new(),
+    )
+    .await?;
+    let message = sent["messageId"]
+        .as_str()
+        .ok_or("original message missing")?;
+    phase("busy original model request", async {
+        assert_eq!(events.recv().await, Some("accepted"));
+        Ok(())
+    })
+    .await?;
+    let original = work(client, session, message, None, None).await?;
+    let create =
+        |title: &'static str, delivery: &'static str, schedule: Value, expires_at: Option<u64>| {
+            let target = target.clone();
+            let connection = connection.clone();
+            async move {
+                let created = mutate(
+                client,
+                "agent",
+                "schedule",
+                json!({"kind":"create","input":{
+                    "timezone":"UTC","misfire":"skip","task":{
+                        "title":title,"intentBody":title,"schedule":schedule,"expiresAt":expires_at,
+                        "effect":{"kind":"session","delivery":delivery,"target":target,
+                            "model":{"connectionId":connection,"modelId":"gpt-4.1"}}
+                    }
+                }}),
+                Attachments::new(),
+            )
+            .await?;
+                assert_eq!(created["kind"], "committed", "{created}");
+                created["taskId"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "automation missing ID".to_string())
+            }
+        };
+    let followup = create(
+        "AUTOMATION-FOLLOWUP",
+        "followup",
+        json!({"kind":"once","runAt":now_ms()+800}),
+        None,
+    )
+    .await?;
+    let expiry_start = now_ms();
+    let expiring = create(
+        "AUTOMATION-EXPIRING",
+        "followup",
+        json!({"kind":"once","runAt":expiry_start+400}),
+        Some(expiry_start + 2_500),
+    )
+    .await?;
+    let blocked = create(
+        "AUTOMATION-BLOCKED-IMPORT",
+        "steering",
+        json!({"kind":"script","everySeconds":1,"startAt":now_ms()+100,
+            "source":format!("import {{ ready }} from \"{base}/condition.ts\"; console.log(ready);")
+        }),
+        None,
+    )
+    .await?;
+    let steering = create(
+        "AUTOMATION-STEERING",
+        "steering",
+        json!({"kind":"script","everySeconds":1,
+            "startAt":now_ms()+100,
+            "source":"import { ready } from './readiness.ts'; console.log(await ready());"
+        }),
+        None,
+    )
+    .await?;
+    let editing = schedule(client, &steering).await?;
+    let next_check = editing["task"]["nextFireAt"].as_i64().unwrap();
+    let wait = |id: String, count: u64| async move {
+        phase("automation delivered to the conversation", async {
+            loop {
+                let task = schedule(client, &id).await?;
+                if task["task"]["fireCount"] == count {
+                    return Ok(task);
+                }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        })
+        .await
+    };
+    phase("follow-up waits and false script does not fire", async {
+        loop {
+            let denied = schedule(client, &blocked).await?;
+            assert_eq!(denied["task"]["fireCount"], 0, "{denied}");
+            let queued = schedule(client, &followup).await?;
+            let checked = schedule(client, &steering).await?;
+            assert!(checked["task"]["lastError"].is_null(), "{checked}");
+            if queued["pendingFire"].is_string()
+                && checked["task"]["nextFireAt"].as_i64().unwrap() > next_check
+                && let Some(error) = denied["task"]["lastError"].as_str()
+            {
+                assert!(error.contains("/condition.ts"), "{error}");
+                assert_eq!(queued["task"]["fireCount"], 0);
+                assert_eq!(checked["task"]["fireCount"], 0);
+                assert_eq!(model.producer_requests.load(Ordering::SeqCst), 1);
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    })
+    .await?;
+    let edited = mutate(
+        client,
+        "agent",
+        "schedule",
+        json!({"kind":"update","taskId":steering,"revision":editing["revision"],"input":{
+            "timezone":"UTC","misfire":"skip","task":{
+                "title":"Updated script name","intentBody":"AUTOMATION-STEERING",
+                "schedule":editing["task"]["schedule"],"effect":editing["task"]["effect"]
+            }
+        }}),
+        Attachments::new(),
+    )
+    .await?;
+    assert_eq!(
+        edited["kind"], "committed",
+        "a background check must not invalidate an open editor: {edited}"
+    );
+    let expired = wait(expiring, 1).await?;
+    assert_eq!(expired["task"]["status"], "expired");
+    assert_eq!(
+        expired["task"]["runs"][0]["message"],
+        "Automation expired before delivery"
+    );
+    assert_eq!(model.producer_requests.load(Ordering::SeqCst), 1);
+    tokio::fs::write(&condition, "ready")
+        .await
+        .map_err(|e| e.to_string())?;
+    let steered = wait(steering.clone(), 1).await?;
+    assert_eq!(steered["task"]["runs"][0]["runId"], original["runId"]);
+    assert_eq!(
+        steered["task"]["runs"][0]["message"],
+        "Message delivered as steering"
+    );
+    let queued = wait(followup, 1).await?;
+    assert_ne!(queued["task"]["runs"][0]["runId"], original["runId"]);
+    assert_eq!(queued["task"]["runs"][0]["message"], "Message admitted");
+    let mut check_after = steered["task"]["nextFireAt"].as_i64().unwrap();
+    for state in ["ready", "waiting"] {
+        tokio::fs::write(&condition, state)
+            .await
+            .map_err(|e| e.to_string())?;
+        check_after = phase("advance script check without another message", async {
+            loop {
+                let task = schedule(client, &steering).await?;
+                assert_eq!(task["task"]["fireCount"], 1, "{task}");
+                assert!(task["task"]["lastError"].is_null(), "{task}");
+                let next = task["task"]["nextFireAt"].as_i64().unwrap();
+                if next > check_after {
+                    return Ok(next);
+                }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        })
+        .await?;
+    }
+    tokio::fs::write(&condition, "ready")
+        .await
+        .map_err(|e| e.to_string())?;
+    let again = wait(steering, 2).await?;
+    let latest = &again["task"]["runs"][0];
+    let message = format!(
+        "m_{}",
+        hex::encode(Sha256::digest(latest["id"].as_str().unwrap().as_bytes()))
+    );
+    work(client, session, &message, Some("completed"), Some(model)).await?;
+    let observed = query(client, "observe", json!({"sessionId":session})).await?;
+    let changed = mutate(
+        client,
+        "agent",
+        "metadata",
+        json!({"sessionId":session,"expectedRevision":observed["session"]["revision"],
+            "title":observed["session"]["title"],"labels":[],
+            "permissions":{"settings":{"access":"danger_full_access","requestPermissions":true},"revokeGrants":false}}),
+        Attachments::new(),
+    )
+    .await?;
+    assert_eq!(changed["kind"], "committed", "{changed}");
+    let session = &changed["session"];
+    let posted = mutate(
+        client,
+        "agent",
+        "schedule",
+        json!({"kind":"create","input":{"timezone":"UTC","misfire":"skip","task":{
+            "title":"POST check","intentBody":"AUTOMATION-FOLLOWUP-POST","maxFires":1,
+            "schedule":{"kind":"script","everySeconds":1,"startAt":now_ms()+100,
+                "source":format!("const response = await fetch(\"{base}/condition\", {{ method: 'POST', headers: {{ 'x-condition': 'ready' }}, body: 'check' }}); console.log(await response.json());")},
+            "effect":{"kind":"session","delivery":"followup","model":{"connectionId":connection,"modelId":"gpt-4.1"},
+                "target":{"sessionId":session["id"],"workspace":session["workspace"],"permissions":session["permissions"],
+                    "boundaryRevision":session["boundaryRevision"],"binding":session["binding"]}}
+        }}}),
+        Attachments::new(),
+    )
+    .await?;
+    assert_eq!(posted["kind"], "committed", "{posted}");
+    let posted = wait(posted["taskId"].as_str().unwrap().to_owned(), 1).await?;
+    assert_eq!(posted["task"]["status"], "completed", "{posted}");
+    assert_eq!(
+        posted["task"]["runs"][0]["message"], "Message admitted",
+        "{posted}"
+    );
+    Ok(())
 }

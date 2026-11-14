@@ -151,8 +151,9 @@ function CodeText(props: {
             props.tone === 'output' && desktop
             ? C.secondary
             : C.text;
+  const width = signal(0);
   const pieces = () => (
-    <Each of={codePieces(props.text, props.gutter, !!props.wrap)} key="index">
+    <Each of={codePieces(props.text, props.gutter, props.wrap ? width() : undefined)} key="index">
       {(piece) => (
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
           <If when={piece().gutter !== undefined}>
@@ -201,7 +202,9 @@ function CodeText(props: {
       }
     >
       {props.wrap ? (
-        <View style={{ minWidth: 0 }}>{pieces()}</View>
+        <View style={{ minWidth: 0 }} onLayout={({ bounds }) => width.set(bounds.size.width)}>
+          <If when={width() > 0}>{pieces()}</If>
+        </View>
       ) : (
         <Scroll horizontal onScrollIntent={props.userScroll}>
           <View style={{ minWidth: 0 }}>{pieces()}</View>

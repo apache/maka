@@ -198,6 +198,7 @@ impl Owner {
                 approval.model.clone(),
                 approval.thinking_level,
                 BackgroundKind::Goal(id),
+                None,
             )
             .await?;
         self.check_goal_tools(&basis)?;
@@ -207,6 +208,7 @@ impl Owner {
             accepted_model: basis.model.clone().ok_or("goal_model_unavailable")?,
             thinking_level: approval.thinking_level,
             language: basis.language,
+            sandbox_ceiling: None,
         })
     }
     pub(super) fn check_goal_tools(&self, basis: &CapturedRun) -> Result<(), String> {

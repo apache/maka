@@ -20,6 +20,7 @@
 import { createTrajectoryRequests } from './trajectoryRequests';
 import { sendReceiptFailure } from './sendReceipt';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
+import { quietWaits, retrying } from './runWaits';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
 import { delayed } from '../../../../products/maka/workbench/app/delayed';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
@@ -164,7 +165,6 @@ import {
 import { BotRestart } from '../../../../products/maka/workbench/app/BotRestart';
 import {
   MessageRow,
-  originLabel,
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
@@ -932,6 +932,9 @@ export function Conversation(props: ConversationProps) {
       turns: [TurnPresentation, boolean][];
     }
   >();
+  // A retry or a child run keeps the run at work; an approval has its own card.
+  const runAtWork = () =>
+    run() === 'running' || (run() === 'waiting' && quietWaits(execution()).length > 0);
   const chatDisplaySections = computed(() =>
     projectionSections().map((section) => {
       const cache = chatSections.get(section);
@@ -958,7 +961,9 @@ export function Conversation(props: ConversationProps) {
               if (entry.kind === 'trajectory-request') {
                 const { modelId, startedAt, firstTokenAt, finished } = entry.request;
                 return (
-                  (!query || modelId.toLocaleLowerCase().includes(query)) &&
+                  (!query ||
+                    modelId.toLocaleLowerCase().includes(query) ||
+                    (finished?.diagnostic?.toLocaleLowerCase().includes(query) ?? false)) &&
                   (!range ||
                     (startedAt != null &&
                       trajectoryOverlaps(
@@ -982,7 +987,27 @@ export function Conversation(props: ConversationProps) {
     return botView() !== 'ordinary' ? chatEntries(projection(), true) : [];
   });
   const ordinaryChat = () => reading() === 'chat' && botView() === 'ordinary';
-  const display = () => (ordinaryChat() ? chatDisplaySections().flat() : otherDisplay());
+  // A model can take minutes to say its first word, or wait to retry. Until the
+  // running Turn has its own header, ordinary Chat says it is at work, as Bot
+  // Chat does. The row stays outside the cached sections, which do not follow
+  // the run.
+  const workingEntries: DisplayEntry[] = [{ kind: 'botWorking', key: 'bot/working' }];
+  const ordinaryChatSections = computed(() => {
+    const sections = chatDisplaySections();
+    if (!runAtWork()) return sections;
+    const running = runTurn();
+    const headed =
+      running !== null &&
+      sections.some((entries) =>
+        entries.some(
+          (item) =>
+            (item.kind === 'process' && item.group.turnKey === running) ||
+            (item.kind === 'summary' && item.turnKey === running),
+        ),
+      );
+    return headed ? sections : [...sections, workingEntries];
+  });
+  const display = () => (ordinaryChat() ? ordinaryChatSections().flat() : otherDisplay());
   function chatEntries(section: ProcessProjection, botChat: boolean): DisplayEntry[] {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
@@ -998,8 +1023,7 @@ export function Conversation(props: ConversationProps) {
     // this row in place instead of arriving above an already shown reply.
     const working = (turnId: string | undefined) => {
       const running = runTurn();
-      if (run() !== 'running' || workingShown || (turnId !== undefined && turnId !== running))
-        return;
+      if (!runAtWork() || workingShown || (turnId !== undefined && turnId !== running)) return;
       const headed = result.some(
         (item) =>
           running !== null &&
@@ -1146,7 +1170,7 @@ export function Conversation(props: ConversationProps) {
     }
   });
   const displaySections = computed(() =>
-    ordinaryChat() ? chatDisplaySections() : [otherDisplay()],
+    ordinaryChat() ? ordinaryChatSections() : [otherDisplay()],
   );
   const entriesByKey = new Map<string, DisplayEntry>();
   const indexedSections = computed((previous: Set<DisplayEntry[]> | undefined) => {
@@ -1260,7 +1284,7 @@ export function Conversation(props: ConversationProps) {
       items.set(turnKey, {
         turnKey,
         order: item.order,
-        label: originLabel(item.origin) ?? item.label,
+        label: item.label,
         anchor: {
           kind: 'landmark',
           through: landmarks().through,
@@ -1276,14 +1300,13 @@ export function Conversation(props: ConversationProps) {
         !row.position ||
         !row.order ||
         row.role !== 'user' ||
+        row.origin ||
         row.field !== 'body' ||
         (row.fragments && row.fragments[0]?.offset !== 0)
       )
         continue;
       const previous = items.get(turnKey);
-      const label =
-        originLabel(row.origin) ??
-        (/\S[\s\S]{0,239}/u.exec(row.text)?.[0] ?? '').replace(/\s+/g, ' ').trim();
+      const label = (/\S[\s\S]{0,239}/u.exec(row.text)?.[0] ?? '').replace(/\s+/g, ' ').trim();
       if (
         !previous ||
         (previous.anchor.kind === 'loaded' && compareHistoryOrder(row.order, previous.order) < 0)
@@ -3685,7 +3708,7 @@ export function Conversation(props: ConversationProps) {
       preview={async (item) => {
         const position = item.anchor.position;
         const row = historyRows().userRows.get(historyRowKey(position));
-        if (row) return originLabel(row.origin) ?? row.text;
+        if (row) return row.text;
         if (item.anchor.kind !== 'landmark') return item.label;
         const prompt = await host.query('agent', 'historyPrompt', {
           sessionId,
@@ -3863,6 +3886,8 @@ export function Conversation(props: ConversationProps) {
             return (
               <BotWorking
                 detail={() => {
+                  if (run() === 'waiting' && retrying(quietWaits(execution())))
+                    return tr('Waiting to retry');
                   const tool = latestToolActivity(toolActivity(), runId(), runTurn());
                   return tool ? `${tool.name}` : '';
                 }}

@@ -26,7 +26,7 @@ import { Canvas, cleanup, computed, effect, inputAction, signal, Text, View, Lis
 import type { ListRef, Signal, ViewRef } from 'nsh';
 import type { AnimatedValue } from 'nsh';
 import { platform, windowSize } from 'nsh';
-import { senderSession, type Row } from './history';
+import { activityMessage, type Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
@@ -96,7 +96,7 @@ export function activityCounts(
   const tools = groups.reduce((count, group) => count + group.toolIds.length, 0);
   const messages = ids.filter((id) => {
     const value = row(id);
-    return value?.role === 'user' && senderSession(value.origin) !== null;
+    return value?.role === 'user' && activityMessage(value.origin);
   }).length;
   return [
     thoughts

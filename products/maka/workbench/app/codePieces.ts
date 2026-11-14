@@ -28,14 +28,13 @@ import { tr } from './locale';
 // pixels wide, and 200 lines are 10,400 pixels tall. Copy buttons still copy
 // the whole text.
 //
-// Wrapped text is as wide as its column, so only its height counts: a piece
-// holds about 200 shown rows, a line counting the rows it takes at a narrow
-// column, and a line is cut where it would take more than 100 of them.
+// Wrapped text uses its measured container width. Word wrapping can leave a
+// row partly empty; budget two rows per full row's worth of columns, plus
+// one for a final partial row (or the command prompt).
 export const largestTextSize = 1.3;
 export const pieceLines = 200;
 export const lineColumns = 720;
-export const narrowColumns = 30;
-export const wrappedLineColumns = narrowColumns * 100;
+const columnWidth = 13 * largestTextSize * 0.62;
 
 export type CodePiece = { index: number; text: string; gutter?: string | undefined };
 
@@ -66,11 +65,15 @@ function cut(line: string, limit: number) {
   return `${line.slice(0, end)}${note([...line.slice(end)].length)}`;
 }
 
-export function codePieces(text: string, gutter?: string, wrap = false): CodePiece[] {
-  const limit = wrap ? wrappedLineColumns : lineColumns;
+export function codePieces(text: string, gutter?: string, wrapWidth?: number): CodePiece[] {
+  const perRow =
+    wrapWidth === undefined ? undefined : Math.max(1, Math.floor(wrapWidth / columnWidth));
+  const limit = perRow === undefined ? lineColumns : perRow * Math.floor((pieceLines - 1) / 2);
   const lines = text.split('\n').map((line) => cut(line, limit));
-  const rows = (line: string) => (wrap ? Math.max(1, Math.ceil(columns(line) / narrowColumns)) : 1);
-  const total = wrap ? lines.reduce((sum, line) => sum + rows(line), 0) : lines.length;
+  const rows = (line: string) =>
+    perRow === undefined ? 1 : Math.max(1, 2 * Math.ceil(columns(line) / perRow) + 1);
+  const total =
+    perRow === undefined ? lines.length : lines.reduce((sum, line) => sum + rows(line), 0);
   if (total <= pieceLines) return [{ index: 0, text: lines.join('\n'), gutter }];
   // Numbers padded to one width keep every piece's text in one column.
   const split = gutter?.split('\n');

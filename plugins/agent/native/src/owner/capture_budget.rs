@@ -70,6 +70,7 @@ pub(super) fn check_approval(
         return Err("background_approval_changed".into());
     };
     if basis.background.as_ref() != Some(&approval.target)
+        || basis.background_sandbox_ceiling != approval.sandbox_ceiling
         || basis.executor.is_some()
         || model.binding.connection_id != approval.model.connection_id
         || model.binding.model != approval.model.model_id
@@ -382,13 +383,16 @@ impl AdmissionGuard for BudgetGuard {
             }
             BudgetBasis::Schedule(source) => {
                 check_source(&self.source, spec, &source.message_id).map_err(invalid)?;
-                let current = super::scheduler::Scheduler::budget_in_transaction(
+                let mut current = super::scheduler::Scheduler::budget_in_transaction(
                     &self.storage,
                     connection,
                     &source.task_id,
                     &source.message_id,
                     &self.data,
                 )?;
+                // Pausing affects subsequent fires. The pending fire still owns
+                // its frozen authorization even if the task revision advances.
+                current.revision = source.revision;
                 if serde_json::to_value(&current)? != serde_json::to_value(source)?
                     || self.budget.deadline != source.expires_at
                     || self.budget.tokens.is_some()

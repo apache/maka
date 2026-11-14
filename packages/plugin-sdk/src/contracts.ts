@@ -12827,6 +12827,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -14370,6 +14387,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -14836,8 +14870,11 @@ export const contracts: {
                 format: 'uint64',
                 minimum: 0,
               },
+              runTerminated: {
+                type: 'boolean',
+              },
             },
-            required: ['requests'],
+            required: ['requests', 'runTerminated'],
             $defs: {
               AgentHistoryRequest: {
                 type: 'object',
@@ -14871,6 +14908,16 @@ export const contracts: {
                     anyOf: [
                       {
                         $ref: '#/$defs/AgentHistoryRequestFinished',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  retry: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentHistoryRequestRetry',
                       },
                       {
                         type: 'null',
@@ -14998,6 +15045,45 @@ export const contracts: {
                     minimum: 0,
                   },
                 },
+              },
+              AgentHistoryRequestRetry: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'scheduled',
+                      },
+                      at: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    required: ['kind', 'at'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'started',
+                      },
+                    },
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cancelled',
+                      },
+                    },
+                    required: ['kind'],
+                  },
+                ],
               },
             },
           },
@@ -20807,6 +20893,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -21868,6 +21971,23 @@ export const contracts: {
                     },
                     additionalProperties: false,
                     required: ['kind', 'execution'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
                   },
                   {
                     type: 'object',
@@ -27535,6 +27655,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -31335,25 +31472,6 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
-                    const: 'approve',
-                  },
-                  taskId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'taskId', 'revision'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
                     const: 'pause',
                   },
                   taskId: {
@@ -31405,51 +31523,6 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['kind', 'taskId', 'revision'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'snooze',
-                  },
-                  taskId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  delayMs: {
-                    type: 'integer',
-                    format: 'int64',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'taskId', 'revision', 'delayMs'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'acknowledge',
-                  },
-                  taskId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  fireId: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'taskId', 'revision', 'fireId'],
               },
               {
                 type: 'object',
@@ -31544,6 +31617,30 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'script',
+                      },
+                      source: {
+                        type: 'string',
+                      },
+                      everySeconds: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                        default: 60,
+                      },
+                      startAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'source', 'startAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'once',
                       },
                       runAt: {
@@ -31623,18 +31720,11 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'reminder',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
                         const: 'session',
+                      },
+                      delivery: {
+                        $ref: '#/$defs/AutomationDelivery',
+                        default: 'steering',
                       },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
@@ -31684,6 +31774,10 @@ export const contracts: {
                     required: ['kind', 'target', 'model'],
                   },
                 ],
+              },
+              AutomationDelivery: {
+                type: 'string',
+                enum: ['steering', 'followup'],
               },
               AgentScheduledTarget: {
                 description:
@@ -31899,57 +31993,6 @@ export const contracts: {
           },
           resources: {},
         },
-        scheduleAlerts: {
-          mode: 'subscription',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentScheduleAlertsRead',
-            type: 'object',
-            additionalProperties: false,
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentScheduleAlerts',
-            type: 'object',
-            properties: {
-              pending: {
-                type: 'integer',
-                format: 'uint32',
-                minimum: 0,
-              },
-              reminders: {
-                type: 'array',
-                items: {
-                  $ref: '#/$defs/AgentScheduledReminder',
-                },
-              },
-            },
-            additionalProperties: false,
-            required: ['pending', 'reminders'],
-            $defs: {
-              AgentScheduledReminder: {
-                type: 'object',
-                properties: {
-                  taskId: {
-                    type: 'string',
-                  },
-                  fireId: {
-                    type: 'string',
-                  },
-                  title: {
-                    type: 'string',
-                  },
-                  body: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['taskId', 'fireId', 'title', 'body'],
-              },
-            },
-          },
-          resources: {},
-        },
         schedules: {
           mode: 'query',
           input: {
@@ -32073,11 +32116,14 @@ export const contracts: {
                   title: {
                     type: 'string',
                   },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  script: {
+                    type: 'boolean',
+                  },
                   status: {
                     $ref: '#/$defs/Status',
-                  },
-                  approved: {
-                    type: 'boolean',
                   },
                   nextFireAt: {
                     type: ['integer', 'null'],
@@ -32086,15 +32132,12 @@ export const contracts: {
                   pendingFire: {
                     type: ['string', 'null'],
                   },
-                  reminder: {
-                    type: 'boolean',
-                  },
                   lastError: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['id', 'revision', 'title', 'status', 'approved', 'reminder'],
+                required: ['id', 'revision', 'title', 'sessionId', 'script', 'status'],
               },
               Status: {
                 type: 'string',
@@ -32117,15 +32160,12 @@ export const contracts: {
                   misfire: {
                     $ref: '#/$defs/Misfire',
                   },
-                  approved: {
-                    type: 'boolean',
-                  },
                   pendingFire: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['revision', 'task', 'timezone', 'misfire', 'approved'],
+                required: ['revision', 'task', 'timezone', 'misfire'],
               },
               Task: {
                 type: 'object',
@@ -32231,6 +32271,30 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'script',
+                      },
+                      source: {
+                        type: 'string',
+                      },
+                      everySeconds: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                        default: 60,
+                      },
+                      startAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'source', 'startAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'once',
                       },
                       runAt: {
@@ -32310,18 +32374,11 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'reminder',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
                         const: 'session',
+                      },
+                      delivery: {
+                        $ref: '#/$defs/AutomationDelivery',
+                        default: 'steering',
                       },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
@@ -32371,6 +32428,10 @@ export const contracts: {
                     required: ['kind', 'target', 'model'],
                   },
                 ],
+              },
+              AutomationDelivery: {
+                type: 'string',
+                enum: ['steering', 'followup'],
               },
               AgentScheduledTarget: {
                 description:
@@ -36868,6 +36929,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -39136,6 +39214,23 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'automation',
+                      },
+                      automationId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'automationId', 'title'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -40100,11 +40195,14 @@ export const contracts: {
                   title: {
                     type: 'string',
                   },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  script: {
+                    type: 'boolean',
+                  },
                   status: {
                     $ref: '#/$defs/Status',
-                  },
-                  approved: {
-                    type: 'boolean',
                   },
                   nextFireAt: {
                     type: ['integer', 'null'],
@@ -40113,15 +40211,12 @@ export const contracts: {
                   pendingFire: {
                     type: ['string', 'null'],
                   },
-                  reminder: {
-                    type: 'boolean',
-                  },
                   lastError: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['id', 'revision', 'title', 'status', 'approved', 'reminder'],
+                required: ['id', 'revision', 'title', 'sessionId', 'script', 'status'],
               },
               Status: {
                 type: 'string',
@@ -40144,15 +40239,12 @@ export const contracts: {
                   misfire: {
                     $ref: '#/$defs/Misfire',
                   },
-                  approved: {
-                    type: 'boolean',
-                  },
                   pendingFire: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['revision', 'task', 'timezone', 'misfire', 'approved'],
+                required: ['revision', 'task', 'timezone', 'misfire'],
               },
               Task: {
                 type: 'object',
@@ -40258,6 +40350,30 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'script',
+                      },
+                      source: {
+                        type: 'string',
+                      },
+                      everySeconds: {
+                        type: 'integer',
+                        format: 'uint32',
+                        minimum: 0,
+                        default: 60,
+                      },
+                      startAt: {
+                        type: 'integer',
+                        format: 'int64',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'source', 'startAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'once',
                       },
                       runAt: {
@@ -40337,18 +40453,11 @@ export const contracts: {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'reminder',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
                         const: 'session',
+                      },
+                      delivery: {
+                        $ref: '#/$defs/AutomationDelivery',
+                        default: 'steering',
                       },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
@@ -40398,6 +40507,10 @@ export const contracts: {
                     required: ['kind', 'target', 'model'],
                   },
                 ],
+              },
+              AutomationDelivery: {
+                type: 'string',
+                enum: ['steering', 'followup'],
               },
               AgentScheduledTarget: {
                 description:
@@ -45819,119 +45932,6 @@ export const contracts: {
             },
             required: ['path', 'old_string', 'new_string'],
             title: 'EditInput',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'completed',
-                  },
-                  value: true,
-                },
-                required: ['kind', 'value'],
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'failed',
-                  },
-                  message: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'message'],
-                description:
-                  'A known completed failure. Uncertain external effects use the original receipt.',
-              },
-            ],
-            title: 'WorkspaceFileResult',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          resources: {},
-        },
-        glob: {
-          mode: 'query',
-          input: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              pattern: {
-                type: 'string',
-                minLength: 1,
-              },
-              cwd: {
-                type: 'string',
-                minLength: 1,
-                default: '.',
-              },
-            },
-            required: ['pattern'],
-            title: 'Input',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'completed',
-                  },
-                  value: true,
-                },
-                required: ['kind', 'value'],
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'failed',
-                  },
-                  message: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'message'],
-                description:
-                  'A known completed failure. Uncertain external effects use the original receipt.',
-              },
-            ],
-            title: 'WorkspaceFileResult',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          resources: {},
-        },
-        grep: {
-          mode: 'query',
-          input: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              pattern: {
-                type: 'string',
-              },
-              path: {
-                type: 'string',
-                default: '.',
-              },
-              glob: {
-                type: 'string',
-              },
-            },
-            required: ['pattern'],
-            title: 'Input',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
           },
           output: {

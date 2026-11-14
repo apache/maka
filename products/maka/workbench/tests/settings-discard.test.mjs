@@ -46,6 +46,7 @@ const { createGeneralSettings } = await import(new URL('generalSettingsState.ts'
 const { createMcpSettings } = await import(new URL('mcpSettingsState.ts', appRoot));
 const { createPluginSettings } = await import(new URL('pluginSettingsState.ts', appRoot));
 const { createNetworkSettings } = await import(new URL('networkSettingsState.ts', appRoot));
+const { createPresetSettings } = await import(new URL('presetSettingsState.ts', appRoot));
 hooks.deregister();
 
 const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -333,4 +334,264 @@ test('the network Discard button reloads without asking', async () => {
   await settled();
   assert.equal(owner.dirty(), false);
   assert.equal(owner.discarding.asking(), false);
+});
+
+async function presets() {
+  let saved = {
+    id: 'role',
+    revision: 1,
+    name: 'Reviewer',
+    description: 'Review code',
+    instruction: 'Original',
+    model: { connectionId: 'one', modelId: 'model' },
+    thinkingLevel: 'high',
+    enabled: true,
+  };
+  const writes = [];
+  let outcome = null;
+  const host = {
+    async query(_, method) {
+      if (method === 'presets') return [{ ...saved, availability: { kind: 'available' } }];
+      if (method === 'preset')
+        return { preset: structuredClone(saved), availability: { kind: 'available' } };
+      if (method === 'model') return { kind: 'unavailable', message: 'Disconnected' };
+      if (method === 'models')
+        return { kind: 'ready', revision: 'catalog', next: null, choices: [] };
+      throw Error(method);
+    },
+    async settingsMutation(endpoint, method, input) {
+      writes.push({ endpoint, method, input });
+      const result =
+        outcome ??
+        (input.expectedRevision && input.expectedRevision !== saved.revision
+          ? { kind: 'conflict', actual: saved.revision }
+          : method === 'deletePreset'
+            ? { kind: 'deleted', id: saved.id }
+            : {
+                kind: 'saved',
+                preset: (saved = { ...saved, ...input, revision: saved.revision + 1 }),
+              });
+      return {
+        reply: {
+          receipt: {
+            kind: 'recorded',
+            outcome: { kind: 'returned', result: { kind: 'success', value: result } },
+          },
+        },
+      };
+    },
+  };
+  const operations = operationsFor(host);
+  const owner = createPresetSettings(host, operations);
+  await owner.open('role');
+  return {
+    owner,
+    operations,
+    writes,
+    host,
+    remote: (patch) => {
+      saved = { ...saved, ...patch, revision: saved.revision + 1 };
+    },
+    fail: (value) => {
+      outcome = value;
+    },
+  };
+}
+
+test('preset editor preserves long Markdown, empty instruction and sends only edited fields', async () => {
+  const { owner, writes } = await presets();
+  const instruction = '# Role\n\n' + 'Keep full instructions.\n'.repeat(5000);
+  owner.change('instruction', instruction);
+  await owner.save();
+  assert.deepEqual(writes[0].input, { id: 'role', expectedRevision: 1, instruction });
+  await owner.open('role');
+  owner.change('instruction', '');
+  await owner.save();
+  assert.deepEqual(writes[1].input, { id: 'role', expectedRevision: 2, instruction: '' });
+});
+
+test('concurrent conversation updates preserve settings draft and original revision until explicit discard', async () => {
+  const { owner, operations, remote, writes } = await presets();
+  owner.change('description', 'Local draft');
+  remote({ name: 'Renamed in conversation' });
+  owner.refresh();
+  await owner.save();
+  assert.match(operations.error(), /changed elsewhere/);
+  assert.equal(owner.editor().values.description, 'Local draft');
+  assert.equal(owner.editor().original.revision, 1);
+  assert.equal(writes.length, 1);
+  owner.back();
+  assert.equal(owner.discarding.asking(), true);
+  owner.discarding.discard();
+  await settled();
+  await owner.open('role');
+  assert.equal(owner.editor().values.name, 'Renamed in conversation');
+});
+
+test('unavailable model can be disabled without resubmitting its model; choosing a model clears effort', async () => {
+  const { owner, writes } = await presets();
+  owner.change('enabled', false);
+  await owner.save();
+  assert.deepEqual(writes[0].input, { id: 'role', expectedRevision: 1, enabled: false });
+  await owner.open('role');
+  owner.choose({
+    selection: { kind: 'model', connectionId: 'two', modelId: 'new' },
+    thinkingLevels: [],
+    sourceName: 'Two',
+    label: 'New',
+  });
+  await owner.save();
+  assert.deepEqual(writes[1].input, {
+    id: 'role',
+    expectedRevision: 2,
+    model: { connectionId: 'two', modelId: 'new' },
+    thinkingLevel: { kind: 'default' },
+  });
+});
+
+test('preset draft survives UI reload and rejected original receipt recovery', async () => {
+  const { owner, operations, host, writes } = await presets();
+  owner.change('instruction', 'Unsaved');
+  const restored = createPresetSettings(host, operations, owner.snapshot());
+  await assert.rejects(restored.recovered({ kind: 'conflict', actual: 2 }), /changed elsewhere/);
+  assert.equal(restored.editor().values.instruction, 'Unsaved');
+  restored.back();
+  assert.equal(restored.discarding.asking(), true);
+  assert.equal(writes.length, 0);
+  await restored.recovered({ kind: 'saved', preset: {} });
+  assert.equal(restored.editor(), null);
+});
+
+test('pending preset mutation blocks repeat save and recovery dispatches its original receipt', async () => {
+  const { owner, operations, writes } = await presets();
+  owner.change('name', 'Draft');
+  operations.pending.set([{ id: 'pending' }]);
+  await owner.save();
+  assert.equal(writes.length, 0);
+  const operation = { id: 'original', endpoint: 'agent', method: 'createPreset' };
+  const recovered = [];
+  const recovery = createSettingsOperations({
+    pendingSettings: async () => [operation],
+    recoverSetting: async (id) => {
+      recovered.push(id);
+      return {
+        receipt: {
+          kind: 'recorded',
+          outcome: {
+            kind: 'returned',
+            result: { kind: 'success', value: { kind: 'conflict', actual: 2 } },
+          },
+        },
+      };
+    },
+  });
+  await recovery.recover((original, value) => {
+    assert.equal(original.id, 'original');
+    return owner.recovered(value);
+  });
+  assert.deepEqual(recovered, ['original']);
+  assert.equal(owner.editor().values.name, 'Draft');
+  assert.match(recovery.error(), /changed elsewhere/);
+});
+
+test('restored preset model details survive text edits and ignore obsolete reads', async () => {
+  const { owner, operations, host } = await presets();
+  const pending = [];
+  const query = host.query;
+  host.query = (_, method, input) =>
+    method === 'model' ? new Promise((resolve) => pending.push(resolve)) : query(_, method, input);
+  const restored = createPresetSettings(host, operations, owner.snapshot());
+  const choice = {
+    selection: { kind: 'model', connectionId: 'one', modelId: 'model' },
+    thinkingLevels: ['high', 'low'],
+    sourceName: 'One',
+    label: 'Model',
+  };
+  restored.activate();
+  restored.change('instruction', 'Edited while loading');
+  pending.shift()({ kind: 'ready', choice });
+  await settled();
+  assert.deepEqual(restored.selectedModel(), choice);
+  assert.equal(restored.editor().values.thinkingLevel, 'high');
+  restored.activate();
+  restored.deactivate();
+  restored.activate();
+  const obsolete = pending.shift();
+  pending.shift()({ kind: 'ready', choice });
+  await settled();
+  obsolete({ kind: 'unavailable' });
+  await settled();
+  assert.deepEqual(restored.selectedModel(), choice);
+  restored.activate();
+  const replacement = {
+    ...choice,
+    selection: { ...choice.selection, modelId: 'other' },
+  };
+  restored.choose(replacement);
+  pending.shift()({ kind: 'ready', choice });
+  await settled();
+  assert.deepEqual(restored.selectedModel(), replacement);
+});
+
+test('cancel and discard restore the preset list after UI reload', async () => {
+  for (const action of ['cancel', 'discard']) {
+    const { owner, operations, host } = await presets();
+    owner.change('instruction', 'Restored draft');
+    const restored = createPresetSettings(host, operations, owner.snapshot());
+    restored.activate();
+    await settled();
+    if (action === 'cancel') restored.cancel();
+    else {
+      restored.back();
+      restored.discarding.discard();
+    }
+    await settled();
+    assert.equal(restored.editor(), null);
+    assert.equal(restored.rows()?.[0].id, 'role');
+  }
+});
+
+test('refresh models updates selected capabilities without replacing the draft', async () => {
+  const { owner, host } = await presets();
+  const choice = {
+    selection: { kind: 'model', connectionId: 'one', modelId: 'model' },
+    thinkingLevels: ['low'],
+    sourceName: 'One',
+    label: 'Model',
+  };
+  const query = host.query;
+  host.query = async (_, method, input) =>
+    method === 'model' ? { kind: 'ready', choice } : query(_, method, input);
+  owner.change('instruction', 'Keep draft');
+  owner.refreshModels();
+  await settled();
+  assert.deepEqual(owner.selectedModel(), choice);
+  assert.equal(owner.editor().values.instruction, 'Keep draft');
+  assert.equal(owner.editor().values.thinkingLevel, 'high');
+});
+
+test('obsolete model failures do not overwrite current settings errors', async () => {
+  const { owner, host, operations } = await presets();
+  const pending = [];
+  const query = host.query;
+  host.query = (_, method, input) =>
+    ['models', 'model'].includes(method)
+      ? new Promise((resolve, reject) => pending.push({ resolve, reject }))
+      : query(_, method, input);
+  owner.searchModels('old');
+  owner.searchModels('new');
+  pending[1].resolve({ kind: 'ready', revision: 'new', next: null, choices: [] });
+  await settled();
+  pending[0].reject(new Error('obsolete'));
+  await settled();
+  assert.equal(operations.error(), '');
+  owner.refreshModels();
+  owner.deactivate();
+  for (const request of pending.slice(2)) request.reject(new Error('inactive'));
+  await settled();
+  assert.equal(operations.error(), '');
+  owner.searchModels('current');
+  pending.at(-1).reject(new Error('current failure'));
+  await settled();
+  assert.notEqual(operations.error(), '');
 });
