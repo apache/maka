@@ -121,7 +121,7 @@ pub(crate) async fn open(
         let expected = match recovery {
             None => None,
             Some(RecoveryDescriptor::Native { binding }) => {
-                if binding.adapter_version != 2
+                if !binding.supported()
                     || binding.resource.resource_ref != input.private_resource.resource_ref
                 {
                     return Err(unavailable(

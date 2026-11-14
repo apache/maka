@@ -93,6 +93,15 @@ pub(crate) struct NativeBinding {
     pub task: NativeTask,
 }
 
+impl NativeBinding {
+    pub(super) fn supported(&self) -> bool {
+        matches!(
+            self.adapter_version,
+            2 | PRESENTATION_VERSION | AGY_ACP_VERSION
+        )
+    }
+}
+
 pub(crate) trait TaskBinding: Send + Sync {
     fn observation_retired(&self) -> CancellationToken;
     fn owner_stop(&self) -> CancellationToken;
@@ -117,6 +126,43 @@ pub(crate) enum NativeTaskObservation {
         reason: maka_agent_facts::durable::BlockerKind,
         diagnostic: String,
     },
+}
+
+fn interrupted() -> Outcome {
+    Outcome::Cancelled {
+        reason: Some("External agent exited before finishing".into()),
+    }
+}
+
+async fn await_closed_task(
+    resource: &maka_process::isolated::Descriptor,
+    cancellation: &CancellationToken,
+    retired: &CancellationToken,
+) -> Result<maka_process::isolated::ClosedEvidence, Error> {
+    use maka_process::isolated::{self, EvidenceInterest, EvidenceWatch};
+
+    let unavailable = |error: isolated::Error| Error::Provider(error.to_string());
+    if let Some(evidence) = isolated::closed_evidence(resource)
+        .await
+        .map_err(unavailable)?
+    {
+        return Ok(evidence);
+    }
+    let mut watch = EvidenceWatch::open(resource, EvidenceInterest::Cleanup)
+        .await
+        .map_err(unavailable)?;
+    let observed = tokio::select! {
+        biased;
+        () = cancellation.cancelled() => Err(Error::ObservationRetired),
+        () = retired.cancelled() => Err(Error::ObservationRetired),
+        result = watch.wait() => result.map_err(unavailable),
+    };
+    watch.close().await.map_err(unavailable)?;
+    observed?;
+    isolated::closed_evidence(resource)
+        .await
+        .map_err(unavailable)?
+        .ok_or(Error::Unknown)
 }
 
 struct CatalogSnapshot {
@@ -333,43 +379,25 @@ impl External {
             | NativeTask::ClaudePty { .. }
             | NativeTask::ClaudeStream { .. } => NativeRuntime::Claude,
         };
-        if !matches!(
-            binding.adapter_version,
-            2 | PRESENTATION_VERSION | AGY_ACP_VERSION
-        ) || request
-            .settings
-            .runtime
-            .as_deref()
-            .and_then(|runtime| runtime.parse::<NativeRuntime>().ok())
-            != Some(runtime)
+        if !binding.supported()
+            || request
+                .settings
+                .runtime
+                .as_deref()
+                .and_then(|runtime| runtime.parse::<NativeRuntime>().ok())
+                != Some(runtime)
         {
             return Ok(blocked(
                 "Original native binding protocol or runtime does not match this task".into(),
             ));
         }
-        let Some(command) = self.commands.get(&runtime) else {
-            return Ok(blocked(
-                "Original native runtime is no longer enabled".into(),
-            ));
-        };
-        if binding.command_basis != runtime::command_basis(command, &request.cwd)? {
-            return Ok(blocked(
-                "Original native command or workspace basis changed".into(),
-            ));
-        }
-        let evidence = match maka_process::isolated::closed_evidence(&binding.resource).await {
-            Ok(Some(evidence)) => evidence,
-            Ok(None) => {
-                return Ok(blocked(
-                    "Original isolated resource has no immutable tracked-group/stream closure"
-                        .into(),
-                ));
-            }
-            Err(error) => {
-                return Ok(blocked(format!(
-                    "Original isolated evidence is unavailable: {error}"
-                )));
-            }
+        let retired = lifecycle.observation_retired();
+        // The original helper owns these bytes. Recovery does not use the
+        // current executable, configuration or credentials to observe them.
+        let evidence = match await_closed_task(&binding.resource, &cancellation, &retired).await {
+            Ok(evidence) => evidence,
+            Err(error @ Error::ObservationRetired) => return Err(error),
+            Err(error) => return Ok(blocked(error.to_string())),
         };
         let pipe_receipt = matches!(
             evidence.receipt,
@@ -385,62 +413,61 @@ impl External {
             ));
         }
         lifecycle.cleanup(OperationCleanup::Confirmed).await?;
-        if binding.task.is_pty() {
-            return Ok(blocked("Original Claude PTY transcript is job-writable; it is not immutable native business-completion evidence".into()));
-        }
-        let expected_prefix = match expected_prefix {
-            Some(prefix) => prefix,
-            None if after_index == 0 => [0; 32],
-            None => {
-                return Ok(blocked(
-                    "The current Root did not supply the original accepted output-prefix proof"
-                        .into(),
-                ));
+        let outcome = if binding.task.is_pty() {
+            // The child controls the PTY transcript. Retain only the output already
+            // accepted by Maka, and use the owner receipt to end the interrupted run.
+            interrupted()
+        } else {
+            let admitted_steering_batches = lifecycle.admitted_steering_batches().await?;
+            let mut input =
+                replay::Stream::new(evidence.stdin, cancellation.clone(), retired.clone());
+            let mut stream = replay::Stream::new(evidence.stdout, cancellation, retired);
+            let count = replay::Count::new(after_index);
+            match replay::parse(
+                request,
+                binding,
+                admitted_steering_batches,
+                &mut input,
+                &mut stream,
+                &count,
+            )
+            .await
+            {
+                Ok(outcome)
+                    if count.total() >= after_index
+                        && (expected_prefix == Some(count.prefix())
+                            || after_index == 0 && expected_prefix.is_none()) =>
+                {
+                    input.rewind().await?;
+                    stream.rewind().await?;
+                    let suffix = replay::Suffix::new(after_index, output.as_ref());
+                    let replayed = replay::parse(
+                        request,
+                        binding,
+                        admitted_steering_batches,
+                        &mut input,
+                        &mut stream,
+                        &suffix,
+                    )
+                    .await?;
+                    if !replay::same_outcome(&outcome, &replayed) {
+                        return Ok(blocked(
+                            "Original protocol changed during read-only replay".into(),
+                        ));
+                    }
+                    outcome
+                }
+                Err(error @ (Error::Cancelled | Error::ObservationRetired)) => return Err(error),
+                Err(error) => {
+                    tracing::debug!(%error, "Closed native task has no recoverable completion");
+                    interrupted()
+                }
+                Ok(_) => {
+                    tracing::warn!("Closed native task output differs from the accepted history");
+                    interrupted()
+                }
             }
         };
-        let admitted_steering_batches = lifecycle.admitted_steering_batches().await?;
-        let retired = lifecycle.observation_retired();
-        let mut input = replay::Stream::new(evidence.stdin, cancellation.clone(), retired.clone());
-        let mut stream = replay::Stream::new(evidence.stdout, cancellation.clone(), retired);
-        let count = replay::Count::new(after_index);
-        let outcome = match replay::parse(
-            request,
-            binding,
-            admitted_steering_batches,
-            &mut input,
-            &mut stream,
-            &count,
-        )
-        .await
-        {
-            Ok(outcome) => outcome,
-            Err(error @ (Error::Cancelled | Error::ObservationRetired)) => return Err(error),
-            Err(error) => {
-                return Ok(blocked(format!(
-                    "Original native protocol is not a complete correlated task: {error}"
-                )));
-            }
-        };
-        if count.total() < after_index || count.prefix() != expected_prefix {
-            return Ok(blocked("Original native output prefix does not match the Root's accepted cursor and digest".into()));
-        }
-        input.rewind().await?;
-        stream.rewind().await?;
-        let suffix = replay::Suffix::new(after_index, output.as_ref());
-        let replayed = replay::parse(
-            request,
-            binding,
-            admitted_steering_batches,
-            &mut input,
-            &mut stream,
-            &suffix,
-        )
-        .await?;
-        if !replay::same_outcome(&outcome, &replayed) {
-            return Ok(blocked(
-                "Original protocol changed during read-only replay".into(),
-            ));
-        }
         lifecycle.closed(outcome.clone()).await?;
         Ok(NativeTaskObservation::Known { outcome })
     }
