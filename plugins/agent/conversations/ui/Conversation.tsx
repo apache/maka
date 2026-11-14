@@ -366,6 +366,7 @@ const readingColumn = {
   paddingRight: platform.idiom === 'terminal' ? 24 : 16,
 } as const;
 const historyEndTolerance = 1;
+const historyFollowThreshold = 24;
 
 export function Conversation(props: ConversationProps) {
   const host = useHost();
@@ -1415,6 +1416,17 @@ export function Conversation(props: ConversationProps) {
     innerReader.set(null);
     // Replace the list's reading anchor when manual scrolling reaches the end.
     list?.scrollToEnd({ animated: animated && !reduceMotion() });
+  };
+  const resumeHistoryAtEnd = (offset: number) => {
+    if (
+      historyMaxOffset - offset > historyFollowThreshold ||
+      !historyFollowPaused() ||
+      (reading() === 'trajectory' && trajectoryRange() !== null) ||
+      !atHistoryTail()
+    )
+      return;
+    if (innerReader() === null) resumeHistoryFollowing();
+    else historyFollowPaused.set(false);
   };
   let compactScroll: ScrollRef | undefined;
   let followCompact = false;
@@ -4276,6 +4288,8 @@ export function Conversation(props: ConversationProps) {
                     historyScrolled = true;
                     if (nearHistoryStart()) prefetchOlder();
                     if (nearHistoryEnd()) prefetchNewer();
+                    // At the edge, further downward input may leave the offset unchanged.
+                    if ((event.delta ?? 0) > 0) resumeHistoryAtEnd(historyOffset);
                   } else if (atHistoryTail()) resumeHistoryFollowing();
                   else ownHandle.jumpLatest(null);
                 }
@@ -4331,15 +4345,7 @@ export function Conversation(props: ConversationProps) {
                 if (movement !== 0 && historyScrollInput === 'pending') historyScrollInput = 'idle';
                 if (scrolled && movement < 0 && distance > historyEndTolerance)
                   historyFollowPaused.set(true);
-                else if (
-                  scrolled &&
-                  movement > 0 &&
-                  distance <= historyEndTolerance &&
-                  historyFollowPaused() &&
-                  (reading() !== 'trajectory' || trajectoryRange() === null) &&
-                  atHistoryTail()
-                )
-                  resumeHistoryFollowing();
+                else if (scrolled && movement > 0) resumeHistoryAtEnd(offset);
                 const owner = pagingOwner('before');
                 if (owner !== null) {
                   // An underfilled initial viewport needs history before the first gesture.
