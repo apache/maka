@@ -1462,7 +1462,7 @@ async fn automation_delivery(
     client: &Client,
     session: &str,
     target: Value,
-    connection: Value,
+    connection: String,
     sandbox: &Sandbox,
     model: &Model,
     events: &mut mpsc::UnboundedReceiver<&'static str>,
