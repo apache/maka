@@ -33,10 +33,6 @@ pub(super) fn executor_tool_id(run: RunId, task: ExternalTaskId, id: &str) -> St
     maka_agent_facts::tool_call::tool_use_id(run, &format!("{task}:{id}"))
 }
 
-pub(super) fn executor_message_id(run: RunId, task: ExternalTaskId, id: &str) -> String {
-    format!("executor/{run}/{task}/{id}")
-}
-
 pub(super) fn executor_tool_display(
     name: &str,
     input: &serde_json::Value,
@@ -243,7 +239,7 @@ pub(super) fn project(item: &HistoryItem, turn_id: String) -> Result<Delivery, S
             match output {
                 Output::OutputDelta { message_id, .. }
                 | Output::ThinkingDelta { message_id, .. } => DeliveryFact::ExecutorTextChanged {
-                    message_id: executor_message_id(run, *task, message_id),
+                    message_id: maka_agent_facts::executor::message_id(run, *task, message_id),
                     thinking: matches!(output, Output::ThinkingDelta { .. }),
                 },
                 Output::ToolStart {

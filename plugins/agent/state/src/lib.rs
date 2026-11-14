@@ -215,4 +215,9 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "subagent presets",
         sql: include_str!("../migrations/0038_subagent_presets.sql"),
     },
+    maka_event_log::migration::Migration {
+        version: 39,
+        description: "index external assistant messages in the session catalog",
+        sql: include_str!("../migrations/0039_external_catalog_messages.sql"),
+    },
 ];
