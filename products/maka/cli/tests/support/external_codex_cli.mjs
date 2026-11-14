@@ -23,7 +23,8 @@ import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
 const invocation = process.argv.slice(2).join(' ');
-const antigravity = invocation === 'acp --process-per-session --dangerously-skip-permissions';
+const antigravity =
+  invocation === 'acp --process-per-session --dangerously-skip-permissions --agent maka';
 if (!antigravity && invocation !== 'app-server --listen stdio://')
   throw Error('Unexpected external agent invocation');
 const address = new URL(process.env.FAKE_CONTROL);

@@ -52,6 +52,8 @@
 
 agy 从原生 `agy models` 读取模型目录，从 `/usage` 读取分组额度。执行通过 [agy ACP](https://antigravity.google/docs/ide/extensions/acp/) 新建或续接会话，使用当前登录的账号和原工作区。建连时直接注册本轮 Host MCP，续接时刷新凭据，工具命名空间保持一致，无需额外工作区或 hook。已有会话沿用原生 ID 和已保存的历史。升级前，请在旧版中让正在运行的 headless 任务完成或停止并结算。Maka 说明在首次交付或变更时通过独立的 user 消息发送，图片通过 ACP image block 传入。工具摘要、思考片段和本轮用量随执行事件记录。
 
+启用 Antigravity 时，Maka 会在 `~/.gemini/config/agents/` 安装 `maka` 定义。最后一个使用 Antigravity 的 Maka 实例关闭该功能时会移除定义。新 AGY 会话使用该定义，文件、进程和自动化工具通过 Maka 的 MCP 桥提供，同时保留 AGY 的原生网页搜索和子 agent 工具。已有 AGY 会话继续使用创建时的 agent。
+
 停止时向 agy 会话发送 `session/cancel`，等对应 prompt 返回终态后再结算任务。agy 忙时，steer 会在同一事务里将新消息入队，并请求取消当前轮。原轮结算后沿用同一个原生会话处理后续消息。显式 queue 会让当前轮继续执行。无法确认原始终态时，恢复仍按原任务绑定读取其协议日志。
 
 原生协议帧、Claude JSONL 行及经过认证的 Host MCP 请求共用 256 MiB 内存防护边界，不另外限制上传大小或图片张数。20 张各 5 MiB 的图片编码为同一行 base64 就已约 134 MiB。ACK 前事件不再按条数截断，保留预算同样为 256 MiB，每条至少按 1 KiB 计入对象开销。启动和 RPC 确认允许五分钟，Claude 文字确认和 JSONL 接纳还按每 32 KiB 增加一秒。这不是整轮执行时限；用户仍可取消，清理超时和不确定副作用栅栏独立保留。
