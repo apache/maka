@@ -520,7 +520,11 @@ impl Owner {
         if let Some(plan) = &mut plan {
             plan.edit_revision = revision;
         }
-        let result = serde_json::json!({ "taskId": id, "revision": revision });
+        let result = serde_json::json!({
+            "taskId": id,
+            "revision": revision,
+            "approved": plan.as_ref().is_some_and(|plan| plan.authorization.is_some()),
+        });
         let receipt = Mutation {
             key,
             expected_revision: None,
