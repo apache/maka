@@ -1616,6 +1616,20 @@ async fn automation_delivery(
     let queued = wait(followup, 1).await?;
     assert_ne!(queued["task"]["runs"][0]["runId"], original["runId"]);
     assert_eq!(queued["task"]["runs"][0]["message"], "Message admitted");
+    let followup_message = format!(
+        "m_{}",
+        hex::encode(Sha256::digest(
+            queued["task"]["runs"][0]["id"].as_str().unwrap().as_bytes()
+        ))
+    );
+    work(
+        client,
+        session,
+        &followup_message,
+        Some("completed"),
+        Some(model),
+    )
+    .await?;
     let mut check_after = steered["task"]["nextFireAt"].as_i64().unwrap();
     for state in ["ready", "waiting"] {
         tokio::fs::write(&condition, state)
