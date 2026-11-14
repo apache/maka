@@ -107,3 +107,33 @@ test('a line too wide for one layer is cut, its note included in the limit', () 
     assert.equal([...kept].length + Number(count), [...line].length);
   }
 });
+
+test('wrapped text accounts for word breaks at the measured width', () => {
+  const lines = Array(20).fill('abcdefghijklmnop '.repeat(17));
+  const text = lines.join('\n');
+  for (const [width, expected] of [
+    [314, [9, 9, 2]],
+    [180, [5, 5, 5, 5]],
+  ]) {
+    const pieces = codePieces(text, undefined, width);
+    assert.deepEqual(
+      pieces.map(({ text }) => text.split('\n').length),
+      expected,
+    );
+    assert.equal(pieces.map(({ text }) => text).join('\n'), text);
+  }
+  assert.equal(codePieces(text).length, 1);
+});
+
+test('the wrapped line limit follows the measured column, including the note', () => {
+  for (const width of [180, 314, 800]) {
+    const line = 'w'.repeat(10000);
+    const [piece] = codePieces(line, undefined, width);
+    const [, kept, count] = piece.text.match(/^(.*) … (\d+) more characters$/u);
+    assert.ok(line.startsWith(kept));
+    assert.equal(kept.length + Number(count), line.length);
+  }
+  const text = 'w'.repeat(1500);
+  assert.equal(codePieces(text, undefined, 314)[0].text, text);
+  assert.match(codePieces(text, undefined, 100)[0].text, / … \d+ more characters$/u);
+});

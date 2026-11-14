@@ -27,9 +27,14 @@ import { tr } from './locale';
 // monospace column measures about 20.9 pixels. 720 columns are about 15,050
 // pixels wide, and 200 lines are 10,400 pixels tall. Copy buttons still copy
 // the whole text.
+//
+// Wrapped text uses its measured container width. Word wrapping can leave a
+// row partly empty; budget two rows per full row's worth of columns, plus
+// one for a final partial row (or the command prompt).
 export const largestTextSize = 1.3;
 export const pieceLines = 200;
 export const lineColumns = 720;
+const columnWidth = 13 * largestTextSize * 0.62;
 
 export type CodePiece = { index: number; text: string; gutter?: string | undefined };
 
@@ -45,11 +50,11 @@ export const columns = (text: string) => {
 };
 const note = (count: number) => ` ${tr('… {count} more characters', { count: String(count) })}`;
 
-function cut(line: string) {
+function cut(line: string, limit: number) {
   // Each code unit takes at most three columns.
-  if (line.length * 3 <= lineColumns || columns(line) <= lineColumns) return line;
+  if (line.length * 3 <= limit || columns(line) <= limit) return line;
   // The note's count has no more digits than the line's length.
-  const room = lineColumns - columns(note(line.length));
+  const room = limit - columns(note(line.length));
   let used = 0;
   let end = 0;
   for (const char of line) {
@@ -60,23 +65,41 @@ function cut(line: string) {
   return `${line.slice(0, end)}${note([...line.slice(end)].length)}`;
 }
 
-export function codePieces(text: string, gutter?: string): CodePiece[] {
-  const lines = text.split('\n').map(cut);
-  if (lines.length <= pieceLines) return [{ index: 0, text: lines.join('\n'), gutter }];
+export function codePieces(text: string, gutter?: string, wrapWidth?: number): CodePiece[] {
+  const perRow =
+    wrapWidth === undefined ? undefined : Math.max(1, Math.floor(wrapWidth / columnWidth));
+  const limit = perRow === undefined ? lineColumns : perRow * Math.floor((pieceLines - 1) / 2);
+  const lines = text.split('\n').map((line) => cut(line, limit));
+  const rows = (line: string) =>
+    perRow === undefined ? 1 : Math.max(1, 2 * Math.ceil(columns(line) / perRow) + 1);
+  const total =
+    perRow === undefined ? lines.length : lines.reduce((sum, line) => sum + rows(line), 0);
+  if (total <= pieceLines) return [{ index: 0, text: lines.join('\n'), gutter }];
   // Numbers padded to one width keep every piece's text in one column.
   const split = gutter?.split('\n');
   const digits = Math.max(0, ...(split ?? []).map((mark) => mark.length));
   const marks = split?.map((mark) => mark.padStart(digits));
   const pieces: CodePiece[] = [];
-  for (let start = 0; start < lines.length; start += pieceLines)
+  const close = (start: number, end: number) =>
     pieces.push({
       index: pieces.length,
       text: lines
-        .slice(start, start + pieceLines)
+        .slice(start, end)
         // A text drops an empty first or last line; a space keeps its height.
         .map((line, at, all) => (line === '' && (at === 0 || at === all.length - 1) ? ' ' : line))
         .join('\n'),
-      gutter: marks?.slice(start, start + pieceLines).join('\n'),
+      gutter: marks?.slice(start, end).join('\n'),
     });
+  let start = 0;
+  let used = 0;
+  lines.forEach((line, index) => {
+    if (used > 0 && used + rows(line) > pieceLines) {
+      close(start, index);
+      start = index;
+      used = 0;
+    }
+    used += rows(line);
+  });
+  close(start, lines.length);
   return pieces;
 }
