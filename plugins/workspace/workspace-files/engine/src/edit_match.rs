@@ -54,12 +54,12 @@ pub(crate) fn replace(
     if old.is_empty() || old == new {
         return Err(failed("Edit requires nonempty, different old_string"));
     }
-    let mut exact = source.match_indices(old);
-    let found = exact.next();
-    if exact.next().is_some() {
+    let found = source.find(old);
+    // Comparing first and last starts also detects overlapping occurrences.
+    if found.is_some() && source.rfind(old) != found {
         return Err(failed("Edit exact match is not unique"));
     }
-    let (span, strategy) = if let Some((offset, _)) = found {
+    let (span, strategy) = if let Some(offset) = found {
         (offset..offset + old.len(), EditMatchStrategy::Exact)
     } else {
         if trimmed_len(old) < 5 {
