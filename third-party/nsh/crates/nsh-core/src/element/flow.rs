@@ -125,16 +125,19 @@ impl Region {
                     let error = failed.get();
                     // The view is under the boundary, the fallback is not
                     // (what fails in it goes to the boundary above).
-                    if error.is_none() {
-                        super::reactive::register_boundary(failed);
-                    }
-                    // The run's owner is under the binding, where the
-                    // boundary is: `boundary_of` finds it from there.
+                    let boundary = error
+                        .is_none()
+                        .then(|| super::reactive::register_boundary(failed));
                     let owner = run_owner();
                     let elements = untracked(|| {
-                        owner.scope(|| match error {
-                            Some(error) => fallback(error, Reset(failed)),
-                            None => view(),
+                        owner.scope(|| {
+                            if let Some(boundary) = boundary {
+                                super::reactive::provide_context(boundary);
+                            }
+                            match error {
+                                Some(error) => fallback(error, Reset(failed)),
+                                None => view(),
+                            }
                         })
                     })
                     .into_iter()

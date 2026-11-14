@@ -209,7 +209,6 @@ pub fn catalog() -> Value {
         root::<maka_agent_api::contract::Schedules>(&mut g),
         root::<maka_agent_api::contract::ScheduleChange>(&mut g),
         root::<maka_agent_api::contract::ScheduleResult>(&mut g),
-        root::<maka_agent_api::contract::ScheduleAlerts>(&mut g),
         root::<maka_agent_api::contract::RecallQuery>(&mut g),
         root::<maka_agent_api::contract::RecallPage>(&mut g),
         root::<maka_agent_api::contract::ImportsRead>(&mut g),

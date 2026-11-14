@@ -174,7 +174,7 @@ export function TurnUsage(props: {
       if (active())
         reading.set({
           kind: 'failed',
-          message: errorText(reason),
+          message: errorText(reason, 'Could not read request usage.'),
         });
     }
   };

@@ -68,7 +68,14 @@ import { createHost, HostProvider } from '../../../products/maka/workbench/app/h
 
 import { createPendingRecovery } from '../../../products/maka/workbench/app/pendingRecovery';
 
+import { SubagentSettings } from '../../../products/maka/workbench/app/SubagentSettings';
+import {
+  createPresetSettings,
+  type PresetSettingsSnapshot,
+} from '../../../products/maka/workbench/app/presetSettingsState';
+
 type Snapshot = {
+  presets?: PresetSettingsSnapshot;
   route: SettingsRoute | null;
   connections: ModelSettingsSnapshot;
   general: GeneralSettingsSnapshot;
@@ -94,13 +101,8 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const route = signal<SettingsRoute | null>(restored?.route ?? defaultRoute);
   const mounted = new Map<string, number>();
   const active = (id: string) => () => (mounted.get(id) ?? 0) > 0;
-  const views = new Set<SettingsViewInput>();
-  const changed = () => {
-    for (const view of views) view.changed();
-  };
   const connections = createModelSettings(
     host,
-    changed,
     operations,
     active('connections'),
     undefined,
@@ -122,12 +124,8 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     context,
     restored?.plugins,
   );
-  const externalAgents = createExternalAgentSettings(
-    host,
-    operations,
-    active('external-agents'),
-    changed,
-  );
+  const externalAgents = createExternalAgentSettings(host, operations, active('external-agents'));
+  const presets = createPresetSettings(host, operations, restored?.presets);
   const configurationWorkspace = createConfigurationWorkspace(operations);
   const skills = createSkillSettings(host, operations, configurationWorkspace);
   const mcp = createMcpSettings(host, operations, configurationWorkspace);
@@ -166,6 +164,11 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     operations.recover(async (original, value) => {
       if (original.endpoint === 'agent' && original.method === 'updateGlobalInstructions')
         await general.recovered(value);
+      else if (
+        original.endpoint === 'agent' &&
+        ['createPreset', 'updatePreset', 'deletePreset'].includes(original.method)
+      )
+        await presets.recovered(value);
       else if (original.endpoint === 'skills') skills.recovered();
       else if (original.endpoint === 'agent' && original.method === 'manageMcpServer')
         mcp.recovered();
@@ -175,12 +178,10 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         if (original.method === 'configureBatch') await host.refresh();
         plugins.reset();
         externalAgents.reset();
-        if (original.method === 'configureBatch') changed();
       } else if (original.method === 'updateAssistantPreferences') general.reset();
       else if (original.method === 'updateNetwork') network.reset();
       else {
         connections.reset();
-        changed();
       }
     });
   createPendingRecovery({
@@ -241,8 +242,6 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               }
             });
           });
-          views.add(input);
-          cleanup(() => views.delete(input));
           return (
             <HostProvider value={host}>
               <If when={input.opened()}>
@@ -322,6 +321,32 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               busy: operations.busy,
             },
             () => <ConnectionSettings owner={connections} />,
+          ),
+      },
+      subagents: {
+        kind: 'settings',
+        render: (props) =>
+          mountPage(
+            'subagents',
+            presets,
+            props,
+            {
+              title: () => tr('Subagents'),
+              action: () =>
+                !presets.editor()
+                  ? {
+                      label: tr('Add subagent'),
+                      run: () => void presets.open(null),
+                      disabled: presets.loading() || presets.busy(),
+                    }
+                  : null,
+              nested: () => !!presets.editor(),
+              navigation: presets.navigation,
+              back: presets.back,
+              leave: presets.leave,
+              busy: presets.busy,
+            },
+            () => <SubagentSettings owner={presets} />,
           ),
       },
       skills: {
@@ -466,6 +491,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       );
       return {
         route: route(),
+        presets: presets.snapshot(),
         connections: connections.snapshot(),
         general: general.snapshot(),
         network: network.snapshotState(),

@@ -122,7 +122,7 @@ export function SessionActions(props: {
       if (active()) props.close();
     } catch (reason) {
       if (!active()) return;
-      error.set(errorText(reason));
+      error.set(errorText(reason, 'Could not update the conversation.'));
       if (reason instanceof SessionRevisionConflict) {
         // Keep the typed title. The refreshed snapshot supplies the next
         // explicitly requested action, never an automatic mutation retry.
@@ -133,8 +133,8 @@ export function SessionActions(props: {
           if (active())
             error.set(
               message('{message} {detail}', {
-                message: errorText(reason),
-                detail: errorText(refreshError),
+                message: errorText(reason, 'Could not update the conversation.'),
+                detail: errorText(refreshError, 'Could not load conversation history.'),
               }),
             );
         }

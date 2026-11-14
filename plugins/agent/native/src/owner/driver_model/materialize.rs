@@ -57,7 +57,7 @@ impl FrozenMaterializer {
                 validate_model_input_policy(&self.provenance,&model)?;
                 let recovery=&self.recovery;
                 let binding=self.executor.binding(&model.provider)?;
-                if self.frozen.accepted!=self.model_source.accepted||!same_adapter_revision(binding.source(),&self.frozen.adapter)
+                if self.frozen.accepted!=self.model_source.accepted||!same_adapter(binding.source(),&self.frozen.adapter)
                     ||preparation::route_identity(&model.provider)?!=self.frozen.route_identity
                     ||recovery.protocol!=format!("{PROTOCOL}/recovery")||recovery.version!=VERSION
                     ||recovery.request!=self.request.request||recovery.adapter!=self.frozen.adapter

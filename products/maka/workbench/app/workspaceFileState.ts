@@ -120,7 +120,9 @@ export function createWorkspaceFiles(
     if (!owns(read)) return;
     stop();
     batch(() => {
-      error.set(errorText(reason));
+      error.set(
+        errorText(reason, 'The directory changed or is unavailable. Refresh to reopen it.'),
+      );
       loading.set(false);
       busy.set(false);
     });

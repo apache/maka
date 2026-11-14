@@ -70,6 +70,11 @@ fn main() -> std::process::ExitCode {
             }
         };
     }
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new(maka_js_runtime::automation::WORKER))
+    {
+        return maka_js_runtime::automation::run();
+    }
     logging::initialize_extension_browser_trace_if_requested();
     if let Some(exit) = maka_computer_use::extension_browser_host::bootstrap() {
         return exit;

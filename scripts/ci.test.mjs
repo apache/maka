@@ -309,13 +309,14 @@ test('native pixel and desktop regressions run only on their native OS workers',
 
 test('non-archived native regressions fail empty selections and GTK runs under Xvfb', async () => {
   const calls = [];
+  const nativeTarget = join(root, 'native-nsh-target');
   const exec = executor(
     root,
     {},
     {
       run: async (exe, args) => {
         calls.push({ exe, args });
-        return '';
+        return args[0] === 'metadata' ? JSON.stringify({ target_directory: nativeTarget }) : '';
       },
     },
   );
@@ -341,7 +342,7 @@ test('non-archived native regressions fail empty selections and GTK runs under X
   assert.equal(
     calls.find(({ args }) => args.includes('crates/nsh-platform-macos/tests/host/Undo.test.tsx'))
       .exe,
-    join(root, 'target/debug/nsh'),
+    join(nativeTarget, 'debug/nsh'),
   );
   assert(calls.some(({ exe, args }) => exe === 'xvfb-run' && args[0] === '-a'));
   const gtk = calls.find(({ args }) => args.includes('maka-desktop-shell'));

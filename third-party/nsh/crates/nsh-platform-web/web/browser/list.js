@@ -4,6 +4,7 @@ export const itemsProps = ["each", "children", "keyExtractor", "stickyHeaderIndi
 const own = new Set([...itemsProps.filter(k => !["stickyHeaderIndices", "viewabilityConfig", "refreshing", "onRefresh", "onLoadMore"].includes(k)), "ref", "estimatedItemSize", "loadMoreAtStartThreshold", "separator"]);
 export function createLists(invoke, values, reactive, dom, live, wake) {
   const lists = new Map(), rt = dom.rt;
+  const itemAt = (source, index) => Array.isArray(source) ? source[index] : source.at(index);
   // `<If>` and `<Each>` are memos, the insert's to track (as QuickJS's `slot`).
   const slot = value => typeof value === "function" && !values.signals.has(value) && !values.memos.has(value) ? reactive.untracked(() => value({})) : value;
   const remove = (parent, entry) => { invoke(306, [parent, entry.node]); entry.dispose(); };
@@ -25,12 +26,25 @@ export function createLists(invoke, values, reactive, dom, live, wake) {
     state.items = reactive.computed(previous => {
       const next = props.each ?? [], old = previous ?? [];
       if (old.length && old !== next) {
-        let start = 0, end = old.length, nextEnd = next.length;
-        while (start < end && start < nextEnd && old[start] === next[start]) start++;
-        while (end > start && nextEnd > start && old[end - 1] === next[nextEnd - 1]) { end--; nextEnd--; }
-        if (end !== start || nextEnd !== start) {
-          splices.push([start, end - start, nextEnd - start]);
-          reactive.untracked(() => { for (const cell of state.cells.values()) { const i = cell.index(); if (i >= end) cell.index.set(i + nextEnd - end); } });
+        let start, removed, inserted;
+        if (Array.isArray(old) && Array.isArray(next)) {
+          let end = old.length, nextEnd = next.length;
+          start = 0;
+          while (start < end && start < nextEnd && old[start] === next[start]) start++;
+          while (end > start && nextEnd > start && old[end - 1] === next[nextEnd - 1]) { end--; nextEnd--; }
+          removed = end - start;
+          inserted = nextEnd - start;
+        } else {
+          const span = next.spliceFrom?.(old) ?? [0, old.length, next.length];
+          if (!Array.isArray(span) || span.length !== 3 ||
+              !span.every(n => Number.isInteger(n) && n >= 0 && n <= 0xffffffff) ||
+              span[0] + span[1] > old.length || old.length - span[1] + span[2] !== next.length)
+            throw new RangeError("Invalid indexed list splice");
+          [start, removed, inserted] = span;
+        }
+        if (removed || inserted) {
+          splices.push([start, removed, inserted]);
+          reactive.untracked(() => { for (const cell of state.cells.values()) { const i = cell.index(); if (i >= start + removed) cell.index.set(i + inserted - removed); } });
         }
       }
       return next;
@@ -73,7 +87,7 @@ export function createLists(invoke, values, reactive, dom, live, wake) {
         state.reported = state.latest;
         const each = props.each ?? [], viewableItems = [], changed = [];
         const token = (index, isViewable) => {
-          const item = each[index];
+          const item = itemAt(each, index);
           const key = typeof props.keyExtractor === "function" ? props.keyExtractor(item, index) : String(item?.key ?? item?.id ?? index);
           return { item, key, index, isViewable };
         };
@@ -105,7 +119,7 @@ export function createLists(invoke, values, reactive, dom, live, wake) {
         const entry = reactive.runWithOwner(state.owner, () => reactive.root(dispose => {
           const index = reactive.signal(first);
           let previous;
-          const item = reactive.computed(() => { const i = index(), items = state.items(); if (i < items.length) previous = items[i]; return previous; });
+          const item = reactive.computed(() => { const i = index(), items = state.items(); if (i < items.length) previous = itemAt(items, i); return previous; });
           const cell = rt.element("cell");
           try {
             rt.prop(cell, "slot", slotId); rt.append(state.node, cell);

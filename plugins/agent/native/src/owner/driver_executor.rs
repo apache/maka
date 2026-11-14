@@ -340,7 +340,18 @@ impl TaskBinding for Publications {
             let mut publication = self.publication.lock().await;
             let closure = match outcome {
                 Outcome::Completed { message_id } => publication.complete(message_id),
-                Outcome::Cancelled { reason } => (Terminal::Cancelled, reason, None),
+                Outcome::Cancelled { reason } => {
+                    let view = self
+                        .state
+                        .frontier(self.frozen.payload.request.execution.run_id)
+                        .await
+                        .map_err(|error| Error::Persistence(error.to_string()))?;
+                    if view.finish_requested() && !view.stopped {
+                        publication.complete(None)
+                    } else {
+                        (Terminal::Cancelled, reason, None)
+                    }
+                }
                 Outcome::Failed { message, .. } => (Terminal::Failed, Some(message), None),
             };
             if let Some(original) = publication.closed.as_ref() {
@@ -1043,8 +1054,15 @@ impl ExternalPorts for DriverExecutor {
     ) -> BoxFuture<'_, Result<ExternalConnection, RunError>> {
         Box::pin(async move {
             let frozen = self.decode(run, task, descriptor.clone()).await?;
-            if frozen.payload.recovery.is_none() {
-                return Err(blocked(descriptor));
+            match &frozen.payload.recovery {
+                Some(RecoveryDescriptor::Native { binding })
+                    if binding.resource.resource_ref
+                        != frozen.payload.private_resource.resource_ref =>
+                {
+                    return Err(blocked(descriptor));
+                }
+                Some(_) => {}
+                None => return Err(blocked(descriptor)),
             }
             self.connection(
                 frozen,

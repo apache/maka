@@ -51,8 +51,6 @@ pub struct Fire<E, A> {
     pub title: String,
     pub intent: Intent,
     pub effect: E,
-    /// Notifications cannot be blindly replayed after an unknown external result.
-    pub delivery_started: bool,
     #[serde(default)]
     pub authorization: Option<A>,
 }
@@ -62,24 +60,16 @@ pub struct Fire<E, A> {
 #[serde(bound(deserialize = "E: Deserialize<'de>, A: Deserialize<'de>"))]
 pub struct TaskPlan<E, A> {
     pub task: Task<E>,
+    pub edit_revision: u64,
     pub timezone: String,
     pub misfire: Misfire,
     pub pending: Option<Fire<E, A>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    condition_matched: bool,
     #[serde(default)]
     pub authorization: Option<A>,
 }
 impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
-    pub(crate) fn waiting_notification(&self) -> bool {
-        self.pending
-            .as_ref()
-            .is_some_and(|fire| fire.effect.is_notification() && !fire.delivery_started)
-    }
-    pub(crate) fn cancel_waiting_notification(&mut self) {
-        if self.waiting_notification() {
-            self.pending = None;
-            self.task.last_error = None;
-        }
-    }
     pub fn validate(&self) -> Result<(), Error> {
         crate::task::text(&self.task.id)?;
         if self
@@ -159,9 +149,11 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
                 runs: vec![],
                 last_error: None,
             },
+            edit_revision: 1,
             timezone,
             misfire: Misfire::Skip,
             pending: None,
+            condition_matched: false,
             authorization: None,
         })
     }
@@ -176,12 +168,24 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         if self.task.expires_at.is_some_and(|expires| now >= expires) {
             self.task.status = Status::Expired;
             self.task.next_fire_at = None;
-        } else if self.misfire == Misfire::Skip && self.task.next_fire_at.is_some_and(|at| at < now)
-        {
-            self.advance(now)?;
+        } else if self.task.next_fire_at.is_some_and(|at| at < now) {
+            match self.misfire {
+                Misfire::Skip => self.advance(now)?,
+                Misfire::Latest => self.catch_up(now)?,
+            }
         }
         if before != (self.task.status, self.task.next_fire_at) {
             self.task.updated_at = self.task.updated_at.max(now);
+        }
+        Ok(())
+    }
+    fn catch_up(&mut self, now: i64) -> Result<(), Error> {
+        if let Some(next) = self.task.next_fire_at.filter(|at| *at < now) {
+            let latest = self
+                .task
+                .schedule
+                .latest_at(now, &TimeZone::get(&self.timezone)?)?;
+            self.task.next_fire_at = Some(latest.map_or(next, |at| at.max(next)));
         }
         Ok(())
     }
@@ -210,12 +214,40 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             title: self.task.title.clone(),
             intent: self.task.intent.clone(),
             effect: self.task.effect.clone(),
-            delivery_started: false,
             authorization: self.authorization.clone(),
         });
         self.task.updated_at = self.task.updated_at.max(now);
         Ok(self.pending.as_ref())
     }
+    /// Apply a check to its observed due occurrence. A true condition must clear
+    /// before it can create another fire. An error does not rearm it.
+    pub fn record_condition(
+        &mut self,
+        now: i64,
+        result: Result<bool, String>,
+    ) -> Result<(), Error> {
+        if self.task.status != Status::Active || self.pending.is_some() {
+            return Ok(());
+        }
+        if self.task.expires_at.is_some_and(|expires| now >= expires) {
+            return self.advance(now);
+        }
+        match result {
+            Ok(matched) => {
+                self.task.last_error = None;
+                let triggered = matched && !self.condition_matched;
+                self.condition_matched = matched;
+                if triggered {
+                    self.claim(now)?;
+                    return Ok(());
+                }
+            }
+            Err(error) => self.task.last_error = Some(error),
+        }
+        self.task.updated_at = self.task.updated_at.max(now);
+        self.advance(now)
+    }
+
     pub fn settle(&mut self, run: Run) -> Result<(), Error> {
         let mut next = self.clone();
         next.settle_inner(run)?;

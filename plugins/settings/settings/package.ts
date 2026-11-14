@@ -55,6 +55,13 @@ export default {
             translations: { 'zh-CN': '连接与模型', 'zh-TW': '連線與模型' },
           },
         },
+        subagents: {
+          kind: 'settings',
+          title: {
+            fallback: 'Subagents',
+            translations: { 'zh-CN': '子 Agent', 'zh-TW': '子 Agent' },
+          },
+        },
         skills: {
           kind: 'settings',
           title: { fallback: 'Skills', translations: { 'zh-CN': '技能', 'zh-TW': '技能' } },

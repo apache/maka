@@ -98,6 +98,8 @@ pub trait SessionAudioRetention: Send + Sync {
 }
 
 pub trait ComputerAccess: NativeCallAccess {
+    fn file_sandbox_floor(&self) -> BoxFuture<'_, Result<maka_sandbox::Sandbox, ToolError>>;
+
     fn session_audio_retention<'a>(
         &'a self,
         basis: &'a maka_sandbox::workspace::PermissionBasis,

@@ -130,7 +130,10 @@ async fn enqueue(
             message_id: message.into(),
             submitted_content_digest: content.content_digest().unwrap(),
             content: content.clone(),
-            origin: None,
+            origin: scheduled.then(|| maka_agent_facts::message::MessageOrigin::Automation {
+                automation_id: "schedule".into(),
+                title: "Scheduled follow-up".into(),
+            }),
         },
         unprepared_content: content,
         submitted_placement: maka_agent_facts::message::Placement::NextTurn,
@@ -296,7 +299,7 @@ async fn pausing_a_goal_preserves_pending_steering_as_an_independent_turn() {
     );
     for _ in 0..2 {
         queue
-            .recover_stopped_goal_steering(spec.owner.clone(), UnixMillis(4))
+            .recover_undelivered_steering(spec.owner.clone(), UnixMillis(4))
             .await
             .unwrap();
         assert_eq!(queue.read(spec.session_id.clone()).await.unwrap(), pending);
@@ -559,5 +562,93 @@ async fn stop_cancels_only_current_interactive_cut_atomically_and_survives_reope
         MessageResolution::Pending
     );
     drop(store);
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn confirmed_native_exit_unblocks_a_previously_failed_conversation() {
+    use maka_plugin_core::operation::OperationCleanup;
+
+    let directory = tempfile::tempdir().unwrap();
+    let (root, store) = open(directory.path(), true).await;
+    let (mut spec, contents) = spec();
+    let descriptor = spec.input.clone();
+    spec.backend = BackendSpec::Executor {
+        selection: maka_agent_facts::executor::Selection {
+            executor: "external".into(),
+            settings: Default::default(),
+        },
+        descriptor: descriptor.clone(),
+    };
+    let original = Admission::new(spec.clone(), UnixMillis(1), contents);
+    store.admit(original.clone()).await.unwrap();
+    let run = original.run();
+    let task = ExternalTaskId::new();
+    let unobservable = BlockerKind::ExternalTaskUnobservable {
+        descriptor: descriptor.clone(),
+    };
+    let claim = store.claim(run).await.unwrap();
+    let view = store.frontier(run).await.unwrap();
+    store
+        .append(
+            &claim,
+            Head::from(&view),
+            [
+                Fact::ExternalTaskPrepared {
+                    task,
+                    descriptor,
+                    live_workspace: true,
+                },
+                Fact::ExternalTaskAdmitted { task },
+                Fact::Blocked {
+                    blocker: BlockerId::new(),
+                    reason: unobservable,
+                },
+                Fact::RunTerminated {
+                    terminal: Terminal::Failed,
+                    diagnostic: None,
+                },
+            ]
+            .into_iter()
+            .map(|fact| Change::new(fact, UnixMillis(2)))
+            .collect(),
+            vec![],
+        )
+        .await
+        .unwrap();
+    let request = enqueue(&store, &spec, "followup-after-native-exit", false).await;
+    let queue = store.queue().read(spec.session_id.clone()).await.unwrap();
+    let successor = Admission::new(request.spec, UnixMillis(4), vec![]).with_queue(Consume {
+        session: spec.session_id,
+        requests: vec![request.id],
+        expected_revision: queue.revision,
+    });
+    assert!(matches!(
+        store.admit(successor.clone()).await,
+        Err(StoreError::InvalidTransition(reason)) if reason == "previous Run has unsettled original operations"
+    ));
+    store
+        .observe(
+            run,
+            vec![Change::new(
+                Fact::ExternalTaskCleanupObserved {
+                    task,
+                    cleanup: OperationCleanup::Confirmed,
+                },
+                UnixMillis(3),
+            )],
+            vec![],
+        )
+        .await
+        .unwrap();
+    store.admit(successor.clone()).await.unwrap();
+    assert_eq!(
+        resolution(&store, "followup-after-native-exit").await,
+        MessageResolution::Delivered {
+            run: successor.run(),
+            shared: false
+        }
+    );
+    drop((claim, store));
     root.close().await.unwrap();
 }

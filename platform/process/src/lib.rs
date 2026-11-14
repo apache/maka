@@ -293,6 +293,39 @@ impl ShellExecutor {
 }
 
 impl Command {
+    /// Run a program with standard input and collect its output after its process tree exits.
+    pub async fn run_with_input(
+        self,
+        input: Vec<u8>,
+        timeout_ms: u64,
+        cancellation: CancellationToken,
+    ) -> Result<PipeResult, ToolError> {
+        validate_timeout(timeout_ms)?;
+        self.run_captured(Some(input), Some(timeout_ms), cancellation, None)
+            .await
+    }
+
+    async fn run_captured(
+        self,
+        input: Option<Vec<u8>>,
+        timeout_ms: Option<u64>,
+        cancellation: CancellationToken,
+        observer: Option<tokio::sync::mpsc::Sender<PipeEvent>>,
+    ) -> Result<PipeResult, ToolError> {
+        // The worker owns termination even if its caller drops the future.
+        let cancellation = cancellation.child_token();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
+        tokio::spawn(process::run(
+            self,
+            input,
+            timeout_ms,
+            cancellation,
+            observer,
+        ))
+        .await
+        .map_err(|e| ToolError::CleanupUnconfirmed(format!("Process worker lost: {e}")))?
+    }
+
     /// No native resources exist until completion is polled. The accepted worker
     /// owns sandbox preparation, process startup and cleanup as one lifecycle.
     pub fn observe(
@@ -304,13 +337,8 @@ impl Command {
             return Err(failed("invalid background shell command or timeout"));
         }
         let (observer, events) = tokio::sync::mpsc::channel(8);
-        let completion = Box::pin(async move {
-            let cancellation = cancellation.child_token();
-            let _cancel_on_drop = cancellation.clone().drop_guard();
-            tokio::spawn(process::run(self, timeout_ms, cancellation, Some(observer)))
-                .await
-                .map_err(|e| ToolError::CleanupUnconfirmed(format!("Shell worker lost: {e}")))?
-        });
+        let completion =
+            Box::pin(self.run_captured(None, timeout_ms, cancellation, Some(observer)));
         Ok(ObservedProcess { events, completion })
     }
 }
@@ -333,20 +361,11 @@ impl ToolExecutor for ShellExecutor {
                     "Shell requires a nonempty command and positive timeout_ms",
                 ));
             }
-            let cancellation = cancellation.child_token();
             let executor = executor.with_login_shell(input.login);
             let plan = executor.prepare(&input.command, false)?;
-            // Dropping the awaiter requests cancellation, but cannot abort the
-            // worker that owns process termination, reaping and pipe drain.
-            let _cancel_on_drop = cancellation.clone().drop_guard();
-            let captured = tokio::spawn(process::run(
-                plan,
-                Some(input.timeout_ms),
-                cancellation,
-                None,
-            ))
-            .await
-            .map_err(|e| ToolError::CleanupUnconfirmed(format!("Shell worker lost: {e}")))??;
+            let captured = plan
+                .run_captured(None, Some(input.timeout_ms), cancellation, None)
+                .await?;
             Ok(captured.into_output(executor.cwd, input.command))
         })
     }

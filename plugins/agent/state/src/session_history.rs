@@ -43,7 +43,7 @@ pub(crate) use sql::{capture_at, source_content_at, sources_at, validate_cut};
 pub(crate) use sql::{index, index_queue, index_retained};
 
 pub use maka_agent_facts::history_snapshot::HistoryCut;
-pub use metrics::{ModelCalibrationSample, SessionModelMetrics};
+pub use metrics::{ModelCalibrationSample, ModelRequestRetry, SessionModelMetrics};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

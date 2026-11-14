@@ -1852,7 +1852,7 @@ pub(crate) fn wheel(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32, tim
             (false, 0.0, raw)
         }
     };
-    let (pos, total, raw) = {
+    let (pos, total, raw, intent) = {
         let state = view.state();
         let Some(s) = &state.scroll else { return };
         let (min, max) = limits(&state);
@@ -1860,7 +1860,8 @@ pub(crate) fn wheel(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32, tim
         let pos = main(s);
         if gesture {
             // Trackpads stretch past the edges, as macOS does.
-            let raw = raw + d;
+            let previous_raw = raw;
+            let raw = previous_raw + d;
             let to = dragged(
                 Points(raw),
                 Points(min),
@@ -1869,15 +1870,20 @@ pub(crate) fn wheel(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32, tim
                 s.behavior.bounces,
             )
             .0;
-            (to, total + d, raw)
+            let at_end = previous_raw <= max && raw > max;
+            (to, total + d, raw, at_end.then_some(d))
         } else {
             // Past an edge (the refresh space) wheels only move back.
             let lo = min.min(pos);
             let hi = max.max(min).max(pos);
             let to = (pos + d).clamp(lo, hi);
-            (to, total + d, to)
+            (to, total + d, to, Some(d))
         }
     };
+    if let Some(delta) = intent {
+        // A gesture stretching past the end can keep the same reported offset.
+        scroll_intent(surface, view, "scroll", Some(delta));
+    }
     set_phase(
         view,
         Phase::Wheel {
@@ -2079,7 +2085,7 @@ pub(crate) fn key_scroll(
         KeyMove::End => "end",
         _ => "scroll",
     };
-    scroll_intent(surface, &view, intent);
+    scroll_intent(surface, &view, intent, None);
     interrupt(surface, &view);
     animate_to(surface, &view, to, KEY_ANIMATION, false, true);
     true
@@ -2104,12 +2110,16 @@ pub(crate) fn listens_to_scroll_intent(view: &NshView) -> bool {
         && state.scroll.as_ref().is_some_and(|s| s.behavior.enabled)
 }
 
-pub(crate) fn scroll_intent(surface: &Surface, view: &NshView, intent: &'static str) {
+fn scroll_intent(surface: &Surface, view: &NshView, intent: &'static str, delta: Option<f32>) {
     if listens_to_scroll_intent(view) {
+        let mut payload = vec![("intent", PayloadValue::Str(intent.into()))];
+        if let Some(delta) = delta {
+            payload.push(("delta", PayloadValue::Number(delta.into())));
+        }
         surface.event(
             view.state().id,
             EventKind::ScrollIntent,
-            EventPayload::Map(vec![("intent", PayloadValue::Str(intent.into()))]),
+            EventPayload::Map(payload),
         );
     }
 }

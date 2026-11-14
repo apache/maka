@@ -25,10 +25,12 @@ use crate::{
 use maka_agent_facts::tools::ToolError;
 use maka_plugin_core::shell_run::PipeStream;
 use std::{io, time::Duration};
+use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) async fn run(
     plan: crate::Command,
+    input: Option<Vec<u8>>,
     timeout_ms: Option<u64>,
     cancellation: CancellationToken,
     observer: Option<tokio::sync::mpsc::Sender<PipeEvent>>,
@@ -45,22 +47,33 @@ pub(crate) async fn run(
     }
     let crate::pipe::Spawned {
         mut child,
-        stdin,
+        mut stdin,
         stdout,
         stderr,
     } = crate::pipe::spawn_prepared(plan).await?;
-    drop(stdin);
     if let Some(observer) = &observer {
         let _ = observer.try_send(PipeEvent::Started);
     }
     let exited = CancellationToken::new();
+    let owns_tree = input.is_some();
     let lifecycle = async {
-        let outcome = settle(&mut child, timeout_ms, cancellation).await;
+        let outcome = settle(&mut child, timeout_ms, cancellation, owns_tree).await;
         exited.cancel();
         outcome
     };
-    let (outcome, stdout, stderr) = tokio::join!(
+    let input_exited = exited.clone();
+    let send_input = async move {
+        if let Some(input) = input {
+            tokio::select! {
+                result = stdin.write_all(&input) => result?,
+                _ = input_exited.cancelled() => {},
+            }
+        }
+        Ok::<_, io::Error>(())
+    };
+    let (outcome, input, stdout, stderr) = tokio::join!(
         lifecycle,
+        send_input,
         tail::capture(
             stdout,
             exited.clone(),
@@ -72,18 +85,32 @@ pub(crate) async fn run(
             observer.map(|o| (o, PipeStream::Stderr))
         ),
     );
-    Ok(Captured::new(outcome?, stdout, stderr))
+    let outcome = outcome?;
+    if matches!(&outcome, Outcome::Exited(status) if status.success()) {
+        input.map_err(failed)?;
+    }
+    Ok(Captured::new(outcome, stdout, stderr))
 }
 
 async fn settle(
     child: &mut crate::pipe::Child,
     timeout_ms: Option<u64>,
     cancellation: CancellationToken,
+    owns_tree: bool,
 ) -> Result<Outcome, ToolError> {
     #[cfg(windows)]
-    let wait = child.wait_foreground();
+    let wait = async {
+        if owns_tree {
+            child.wait().await
+        } else {
+            child.wait_foreground().await
+        }
+    };
     #[cfg(unix)]
-    let wait = child.wait();
+    let wait = {
+        let _ = owns_tree;
+        child.wait()
+    };
     let reason = tokio::select! {
         biased;
         result = wait => return result.map(Outcome::Exited).map_err(unknown),

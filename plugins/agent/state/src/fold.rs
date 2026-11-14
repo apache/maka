@@ -413,6 +413,12 @@ impl RunView {
     }
 
     pub fn has_unsettled_recovery(&self) -> bool {
+        let closed_native_process = matches!(&self.spec.backend, BackendSpec::Executor { selection, .. }
+            if selection.executor == "external")
+            && self
+                .external
+                .as_ref()
+                .is_some_and(|task| task.cleanup == OperationCleanup::Confirmed);
         self.recovery_failures().any(|reason| {
             if let BlockerKind::OriginalAdmissionUnknown { tool } = reason {
                 return self
@@ -424,6 +430,11 @@ impl RunView {
                 return self
                     .recovery_cell(cell)
                     .is_none_or(|cell| cell.has_unsettled_effects());
+            }
+            if closed_native_process
+                && matches!(reason, BlockerKind::ExternalTaskUnobservable { .. })
+            {
+                return false;
             }
             !matches!(
                 reason,
@@ -437,7 +448,7 @@ impl RunView {
             || self.cells.values().any(|cell| cell.has_unsettled_effects())
             || self.external.as_ref().is_some_and(|task| {
                 task.admitted
-                    && (task.closed.is_none()
+                    && (task.closed.is_none() && !closed_native_process
                         || task.cleanup != OperationCleanup::Confirmed
                         || task.effects.values().any(|effect| effect.pending())
                         || task.publication.as_ref().is_some_and(|publication| {
@@ -537,14 +548,17 @@ impl RunView {
         )?;
         require(
             self.external.as_ref().is_none_or(|task| {
-                task.effects.values().all(|effect| {
-                    !effect
-                        .observation
-                        .as_ref()
-                        .is_some_and(|reply| receipt_blocks_effects(&reply.receipt))
-                        && !matches!(effect.cleanup, OperationCleanup::Failed { .. })
-                        && !(effect.known() && effect.cleanup != OperationCleanup::Confirmed)
-                })
+                task.effects
+                    .values()
+                    .filter(|effect| effect.admitted)
+                    .all(|effect| {
+                        !effect
+                            .observation
+                            .as_ref()
+                            .is_some_and(|reply| receipt_blocks_effects(&reply.receipt))
+                            && !matches!(effect.cleanup, OperationCleanup::Failed { .. })
+                            && !(effect.known() && effect.cleanup != OperationCleanup::Confirmed)
+                    })
             }),
             "external task has unresolved original effects or cleanup",
         )
@@ -671,16 +685,17 @@ impl RunView {
             !self.stopped || !fact.is_admission(),
             "stopped run cannot admit work",
         )?;
-        if fact.is_admission() {
-            self.check_effect_admission_at(recorded.at)?;
-            require(
-                self.spec
+        // Fresh effect admission is checked at the write boundary. Replay only
+        // checks the recorded transition, including its original deadline.
+        require(
+            !fact.is_admission()
+                || self
+                    .spec
                     .budget
                     .deadline
                     .is_none_or(|deadline| recorded.at < deadline),
-                "run deadline reached",
-            )?;
-        }
+            "run deadline reached",
+        )?;
         for reference in fact.content_refs() {
             reference
                 .validate()
@@ -726,19 +741,36 @@ impl RunView {
                     )?;
                 }
                 if let CellEvent::Started { owner, .. } = event {
-                    require(
-                        matches!(owner,CellOwner::Agent{link,..} if link.run==self.run && Some(link.step)==self.current_step && Some(link.attempt)==self.current_attempt),
-                        "Agent Cell must belong to the current real Step/Attempt",
-                    )?;
-                    if let CellOwner::Agent { link, call } = owner {
-                        let parent = ToolKey {
-                            attempt: link.attempt,
-                            call: call.clone(),
-                        };
-                        require(
-                            self.tool(&parent)?.admitted,
-                            "Agent Cell requires its exact parent Tool T1",
-                        )?;
+                    require(owner.run() == Some(self.run), "Cell belongs to another Run")?;
+                    match owner {
+                        CellOwner::Agent { link, call } => {
+                            require(
+                                Some(link.step) == self.current_step
+                                    && Some(link.attempt) == self.current_attempt,
+                                "Agent Cell must belong to the current real Step/Attempt",
+                            )?;
+                            let parent = ToolKey {
+                                attempt: link.attempt,
+                                call: call.clone(),
+                            };
+                            require(
+                                self.tool(&parent)?.admitted,
+                                "Agent Cell requires its exact parent Tool T1",
+                            )?;
+                        }
+                        CellOwner::External { key, .. } => {
+                            require(
+                                self.external
+                                    .as_ref()
+                                    .filter(|task| task.task == key.task && task.closed.is_none())
+                                    .and_then(|task| task.effects.get(&key.operation))
+                                    .is_some_and(|parent| {
+                                        parent.admitted && parent.returned.is_none()
+                                    }),
+                                "Cell requires its admitted external parent",
+                            )?;
+                        }
+                        CellOwner::Standalone { .. } => unreachable!("standalone Cell has no Run"),
                     }
                     if self.cells.contains_key(&event.cell()) {
                         return Err(StoreError::EventConflict);
@@ -1427,6 +1459,13 @@ impl RunView {
             Fact::ExternalEffect { event } => {
                 let key = event.key();
                 crate::external_effects::apply(self, event)?;
+                self.finish_requested |= matches!(
+                    event,
+                    maka_agent_facts::external_effects::ExternalEffectEvent::Returned {
+                        finish_turn: true,
+                        ..
+                    }
+                );
                 if self
                     .external
                     .as_ref()

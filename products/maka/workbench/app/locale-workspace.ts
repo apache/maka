@@ -36,12 +36,64 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const workspaceMessages = {
+  'Checking terminal command status…': [
+    'Checking terminal command status…',
+    '正在确认终端命令状态…',
+    '正在確認終端機命令狀態…',
+  ],
+  'Checking whether workspace locations were saved…': [
+    'Checking whether workspace locations were saved…',
+    '正在确认工作区位置是否已保存…',
+    '正在確認工作區位置是否已儲存…',
+  ],
+  'Could not complete the terminal command.': [
+    'Could not complete the terminal command.',
+    '无法完成终端命令。',
+    '無法完成終端機命令。',
+  ],
+  'Could not control the terminal.': [
+    'Could not control the terminal.',
+    '无法控制终端。',
+    '無法控制終端機。',
+  ],
+  'Could not read file changes.': [
+    'Could not read file changes.',
+    '无法读取文件更改。',
+    '無法讀取檔案變更。',
+  ],
+  'Could not read the file.': ['Could not read the file.', '无法读取文件。', '無法讀取檔案。'],
+  'Could not load project MCP servers.': [
+    'Could not load project MCP servers.',
+    '无法加载项目 MCP 服务器。',
+    '無法載入專案 MCP 伺服器。',
+  ],
   'Use folder {path}': ['Use folder {path}', '使用文件夹 {path}', '使用資料夾 {path}'],
   'Choose another folder…': ['Choose another folder…', '选择其他文件夹…', '選擇其他資料夾…'],
   'Pin conversation': ['Pin conversation', '置顶对话', '置頂對話'],
   Pin: ['Pin', '置顶', '置頂'],
   Unpin: ['Unpin', '取消置顶', '取消置頂'],
   'Rename…': ['Rename…', '重命名…', '重新命名…'],
+  '{count} created conversations': [
+    '{count} created conversations',
+    '{count} 个子对话',
+    '{count} 個子對話',
+  ],
+  'Show the conversations {title} created': [
+    'Show the conversations {title} created',
+    '展开「{title}」的子对话',
+    '展開「{title}」的子對話',
+  ],
+  'Fold the conversations {title} created': [
+    'Fold the conversations {title} created',
+    '收起「{title}」的子对话',
+    '收合「{title}」的子對話',
+  ],
+  '{count} more': ['{count} more', '还有 {count} 个', '還有 {count} 個'],
+  '{count} more in Maka Bot': [
+    '{count} more in Maka Bot',
+    'Maka Bot 里还有 {count} 个',
+    'Maka Bot 裡還有 {count} 個',
+  ],
   'Fork…': ['Fork…', '分支…', '分支…'],
   'Compaction prompt…': ['Compaction prompt…', '压缩提示词…', '壓縮提示詞…'],
   'Open to the side': ['Open to the side', '在右侧打开', '在右側開啟'],
@@ -68,6 +120,19 @@ export const workspaceMessages = {
   'Close side pane': ['Close side pane', '关闭右侧对话', '關閉右側對話'],
   'Collapse {name}': ['Collapse {name}', '收起 {name}', '收合 {name}'],
   'Expand {name}': ['Expand {name}', '展开 {name}', '展開 {name}'],
+  'Show more project conversations': ['Show more', '展开显示', '展開顯示'],
+  'Show fewer project conversations': ['Show less', '收起', '收合'],
+  'Load older conversations': ['Load older conversations', '加载更早的会话', '載入更早的對話'],
+  'Show more conversations in {name}': [
+    'Show more conversations in {name}',
+    '展开 {name} 中的更多会话',
+    '展開 {name} 中的更多對話',
+  ],
+  'Show fewer conversations in {name}': [
+    'Show fewer conversations in {name}',
+    '收起 {name} 中的更多会话',
+    '收合 {name} 中的更多對話',
+  ],
   'Unpin conversation': ['Unpin conversation', '取消置顶', '取消置頂'],
   Pinned: ['Pinned', '已置顶', '已置頂'],
   'Actions for {title}': ['Actions for {title}', '{title} 的操作', '{title} 的操作'],
@@ -403,6 +468,21 @@ export const workspaceMessages = {
     'The Host closed output without an end marker.',
     'Host 关闭了输出，但未提供结束标记。',
     'Host 關閉了輸出，但未提供結束標記。',
+  ],
+  'Could not load terminals. Refresh to try again.': [
+    'Could not load terminals. Refresh to try again.',
+    '无法加载终端列表。请刷新后重试。',
+    '無法載入終端機清單。請重新整理後再試。',
+  ],
+  'Could not read terminal output. Try reconnecting.': [
+    'Could not read terminal output. Try reconnecting.',
+    '无法读取终端输出。请重新连接。',
+    '無法讀取終端機輸出。請重新連線。',
+  ],
+  'Enter an absolute folder path before saving.': [
+    'Enter an absolute folder path before saving.',
+    '请填写文件夹的绝对路径，再保存。',
+    '請填寫資料夾的絕對路徑，再儲存。',
   ],
   'The Host closed the terminal list.': [
     'The Host closed the terminal list.',

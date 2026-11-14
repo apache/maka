@@ -311,25 +311,25 @@ impl QueueStore {
     pub async fn rebuild(&self, session: String) -> Result<QueueCommit, StoreError> {
         self.data.write(Rebuild(session)).await
     }
-    pub async fn recover_stopped_goal_steering(
+    pub async fn recover_undelivered_steering(
         &self,
         owner: RunOwner,
         at: UnixMillis,
     ) -> Result<(), StoreError> {
         self.data
-            .write(RecoverStoppedGoalSteering { owner, at })
+            .write(RecoverUndeliveredSteering { owner, at })
             .await
     }
 }
-struct RecoverStoppedGoalSteering {
+struct RecoverUndeliveredSteering {
     owner: RunOwner,
     at: UnixMillis,
 }
-impl Statement for RecoverStoppedGoalSteering {
+impl Statement for RecoverUndeliveredSteering {
     type Value = ();
     type Output = ();
     fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
-        let sessions = sql::recover_stopped_goal_steering(c, &self.owner, self.at)?;
+        let sessions = sql::recover_undelivered_steering(c, &self.owner, self.at)?;
         Ok(Prepared {
             value: (),
             changed: !sessions.is_empty(),

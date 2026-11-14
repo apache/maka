@@ -21,13 +21,12 @@ use crate::{Error, invalid, schedule::Schedule};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Execution owners supply effect validation and delivery semantics.
+/// The execution owner validates the task effect.
 /// Each execution owner supplies its own effect and authority types.
 pub trait TaskEffect: Clone + Serialize {
     fn validate(&self) -> Result<(), Error>;
-    fn is_notification(&self) -> bool;
     fn allows_empty_intent(&self) -> bool {
-        self.is_notification()
+        false
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

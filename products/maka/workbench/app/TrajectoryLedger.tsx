@@ -486,6 +486,14 @@ const requestLabel = (request: AgentHistoryRequest) =>
   request.purpose === 'summary' ? tr('Compaction request') : tr('Model request');
 
 function requestStatus(request: AgentHistoryRequest): string {
+  switch (request.retry?.kind) {
+    case 'scheduled':
+      return tr('Retry at {time}', { time: timeOfDay(request.retry.at) });
+    case 'started':
+      return tr('Retried');
+    case 'cancelled':
+      return tr('Retry cancelled');
+  }
   switch (request.finished?.outcome) {
     case 'success':
       return tr('Completed');
@@ -505,6 +513,10 @@ export function TrajectoryRequest(props: {
   selected(): boolean;
   select(): void;
 }) {
+  const summary = () => {
+    const { modelId, finished } = props.request();
+    return finished?.diagnostic ? `${modelId} · ${oneLine(finished.diagnostic)}` : modelId;
+  };
   return (
     <Button
       accessibilityLabel={tr('Inspect model request {model}', { model: props.request().modelId })}
@@ -527,7 +539,7 @@ export function TrajectoryRequest(props: {
       <Icon name="bot" color={C.muted} />
       <Text style={{ ...captionTextStyle, color: C.muted }}>{requestLabel(props.request())}</Text>
       <Text style={{ ...captionTextStyle, ...ellipsis, color: C.text, flex: 1, minWidth: 0 }}>
-        {props.request().modelId}
+        {summary()}
       </Text>
       <Text style={{ ...captionTextStyle, color: C.muted }}>{requestStatus(props.request())}</Text>
     </Button>

@@ -21,8 +21,8 @@ export const HISTORY_LOOKAHEAD_VIEWPORTS = 2;
 
 export function createHistoryPrefetch(options: {
   owner(): object | null;
-  nearStart(): boolean;
-  loadOlder(): Promise<boolean>;
+  nearEdge(): boolean;
+  loadPage(): Promise<boolean>;
 }) {
   let reading: object | null = null;
   return async () => {
@@ -31,11 +31,11 @@ export function createHistoryPrefetch(options: {
     reading = owner;
     try {
       do {
-        if (!(await options.loadOlder()) || options.owner() !== owner) break;
+        if (!(await options.loadPage()) || options.owner() !== owner) break;
         // Folded pages can advance the cursor without moving the list edge.
         // NSH reports prepend corrections after the frame callbacks.
         await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
-      } while (options.owner() === owner && options.nearStart());
+      } while (options.owner() === owner && options.nearEdge());
     } finally {
       if (reading === owner) reading = null;
     }

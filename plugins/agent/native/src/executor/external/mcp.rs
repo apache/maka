@@ -40,7 +40,6 @@ struct Route {
     service: Service,
 }
 struct EndpointState {
-    catalog: Option<Arc<Vec<Value>>>,
     route: Option<Arc<Route>>,
     active: Weak<Bridge>,
     retired: bool,
@@ -54,10 +53,7 @@ pub(super) struct Endpoint {
     server: tokio::sync::Mutex<Option<tokio::task::JoinHandle<std::io::Result<()>>>>,
 }
 impl Endpoint {
-    pub async fn open(
-        session_id: String,
-        definitions: Option<Vec<Value>>,
-    ) -> Result<Arc<Self>, Error> {
+    pub async fn open(session_id: String) -> Result<Arc<Self>, Error> {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .map_err(|e| Error::Provider(e.to_string()))?;
@@ -69,7 +65,6 @@ impl Endpoint {
             address,
             url: format!("http://{address}/mcp"),
             state: Mutex::new(EndpointState {
-                catalog: definitions.map(Arc::new),
                 route: None,
                 active: Weak::new(),
                 retired: false,
@@ -152,21 +147,10 @@ impl Endpoint {
                 "Previous Host MCP scope has not drained".into(),
             ));
         }
-        if state.catalog.as_ref().is_none_or(|catalog| {
-            definitions
-                .iter()
-                .any(|definition| !catalog.contains(definition))
-        }) {
-            state.catalog = Some(Arc::new(definitions));
-        }
         let bridge = Arc::new(Bridge {
             tools,
             endpoint: Arc::downgrade(self),
-            catalog: state
-                .catalog
-                .as_ref()
-                .expect("actual Call initialized the catalog")
-                .clone(),
+            catalog: definitions,
             state: Mutex::new(Admission {
                 phase: Phase::Opening,
                 pending: 0,
@@ -300,7 +284,7 @@ impl Drop for RequestGuard {
 pub(super) struct Bridge {
     tools: tools::Tools,
     endpoint: Weak<Endpoint>,
-    catalog: Arc<Vec<Value>>,
+    catalog: Vec<Value>,
     state: Mutex<Admission>,
     changed: Notify,
     pub cancelled: CancellationToken,
@@ -357,6 +341,25 @@ impl Bridge {
     pub fn claude(&self) -> Value {
         serde_json::json!({"mcpServers":{"maka":{"type":"http","url":self.url,"headers":{"Authorization":format!("Bearer {}", self.token)}}}})
     }
+    pub async fn finish_turn(&self) {
+        self.tools.finish_signal().cancelled().await;
+        // Let successful calls return before the native interrupt closes their transport.
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self
+                .state
+                .lock()
+                .expect("MCP admission lock poisoned")
+                .idle()
+            {
+                return;
+            }
+            changed.await;
+        }
+    }
+
     pub fn admit(&self) -> Result<(), Error> {
         let mut state = self.state.lock().expect("MCP admission lock poisoned");
         if state.phase == Phase::Closed {

@@ -114,7 +114,7 @@ export function FinalActions(props: {
       });
       if (owns(original)) notice.set(uiMessage('Fork created. Open it in Sessions.'));
     } catch (reason) {
-      if (owns(original)) notice.set(errorText(reason));
+      if (owns(original)) notice.set(errorText(reason, 'Could not fork the conversation.'));
     } finally {
       if (alive) pending.set(false);
     }

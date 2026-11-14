@@ -219,18 +219,8 @@ pub async fn project_cell_knowledge(
             content.push(ContentPart::text(serde_json::to_string(&serde_json::json!({"operation":operation,"evidence":kind,"isError":result.is_error})).map_err(RunError::Json)?));
             let output = match returned {
                 ChildOutput::Projection(projection) => {
-                    let media = match &media {
-                        MediaSource::Live { artifacts, scope } => MediaSource::Live {
-                            artifacts,
-                            scope: scope.clone(),
-                        },
-                        MediaSource::Snapshot { snapshot, scope } => MediaSource::Snapshot {
-                            snapshot,
-                            scope: scope.clone(),
-                        },
-                    };
                     super::project_durable_projection(
-                        media,
+                        media.clone(),
                         &projection,
                         result.is_error,
                         language,

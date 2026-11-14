@@ -18,7 +18,7 @@
  */
 
 import {
-  senderSession,
+  activityMessage,
   historyTurnKey,
   compareHistoryOrder,
   stableRowId,
@@ -40,6 +40,7 @@ export type ProcessRow = Pick<
   | 'turnId'
   | 'importedTurn'
   | 'timing'
+  | 'foldedWork'
   | 'finalOutput'
   | 'finalAnswer'
   | 'origin'
@@ -79,6 +80,7 @@ export type ProcessEntry = ProcessGroup | MessageEntry;
 export type TurnPresentation = {
   turnKey: string;
   timing: Row['timing'] | null;
+  foldedWork?: Row['foldedWork'];
   active: boolean;
   finalOutputIds: string[];
   /** Trailing assistant text until more work arrives or history identifies the final output. */
@@ -103,6 +105,7 @@ export function turnWorkFold(
   terminal: boolean,
 ): 'unavailable' | 'open' | 'closed' {
   const outcome = turnOutcome(turn);
+  if (turn.foldedWork) return 'closed';
   if (!turn.worked || turn.interleavedInput || (outcome !== null && outcome !== 'completed'))
     return 'unavailable';
   if (turn.finalAnswerStarted) return 'closed';
@@ -249,6 +252,8 @@ export function projectProcessGroups(input: {
   activeTurnId: string | null;
   answerTurnId?: string | null;
   previous?: readonly ProcessEntry[];
+  /** The slice ends before another source turn. */
+  followed?: boolean;
   /** Only caller-known missing coverage, not gaps between raw event numbers. */
   gapsBefore?: ReadonlySet<string>;
 }): ProcessProjection {
@@ -291,6 +296,10 @@ export function projectProcessGroups(input: {
     const rowTurn = historyTurnKey(row);
     if (rowTurn === undefined) continue;
     const presentation = turn(rowTurn);
+    if (row.foldedWork) {
+      presentation.foldedWork = row.foldedWork;
+      presentation.worked = true;
+    }
     const through = row.metadataThrough ?? null;
     const previousThrough = timingThrough.get(rowTurn);
     if (row.timing && (through === null || previousThrough == null || through >= previousThrough)) {
@@ -417,7 +426,7 @@ export function projectProcessGroups(input: {
     const body = !row.tool && row.role === 'assistant' && row.field === 'body';
     const outside =
       body ||
-      (!row.tool && row.role === 'user' && senderSession(row.origin) === null) ||
+      (!row.tool && row.role === 'user' && !activityMessage(row.origin)) ||
       row.role === 'failure' ||
       row.role === 'compaction';
     if (!rowTurn || outside) {
@@ -472,6 +481,6 @@ export function projectProcessGroups(input: {
     const activity = activities[nextActivity];
     append(activity.turnId, { kind: 'activity', toolUseId: activity.toolUseId });
   }
-  flush(false);
+  flush(input.followed ?? false);
   return { entries, turns, rowsById };
 }

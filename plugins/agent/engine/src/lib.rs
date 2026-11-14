@@ -102,6 +102,8 @@ pub enum RunError {
     Json(#[source] serde_json::Error),
     #[error("model input preparation failed: {0}")]
     Preparation(#[from] std::io::Error),
+    #[error("invalid image in model input: {0}")]
+    InvalidImage(String),
     #[error("model input cleanup was not confirmed: {0}")]
     PreparationCleanup(#[source] std::io::Error),
 }

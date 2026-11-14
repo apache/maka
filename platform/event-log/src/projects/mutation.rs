@@ -21,8 +21,6 @@ use super::*;
 use crate::writeback::{Notification, Prepared, Statement};
 use uuid::Uuid;
 
-type ProjectSelection = std::result::Result<(ProjectRecord, String), ProjectError>;
-
 enum RegistrationGuard {
     Unconditional,
     Observed(Option<ProjectRecord>),
@@ -187,45 +185,18 @@ impl EventLog {
     > {
         WriteMutation::new(&expected.id.clone(), mutation, now, Some(expected))
     }
-    pub async fn select_project(
-        &self,
-        id: &str,
-        available_paths: Vec<String>,
-        now: u64,
-    ) -> Result<(ProjectRecord, String)> {
-        self.select_project_guarded(id, available_paths, now, None)
-            .await
-    }
-    pub async fn select_project_if(
-        &self,
-        expected: ProjectRecord,
-        available_paths: Vec<String>,
-        now: u64,
-    ) -> Result<(ProjectRecord, String)> {
-        self.select_project_guarded(&expected.id.clone(), available_paths, now, Some(expected))
-            .await
-    }
-    async fn select_project_guarded(
-        &self,
-        id: &str,
-        available_paths: Vec<String>,
-        now: u64,
-        expected: Option<ProjectRecord>,
-    ) -> Result<(ProjectRecord, String)> {
-        self.connection
-            .write(
-                WriteSelection::new(id, available_paths, now, expected)?,
-                self.commits.notice(),
-            )
-            .await?
-            .map_err(StoreError::Project)
-    }
     pub(crate) fn prepare_project_selection(
-        expected: ProjectRecord,
-        available_paths: Vec<String>,
+        id: Uuid,
+        identity: String,
+        path: String,
         now: u64,
-    ) -> Result<impl Statement<Value = ProjectSelection, Output = ProjectSelection>> {
-        WriteSelection::new(&expected.id.clone(), available_paths, now, Some(expected))
+    ) -> Result<impl Statement<Value = std::result::Result<ProjectRecord, ProjectError>>> {
+        Ok(WriteSelection {
+            id,
+            identity,
+            path,
+            now: timestamp(now)?,
+        })
     }
     pub async fn touch_project(&self, id: &str, path: &str, now: u64) -> Result<ProjectRecord> {
         validate_id(id)?;
@@ -453,61 +424,36 @@ impl Statement for WriteMutation {
 }
 
 struct WriteSelection {
-    id: String,
-    available_paths: Vec<String>,
+    id: Uuid,
+    identity: String,
+    path: String,
     now: i64,
-    expected: Option<ProjectRecord>,
-}
-impl WriteSelection {
-    fn new(
-        id: &str,
-        available_paths: Vec<String>,
-        now: u64,
-        expected: Option<ProjectRecord>,
-    ) -> Result<Self> {
-        validate_id(id)?;
-        Ok(Self {
-            id: id.into(),
-            available_paths,
-            now: timestamp(now)?,
-            expected,
-        })
-    }
 }
 impl Statement for WriteSelection {
-    type Value = std::result::Result<(ProjectRecord, String), ProjectError>;
+    type Value = std::result::Result<ProjectRecord, ProjectError>;
     type Output = Self::Value;
     fn execute(self, connection: &rusqlite::Connection) -> Result<Prepared<Self::Value>> {
-        let Some(record) = read(connection, &self.id)? else {
+        let id = self.id.to_string();
+        let Some(record) = read(connection, &id)? else {
             return rejected(ProjectError::NotFound);
         };
-        if self
-            .expected
-            .as_ref()
-            .is_some_and(|expected| expected != &record)
-        {
+        if record.id != id || record.identity != self.identity {
             return rejected(ProjectError::Changed);
         }
         if record.archived_at.is_some() {
             return rejected(ProjectError::Archived);
         }
-        let Some(location) = record
+        if !record
             .locations
             .iter()
-            .filter(|location| self.available_paths.contains(&location.path))
-            .min_by(|a, b| {
-                b.last_used_at
-                    .cmp(&a.last_used_at)
-                    .then_with(|| a.path.cmp(&b.path))
-            })
-        else {
+            .any(|location| location.path == self.path)
+        {
             return rejected(ProjectError::Unavailable);
-        };
-        let path = location.path.clone();
-        touch(connection, &record.id, &path, self.now)?;
+        }
+        touch(connection, &record.id, &self.path, self.now)?;
         let record = read(connection, &record.id)?.ok_or(ProjectError::NotFound)?;
         Ok(Prepared {
-            value: Ok((record, path)),
+            value: Ok(record),
             changed: true,
             notification: Notification::NONE,
         })

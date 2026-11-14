@@ -39,3 +39,11 @@ The Agent service exposes `presets`, `preset`, `createPreset`, `updatePreset` an
 Updates and deletes require `expectedRevision`. Omitted update fields stay unchanged; `instruction: ""` clears the instruction and `thinkingLevel: {"kind":"default"}` restores the model default. A thinking level is set with `{"kind":"set","value":"high"}`. Model or thinking changes validate the selected native model; other edits and deletion remain available when a connection disappears. Names are trimmed and unique within the scope.
 
 Each mutation and its result commit atomically through the Host operation journal. If a reply is lost, recover the original operation reference instead of issuing another mutation. The default product exposes these methods as `SubagentPresetList/Read/Create/Update/Delete` tools. `SessionCreate` applies a preset by ID; `SessionSend` supplies the task.
+
+### Settings and session details
+
+Open **Settings → Subagents** on desktop or in the terminal to create, edit, disable or delete a preset. Choose an explicit native connection/model and optional reasoning effort. Description explains when to use the role; the multiline role instruction accepts Markdown and may be empty. Model search uses the same catalog as conversation model selection; external executor models are excluded.
+
+Settings and conversation tools share the same presets. Refresh the list to see changes made in conversation. An open editor keeps its draft: concurrent changes reject the save without overwriting either version. Return and discard the draft before reopening the latest saved preset. Pending operations recover their original receipt before another save is allowed; UI reload also retains the draft.
+
+In a preset child conversation, open **Conversation details → Applied subagent** to read the captured role name, complete instruction and initial model. The current model is shown separately, including an explicit model switch. This record survives changes to, or deletion of, the source preset. The conversation itself retains the normal execution history.

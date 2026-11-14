@@ -27,8 +27,8 @@ use maka_event_log::root_store::completions::{Completion, RegisterCompletion};
 #[derive(Serialize, Deserialize)]
 pub(super) struct CompletionRequest {
     source: maka_agent_facts::durable::ExecutionIdentity,
-    model: ModelSelection,
-    thinking_level: Option<ThinkingLevel>,
+    #[serde(flatten)]
+    backend: notifications::NotificationBackend,
     workspace: Workspace,
     binding: maka_sandbox::workspace::BindingStamp,
 }
@@ -119,14 +119,9 @@ impl Owner {
             return Err("agent_completion_requires_other_session".into());
         }
         let route = self.return_route(source).await?;
-        let model = route.binding_model();
         Ok(Some(CompletionRequest {
             source: source.clone(),
-            model: ModelSelection {
-                connection_id: model.connection_id.clone(),
-                model_id: model.model.clone(),
-            },
-            thinking_level: route.thinking_level(),
+            backend: route.backend,
             workspace: route.workspace,
             binding: route.binding,
         }))
@@ -275,97 +270,91 @@ impl Owner {
         if source.stopped {
             return self.retire_completion(&entry).await;
         }
-        let notification: maka_agent_state::queue::PreparedRequest = if let Some(notification) =
-            entry.notification
-        {
-            serde_json::from_value(notification).map_err(|e| e.to_string())?
-        } else {
-            let notice = if self
-                .store
-                .get_session::<StoredSessionConfiguration>(&entry.session_id)
-                .await
-                .map_err(|e| e.to_string())?
-                .is_none()
-            {
-                Notice::Unavailable
+        let notification: maka_agent_state::queue::PreparedRequest =
+            if let Some(notification) = entry.notification {
+                serde_json::from_value(notification).map_err(|e| e.to_string())?
             } else {
-                match resolution {
-                    MessageResolution::Cancelled => Notice::Finished(Terminal::Cancelled),
-                    MessageResolution::Delivered { run, .. } => {
-                        let state = states
-                            .get(&run)
-                            .filter(|state| state.session_id == entry.session_id)
-                            .ok_or("agent_completion_run_missing")?;
-                        match (&state.terminal, &state.attention) {
-                            (Some(terminal), _) => Notice::Finished(terminal.clone()),
-                            (None, Some(reason)) if !state.stopped => {
-                                Notice::Attention { run, reason }
+                let notice = if self
+                    .store
+                    .get_session::<StoredSessionConfiguration>(&entry.session_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .is_none()
+                {
+                    Notice::Unavailable
+                } else {
+                    match resolution {
+                        MessageResolution::Cancelled => Notice::Finished(Terminal::Cancelled),
+                        MessageResolution::Delivered { run, .. } => {
+                            let state = states
+                                .get(&run)
+                                .filter(|state| state.session_id == entry.session_id)
+                                .ok_or("agent_completion_run_missing")?;
+                            match (&state.terminal, &state.attention) {
+                                (Some(terminal), _) => Notice::Finished(terminal.clone()),
+                                (None, Some(reason)) if !state.stopped => {
+                                    Notice::Attention { run, reason }
+                                }
+                                _ => return Ok(()),
                             }
-                            _ => return Ok(()),
                         }
+                        _ => return Ok(()),
                     }
-                    _ => return Ok(()),
+                };
+                let identity = notice.identity(&entry);
+                let attention = matches!(notice, Notice::Attention { .. });
+                if attention
+                    && self
+                        .durable
+                        .queue()
+                        .entry(
+                            entry.recipient.clone(),
+                            maka_agent_state::queue::RequestId(identity.clone()),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .is_some()
+                {
+                    return Ok(());
                 }
-            };
-            let identity = notice.identity(&entry);
-            let attention = matches!(notice, Notice::Attention { .. });
-            if attention
-                && self
-                    .durable
-                    .queue()
-                    .entry(
-                        entry.recipient.clone(),
-                        maka_agent_state::queue::RequestId(identity.clone()),
+                let route = self
+                    .resolve_notification_route(
+                        request.backend,
+                        &request.source.session_id,
+                        request.workspace,
+                        request.binding,
+                    )
+                    .await?;
+                let Some(notification) = self
+                    .prepare_notification(
+                        &request.source,
+                        &route,
+                        &identity,
+                        |language| notice.message(&entry, language),
+                        MessageOrigin::SessionCompletion {
+                            session_id: entry.session_id.clone(),
+                            message_id: entry.message_id.clone(),
+                        },
+                    )
+                    .await?
+                else {
+                    return Ok(());
+                };
+                if attention {
+                    // Admission identity is the durable deduplication record; keep the completion watch.
+                    self.admit_notification(&notification).await?;
+                    return Ok(());
+                }
+                self.store
+                    .settle_message_completion(
+                        &self.prefix,
+                        &entry.key,
+                        Some(serde_json::to_value(&notification).map_err(|e| e.to_string())?),
                     )
                     .await
-                    .map_err(|error| error.to_string())?
-                    .is_some()
-            {
-                return Ok(());
-            }
-            let (model, _) = crate::model::Source::select(
-                self.configuration.clone(),
-                self.catalog.clone(),
-                self.credentials.clone(),
-                request.model,
-                request.thinking_level,
-                request.source.session_id.clone(),
-                self.revision.clone(),
-            )
-            .await
-            .map_err(public_error)?;
-            let route =
-                notifications::ReturnRoute::new(model.accepted, request.workspace, request.binding);
-            let Some(notification) = self
-                .prepare_notification(
-                    &request.source,
-                    &route,
-                    &identity,
-                    |language| notice.message(&entry, language),
-                    MessageOrigin::SessionCompletion {
-                        session_id: entry.session_id.clone(),
-                        message_id: entry.message_id.clone(),
-                    },
-                )
-                .await?
-            else {
-                return Ok(());
+                    .map_err(|e| e.to_string())?;
+                notification
             };
-            if attention {
-                // Admission identity is the durable deduplication record; keep the completion watch.
-                self.admit_notification(&notification).await?;
-                return Ok(());
-            }
-            self.store
-                .settle_message_completion(
-                    &self.prefix,
-                    &entry.key,
-                    Some(serde_json::to_value(&notification).map_err(|e| e.to_string())?),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            notification
-        };
         if self.admit_notification(&notification).await? {
             self.mark_bot_completion(&entry.session_id, &entry.message_id, &entry.recipient)
                 .await?;
