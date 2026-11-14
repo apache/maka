@@ -20,7 +20,12 @@
 use cap_std::fs::Dir;
 use std::{io, os::fd::AsRawFd};
 
-pub(super) fn volume(directory: &Dir) -> io::Result<String> {
+pub(super) struct Volume {
+    pub(super) id: String,
+    pub(super) stable_birth: bool,
+}
+
+pub(super) fn volume(directory: &Dir) -> io::Result<Volume> {
     // SAFETY: fstatfs initializes the struct on success, and the descriptor is held.
     let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
     let result = unsafe { libc::fstatfs(directory.as_raw_fd(), filesystem.as_mut_ptr()) };
@@ -37,12 +42,18 @@ pub(super) fn volume(directory: &Dir) -> io::Result<String> {
             if [first, second] == [0, 0] {
                 return Err(no_identity());
             }
-            Ok(format!(
-                "linux-fsid:{:08x}:{first:08x}:{second:08x}",
-                filesystem.f_type
-            ))
+            Ok(Volume {
+                id: format!(
+                    "linux-fsid:{:08x}:{first:08x}:{second:08x}",
+                    filesystem.f_type
+                ),
+                stable_birth: true,
+            })
         }
-        libc::BTRFS_SUPER_MAGIC => btrfs_volume(directory),
+        libc::BTRFS_SUPER_MAGIC => Ok(Volume {
+            id: btrfs_volume(directory)?,
+            stable_birth: true,
+        }),
         libc::XFS_SUPER_MAGIC => {
             // XFS f_fsid is a device number. Read its on-disk UUID via XFS_IOC_FSGEOMETRY_V1.
             #[repr(C)]
@@ -59,15 +70,23 @@ pub(super) fn volume(directory: &Dir) -> io::Result<String> {
                 flags: [0; 7],
             };
             ioctl_read(&directory.open(".")?, b'X', 100, &mut geometry)?;
-            uuid(&geometry.uuid)
+            Ok(Volume {
+                id: uuid(&geometry.uuid)?,
+                stable_birth: true,
+            })
         }
         _ => {
             // FS_IOC_GETFSUUID supplies the filesystem UUID on other filesystems
-            // that expose one. A missing UUID cannot authorize a durable grant.
+            // that expose one. Overlayfs needs its instance UUID: with uuid=off/null,
+            // f_fsid identifies the backing filesystem shared by independent overlays.
             let mut fsuuid = [0_u8; 17];
             ioctl_read(&directory.open(".")?, 0x15, 0, &mut fsuuid)?;
             let size = usize::from(fsuuid[0]);
-            uuid(fsuuid.get(1..1 + size).ok_or_else(no_identity)?)
+            Ok(Volume {
+                id: uuid(fsuuid.get(1..1 + size).ok_or_else(no_identity)?)?,
+                // Copy-up replaces the lower inode's birth time with the upper's.
+                stable_birth: filesystem.f_type != libc::OVERLAYFS_SUPER_MAGIC,
+            })
         }
     }
 }
