@@ -32,11 +32,14 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use maka_agent_facts::{
+    configuration::CatalogMutationResult,
     execution::CodeLanguage,
     operation::{RecordedOperationReply, RecordedOperationResult, inline_reply, same_outcome},
 };
 use maka_app_client::{Client, Journal};
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
+use maka_config::ConfigurationStore;
+use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_host_runtime::application::host::Client as HostClient;
 use maka_plugin_core::{
     contract::ResourceType,
@@ -955,6 +958,36 @@ async fn case(
     base: &str,
     language: CodeLanguage,
 ) -> Result<()> {
+    // Seed before the Host's public catalog refresh can advance the fixture's CAS revision.
+    let connection = {
+        let root = sandbox.root.clone();
+        let owner = tokio::task::spawn_blocking(move || {
+            RootOwner::create(&root, &RootNamespaces::for_current_account()?)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        let store = ConfigurationStore::for_root(Arc::new(owner))
+            .await
+            .map_err(|error| error.to_string())?;
+        let created = store.create_connection(serde_json::from_value(json!({
+            "expectedCatalogRevision":0,"connection":{
+                "slug":"codemode","name":"CodeMode loopback","provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"},
+                "configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":["gpt-4.1"],
+                "modelOverrides":{"gpt-4.1":{"codeMode":true,"codeModeLanguage":language,"apiProtocol":"openai-chat-completions"}}
+            }
+        })).unwrap()).await;
+        let closed = store.shutdown().await;
+        let created = created.map_err(|error| error.to_string())?;
+        closed.map_err(|error| error.to_string())?;
+        match created {
+            CatalogMutationResult::Committed {
+                connection: Some(basis),
+                ..
+            } => basis.connection_id,
+            other => return Err(format!("fixture connection was not committed: {other:?}")),
+        }
+    };
     hosts.push(Host::spawn(sandbox)?);
     let (first, _) = phase("first default Host ready", hosts[0].ready()).await?;
     let epoch = first.epoch();
@@ -966,21 +999,6 @@ async fn case(
         phase("external client Journal", Journal::open(&sandbox.journal)).await?,
         "receipts".into(),
     )?);
-    let catalog = phase(
-        "connection catalog",
-        clients[0].query("settings", "connections", json!({"kind":"start"})),
-    )
-    .await?;
-    assert_eq!(catalog["kind"], "ready");
-    let connection = mutate(&clients[0], "settings", "create", json!({
-        "expectedCatalogRevision":catalog["revision"],"connection":{
-            "slug":"codemode","name":"CodeMode loopback","provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"},
-            "configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":["gpt-4.1"],
-            "modelOverrides":{"gpt-4.1":{"codeMode":true,"codeModeLanguage":language,"apiProtocol":"openai-chat-completions"}}
-        }
-    }), Attachments::new()).await?;
-    assert_eq!(connection["kind"], "committed");
-    let connection = connection["connection"]["connectionId"].clone();
     let detail = phase(
         "credential target",
         clients[0].query("settings", "connection", json!({"connectionId":connection})),

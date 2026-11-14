@@ -169,13 +169,19 @@ async fn check_truncated_cell_image() -> TestResult<()> {
 
     let mut rig = Rig::new()?;
     let mut provider = Provider::start().await?;
+    let mut stage = "bootstrap";
+    let mut image_case = "not started";
+    let mut last_work = None;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(45), async {
         let base = rig.directory.path().to_path_buf();
         let boot = bootstrap(&base, provider.url.clone(), true).await?;
+        stage = "attach Host";
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
+        stage = "configure model";
         let model = model_options(client, &provider.url, true, json!({"vision":true})).await?;
 
+        stage = "encode complete PNG";
         let mut state = 1_u32;
         let pixels = image::RgbImage::from_fn(256, 128, |_, _| {
             state ^= state << 13;
@@ -191,8 +197,16 @@ async fn check_truncated_cell_image() -> TestResult<()> {
         assert!(!tail.starts_with("iVBOR"));
 
         for (data, expected) in [(tail, "failed"), (encoded.as_str(), "completed")] {
+            image_case = if expected == "failed" {
+                "truncated tail"
+            } else {
+                "complete PNG"
+            };
+            last_work = None;
+            stage = "create session";
             let session = create(client, &base, &model, None).await?;
             let id = session["id"].as_str().unwrap();
+            stage = "send message";
             let sent = call(
                 client,
                 "agent",
@@ -203,7 +217,9 @@ async fn check_truncated_cell_image() -> TestResult<()> {
             )
             .await?;
             assert_eq!(sent["kind"], "queued", "{sent}");
+            stage = "wait initial model request";
             let (_, reply) = provider.next().await?;
+            stage = "send image tool call";
             reply
                 .send(tool_response(
                     "exec",
@@ -214,12 +230,14 @@ async fn check_truncated_cell_image() -> TestResult<()> {
                 .map_err(|_| "image tool response lost")?;
 
             if expected == "completed" {
+                stage = "wait model request with complete PNG";
                 let (request, reply) = provider.next().await?;
                 assert!(
                     request["messages"]
                         .to_string()
                         .contains("data:image/png;base64,")
                 );
+                stage = "send final model response";
                 reply
                     .send(completion(
                         json!({"content":"Valid image received."}),
@@ -229,6 +247,7 @@ async fn check_truncated_cell_image() -> TestResult<()> {
             }
             let target = json!({"kind":"message","messageId":sent["messageId"]});
             loop {
+                stage = "wait run terminal state";
                 let work = call(
                     client,
                     "agent",
@@ -241,6 +260,7 @@ async fn check_truncated_cell_image() -> TestResult<()> {
                     assert_eq!(kind, Some(expected), "{work}");
                     break;
                 }
+                last_work = Some(work);
                 tokio::task::yield_now().await;
             }
             assert!(
@@ -252,10 +272,20 @@ async fn check_truncated_cell_image() -> TestResult<()> {
     }))
     .catch_unwind()
     .await;
+    let context = format!(
+        "stage={stage}, case={image_case}, queued_model_requests={}, last_work={last_work:?}",
+        provider.requests.len()
+    );
+    if matches!(&outcome, Ok(Err(_))) {
+        eprintln!("truncated cell image timeout: {context}");
+    }
     let cleanup = rig.finish().await;
     assert!(cleanup.is_empty(), "{cleanup:?}");
     match outcome {
-        Ok(result) => result?,
+        Ok(Ok(result)) => {
+            result.map_err(|error| format!("cell image check failed ({context}): {error}").into())
+        }
+        Ok(Err(error)) => Err(format!("cell image check timed out ({context}): {error}").into()),
         Err(panic) => std::panic::resume_unwind(panic),
     }
 }

@@ -481,26 +481,42 @@ impl DriverModel {
             self.original_cleanup.physical.clone(),
         )?)
     }
-    pub(in crate::owner) fn original_cleanup_signals(&self) -> Vec<BoxFuture<'static, ()>> {
+    pub(in crate::owner) fn original_worker_join(
+        &self,
+    ) -> BoxFuture<'static, Result<(), RunError>> {
         self.workers.close();
         let workers = self.workers.clone();
         let original = self.original_cleanup.clone();
         let conversation = self.conversation.clone();
-        vec![
-            async move {
-                // Only tracked main workers register follow-ups; draining seals this set.
-                workers.wait().await;
-                let session = conversation.lock().unwrap().as_ref().cloned();
-                if let Some(session) = session {
-                    session.retire();
-                }
-                let continuations = original.continuations.lock().unwrap().clone();
-                for (_, continuation) in continuations {
-                    let _joined = continuation.await;
-                }
-                workers.wait().await;
+        async move {
+            // Only tracked main workers register follow-ups; draining seals this set.
+            workers.wait().await;
+            let session = conversation.lock().unwrap().as_ref().cloned();
+            if let Some(session) = session {
+                session.retire();
             }
-            .boxed(),
+            let continuations = original.continuations.lock().unwrap().clone();
+            for (_, continuation) in continuations {
+                continuation.await.map_err(|error| {
+                    RunError::ReconciliationRequired(format!(
+                        "original model cleanup observer failed: {error}"
+                    ))
+                })?;
+            }
+            workers.wait().await;
+            Ok(())
+        }
+        .boxed()
+    }
+    pub(in crate::owner) fn original_cleanup_signals(&self) -> Vec<BoxFuture<'static, ()>> {
+        vec![
+            self.original_worker_join()
+                .map(|result| {
+                    if let Err(error) = result {
+                        tracing::error!(%error, "Original model cleanup worker failed to join");
+                    }
+                })
+                .boxed(),
         ]
     }
     pub(in crate::owner) async fn original_cleanup_confirmed(&self) -> Result<bool, RunError> {
