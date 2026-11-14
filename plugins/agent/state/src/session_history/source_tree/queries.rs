@@ -39,6 +39,7 @@ pub(super) struct LivePositions(
     pub(super) bool,
     pub(super) u64,
     pub(super) u32,
+    pub(super) Option<RunRows>,
 );
 impl Query for LivePositions {
     type Output = Vec<SnapshotPosition>;
@@ -56,7 +57,28 @@ impl Query for LivePositions {
             (">=", "ASC")
         };
         let visible = if self.4 { "" } else { " AND d.internal=0" };
-        let mut statement=c.prepare_cached(&format!("SELECT d.run,d.sequence,h.admission_sequence,h.fact_id,d.ordinal,d.internal FROM agent_recall_messages d JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence WHERE d.owner=? AND d.session=? AND d.sequence<=? AND h.admission_sequence>? AND (d.sequence,d.ordinal){comparison}(?,?){visible} ORDER BY d.sequence {order},d.ordinal {order} LIMIT ?"))?;
+        let (constraint, run, attempt) = match self.7 {
+            None => ("?8 IS NULL AND ?9 IS NULL", None, None),
+            Some(RunRows::Only { run, .. }) => ("d.run=?8 AND ?9 IS NULL", Some(run), None),
+            Some(RunRows::Folded { run, attempt }) => (
+                r#"(d.run<>?8 OR (
+                    d.role='"compaction"'
+                    OR (d.role='"user"' AND coalesce(json_extract(d.origin_json,'$.kind'),'')
+                        NOT IN ('session','session_completion','automation','bot_worker'))
+                    OR (d.role='"assistant"' AND d.internal=0 AND h.attempt=?9)
+                ))"#,
+                Some(run),
+                Some(attempt),
+            ),
+        };
+        let mut statement = c.prepare_cached(&format!(
+            "SELECT d.run,d.sequence,h.admission_sequence,h.fact_id,d.ordinal,d.internal
+             FROM agent_recall_messages d
+             JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence
+             WHERE d.owner=?1 AND d.session=?2 AND d.sequence<=?3 AND h.admission_sequence>?4
+               AND (d.sequence,d.ordinal){comparison}(?5,?6){visible} AND {constraint}
+             ORDER BY d.sequence {order},d.ordinal {order} LIMIT ?7"
+        ))?;
         let rows = statement
             .query_map(
                 params![
@@ -66,7 +88,9 @@ impl Query for LivePositions {
                     sql::bind_u64(self.5)?,
                     sql::bind_u64(bound.0)?,
                     sql::bind_u64(bound.1)?,
-                    i64::from(self.6)
+                    i64::from(self.6),
+                    run.map(|run| run.to_string()),
+                    attempt.map(|attempt| attempt.to_string()),
                 ],
                 |r| {
                     Ok((
@@ -192,5 +216,233 @@ impl Query for RunAt {
             return Err(invalid("Run source is outside this fixed cut"));
         }
         Ok(source)
+    }
+}
+
+pub(super) struct FinalAttemptAt(
+    pub(super) HistoryNamespace,
+    pub(super) HistoryCut,
+    pub(super) RunId,
+);
+impl Query for FinalAttemptAt {
+    type Output = Option<ModelAttemptId>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let attempt: Option<String> = c
+            .query_row(
+                r#"SELECT r.current_attempt
+               FROM agent_runs r
+               JOIN agent_session_history h
+                 ON h.owner=r.owner AND h.session=r.session AND h.run=r.run
+                 AND h.step IS NULL AND h.kind='run_terminated'
+               WHERE r.run=?1 AND r.owner=?2 AND r.session=?3 AND h.sequence<=?4
+                 AND r.terminal='"completed"' AND r.current_attempt IS NOT NULL"#,
+                params![
+                    self.2.to_string(),
+                    serde_json::to_string(&self.0.owner)?,
+                    self.0.session,
+                    sql::bind_u64(self.1.through_sequence)?
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        attempt.map(sql::identity).transpose()
+    }
+}
+
+/// Read a settled turn's summary from its indexed history coordinates, without
+/// decoding the tool results, receipts, or the Run's accumulated execution state.
+pub(super) struct CompletedWorkAt {
+    pub(super) namespace: HistoryNamespace,
+    pub(super) cut: HistoryCut,
+    pub(super) run: RunId,
+    pub(super) turn: String,
+}
+
+impl Query for CompletedWorkAt {
+    type Output = Option<CompletedWork>;
+
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::validate_cut(c, &self.namespace.owner, &self.namespace.session, &self.cut)?;
+        let owner = serde_json::to_string(&self.namespace.owner)?;
+        let run = self.run.to_string();
+        let through = sql::bind_u64(self.cut.through_sequence)?;
+        let Some(attempt) =
+            FinalAttemptAt(self.namespace.clone(), self.cut.clone(), self.run).execute(c)?
+        else {
+            return Ok(None);
+        };
+        let (thoughts, messages, tools, earlier_output): (u64, u64, u64, u64) =
+            c.query_row(
+                r#"WITH visible AS (
+                     SELECT d.sequence, d.role, d.internal, d.body,
+                            coalesce(json_extract(d.origin_json,'$.kind'),'') IN
+                              ('session','session_completion','automation','bot_worker') AS activity,
+                            h.tool_use_id, h.tool_start, h.attempt
+                     FROM agent_recall_messages d INDEXED BY agent_recall_turn
+                     JOIN agent_session_history h
+                       ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence
+                     WHERE d.owner=?1 AND d.session=?2 AND d.turn=?3 AND d.sequence<=?4 AND d.run=?5
+                   )
+                   SELECT count(CASE WHEN internal AND trim(body)<>'' THEN 1 END),
+                          count(CASE WHEN role='"user"' AND activity THEN 1 END),
+                          count(DISTINCT CASE WHEN tool_start THEN tool_use_id END),
+                          count(CASE WHEN role='"assistant"' AND NOT internal AND attempt<>?6 THEN 1 END)
+                   FROM visible
+                   HAVING count(CASE WHEN role='"assistant"' AND NOT internal AND attempt=?6 THEN 1 END)>0"#,
+                params![owner,self.namespace.session,self.turn,through,run,attempt.to_string()],
+                |row| Ok((sql::read_u64(row, 0)?, sql::read_u64(row, 1)?, sql::read_u64(row, 2)?, sql::read_u64(row, 3)?)),
+            ).optional()?.unwrap_or_default();
+        if earlier_output + thoughts + tools + messages == 0 {
+            return Ok(None);
+        }
+        let image_count = c.query_row(
+            "SELECT count(DISTINCT b.artifact)
+             FROM agent_artifact_run_bindings b
+             JOIN agent_artifacts a ON a.session=b.session AND a.artifact=b.artifact
+             JOIN agent_session_history h ON h.fact_id=b.fact
+             WHERE b.run=?1 AND b.session=?2 AND h.sequence<=?3 AND b.origin IN ('tool','cell')
+               AND json_extract(a.record_json,'$.artifact.mimeType') LIKE 'image/%'",
+            params![run, self.namespace.session, through],
+            |row| sql::read_u64(row, 0),
+        )?;
+        let mut images = c.prepare_cached(
+            "SELECT DISTINCT h.sequence,h.fact_id
+             FROM agent_artifact_run_bindings b
+             JOIN agent_artifacts a ON a.session=b.session AND a.artifact=b.artifact
+             JOIN agent_session_history h ON h.fact_id=b.fact
+             WHERE b.run=?1 AND b.session=?2 AND h.sequence<=?3 AND b.origin IN ('tool','cell')
+               AND json_extract(a.record_json,'$.artifact.mimeType') LIKE 'image/%'
+             ORDER BY h.sequence DESC LIMIT 4",
+        )?;
+        let image_sources = images
+            .query_map(params![run, self.namespace.session, through], |row| {
+                Ok((sql::read_u64(row, 0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .rev()
+            .map(|(sequence, fact)| {
+                Ok(HistoryRowAddress::Live {
+                    sequence,
+                    fact: sql::identity(fact)?,
+                    item_index: 0,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        Ok(Some(CompletedWork {
+            attempt,
+            thoughts,
+            messages,
+            tools,
+            image_sources,
+            image_count,
+        }))
+    }
+}
+
+pub(super) struct ReportedModelAt(
+    pub(super) HistoryNamespace,
+    pub(super) HistoryCut,
+    pub(super) RunId,
+    pub(super) StepId,
+    pub(super) ModelAttemptId,
+);
+impl Query for ReportedModelAt {
+    type Output = Option<String>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::validate_cut(c, &self.0.owner, &self.0.session, &self.1)?;
+        let row: Option<(u32, Vec<u8>, String)> = c
+            .query_row(
+                "SELECT f.schema_version,b.payload,b.content_sha256
+             FROM agent_session_history h
+             JOIN agent_facts f ON f.sequence=h.sequence
+             JOIN contents b ON b.id=f.body_content_id
+             WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.step=?4
+               AND h.kind='model_closed' AND h.attempt=?5 AND h.sequence<=?6",
+                params![
+                    serde_json::to_string(&self.0.owner)?,
+                    self.0.session,
+                    self.2.to_string(),
+                    self.3.to_string(),
+                    self.4.to_string(),
+                    sql::bind_u64(self.1.through_sequence)?
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((version, bytes, digest)) = row else {
+            return Ok(None);
+        };
+        sql::check_bytes(&bytes, &digest)?;
+        let Fact::ModelClosed {
+            outcome, protocol, ..
+        } = sql::decode_record(version, &bytes)?.fact
+        else {
+            return Err(invalid("Model closure index names another fact"));
+        };
+        if outcome != maka_agent_facts::accounting::Outcome::Success {
+            return Ok(None);
+        }
+        let protocol: maka_agent_facts::context::ModelClosureProtocol =
+            serde::Deserialize::deserialize(&protocol)?;
+        Ok(protocol.model)
+    }
+}
+
+pub(super) struct ProjectedToolAt(
+    pub(super) HistoryNamespace,
+    pub(super) HistoryCut,
+    pub(super) RunId,
+    pub(super) ToolKey,
+);
+impl Query for ProjectedToolAt {
+    type Output = Option<crate::fold::Tool>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let row: Option<String> = c
+            .query_row(
+                "SELECT t.body FROM agent_tools t JOIN agent_runs r ON r.run=t.run
+             JOIN agent_facts f ON f.run=r.run AND f.revision=r.revision
+             WHERE t.run=?1 AND t.key=?2 AND r.owner=?3 AND r.session=?4 AND f.sequence<=?5",
+                params![
+                    self.2.to_string(),
+                    crate::fold::tool_key(&self.3),
+                    serde_json::to_string(&self.0.owner)?,
+                    self.0.session,
+                    sql::bind_u64(self.1.through_sequence)?
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        row.map(|body| serde_json::from_str(&body).map_err(StoreError::from))
+            .transpose()
+    }
+}
+
+pub(super) struct ProjectedCellAt(
+    pub(super) HistoryNamespace,
+    pub(super) HistoryCut,
+    pub(super) RunId,
+    pub(super) maka_agent_facts::cells::CellId,
+);
+impl Query for ProjectedCellAt {
+    type Output = Option<maka_agent_facts::cells::CellView>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let row: Option<String> = c
+            .query_row(
+                "SELECT t.body FROM agent_cells t JOIN agent_runs r ON r.run=t.run
+             JOIN agent_facts f ON f.run=r.run AND f.revision=r.revision
+             WHERE t.run=?1 AND t.cell=?2 AND r.owner=?3 AND r.session=?4 AND f.sequence<=?5",
+                params![
+                    self.2.to_string(),
+                    self.3.to_string(),
+                    serde_json::to_string(&self.0.owner)?,
+                    self.0.session,
+                    sql::bind_u64(self.1.through_sequence)?
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        row.map(|body| serde_json::from_str(&body).map_err(StoreError::from))
+            .transpose()
     }
 }
