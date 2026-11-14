@@ -140,21 +140,9 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[ignore = "requires a fresh lower-layer overlayfs directory in MAKA_TEST_OVERLAYFS_DIR"]
     fn captured_grant_survives_linux_overlayfs_copy_up() {
-        let Some(target) = std::env::var_os("MAKA_TEST_OVERLAYFS_DIR") else {
-            return;
-        };
-        let path = std::path::PathBuf::from(target);
-        let directory = Dir::open_ambient_dir(&path, cap_std::ambient_authority()).unwrap();
-
-        use std::os::fd::AsRawFd;
-        let mut statfs = std::mem::MaybeUninit::<libc::statfs>::uninit();
-        assert_eq!(
-            unsafe { libc::fstatfs(directory.as_raw_fd(), statfs.as_mut_ptr()) },
-            0
-        );
-        let statfs = unsafe { statfs.assume_init() };
-        assert_eq!(statfs.f_type, libc::OVERLAYFS_SUPER_MAGIC);
+        let (path, directory) = overlayfs_directory();
 
         let before_birth = directory.dir_metadata().unwrap().created().ok();
         let grant = DirectoryIdentity::capture(&directory).unwrap();
@@ -169,5 +157,37 @@ mod tests {
             "expected overlayfs copy-up to update directory birth time"
         );
         assert!(grant.matches(&after_dir).unwrap());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an overlayfs uuid=off/null mount in MAKA_TEST_OVERLAYFS_DIR"]
+    fn captured_grant_rejects_linux_overlayfs_without_uuid() {
+        let (_, directory) = overlayfs_directory();
+        assert_eq!(
+            DirectoryIdentity::capture(&directory).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn overlayfs_directory() -> (std::path::PathBuf, Dir) {
+        use std::os::fd::AsRawFd;
+
+        let path = std::path::PathBuf::from(
+            std::env::var_os("MAKA_TEST_OVERLAYFS_DIR").expect("overlayfs fixture directory"),
+        );
+        let directory = Dir::open_ambient_dir(&path, cap_std::ambient_authority()).unwrap();
+        let mut statfs = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        // SAFETY: fstatfs initializes the struct on success, and directory holds the fd.
+        let result = unsafe { libc::fstatfs(directory.as_raw_fd(), statfs.as_mut_ptr()) };
+        assert_eq!(result, 0);
+        // SAFETY: fstatfs succeeded and initialized the struct.
+        let statfs = unsafe { statfs.assume_init() };
+        assert_eq!(statfs.f_type, libc::OVERLAYFS_SUPER_MAGIC);
+        // SAFETY: Linux fsid_t contains two C int fields.
+        let fsid: [u32; 2] = unsafe { std::mem::transmute(statfs.f_fsid) };
+        assert_ne!(fsid, [0, 0], "fixture must have a nonzero backing fsid");
+        (path, directory)
     }
 }
