@@ -247,6 +247,8 @@ enum InvalidBindings {
 enum NativeCellWire {
     Running {
         cell_id: Uuid,
+        #[serde(default)]
+        cancel_with: Option<CancelCell>,
     },
     Completed {
         cell_id: Uuid,
@@ -258,6 +260,13 @@ enum NativeCellWire {
         heap: ExpiredHeap,
         bindings: InvalidBindings,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelCell {
+    cell_id: Uuid,
+    terminate: bool,
 }
 
 #[derive(Deserialize)]
@@ -285,7 +294,15 @@ fn cell_observation(values: &[Value]) -> Result<(&Value, Value)> {
     let wire: CellWire = serde_json::from_value(summary.clone())
         .map_err(|error| format!("invalid Cell state observation {summary}: {error}"))?;
     let cell = match wire {
-        CellWire::Native(NativeCellWire::Running { cell_id }) => cell_id,
+        CellWire::Native(NativeCellWire::Running {
+            cell_id,
+            cancel_with,
+        }) => {
+            if cancel_with.is_some_and(|args| args.cell_id != cell_id || !args.terminate) {
+                return Err("Cell cancellation must target the running Cell".into());
+            }
+            cell_id
+        }
         CellWire::Native(NativeCellWire::Completed {
             cell_id: cell,
             result,
@@ -340,13 +357,19 @@ fn decodes_recorded_chat_cell_text_parts_without_losing_final_identity_or_output
 #[test]
 fn cell_wire_rejects_unknown_parts_and_does_not_search_child_input_for_markers() {
     let cell = json!("5ad6c18d-1c8f-83e8-9185-5d1d3026361f");
-    let running = json!({"state":"running","cell_id":cell});
+    let running = json!({"state":"running","cell_id":cell,
+        "cancel_with":{"cell_id":cell,"terminate":true}});
     let marker = json!({"stage":"draftReady","nonce":"real-output","a":2,"b":3});
     let input = json!({"operation":"452f5dfa-166f-4b3d-9152-f7599cf64494","name":"Shell",
         "input":{"stage":"draftReady","nonce":"not-an-output","state":"interrupted","cell":cell}});
     let content = json!(format!("{running}\n{marker}\n{input}"));
     let values = tool_objects(&content).unwrap();
     assert_eq!(cell_observation(&values).unwrap().1, cell);
+    assert!(
+        cell_observation(&[json!({"state":"running","cell_id":cell,
+            "cancel_with":{"cell_id":Uuid::nil(),"terminate":true}})])
+        .is_err()
+    );
     assert_eq!(
         values
             .iter()
@@ -635,6 +658,11 @@ impl Model {
                 assert_eq!(
                     summary["state"], "running",
                     "draft must not finish before SIGKILL: {output}"
+                );
+                assert_eq!(
+                    summary["cancel_with"],
+                    json!({"cell_id":cell,"terminate":true}),
+                    "the provider must receive the arguments for cancelling this running Cell"
                 );
                 let Some(marker) = values
                     .iter()
