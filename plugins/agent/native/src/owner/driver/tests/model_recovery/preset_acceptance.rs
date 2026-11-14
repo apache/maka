@@ -169,11 +169,18 @@ async fn check_truncated_cell_image() -> TestResult<()> {
 
     let mut rig = Rig::new()?;
     let mut provider = Provider::start().await?;
+    let mut phase = "bootstrap";
+    let mut image_state = None;
+    let mut session_id = None;
+    let mut last_work = Value::Null;
+    let mut requests_consumed = 0;
     let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(45), async {
         let base = rig.directory.path().to_path_buf();
         let boot = bootstrap(&base, provider.url.clone(), true).await?;
+        phase = "attach";
         attach(&mut rig, &boot).await?;
         let client = rig.client.as_ref().unwrap();
+        phase = "model options";
         let model = model_options(client, &provider.url, true, json!({"vision":true})).await?;
 
         let mut state = 1_u32;
@@ -191,8 +198,12 @@ async fn check_truncated_cell_image() -> TestResult<()> {
         assert!(!tail.starts_with("iVBOR"));
 
         for (data, expected) in [(tail, "failed"), (encoded.as_str(), "completed")] {
+            image_state = Some(expected);
+            phase = "create session";
             let session = create(client, &base, &model, None).await?;
             let id = session["id"].as_str().unwrap();
+            session_id = Some(id.to_owned());
+            phase = "send";
             let sent = call(
                 client,
                 "agent",
@@ -203,7 +214,9 @@ async fn check_truncated_cell_image() -> TestResult<()> {
             )
             .await?;
             assert_eq!(sent["kind"], "queued", "{sent}");
+            phase = "tool request";
             let (_, reply) = provider.next().await?;
+            requests_consumed += 1;
             reply
                 .send(tool_response(
                     "exec",
@@ -214,7 +227,9 @@ async fn check_truncated_cell_image() -> TestResult<()> {
                 .map_err(|_| "image tool response lost")?;
 
             if expected == "completed" {
+                phase = "valid-image model continuation";
                 let (request, reply) = provider.next().await?;
+                requests_consumed += 1;
                 assert!(
                     request["messages"]
                         .to_string()
@@ -228,6 +243,7 @@ async fn check_truncated_cell_image() -> TestResult<()> {
                     .map_err(|_| "final model response lost")?;
             }
             let target = json!({"kind":"message","messageId":sent["messageId"]});
+            phase = "terminal work";
             loop {
                 let work = call(
                     client,
@@ -236,6 +252,10 @@ async fn check_truncated_cell_image() -> TestResult<()> {
                     json!({"sessionId":id,"target":target}),
                 )
                 .await?;
+                last_work = json!({
+                    "kind":work["kind"], "shared":work["shared"],
+                    "execution":work["execution"]
+                });
                 let kind = work["execution"]["state"]["kind"].as_str();
                 if matches!(kind, Some("completed" | "failed" | "cancelled")) {
                     assert_eq!(kind, Some(expected), "{work}");
@@ -252,6 +272,19 @@ async fn check_truncated_cell_image() -> TestResult<()> {
     }))
     .catch_unwind()
     .await;
+    if !matches!(&outcome, Ok(Ok(Ok(())))) {
+        eprintln!(
+            "image phase={phase}, expected={image_state:?}, requests_consumed={requests_consumed}, queued_requests={}, last_work={last_work}",
+            provider.requests.len()
+        );
+        if let Some(id) = session_id {
+            match tokio::time::timeout(Duration::from_secs(2), diagnostic(&rig, &id)).await {
+                Ok(Ok(snapshot)) => eprintln!("image failure diagnostic: {snapshot}"),
+                Ok(Err(error)) => eprintln!("image failure diagnostic error: {error}"),
+                Err(error) => eprintln!("image failure diagnostic timeout: {error}"),
+            }
+        }
+    }
     let cleanup = rig.finish().await;
     assert!(cleanup.is_empty(), "{cleanup:?}");
     match outcome {
