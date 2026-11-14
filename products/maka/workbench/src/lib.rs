@@ -88,7 +88,7 @@ pub fn configuration(
 #[cfg(test)]
 mod tests {
     use nsh_core::{
-        Size,
+        Points, Size,
         element::Instance,
         platform::{Environment, Os},
         prelude::px,
@@ -105,14 +105,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn discovery_panel_approves_scope_controls_runs_and_rejects_stale_edits() {
+        let mut app = headless_fixture(
+            "tests/fixtures/discovery.tsx",
+            Size::new(px(1100.0), px(900.0)),
+            false,
+        );
+        app.wait_for("text:Earlier discovery").unwrap();
+        app.wait_for("text:Please stop this recommendation.")
+            .unwrap();
+        app.wait_for("role:button[View investigation]").unwrap();
+        app.press("role:button[View investigation] >> nth=0")
+            .unwrap();
+        app.wait_for("text:Opened original-worker").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.wait_for("text:/sample-command-code/").unwrap();
+        app.wait_for("text:/isolated.sample/").unwrap();
+        app.press("role:button[Approve and enable]").unwrap();
+        app.wait_for("role:button[Pause]").unwrap();
+        app.press("role:button[Pause]").unwrap();
+        app.wait_for("role:button[Approve and resume]").unwrap();
+        app.press("role:button[Approve and resume]").unwrap();
+        app.wait_for("role:button[Edit plan]").unwrap();
+        app.press("role:button[Edit plan]").unwrap();
+        app.wait_for("role:button[Approve and save]").unwrap();
+        app.press_key("mod+u").unwrap();
+        app.press("role:button[Approve and save]").unwrap();
+        app.wait_for("text:/The plan changed/").unwrap();
+        app.press("role:button[Close]").unwrap();
+        app.press("role:button[Proactive discovery]").unwrap();
+        app.wait_for("role:button[Check now]").unwrap();
+        app.press("role:button[Check now]").unwrap();
+        app.wait_for("text:Investigating").unwrap();
+        app.press("role:button[View investigation] >> nth=0")
+            .unwrap();
+        app.press("role:button[Close]").unwrap();
+        app.wait_for("text:Opened original-worker").unwrap();
+    }
+
     fn completion_fixture() -> nsh_testing::Headless {
+        headless_fixture(
+            "tests/fixtures/composer-completion.tsx",
+            Size::new(px(480.0), px(200.0)),
+            true,
+        )
+    }
+
+    fn headless_fixture(
+        entry: &str,
+        viewport: Size<Points>,
+        native_focus_scopes: bool,
+    ) -> nsh_testing::Headless {
         let mut registry = crate::bindings::ui_registry();
         registry.value("host", || Instance::new(CompletionHost));
         let sets = vec![nsh_base::registry(), registry];
         let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
-            entry: std::path::Path::new("tests/fixtures/composer-completion.tsx")
-                .canonicalize()
-                .unwrap(),
+            entry: std::path::Path::new(entry).canonicalize().unwrap(),
             minify: false,
             split: false,
             ui_sets: sets.iter().map(Into::into).collect(),
@@ -123,10 +172,10 @@ mod tests {
         })
         .unwrap();
         nsh_testing::Headless::start(nsh_engine::EngineConfig {
-            viewport: Size::new(px(480.0), px(200.0)),
+            viewport,
             environment: Environment {
                 os: Os::MacOs,
-                native_focus_scopes: true,
+                native_focus_scopes,
                 ..Environment::default()
             },
             ui_sets: sets,

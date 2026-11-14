@@ -385,7 +385,12 @@ pub(crate) fn retract_interactive(
     let mut expected_revision = queue.revision;
     for entry in queue.entries {
         let source = source(c, &entry.request)?;
-        if !is_interactive(&entry.request, &source) {
+        if !is_interactive(&entry.request, &source)
+            || matches!(
+                source.message.origin,
+                Some(maka_agent_facts::message::MessageOrigin::BotWorker { .. })
+            )
+        {
             continue;
         }
         let mut hash = Sha256::new();
@@ -1065,4 +1070,22 @@ pub(crate) fn consume_external_steering(
     }
     project(c, &cut.session, next, &event, true)?;
     record(c, &cut.session, next, command, at, &event)
+}
+
+pub(super) fn message_entry(
+    c: &Connection,
+    session: &str,
+    message: &str,
+) -> Result<Option<QueueEntry>, StoreError> {
+    id(session)?;
+    id(message)?;
+    let json: Option<String> = c
+        .query_row(
+            "SELECT entry_json FROM agent_queue_items WHERE session=? AND message=?",
+            params![session, message],
+            |r| r.get(0),
+        )
+        .optional()?;
+    json.map(|v| serde_json::from_str(&v).map_err(StoreError::from))
+        .transpose()
 }

@@ -87,7 +87,9 @@ function AutomationEditor(props: {
       ? 'new'
       : effect?.kind === 'executor_session'
         ? 'followup'
-        : (effect?.delivery ?? 'steering'),
+        : effect?.kind === 'session'
+          ? (effect.delivery ?? 'steering')
+          : 'steering',
   );
   const title = signal(task?.title ?? '');
   const text = signal(task?.intent.body ?? '');

@@ -8514,6 +8514,7 @@ name = "maka-app-client"
 version = "0.2.0"
 dependencies = [
  "futures-util",
+ "maka-agent-facts",
  "maka-capabilities",
  "maka-event-log",
  "maka-host-runtime",

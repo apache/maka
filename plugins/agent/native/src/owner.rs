@@ -34,6 +34,7 @@ mod computer_apps;
 mod context;
 mod continuation;
 mod creation;
+mod discovery;
 mod execution;
 pub(crate) use access::RunAccess;
 mod capture;
@@ -244,6 +245,7 @@ pub(crate) struct Owner {
     mcp: crate::mcp::Servers,
     mcp_projects: Arc<crate::mcp::Projects>,
     tool_basis: Arc<Vec<crate::tools::SelectedTool>>,
+    discovery_reads: Vec<String>,
     editing_tools: Vec<(String, maka_agent_facts::execution::EditingTools)>,
     skills: Option<skills::Library>,
     pub(super) executors: crate::executor::Executors,
@@ -491,6 +493,7 @@ impl Owner {
             tools,
             basis: tool_basis,
             editing: editing_tools,
+            discovery_reads,
         } = match prepared_tools {
             Ok(tools) => tools,
             Err(error) => {
@@ -587,6 +590,7 @@ impl Owner {
             mcp,
             mcp_projects,
             tool_basis: Arc::new(tool_basis),
+            discovery_reads,
             editing_tools,
             skills,
             executors,
@@ -603,6 +607,9 @@ impl Owner {
                 error.to_string(),
                 owner,
             ));
+        }
+        if let Err(error) = owner.restore_discovery().await {
+            return Err(initialization::InitializationError::instance(error, owner));
         }
         let antigravity = owner
             .settings
@@ -1240,13 +1247,25 @@ impl Owner {
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> crate::tools::Declarations {
         let bot = session.is_some_and(|session| self.bot.is(session));
+        let investigation = session.is_some_and(|id| {
+            self.scheduler
+                .investigation
+                .read()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|active| active == id)
+        });
         let excluded: Vec<_> = catalog
             .definitions()
             .map(|definition| definition.name.as_str())
             .filter(|name| {
-                let speaks = *name == bot::SEND_USER || *name == bot::SLEEP;
-                (speaks && !bot)
-                    || (!(speaks && bot)
+                let bot_only = *name == bot::SEND_USER || *name == bot::SLEEP;
+                let memory = *name == discovery::MEMORY;
+                (*name == discovery::COMPLETE && !investigation)
+                    || (*name == discovery::CONTEXT && (!investigation || !self.settings.recall))
+                    || (memory && (!self.settings.scheduled_tasks || !(bot || investigation)))
+                    || (bot_only && !bot)
+                    || (!(bot && (bot_only || memory))
                         && allowed_tools.is_some_and(|allowed| {
                             !allowed.iter().any(|allowed| allowed.as_str() == *name)
                         }))

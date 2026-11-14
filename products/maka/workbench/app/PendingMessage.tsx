@@ -23,6 +23,7 @@ import type {
   ComposerSendStatus,
   ComposerSession,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import { MessageQuotes } from './MessageQuotes';
 import { Icon } from './Icon';
 import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
@@ -47,6 +48,7 @@ export function PendingMessage(props: {
         gap: platform.idiom === 'terminal' ? 8 : 6,
       }}
     >
+      <MessageQuotes quotes={() => props.message.quotes ?? []} />
       <If when={props.message.text !== ''}>
         <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
           {props.message.text}

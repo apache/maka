@@ -37,6 +37,7 @@ import { sessionToolMessages } from './locale-tool-sessions';
 import { deploymentToolMessages } from './locale-tool-deployment';
 import { automationMessages } from './locale-automation';
 import { nativeToolMessages } from './locale-tool-native';
+import { discoveryMessages } from './locale-discovery';
 
 import { subagentMessages } from './locale-subagents';
 
@@ -61,6 +62,7 @@ const copy = createCopy({
   ...deploymentToolMessages,
   ...nativeToolMessages,
   ...automationMessages,
+  ...discoveryMessages,
 });
 export type MessageKey = keyof ReturnType<typeof copy>;
 

@@ -155,6 +155,8 @@ function CompletionComposer(props: { prediction?: boolean; switchBackend?: boole
   } satisfies AgentBackendPreference;
   const selectedBackend = signal<AgentBackendPreference>(backend);
   const owner: ComposerSession<JSX.Element> = {
+    quotes: () => [],
+    removeQuote: () => {},
     sessionId: 'original-session',
     connected: () => true,
     draft,

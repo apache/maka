@@ -122,6 +122,8 @@ pub struct Draft {
     pub revision: u64,
     pub text: String,
     pub attachments: Vec<DraftAttachment>,
+    #[serde(default)]
+    pub quotes: Vec<maka_agent_facts::input::QuoteRef>,
 }
 
 /// A send owns this frozen content after the editor moves to its next draft.
@@ -149,6 +151,8 @@ pub struct DraftAttachment {
 #[schemars(rename = "ClientDraftEdit")]
 pub struct DraftEdit {
     pub text: String,
+    #[serde(default)]
+    pub quotes: Vec<maka_agent_facts::input::QuoteRef>,
     #[serde(default)]
     pub attachments: Vec<DraftAttachment>,
     #[serde(default)]
@@ -185,6 +189,8 @@ pub struct DraftReference {
     pub revision: u64,
 }
 
+#[cfg(test)]
+mod quote_tests;
 mod recovery;
 mod workspaces;
 mod write;
@@ -407,6 +413,8 @@ impl Journal {
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating drafts table: {error}"))?;
             sqlx::query("CREATE TABLE IF NOT EXISTS recent_workspaces (owner TEXT PRIMARY KEY, value TEXT NOT NULL)")
                 .execute(&mut *transaction).await.map_err(error)?;
+            sqlx::query(include_str!("../migrations/202611100001_draft_quotes.sql"))
+                .execute(&mut *transaction).await.map_err(error)?;
             transaction
                 .commit()
                 .await
@@ -430,13 +438,15 @@ impl Journal {
         })
     }
     pub(crate) async fn load_draft(&self, key: &DraftKey) -> Result<Option<Draft>> {
-        let row = sqlx::query("SELECT revision,CASE WHEN consumed=1 THEN '' ELSE text END AS text,CASE WHEN consumed=1 THEN '[]' ELSE attachments END AS attachments FROM drafts WHERE owner=?")
+        let row = sqlx::query("SELECT d.revision,CASE WHEN d.consumed=1 THEN '' ELSE d.text END AS text,CASE WHEN d.consumed=1 THEN '[]' ELSE d.attachments END AS attachments,CASE WHEN d.consumed=1 THEN '[]' ELSE COALESCE(q.quotes,'[]') END AS quotes FROM drafts d LEFT JOIN draft_quotes q ON q.owner=d.owner AND q.revision=d.revision WHERE d.owner=?")
             .bind(serde_json::to_string(key).map_err(error)?)
             .fetch_optional(&self.pool)
             .await
             .map_err(error)?;
         row.map(|row| {
             Ok(Draft {
+                quotes: serde_json::from_str(row.try_get("quotes").map_err(error)?)
+                    .map_err(error)?,
                 revision: row.try_get::<i64, _>("revision").map_err(error)? as u64,
                 text: row.try_get("text").map_err(error)?,
                 attachments: serde_json::from_str(row.try_get("attachments").map_err(error)?)

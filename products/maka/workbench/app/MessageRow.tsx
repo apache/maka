@@ -49,6 +49,7 @@ import {
 import { HistoryAttachments } from './Attachments';
 import type { ToolActivity } from './toolActivity';
 import { ToolCard } from './ToolCard';
+import { MessageQuotes } from './MessageQuotes';
 import { MessageCopy, readOriginal, type OriginalMessage } from './MessageCopy';
 import type { ImagePreview } from './ImageThumbnail';
 import type { InlineEdit } from './MessageEdit';
@@ -658,6 +659,7 @@ export function MessageRow({
                         gap: 8,
                       }}
                     >
+                      <MessageQuotes quotes={() => row().quotes ?? []} />
                       <SkillMessage row={row} sourceId={sourceId()} />
                       <If when={(row().attachments?.length ?? 0) > 0}>
                         <HistoryAttachments

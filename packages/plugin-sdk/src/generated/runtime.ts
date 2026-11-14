@@ -327,6 +327,10 @@ export type RuntimeProtocol =
   | StateRecord
   | StatePage;
 /**
+ * JavaScript epoch milliseconds, preserving fractional timestamps within Date's range.
+ */
+export type CaptureTime = number;
+/**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
 export type InstanceId = string[];
@@ -2456,6 +2460,12 @@ export type AgentRecapFailure =
   | 'model_unavailable';
 export type AgentScheduleRead =
   | {
+      kind: 'discovery';
+      sessionId: string;
+      cursor?: string | null;
+      expectedRevision?: number | null;
+    }
+  | {
       kind: 'list';
       cursor?: string | null;
       expectedRevision?: number | null;
@@ -2480,6 +2490,7 @@ export type AgentSchedules =
       revision: number;
     };
 export type Status = 'active' | 'paused' | 'completed' | 'expired';
+export type AgentInvestigationPhase = 'investigating' | 'delivering' | 'stopping';
 export type Intent = {
   kind: 'text';
   body: string;
@@ -2529,6 +2540,12 @@ export type AgentScheduledEffect =
       target: AgentScheduledTarget;
       model: ModelSelection;
       thinkingLevel?: ThinkingLevel | null;
+    }
+  | {
+      kind: 'discovery';
+      target: AgentScheduledTarget;
+      model: ModelSelection;
+      thinkingLevel?: ThinkingLevel | null;
     };
 export type AutomationDelivery = 'steering' | 'followup';
 export type Creator =
@@ -2554,6 +2571,11 @@ export type AgentScheduleChange =
       taskId: string;
       revision: number;
       input: AgentScheduledInput;
+    }
+  | {
+      kind: 'approve';
+      taskId: string;
+      revision: number;
     }
   | {
       kind: 'pause';
@@ -4895,6 +4917,7 @@ export interface ClientDraft {
   revision: number;
   text: string;
   attachments: ClientDraftAttachment[];
+  quotes?: QuoteRef[];
 }
 /**
  * Display metadata for an immutable Host upload in this exact draft owner.
@@ -4905,11 +4928,28 @@ export interface ClientDraftAttachment {
   mimeType: string;
   bytes: number;
 }
+export interface QuoteRef {
+  sourceMessageId?: string | null;
+  text: string;
+  label?: string | null;
+  sourceTurnId?: string | null;
+  source?: SessionQuoteSource | null;
+}
+/**
+ * Display provenance of an immutable excerpt, never authority to read its source.
+ */
+export interface SessionQuoteSource {
+  sessionId: string;
+  sessionName: string;
+  capturedAt: CaptureTime;
+  truncated: boolean;
+}
 /**
  * One complete editor revision, including the upload receipts it has handled.
  */
 export interface ClientDraftEdit {
   text: string;
+  quotes?: QuoteRef[];
   attachments?: ClientDraftAttachment[];
   settledUploads?: string[];
 }
@@ -7185,17 +7225,25 @@ export interface AgentScheduledSummary {
   title: string;
   sessionId: string;
   script: boolean;
+  approved: boolean;
   status: Status;
   nextFireAt?: number | null;
   pendingFire?: string | null;
   lastError?: string | null;
 }
 export interface AgentScheduledDetail {
+  investigation?: AgentScheduledInvestigation | null;
   revision: number;
   task: Task;
   timezone: string;
   misfire: Misfire;
+  approved: boolean;
   pendingFire?: string | null;
+}
+export interface AgentScheduledInvestigation {
+  sessionId: string;
+  turnId: string;
+  phase: AgentInvestigationPhase;
 }
 export interface Task {
   id: string;
@@ -7501,6 +7549,127 @@ export interface AgentSend {
    * check the completion field of the send receipt.
    */
   onComplete?: AgentOnComplete | null;
+  /**
+   * Immutable user-selected excerpts; source metadata grants no read authority.
+   *
+   * @maxItems 16
+   */
+  quotes?:
+    | []
+    | [QuoteRef]
+    | [QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ];
   /**
    * Defaults to steer. Omit or use steer for updates to ongoing work;
    * use queue only when this message should wait until the current turn ends.
@@ -8170,6 +8339,10 @@ export interface AgentHistoryChunk {
    */
   hasReferences?: boolean;
   /**
+   * Bounded quote display, present only on the first message fragment.
+   */
+  quotes?: HistoryQuote[];
+  /**
    * Part of the successfully completed native Turn's final output at `through`.
    * Includes body text and source citations; never a Thinking field.
    */
@@ -8206,6 +8379,14 @@ export interface ModelPartIdentity {
   stepId: StepId;
   attemptId: ModelAttemptId;
   ordinal: number;
+}
+/**
+ * Display preview only; the original input retains complete text and provenance.
+ */
+export interface HistoryQuote {
+  text: string;
+  label?: string | null;
+  truncated: boolean;
 }
 /**
  * Duration of a successfully adopted context checkpoint, in recorded milliseconds.

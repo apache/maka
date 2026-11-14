@@ -52,7 +52,7 @@ struct ReturnBody {
 struct InputContent {
     display_text: Option<serde::de::IgnoredAny>,
     attachments: Option<Vec<AttachmentRef>>,
-    quotes: Option<Vec<serde::de::IgnoredAny>>,
+    quotes: Option<Vec<maka_agent_facts::input::QuoteRef>>,
     directory_references: Option<Vec<serde::de::IgnoredAny>>,
     inline_references: Option<Vec<serde::de::IgnoredAny>>,
 }
@@ -283,6 +283,7 @@ pub(super) async fn row(
             run_id: None,
             model_part: None,
             has_references: false,
+            quotes: Vec::new(),
             final_output: false,
             final_answer: false,
             model: None,
@@ -318,7 +319,8 @@ pub(super) async fn row(
             } else {
                 "text"
             };
-            let has_references = content.quotes.is_some_and(|value| !value.is_empty())
+            row.chunk.quotes = projection::quotes(content.quotes.as_deref().unwrap_or_default());
+            let has_references = !row.chunk.quotes.is_empty()
                 || content
                     .directory_references
                     .is_some_and(|value| !value.is_empty())

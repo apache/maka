@@ -125,6 +125,7 @@ impl MessageInput {
             .chain(self.display_text.as_deref())
             .chain(self.quotes.iter().flatten().flat_map(|quote| {
                 std::iter::once(quote.text.as_str())
+                    .chain(quote.source_message_id.as_deref())
                     .chain(quote.label.as_deref())
                     .chain(quote.source_turn_id.as_deref())
                     .chain(quote.source.iter().flat_map(|source| {

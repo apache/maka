@@ -65,7 +65,12 @@ impl CapturedRun {
         if let Some(boundary) = &self.background
             && (session.archived
                 || session.configuration.workspace != boundary.workspace
-                || session.configuration.permissions != boundary.permissions
+                || session.configuration.permissions
+                    != if super::super::discovery::legacy_tools(self.allowed_tools.as_deref()) {
+                        super::super::discovery::permissions()
+                    } else {
+                        boundary.permissions.clone()
+                    }
                 || session.configuration.binding != boundary.binding
                 || session.configuration.boundary_revision
                     != if session.id == boundary.session_id {
@@ -126,6 +131,11 @@ impl Owner {
                 thinking_level,
                 ..
             }
+            | ScheduledEffect::Discovery {
+                target,
+                model,
+                thinking_level,
+            }
             | ScheduledEffect::AgentRun {
                 target,
                 model,
@@ -148,6 +158,14 @@ impl Owner {
                 });
             }
         };
+        if matches!(plan.task.effect, ScheduledEffect::Discovery { .. }) {
+            if !self.settings.bot || !self.bot.is(&target.session_id) {
+                return Err("discovery_requires_bot".into());
+            }
+            if matches!(plan.task.schedule, TaskSchedule::Script { .. }) {
+                return Err("discovery_requires_time_schedule".into());
+            }
+        }
         let basis = self
             .approve_background(
                 target,
@@ -159,17 +177,29 @@ impl Owner {
                 sandbox_ceiling,
             )
             .await?;
-        Ok(Approval::Execution {
-            approval: BackgroundGrant::Model(super::super::notifications::BackgroundApproval {
-                target: target.clone(),
-                model: model.clone(),
-                accepted_model: basis.model.clone().ok_or("scheduler_model_unavailable")?,
-                thinking_level: *thinking,
-                language: basis.language,
-                sandbox_ceiling: basis.background_sandbox_ceiling,
-            }),
-        })
+        let approval = super::super::notifications::BackgroundApproval {
+            target: target.clone(),
+            model: model.clone(),
+            accepted_model: basis.model.clone().ok_or("scheduler_model_unavailable")?,
+            thinking_level: *thinking,
+            language: basis.language,
+            sandbox_ceiling: basis.background_sandbox_ceiling,
+        };
+        Ok(
+            if matches!(plan.task.effect, ScheduledEffect::Discovery { .. }) {
+                Approval::Discovery {
+                    approval,
+                    recall: self.settings.recall && self.tools.contains("Recall"),
+                    session_tools: true,
+                }
+            } else {
+                Approval::Execution {
+                    approval: BackgroundGrant::Model(approval),
+                }
+            },
+        )
     }
+
     pub(in crate::owner) async fn approve_background(
         &self,
         target: &ScheduledTarget,
@@ -304,7 +334,8 @@ impl Owner {
         }
     }
     pub(in crate::owner) fn start_schedules(self: &Arc<Self>) {
-        if !self.settings.scheduled_tasks {
+        if !self.settings.scheduled_tasks && self.scheduler.investigation.read().unwrap().is_none()
+        {
             return;
         }
         let owner = self.clone();
@@ -406,6 +437,14 @@ impl Owner {
             }
             let saved = &catalog.plans[&id];
             let plan = &saved.plan;
+            if !self.settings.scheduled_tasks
+                && !plan
+                    .pending
+                    .as_ref()
+                    .is_some_and(|f| matches!(f.effect, ScheduledEffect::Discovery { .. }))
+            {
+                continue;
+            }
             let retry = plan
                 .pending
                 .as_ref()
@@ -413,7 +452,8 @@ impl Owner {
             if retry.is_some_and(|retry| !retry.ready(Instant::now())) {
                 continue;
             }
-            if plan.task.status == Status::Active
+            if self.settings.scheduled_tasks
+                && plan.task.status == Status::Active
                 && plan.pending.is_none()
                 && let TaskSchedule::Script { source, .. } = &plan.task.schedule
                 && let Some(Approval::Execution { approval }) = &plan.authorization
@@ -428,10 +468,10 @@ impl Owner {
             let mut plan = plan.clone();
             let before = serde_json::to_value(&plan).map_err(reason)?;
             let at = now() as i64;
-            if recover {
+            if recover && self.settings.scheduled_tasks {
                 plan.recover(at).map_err(reason)?;
             }
-            if plan.authorization.is_some() {
+            if self.settings.scheduled_tasks && plan.authorization.is_some() {
                 plan.claim(at).map_err(reason)?;
             }
             if serde_json::to_value(&plan).map_err(reason)? != before {
@@ -443,7 +483,7 @@ impl Owner {
                 continue;
             };
             let expired = plan.task.expires_at.is_some_and(|expires| at >= expires);
-            match self.dispatch_scheduled(fire, expired).await {
+            match self.dispatch_scheduled(fire, &plan, expired).await {
                 Ok(Some(run)) => {
                     plan.settle(run).map_err(reason)?;
                     self.scheduler
@@ -472,8 +512,20 @@ impl Owner {
     async fn dispatch_scheduled(
         self: &Arc<Self>,
         fire: &maka_scheduler::plan::Fire<ScheduledEffect, Approval>,
+        plan: &Plan,
         expired: bool,
     ) -> Result<Option<Run>, String> {
+        let active = plan.task.status == Status::Active;
+        if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
+            return self
+                .dispatch_discovery(
+                    fire,
+                    active && !expired,
+                    &plan.timezone,
+                    plan.task.runs.first(),
+                )
+                .await;
+        }
         let Some(Approval::Execution { approval }) = &fire.authorization else {
             return Ok(Some(settlement(
                 fire,

@@ -279,6 +279,10 @@ async fn save_draft(
         return Err("invalid draft revision".into());
     }
     let attachments = serde_json::to_string(&edit.attachments).map_err(error)?;
+    if edit.quotes.len() > 16 || edit.quotes.iter().any(|quote| quote.text.trim().is_empty()) {
+        return Err("invalid draft quotes".into());
+    }
+    let quotes = serde_json::to_string(&edit.quotes).map_err(error)?;
     if edit
         .attachments
         .iter()
@@ -337,19 +341,22 @@ async fn save_draft(
     }
     let row = if let Some(revision) = expected {
             sqlx::query("UPDATE drafts SET revision=revision+1,text=?,attachments=?,consumed=0 WHERE owner=? AND revision=? RETURNING revision,text,attachments")
-                .bind(edit.text).bind(attachments).bind(encoded_key).bind(revision as i64)
+                .bind(edit.text).bind(attachments).bind(&encoded_key).bind(revision as i64)
                 .fetch_optional(&mut *connection).await.map_err(error)?
         } else {
             sqlx::query("INSERT INTO drafts (owner,revision,text,attachments) VALUES (?,1,?,?) ON CONFLICT DO NOTHING RETURNING revision,text,attachments")
-                .bind(encoded_key).bind(edit.text).bind(attachments)
+                .bind(&encoded_key).bind(edit.text).bind(attachments)
                 .fetch_optional(&mut *connection).await.map_err(error)?
         }.ok_or("draft revision conflicts with a newer saved value")?;
     let draft = Draft {
+        quotes: edit.quotes,
         revision: row.try_get::<i64, _>("revision").map_err(error)? as u64,
         text: row.try_get("text").map_err(error)?,
         attachments: serde_json::from_str(row.try_get("attachments").map_err(error)?)
             .map_err(error)?,
     };
+    sqlx::query("INSERT INTO draft_quotes(owner,revision,quotes) VALUES (?,?,?) ON CONFLICT(owner) DO UPDATE SET revision=excluded.revision,quotes=excluded.quotes")
+        .bind(encoded_key).bind(draft.revision as i64).bind(quotes).execute(&mut *connection).await.map_err(error)?;
     Ok(draft)
 }
 
@@ -390,6 +397,12 @@ async fn reserve_send(
     if consumed.rows_affected() != 1 {
         return Err("saved draft revision changed before sending".into());
     }
+    sqlx::query("DELETE FROM draft_quotes WHERE owner=? AND revision=?")
+        .bind(&owner)
+        .bind(draft.revision as i64)
+        .execute(&mut *connection)
+        .await
+        .map_err(error)?;
     pending_send(connection, &id, &owner).await?;
     Ok(())
 }

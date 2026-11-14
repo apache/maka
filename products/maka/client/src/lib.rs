@@ -968,7 +968,7 @@ impl Client {
         if draft.revision != revision {
             return Err("saved draft revision changed before sending".into());
         }
-        if draft.text.trim().is_empty() && draft.attachments.is_empty() {
+        if draft.text.trim().is_empty() && draft.attachments.is_empty() && draft.quotes.is_empty() {
             return Err("saved draft is empty or already consumed".into());
         }
         if !selection.is_object() {
@@ -1458,6 +1458,10 @@ impl DraftSend {
             serde_json::to_value(&self.operation.session_id).map_err(error)?,
         );
         input.insert("message".into(), Value::String(snapshot.draft.text));
+        input.insert(
+            "quotes".into(),
+            serde_json::to_value(snapshot.draft.quotes).map_err(error)?,
+        );
         input.insert(
             "attachments".into(),
             serde_json::to_value(
