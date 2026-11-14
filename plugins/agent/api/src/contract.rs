@@ -674,7 +674,7 @@ pub enum SendDelivery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSend")]
 pub struct Send {
-    /// Best-effort notification to the native model caller when this message finishes,
+    /// Best-effort notification to the caller when this message finishes,
     /// fails or is cancelled, and once per pending interaction or authority blocker
     /// that needs attention. An attention notification keeps the completion watch.
     /// When registration is confirmed, the caller can yield rather than poll.

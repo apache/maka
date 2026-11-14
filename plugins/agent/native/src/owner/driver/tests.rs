@@ -5058,14 +5058,10 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
         let owner = rig.captured.lock().unwrap().clone().unwrap();
         let source = rig.driver.as_ref().unwrap().access.execution().clone();
         let route = owner.return_route(&source).await?;
-        let model = route.binding_model();
-        let request = json!({
-            "source": source,
-            "model": {"connectionId": model.connection_id, "modelId": model.model},
-            "thinking_level": route.thinking_level(),
-            "workspace": route.workspace,
-            "binding": route.binding,
-        });
+        let mut request = serde_json::to_value(&route.backend)?;
+        request["source"] = json!(source);
+        request["workspace"] = json!(route.workspace);
+        request["binding"] = json!(route.binding);
         let worker = format!("{}missing-worker", owner.prefix);
         owner
             .store
@@ -5157,14 +5153,10 @@ async fn completion_notification_survives_pending_message_edit() {
         let _producer = owner.producer_gate.lock().await;
         let source = rig.driver.as_ref().unwrap().access.execution().clone();
         let route = owner.return_route(&source).await?;
-        let model = route.binding_model();
-        let request = json!({
-            "source": source,
-            "model": {"connectionId": model.connection_id, "modelId": model.model},
-            "thinking_level": route.thinking_level(),
-            "workspace": route.workspace,
-            "binding": route.binding,
-        });
+        let mut request = serde_json::to_value(&route.backend)?;
+        request["source"] = json!(source);
+        request["workspace"] = json!(route.workspace);
+        request["binding"] = json!(route.binding);
         let worker = format!("{}missing-worker", owner.prefix);
         owner
             .store

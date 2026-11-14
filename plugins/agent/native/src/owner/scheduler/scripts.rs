@@ -30,26 +30,24 @@ pub(super) struct Check {
 impl Owner {
     pub(super) async fn check_automation(
         &self,
-        approval: super::super::notifications::BackgroundApproval,
+        approval: BackgroundGrant,
         source: String,
     ) -> Result<bool, String> {
-        let session = self.session(&approval.target.session_id).await?;
+        let target = approval.target();
+        let session = self.session(&target.session_id).await?;
         let config = session.configuration;
         if session.archived
-            || config.binding != approval.target.binding
-            || config.boundary_revision != approval.target.boundary_revision
-            || config.workspace != approval.target.workspace
-            || config.permissions != approval.target.permissions
+            || config.binding != target.binding
+            || config.boundary_revision != target.boundary_revision
+            || config.workspace != target.workspace
+            || config.permissions != target.permissions
         {
             return Err("Conversation access changed. Update this automation to continue.".into());
         }
         let sandbox = self
             .capture_sandbox(
                 &config,
-                approval
-                    .sandbox_ceiling
-                    .as_ref()
-                    .unwrap_or(&Sandbox::Disabled),
+                approval.sandbox_ceiling().unwrap_or(&Sandbox::Disabled),
             )
             .await?;
         let workspace = config.workspace;

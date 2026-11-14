@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::super::notifications::BackgroundApproval;
+use super::super::scheduler::BackgroundGrant;
 use super::*;
 use maka_agent_facts::durable::{Fact, Terminal, UnixMillis};
 use maka_agent_state::{
@@ -123,10 +123,7 @@ impl Owner {
             errors,
         ))
     }
-    async fn tick_goal(
-        self: &Arc<Self>,
-        mut saved: Saved<BackgroundApproval>,
-    ) -> Result<(), String> {
+    async fn tick_goal(self: &Arc<Self>, mut saved: Saved<BackgroundGrant>) -> Result<(), String> {
         let session = saved.goal.session_id.clone();
         if let Some(pending) = saved.goal.pending.clone() {
             let (run, managed) = match pending {
@@ -194,10 +191,7 @@ impl Owner {
                             }
                             let grant = &saved.goal.arm.grant;
                             let basis = match self
-                                .prepare_approved_background(
-                                    grant,
-                                    BackgroundKind::Goal(saved.goal.id),
-                                )
+                                .prepare_background(grant, BackgroundKind::Goal(saved.goal.id))
                                 .await
                             {
                                 Ok(basis) => basis,
@@ -300,10 +294,7 @@ impl Owner {
         saved.goal.meter(self.goal_meter(&session).await?);
         if saved.goal.status == Status::Active {
             if let Err(error) = self
-                .prepare_approved_background(
-                    &saved.goal.arm.grant,
-                    BackgroundKind::Goal(saved.goal.id),
-                )
+                .prepare_background(&saved.goal.arm.grant, BackgroundKind::Goal(saved.goal.id))
                 .await
             {
                 tracing::info!(cause = %error, "Goal is awaiting updated conversation settings");

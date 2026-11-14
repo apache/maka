@@ -1431,6 +1431,11 @@ export type CellOwner =
       call: string;
     }
   | {
+      kind: 'external';
+      run: RunId;
+      key: ExternalEffectKey;
+    }
+  | {
       kind: 'standalone';
       session: string;
     };
@@ -2488,6 +2493,11 @@ export type AgentScheduledEffect =
       target: AgentScheduledTarget;
       model: ModelSelection;
       thinkingLevel?: ThinkingLevel | null;
+    }
+  | {
+      kind: 'executor_session';
+      target: AgentScheduledTarget;
+      selection: AgentExecutorSelection;
     }
   | {
       kind: 'agent_run';
@@ -6186,6 +6196,10 @@ export interface ToolCallIdentity {
   origin: ToolOrigin;
   [k: string]: unknown | undefined;
 }
+export interface ExternalEffectKey {
+  task: ExternalTaskId;
+  operation: string;
+}
 export interface RunOwner {
   deployment: string;
   namespace: InstanceId;
@@ -7413,7 +7427,7 @@ export interface AgentChangeSession {
 }
 export interface AgentSend {
   /**
-   * Best-effort notification to the native model caller when this message finishes,
+   * Best-effort notification to the caller when this message finishes,
    * fails or is cancelled, and once per pending interaction or authority blocker
    * that needs attention. An attention notification keeps the completion watch.
    * When registration is confirmed, the caller can yield rather than poll.

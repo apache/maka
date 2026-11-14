@@ -18,7 +18,7 @@
  */
 
 import net from 'node:net';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
@@ -69,48 +69,7 @@ const diagnosticText = (value, limit = 256) => {
     )
     .slice(0, limit);
 };
-function sessionCreateError(result) {
-  const stage = 'SessionCreate tools/call isError';
-  const content = result.content?.find((part) => part.type === 'text');
-  if (!content) return Error(`${stage}: missing error text`);
-  let error;
-  try {
-    error = JSON.parse(content.text);
-  } catch {
-    return Error(`${stage}: invalid error JSON`);
-  }
-  const receipt = error?.observation?.receipt;
-  const outcome = receipt?.outcome;
-  const returned = outcome?.result;
-  const value = returned?.value;
-  const cleanup = receipt?.cleanup;
-  return Error(
-    JSON.stringify({
-      stage,
-      message: diagnosticText(error?.message),
-      operationId: diagnosticText(error?.operationId),
-      receipt: {
-        kind: diagnosticText(receipt?.kind),
-        diagnostic: diagnosticText(receipt?.diagnostic),
-      },
-      outcome: {
-        kind: diagnosticText(outcome?.kind),
-        diagnostic: diagnosticText(outcome?.diagnostic),
-      },
-      result: {
-        kind: diagnosticText(returned?.kind),
-        diagnostic: diagnosticText(returned?.diagnostic),
-        valueKind: diagnosticText(value?.kind),
-        rejectionReason: value?.kind === 'rejected' ? diagnosticText(value.reason) : undefined,
-        childSessionId: value?.kind === 'created' ? diagnosticText(value.session?.id) : undefined,
-      },
-      cleanup: {
-        kind: diagnosticText(cleanup?.kind),
-        diagnostic: diagnosticText(cleanup?.diagnostic),
-      },
-    }),
-  );
-}
+
 const fail = async (error) => {
   const message =
     error instanceof SyntaxError
@@ -190,6 +149,29 @@ async function rpc(method, params, id) {
   }
   return answer.result;
 }
+let callId = 104;
+async function callTool(name, args) {
+  const result = await rpc('tools/call', { name, arguments: args }, callId++);
+  if (result.isError) throw Error(diagnosticText(JSON.stringify(result.content), 1500));
+  return result;
+}
+async function codeResult(code) {
+  let result = await callTool('maka_exec', { code: '// @exec: {"yield_time_ms": 1}\n' + code });
+  const emitted = [];
+  for (;;) {
+    const output = result.content.filter((part) => part.type === 'text');
+    const [header, ...lines] = output[0].text.split('\n');
+    const summary = JSON.parse(header);
+    if (lines.length) emitted.push(lines.join('\n'));
+    if (summary.state === 'completed') {
+      if (summary.result?.ok !== true || !emitted[0])
+        throw Error(diagnosticText(JSON.stringify({ summary, emitted }), 1800));
+      return JSON.parse(emitted.join('\n'));
+    }
+    if (summary.state !== 'running') throw Error(JSON.stringify(summary));
+    result = await callTool('maka_wait', { cell_id: summary.cell_id });
+  }
+}
 async function hostEffect() {
   await rpc(
     'initialize',
@@ -202,26 +184,42 @@ async function hostEffect() {
   );
   await rpc('notifications/initialized', {});
   const tools = await rpc('tools/list', {}, 102);
-  if (!tools.tools.some((tool) => tool.name === 'SessionCreate'))
-    throw Error('Real SessionCreate unavailable');
+  const names = tools.tools.map((tool) => tool.name);
+  if (
+    !names.includes('maka_exec') ||
+    !names.includes('maka_wait') ||
+    !names.includes('maka_cua_repl') ||
+    names.includes('maka_Shell') ||
+    names.includes('maka_SendUser') ||
+    names.includes('maka_sleep')
+  )
+    throw Error('Authorized Maka tools unavailable');
+  if (names.some((name) => !name.startsWith('maka_')))
+    throw Error('Maka tool is missing its namespace');
   if (antigravity) return;
+  const path = 'host-patch-' + job.label;
+  await codeResult(
+    'text(await tools.ApplyPatch(' +
+      JSON.stringify({
+        callId: 'external-edit-fixture',
+        operation: { type: 'create_file', path, diff: '+written through Maka\n+' },
+      }) +
+      '))',
+  );
+  if ((await readFile(path, 'utf8')) !== 'written through Maka\n')
+    throw Error('ApplyPatch did not write the expected file');
   await record('host_call', { name: 'SessionCreate' });
-  const result = await rpc(
-    'tools/call',
-    {
-      name: 'SessionCreate',
-      arguments: {
+  const created = await codeResult(
+    'text(await tools.SessionCreate(' +
+      JSON.stringify({
         title: job.title,
         automaticTitle: false,
         labels: [],
         backend: null,
         workspace: { kind: 'session', sessionId: job.session },
-      },
-    },
-    103,
+      }) +
+      '))',
   );
-  if (result.isError) throw sessionCreateError(result);
-  const created = JSON.parse(result.content.find((part) => part.type === 'text').text);
   if (created?.kind !== 'created')
     throw Error(
       JSON.stringify({
@@ -291,7 +289,26 @@ async function acp(id, method, params) {
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: checkpoint } },
     });
     await record('ready', { thread, checkpoint, promptId: id });
-    if (job.label === 'ACP-followup') return reply(id, { stopReason: 'end_turn' });
+    if (job.label === 'ACP-schedule') {
+      const task = await codeResult(
+        'text(await tools.ScheduledTask(' +
+          JSON.stringify({
+            request: {
+              mode: 'create',
+              title: 'ACP wake-up',
+              intentBody: `MAKA_EXTERNAL_CASE ${JSON.stringify({ label: 'ACP-wake', session: job.session })}`,
+              timezone: 'UTC',
+              schedule: { kind: 'once', runAt: Date.now() + 4000 },
+            },
+          }) +
+          '))',
+      );
+      if (!task.taskId) throw Error('ScheduledTask omitted the automation ID');
+      await record('scheduled', { thread, taskId: task.taskId, promptId: id });
+      return;
+    }
+    if (job.label === 'ACP-followup' || job.label === 'ACP-wake')
+      return reply(id, { stopReason: 'end_turn' });
     return;
   }
   if (method === 'session/close' && params.sessionId === thread) {
@@ -385,6 +402,8 @@ createInterface({ input: socket }).on('line', (line) => {
       }
       if (command.action === 'challenge' && job && !finished)
         return record('challenge', { nonce: command.nonce, thread, turn });
+      if (command.action === 'complete' && job?.label === 'ACP-schedule')
+        return reply(command.promptId, { stopReason: 'end_turn' });
       if (command.action === 'complete' && ['B', 'D'].includes(job?.label))
         return terminal('completed');
       throw Error('Invalid controller action');

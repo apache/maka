@@ -457,15 +457,19 @@ fn fact_scope(c: &Connection, record: &RecordedFact) -> Result<HistoryScope, Sto
                 CellEvent::Started { owner, .. } => owner.clone(),
                 _ => crate::cells::read_cell(c, record.run, event.cell())?.owner,
             };
-            let CellOwner::Agent { link, .. } = owner else {
-                return Err(invalid("standalone Cell cannot claim Agent Run history"));
-            };
-            if link.run != record.run {
+            if owner.run() != Some(record.run) {
                 return Err(invalid("Cell history belongs to another Run"));
             }
-            return Ok(HistoryScope {
-                step: Some(link.step),
-                attempt: Some(link.attempt),
+            return Ok(match owner {
+                CellOwner::Agent { link, .. } => HistoryScope {
+                    step: Some(link.step),
+                    attempt: Some(link.attempt),
+                },
+                CellOwner::External { .. } => HistoryScope {
+                    step: None,
+                    attempt: None,
+                },
+                CellOwner::Standalone { .. } => unreachable!("standalone Cell has no Run"),
             });
         }
         Fact::StepPrepared { step, .. } => {

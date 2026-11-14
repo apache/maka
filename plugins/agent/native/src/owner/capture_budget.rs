@@ -17,7 +17,10 @@
  * under the License.
  */
 
-use super::{BackgroundKind, CapturedRun, Owner, notifications::BackgroundApproval};
+use super::{
+    BackgroundKind, CapturedRun, Owner, notifications::BackgroundApproval,
+    scheduler::BackgroundGrant,
+};
 use maka_agent_facts::durable::{
     BackendSpec, Budget, RunId, RunOwner, RunSpec, Trigger, UnixMillis,
 };
@@ -47,7 +50,7 @@ enum BudgetBasis {
         approved_tokens: Option<u64>,
         baseline: Meter,
         meter: Meter,
-        approval: BackgroundApproval,
+        approval: BackgroundGrant,
     },
     Schedule(ScheduleBudget),
 }
@@ -59,7 +62,7 @@ pub(super) struct ScheduleBudget {
     pub revision: u64,
     pub fire_id: String,
     pub expires_at: Option<UnixMillis>,
-    pub approval: BackgroundApproval,
+    pub approval: super::scheduler::BackgroundGrant,
 }
 
 pub(super) fn check_approval(
@@ -80,6 +83,21 @@ pub(super) fn check_approval(
         return Err("background_approval_changed".into());
     }
     Ok(())
+}
+
+fn check_background(basis: &CapturedRun, approval: &BackgroundGrant) -> Result<(), String> {
+    match approval {
+        BackgroundGrant::Model(approval) => check_approval(basis, approval),
+        BackgroundGrant::Executor(approval)
+            if basis.background.as_ref() == Some(&approval.target)
+                && basis.background_sandbox_ceiling == approval.sandbox_ceiling
+                && basis.executor.as_ref().map(|executor| &executor.selection)
+                    == Some(&approval.selection) =>
+        {
+            Ok(())
+        }
+        BackgroundGrant::Executor(_) => Err("background_approval_changed".into()),
+    }
 }
 
 impl Owner {
@@ -119,7 +137,7 @@ impl Owner {
                     .ok_or("goal_missing")?;
                 let goal = &saved.goal;
                 check_goal(goal, *id, session, message_id)?;
-                check_approval(basis, &goal.arm.grant)?;
+                check_background(basis, &goal.arm.grant)?;
                 let meter = self.goal_meter(session).await?;
                 budget.tokens = goal_tokens(goal, &meter)?;
                 BudgetBasis::Goal {
@@ -136,7 +154,7 @@ impl Owner {
                 if task_id == schedule_id && basis.background.is_some() =>
             {
                 let current = self.scheduler.capture_budget(task_id, message_id).await?;
-                check_approval(basis, &current.approval)?;
+                check_background(basis, &current.approval)?;
                 budget.deadline = current.expires_at;
                 BudgetBasis::Schedule(current)
             }
@@ -229,7 +247,7 @@ impl Owner {
 }
 
 fn check_goal(
-    goal: &maka_goal::goal::Goal<BackgroundApproval>,
+    goal: &maka_goal::goal::Goal<BackgroundGrant>,
     id: Uuid,
     session: &str,
     message_id: &str,
@@ -248,7 +266,7 @@ fn check_goal(
     Ok(())
 }
 fn goal_tokens(
-    goal: &maka_goal::goal::Goal<BackgroundApproval>,
+    goal: &maka_goal::goal::Goal<BackgroundGrant>,
     meter: &Meter,
 ) -> Result<Option<u64>, String> {
     let Some(ceiling) = goal.arm.token_budget else {
@@ -286,12 +304,22 @@ fn check_source(source: &BudgetBasis, spec: &RunSpec, message_id: &str) -> Resul
         }
         _ => return Err("background_budget_source_changed".into()),
     };
-    if !matches!(&spec.backend, BackendSpec::Model { binding, .. } if binding.connection_id == approval.model.connection_id && binding.model == approval.model.model_id)
-    {
-        return Err("background_approval_changed".into());
+    match (&spec.backend, approval) {
+        (BackendSpec::Model { binding, .. }, BackgroundGrant::Model(approval))
+            if binding.connection_id == approval.model.connection_id
+                && binding.model == approval.model.model_id =>
+        {
+            Ok(())
+        }
+        (BackendSpec::Executor { selection, .. }, BackgroundGrant::Executor(approval))
+            if selection == &approval.selection =>
+        {
+            Ok(())
+        }
+        _ => Err("background_approval_changed".into()),
     }
-    Ok(())
 }
+
 fn invalid(cause: impl std::fmt::Display) -> StoreError {
     StoreError::InvalidTransition(cause.to_string())
 }
@@ -344,7 +372,7 @@ impl AdmissionGuard for BudgetGuard {
                 if record.revision != *revision {
                     return Err(invalid("goal_revision_changed"));
                 }
-                let goal: maka_goal::goal::Goal<BackgroundApproval> = serde_json::from_value(
+                let goal: maka_goal::goal::Goal<BackgroundGrant> = serde_json::from_value(
                     record
                         .data
                         .value()

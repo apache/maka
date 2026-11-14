@@ -737,19 +737,36 @@ impl RunView {
                     )?;
                 }
                 if let CellEvent::Started { owner, .. } = event {
-                    require(
-                        matches!(owner,CellOwner::Agent{link,..} if link.run==self.run && Some(link.step)==self.current_step && Some(link.attempt)==self.current_attempt),
-                        "Agent Cell must belong to the current real Step/Attempt",
-                    )?;
-                    if let CellOwner::Agent { link, call } = owner {
-                        let parent = ToolKey {
-                            attempt: link.attempt,
-                            call: call.clone(),
-                        };
-                        require(
-                            self.tool(&parent)?.admitted,
-                            "Agent Cell requires its exact parent Tool T1",
-                        )?;
+                    require(owner.run() == Some(self.run), "Cell belongs to another Run")?;
+                    match owner {
+                        CellOwner::Agent { link, call } => {
+                            require(
+                                Some(link.step) == self.current_step
+                                    && Some(link.attempt) == self.current_attempt,
+                                "Agent Cell must belong to the current real Step/Attempt",
+                            )?;
+                            let parent = ToolKey {
+                                attempt: link.attempt,
+                                call: call.clone(),
+                            };
+                            require(
+                                self.tool(&parent)?.admitted,
+                                "Agent Cell requires its exact parent Tool T1",
+                            )?;
+                        }
+                        CellOwner::External { key, .. } => {
+                            require(
+                                self.external
+                                    .as_ref()
+                                    .filter(|task| task.task == key.task && task.closed.is_none())
+                                    .and_then(|task| task.effects.get(&key.operation))
+                                    .is_some_and(|parent| {
+                                        parent.admitted && parent.returned.is_none()
+                                    }),
+                                "Cell requires its admitted external parent",
+                            )?;
+                        }
+                        CellOwner::Standalone { .. } => unreachable!("standalone Cell has no Run"),
                     }
                     if self.cells.contains_key(&event.cell()) {
                         return Err(StoreError::EventConflict);
@@ -1438,6 +1455,13 @@ impl RunView {
             Fact::ExternalEffect { event } => {
                 let key = event.key();
                 crate::external_effects::apply(self, event)?;
+                self.finish_requested |= matches!(
+                    event,
+                    maka_agent_facts::external_effects::ExternalEffectEvent::Returned {
+                        finish_turn: true,
+                        ..
+                    }
+                );
                 if self
                     .external
                     .as_ref()

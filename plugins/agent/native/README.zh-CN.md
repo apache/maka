@@ -62,13 +62,13 @@ agy 从原生 `agy models` 读取模型目录，从 `/usage` 读取分组额度�
 
 macOS 上的 `cargo test -p maka-cli --test external_jobs` 用可控 app-server 验证原工作区、原生续接、精确停止和冷启动恢复。
 
-外部运行时只获得已捕获的安全 Host catalog：Skills、结构化提问、支持的 Session 编排、插件管理及符合条件的 Recall 工具。调用保留实时 Maka 身份、授权、审批、ToolJournal 和原操作回执。取消时先关闭准入、请求取消并等待全部已准入副作用结算，再结算原生进程和输出流。Session 工具列表只约束这一 Host catalog；CLI 保留原生工具和完整权限模式。
+Host MCP 桥接为当前会话的工具名加上 `maka_` 前缀。Code Mode 使用 `maka_exec` 和 `maka_wait`，脚本内沿用 `tools.<name>`。图片和音频以 MCP 内容块返回。调用沿用会话权限、审批和原操作回执。
 
-桥接的 Files `Read` 只接受 Session 附件和归档结果资源，包括有界的 `page.next` 分页；拒绝工作区文件、任务资源和图片输出。较大的 Host 结果仍可通过相同的归档资源路径读取。此桥接不开放 CUA、Session 元数据／归档／删除、Goal 和定时执行工具，也不自动转发第三方 MCP 配置。
+自动化支持给已有的外部 Agent 会话发后续消息。Host 负责触发，会话忙时先排队，随后恢复原生会话继续运行。
 
 Windows 命令须选择原生 `.exe`，或显式使用 `node.exe` 加 CLI 脚本参数。`.cmd`／`.bat` 启动脚本会给出明确诊断，不隐式交给 shell 执行。
 
-Host 工具使用会话级本地 HTTP MCP endpoint，同一 Host 激活期间保持地址和私有配置路径稳定。每轮捕获不可变工具定义。本轮工具选择收紧时可保留公开定义以复用缓存，但不可用调用仍会被拒绝；新增工具或定义变化只在上一轮结算后刷新目录，不因描述或插件更新丢失原生会话身份。每个 invocation 使用新 bearer 和隔离的 MCP transport session，不共享调用权限。Codex 刷新 thread 级 `http_headers`；Claude 和 agy 在原配置路径原子刷新凭据。已关闭的凭据和旧 transport session 不能借用下一轮权限；已接受调用在取消或断连后仍归原 invocation 和原操作回执。空闲会话仅保留 endpoint、目录和配置，删除会话及 Host 关闭会在物理结算后释放。Host 重启会创建新 listener 和私有目录，并捕获当前目录，同时保留原生身份、已完成的初始化标记与说明交付摘要。凭据不出现在 argv 或日志中。
+Host 工具使用会话级本地 HTTP MCP endpoint，同一 Host 激活期间保持地址和私有配置路径稳定。每轮捕获不可变工具定义。上一轮结算后，下一轮公布当前会话的工具选择。描述或插件更新不会改变原生会话身份。每个 invocation 使用新 bearer 和隔离的 MCP transport session，不共享调用权限。Codex 刷新 thread 级 `http_headers`；Claude 和 agy 在原配置路径原子刷新凭据。已关闭的凭据和旧 transport session 不能借用下一轮权限；已接受调用在取消或断连后仍归原 invocation 和原操作回执。空闲会话仅保留 endpoint、目录和配置，删除会话及 Host 关闭会在物理结算后释放。Host 重启会创建新 listener 和私有目录，并捕获当前目录，同时保留原生身份、已完成的初始化标记与说明交付摘要。凭据不出现在 argv 或日志中。
 
 启用工作区指令时，选中的全局 `AGENTS.md` 正文紧接内置身份介绍，仅用 `<global_instruction>` 和 `</global_instruction>` 包裹。优先使用 `~/.maka/AGENTS.md`，只有它不存在时才使用 `~/.agents/AGENTS.md`。内置模型会话还会在后面追加其他全局和项目指令文件。外部 Codex、Claude 和 agy 会话只接收 Maka 身份、选中的全局偏好和 Maka 工具／技能说明（以及已配置的 Maka 角色）。CLI 自己发现并加载其原生全局和项目规则；Maka 不再将这些文件复制进注入块，也不关闭原生发现。工作区指令开关只控制 Maka 的采集，不控制 CLI 原生加载。Maka 指令在受理时捕获，恢复运行时保留原内容。Native 全局指令 API 读取和保存选中的完整 UTF-8 文件，提示词捕获不设独立的文件大小门槛。保存会检查选中的来源与内容 revision，再原子替换文件；助手编辑器使用共享的完整文本编辑与捕获路径。
 

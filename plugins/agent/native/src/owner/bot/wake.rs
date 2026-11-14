@@ -21,6 +21,7 @@
 //! ordinary Session; the Bot only keeps a durable watch per worker so that each
 //! finished run is reported to it once, even across restarts.
 use super::*;
+use crate::owner::notifications::NotificationBackend;
 use maka_agent_facts::durable::{ExecutionIdentity, RunId, Terminal};
 
 const WATCH_PREFIX: &str = "watch/";
@@ -35,10 +36,9 @@ fn watch_key(worker: &str) -> String {
 /// model is resolved again when the Bot is woken, so a later change to what an accepted
 /// model contains cannot make a stored watch unreadable.
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Watch {
-    model: ModelSelection,
-    thinking_level: Option<ThinkingLevel>,
+    #[serde(flatten)]
+    backend: NotificationBackend,
     workspace: Workspace,
     binding: maka_sandbox::workspace::BindingStamp,
     /// The last finished logical Run already reported to the Bot.
@@ -61,13 +61,8 @@ impl Bot {
             .and_then(|record| record.data.value().cloned())
             .and_then(|value| serde_json::from_value::<Watch>(value).ok())
             .and_then(|watch| watch.notified);
-        let binding = route.binding_model();
         let watch = Watch {
-            model: ModelSelection {
-                connection_id: binding.connection_id.clone(),
-                model_id: binding.model.clone(),
-            },
-            thinking_level: route.thinking_level(),
+            backend: route.backend,
             workspace: route.workspace.clone(),
             binding: route.binding,
             notified,
@@ -180,20 +175,22 @@ impl Owner {
             return Ok(backend);
         }
         let route = self.return_route(source).await?;
-        let binding = route.binding_model();
+        let NotificationBackend::Model { model, .. } = route.backend else {
+            return Ok(backend.or_else(|| Some(route.backend.preference())));
+        };
         let thinking_level = match &backend {
             Some(crate::contract::BackendPreference::Model {
                 connection_id,
                 model_id,
                 thinking_level,
-            }) if *connection_id == binding.connection_id && *model_id == binding.model => {
+            }) if *connection_id == model.connection_id && *model_id == model.model_id => {
                 *thinking_level
             }
             _ => None,
         };
         Ok(Some(crate::contract::BackendPreference::Model {
-            connection_id: binding.connection_id.clone(),
-            model_id: binding.model.clone(),
+            connection_id: model.connection_id,
+            model_id: model.model_id,
             thinking_level,
         }))
     }
@@ -333,24 +330,18 @@ impl Owner {
             let run_label = run.to_string();
             let title = stored.configuration.title.clone();
             // The Bot's model as it is now, not as it was when the watch was written.
-            let route = match crate::model::Source::select(
-                self.configuration.clone(),
-                self.catalog.clone(),
-                self.credentials.clone(),
-                watch.model.clone(),
-                watch.thinking_level,
-                bot.clone(),
-                self.revision.clone(),
-            )
-            .await
-            {
-                Ok((model, _)) => crate::owner::notifications::ReturnRoute::new(
-                    model.accepted,
+            let route = match self
+                .resolve_notification_route(
+                    watch.backend.clone(),
+                    &bot,
                     watch.workspace.clone(),
                     watch.binding,
-                ),
+                )
+                .await
+            {
+                Ok(route) => route,
                 Err(error) => {
-                    unreadable.push(format!("model for {worker}: {}", public_error(error)));
+                    unreadable.push(format!("backend for {worker}: {error}"));
                     continue;
                 }
             };
