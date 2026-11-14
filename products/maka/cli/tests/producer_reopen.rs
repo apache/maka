@@ -68,7 +68,7 @@ use uuid::Uuid;
 
 #[derive(Clone, Copy)]
 enum Producer {
-    Goal,
+    Goal { pending_steering: bool },
     GoalBudget,
     Scheduler,
     Automation,
@@ -191,6 +191,8 @@ fn tool_text<'a>(messages: &'a [Value], id: &str) -> Result<&'a str> {
         .ok_or_else(|| "direct tool content must be a string".to_string())
 }
 
+const RECOVERY_STEERING: &str = "Keep this queued correction after the original Run fails.";
+
 struct Model {
     producer: Producer,
     marker: String,
@@ -284,8 +286,23 @@ impl Model {
                     "stop",
                 ));
             }
-            if matches!(self.producer, Producer::Goal) && iteration > 1 {
-                return match iteration {
+            if let Producer::Goal { pending_steering } = self.producer
+                && iteration > 1
+            {
+                if pending_steering {
+                    let corrections = messages
+                        .iter()
+                        .filter(|message| {
+                            message["role"] == "user"
+                                && message["content"].to_string().contains(RECOVERY_STEERING)
+                        })
+                        .count();
+                    assert_eq!(corrections, 1, "one delivered correction in model history");
+                    if iteration == 2 {
+                        return Ok(sse(json!({"content":"Correction handled."}), "stop"));
+                    }
+                }
+                return match iteration - usize::from(pending_steering) {
                     2 => Ok(sse(
                         json!({"tool_calls":[{"index":0,"id":"finish-goal","type":"function","function":{
                             "name":"GoalStatus","arguments":json!({"status":"achieved","note":"Continued in a new iteration."}).to_string()
@@ -773,11 +790,26 @@ async fn body(
         let store = ConfigurationStore::for_root(Arc::new(owner))
             .await
             .map_err(|error| error.to_string())?;
-        let created = store.create_connection(serde_json::from_value(json!({"expectedCatalogRevision":0,"connection":{
-            "slug":"producer","name":"Producer loopback","provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"},
+        let mut draft = json!({"slug":"producer","name":"Producer loopback",
+            "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"},
             "configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":["gpt-4.1"],
             "modelOverrides":{"gpt-4.1":{"codeMode":false,"apiProtocol":"openai-chat-completions"}}
-        }})).unwrap()).await;
+        });
+        if matches!(
+            producer,
+            Producer::Goal {
+                pending_steering: true
+            }
+        ) {
+            // This connection cannot interrupt a model stream to apply steering.
+            draft["requestBodyOverlay"] = json!({"temperature":0});
+        }
+        let created = store
+            .create_connection(
+                serde_json::from_value(json!({"expectedCatalogRevision":0,"connection":draft}))
+                    .unwrap(),
+            )
+            .await;
         let closed = store.shutdown().await;
         let created = created.map_err(|error| error.to_string())?;
         closed.map_err(|error| error.to_string())?;
@@ -813,7 +845,7 @@ async fn body(
     .await?;
     assert_eq!(saved["kind"], "saved");
     let tool = match producer {
-        Producer::Goal | Producer::GoalBudget => "GoalStatus",
+        Producer::Goal { .. } | Producer::GoalBudget => "GoalStatus",
         Producer::Scheduler | Producer::Automation => "ScheduledTask",
     };
     let created = mutate(client, "agent", "create", json!({"title":"Producer crash acceptance","automaticTitle":false,"labels":[],"tools":[tool],
@@ -993,7 +1025,7 @@ async fn body(
         return Ok(());
     }
     let (domain_id, session, message) = match producer {
-        Producer::Goal | Producer::GoalBudget => {
+        Producer::Goal { .. } | Producer::GoalBudget => {
             let result = mutate(
                 client,
                 "agent",
@@ -1112,7 +1144,8 @@ async fn body(
     })
     .await;
     if let Err(error) = accepted {
-        if matches!(producer, Producer::Goal) && error == "deadline: external physical model accept"
+        if matches!(producer, Producer::Goal { .. })
+            && error == "deadline: external physical model accept"
         {
             eprintln!("{error}");
             let snapshot = model_accept_snapshot(client, &session, &message, model).await;
@@ -1132,7 +1165,7 @@ async fn body(
     let run = original["runId"].clone();
     let user = user_message(client, &session, &message, &run).await?;
     let scheduled = match producer {
-        Producer::Goal | Producer::GoalBudget => {
+        Producer::Goal { .. } | Producer::GoalBudget => {
             assert_eq!(user["origin"]["kind"], "goal");
             assert_eq!(user["origin"]["goalId"], domain_id);
             let goal = query(client, "goal", json!({"sessionId":session})).await?;
@@ -1163,6 +1196,28 @@ async fn body(
             assert!(detail["pendingFire"].is_null());
             Some(detail)
         }
+    };
+    let correction = if matches!(
+        producer,
+        Producer::Goal {
+            pending_steering: true
+        }
+    ) {
+        let queued = mutate(
+            client,
+            "agent",
+            "send",
+            json!({"sessionId":session,"message":RECOVERY_STEERING,"delivery":"steer","expectedRunId":run}),
+            Attachments::new(),
+        )
+        .await?;
+        assert_eq!(queued["kind"], "queued", "{queued}");
+        let queue = query(client, "queue", json!({"sessionId":session})).await?;
+        assert_eq!(queue["entries"][0]["kind"], "steering", "{queue}");
+        assert_eq!(queue["entries"][0]["messageId"], queued["messageId"]);
+        Some(queued["messageId"].as_str().unwrap().to_owned())
+    } else {
+        None
     };
     phase("first client close before Host fault", clients[0].close()).await?;
     assert_eq!(model.producer_requests.load(Ordering::SeqCst), 1);
@@ -1233,8 +1288,14 @@ async fn body(
     .await?;
     assert_eq!(by_run["kind"], "found");
     assert_eq!(by_run["execution"], recovered);
-    let successor = match producer {
-        Producer::Goal => {
+    let successors = match producer {
+        Producer::Goal { .. } => {
+            let mut successors = Vec::new();
+            if let Some(correction) = &correction {
+                let corrected = work(client, &session, correction, Some("completed"), None).await?;
+                assert_ne!(corrected["runId"], run);
+                successors.push(corrected["runId"].clone());
+            }
             phase("Goal completes a second iteration after recovery", async {
                 loop {
                     let goal = query(client, "goal", json!({"sessionId":session})).await?;
@@ -1254,8 +1315,8 @@ async fn body(
             .await?;
             let next_message = format!("m_goal-{domain_id}-2");
             let next = work(client, &session, &next_message, Some("completed"), None).await?;
-            assert_ne!(next["runId"], run);
-            Some(next["runId"].clone())
+            successors.push(next["runId"].clone());
+            successors
         }
         Producer::GoalBudget | Producer::Automation => unreachable!(),
         Producer::Scheduler => {
@@ -1267,7 +1328,7 @@ async fn body(
             let children = children["sessions"].as_array().unwrap();
             assert_eq!(children.len(), 1);
             assert_eq!(children[0]["id"], session);
-            None
+            vec![]
         }
     };
     // Leave failed history for the existing read-only inspector, without a
@@ -1287,7 +1348,7 @@ async fn body(
     assert_eq!(
         admitted_runs,
         std::iter::once(&run)
-            .chain(successor.iter())
+            .chain(successors.iter())
             .collect::<Vec<_>>()
     );
     let after: Vec<_> = after
@@ -1309,14 +1370,21 @@ async fn body(
         one(&after, "model_attempt_admitted"),
         one(&before, "model_attempt_admitted")
     );
-    let interrupted = one(&after, "model_interrupted");
-    let recovery = one(&after, "attempt_recovery_recorded");
-    assert_eq!(recovery["fact"]["recovery"]["kind"], "blocked");
-    assert_eq!(interrupted["fact"]["attempt"], recovery["fact"]["attempt"]);
-    assert_eq!(
-        recovery["fact"]["attempt"],
-        one(&before, "model_attempt_prepared")["fact"]["attempt"]
-    );
+    if correction.is_some() {
+        assert_eq!(
+            one(&after, "blocked")["fact"]["reason"]["protocol"],
+            "maka.native-model-input/provider-effects-or-unproved-adapter"
+        );
+    } else {
+        let interrupted = one(&after, "model_interrupted");
+        let recovery = one(&after, "attempt_recovery_recorded");
+        assert_eq!(recovery["fact"]["recovery"]["kind"], "blocked");
+        assert_eq!(interrupted["fact"]["attempt"], recovery["fact"]["attempt"]);
+        assert_eq!(
+            recovery["fact"]["attempt"],
+            one(&before, "model_attempt_prepared")["fact"]["attempt"]
+        );
+    }
     assert_eq!(one(&after, "run_terminated")["fact"]["terminal"], "failed");
     assert!(!after.iter().any(|record| matches!(
         record["fact"]["kind"].as_str(),
@@ -1431,7 +1499,10 @@ async fn acceptance(producer: Producer, retry_workspace: bool) {
                 return;
             }
             let (requests, producer_requests, eof) = match producer {
-                Producer::Goal => (3, 3, 1),
+                Producer::Goal { pending_steering } => {
+                    let count = 3 + usize::from(pending_steering);
+                    (count, count, 1)
+                }
                 Producer::Scheduler => (4, 1, 1),
                 Producer::Automation => unreachable!(),
                 Producer::GoalBudget => (2, 2, 0),
@@ -1454,7 +1525,24 @@ async fn acceptance(producer: Producer, retry_workspace: bool) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn goal_continues_in_a_new_iteration_after_original_run_fails_on_reopen() {
-    acceptance(Producer::Goal, false).await;
+    acceptance(
+        Producer::Goal {
+            pending_steering: false,
+        },
+        false,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_continues_after_failed_run_delivers_queued_steering_as_followup() {
+    acceptance(
+        Producer::Goal {
+            pending_steering: true,
+        },
+        false,
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
