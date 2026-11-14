@@ -353,6 +353,7 @@ impl Owner {
             persistence.source().deployment,
             context.activation().instance(),
         );
+        let root_id = root.root_id().to_owned();
         let managed_worktrees = root.canonical_path().join("subagent-worktrees");
         let workspace_specs = settings.workspace_roots.clone();
         let import_specs = settings.import_roots.clone();
@@ -602,6 +603,25 @@ impl Owner {
                 error.to_string(),
                 owner,
             ));
+        }
+        let antigravity = owner
+            .settings
+            .external
+            .as_ref()
+            .is_some_and(|configuration| {
+                configuration
+                    .runtimes
+                    .enabled(maka_agent_api::executor::NativeRuntime::Antigravity)
+            });
+        let installation = format!("{}-{}", root_id, owner.prefix);
+        if let Err(error) = crate::executor::external::agy::sync_host_agent(
+            owner.home.clone(),
+            installation,
+            antigravity,
+        )
+        .await
+        {
+            tracing::warn!(%error, "Could not update the Maka Antigravity agent");
         }
         Ok(owner)
     }

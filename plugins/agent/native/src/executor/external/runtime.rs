@@ -216,6 +216,7 @@ pub(super) fn validate_command(
                     key,
                     "acp"
                         | "--process-per-session"
+                        | "--agent"
                         | "--approval-mode"
                         | "--sandbox"
                         | "--mode"

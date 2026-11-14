@@ -1208,6 +1208,8 @@ async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
     let outcome = AssertUnwindSafe(async {
         let (mut anchor, bootstrap) = phase("start original Host", rig.start()).await?;
         phase("enable Antigravity ACP", rig.configure(&mut anchor, &bootstrap, "antigravity")).await?;
+        let profile = rig.sandbox.home.join(".gemini/config/agents/maka.md");
+        assert!(tokio::fs::try_exists(&profile).await.map_err(|error| error.to_string())?);
         bootstrap.close().await?;
         rig.clients.pop();
         let sdk = connect_sdk(&mut rig, &anchor).await?;
@@ -1253,6 +1255,36 @@ async fn antigravity_can_continue_after_host_restarts_during_a_prompt() {
         assert_eq!(events.iter().filter(|e| e["kind"] == "hello").count(), 2, "{events:?}");
         assert!(events.iter().all(|e| e["kind"] != "failure"), "{events:?}");
         phase("resumed Run settles before Host quit", readiness(&recovery, &session, &next)).await?;
+        let external = query(&recovery, "agent", "externalAgents", json!({"inspect":true})).await?;
+        let target = &external["target"];
+        let source = query(&recovery, "management", "read", json!({})).await?;
+        let original_epoch = reopened.catalogue().describe("agent")?.registration_epoch;
+        let mut setting = target["path"].as_array().ok_or("external target path missing")?.clone();
+        setting.extend([json!("runtimes"), json!("antigravity")]);
+        let changed = mutate(
+            &recovery,
+            "management",
+            "configureBatch",
+            json!({
+                "expectedRevision":source["source"]["reference"]["revision"],
+                "edits":[{"instance":target["source"]["namespace"],"changes":[
+                    {"path":setting,"value":{"kind":"boolean","value":false}}
+                ]}]
+            })
+        ).await?;
+        assert_eq!(changed["status"], "committed", "{changed}");
+        phase("apply the disabled Antigravity runtime", async {
+            loop {
+                reopened.refresh().await?;
+                let epoch = reopened.catalogue().describe("agent")?.registration_epoch;
+                if epoch.is_some() && epoch != original_epoch {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            Ok(())
+        }).await?;
+        assert!(!tokio::fs::try_exists(&profile).await.map_err(|error| error.to_string())?);
         recovery.close().await?;
         rig.clients.pop();
         phase("quit reopened Host", rig.hosts[1].quit(&mut reopened)).await?;
