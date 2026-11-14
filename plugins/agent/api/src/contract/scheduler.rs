@@ -45,13 +45,20 @@ pub enum ScheduledEffect {
         model: ModelSelection,
         thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
     },
+    /// Read-only investigation in a fresh worker. The target is the current Bot.
+    Discovery {
+        target: ScheduledTarget,
+        model: ModelSelection,
+        thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
+    },
 }
 impl ScheduledEffect {
     pub fn target(&self) -> &ScheduledTarget {
         match self {
             Self::Session { target, .. }
             | Self::ExecutorSession { target, .. }
-            | Self::AgentRun { target, .. } => target,
+            | Self::AgentRun { target, .. }
+            | Self::Discovery { target, .. } => target,
         }
     }
 }
@@ -113,6 +120,11 @@ pub struct ScheduledInput {
 )]
 #[schemars(rename = "AgentScheduleRead")]
 pub enum ScheduleRead {
+    Discovery {
+        session_id: String,
+        cursor: Option<String>,
+        expected_revision: Option<u64>,
+    },
     List {
         cursor: Option<String>,
         expected_revision: Option<u64>,
@@ -130,6 +142,7 @@ pub struct ScheduledSummary {
     pub title: String,
     pub session_id: String,
     pub script: bool,
+    pub approved: bool,
     pub status: maka_scheduler::task::Status,
     pub next_fire_at: Option<i64>,
     pub pending_fire: Option<String>,
@@ -143,6 +156,7 @@ pub struct ScheduledDetail {
     pub task: maka_scheduler::task::Task<ScheduledEffect>,
     pub timezone: String,
     pub misfire: TaskMisfire,
+    pub approved: bool,
     pub pending_fire: Option<String>,
 }
 #[derive(Serialize, JsonSchema)]
@@ -182,6 +196,10 @@ pub enum ScheduleChange {
         task_id: String,
         revision: u64,
         input: ScheduledInput,
+    },
+    Approve {
+        task_id: String,
+        revision: u64,
     },
     Pause {
         task_id: String,

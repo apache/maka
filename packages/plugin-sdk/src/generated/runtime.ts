@@ -2456,6 +2456,12 @@ export type AgentRecapFailure =
   | 'model_unavailable';
 export type AgentScheduleRead =
   | {
+      kind: 'discovery';
+      sessionId: string;
+      cursor?: string | null;
+      expectedRevision?: number | null;
+    }
+  | {
       kind: 'list';
       cursor?: string | null;
       expectedRevision?: number | null;
@@ -2529,6 +2535,12 @@ export type AgentScheduledEffect =
       target: AgentScheduledTarget;
       model: ModelSelection;
       thinkingLevel?: ThinkingLevel | null;
+    }
+  | {
+      kind: 'discovery';
+      target: AgentScheduledTarget;
+      model: ModelSelection;
+      thinkingLevel?: ThinkingLevel | null;
     };
 export type AutomationDelivery = 'steering' | 'followup';
 export type Creator =
@@ -2554,6 +2566,11 @@ export type AgentScheduleChange =
       taskId: string;
       revision: number;
       input: AgentScheduledInput;
+    }
+  | {
+      kind: 'approve';
+      taskId: string;
+      revision: number;
     }
   | {
       kind: 'pause';
@@ -3358,6 +3375,10 @@ export type AgentSessionChanged =
       reason: AgentRejection;
     };
 export type AgentOnComplete = 'notify_caller';
+/**
+ * JavaScript epoch milliseconds, preserving fractional timestamps within Date's range.
+ */
+export type CaptureTime = number;
 export type AgentSendDelivery = 'steer' | 'queue';
 export type AgentExecutionResult =
   | {
@@ -7185,6 +7206,7 @@ export interface AgentScheduledSummary {
   title: string;
   sessionId: string;
   script: boolean;
+  approved: boolean;
   status: Status;
   nextFireAt?: number | null;
   pendingFire?: string | null;
@@ -7195,6 +7217,7 @@ export interface AgentScheduledDetail {
   task: Task;
   timezone: string;
   misfire: Misfire;
+  approved: boolean;
   pendingFire?: string | null;
 }
 export interface Task {
@@ -7502,6 +7525,127 @@ export interface AgentSend {
    */
   onComplete?: AgentOnComplete | null;
   /**
+   * Immutable user-selected excerpts; source metadata grants no read authority.
+   *
+   * @maxItems 16
+   */
+  quotes?:
+    | []
+    | [QuoteRef]
+    | [QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef, QuoteRef]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ]
+    | [
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+        QuoteRef,
+      ];
+  /**
    * Defaults to steer. Omit or use steer for updates to ongoing work;
    * use queue only when this message should wait until the current turn ends.
    */
@@ -7520,6 +7664,21 @@ export interface AgentSend {
   backend?: AgentBackendPreference | null;
   sessionId: string;
   message: string;
+}
+export interface QuoteRef {
+  text: string;
+  label?: string | null;
+  sourceTurnId?: string | null;
+  source?: SessionQuoteSource | null;
+}
+/**
+ * Display provenance of an immutable excerpt, never authority to read its source.
+ */
+export interface SessionQuoteSource {
+  sessionId: string;
+  sessionName: string;
+  capturedAt: CaptureTime;
+  truncated: boolean;
 }
 export interface AgentStop {
   sessionId: string;

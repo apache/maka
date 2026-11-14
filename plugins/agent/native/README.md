@@ -118,6 +118,72 @@ The default composition enables `recaps`. The Session recap command reads cached
 
 The default composition enables `goals`. `/goal` or the composer’s + menu opens its panel; `/goal <objective>` starts immediately. Goals continue through the existing Session queue without an iteration limit. `CreateGoal`, `GetGoal` and `GoalStatus` work in Direct and Code Mode; the current objective, progress and budget accompany model requests, including after compaction. A model-created Goal owns its creating turn. Pause stops current work; Resume continues with the selected model and settings; Cancel targets only that Goal. Transient execution failures remain recoverable. Token budgets are optional scheduling thresholds checked between turns; missing usage is reported as incomplete rather than stopping work, and users can adjust budgets. Reads expose current usage, remaining budget and active elapsed time; completed usage stays frozen after cleanup. Goal iterations retain their original admitted Run and Host receipt identities across restart. Recovery reconciles that Run’s effects and physical cleanup; a later iteration is a new policy-authorized submission, not a physical handoff or request replay. Archived Sessions and changed execution prerequisites require user action before further execution.
 
+## Read-only discovery
+
+With `bot` and `scheduledTasks` enabled, the current Bot can propose a `ScheduledTask`
+with `effect: "discovery"`. As with other model-created schedules, this is a paused
+proposal until a human approves its exact workspace, permissions and model through
+`schedule`. Human-created schedules use the `discovery` effect with that Bot as the
+target. Existing `once`, `interval` and `cron` timing, `trigger_now`, `pause` and
+`resume` controls apply; no discovery work is enabled by default.
+
+Each fire creates a fresh ordinary worker Session. It inherits the approved workspace
+and model but uses read-only permissions without permission requests. Its tools are
+the composition's Files read/image/glob/grep operations, Recall when enabled, `DiscoveryMemory`, and
+`DiscoveryComplete`; the coordinator's tools, MCP and shell access are not inherited.
+The worker must call `DiscoveryComplete` with either
+`{"kind":"no_report","note":"What was checked"}` or
+`{"kind":"report","text":"Findings and source references"}`. This records the
+result and ends the Turn. Ordinary text without that call is an incomplete investigation.
+
+One investigation, including an outstanding report handoff, occupies the shared slot.
+The scheduler waits for actual execution cleanup: admission is not completion.
+`no_report` settles silently; a report is admitted to the Bot once, using its existing
+notification path, where the Bot decides whether to call `SendUser`. The recorded run
+links to the worker and distinguishes report admission from user delivery. Pausing
+cancels the original worker Run and retracts pending reports. Consumed Bot messages
+remain history. Restart rechecks the original source approval and pending fire before
+queue consumers start; it reconciles the original Run and receipt instead of creating
+replacement work. An interrupted terminal run is recorded as failed.
+
+Disabling Bot or scheduling withdraws outstanding investigation work and unsent reports.
+Resuming a plan schedules future work without reviving its cancelled fire. Settlement
+tracks the investigation's original Run, so later user work in its Session cannot hold
+the investigation slot. Result-write uncertainty remains an unknown tool outcome.
+
+Plans, the active job and completed receipts use the existing scheduler KV namespace;
+no separate database or lease is introduced. `DiscoveryMemory` shares investigation
+results, progress, corrections, notification decisions and user feedback across fresh
+workers with the same Bot source boundary. A changed Bot, workspace, permission revision
+or Recall grant has a different record scope; references never grant source access.
+
+Each worker receives at most three 350-character previews, with record IDs and explicit
+truncation. `get` returns a complete record. `list` returns at most four short previews,
+examines at most 32 positions per call, and supplies `next_before` even for an empty
+filtered page. Queries can filter by text or the original investigation ID. Correction
+records append to that original record instead of overwriting it. The outcome, completed
+receipt, ordered record index and released investigation slot commit atomically.
+`checkpoint` stages one bounded progress note; it survives Host recovery and publishes
+on successful or failed settlement, while cancelled work discards it. Records describe
+observations and execution outcomes, not verified task completion.
+
+The Bot can include `discovery: {record, reason}` in `SendUser` or `sleep`, recording
+notification or withholding in the same model step. A recorded outbox message is required
+for a notification decision. If message publication succeeds but decision acknowledgement
+fails, the tool preserves an unknown outcome; retrying the same message ID does not send
+again. Reopening alone does not prove an unknown effect or its cleanup has settled;
+the Agent's original reconciliation and risk-decision rules still apply.
+`DiscoveryMemory` also supports explicit decisions and corrections. `feedback`
+links a Bot interpretation to an actual human input in the current Turn; it cannot use
+worker notifications as user feedback. Exact text and quotes stay in the original
+message and are readable through paginated `feedback_source`. `send` accepts optional
+immutable `quotes`, including a quote-only message, through ordinary and steering
+admission. The native Bot uses this path; external executors retain their existing
+rich-input restrictions. No quote grants access to the referenced Session.
+
+This slice does not import TS discovery data or observe external events. The [discovery tests](src/owner/driver/tests/model_recovery/discovery.rs)
+exercise the real Host with local model fixtures.
+
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
 
 

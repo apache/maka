@@ -264,6 +264,14 @@ impl QueueStore {
     ) -> Result<Option<QueueEntry>, StoreError> {
         self.data.query(ReadEntry(session, request)).await
     }
+    /// Resolve the immutable source request by its submitted message identity.
+    pub async fn message_entry(
+        &self,
+        session: String,
+        message: String,
+    ) -> Result<Option<QueueEntry>, StoreError> {
+        self.data.query(ReadMessageEntry(session, message)).await
+    }
     pub async fn resolve_message(
         &self,
         session: String,
@@ -469,6 +477,14 @@ impl Query for Ready {
     type Output = Vec<ReadyEntry>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::ready(c, &self.0, self.1.as_ref(), self.2)
+    }
+}
+
+struct ReadMessageEntry(String, String);
+impl Query for ReadMessageEntry {
+    type Output = Option<QueueEntry>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::message_entry(c, &self.0, &self.1)
     }
 }
 

@@ -269,6 +269,7 @@ pub(crate) struct Catalog<T> {
     pub basis: Vec<SelectedTool>,
     /// Derived from actual bound contracts and methods, never display names.
     pub editing: Vec<(String, EditingTools)>,
+    pub discovery_reads: Vec<String>,
 }
 
 pub(crate) fn catalog(
@@ -280,11 +281,13 @@ pub(crate) fn catalog(
         tools,
         basis,
         editing,
+        discovery_reads,
     } = catalog_inner(services, selected, additional, None)?;
     Ok(Catalog {
         tools: Declarations(tools),
         basis,
         editing,
+        discovery_reads,
     })
 }
 
@@ -321,6 +324,7 @@ fn catalog_inner(
     run: Option<RunBindings>,
 ) -> Result<Catalog<ToolCatalog>, String> {
     let mut basis = Vec::new();
+    let mut discovery_reads = Vec::new();
     let file_contract = maka_workspace_api::files::contract();
     let editing: Vec<_> = selected
         .iter()
@@ -371,6 +375,11 @@ fn catalog_inner(
                 return Err("agent_tool_contract_invalid".to_owned());
             };
             let contract = binding.contract();
+            if contract == &file_contract
+                && matches!(selection.method.as_str(), "readText" | "readImage" | "glob" | "grep")
+            {
+                discovery_reads.push(selection.name.clone());
+            }
             let method = methods
                 .get(&selection.method)
                 .ok_or("agent_tool_method_unavailable")?;
@@ -611,6 +620,7 @@ fn catalog_inner(
         tools: catalog,
         basis,
         editing,
+        discovery_reads,
     })
 }
 #[derive(Clone)]

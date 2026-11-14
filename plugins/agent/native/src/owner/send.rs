@@ -145,7 +145,8 @@ impl Owner {
         let mcp_floor = self
             .capture_sandbox(&session.configuration, parent.sandbox_floor())
             .await?;
-        let selected_catalog = if external && !host_bridge {
+        let discovery = self.scheduler.investigation.read().unwrap().as_deref() == Some(id);
+        let selected_catalog = if discovery || (external && !host_bridge) {
             self.mcp_projects.base.clone()
         } else {
             match self
@@ -159,7 +160,11 @@ impl Owner {
                 }
             }
         };
-        let selected_catalog = self.mcp_projects.with_client(id, selected_catalog)?;
+        let selected_catalog = if discovery {
+            selected_catalog
+        } else {
+            self.mcp_projects.with_client(id, selected_catalog)?
+        };
         if external && !host_bridge && selected_catalog.revision.is_some() {
             return Err("agent_executor_cannot_use_session_mcp".into());
         }
@@ -205,7 +210,9 @@ impl Owner {
             )),
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Interactive,
-            tool_discovery: (!external || host_bridge) && self.settings.tool_discovery,
+            tool_discovery: (!external || host_bridge)
+                && !discovery
+                && self.settings.tool_discovery,
             allowed_tools,
             background: None,
             background_sandbox_ceiling: None,
@@ -241,13 +248,17 @@ impl Owner {
         let Send {
             session_id: id,
             message: text,
+            quotes,
             backend,
             attachments,
             delivery,
             expected_run_id,
             on_complete: _,
         } = input;
-        if text.trim().is_empty() && attachments.is_empty() {
+        if quotes.len() > 16
+            || quotes.iter().any(|q| q.text.trim().is_empty())
+            || (text.trim().is_empty() && attachments.is_empty() && quotes.is_empty())
+        {
             return Err("agent_message_invalid".into());
         }
         let admission = self.runs.session(&id).await;
@@ -350,6 +361,8 @@ impl Owner {
             }
             Err(CaptureError::Other(error)) => return Err(error),
         };
+        let mut message: MessageInput = text.into();
+        message.quotes = (!quotes.is_empty()).then_some(quotes);
         if let (Some(view), SendDelivery::Steer) = (&active, delivery)
             && interrupt.is_none()
         {
@@ -360,7 +373,7 @@ impl Owner {
             };
             return self
                 .steer_message(
-                    text,
+                    message,
                     attachments,
                     &execution,
                     &basis,
@@ -370,7 +383,7 @@ impl Owner {
                 )
                 .await;
         }
-        let mut unprepared: MessageInput = text.into();
+        let mut unprepared = message;
         unprepared.attachments = self.attachment_refs(&id, attachments, parent).await?;
         let (message, required_tools) = match self
             .prepare_skills(

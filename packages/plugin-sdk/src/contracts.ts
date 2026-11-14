@@ -31580,6 +31580,25 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'approve',
+                  },
+                  taskId: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'taskId', 'revision'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'pause',
                   },
                   taskId: {
@@ -31898,6 +31917,35 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'target', 'model'],
                   },
+                  {
+                    description:
+                      'Read-only investigation in a fresh worker. The target is the current Bot.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
                 ],
               },
               AutomationDelivery: {
@@ -32171,6 +32219,28 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'discovery',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  cursor: {
+                    type: ['string', 'null'],
+                  },
+                  expectedRevision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'list',
                   },
                   cursor: {
@@ -32289,6 +32359,9 @@ export const contracts: {
                   script: {
                     type: 'boolean',
                   },
+                  approved: {
+                    type: 'boolean',
+                  },
                   status: {
                     $ref: '#/$defs/Status',
                   },
@@ -32304,7 +32377,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['id', 'revision', 'title', 'sessionId', 'script', 'status'],
+                required: ['id', 'revision', 'title', 'sessionId', 'script', 'approved', 'status'],
               },
               Status: {
                 type: 'string',
@@ -32327,12 +32400,15 @@ export const contracts: {
                   misfire: {
                     $ref: '#/$defs/Misfire',
                   },
+                  approved: {
+                    type: 'boolean',
+                  },
                   pendingFire: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['revision', 'task', 'timezone', 'misfire'],
+                required: ['revision', 'task', 'timezone', 'misfire', 'approved'],
               },
               Task: {
                 type: 'object',
@@ -32590,6 +32666,35 @@ export const contracts: {
                       kind: {
                         type: 'string',
                         const: 'agent_run',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    description:
+                      'Read-only investigation in a fresh worker. The target is the current Bot.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery',
                       },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
@@ -34231,6 +34336,16 @@ export const contracts: {
                   },
                 ],
               },
+              quotes: {
+                description:
+                  'Immutable user-selected excerpts; source metadata grants no read authority.',
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/QuoteRef',
+                },
+                maxItems: 16,
+                default: [],
+              },
               delivery: {
                 description:
                   'Defaults to steer. Omit or use steer for updates to ongoing work;\nuse queue only when this message should wait until the current turn ends.',
@@ -34282,6 +34397,59 @@ export const contracts: {
               AgentOnComplete: {
                 type: 'string',
                 enum: ['notify_caller'],
+              },
+              QuoteRef: {
+                type: 'object',
+                properties: {
+                  text: {
+                    type: 'string',
+                  },
+                  label: {
+                    type: ['string', 'null'],
+                  },
+                  sourceTurnId: {
+                    type: ['string', 'null'],
+                  },
+                  source: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/SessionQuoteSource',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['text'],
+              },
+              SessionQuoteSource: {
+                description:
+                  'Display provenance of an immutable excerpt, never authority to read its source.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  sessionName: {
+                    type: 'string',
+                  },
+                  capturedAt: {
+                    $ref: '#/$defs/CaptureTime',
+                  },
+                  truncated: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'sessionName', 'capturedAt', 'truncated'],
+              },
+              CaptureTime: {
+                description:
+                  "JavaScript epoch milliseconds, preserving fractional timestamps within Date's range.",
+                type: 'number',
+                format: 'double',
               },
               AgentSendDelivery: {
                 oneOf: [
@@ -40295,6 +40463,28 @@ export const contracts: {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'discovery',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  cursor: {
+                    type: ['string', 'null'],
+                  },
+                  expectedRevision: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'list',
                   },
                   cursor: {
@@ -40413,6 +40603,9 @@ export const contracts: {
                   script: {
                     type: 'boolean',
                   },
+                  approved: {
+                    type: 'boolean',
+                  },
                   status: {
                     $ref: '#/$defs/Status',
                   },
@@ -40428,7 +40621,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['id', 'revision', 'title', 'sessionId', 'script', 'status'],
+                required: ['id', 'revision', 'title', 'sessionId', 'script', 'approved', 'status'],
               },
               Status: {
                 type: 'string',
@@ -40451,12 +40644,15 @@ export const contracts: {
                   misfire: {
                     $ref: '#/$defs/Misfire',
                   },
+                  approved: {
+                    type: 'boolean',
+                  },
                   pendingFire: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['revision', 'task', 'timezone', 'misfire'],
+                required: ['revision', 'task', 'timezone', 'misfire', 'approved'],
               },
               Task: {
                 type: 'object',
@@ -40714,6 +40910,35 @@ export const contracts: {
                       kind: {
                         type: 'string',
                         const: 'agent_run',
+                      },
+                      target: {
+                        $ref: '#/$defs/AgentScheduledTarget',
+                      },
+                      model: {
+                        $ref: '#/$defs/ModelSelection',
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'target', 'model'],
+                  },
+                  {
+                    description:
+                      'Read-only investigation in a fresh worker. The target is the current Bot.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'discovery',
                       },
                       target: {
                         $ref: '#/$defs/AgentScheduledTarget',
