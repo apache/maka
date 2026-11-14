@@ -38,11 +38,14 @@ import { deploymentToolMessages } from './locale-tool-deployment';
 import { automationMessages } from './locale-automation';
 import { nativeToolMessages } from './locale-tool-native';
 
+import { subagentMessages } from './locale-subagents';
+
 const nativeLocale = nativeHost.systemLocale;
 export const currentLocale = signal(resolveLocale('auto', nativeLocale));
 let observedRevision = -1;
 const copy = createCopy({
   ...commonMessages,
+  ...subagentMessages,
   ...computerPermissionMessages,
   ...goalMessages,
   ...conversationMessages,

@@ -407,6 +407,20 @@ export type AgentHistoryRequestsOutput_StepId = string;
 export type AgentHistoryRequestsOutput_ModelAttemptId = string;
 export type AgentHistoryRequestsOutput_ModelPurpose = 'main' | 'summary';
 export type AgentHistoryRequestsOutput_UsageOutcome = ('success' | 'error' | 'aborted') | 'unknown';
+export type AgentHistoryRequestsOutput_AgentHistoryRequestRetry =
+  | {
+      kind: 'scheduled';
+      at: number;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'started';
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'cancelled';
+      [k: string]: unknown | undefined;
+    };
 export type AgentLoadHistoryCheckpointOutput_AgentCheckpointLoadState =
   | {
       kind: 'preparing';
@@ -1652,6 +1666,7 @@ export interface ServiceMethods {
       output: {
         requests: AgentHistoryRequestsOutput_AgentHistoryRequest[];
         next?: number | null;
+        runTerminated: boolean;
         [k: string]: unknown | undefined;
       };
     };
@@ -3465,6 +3480,7 @@ export interface AgentHistoryRequestsOutput_AgentHistoryRequest {
   startedAt?: number | null;
   firstTokenAt?: number | null;
   finished?: AgentHistoryRequestsOutput_AgentHistoryRequestFinished | null;
+  retry?: AgentHistoryRequestsOutput_AgentHistoryRequestRetry | null;
   estimatedInputTokens: number;
   contextWindow?: number | null;
   inputLimit?: number | null;

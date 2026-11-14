@@ -149,6 +149,7 @@ import {
   WorkspaceBrowser,
   type WorkspaceBrowserProps,
 } from '../../../../products/maka/workbench/app/WorkspaceBrowser';
+import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
 import {
   applicationMenu,
   ownTitleBar,
@@ -1385,6 +1386,11 @@ export function createConversationUi(
   // in the current conversation's workspace, later opens return the same Session.
   // `undefined` until the Host has answered; then the Bot Session or `null` for none.
   const botSession = signal<string | null | undefined>(undefined);
+  const botWorkers = createBotWorkers(
+    host,
+    () => botSession() ?? null,
+    () => platform.idiom !== 'terminal',
+  );
   const refreshBotSession = async () => {
     const head = await host.query('agent', 'botOutbox', { limit: 0 });
     if (alive) botSession.set(head.sessionId ?? null);
@@ -2012,6 +2018,7 @@ export function createConversationUi(
     newConversation: (sessionId) => invokeCommand({ id: 'new', sessionId }),
     openBot: (sessionId) => invokeCommand({ id: 'bot', sessionId }),
     botSession,
+    botWorkers: botWorkers.sessions,
     settings: (sessionId) => invokeCommand({ id: 'settings', sessionId }),
     search: (sessionId) => invokeCommand({ id: 'sessions', sessionId }),
     canOpenBeside: () => !!shell()?.openBeside,

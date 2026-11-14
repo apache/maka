@@ -867,7 +867,9 @@ fn partial(error: ToolError, context: &CellContext, language: Language) -> ToolE
     match error {
         ToolError::Failed(value) => ToolError::Failed(value + suffix.as_str()),
         ToolError::Persistence(value) => ToolError::Persistence(value + suffix.as_str()),
-        ToolError::CleanupUnconfirmed(value) => ToolError::CleanupUnconfirmed(value + suffix.as_str()),
+        ToolError::CleanupUnconfirmed(value) => {
+            ToolError::CleanupUnconfirmed(value + suffix.as_str())
+        }
         ToolError::OutcomeUnknown(value) => ToolError::OutcomeUnknown(value + suffix.as_str()),
         ToolError::Io { kind, message } => ToolError::Io {
             kind,

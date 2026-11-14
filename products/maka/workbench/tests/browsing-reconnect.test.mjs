@@ -30,7 +30,8 @@ const native = {
       return read;
     };
     export const batch = fn => fn();
-    export const cleanup = () => {};`,
+    export const cleanup = () => {};
+    export const platform = { idiom: 'desktop' };`,
   locale: `export const tr = key => key;`,
 };
 const hooks = registerHooks({

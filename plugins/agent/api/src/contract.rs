@@ -1519,6 +1519,7 @@ pub struct HistoryRequestsRead {
 pub struct HistoryRequests {
     pub requests: Vec<HistoryRequest>,
     pub next: Option<u64>,
+    pub run_terminated: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -1533,6 +1534,7 @@ pub struct HistoryRequest {
     pub started_at: Option<u64>,
     pub first_token_at: Option<u64>,
     pub finished: Option<HistoryRequestFinished>,
+    pub retry: Option<HistoryRequestRetry>,
     pub estimated_input_tokens: u64,
     pub context_window: Option<u64>,
     pub input_limit: Option<u64>,
@@ -1547,6 +1549,15 @@ pub struct HistoryRequestFinished {
     pub usage: maka_agent_facts::model::ModelUsage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[schemars(rename = "AgentHistoryRequestRetry")]
+pub enum HistoryRequestRetry {
+    Scheduled { at: u64 },
+    Started,
+    Cancelled,
 }
 
 #[derive(Deserialize, JsonSchema)]

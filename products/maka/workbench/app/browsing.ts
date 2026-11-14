@@ -18,7 +18,7 @@
  */
 
 import { createText, errorText, errorMessage, isObservationCancelled, UiError } from './text';
-import { batch, cleanup, signal } from 'nsh';
+import { batch, cleanup, platform, signal } from 'nsh';
 import type { Host } from './host';
 import type {
   AgentSessionListScope,
@@ -93,10 +93,13 @@ export function createBrowsing(host: Host): Browsing {
   let continuation: SessionPage | null = null;
   let projectRead: object | null = null;
   const owns = (read: CatalogRead) => alive && current === read;
+  // The desktop lists child conversations under the ones that created them.
+  const rootsOnly = (read: CatalogRead) =>
+    read.filter !== 'needs_you' && platform.idiom === 'terminal';
   const list = async (read: CatalogRead, position: AgentSessionPosition): Promise<SessionPage> =>
     host.query('agent', 'list', {
       filter: read.filter,
-      rootsOnly: read.filter !== 'needs_you',
+      rootsOnly: rootsOnly(read),
       scope: read.scope,
       position,
     });
@@ -162,7 +165,7 @@ export function createBrowsing(host: Host): Browsing {
         try {
           opened = await host.subscribe('agent', 'catalog', {
             filter: read.filter,
-            rootsOnly: read.filter !== 'needs_you',
+            rootsOnly: rootsOnly(read),
             scope: read.scope,
             position: { kind: 'start' },
           });

@@ -1146,3 +1146,6 @@ mod tests {
 
 #[cfg(test)]
 mod desktop_residency_tests;
+
+#[cfg(test)]
+mod preset_settings_tests;

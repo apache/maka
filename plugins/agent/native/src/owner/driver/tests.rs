@@ -3241,6 +3241,53 @@ mod model_recovery {
             assert_ne!(first, last);
             assert_eq!(view.attempts[&first].step, view.attempts[&last].step);
             assert_eq!(view.attempts.len(), 2);
+            use maka_agent_state::session_history::{
+                ModelRequestRetry, snapshot::CaptureRequest, source_tree::HistoryDataSource,
+            };
+            use maka_agent_facts::accounting::Outcome;
+
+            let owner = rig.captured.lock().unwrap().clone().ok_or("Native owner missing")?;
+            let history = owner.durable.session_history(owner.run_owner(), session.clone());
+            let cut = history.capture().await?;
+            let page = history.page(&cut, 0, 128).await?;
+            let charged = page.items.iter().find(|item| item.recorded.run == run &&
+                matches!(item.recorded.fact, Fact::RetryCharged { attempt, .. } if attempt == first))
+                .ok_or("retry was not scheduled")?;
+            let Fact::RetryCharged { due_at, .. } = charged.recorded.fact else {
+                unreachable!();
+            };
+            let waiting = HistoryDataSource::Live {
+                cut: history.capture_at(charged.sequence).await?,
+                history: history.clone(),
+            }.model_request_traces(run, 0, 24).await?;
+            assert!(!waiting.run_terminated);
+            let [waiting] = waiting.requests.as_slice() else { return Err("expected one request at retry cut".into()); };
+            assert_eq!(waiting.attempt, first);
+            assert!(matches!(waiting.retry, Some(ModelRequestRetry::Scheduled { at }) if at == due_at));
+            let failure = waiting.finished.as_ref().ok_or("interrupted request is still pending")?;
+            assert_eq!(failure.outcome, Outcome::Error);
+            assert!(failure.diagnostic.as_deref().is_some_and(|text| text.contains("cancel")), "{failure:?}");
+
+            let snapshot = history.capture_snapshot(CaptureRequest {
+                id: maka_agent_facts::history_snapshot::SnapshotId::new(),
+                cut: cut.clone(),
+            }, CancellationToken::new()).await?;
+            for source in [
+                HistoryDataSource::Live { history, cut },
+                HistoryDataSource::Snapshot(snapshot),
+            ] {
+                let traces = source.model_request_traces(run, 0, 24).await?;
+                assert!(traces.run_terminated);
+                let [failed, succeeded] = traces.requests.as_slice() else { return Err("expected a failed request and its retry".into()); };
+                assert_eq!(failed.attempt, first);
+                assert!(matches!(failed.retry, Some(ModelRequestRetry::Started)));
+                let finished = failed.finished.as_ref().ok_or("failed request is still pending")?;
+                assert_eq!(finished.outcome, Outcome::Error);
+                assert_eq!(finished.diagnostic, failure.diagnostic);
+                assert_eq!(succeeded.attempt, last);
+                assert_eq!(succeeded.finished.as_ref().map(|result| result.outcome), Some(Outcome::Success));
+            }
+
             Ok::<_, Box<dyn Error + Send + Sync>>(())
         })
         .await;
