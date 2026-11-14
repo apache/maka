@@ -108,7 +108,9 @@ export function errorText(reason: unknown, fallback: MessageKey, values?: UiText
     case 'database connection closed before accepting the operation':
       return message('Connection interrupted. Reconnect to continue; your draft is kept.');
     default:
+      // The fallback names the action and the detail says why, so a model
+      // refusal and a lost connection do not read the same.
       console.warn(fallback, detail);
-      return message(fallback, values);
+      return message('{message} {detail}', { message: message(fallback, values), detail });
   }
 }

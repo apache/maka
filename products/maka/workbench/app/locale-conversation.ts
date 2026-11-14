@@ -156,10 +156,21 @@ export const conversationMessages = {
     '无法保存压缩指令。',
     '無法儲存壓縮指令。',
   ],
+  'Could not continue the response.': [
+    'Could not continue the response.',
+    '无法继续回答。',
+    '無法繼續回答。',
+  ],
+  'Could not save the draft.': ['Could not save the draft.', '无法保存草稿。', '無法儲存草稿。'],
   'Could not send the message.': [
     'Could not send the message.',
     '无法发送消息。',
     '無法傳送訊息。',
+  ],
+  'Could not stop the response.': [
+    'Could not stop the response.',
+    '无法停止回答。',
+    '無法停止回答。',
   ],
   'Could not submit the answer.': [
     'Could not submit the answer.',

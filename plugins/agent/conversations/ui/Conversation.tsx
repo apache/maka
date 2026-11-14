@@ -1470,8 +1470,11 @@ export function Conversation(props: ConversationProps) {
     },
   });
 
-  const report = (reason: unknown) => {
-    if (alive) error.set(errorText(reason, 'Could not load conversation history.'));
+  const report = (
+    reason: unknown,
+    fallback: MessageKey = 'Could not load conversation history.',
+  ) => {
+    if (alive) error.set(errorText(reason, fallback));
   };
   const publishHistory = (
     chunks: AgentHistoryChunk[],
@@ -2384,7 +2387,7 @@ export function Conversation(props: ConversationProps) {
     })()
       .catch((reason) => {
         if (alive) savingFailed.set(true);
-        report(reason);
+        report(reason, 'Could not save the draft.');
       })
       .finally(() => {
         saveTask = null;
@@ -2663,7 +2666,7 @@ export function Conversation(props: ConversationProps) {
       }
       await observe();
     } catch (reason) {
-      report(reason);
+      report(reason, 'Could not continue the response.');
     } finally {
       if (alive)
         batch(() => {
@@ -2795,7 +2798,7 @@ export function Conversation(props: ConversationProps) {
       try {
         if (alive) await refreshSends();
       } catch (reason) {
-        report(reason);
+        report(reason, 'Could not send the message.');
       }
       if (alive) {
         const next = new Map(activeSends());
@@ -2906,7 +2909,7 @@ export function Conversation(props: ConversationProps) {
       attachments.sent(edit.attachments.map((file) => file.id));
       await freezeSend(frozen);
     } catch (reason) {
-      report(reason);
+      report(reason, 'Could not send the message.');
     }
   };
 
@@ -3099,7 +3102,7 @@ export function Conversation(props: ConversationProps) {
         if (needsRecovery(original) || acceptedQueued(original)) await checkSend(original.id);
       }
     } catch (reason) {
-      report(reason);
+      report(reason, 'Could not send the message.');
     } finally {
       if (alive) recovering.set(false);
     }
@@ -3146,7 +3149,7 @@ export function Conversation(props: ConversationProps) {
       // Stop is a durable admission fence, not proof that in-flight work ended.
     } catch (reason) {
       if (alive && stoppingRun() === targetRunId) stoppingRun.set(null);
-      report(reason);
+      report(reason, 'Could not stop the response.');
     }
   };
   const chooseReading = ({ owner, mode }: { owner: string; mode: 'chat' | 'trajectory' }) => {
