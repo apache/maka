@@ -305,10 +305,15 @@ async function acp(id, method, params) {
     if (job) throw Error('Duplicate ACP task prompt');
     job = JSON.parse(text.slice(start + 'MAKA_EXTERNAL_CASE '.length));
     const checkpoint = `ACP checkpoint ${job.label}`;
-    await event('session/update', {
-      sessionId: thread,
-      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: checkpoint } },
-    });
+    if (job.label !== 'ACP-followup') {
+      await event('session/update', {
+        sessionId: thread,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: checkpoint },
+        },
+      });
+    }
     await record('ready', { thread, checkpoint, promptId: id });
     if (job.label === 'ACP-schedule') {
       const task = await codeResult(
@@ -328,7 +333,16 @@ async function acp(id, method, params) {
       await record('scheduled', { thread, taskId: task.taskId, promptId: id });
       return;
     }
-    if (job.label === 'ACP-followup') await readArchivedResult();
+    if (job.label === 'ACP-followup') {
+      await readArchivedResult();
+      await event('session/update', {
+        sessionId: thread,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'ACP follow-up final reply' },
+        },
+      });
+    }
     if (job.label === 'ACP-followup' || job.label === 'ACP-wake')
       return reply(id, { stopReason: 'end_turn' });
     return;
