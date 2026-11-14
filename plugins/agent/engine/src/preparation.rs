@@ -683,9 +683,12 @@ async fn read_media(
             } else {
                 maka_agent_facts::attachment::sniff_binary_mime(&bytes) != Some(mime.as_str())
             } {
-                return Err(RunError::InvalidInput(
-                    "media MIME does not match bytes".into(),
-                ));
+                let reason = "media MIME does not match bytes".into();
+                return Err(if !audio && mime.starts_with("image/") {
+                    RunError::InvalidImage(reason)
+                } else {
+                    RunError::InvalidInput(reason)
+                });
             }
             Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
         })
