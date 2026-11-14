@@ -1941,6 +1941,145 @@ async fn desktop_folds_work_when_responses_starts_the_final_answer() {
     fixture.finish().await;
 }
 
+async fn desktop_asks_beside_a_reply_and_carries_the_answer_into_the_next_message() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1440),
+            nsh_terminal::DevicePixels(800),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    let settle = |seconds: u64| {
+        let start = std::time::Instant::now();
+        desktop.until("settle", move || {
+            (start.elapsed() >= Duration::from_secs(seconds)).then_some(())
+        })
+    };
+    desktop.new_draft().await;
+    desktop.type_text("MAIN_QUESTION_ONE").await;
+    desktop.submit().await;
+    let mut first = desktop.request(&mut fixture).await;
+    first
+        .delta("The cache layer is CACHE_LAYER_EXPLAINED in detail.")
+        .await;
+    first.finish().await;
+    let original = desktop.platform.text_input_target();
+    desktop.press("Ask beside").await;
+    desktop.target_after(original).await;
+    desktop
+        .until("the side question's card did not open", || {
+            (desktop.controls("Close side question").len() == 1).then_some(())
+        })
+        .await;
+    // The card is not a second conversation: the window keeps one full composer,
+    // and the card shows only what is asked in it.
+    assert_eq!(desktop.controls("Focus message composer").len(), 1);
+    assert!(
+        desktop
+            .controls("The conversation before is in the main thread · Show")
+            .is_empty()
+    );
+    // Not asked anything yet: the reply does not list it.
+    assert!(desktop.controls("Side questions of this reply").is_empty());
+    desktop.artifact("side-card-opened");
+    desktop.type_text("SIDE_QUESTION").await;
+    desktop.submit().await;
+    let mut side = desktop.request(&mut fixture).await;
+    let body = side.body.to_string();
+    assert!(
+        body.contains("CACHE_LAYER_EXPLAINED"),
+        "the fork lacks the parent context: {body}"
+    );
+    assert!(body.contains("SIDE_QUESTION"), "{body}");
+    side.delta("SIDE_ANSWER_42").await;
+    side.finish().await;
+    // The reply lists its side question, named by its first question; the
+    // sidebar does not.
+    desktop
+        .until("the reply did not list its side question", || {
+            (desktop.controls("Side questions of this reply").len() == 1).then_some(())
+        })
+        .await;
+    desktop.artifact("side-card-answered");
+    assert!(desktop.controls("Actions for ↳ SIDE_QUESTION").is_empty());
+    assert!(desktop.controls("Actions for ↳ Side question").is_empty());
+    // Closed, the card comes back from the reply's list.
+    desktop.press("Close side question").await;
+    desktop
+        .until("the card did not close", || {
+            desktop
+                .controls("Close side question")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    desktop.press("Side questions of this reply").await;
+    desktop.press("SIDE_QUESTION").await;
+    desktop
+        .until("the listed side question did not open its card", || {
+            (desktop.controls("Close side question").len() == 1).then_some(())
+        })
+        .await;
+    // As a full conversation it starts at the fork, with the parent's messages folded away.
+    desktop.press("Open as a conversation").await;
+    desktop
+        .until("the card did not become a conversation", || {
+            (desktop
+                .controls("The conversation before is in the main thread · Show")
+                .len()
+                == 1
+                && desktop.controls("Close side question").is_empty())
+            .then_some(())
+        })
+        .await;
+    desktop
+        .press("The conversation before is in the main thread · Show")
+        .await;
+    desktop
+        .until("the parent conversation did not unfold", || {
+            (desktop
+                .controls("Hide the conversation this was asked from")
+                .len()
+                == 1)
+                .then_some(())
+        })
+        .await;
+    desktop
+        .press("Hide the conversation this was asked from")
+        .await;
+    settle(2).await;
+    let mut composers = desktop.controls("Focus message composer");
+    composers.sort_by(|a, b| a.left().partial_cmp(&b.left()).unwrap());
+    let original = desktop.platform.text_input_target();
+    desktop.press_at(composers[0].center());
+    desktop.target_after(original).await;
+    desktop.type_text("MAIN_QUESTION_TWO").await;
+    desktop.submit().await;
+    let mut second = desktop.request(&mut fixture).await;
+    let body = second.body.to_string();
+    assert!(body.contains("maka-side-threads"), "no side block: {body}");
+    let block = &body[body.find("maka-side-threads").unwrap()..];
+    assert!(
+        !block.contains("MAIN_QUESTION_ONE"),
+        "the block carried what the side question inherited: {block}"
+    );
+    assert!(
+        body.contains("SIDE_ANSWER_42") && body.contains("SIDE_QUESTION"),
+        "{body}"
+    );
+    second.delta("Noted.").await;
+    second.finish().await;
+    // The message shows what it carried as a note, not as text.
+    desktop.control("Side questions attached").await;
+    desktop.artifact("side-carried");
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
     let fixture = Fixture::open().await;
     let desktop = Desktop::open_at(
@@ -3478,6 +3617,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_previews_an_incoming_session_message",
     "desktop_folds_work_when_responses_starts_the_final_answer",
     "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened",
+    "desktop_asks_beside_a_reply_and_carries_the_answer_into_the_next_message",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
     "desktop_file_gestures_preserve_drafts_and_stage_an_image",
     "desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image",
@@ -3548,6 +3688,8 @@ pub(crate) fn run(name: &str) {
         "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened" => {
             runtime.block_on(desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened())
         }
+        "desktop_asks_beside_a_reply_and_carries_the_answer_into_the_next_message" => runtime
+            .block_on(desktop_asks_beside_a_reply_and_carries_the_answer_into_the_next_message()),
         "desktop_steering_freezes_each_message_and_queue_is_one_shot" => {
             runtime.block_on(desktop_steering_freezes_each_message_and_queue_is_one_shot())
         }

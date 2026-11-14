@@ -22,7 +22,7 @@ import { CompactionDivider, NoteDivider } from './CompactionDivider';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
 import { platform, reduceMotion } from 'nsh';
-import { ContextMenu, MenuItem, TextView } from 'nsh/base';
+import { Button, ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { createMessageMenu, type MessageMenu } from './messageMenu';
 import type { MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
@@ -31,11 +31,15 @@ import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
 import { SkillMessage } from './SkillMessage';
+import { splitSideBlock } from './sideThreads';
+import { splitQuotes } from './quotedPassages';
+import { QuoteBlock } from './QuoteBlock';
 import {
   C,
   bodyTextStyle,
   captionTextStyle,
   controlDisabledStyle,
+  controlHoverStyle,
   controlStyle,
   secondaryTextStyle,
   Disclosure,
@@ -154,7 +158,10 @@ export function MessageRow({
   editMessage,
   messageEditor,
   failureActions,
+  beside,
 }: {
+  /** Drawn in a card beside the conversation, on the sidebar's tone. */
+  beside?: boolean;
   item: () => Row;
   highlighted?: () => boolean;
   /** How many identical failures this row stands for. */
@@ -613,11 +620,32 @@ export function MessageRow({
                         paddingHorizontal: 16,
                         paddingVertical: 16,
                         borderRadius: 20,
-                        backgroundColor: highlighted?.() ? C.cardRaised : C.card,
+                        backgroundColor: highlighted?.() ? C.cardRaised : beside ? C.panel : C.card,
                         gap: 8,
                       }}
                     >
-                      <SkillMessage row={row} sourceId={sourceId()} />
+                      {/* Passages quoted at the start read as quotes, not as "> text". */}
+                      <Each of={splitQuotes(row().text).quotes} key={(_, index) => index}>
+                        {(quote) => <QuoteBlock text={quote()} lines={4} />}
+                      </Each>
+                      <SkillMessage
+                        row={() => {
+                          // The side-thread block shows as a note below, not as text.
+                          const split = splitSideBlock(row().text);
+                          const quoted = splitQuotes(split.body);
+                          return split.block || quoted.quotes.length > 0
+                            ? {
+                                ...row(),
+                                text: quoted.body,
+                                fragments: [{ offset: 0, text: quoted.body }],
+                              }
+                            : row();
+                        }}
+                        sourceId={sourceId()}
+                      />
+                      <If when={splitSideBlock(row().text).block}>
+                        <SideThreadsNote text={() => row().text} />
+                      </If>
                       <If when={(row().attachments?.length ?? 0) > 0}>
                         <HistoryAttachments
                           userScroll={userScroll}
@@ -705,5 +733,43 @@ export function MessageRow({
         );
       }}
     </Each>
+  );
+}
+
+// What a message carried from its side threads, folded.
+function SideThreadsNote(props: { text(): string }) {
+  const open = signal(false);
+  const split = () => splitSideBlock(props.text());
+  return (
+    <View style={{ gap: 6, maxWidth: '100%' }}>
+      <Button
+        accessibilityLabel={tr('Side questions attached')}
+        onPress={() => open.set(!open())}
+        style={{
+          ...controlStyle,
+          alignSelf: 'flex-start',
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          paddingHorizontal: 8,
+        }}
+        hoverStyle={controlHoverStyle()}
+      >
+        <Icon name="ask" color={C.muted} />
+        <Text style={{ ...captionTextStyle, color: C.muted }}>
+          {tr('{count} side questions attached', { count: split().threads.length })}
+          {' · '}
+          {split()
+            .threads.map((thread) => thread.title)
+            .join(' · ')}
+        </Text>
+        <Icon name={open() ? 'up' : 'down'} color={C.muted} />
+      </Button>
+      <If when={open()}>
+        <Text style={[{ ...captionTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
+          {split().block}
+        </Text>
+      </If>
+    </View>
   );
 }

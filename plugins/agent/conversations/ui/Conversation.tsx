@@ -168,6 +168,35 @@ import {
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
+import { SideQuoteTray } from '../../../../products/maka/workbench/app/SideThreadsMenu';
+import {
+  addPendingQuote,
+  addSideAnchors,
+  anchorsOf,
+  clearPendingQuotes,
+  collectSideUpdates,
+  formatSideBlock,
+  isSideLabel,
+  isUntitledSide,
+  loadSideAnchors,
+  pendingQuotes,
+  questionOf,
+  quotePassages,
+  quotesTitle,
+  registerSideActions,
+  removePendingQuote,
+  removeSideAnchor,
+  setSidePrefill,
+  sideAskedLabel,
+  sideFromOf,
+  sideLabel,
+  sideParent,
+  sideQuoteLabel,
+  sideTitle,
+  splitSideBlock,
+  type SideQuote,
+} from '../../../../products/maka/workbench/app/sideThreads';
+import { AskedQuestion } from '../../../../products/maka/workbench/app/ThreadCard';
 import {
   MessageEdit,
   MessageEditor,
@@ -175,7 +204,11 @@ import {
   type InlineEdit,
 } from '../../../../products/maka/workbench/app/MessageEdit';
 import { createMessageSenders } from '../../../../products/maka/workbench/app/messageSenders';
-import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
+import {
+  performSessionAction,
+  sessionActionTarget,
+  type SessionAction,
+} from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
 import { createSessionGoal } from '../../../../products/maka/workbench/app/sessionGoal';
@@ -233,6 +266,7 @@ import type {
   AgentComputerApps,
   AgentCompactionProgress,
 } from '../../../../packages/plugin-sdk/src/index.js';
+import type { PendingThread } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import {
   createAttachmentDraft,
   type AttachmentEdit,
@@ -249,7 +283,12 @@ type HistoryWindow = Pick<AgentHistoryPage, 'before' | 'after'> & {
   identity: object;
 };
 
-export type Control = (method: string, input: any) => Promise<any>;
+export type Control = (
+  method: string,
+  input: any,
+  /** With `quiet`, the action shows no notice of its own while it is confirmed. */
+  options?: { quiet?: boolean },
+) => Promise<any>;
 export type ConversationHandle = Omit<
   ComposerSession,
   'attachments' | 'modelDetails' | 'permissions' | 'projectMcp' | 'completion' | 'checklist'
@@ -326,7 +365,10 @@ type ConversationProps = {
   filesOpener(node: ViewRef): void;
   previewImage(image: ImagePreview): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
-  openSessionBeside?(sessionId: string): void;
+  /** With `thread`, as a side question's card beside this conversation. */
+  openSessionBeside?(sessionId: string, options?: { thread?: boolean }): void;
+  /** Opens a side question's card before its conversation exists. */
+  openThreadCard?(thread: PendingThread): void;
   knownSession?(sessionId: string): AgentSession | undefined;
   /** Opens a conversation in this pane, for when no side pane fits. */
   openSessionHere?(sessionId: string): void;
@@ -338,6 +380,8 @@ type ConversationProps = {
   restartBot?(): Promise<void>;
   /** Shows only the latest exchange, as tall as its content, with no header. */
   compact?: boolean;
+  /** With `compact`, a side question's card: everything asked in it shows. */
+  thread?: boolean;
 };
 function indexRows(items: readonly Row[]) {
   const byId = new Map<string, Row>();
@@ -846,6 +890,155 @@ export function Conversation(props: ConversationProps) {
   // this pane (the Bot stays pinned in the sidebar to switch back).
   const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
   const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
+  // A side question opens as a card beside this conversation (see sideThreads.ts).
+  const openThread = (id: string) =>
+    props.openSessionBeside
+      ? props.openSessionBeside(id, { thread: true })
+      : props.openSessionHere?.(id);
+  const sideQuery = (plugin: 'agent', method: string, input: unknown) =>
+    host.query(plugin, method as any, input as any) as Promise<any>;
+  // A side question forks through `turnId` (at or after every quoted reply) and
+  // starts with the quotes in its draft.
+  const createSide = async (turnId: string, quotes: readonly SideQuote[]) => {
+    const texts = quotes.map((quote) => quote.text);
+    const title = quotesTitle(texts);
+    const card = props.openThreadCard;
+    const fork = async () => {
+      const observed = await host.query('agent', 'observe', { sessionId });
+      const labels = observed.session.labels.filter((label: string) => !isSideLabel(label));
+      const forked = await props.control(
+        'fork',
+        {
+          sessionId,
+          expectedRevision: observed.session.revision,
+          position: { kind: 'through_turn', turnId },
+          title,
+          labels: [
+            ...labels,
+            sideLabel(sessionId),
+            ...(quotes.length > 0 ? [sideQuoteLabel(quotes)] : []),
+          ],
+        },
+        // The card is already open; it reports the wait and the failure.
+        { quiet: card !== undefined },
+      );
+      if (forked.kind !== 'forked')
+        throw new UiError('Conversation creation rejected: {reason}', {
+          reason: forked.reason ?? forked.kind,
+        });
+      const id: string = forked.session.id;
+      addSideAnchors(sessionId, anchorsOf(id, title, turnId, quotes, false));
+      return id;
+    };
+    if (card) {
+      // The question can be typed while the conversation is created.
+      const ready = fork();
+      ready.catch(() => {});
+      card({ title, draft: '', quotes: texts, ready });
+      return;
+    }
+    const id = await fork();
+    if (texts.length > 0) setSidePrefill(id, quotePassages(texts));
+    openThread(id);
+  };
+  // With passages gathered, asking beside asks about them together with this one.
+  const askBeside = async (turnId: string, passage: string | null) => {
+    if (pendingQuotes(sessionId).length === 0)
+      return createSide(turnId, passage ? [{ turnId, text: passage }] : []);
+    if (passage) addPendingQuote(sessionId, { turnId, text: passage });
+    await askQuotes(turnId);
+  };
+  // Ask about the gathered passages together, forked through the latest reply quoted.
+  const askingQuotes = signal(false);
+  const quotesError = signal('');
+  const askQuotes = async (alsoTurn?: string) => {
+    const quotes = pendingQuotes(sessionId);
+    if (quotes.length === 0 || askingQuotes()) return;
+    const order = new Map<string, number>();
+    rows().forEach((row, index) => {
+      if (row.turnId && !order.has(row.turnId)) order.set(row.turnId, index);
+    });
+    const turns = [...quotes.map((quote) => quote.turnId), ...(alsoTurn ? [alsoTurn] : [])];
+    const latest = turns.reduce((best, turn) =>
+      (order.get(turn) ?? -1) > (order.get(best) ?? -1) ? turn : best,
+    );
+    askingQuotes.set(true);
+    quotesError.set('');
+    try {
+      await createSide(latest, quotes);
+      clearPendingQuotes(sessionId);
+    } catch (reason) {
+      quotesError.set(String(errorText(reason, 'Could not fork the conversation.')));
+    } finally {
+      askingQuotes.set(false);
+    }
+  };
+  // Replies list their side questions and mark the passages asked about.
+  cleanup(
+    registerSideActions(sessionId, {
+      open: (id) => openThread(id),
+      async archive(id) {
+        const observed = await host.query('agent', 'observe', { sessionId: id });
+        await performSessionAction(props.control, {
+          kind: 'archive',
+          session: sessionActionTarget(observed.session),
+        });
+        removeSideAnchor(sessionId, id);
+      },
+    }),
+  );
+  // A side question's first message marks it asked (its reply then lists it and
+  // marks its passages); one asked about a whole reply also takes the question
+  // as its name. Sending moves the revision too, so a conflict is retried.
+  const nameSideThread = async (text: string) => {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const observed = await host.query('agent', 'observe', { sessionId });
+      const parent = sideParent(observed.session);
+      if (!parent) return;
+      const question = questionOf(text);
+      const asked = observed.session.labels.includes(sideAskedLabel);
+      const rename = question !== '' && isUntitledSide(observed.session.title);
+      if (asked && !rename) return;
+      const result = await props.control('metadata', {
+        sessionId,
+        expectedRevision: observed.session.revision,
+        title: rename ? sideTitle(question) : observed.session.title,
+        labels: asked ? [...observed.session.labels] : [...observed.session.labels, sideAskedLabel],
+      });
+      if (result.kind === 'revision_conflict') continue;
+      await loadSideAnchors(sideQuery, parent);
+      return;
+    }
+  };
+  void loadSideAnchors(sideQuery, sessionId).catch((reason) =>
+    console.warn('side question passages were not loaded', reason),
+  );
+  // The side turn each side question was last carried through: what this pane
+  // sent, else what the loaded messages carried.
+  const sideCarried = new Map<string, string>();
+  const carriedSides = () => {
+    const carried = new Map<string, string>();
+    for (const row of rows())
+      if (row.role === 'user')
+        for (const thread of splitSideBlock(row.text).threads)
+          carried.set(thread.sessionId, thread.through);
+    for (const [id, through] of sideCarried) carried.set(id, through);
+    return carried;
+  };
+  const sideBlock = async () => {
+    try {
+      const updates = await collectSideUpdates(sideQuery, sessionId, carriedSides());
+      return {
+        block: formatSideBlock(updates),
+        carry: () => {
+          for (const update of updates) sideCarried.set(update.sessionId, update.through);
+        },
+      };
+    } catch (reason) {
+      console.warn('side questions were not carried', reason);
+      return { block: null, carry: () => {} };
+    }
+  };
   const senders = createMessageSenders(
     host,
     senderIds,
@@ -924,7 +1117,8 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'bot'; key: string; turnId: string; worker?: string }
     | { kind: 'botNote'; key: string; turnId: string }
     | { kind: 'botWorking'; key: string }
-    | { kind: 'botWaiting'; key: string; workers: readonly ActiveWorker[] };
+    | { kind: 'botWaiting'; key: string; workers: readonly ActiveWorker[] }
+    | { kind: 'sideInherited'; key: string };
   const chatSections = new WeakMap<
     ProcessProjection,
     {
@@ -1007,7 +1201,7 @@ export function Conversation(props: ConversationProps) {
       );
     return headed ? sections : [...sections, workingEntries];
   });
-  const display = () => (ordinaryChat() ? ordinaryChatSections().flat() : otherDisplay());
+  const display = () => displaySections().flat();
   function chatEntries(section: ProcessProjection, botChat: boolean): DisplayEntry[] {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
@@ -1169,8 +1363,74 @@ export function Conversation(props: ConversationProps) {
       }
     }
   });
+  // A side question shows what was asked in it, not the conversation it was
+  // forked with (its model still reads that); a full pane can show it again.
+  const sideCut = signal<string | null>(null);
+  const showInherited = signal(false);
+  void host
+    .query('agent', 'observe', { sessionId })
+    .then((observed) => {
+      if (alive && sideParent(observed.session)) sideCut.set(sideFromOf(observed.session));
+    })
+    .catch(() => {});
+  // Fixed sections, so the history list keeps their rows as other sections change.
+  const inheritedSection: DisplayEntry[] = [{ kind: 'sideInherited', key: 'side/inherited' }];
+  // Turn keys of snapshot or imported rows wrap the Turn id (see historyTurnKey).
+  const atTurn = (key: string | null | undefined, turnId: string) => {
+    if (key == null) return false;
+    if (key === turnId) return true;
+    if (!key.startsWith('[')) return false;
+    try {
+      const parts = JSON.parse(key);
+      return Array.isArray(parts) && parts[parts.length - 1] === turnId;
+    } catch {
+      return false;
+    }
+  };
+  const entryTurnKey = (item: DisplayEntry) =>
+    item.kind === 'summary'
+      ? item.turnKey
+      : item.kind === 'process'
+        ? item.group.turnKey
+        : item.kind === 'row'
+          ? item.turnKey
+          : item.kind === 'bot' || item.kind === 'botNote'
+            ? item.turnId
+            : undefined;
+  // The part of a section after the fork point, kept while that section is.
+  const cutTails = new WeakMap<DisplayEntry[], { from: number; tail: DisplayEntry[] }>();
+  const sideSections = (sections: DisplayEntry[][]) => {
+    const cut = sideCut();
+    if (cut === null) return sections;
+    let section = -1;
+    let index = -1;
+    sections.forEach((entries, at) =>
+      entries.forEach((item, position) => {
+        if (atTurn(entryTurnKey(item), cut)) {
+          section = at;
+          index = position;
+        }
+      }),
+    );
+    if (section < 0) return sections;
+    const entries = sections[section]!;
+    let cached = cutTails.get(entries);
+    if (cached?.from !== index + 1) {
+      cached = { from: index + 1, tail: entries.slice(index + 1) };
+      cutTails.set(entries, cached);
+    }
+    const after = [cached.tail, ...sections.slice(section + 1)];
+    // The card stands beside that conversation, so it shows only its own messages.
+    if (props.thread) return after;
+    return showInherited()
+      ? [...sections.slice(0, section), entries.slice(0, index + 1), inheritedSection, ...after]
+      : [inheritedSection, ...after];
+  };
+  // A model can take a while to say its first word. Until the running turn has
+  // a row of its own, a side question's card says it is at work.
+
   const displaySections = computed(() =>
-    ordinaryChat() ? ordinaryChatSections() : [otherDisplay()],
+    ordinaryChat() ? sideSections(ordinaryChatSections()) : [otherDisplay()],
   );
   const entriesByKey = new Map<string, DisplayEntry>();
   const indexedSections = computed((previous: Set<DisplayEntry[]> | undefined) => {
@@ -1270,6 +1530,7 @@ export function Conversation(props: ConversationProps) {
   const compactStart = signal<string | null>(null);
   const shownKeys = computed(() => {
     if (!props.compact) return [];
+    if (props.thread) return displayKeys();
     const start = compactStart();
     const anchored = start === null ? -1 : displayKeys().indexOf(start);
     const first = anchored >= 0 ? anchored : latestQuestion();
@@ -1721,6 +1982,7 @@ export function Conversation(props: ConversationProps) {
     workspace.set(observed.session.workspace.path);
     permissions.observe(observed.session);
     backend.set(observed.session.backend ?? observed.rememberedBackend ?? null);
+    backendKnown.set(true);
     if (observed.through >= runThrough) {
       if (subscription === null) {
         overlay.observe(observed);
@@ -2454,7 +2716,11 @@ export function Conversation(props: ConversationProps) {
     generation: number;
     task: Promise<void>;
   } | null = null;
+  // Until the Host has said which model the conversation uses, there is none
+  // to call unavailable: a slow first read is not a missing model.
+  const backendKnown = signal(false);
   const modelDetails = (): ModelDetails => {
+    if (!backendKnown()) return { kind: 'loading' };
     const value = modelProjection();
     return value.route === modelRoute() ? value.details : { kind: 'loading' };
   };
@@ -2761,6 +3027,11 @@ export function Conversation(props: ConversationProps) {
     return '';
   };
   const sendBlockedReason = () => sendBlockedReasonFor(true);
+  /** Why a prefilled message that sends itself has not been sent yet. */
+  const autoSendWait = () =>
+    autoSend() === null
+      ? ''
+      : sendBlockedReasonFor(false) || (modelLoading() ? tr('Checking the model…') : '');
 
   const refreshSends = async () => {
     const operations = await pendingSends(client);
@@ -2890,7 +3161,14 @@ export function Conversation(props: ConversationProps) {
         targetBackend = capturedBackend;
       }
       const selected = sendSelection(delivery, targetBackend);
-      const edit = { text, ...attachments.snapshot() };
+      // What the side questions finished since they were last carried goes with it.
+      const side = await sideBlock();
+      if (!alive) return;
+      const edit = {
+        text: side.block ? splitSideBlock(text).body + side.block : text,
+        ...attachments.snapshot(),
+      };
+      side.carry();
       const frozen: FrozenSend = {
         id: `draft-send-${++sendSequence}`,
         text,
@@ -2904,6 +3182,9 @@ export function Conversation(props: ConversationProps) {
       error.set('');
       changeDraft(nextText);
       attachments.sent(edit.attachments.map((file) => file.id));
+      void nameSideThread(text).catch((reason) =>
+        console.warn('side question was not named', reason),
+      );
       await freezeSend(frozen);
     } catch (reason) {
       report(reason);
@@ -3736,6 +4017,26 @@ export function Conversation(props: ConversationProps) {
               viewPosition: 0,
               animated: false,
             });
+          if (initial.kind === 'sideInherited')
+            return (
+              <Button
+                accessibilityLabel={
+                  showInherited()
+                    ? tr('Hide the conversation this was asked from')
+                    : tr('The conversation before is in the main thread · Show')
+                }
+                onPress={() => showInherited.set(!showInherited())}
+                style={{ ...controlStyle, alignSelf: 'center', marginVertical: 8 }}
+                hoverStyle={{ backgroundColor: C.card }}
+                focusStyle={{ backgroundColor: C.raised }}
+              >
+                <Text style={{ ...captionTextStyle, color: C.muted }}>
+                  {showInherited()
+                    ? tr('Hide the conversation this was asked from')
+                    : tr('The conversation before is in the main thread · Show')}
+                </Text>
+              </Button>
+            );
           if (initial.kind === 'trajectory-turn') {
             return (
               <TrajectoryTurn
@@ -3941,6 +4242,7 @@ export function Conversation(props: ConversationProps) {
           const row = () => currentRow(initial.rowId) ?? first;
           return (
             <MessageRow
+              beside={props.thread === true}
               item={row}
               highlighted={() => highlightedAnchor() === initial.key}
               repeats={() => {
@@ -3976,6 +4278,9 @@ export function Conversation(props: ConversationProps) {
                   sessionId={sessionId}
                   through={() => latestKnown}
                   fork={props.fork}
+                  askBeside={
+                    platform.idiom !== 'terminal' && canOpenWorker() ? askBeside : undefined
+                  }
                   menu={menu}
                   extra={
                     platform.idiom !== 'terminal' && props.edit ? (
@@ -4057,7 +4362,7 @@ export function Conversation(props: ConversationProps) {
         style={{
           flexShrink: 1,
           minHeight: 0,
-          borderTopWidth: shownKeys().length ? 1 : 0,
+          borderTopWidth: shownKeys().length && !props.thread ? 1 : 0,
           borderTopColor: C.line,
         }}
       >
@@ -4069,7 +4374,10 @@ export function Conversation(props: ConversationProps) {
             changedReadExposure();
           }}
           style={{ flexShrink: 1, minHeight: 0 }}
-          contentStyle={{ paddingVertical: shownKeys().length ? 16 : 0 }}
+          contentStyle={{
+            paddingTop: shownKeys().length && !props.thread ? 16 : 0,
+            paddingBottom: shownKeys().length || (props.thread && autoSending()) ? 16 : 0,
+          }}
         >
           <View
             onLayout={() => {
@@ -4088,6 +4396,10 @@ export function Conversation(props: ConversationProps) {
             >
               {entryRow}
             </List>
+            {/* The card's first question reads as sent while it waits to be. */}
+            <If when={props.thread === true && autoSending()}>
+              <AskedQuestion text={() => autoSend()?.text ?? ''} waiting={autoSendWait} />
+            </If>
           </View>
         </Scroll>
       </View>
@@ -4429,6 +4741,20 @@ export function Conversation(props: ConversationProps) {
               </View>
             )}
           </Each>
+          <If when={platform.idiom !== 'terminal' && pendingQuotes(sessionId).length > 0}>
+            <View style={{ paddingLeft: railInset() }}>
+              <View style={[readingColumn, { paddingRight: 16 }]}>
+                <SideQuoteTray
+                  quotes={() => pendingQuotes(sessionId).map((quote) => quote.text)}
+                  busy={askingQuotes}
+                  error={quotesError}
+                  ask={() => void askQuotes()}
+                  remove={(index) => removePendingQuote(sessionId, index)}
+                  clear={() => clearPendingQuotes(sessionId)}
+                />
+              </View>
+            </View>
+          </If>
         </View>
         <Each
           of={selectedTrajectory() === null ? [] : [selectedTrajectory()!]}

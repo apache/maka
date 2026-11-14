@@ -25,6 +25,7 @@ import { MarkdownImageView } from './MarkdownImage';
 import { SourceText } from './SourceText';
 import { tr } from './locale';
 import { C, bodyTextStyle, codeTextStyle, secondaryTextStyle } from './ui';
+import { markPassages, notePassage, openSideLink, sideAnchors } from './sideThreads';
 
 export function MarkdownBody(props: {
   row: () => Row;
@@ -42,7 +43,12 @@ export function MarkdownBody(props: {
   const readingStyle = props.compact ? secondaryTextStyle : bodyTextStyle;
   const color = () => (props.compact ? C.muted : C.text);
   return (
-    <View selectable>
+    <View
+      selectable
+      onSelectionChange={(event: { text: string }) =>
+        notePassage(props.sessionId, props.row().turnId, props.sourceId, event.text)
+      }
+    >
       <If
         when={hasTextPrefix(props.row())}
         else={
@@ -52,7 +58,11 @@ export function MarkdownBody(props: {
         }
       >
         <TextView
-          markdown={props.row().text}
+          markdown={
+            props.compact || props.row().role !== 'assistant'
+              ? props.row().text
+              : markPassages(props.row().text, sideAnchors(props.sessionId, props.row().turnId))
+          }
           extensions={mermaidExtensions}
           renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
           sourceId={props.sourceId}
@@ -63,6 +73,7 @@ export function MarkdownBody(props: {
           onScrollIntent={props.userScroll}
           onParseError={({ reason }) => failure.set(reason)}
           onLinkPress={(event) => {
+            if (openSideLink(props.sessionId, event.url)) return;
             const row = props.row();
             const sourceId = props.sourceId;
             const target = event.target;
