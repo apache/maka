@@ -300,9 +300,15 @@ impl Owner {
                 let mut tasks = Vec::new();
                 let mut next_cursor = None;
                 for (id, saved) in &catalog.plans {
-                    if discovery_session.as_ref().is_some_and(|session| !matches!(
-                        &saved.plan.task.effect, ScheduledEffect::Discovery { target, .. } if &target.session_id == session
-                    )) { continue; }
+                    let matches_view = match &saved.plan.task.effect {
+                        ScheduledEffect::Discovery { target, .. } => {
+                            discovery_session.as_ref() == Some(&target.session_id)
+                        }
+                        _ => discovery_session.is_none(),
+                    };
+                    if !matches_view {
+                        continue;
+                    }
                     if cursor.as_ref().is_some_and(|after| id <= after) {
                         continue;
                     }

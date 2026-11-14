@@ -147,7 +147,6 @@ impl Owner {
             .await?;
         let legacy_discovery = self.scheduler.investigation.read().unwrap().as_deref() == Some(id)
             && super::discovery::legacy_tools(session.configuration.tools.as_deref());
-        let discovery = self.scheduler.investigation.read().unwrap().as_deref() == Some(id);
         let selected_catalog = if legacy_discovery || (external && !host_bridge) {
             self.mcp_projects.base.clone()
         } else {
